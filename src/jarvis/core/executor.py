@@ -30,9 +30,7 @@ class Executor:
         self.execution_count = 0
         logger.info("Executor initialized")
 
-    async def execute_tool(
-        self, tool_name: str, arguments: dict[str, Any]
-    ) -> ToolResult:
+    async def execute_tool(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
         """
         Execute a tool with given arguments.
 
@@ -44,9 +42,7 @@ class Executor:
             ToolResult with execution outcome
         """
         self.execution_count += 1
-        logger.info(
-            f"Executing tool '{tool_name}' (execution #{self.execution_count})"
-        )
+        logger.info(f"Executing tool '{tool_name}' (execution #{self.execution_count})")
 
         # Validate tool exists
         tool = self.tool_registry.get(tool_name)

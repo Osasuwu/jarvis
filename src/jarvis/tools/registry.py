@@ -70,9 +70,7 @@ class ToolRegistry:
         Returns:
             List of tools with matching capability
         """
-        return [
-            tool for tool in self._tools.values() if capability in tool.capabilities
-        ]
+        return [tool for tool in self._tools.values() if capability in tool.capabilities]
 
     def find_by_risk_level(self, risk_level: RiskLevel) -> list[Tool]:
         """
@@ -84,9 +82,7 @@ class ToolRegistry:
         Returns:
             List of tools with matching risk level
         """
-        return [
-            tool for tool in self._tools.values() if tool.risk_level == risk_level
-        ]
+        return [tool for tool in self._tools.values() if tool.risk_level == risk_level]
 
     def get_llm_schemas(self) -> list[dict[str, Any]]:
         """

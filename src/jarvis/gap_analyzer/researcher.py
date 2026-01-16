@@ -167,8 +167,7 @@ class GapResearcher:
         data = {
             "total_researches": len(self.research_cache),
             "research_results": {
-                name: result.to_dict()
-                for name, result in self.research_cache.items()
+                name: result.to_dict() for name, result in self.research_cache.items()
             },
         }
         with open(filepath, "w", encoding="utf-8") as f:

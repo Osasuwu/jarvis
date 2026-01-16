@@ -79,7 +79,7 @@ class Orchestrator:
 
             # 1. THINK: Get current context and plan next action
             messages = self.memory.get_messages()
-            
+
             # Only provide tools on first iteration, or after successful completion
             llm_tools = self.tool_registry.get_llm_schemas() if not tool_called_once else None
 
@@ -93,7 +93,7 @@ class Orchestrator:
                 # ACT: Execute tool calls
                 logger.debug(f"LLM response content: {response.content}")
                 logger.debug(f"LLM requested {len(response.tool_calls)} tool calls")
-                
+
                 tool_called_once = True
 
                 # Add assistant message with tool calls intent
@@ -115,10 +115,12 @@ class Orchestrator:
                     )
 
                 # Add tool results to memory
-                results_text = "\n".join([
-                    f"- {r['tool']}: {'✓ ' if r['success'] else '✗ '}{r['output'] or r['error']}"
-                    for r in tool_results
-                ])
+                results_text = "\n".join(
+                    [
+                        f"- {r['tool']}: {'✓ ' if r['success'] else '✗ '}{r['output'] or r['error']}"
+                        for r in tool_results
+                    ]
+                )
                 self.memory.add_message("system", f"Tool results:\n{results_text}")
 
                 # 3. OBSERVE: Continue loop with tool results

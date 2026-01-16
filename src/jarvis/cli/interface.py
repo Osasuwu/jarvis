@@ -30,9 +30,7 @@ class CLIInterface:
         self.register_command("exit", self._cmd_exit, "Exit the application")
         self.register_command("stats", self._cmd_stats, "Show statistics")
 
-    def register_command(
-        self, name: str, handler: Callable, help_text: str = ""
-    ) -> None:
+    def register_command(self, name: str, handler: Callable, help_text: str = "") -> None:
         """Register a command handler.
 
         Args:
@@ -72,9 +70,7 @@ class CLIInterface:
                 result = handler(cmd_args)
 
             # Log successful command
-            self.history.add_command(
-                command=command, status="success", result=str(result or "")
-            )
+            self.history.add_command(command=command, status="success", result=str(result or ""))
             return result
 
         except KeyboardInterrupt:
@@ -83,9 +79,7 @@ class CLIInterface:
             return None
         except Exception as e:
             self.formatter.print_error(f"Command failed: {e}")
-            self.history.add_command(
-                command=command, status="error", error=str(e)
-            )
+            self.history.add_command(command=command, status="error", error=str(e))
             return None
 
     def _cmd_help(self, args: str) -> None:
@@ -109,9 +103,7 @@ class CLIInterface:
             return
 
         if args == "export":
-            filepath = self.formatter.input_prompt(
-                "Export to file", "history.json"
-            )
+            filepath = self.formatter.input_prompt("Export to file", "history.json")
             self.history.export_to_json(filepath)
             self.formatter.print_success(f"History exported to {filepath}")
             return
@@ -123,12 +115,8 @@ class CLIInterface:
 
         self.formatter.print_section("Recent Commands")
         for i, cmd in enumerate(recent, 1):
-            status_symbol = (
-                "✓" if cmd["status"] == "success" else "✗"
-            )
-            self.formatter.console.print(
-                f"  [{i}] {status_symbol} {cmd['command']}"
-            )
+            status_symbol = "✓" if cmd["status"] == "success" else "✗"
+            self.formatter.console.print(f"  [{i}] {status_symbol} {cmd['command']}")
 
     def _cmd_clear(self, args: str) -> None:
         """Clear screen."""
@@ -175,6 +163,4 @@ class CLIInterface:
 
     def get_commands(self) -> dict[str, str]:
         """Get all registered commands with help text."""
-        return {
-            name: info["help"] for name, info in self.commands.items()
-        }
+        return {name: info["help"] for name, info in self.commands.items()}

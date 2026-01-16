@@ -207,12 +207,18 @@ def test_audit_logger_filter_by_risk() -> None:
     auditor = AuditLogger()
 
     auditor.log_operation(
-        tool_name="file_read", operation="Read", parameters={},
-        risk_level="LOW", result_status="success"
+        tool_name="file_read",
+        operation="Read",
+        parameters={},
+        risk_level="LOW",
+        result_status="success",
     )
     auditor.log_operation(
-        tool_name="shell_execute", operation="Execute", parameters={},
-        risk_level="HIGH", result_status="success"
+        tool_name="shell_execute",
+        operation="Execute",
+        parameters={},
+        risk_level="HIGH",
+        result_status="success",
     )
 
     low = auditor.get_entries_by_risk("LOW")
@@ -227,12 +233,18 @@ def test_audit_logger_summary() -> None:
     auditor = AuditLogger()
 
     auditor.log_operation(
-        tool_name="file_read", operation="Read", parameters={},
-        risk_level="LOW", result_status="success"
+        tool_name="file_read",
+        operation="Read",
+        parameters={},
+        risk_level="LOW",
+        result_status="success",
     )
     auditor.log_operation(
-        tool_name="shell_execute", operation="Execute", parameters={},
-        risk_level="HIGH", result_status="denied"
+        tool_name="shell_execute",
+        operation="Execute",
+        parameters={},
+        risk_level="HIGH",
+        result_status="denied",
     )
 
     summary = auditor.get_summary()
@@ -248,8 +260,11 @@ def test_audit_logger_export_json() -> None:
         auditor = AuditLogger()
 
         auditor.log_operation(
-            tool_name="test", operation="Test", parameters={},
-            risk_level="LOW", result_status="success"
+            tool_name="test",
+            operation="Test",
+            parameters={},
+            risk_level="LOW",
+            result_status="success",
         )
 
         auditor.export_to_json(filepath)
@@ -329,4 +344,3 @@ async def test_safe_executor_with_confirmation() -> None:
     assert result.success
     assert auditor.entries[0].result_status == "success"
     assert auditor.entries[0].user_approved is True
-

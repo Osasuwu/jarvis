@@ -91,8 +91,6 @@ class Planner:
         tool = self.tool_registry.get(tool_name)
         if tool.requires_confirmation:
             # TODO: Phase 4 - Human-in-the-loop confirmation
-            logger.warning(
-                f"Tool '{tool_name}' requires confirmation (not implemented yet)"
-            )
+            logger.warning(f"Tool '{tool_name}' requires confirmation (not implemented yet)")
 
         return True, ""

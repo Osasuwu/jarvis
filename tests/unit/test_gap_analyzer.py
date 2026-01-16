@@ -82,9 +82,7 @@ class TestGapDetector(unittest.TestCase):
         self.detector.detect_from_error(
             "gap2", "Desc2", "Context2", "tool2", "Error2", severity="HIGH"
         )
-        self.detector.detect_missing_capability(
-            "gap3", "Desc3", "Context3", severity="LOW"
-        )
+        self.detector.detect_missing_capability("gap3", "Desc3", "Context3", severity="LOW")
 
         critical = self.detector.get_critical_gaps()
         self.assertEqual(len(critical), 2)
@@ -93,9 +91,7 @@ class TestGapDetector(unittest.TestCase):
     def test_get_recent_gaps(self):
         """Test getting recent gaps with limit."""
         for i in range(5):
-            self.detector.detect_missing_capability(
-                f"gap_{i}", f"Desc {i}", f"Context {i}"
-            )
+            self.detector.detect_missing_capability(f"gap_{i}", f"Desc {i}", f"Context {i}")
 
         recent = self.detector.get_recent_gaps(limit=3)
         self.assertEqual(len(recent), 3)
@@ -104,9 +100,7 @@ class TestGapDetector(unittest.TestCase):
         """Test checking for unresolved gaps."""
         self.assertFalse(self.detector.has_unresolved_gaps())
 
-        self.detector.detect_missing_capability(
-            "gap1", "Desc1", "Context1"
-        )
+        self.detector.detect_missing_capability("gap1", "Desc1", "Context1")
         self.assertTrue(self.detector.has_unresolved_gaps())
 
     def test_export_to_json(self):
@@ -130,9 +124,7 @@ class TestGapDetector(unittest.TestCase):
 
     def test_clear_gaps(self):
         """Test clearing gaps."""
-        self.detector.detect_missing_capability(
-            "gap1", "Desc1", "Context1"
-        )
+        self.detector.detect_missing_capability("gap1", "Desc1", "Context1")
         self.assertEqual(len(self.detector.gaps), 1)
 
         self.detector.clear_gaps()
@@ -140,15 +132,9 @@ class TestGapDetector(unittest.TestCase):
 
     def test_get_summary(self):
         """Test getting summary statistics."""
-        self.detector.detect_from_error(
-            "gap1", "Desc1", "Context1", "tool1", "Error1", "HIGH"
-        )
-        self.detector.detect_from_error(
-            "gap2", "Desc2", "Context2", "tool2", "Error2", "HIGH"
-        )
-        self.detector.detect_missing_capability(
-            "gap3", "Desc3", "Context3", "MEDIUM", 0.95
-        )
+        self.detector.detect_from_error("gap1", "Desc1", "Context1", "tool1", "Error1", "HIGH")
+        self.detector.detect_from_error("gap2", "Desc2", "Context2", "tool2", "Error2", "HIGH")
+        self.detector.detect_missing_capability("gap3", "Desc3", "Context3", "MEDIUM", 0.95)
 
         summary = self.detector.get_summary()
         self.assertEqual(summary["total_gaps"], 3)
@@ -371,9 +357,7 @@ class TestToolProposer(unittest.TestCase):
         self.proposer.propose_tool(gap, research)
 
         high_priority = self.proposer.get_high_priority_proposals()
-        self.assertTrue(
-            any(p.risk_level == "HIGH" for p in high_priority)
-        )
+        self.assertTrue(any(p.risk_level == "HIGH" for p in high_priority))
 
     def test_export_proposals_json(self):
         """Test exporting proposals to JSON."""
@@ -464,9 +448,7 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(proposal.tool_name, "database_query")
 
         # Verify integration
-        self.assertIn(
-            research.possible_solutions[0], proposal.implementation_hint
-        )
+        self.assertIn(research.possible_solutions[0], proposal.implementation_hint)
 
 
 if __name__ == "__main__":

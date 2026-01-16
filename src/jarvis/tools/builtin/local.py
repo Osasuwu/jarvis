@@ -147,7 +147,7 @@ class ListDirectoryTool(Tool):
 
             entries = []
             for entry in os.scandir(path):
-                if not show_hidden and entry.name.startswith('.'):
+                if not show_hidden and entry.name.startswith("."):
                     continue
                 kind = "dir" if entry.is_dir() else "file"
                 size = entry.stat().st_size if entry.is_file() else 0

@@ -39,9 +39,9 @@ async def test_orchestrator_initialization() -> None:
     mock_llm = AsyncMock()
     registry = ToolRegistry()
     memory = ConversationMemory()
-    
+
     orchestrator = Orchestrator(mock_llm, registry, memory, max_iterations=5)
-    
+
     assert orchestrator.max_iterations == 5
     assert orchestrator.llm == mock_llm
     assert orchestrator.tool_registry == registry
@@ -52,7 +52,7 @@ async def test_orchestrator_with_tool_call() -> None:
     """Test orchestrator with tool call."""
     registry = ToolRegistry()
     registry.register(SampleTool())
-    
+
     mock_llm = AsyncMock()
     mock_llm.complete.side_effect = [
         LLMResponse(
@@ -67,12 +67,12 @@ async def test_orchestrator_with_tool_call() -> None:
         ),
         LLMResponse(content="Task completed successfully"),
     ]
-    
+
     memory = ConversationMemory()
     orchestrator = Orchestrator(mock_llm, registry, memory)
-    
+
     response = await orchestrator.run("Use the sample tool")
-    
+
     assert "completed" in response.lower()
     assert mock_llm.complete.call_count == 2
 
@@ -82,20 +82,18 @@ async def test_orchestrator_max_iterations() -> None:
     """Test orchestrator respects max iterations."""
     registry = ToolRegistry()
     registry.register(SampleTool())
-    
+
     mock_llm = AsyncMock()
     mock_llm.complete.return_value = LLMResponse(
         content="Calling tool again",
-        tool_calls=[
-            ToolCall(id="call_1", name="sample_tool", arguments={"param": "value"})
-        ],
+        tool_calls=[ToolCall(id="call_1", name="sample_tool", arguments={"param": "value"})],
     )
-    
+
     memory = ConversationMemory()
     orchestrator = Orchestrator(mock_llm, registry, memory, max_iterations=3)
-    
+
     response = await orchestrator.run("Test")
-    
+
     assert "maximum" in response.lower() or "iterations" in response.lower()
     assert mock_llm.complete.call_count <= 3
 
@@ -103,7 +101,7 @@ async def test_orchestrator_max_iterations() -> None:
 @pytest.mark.asyncio
 async def test_orchestrator_tool_execution_error() -> None:
     """Test orchestrator handles tool execution errors."""
-    
+
     class FailingTool(Tool):
         name = "failing_tool"
         description = "A tool that fails"
@@ -114,10 +112,10 @@ async def test_orchestrator_tool_execution_error() -> None:
 
         def get_parameters(self) -> list[ToolParameter]:
             return []
-    
+
     registry = ToolRegistry()
     registry.register(FailingTool())
-    
+
     mock_llm = AsyncMock()
     mock_llm.complete.side_effect = [
         LLMResponse(
@@ -126,12 +124,12 @@ async def test_orchestrator_tool_execution_error() -> None:
         ),
         LLMResponse(content="Tool failed, but handled gracefully"),
     ]
-    
+
     memory = ConversationMemory()
     orchestrator = Orchestrator(mock_llm, registry, memory)
-    
+
     response = await orchestrator.run("Test")
-    
+
     assert "gracefully" in response.lower() or "failed" in response.lower()
 
 
@@ -141,10 +139,10 @@ def test_orchestrator_reset() -> None:
     registry = ToolRegistry()
     memory = ConversationMemory()
     memory.add_message("user", "test")
-    
+
     orchestrator = Orchestrator(mock_llm, registry, memory)
     assert memory.size() == 1
-    
+
     orchestrator.reset()
     assert memory.size() == 0
 
@@ -154,13 +152,13 @@ def test_orchestrator_get_stats() -> None:
     mock_llm = AsyncMock()
     mock_llm.provider_name = "test_provider"
     mock_llm.model_name = "test_model"
-    
+
     registry = ToolRegistry()
     registry.register(SampleTool())
-    
+
     memory = ConversationMemory()
     orchestrator = Orchestrator(mock_llm, registry, memory, max_iterations=10)
-    
+
     stats = orchestrator.get_stats()
     assert stats["max_iterations"] == 10
     assert stats["tools_available"] == 1

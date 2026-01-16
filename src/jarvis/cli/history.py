@@ -95,9 +95,7 @@ class CommandHistory:
             "total_commands": total,
             "successful": successful,
             "failed": failed,
-            "success_rate": (
-                (successful / total * 100) if total > 0 else 0
-            ),
+            "success_rate": ((successful / total * 100) if total > 0 else 0),
         }
 
     def clear_history(self) -> None:

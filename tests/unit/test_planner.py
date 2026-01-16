@@ -30,7 +30,7 @@ async def test_planner_initialization() -> None:
     registry = ToolRegistry()
     llm = None  # Not needed for basic functionality
     planner = Planner(llm, registry)
-    
+
     assert planner.tool_registry == registry
 
 
@@ -41,9 +41,9 @@ async def test_planner_creates_plan() -> None:
     registry.register(SimpleTool())
     llm = None
     planner = Planner(llm, registry)
-    
+
     plan = await planner.plan("Do a simple task")
-    
+
     assert "task" in plan
     assert "available_tools" in plan
     assert "tool_count" in plan
@@ -57,11 +57,13 @@ async def test_planner_estimates_complexity() -> None:
     registry = ToolRegistry()
     llm = None
     planner = Planner(llm, registry)
-    
+
     simple_plan = await planner.plan("Do it")
     assert simple_plan["complexity"] == "simple"
-    
-    medium_plan = await planner.plan("Do this task with some detailed requirements and specifications here")
+
+    medium_plan = await planner.plan(
+        "Do this task with some detailed requirements and specifications here"
+    )
     assert medium_plan["complexity"] == "medium"
 
 
@@ -71,12 +73,12 @@ def test_planner_validates_tool_selection() -> None:
     registry.register(SimpleTool())
     llm = None
     planner = Planner(llm, registry)
-    
+
     # Valid tool
     is_valid, error = planner.validate_tool_selection("simple_tool")
     assert is_valid
     assert error == ""
-    
+
     # Invalid tool
     is_valid, error = planner.validate_tool_selection("nonexistent")
     assert not is_valid

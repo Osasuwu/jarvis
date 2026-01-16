@@ -15,9 +15,7 @@ def test_tool_call_creation() -> None:
 
 def test_tool_call_with_id() -> None:
     """Test ToolCall with ID."""
-    call = ToolCall(
-        name="test_tool", arguments={"arg1": "value1"}, id="call_123"
-    )
+    call = ToolCall(name="test_tool", arguments={"arg1": "value1"}, id="call_123")
     assert call.id == "call_123"
 
 

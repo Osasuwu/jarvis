@@ -128,9 +128,7 @@ class GapDetector:
 
     def get_recent_gaps(self, limit: int = 10) -> list[CapabilityGap]:
         """Get most recent gaps."""
-        return sorted(
-            self.gaps, key=lambda g: g.timestamp, reverse=True
-        )[:limit]
+        return sorted(self.gaps, key=lambda g: g.timestamp, reverse=True)[:limit]
 
     def has_unresolved_gaps(self) -> bool:
         """Check if there are any unresolved gaps."""

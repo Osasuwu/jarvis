@@ -186,9 +186,7 @@ class AuditLogger:
         Args:
             filepath: Path to export to
         """
-        Path(filepath).write_text(
-            json.dumps([e.to_dict() for e in self.entries], indent=2)
-        )
+        Path(filepath).write_text(json.dumps([e.to_dict() for e in self.entries], indent=2))
 
     def load_from_file(self, filepath: str | Path) -> None:
         """

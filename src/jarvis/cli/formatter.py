@@ -50,9 +50,7 @@ class OutputFormatter:
         """Print info message."""
         self.console.print(f"[cyan]ℹ[/cyan] {message}")
 
-    def print_code(
-        self, code: str, language: str = "python", line_numbers: bool = True
-    ) -> None:
+    def print_code(self, code: str, language: str = "python", line_numbers: bool = True) -> None:
         """Print formatted code block."""
         syntax = Syntax(
             code,
@@ -123,9 +121,7 @@ class OutputFormatter:
             )
         )
 
-    def print_progress_bar(
-        self, total: int, description: str = "Processing"
-    ) -> Progress:
+    def print_progress_bar(self, total: int, description: str = "Processing") -> Progress:
         """Create and return a progress bar."""
         progress = Progress()
         progress.add_task(description, total=total)
@@ -141,9 +137,7 @@ class OutputFormatter:
 
         self.console.print(Rule(title))
 
-    def print_tree(
-        self, label: str, children: dict[str, list[str]]
-    ) -> None:
+    def print_tree(self, label: str, children: dict[str, list[str]]) -> None:
         """Print hierarchical tree structure."""
         from rich.tree import Tree
 

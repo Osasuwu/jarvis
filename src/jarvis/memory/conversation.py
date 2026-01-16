@@ -48,9 +48,7 @@ class ConversationMemory:
 
         # Warn if approaching limit
         if len(self._messages) >= self.max_length * 0.9:
-            logger.warning(
-                f"Memory nearing limit: {len(self._messages)}/{self.max_length}"
-            )
+            logger.warning(f"Memory nearing limit: {len(self._messages)}/{self.max_length}")
 
     def get_messages(self) -> list[dict[str, str]]:
         """

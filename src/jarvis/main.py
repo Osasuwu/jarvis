@@ -89,7 +89,7 @@ def chat(query: str = typer.Argument(None, help="Query to send to Jarvis")) -> N
     """Send a query to Jarvis or start interactive mode."""
     if not query:
         console.print("[yellow]Interactive mode not yet implemented.[/yellow]")
-        console.print("Usage: jarvis chat \"your question here\"")
+        console.print('Usage: jarvis chat "your question here"')
         return
 
     console.print(Panel(f"[bold]User:[/bold] {query}", style="blue"))

@@ -74,9 +74,7 @@ class ToolProposer:
         """Initialize the tool proposer."""
         self.proposals: list[ToolProposal] = []
 
-    def propose_tool(
-        self, gap: CapabilityGap, research: ResearchResult
-    ) -> ToolProposal:
+    def propose_tool(self, gap: CapabilityGap, research: ResearchResult) -> ToolProposal:
         """Generate a tool proposal based on gap and research.
 
         Args:
@@ -91,9 +89,7 @@ class ToolProposer:
         self.proposals.append(proposal)
         return proposal
 
-    def _generate_proposal(
-        self, gap: CapabilityGap, research: ResearchResult
-    ) -> ToolProposal:
+    def _generate_proposal(self, gap: CapabilityGap, research: ResearchResult) -> ToolProposal:
         """Generate proposal based on gap type."""
         gap_name_lower = gap.capability_name.lower()
 

@@ -70,9 +70,7 @@ class TestOutputFormatter(unittest.TestCase):
         """Test input prompt."""
         with patch("builtins.input", return_value="test input"):
             # Mock console input
-            self.formatter.console.input = MagicMock(
-                return_value="test input"
-            )
+            self.formatter.console.input = MagicMock(return_value="test input")
             result = self.formatter.input_prompt("Enter value")
             self.assertIsNotNone(result)
 

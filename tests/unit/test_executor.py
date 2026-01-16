@@ -51,7 +51,7 @@ def test_executor_initialization() -> None:
     """Test executor initializes correctly."""
     registry = ToolRegistry()
     executor = Executor(registry)
-    
+
     assert executor.execution_count == 0
     stats = executor.get_stats()
     assert stats["total_executions"] == 0
@@ -63,9 +63,9 @@ async def test_execute_tool_success() -> None:
     registry = ToolRegistry()
     registry.register(MockTool())
     executor = Executor(registry)
-    
+
     result = await executor.execute_tool("mock_tool", {"value": "test"})
-    
+
     assert result.success is True
     assert result.output == "Processed: test"
     assert result.error is None
@@ -77,9 +77,9 @@ async def test_execute_tool_not_found() -> None:
     """Test executing non-existent tool."""
     registry = ToolRegistry()
     executor = Executor(registry)
-    
+
     result = await executor.execute_tool("nonexistent", {})
-    
+
     assert result.success is False
     assert "not found" in result.error
 
@@ -90,10 +90,10 @@ async def test_execute_tool_invalid_params() -> None:
     registry = ToolRegistry()
     registry.register(MockTool())
     executor = Executor(registry)
-    
+
     # Missing required 'value' parameter
     result = await executor.execute_tool("mock_tool", {})
-    
+
     assert result.success is False
     assert "Missing required parameters" in result.error
 
@@ -104,9 +104,9 @@ async def test_execute_tool_failure() -> None:
     registry = ToolRegistry()
     registry.register(FailingTool())
     executor = Executor(registry)
-    
+
     result = await executor.execute_tool("failing_tool", {})
-    
+
     assert result.success is False
     assert result.error == "Tool failed"
 
@@ -117,12 +117,12 @@ async def test_execution_count() -> None:
     registry = ToolRegistry()
     registry.register(MockTool())
     executor = Executor(registry)
-    
+
     assert executor.execution_count == 0
-    
+
     await executor.execute_tool("mock_tool", {"value": "1"})
     assert executor.execution_count == 1
-    
+
     await executor.execute_tool("mock_tool", {"value": "2"})
     assert executor.execution_count == 2
 
@@ -132,7 +132,7 @@ def test_reset_stats() -> None:
     registry = ToolRegistry()
     executor = Executor(registry)
     executor.execution_count = 5
-    
+
     executor.reset_stats()
     assert executor.execution_count == 0
 
@@ -143,7 +143,7 @@ def test_get_stats() -> None:
     registry.register(MockTool())
     executor = Executor(registry)
     executor.execution_count = 3
-    
+
     stats = executor.get_stats()
     assert stats["total_executions"] == 3
     assert stats["tools_available"] == 1
