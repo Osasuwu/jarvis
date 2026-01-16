@@ -49,7 +49,12 @@ class AuditLogger:
         self.logger = logging.getLogger(__name__)
 
         if self.log_file:
-            self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self.log_file.parent.mkdir(parents=True, exist_ok=True)
+            except (OSError, FileExistsError) as e:
+                # If directory creation fails, continue without file logging
+                self.logger.warning(f"Could not create audit log directory: {e}")
+                self.log_file = None
 
     def log_operation(
         self,

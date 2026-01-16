@@ -38,8 +38,9 @@ async def test_orchestrator_initialization() -> None:
     """Test orchestrator initializes correctly."""
     mock_llm = AsyncMock()
     registry = ToolRegistry()
-    memory = ConversationMemory()
-
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
+    
     orchestrator = Orchestrator(mock_llm, registry, memory, max_iterations=5)
 
     assert orchestrator.max_iterations == 5
@@ -68,7 +69,8 @@ async def test_orchestrator_with_tool_call() -> None:
         LLMResponse(content="Task completed successfully"),
     ]
 
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     orchestrator = Orchestrator(mock_llm, registry, memory)
 
     response = await orchestrator.run("Use the sample tool")
@@ -89,7 +91,8 @@ async def test_orchestrator_max_iterations() -> None:
         tool_calls=[ToolCall(id="call_1", name="sample_tool", arguments={"param": "value"})],
     )
 
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     orchestrator = Orchestrator(mock_llm, registry, memory, max_iterations=3)
 
     response = await orchestrator.run("Test")
@@ -125,7 +128,8 @@ async def test_orchestrator_tool_execution_error() -> None:
         LLMResponse(content="Tool failed, but handled gracefully"),
     ]
 
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     orchestrator = Orchestrator(mock_llm, registry, memory)
 
     response = await orchestrator.run("Test")
@@ -137,7 +141,8 @@ def test_orchestrator_reset() -> None:
     """Test orchestrator reset."""
     mock_llm = AsyncMock()
     registry = ToolRegistry()
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     memory.add_message("user", "test")
 
     orchestrator = Orchestrator(mock_llm, registry, memory)
@@ -156,7 +161,8 @@ def test_orchestrator_get_stats() -> None:
     registry = ToolRegistry()
     registry.register(SampleTool())
 
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     orchestrator = Orchestrator(mock_llm, registry, memory, max_iterations=10)
 
     stats = orchestrator.get_stats()

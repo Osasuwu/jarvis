@@ -13,6 +13,9 @@ from jarvis.llm import LLMProvider
 from jarvis.gap_analyzer import GapDetector, GapResearcher, ToolProposer
 from jarvis.memory.conversation import ConversationMemory
 from jarvis.observability import set_request_id, clear_request_id
+from jarvis.safety.auditor import AuditLogger
+from jarvis.safety.confirmation import ConfirmationPrompt
+from jarvis.safety.whitelist import WhitelistManager
 from jarvis.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -24,9 +27,15 @@ class Orchestrator:
 
     The ReAct pattern:
     1. Think - Analyze the task and current state
-    2. Act - Choose and execute tools
+    2. Act - Choose and execute tools (with safety checks)
     3. Observe - Process results
     4. Repeat - Until task is complete
+
+    Safety enforcement:
+    - All tool executions go through Executor with safety layer
+    - HIGH risk tools require user confirmation
+    - All operations audited and logged
+    - Whitelist enforcement for parameters
     """
 
     def __init__(
@@ -35,6 +44,10 @@ class Orchestrator:
         tool_registry: ToolRegistry,
         memory: ConversationMemory | None = None,
         max_iterations: int | None = None,
+        executor: Executor | None = None,
+        confirmation: ConfirmationPrompt | None = None,
+        whitelist: WhitelistManager | None = None,
+        auditor: AuditLogger | None = None,
     ):
         """
         Initialize orchestrator.
@@ -44,18 +57,36 @@ class Orchestrator:
             tool_registry: Registry of available tools
             memory: Conversation memory (optional)
             max_iterations: Max ReAct iterations (defaults to config)
+            executor: Custom executor (optional; created if not provided)
+            confirmation: Confirmation system (optional)
+            whitelist: Whitelist manager (optional)
+            auditor: Audit logger (optional)
         """
         self.llm = llm_provider
         self.tool_registry = tool_registry
-        self.memory = memory or ConversationMemory()
+        self.memory = memory if memory is not None else ConversationMemory()
         self.planner = Planner(llm_provider, tool_registry)
-        self.executor = Executor(tool_registry)
         self.gap_detector = GapDetector()
         self.gap_researcher = GapResearcher()
         self.tool_proposer = ToolProposer()
 
         config = get_config()
         self.max_iterations = max_iterations or config.agent.max_iterations
+
+        # Initialize executor with safety layer
+        if executor is None:
+            # Create executor with safety components
+            # Risk levels for confirmation are configured via ToolSettings
+            require_confirmation_for = config.tools.require_confirmation_for_risk_levels
+            self.executor = Executor(
+                tool_registry,
+                confirmation=confirmation,
+                whitelist=whitelist,
+                auditor=auditor,
+                require_confirmation_for=require_confirmation_for,
+            )
+        else:
+            self.executor = executor
 
         logger.info(
             f"Orchestrator initialized with {len(tool_registry)} tools, "

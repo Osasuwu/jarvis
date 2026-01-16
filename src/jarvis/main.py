@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import os
 import sys
 
 import typer
@@ -11,11 +10,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from jarvis.config import get_config
-from jarvis.core.orchestrator import Orchestrator
-from jarvis.llm import GroqProvider, LocalStubProvider
-from jarvis.memory import ConversationMemory
-from jarvis.tools.discovery import ToolDiscovery
-from jarvis.tools.registry import ToolRegistry
+from jarvis.core.factory import create_orchestrator
 
 app = typer.Typer(
     name="jarvis",
@@ -32,57 +27,35 @@ logging.basicConfig(
 )
 
 
-def _create_orchestrator() -> Orchestrator:
-    """Create and initialize the orchestrator."""
+def _create_orchestrator() -> "Orchestrator":
+    """
+    Create and initialize the orchestrator using factory.
+
+    The factory handles:
+    - Configuration validation
+    - LLM provider selection
+    - Tool discovery and registration
+    - Memory initialization with persistence
+    - Safety layer setup
+
+    Returns:
+        Fully initialized Orchestrator
+
+    Raises:
+        ValueError: If configuration is invalid
+        RuntimeError: If initialization fails
+    """
     try:
-        config = get_config()
-
-        # Initialize LLM Provider
-        use_local_env = os.getenv("USE_LOCAL_LLM", "").lower() in ("1", "true", "yes")
-        if use_local_env:
-            # Use local Ollama model
-            local_model = os.getenv("LOCAL_LLM_MODEL", "qwen2:4b")
-            console.print(
-                f"[yellow]USE_LOCAL_LLM enabled; using local Ollama model '{local_model}'.[/yellow]"
-            )
-            llm = LocalStubProvider(model=local_model)
-        elif config.llm.groq_api_key:
-            llm = GroqProvider(
-                api_key=config.llm.groq_api_key,
-                model=config.llm.model,
-            )
-        else:
-            console.print(
-                "[yellow]GROQ_API_KEY not set; using local stub LLM fallback.[/yellow]"
-            )
-            llm = LocalStubProvider()
-
-        # Initialize Tool Registry with discovery
-        discovery = ToolDiscovery()
-        discovered_tools = discovery.discover_all(
-            include_builtin=True,
-            config_file=None,  # Optional: "configs/tools.yaml"
-            custom_paths=None,  # Optional: ["./custom_tools"]
-        )
-        
-        registry = ToolRegistry()
-        for tool in discovered_tools:
-            registry.register(tool)
-
-        # Initialize Memory
-        memory = ConversationMemory()
-
-        # Create Orchestrator
-        orchestrator = Orchestrator(
-            llm_provider=llm,
-            tool_registry=registry,
-            memory=memory,
-        )
-
+        orchestrator = create_orchestrator()
         return orchestrator
 
+    except ValueError as e:
+        console.print(f"[red]Configuration Error:[/red] {e}")
+        raise typer.Exit(1)
     except Exception as e:
         console.print(f"[red]Failed to initialize Jarvis: {e}[/red]")
+        logger = logging.getLogger(__name__)
+        logger.exception("Orchestrator initialization failed")
         raise typer.Exit(1)
 
 

@@ -7,7 +7,8 @@ from jarvis.memory import ConversationMemory
 
 def test_memory_initialization() -> None:
     """Test memory initializes correctly."""
-    memory = ConversationMemory(max_length=10)
+    memory = ConversationMemory(max_length=10, auto_load=False)
+    memory.persist_enabled = False  # Disable persistence for tests
     assert memory.max_length == 10
     assert memory.is_empty()
     assert memory.size() == 0
@@ -15,7 +16,8 @@ def test_memory_initialization() -> None:
 
 def test_add_message() -> None:
     """Test adding messages to memory."""
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     memory.add_message("user", "Hello")
 
     assert memory.size() == 1
@@ -29,7 +31,8 @@ def test_add_message() -> None:
 
 def test_add_multiple_messages() -> None:
     """Test adding multiple messages."""
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
 
     memory.add_message("user", "Hello")
     memory.add_message("assistant", "Hi there!")
@@ -44,7 +47,8 @@ def test_add_multiple_messages() -> None:
 
 def test_max_length_truncation() -> None:
     """Test that old messages are removed when max_length reached."""
-    memory = ConversationMemory(max_length=3)
+    memory = ConversationMemory(max_length=3, auto_load=False)
+    memory.persist_enabled = False
 
     memory.add_message("user", "Message 1")
     memory.add_message("assistant", "Message 2")
@@ -62,7 +66,8 @@ def test_max_length_truncation() -> None:
 
 def test_get_recent() -> None:
     """Test getting recent messages."""
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
 
     memory.add_message("user", "1")
     memory.add_message("assistant", "2")
@@ -77,7 +82,8 @@ def test_get_recent() -> None:
 
 def test_get_recent_more_than_available() -> None:
     """Test getting recent when requesting more than available."""
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     memory.add_message("user", "1")
     memory.add_message("assistant", "2")
 
@@ -87,7 +93,8 @@ def test_get_recent_more_than_available() -> None:
 
 def test_clear_memory() -> None:
     """Test clearing memory."""
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     memory.add_message("user", "Hello")
     memory.add_message("assistant", "Hi")
 
@@ -99,7 +106,8 @@ def test_clear_memory() -> None:
 
 def test_invalid_role() -> None:
     """Test handling of invalid role."""
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     memory.add_message("invalid_role", "Test")
 
     # Should still add the message (role converted to system)
@@ -108,7 +116,8 @@ def test_invalid_role() -> None:
 
 def test_to_dict() -> None:
     """Test exporting memory to dict."""
-    memory = ConversationMemory(max_length=5)
+    memory = ConversationMemory(max_length=5, auto_load=False)
+    memory.persist_enabled = False
     memory.add_message("user", "Hello")
     memory.add_message("assistant", "Hi")
 
@@ -137,7 +146,8 @@ def test_from_dict() -> None:
 
 def test_memory_repr() -> None:
     """Test string representation."""
-    memory = ConversationMemory(max_length=10)
+    memory = ConversationMemory(max_length=10, auto_load=False)
+    memory.persist_enabled = False
     memory.add_message("user", "Test")
 
     repr_str = repr(memory)
@@ -147,7 +157,8 @@ def test_memory_repr() -> None:
 
 def test_memory_len() -> None:
     """Test __len__ operator."""
-    memory = ConversationMemory()
+    memory = ConversationMemory(auto_load=False)
+    memory.persist_enabled = False
     assert len(memory) == 0
 
     memory.add_message("user", "Test")
