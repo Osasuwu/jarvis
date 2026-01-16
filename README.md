@@ -142,6 +142,7 @@ MIT License — см. [LICENSE](LICENSE)
 - [x] Phase 1: Core Foundation (LLM Adapter, Tool Registry)
 - [x] Phase 2: Orchestrator MVP
 - [x] Phase 3: Базовые инструменты (файлы, shell, веб)
+- [x] Phase 4: Human-in-the-Loop (confirmations, audit, whitelist)
 - [ ] Phase 4: Human-in-the-Loop
 - [ ] Phase 5: Capability Gap Analyzer
 - [ ] Phase 6: CLI & Polish
