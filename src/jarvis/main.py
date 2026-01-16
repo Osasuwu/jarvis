@@ -14,15 +14,7 @@ from jarvis.config import get_config
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.llm import GroqProvider, LocalStubProvider
 from jarvis.memory import ConversationMemory
-from jarvis.tools.builtin import (
-    EchoTool,
-    FileReadTool,
-    FileWriteTool,
-    ListDirectoryTool,
-    ShellExecuteTool,
-    WebFetchTool,
-    WebSearchTool,
-)
+from jarvis.tools.discovery import ToolDiscovery
 from jarvis.tools.registry import ToolRegistry
 
 app = typer.Typer(
@@ -65,15 +57,17 @@ def _create_orchestrator() -> Orchestrator:
             )
             llm = LocalStubProvider()
 
-        # Initialize Tool Registry
+        # Initialize Tool Registry with discovery
+        discovery = ToolDiscovery()
+        discovered_tools = discovery.discover_all(
+            include_builtin=True,
+            config_file=None,  # Optional: "configs/tools.yaml"
+            custom_paths=None,  # Optional: ["./custom_tools"]
+        )
+        
         registry = ToolRegistry()
-        registry.register(EchoTool())
-        registry.register(FileReadTool())
-        registry.register(FileWriteTool())
-        registry.register(ListDirectoryTool())
-        registry.register(ShellExecuteTool())
-        registry.register(WebFetchTool())
-        registry.register(WebSearchTool())
+        for tool in discovered_tools:
+            registry.register(tool)
 
         # Initialize Memory
         memory = ConversationMemory()
