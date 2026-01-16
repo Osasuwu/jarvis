@@ -177,28 +177,26 @@
 
 ---
 
-## Future Phases (Post-MVP)
+## Future Features (Post-MVP)
 
-### Phase 7: Advanced Memory
+### Advanced Memory
 - Векторная БД для семантического поиска
 - Long-term memory
 - Персонализация на основе истории
 
-### Phase 8: Multi-Agent System
+### Multi-Agent System
 - Специализированные агенты
 - Делегирование задач
 - Координация между агентами
 
-### Phase 9: Web Interface
+### Web Interface
 - FastAPI backend
 - React frontend
 - WebSocket для real-time обновлений
 
-### Phase 10: Plugin Marketplace
+### Plugin Marketplace
 - Публикация custom tools
 - Версионирование
 - Security review
 
 ---
-
-**Следующий шаг:** Начать Phase 1 — Core Foundation

@@ -8,7 +8,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: windows-11-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
@@ -36,7 +36,7 @@ jobs:
         run: mypy src
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: windows-11-latest
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]

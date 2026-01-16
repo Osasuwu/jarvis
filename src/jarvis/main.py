@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 
 import typer
@@ -11,7 +12,7 @@ from rich.panel import Panel
 
 from jarvis.config import get_config
 from jarvis.core.orchestrator import Orchestrator
-from jarvis.llm import GroqProvider
+from jarvis.llm import GroqProvider, LocalStubProvider
 from jarvis.memory import ConversationMemory
 from jarvis.tools.builtin import (
     EchoTool,
@@ -45,17 +46,24 @@ def _create_orchestrator() -> Orchestrator:
         config = get_config()
 
         # Initialize LLM Provider
-        if not config.llm.groq_api_key:
+        use_local_env = os.getenv("USE_LOCAL_LLM", "").lower() in ("1", "true", "yes")
+        if use_local_env:
+            # Use local Ollama model
+            local_model = os.getenv("LOCAL_LLM_MODEL", "qwen2:4b")
             console.print(
-                "[red]Error: GROQ_API_KEY not set.[/red]\n"
-                "Please set it in .env file or environment variable."
+                f"[yellow]USE_LOCAL_LLM enabled; using local Ollama model '{local_model}'.[/yellow]"
             )
-            raise typer.Exit(1)
-
-        llm = GroqProvider(
-            api_key=config.llm.groq_api_key,
-            model=config.llm.model,
-        )
+            llm = LocalStubProvider(model=local_model)
+        elif config.llm.groq_api_key:
+            llm = GroqProvider(
+                api_key=config.llm.groq_api_key,
+                model=config.llm.model,
+            )
+        else:
+            console.print(
+                "[yellow]GROQ_API_KEY not set; using local stub LLM fallback.[/yellow]"
+            )
+            llm = LocalStubProvider()
 
         # Initialize Tool Registry
         registry = ToolRegistry()

@@ -7,6 +7,7 @@ from jarvis.config import get_config
 from jarvis.core.executor import Executor
 from jarvis.core.planner import Planner
 from jarvis.llm import LLMProvider
+from jarvis.gap_analyzer import GapDetector, GapResearcher, ToolProposer
 from jarvis.memory.conversation import ConversationMemory
 from jarvis.tools.registry import ToolRegistry
 
@@ -45,6 +46,9 @@ class Orchestrator:
         self.memory = memory or ConversationMemory()
         self.planner = Planner(llm_provider, tool_registry)
         self.executor = Executor(tool_registry)
+        self.gap_detector = GapDetector()
+        self.gap_researcher = GapResearcher()
+        self.tool_proposer = ToolProposer()
 
         config = get_config()
         self.max_iterations = max_iterations or config.agent.max_iterations
@@ -122,6 +126,40 @@ class Orchestrator:
                     ]
                 )
                 self.memory.add_message("system", f"Tool results:\n{results_text}")
+
+                # If any tool failed, detect capability gaps and propose solutions
+                failed = [r for r in tool_results if not r["success"]]
+                if failed:
+                    suggestions: list[str] = []
+                    for fr in failed:
+                        gap = self.gap_detector.detect_from_error(
+                            capability_name=fr["tool"],
+                            description=f"Tool '{fr['tool']}' failed during execution",
+                            context=user_input,
+                            tool_name=fr["tool"],
+                            error=str(fr["error"]),
+                            severity="HIGH",
+                        )
+                        research = await self.gap_researcher.research_gap(gap)
+                        proposal = self.tool_proposer.propose_tool(gap, research)
+                        suggestions.append(
+                            f"- {proposal.tool_name}: {proposal.description}. "
+                            f"Hint: {proposal.implementation_hint}"
+                        )
+
+                    final_response = (
+                        "Не удалось полностью выполнить запрос из-за ограничений инструментов.\n\n"
+                        "Причины:\n" +
+                        "\n".join(
+                            [
+                                f"• {fr['tool']}: {fr['error'] or 'unknown error'}"
+                                for fr in failed
+                            ]
+                        ) +
+                        "\n\nПредложения по решению:\n" + "\n".join(suggestions)
+                    )
+                    self.memory.add_message("assistant", final_response)
+                    break
 
                 # 3. OBSERVE: Continue loop with tool results
                 continue
