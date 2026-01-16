@@ -89,9 +89,7 @@ class GroqProvider(LLMProvider):
 
         # Add tools if provided
         if tools:
-            kwargs["tools"] = [
-                {"type": "function", "function": tool} for tool in tools
-            ]
+            kwargs["tools"] = tools
 
         response = self._client.chat.completions.create(**kwargs)
 

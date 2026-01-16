@@ -34,10 +34,10 @@ class ConversationMemory:
         Add a message to memory.
 
         Args:
-            role: Message role ('user', 'assistant', 'system')
+            role: Message role ('user', 'assistant', 'system', 'tool')
             content: Message content
         """
-        if role not in ["user", "assistant", "system"]:
+        if role not in ["user", "assistant", "system", "tool"]:
             logger.warning(f"Unknown role '{role}', using 'system' instead")
             role = "system"
 

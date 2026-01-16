@@ -71,6 +71,7 @@ class Orchestrator:
 
         iteration = 0
         final_response = ""
+        tool_called_once = False
 
         while iteration < self.max_iterations:
             iteration += 1
@@ -78,7 +79,9 @@ class Orchestrator:
 
             # 1. THINK: Get current context and plan next action
             messages = self.memory.get_messages()
-            llm_tools = self.tool_registry.get_llm_schemas()
+            
+            # Only provide tools on first iteration, or after successful completion
+            llm_tools = self.tool_registry.get_llm_schemas() if not tool_called_once else None
 
             response = await self.llm.complete(
                 messages=messages,
@@ -88,7 +91,13 @@ class Orchestrator:
             # 2. DECIDE: Check if we should act or respond
             if response.tool_calls:
                 # ACT: Execute tool calls
+                logger.debug(f"LLM response content: {response.content}")
                 logger.debug(f"LLM requested {len(response.tool_calls)} tool calls")
+                
+                tool_called_once = True
+
+                # Add assistant message with tool calls intent
+                self.memory.add_message("assistant", response.content or "Executing tools...")
 
                 tool_results = []
                 for tool_call in response.tool_calls:
@@ -105,15 +114,12 @@ class Orchestrator:
                         }
                     )
 
-                # Add tool execution to memory
-                self.memory.add_message(
-                    "assistant",
-                    f"Used tools: {[tc.name for tc in response.tool_calls]}",
-                )
-                self.memory.add_message(
-                    "system",
-                    f"Tool results: {tool_results}",
-                )
+                # Add tool results to memory
+                results_text = "\n".join([
+                    f"- {r['tool']}: {'✓ ' if r['success'] else '✗ '}{r['output'] or r['error']}"
+                    for r in tool_results
+                ])
+                self.memory.add_message("system", f"Tool results:\n{results_text}")
 
                 # 3. OBSERVE: Continue loop with tool results
                 continue
