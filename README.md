@@ -16,9 +16,16 @@ Jarvis — это модульный AI-агент для автоматизац
 
 ## 🏗️ Статус проекта
 
-🚧 **MVP в разработке** — Phase 0 (Подготовка) завершена
+� **MVP функционален** — Phase 3 (Базовые инструменты) завершена
 
-См. полный план разработки в [project_vision.md](project_vision.md)
+Текущие возможности:
+- Модульная система инструментов (6 основных + расширяемая архитектура)
+- ReAct orchestrator с поддержкой инструментов
+- Groq LLM интеграция (Llama 3.3 70B)
+- Управление памятью и контекстом
+- Полное покрытие тестами (80.85%)
+
+см. полный план разработки в [project_vision.md](project_vision.md) и [дорожную карту](docs/roadmap.md)
 
 ## 🚀 Быстрый старт
 
@@ -132,9 +139,9 @@ MIT License — см. [LICENSE](LICENSE)
 ## 🎯 Roadmap
 
 - [x] Phase 0: Подготовка репозитория
-- [ ] Phase 1: Core Foundation (LLM Adapter, Tool Registry)
-- [ ] Phase 2: Orchestrator MVP
-- [ ] Phase 3: Базовые инструменты
+- [x] Phase 1: Core Foundation (LLM Adapter, Tool Registry)
+- [x] Phase 2: Orchestrator MVP
+- [x] Phase 3: Базовые инструменты (файлы, shell, веб)
 - [ ] Phase 4: Human-in-the-Loop
 - [ ] Phase 5: Capability Gap Analyzer
 - [ ] Phase 6: CLI & Polish
