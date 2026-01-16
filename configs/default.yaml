@@ -1,0 +1,48 @@
+# Default configuration for Jarvis AI Agent
+
+# Agent settings
+agent:
+  name: "Jarvis"
+  # FREE OPTIONS:
+  # - "groq:llama-3.3-70b-versatile" (Groq API - fast & free tier)
+  # - "ollama:llama3.2" (Local - fully free, needs good PC)
+  # - "gemini:gemini-2.0-flash-exp" (Google - free tier available)
+  model: "groq:llama-3.3-70b-versatile"
+  max_iterations: 10
+  timeout_seconds: 300
+
+# LLM settings
+llm:
+  # Supported providers: openai, groq, ollama, gemini
+  provider: "groq"  # FREE with generous limits
+  temperature: 0.7
+  max_tokens: 4096
+  top_p: 1.0
+
+# Tool settings
+tools:
+  enabled: true
+  auto_discover: true
+  require_confirmation_for_risk_levels:
+    - "HIGH"
+  max_parallel_executions: 3
+
+# Memory settings
+memory:
+  max_conversation_length: 50
+  persist_to_disk: true
+  storage_path: "./.jarvis/memory"
+
+# Logging settings
+logging:
+  level: "INFO"
+  format: "json"
+  output: "console"
+  file_path: "./logs/jarvis.log"
+  rotation: "1 day"
+
+# Gap Analysis settings
+gap_analysis:
+  enabled: true
+  auto_research: true
+  max_research_depth: 2
