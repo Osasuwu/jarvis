@@ -13,7 +13,15 @@ from jarvis.config import get_config
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.llm import GroqProvider
 from jarvis.memory import ConversationMemory
-from jarvis.tools.builtin import EchoTool
+from jarvis.tools.builtin import (
+    EchoTool,
+    FileReadTool,
+    FileWriteTool,
+    ListDirectoryTool,
+    ShellExecuteTool,
+    WebFetchTool,
+    WebSearchTool,
+)
 from jarvis.tools.registry import ToolRegistry
 
 app = typer.Typer(
@@ -52,6 +60,12 @@ def _create_orchestrator() -> Orchestrator:
         # Initialize Tool Registry
         registry = ToolRegistry()
         registry.register(EchoTool())
+        registry.register(FileReadTool())
+        registry.register(FileWriteTool())
+        registry.register(ListDirectoryTool())
+        registry.register(ShellExecuteTool())
+        registry.register(WebFetchTool())
+        registry.register(WebSearchTool())
 
         # Initialize Memory
         memory = ConversationMemory()

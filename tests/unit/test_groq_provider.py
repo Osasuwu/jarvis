@@ -1,14 +1,18 @@
 """Tests for Groq provider."""
 
 import pytest
+from unittest.mock import patch
 
 from jarvis.llm.groq import GroqProvider
 
 
 def test_groq_provider_initialization_error() -> None:
     """Test GroqProvider raises error without API key."""
-    with pytest.raises(ValueError, match="API key not provided"):
-        GroqProvider(api_key="")
+    # Mock the config to have no API key
+    with patch("jarvis.llm.groq.get_config") as mock_config:
+        mock_config.return_value.llm.groq_api_key = ""
+        with pytest.raises(ValueError, match="Groq API key not provided"):
+            GroqProvider(api_key="")
 
 
 def test_groq_provider_properties() -> None:
