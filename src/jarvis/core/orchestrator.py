@@ -4,8 +4,10 @@ import logging
 from typing import Any
 
 from jarvis.config import get_config
+from jarvis.core.exceptions import LLMError, ToolExecutionError, RetryableError
 from jarvis.core.executor import Executor
 from jarvis.core.planner import Planner
+from jarvis.core.resilience import retry_async, RetryPolicy
 from jarvis.llm import LLMProvider
 from jarvis.gap_analyzer import GapDetector, GapResearcher, ToolProposer
 from jarvis.memory.conversation import ConversationMemory
@@ -87,10 +89,25 @@ class Orchestrator:
             # Only provide tools on first iteration, or after successful completion
             llm_tools = self.tool_registry.get_llm_schemas() if not tool_called_once else None
 
-            response = await self.llm.complete(
-                messages=messages,
-                tools=llm_tools if llm_tools else None,
-            )
+            # Execute LLM call with retry logic
+            try:
+                response = await retry_async(
+                    lambda: self.llm.complete(
+                        messages=messages,
+                        tools=llm_tools if llm_tools else None,
+                    ),
+                    max_attempts=2,
+                    timeout=60.0,
+                    operation_name="llm_complete",
+                )
+            except Exception as e:
+                logger.error(f"LLM call failed after retries: {e}")
+                final_response = (
+                    "I encountered an error communicating with the language model. "
+                    "Please try again in a moment."
+                )
+                self.memory.add_message("assistant", final_response)
+                break
 
             # 2. DECIDE: Check if we should act or respond
             if response.tool_calls:
@@ -105,18 +122,34 @@ class Orchestrator:
 
                 tool_results = []
                 for tool_call in response.tool_calls:
-                    result = await self.executor.execute_tool(
-                        tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
-                    )
-                    tool_results.append(
-                        {
-                            "tool": tool_call.name,
-                            "success": result.success,
-                            "output": result.output,
-                            "error": result.error,
-                        }
-                    )
+                    try:
+                        result = await retry_async(
+                            lambda: self.executor.execute_tool(
+                                tool_name=tool_call.name,
+                                arguments=tool_call.arguments,
+                            ),
+                            max_attempts=2,
+                            timeout=30.0,
+                            operation_name=f"tool_{tool_call.name}",
+                        )
+                        tool_results.append(
+                            {
+                                "tool": tool_call.name,
+                                "success": result.success,
+                                "output": result.output,
+                                "error": result.error,
+                            }
+                        )
+                    except Exception as e:
+                        logger.error(f"Tool {tool_call.name} failed after retries: {e}")
+                        tool_results.append(
+                            {
+                                "tool": tool_call.name,
+                                "success": False,
+                                "output": None,
+                                "error": f"Execution failed: {str(e)}",
+                            }
+                        )
 
                 # Add tool results to memory
                 results_text = "\n".join(
