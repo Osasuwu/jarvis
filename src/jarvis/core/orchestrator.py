@@ -12,7 +12,7 @@ from jarvis.core.resilience import retry_async, RetryPolicy
 from jarvis.llm import LLMProvider
 from jarvis.gap_analyzer import GapDetector, GapResearcher, ToolProposer
 from jarvis.memory.conversation import ConversationMemory
-from jarvis.observability import set_request_id, clear_request_id
+from jarvis.observability import set_log_context, update_log_context, clear_log_context
 from jarvis.safety.auditor import AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt
 from jarvis.safety.whitelist import WhitelistManager
@@ -103,13 +103,13 @@ class Orchestrator:
         Returns:
             Final response to the user
         """
-        # Set request ID for tracking
-        request_id = set_request_id()
+        # Set logging context for tracking
+        ctx = set_log_context(operation="react_loop")
         start_time = time.time()
         
         logger.info(
             f"Starting ReAct loop for query: {user_input[:100]}...",
-            extra={"component": "orchestrator", "action": "start", "request_id": request_id},
+            extra={"component": "orchestrator", "action": "start"},
         )
 
         try:
@@ -118,16 +118,31 @@ class Orchestrator:
 
             iteration = 0
             final_response = ""
+            
+            # FIXME: Tool availability logic issue
+            # This flag was originally designed to hide tools from LLM after the first tool call,
+            # but this causes problems:
+            # - LLM cannot see available tools in later iterations
+            # - If a follow-up tool call is needed, LLM has no way to know what tools exist
+            # - Results in "tool not found" errors or LLM confusion
+            #
+            # Recommended fix: Always provide tools to LLM, OR implement proper tool availability
+            # negotiation based on conversation state. For now, keeping the flag but documenting
+            # the issue. This will be addressed in a future update.
+            #
+            # Related: Task 4 in stabilization_plan.md
             tool_called_once = False
 
             while iteration < self.max_iterations:
                 iteration += 1
+                update_log_context(operation=f"react_iteration_{iteration}")
                 logger.debug(f"ReAct iteration {iteration}/{self.max_iterations}")
 
                 # 1. THINK: Get current context and plan next action
                 messages = self.memory.get_messages()
 
-                # Only provide tools on first iteration, or after successful completion
+                # Tool availability: Currently tools are hidden after first use (see FIXME above)
+                # This behavior is under review and may change in future releases
                 llm_tools = self.tool_registry.get_llm_schemas() if not tool_called_once else None
 
                 # Execute LLM call with retry logic
@@ -261,14 +276,13 @@ class Orchestrator:
                     "action": "complete",
                     "status": "success" if final_response else "timeout",
                     "duration_ms": duration_ms,
-                    "request_id": request_id,
                 },
             )
             
             return final_response
         finally:
             # Clear request context
-            clear_request_id()
+            clear_log_context()
 
     def reset(self) -> None:
         """Reset the orchestrator state and memory."""

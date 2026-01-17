@@ -2,15 +2,42 @@
 
 from __future__ import annotations
 
+from typing import Any, Optional
+
+from jarvis.observability.logging import get_request_id
+
 
 class JarvisError(Exception):
-    """Base class for Jarvis-specific errors."""
+    """
+    Base class for Jarvis-specific errors.
     
-    def __init__(self, message: str, details: dict | None = None):
-        """Initialize error with optional details."""
+    Automatically includes request context in error details for tracing.
+    """
+    
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        """
+        Initialize error with optional details and request context.
+        
+        Args:
+            message: Human-readable error message
+            details: Additional error context
+        """
         super().__init__(message)
         self.message = message
         self.details = details or {}
+        
+        # Automatically capture request ID for tracing
+        request_id = get_request_id()
+        if request_id:
+            self.details["request_id"] = request_id
+        
+    def __str__(self) -> str:
+        """Format error message with request ID if available."""
+        request_id = self.details.get("request_id")
+        if request_id:
+            return f"[request_id={request_id}] {self.message}"
+        return self.message
+
 
 
 class ToolDiscoveryError(JarvisError):
