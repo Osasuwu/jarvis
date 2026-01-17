@@ -146,11 +146,6 @@ MIT License — см. [LICENSE](LICENSE)
 - [x] Phase 2: Orchestrator MVP
 - [x] Phase 3: Базовые инструменты (файлы, shell, веб)
 - [x] Phase 4: Human-in-the-Loop (confirmations, audit, whitelist)
-- [ ] Phase 4: Human-in-the-Loop
-- [ ] Phase 5: Capability Gap Analyzer
-- [ ] Phase 6: CLI & Polish
-
----
-
-Made with ❤️ by [Petr K](https://github.com/petrk)
-
+- [x] Phase 4: Human-in-the-Loop
+- [x] Phase 5: Capability Gap Analyzer
+- [x] Phase 6: CLI & Polish

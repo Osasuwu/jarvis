@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
+
+if TYPE_CHECKING:
+    from jarvis.self_improvement.models import CopilotPrompt, ImprovementOpportunity
 
 
 class ConfirmationPrompt:
@@ -120,3 +123,97 @@ class ConfirmationPrompt:
                 continue
 
         return False
+
+
+class ImprovementApprovalPrompt(ConfirmationPrompt):
+    """Extended confirmation for self-improvement operations.
+
+    Per design decision Q2: Extends existing safety module with structured
+    approval for self-improvement, maintaining consistency with other
+    human approval gates.
+    """
+
+    async def request_improvement_approval(
+        self,
+        opportunity: ImprovementOpportunity,
+        proposed_prompt: CopilotPrompt,
+        rationale: str,
+    ) -> tuple[Literal["approve", "reject", "edit", "skip_category"], str | None]:
+        """Request approval for a self-improvement opportunity.
+
+        Args:
+            opportunity: The detected improvement opportunity
+            proposed_prompt: The generated Copilot prompt
+            rationale: Why the detector proposed this
+
+        Returns:
+            Tuple of (decision, edited_text):
+            - ("approve", None): User approved as-is
+            - ("reject", reason): User rejected with optional reason
+            - ("edit", edited_text): User wants to edit the prompt
+            - ("skip_category", reason): User wants to disable this detector category
+        """
+        prompt_lines = [
+            "",
+            "🔍 SELF-IMPROVEMENT OPPORTUNITY",
+            "=" * 60,
+            f"File: {opportunity.file_path}:{opportunity.line_number}",
+            f"Category: {opportunity.category.value}",
+            f"Severity: {opportunity.severity.value}",
+            f"Detector: {opportunity.detector_name}",
+            "",
+            f"Issue: {opportunity.description}",
+            "",
+            "Rationale:",
+            f"  {rationale}",
+            "",
+            "Proposed Copilot Prompt:",
+            "-" * 60,
+            proposed_prompt.prompt_text,
+            "-" * 60,
+            "",
+            "Options:",
+            "  [a] Approve - Send prompt to Copilot",
+            "  [r] Reject - Skip this improvement",
+            "  [e] Edit - Modify the prompt before sending",
+            "  [s] Skip category - Disable this detector type",
+            "",
+            "Your decision (a/r/e/s): ",
+        ]
+
+        prompt_text = "\n".join(prompt_lines)
+        response = await asyncio.to_thread(input, prompt_text)
+        decision = response.strip().lower()
+
+        if decision in ("a", "approve"):
+            return ("approve", None)
+
+        if decision in ("e", "edit"):
+            edit_prompt = "\nEnter your edited prompt (or press Ctrl+C to cancel):\n> "
+            try:
+                edited_text = await asyncio.to_thread(input, edit_prompt)
+                if edited_text.strip():
+                    return ("edit", edited_text.strip())
+                print("No changes provided, treating as rejection")
+                return ("reject", "No edits provided")
+            except (KeyboardInterrupt, EOFError):
+                return ("reject", "Edit cancelled")
+
+        if decision in ("s", "skip", "skip_category"):
+            reason_prompt = "\nReason for disabling this category (optional): "
+            try:
+                reason = await asyncio.to_thread(input, reason_prompt)
+                return ("skip_category", reason.strip() if reason.strip() else "User disabled")
+            except (KeyboardInterrupt, EOFError):
+                return ("skip_category", "User disabled")
+
+        # Default to reject for any other input
+        if decision in ("r", "reject"):
+            reason_prompt = "\nReason for rejection (optional): "
+            try:
+                reason = await asyncio.to_thread(input, reason_prompt)
+                return ("reject", reason.strip() if reason.strip() else None)
+            except (KeyboardInterrupt, EOFError):
+                return ("reject", None)
+
+        return ("reject", f"Invalid response: {decision}")
