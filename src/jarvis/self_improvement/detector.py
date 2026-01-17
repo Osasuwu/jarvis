@@ -29,8 +29,8 @@ logger = logging.getLogger(__name__)
 # Protected paths that must never be analyzed per spec section 4 (DO NOT)
 PROTECTED_PATHS = frozenset(
     {
-        "self_improvement",
-        "safety",
+        "self_improvement/",
+        "safety/",
         "core/orchestrator.py",
     }
 )

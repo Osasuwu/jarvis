@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from jarvis.self_improvement.models import CopilotPrompt, ImprovementOpportunity
+    from jarvis.self_improvement.models import CopilotPrompt, DecisionType, ImprovementOpportunity
 
 
 class ConfirmationPrompt:
@@ -138,7 +138,7 @@ class ImprovementApprovalPrompt(ConfirmationPrompt):
         opportunity: ImprovementOpportunity,
         proposed_prompt: CopilotPrompt,
         rationale: str,
-    ) -> tuple[Literal["approve", "reject", "edit", "skip_category"], str | None]:
+    ) -> tuple[DecisionType, str | None]:
         """Request approval for a self-improvement opportunity.
 
         Args:
@@ -147,12 +147,14 @@ class ImprovementApprovalPrompt(ConfirmationPrompt):
             rationale: Why the detector proposed this
 
         Returns:
-            Tuple of (decision, edited_text):
-            - ("approve", None): User approved as-is
-            - ("reject", reason): User rejected with optional reason
-            - ("edit", edited_text): User wants to edit the prompt
-            - ("skip_category", reason): User wants to disable this detector category
+            Tuple of (decision, metadata):
+            - (APPROVE, None): User approved as-is
+            - (REJECT, reason): User rejected with optional reason
+            - (EDIT, edited_text): User wants to edit the prompt
+            - (REJECT, "category_disabled:<reason>"): User disabled this detector category
         """
+        from jarvis.self_improvement.models import DecisionType
+
         prompt_lines = [
             "",
             "🔍 SELF-IMPROVEMENT OPPORTUNITY",
@@ -186,34 +188,36 @@ class ImprovementApprovalPrompt(ConfirmationPrompt):
         decision = response.strip().lower()
 
         if decision in ("a", "approve"):
-            return ("approve", None)
+            return (DecisionType.APPROVE, None)
 
         if decision in ("e", "edit"):
             edit_prompt = "\nEnter your edited prompt (or press Ctrl+C to cancel):\n> "
             try:
                 edited_text = await asyncio.to_thread(input, edit_prompt)
                 if edited_text.strip():
-                    return ("edit", edited_text.strip())
+                    return (DecisionType.EDIT, edited_text.strip())
                 print("No changes provided, treating as rejection")
-                return ("reject", "No edits provided")
+                return (DecisionType.REJECT, "No edits provided")
             except (KeyboardInterrupt, EOFError):
-                return ("reject", "Edit cancelled")
+                return (DecisionType.REJECT, "Edit cancelled")
 
         if decision in ("s", "skip", "skip_category"):
             reason_prompt = "\nReason for disabling this category (optional): "
             try:
                 reason = await asyncio.to_thread(input, reason_prompt)
-                return ("skip_category", reason.strip() if reason.strip() else "User disabled")
+                reason_text = reason.strip() if reason.strip() else "User disabled"
+                # Return REJECT with special metadata prefix to indicate category disable
+                return (DecisionType.REJECT, f"category_disabled:{reason_text}")
             except (KeyboardInterrupt, EOFError):
-                return ("skip_category", "User disabled")
+                return (DecisionType.REJECT, "category_disabled:User disabled")
 
         # Default to reject for any other input
         if decision in ("r", "reject"):
             reason_prompt = "\nReason for rejection (optional): "
             try:
                 reason = await asyncio.to_thread(input, reason_prompt)
-                return ("reject", reason.strip() if reason.strip() else None)
+                return (DecisionType.REJECT, reason.strip() if reason.strip() else None)
             except (KeyboardInterrupt, EOFError):
-                return ("reject", None)
+                return (DecisionType.REJECT, None)
 
-        return ("reject", f"Invalid response: {decision}")
+        return (DecisionType.REJECT, f"Invalid response: {decision}")

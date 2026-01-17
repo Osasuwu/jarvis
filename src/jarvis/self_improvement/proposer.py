@@ -56,6 +56,7 @@ class PromptProposer:
         self,
         opportunity: ImprovementOpportunity,
         related_files: list[str] | None = None,
+        best_practices: list[str] | None = None,
     ) -> CopilotPrompt | None:
         """Generate a Copilot prompt for an opportunity.
 
@@ -67,6 +68,7 @@ class PromptProposer:
         Args:
             opportunity: The improvement opportunity
             related_files: Additional files for context
+            best_practices: Best practices from research to include in prompt
 
         Returns:
             Generated CopilotPrompt or None if opportunity cannot be handled
@@ -79,8 +81,8 @@ class PromptProposer:
         # Build context files list
         context_files = self._gather_context_files(opportunity, related_files)
 
-        # Generate the prompt text
-        prompt_text = self._generate_prompt_text(opportunity)
+        # Generate the prompt text (M4 fix: include best practices)
+        prompt_text = self._generate_prompt_text(opportunity, best_practices)
 
         # Check prompt length
         if len(prompt_text) > MAX_PROMPT_CHARS:
@@ -143,7 +145,11 @@ class PromptProposer:
 
         return file_list
 
-    def _generate_prompt_text(self, opportunity: ImprovementOpportunity) -> str:
+    def _generate_prompt_text(
+        self,
+        opportunity: ImprovementOpportunity,
+        best_practices: list[str] | None = None,
+    ) -> str:
         """Generate the actual prompt text for Copilot.
 
         Per spec:
@@ -151,6 +157,10 @@ class PromptProposer:
         - DO state expected changes explicitly
         - DO reference file paths and line numbers consistently
         - DO NOT assume Copilot has domain context; always include "why"
+
+        Args:
+            opportunity: The improvement opportunity
+            best_practices: Optional best practices from research (M4 integration)
         """
         parts: list[str] = []
 
@@ -177,6 +187,13 @@ class PromptProposer:
         parts.append("## Why This Change Is Needed\n")
         parts.append(self._generate_rationale(opportunity))
         parts.append("\n\n")
+
+        # Best Practices (M4 fix: inject research findings)
+        if best_practices:
+            parts.append("## Best Practices & Patterns\n")
+            for practice in best_practices[:3]:  # Limit to 3 to avoid prompt bloat
+                parts.append(f"- {practice}\n")
+            parts.append("\n")
 
         # Expected outcome
         parts.append("## Expected Outcome\n")

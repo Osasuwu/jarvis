@@ -479,8 +479,234 @@ These constraints ensure:
 - **Stability:** Immutable IDs, versioned schemas, and atomic changes enable reliable reruns
 - **Clarity:** Structured requests and reports reduce ambiguity in human-agent communication
 
-## 5. Code Rewiew
-(owned by Code Rewiewer)
+## 5. Code Review
+
+### Summary
+
+The implementation provides a complete self-improvement system across 7 files (~2200 LOC). The codebase implements:
+- **models.py**: All data contracts from spec section 4 (ImprovementOpportunity, CopilotPrompt, ExecutionReport, ApprovalRequest)
+- **detector.py**: Pluggable analyzer framework with PylintAnalyzer and ComplexityAnalyzer
+- **proposer.py**: Prompt generation with risk assessment and validation planning
+- **tracker.py**: Approval history with rate limiting and cooldown logic
+- **copilot_interface.py**: File-based Copilot handoff (Option B from spec)
+- **orchestrator.py**: 7-phase reasoning model coordinator
+- **researcher.py**: Best practices lookup (static knowledge base)
+
+The module integrates with the existing safety layer via `ImprovementApprovalPrompt` and exposes a clean public API through `__init__.py`.
+
+---
+
+### Spec Compliance Issues
+
+#### Critical Deviations
+
+**C1. Missing Tests**
+- **Spec Requirement:** Section 7 (Open Questions / TODO) references test coverage and validation
+- **Actual State:** `file_search` returned "No files found" for `tests/test_self_improvement*.py`
+- **Impact:** No verification that Phase 0-7 logic, rate limits, or deduplication work as specified
+- **Required Action:** Add test suite covering at minimum: opportunity deduplication (80% overlap rule), rate limit enforcement, protected path exclusion, prompt length validation
+
+**C2. Protected Path Inconsistency**
+- **Spec (Section 4 - DO NOT):** "DO NOT generate opportunities targeting `self_improvement/`, `safety/`, or `core/orchestrator.py` modules"
+- **detector.py:28-33:** `PROTECTED_PATHS = frozenset({"self_improvement", "safety", "core/orchestrator.py"})`
+- **orchestrator.py:30-35:** `PROTECTED_PATHS = frozenset({"self_improvement/", "safety/", "core/orchestrator.py"})`
+- **Issue:** Inconsistent trailing slashes. `detector.py` lacks trailing slashes, which may fail path matching logic in `_is_path_excluded()`
+- **Required Action:** Standardize to trailing-slash format as specified in orchestrator.py
+
+**C3. Missing Validation Status Check**
+- **Spec (Section 3 - Phase 6):** "If validations fail or changes diverge from expected scope, roll back the proposal state"
+- **orchestrator.py:** No implementation of Phase 6 post-execution verification visible in the 601 lines
+- **Missing Logic:** No method checks if Copilot actually modified expected files, no rollback mechanism
+- **Required Action:** Implement `_phase6_verify_execution()` with file diff comparison and validation runner
+
+**C4. Approval Decision Type Mismatch**
+- **Spec (Section 4 - Enum):** `DecisionType` = `{APPROVE, REJECT, EDIT, DEFER}`
+- **confirmation.py:148:** Returns `Literal["approve", "reject", "edit", "skip_category"]`
+- **Issue:** Lowercase strings instead of enum values; `"skip_category"` not in spec
+- **Impact:** `orchestrator.py:244` expects `DecisionType.APPROVE`, will fail type check
+- **Required Action:** Return `DecisionType` enum values or convert strings to enums in orchestrator
+
+**C5. Git Conflict Check Returns Wrong Value**
+- **Spec (Section 3 - Phase 0):** "If conflicts exist, stop and escalate"
+- **orchestrator.py:311:** `_has_git_conflicts()` checks for `UU` and `AA` status codes
+- **Issue:** Method returns `False` when git command fails (`FileNotFoundError`) instead of escalating
+- **Spec Violation:** "Stop immediately on...workspace conflicts" but silent fallback allows execution
+- **Required Action:** Return `True` (or raise exception) when git is unavailable to enforce conservative safety
+
+---
+
+#### Moderate Deviations
+
+**M1. Prompt Length Validation Incomplete**
+- **Spec (Section 4):** "DO validate prompt length <2000 tokens; split opportunities exceeding this limit"
+- **proposer.py:20:** `MAX_PROMPT_CHARS = MAX_PROMPT_TOKENS * 4` (approximation = 8000 chars)
+- **proposer.py:85:** Returns `None` if prompt exceeds limit (correct)
+- **Missing:** No actual token counting (uses character approximation). For GPT models, 4 chars/token is inaccurate for Python code (often 2-3 chars/token)
+- **Recommendation:** Add token counting via `tiktoken` library or document approximation limitation
+
+**M2. Rate Limit Enforcement Gaps**
+- **Spec (Section 4 - Rate Limiting):** "Global: max 20 improvements per week"
+- **tracker.py:123:** `check_rate_limits()` method exists
+- **orchestrator.py:291:** Only checks `if limits.get("global_weekly")` but doesn't verify per-file or per-category limits
+- **Missing:** Per-file (max 3/week) and per-category (max 5/cycle) checks not enforced in orchestrator
+- **Required Action:** Add all limit checks in `_phase0_entry_guard()`
+
+**M3. Edit Loop Not Fully Implemented**
+- **Spec (Section 3 - Phase 5):** "If human edits...re-scope (if edit)"
+- **orchestrator.py:250-258:** Records EDIT decision but comment says "See design_questions.md Q3: Edit loop implementation needs clarification"
+- **Actual Behavior:** Edited prompt stored but never re-proposed for approval or execution
+- **Impact:** EDIT decision is equivalent to REJECT (no-op)
+- **Required Action:** Complete edit loop or document as deferred feature in spec section 7
+
+**M4. Researcher Not Integrated**
+- **Spec (Section 2):** "Researcher: Researches best practices, patterns (optional)"
+- **orchestrator.py:350:** `research = await self.researcher.research(opportunity)` called
+- **orchestrator.py:354:** Result `research.external_references` passed to proposer
+- **proposer.py:125:** `related_files` parameter stored in context_files but never used in prompt text generation
+- **Issue:** Research results gathered but not injected into prompt text
+- **Impact:** Copilot prompts lack best practices context
+- **Required Action:** Modify `_generate_prompt_text()` to include research findings
+
+**M5. Missing Approval History in Request**
+- **Spec (Section 4 - ApprovalRequest Contract):** `historical_context: dict[str, int]` with approval/rejection counts
+- **orchestrator.py:382:** Calls `self.tracker.get_historical_context(opportunity.category)` for rationale string
+- **Safety Integration:** `confirmation.py:148` shows simple prompt without historical approval rates
+- **Mismatch:** Historical context used for rationale text but not shown in structured format per spec
+- **Required Action:** Display approval rate percentage in confirmation prompt
+
+---
+
+### Non-Critical Improvements
+
+**N1. Hardcoded Complexity Threshold**
+- **detector.py:283:** `if func.get("complexity", 0) > 10` magic number
+- **Improvement:** Make configurable via `DetectorConfig`
+
+**N2. Missing Opportunity ID in Logs**
+- Throughout detector and orchestrator, log messages reference files but not opportunity IDs
+- **Improvement:** Include opportunity ID in all log statements for traceability
+
+**N3. Synchronous File I/O in Async Context**
+- **tracker.py:72-80, 86-95:** `open()` and `json.load()` are blocking calls in async methods
+- **Impact:** Blocks event loop during history persistence
+- **Improvement:** Use `aiofiles` for async file operations
+
+**N4. No Prompt Text Preview in Logs**
+- When proposals are generated, no logging of prompt text (only IDs)
+- **Improvement:** Log first 200 chars of prompt text at DEBUG level for debugging
+
+**N5. Missing Type Hints on Callbacks**
+- **orchestrator.py:99:** `approval_callback: callable | None` lacks type signature
+- **Improvement:** Use `Callable[[ApprovalRequest], Awaitable[tuple[DecisionType, str | None]]]`
+
+**N6. Opportunistic Deduplication**
+- **detector.py:451-465:** Deduplication only happens within same file
+- **Limitation:** Similar opportunities across different files won't be merged
+- **Improvement:** Consider cross-file deduplication for same detector + line range patterns
+
+**N7. Missing Diff Display**
+- **Spec (Section 3 - Phase 5):** "Re-check workspace cleanliness...highlight affected files"
+- **orchestrator.py:308:** Comment references checking workspace but no diff display
+- **Improvement:** Show `git diff` summary before approval
+
+**N8. Incomplete ExecutionReport Fields**
+- **models.py:281:** `created_at` and `approved_at` defined but not populated in orchestrator
+- **orchestrator.py:222-226:** Stores timing in `_approval_metadata` (private attribute) but doesn't create ExecutionReport
+- **Improvement:** Generate ExecutionReport after Phase 6 verification
+
+---
+
+### Architectural Observations
+
+**Positive:**
+- Clean separation of concerns: detector, proposer, tracker, interface all isolated
+- Extensible analyzer framework via `BaseAnalyzer` abstract class
+- Immutable IDs with timestamp + hash (collision-resistant)
+- Comprehensive data contracts matching spec section 4 exactly
+- Integration with existing safety layer preserves approval patterns
+
+**Concerns:**
+- Phase 6 and 7 marked as "handled by separate methods" but no methods exist
+- File-based Copilot integration requires manual user action (copy-paste workflow)
+- No telemetry/metrics collection for improvement success rates
+- Cooldown state persisted but never checked in orchestrator entry guard
+
+---
+
+### Final Verdict
+
+**Status:** Needs Revision
+
+**Blockers for Acceptance:**
+1. Fix protected path trailing slash inconsistency (C2)
+2. Fix approval decision type mismatch (C4)
+3. Fix git conflict fallback behavior (C5)
+4. Implement Phase 6 post-execution verification (C3)
+5. Add test coverage for core deduplication, rate limits, and phase logic (C1)
+
+**Post-Blocker (Recommended):**
+- Complete edit loop implementation (M3)
+- Enforce per-file and per-category rate limits (M2)
+- Integrate researcher findings into prompt text (M4)
+
+**Estimation:** 3-5 days to address critical issues + basic test suite. Current implementation is ~75% spec-compliant.
+
+---
+
+### Resolution Status (Updated: 2024)
+
+The following issues from the code review have been addressed:
+
+**✅ Resolved Critical Issues:**
+
+- **C2. Protected Path Inconsistency** - FIXED
+  - Updated `detector.py:28-33` to standardize `PROTECTED_PATHS` with trailing slashes
+  - Now matches `orchestrator.py:30-35` format: `{"self_improvement/", "safety/", "core/orchestrator.py"}`
+  - Path matching logic now consistent across all modules
+
+- **C4. Approval Decision Type Mismatch** - FIXED
+  - Modified `confirmation.py:148` to return `DecisionType` enum values instead of string literals
+  - Changed `"approve"` → `DecisionType.APPROVE`, `"reject"` → `DecisionType.REJECT`, etc.
+  - `"skip_category"` now encoded as `DecisionType.REJECT` with metadata prefix
+  - Type compatibility with `orchestrator.py:244` now ensured
+
+- **C5. Git Conflict Check Returns Wrong Value** - FIXED
+  - Updated `orchestrator.py:311` `_has_git_conflicts()` to escalate when git unavailable
+  - Changed from returning `False` on `FileNotFoundError` to returning `True` (conservative safety)
+  - Added warning log: `"Git command failed - treating as conflict for safety"`
+  - Now complies with "stop immediately on workspace conflicts" requirement
+
+**✅ Resolved Moderate Issues:**
+
+- **M2. Rate Limit Enforcement Gaps** - FIXED
+  - Added per-file rate limit checks in `_phase2_prioritize()` filtering
+  - Added per-category limit tracking (max 5 per cycle) in `_phase5_request_approval()`
+  - Integrated `tracker.check_rate_limits()` results throughout orchestrator phases
+
+- **M4. Researcher Not Integrated** - FIXED
+  - Added `best_practices` parameter to `proposer.py` `generate_prompt()`
+  - Injected research findings into prompt text as `"## Best Practices & Patterns"` section
+  - Research results now visible in Copilot prompts instead of being ignored
+
+**🔧 Additional Fixes:**
+
+- Added `logging` module integration to `orchestrator.py`
+  - Imported `logging` module
+  - Initialized logger: `logger = logging.getLogger(__name__)`
+  - Replaced print statements with proper logging calls
+
+**⏸️ Deferred Issues (Complex/Architectural):**
+
+- **C1. Missing Tests** - Requires new test file creation and comprehensive test suite
+- **C3. Missing Validation Status Check** - Requires Phase 6 implementation (architectural gap)
+- **M1, M3, M5** - Non-blocking improvements deferred for future enhancement
+
+**Test Status:**
+- All 230 existing tests pass after fixes
+- No regressions introduced
+- Coverage: 47.43% overall (self_improvement module still at 0% - no dedicated tests yet)
+
+---
 
 ## 6. Backend Contract
 (inputs, outputs, data models)

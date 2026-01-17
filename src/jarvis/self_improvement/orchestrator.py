@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import logging
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,8 @@ PROTECTED_PATHS = frozenset(
         "core/orchestrator.py",
     }
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -169,7 +172,20 @@ class SelfImprovementOrchestrator:
 
         # Score and prioritize
         scored = self._score_opportunities(opportunities)
-        vetted = scored[: self.config.max_opportunities_per_cycle]
+
+        # Filter by per-file and per-category rate limits (M2 fix)
+        filtered = []
+        for opp in scored:
+            limits = self.tracker.check_rate_limits(
+                file_path=opp.file_path,
+                category=opp.category,
+            )
+            if limits.get("per_file_weekly"):
+                logger.debug(f"Skipping {opp.id}: per-file rate limit exceeded for {opp.file_path}")
+                continue
+            filtered.append(opp)
+
+        vetted = filtered[: self.config.max_opportunities_per_cycle]
         result.opportunities_vetted = len(vetted)
 
         # Phase 3: Proposal Synthesis
@@ -189,6 +205,8 @@ class SelfImprovementOrchestrator:
         batches = self.proposer.batch_prompts(prompts, self.config.max_prompts_per_batch)
 
         # Process each batch
+        category_counts: dict[str, int] = {}  # Track per-category in this cycle
+
         for batch in batches:
             # Phase 5: Execution Gate
             for prompt in batch:
@@ -198,6 +216,14 @@ class SelfImprovementOrchestrator:
                 opportunity = self._find_opportunity(prompt.opportunity_id, vetted)
                 if not opportunity:
                     continue
+
+                # Per-category rate limit: max 5 per cycle (M2 fix)
+                category_key = opportunity.category.value
+                category_counts[category_key] = category_counts.get(category_key, 0)
+                if category_counts[category_key] >= 5:
+                    logger.debug(f"Skipping {opportunity.id}: per-category limit (5) exceeded for {category_key}")
+                    continue
+                category_counts[category_key] += 1
 
                 # Check risk ceiling
                 if self._exceeds_risk_ceiling(prompt):
@@ -293,7 +319,14 @@ class SelfImprovementOrchestrator:
         return None
 
     async def _has_git_conflicts(self) -> bool:
-        """Check if workspace has unresolved git conflicts."""
+        """Check if workspace has unresolved git conflicts.
+
+        Per spec Phase 0: "If conflicts exist, stop and escalate"
+        Conservative approach: treat git unavailability as requiring escalation.
+
+        Returns:
+            True if conflicts detected OR git unavailable (escalation required)
+        """
         try:
             result = subprocess.run(
                 ["git", "status", "--porcelain"],
@@ -308,8 +341,9 @@ class SelfImprovementOrchestrator:
                     return True
             return False
         except (subprocess.TimeoutExpired, FileNotFoundError):
-            # If git not available, assume no conflicts
-            return False
+            # Per C5 fix: Escalate when git unavailable (conservative safety)
+            logger.warning("Git unavailable or timed out - escalating for safety")
+            return True
 
     def _score_opportunities(
         self, opportunities: list[ImprovementOpportunity]
@@ -340,13 +374,14 @@ class SelfImprovementOrchestrator:
         if not opportunity.atomic:
             return None
 
-        # Research best practices
+        # Research best practices (M4 integration)
         research = await self.researcher.research(opportunity)
 
-        # Generate prompt
+        # Generate prompt with research findings
         prompt = self.proposer.propose(
             opportunity,
             related_files=list(research.external_references),
+            best_practices=research.best_practices[:5] if research.best_practices else None,
         )
 
         return prompt
@@ -398,18 +433,19 @@ class SelfImprovementOrchestrator:
             rationale=rationale,
         )
 
-        if decision == "skip_category":
-            # Mark detector as disabled
+        # Handle category disable (encoded as REJECT with special metadata prefix)
+        if metadata and metadata.startswith("category_disabled:"):
+            reason = metadata.replace("category_disabled:", "")
             self.tracker.record_decision(
                 opportunity_id=opportunity.id,
                 decision=DecisionType.REJECT,
                 detector_name=opportunity.detector_name,
                 category=opportunity.category,
-                reason=f"Category disabled by user: {metadata}",
+                reason=f"Category disabled by user: {reason}",
             )
-            return DecisionType.REJECT, metadata
+            return DecisionType.REJECT, reason
 
-        if decision == "edit":
+        if decision == DecisionType.EDIT:
             # Single edit loop per Q3 decision
             if not metadata:
                 return DecisionType.REJECT, "No edits provided"
@@ -449,11 +485,8 @@ class SelfImprovementOrchestrator:
             # Rejected after edit
             return DecisionType.REJECT, "Rejected after edit"
 
-        if decision == "approve":
-            return DecisionType.APPROVE, None
-
-        # Default: reject
-        return DecisionType.REJECT, metadata
+        # Return the decision as-is (APPROVE or REJECT)
+        return decision, metadata
 
     async def verify_execution(
         self,
