@@ -3,6 +3,7 @@
 import logging
 from typing import Any
 
+from jarvis.observability import update_log_context
 from jarvis.safety.auditor import AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt
 from jarvis.safety.executor import SafeExecutor
@@ -86,7 +87,14 @@ class Executor:
             ToolResult with execution outcome
         """
         self.execution_count += 1
-        logger.info(f"Executing tool '{tool_name}' (execution #{self.execution_count})")
+        
+        # Update log context to track tool execution
+        update_log_context(operation=f"execute_tool_{tool_name}", tool_name=tool_name)
+        
+        logger.info(
+            f"Executing tool '{tool_name}' (execution #{self.execution_count})",
+            extra={"tool_name": tool_name, "action": "execute_start"},
+        )
 
         # 1. Validate tool exists
         tool = self.tool_registry.get(tool_name)
@@ -114,9 +122,15 @@ class Executor:
             result = await self.safe_executor.execute(tool, **arguments)
 
             if result.success:
-                logger.info(f"Tool '{tool_name}' executed successfully")
+                logger.info(
+                    f"Tool '{tool_name}' executed successfully",
+                    extra={"tool_name": tool_name, "action": "execute_success"},
+                )
             else:
-                logger.warning(f"Tool '{tool_name}' failed: {result.error}")
+                logger.warning(
+                    f"Tool '{tool_name}' failed: {result.error}",
+                    extra={"tool_name": tool_name, "action": "execute_failed"},
+                )
 
             return result
 

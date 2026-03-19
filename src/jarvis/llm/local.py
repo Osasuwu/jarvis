@@ -19,6 +19,7 @@ from typing import Any
 import httpx
 
 from jarvis.llm.base import LLMProvider, LLMResponse, ToolCall
+from jarvis.prompts import build_system_prompt, format_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -104,8 +105,12 @@ class LocalStubProvider(LLMProvider):
         # Filter tools to only include local ones (no web tools)
         local_tools = self._filter_local_tools(tools or [])
 
-        # Build system prompt for local LLM
-        system_prompt = self._build_system_prompt(local_tools)
+        # Build system prompt for local LLM using centralized prompts
+        system_prompt = build_system_prompt(
+            provider="local",
+            tools=local_tools,
+            include_tool_instructions=True,
+        )
 
         # Format messages as text prompt (Ollama /api/generate expects text input)
         prompt_text = system_prompt + "\n\n"
@@ -201,11 +206,14 @@ class LocalStubProvider(LLMProvider):
         # Default fallback message
         logger.info("No heuristic matched")
         return LLMResponse(
-            content=(
-                "Локальный Ollama сервер недоступен. "
-                "Я работаю в режиме ограниченного функционала. "
-                "Доступные команды: 'список файлов', 'прочитай readme'. "
-                "Для полного функционала запустите Ollama: 'ollama serve'"
+            content=format_error_message(
+                "llm_error",
+                error_message=(
+                    "Local Ollama server is unavailable. "
+                    "Operating in limited functionality mode. "
+                    "Available commands: 'list files', 'read readme'. "
+                    "For full functionality, start Ollama: 'ollama serve'"
+                ),
             ),
             tool_calls=None,
         )
@@ -220,26 +228,6 @@ class LocalStubProvider(LLMProvider):
             "echo",
         }
         return [t for t in tools if t.get("name") in local_tool_names]
-
-    def _build_system_prompt(self, tools: list[dict[str, Any]]) -> str:
-        """Build a system prompt describing available tools."""
-        prompt = (
-            "Ты помощник на локальном компьютере. Тебе доступны следующие инструменты:\n\n"
-        )
-
-        for tool in tools:
-            name = tool.get("name", "unknown")
-            desc = tool.get("description", "")
-            prompt += f"- {name}: {desc}\n"
-
-        prompt += (
-            "\nТы можешь вызывать эти инструменты. "
-            "Используй формат: <function=tool_name(parameters)></function>\n"
-            "Параметры передавай в виде JSON объекта.\n"
-            "Отвечай на русском языке.\n"
-        )
-
-        return prompt
 
     def _extract_tool_calls(
         self,

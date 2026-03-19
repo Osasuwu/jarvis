@@ -8,6 +8,7 @@ from groq import Groq, APIError
 
 from jarvis.config import get_config
 from jarvis.llm.base import LLMProvider, LLMResponse, ToolCall
+from jarvis.prompts import build_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -54,15 +55,22 @@ class GroqProvider(LLMProvider):
         temperature: float | None = None,
         max_tokens: int | None = None,
     ) -> LLMResponse:
-        """Send messages to Groq and get completion."""
+        """
+        Send messages to Groq and get completion.
+        
+        Automatically injects system prompt if not present.
+        """
         temp = temperature if temperature is not None else self._temperature
         max_tok = max_tokens if max_tokens is not None else self._max_tokens
+        
+        # Inject system prompt if not present
+        messages_with_system = self._ensure_system_prompt(messages, tools)
 
         try:
             # Run blocking Groq call in thread pool
             response = await asyncio.to_thread(
                 self._sync_complete,
-                messages=messages,
+                messages=messages_with_system,
                 tools=tools,
                 temperature=temp,
                 max_tokens=max_tok,
@@ -71,6 +79,36 @@ class GroqProvider(LLMProvider):
         except APIError as e:
             logger.error(f"Groq API error: {e}")
             raise
+    
+    def _ensure_system_prompt(
+        self, 
+        messages: list[dict],
+        tools: list[dict] | None = None,
+    ) -> list[dict]:
+        """
+        Ensure system prompt is present at the start of conversation.
+        
+        Args:
+            messages: Current conversation messages
+            tools: Available tools (for tool instruction injection)
+            
+        Returns:
+            Messages with system prompt prepended if needed
+        """
+        # Check if system prompt already exists
+        has_system = any(msg.get("role") == "system" for msg in messages)
+        
+        if has_system:
+            return messages
+        
+        # Build and inject system prompt
+        system_prompt = build_system_prompt(
+            provider="groq",
+            tools=tools,
+            include_tool_instructions=bool(tools),
+        )
+        
+        return [{"role": "system", "content": system_prompt}] + messages
 
     def _sync_complete(
         self,
