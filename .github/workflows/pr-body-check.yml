@@ -1,0 +1,19 @@
+name: PR Body Check
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  require-linked-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const hasLink = /(?:closes|fixes|resolves)\s+#\d+/i.test(body);
+
+            if (!hasLink) {
+              core.setFailed('PR body must include a linked issue reference, e.g. "Closes #123".');
+            }

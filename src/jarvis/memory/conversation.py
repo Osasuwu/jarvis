@@ -3,6 +3,7 @@
 import json
 import logging
 from collections import deque
+from datetime import UTC
 from pathlib import Path
 from typing import Any
 
@@ -47,43 +48,41 @@ class ConversationMemory:
         config = get_config()
         self.max_length = max_length or config.memory.max_conversation_length
         self._messages: deque[dict[str, str]] = deque(maxlen=self.max_length)
-        
+
         # Persistence configuration
         self.persist_enabled = config.memory.persist_to_disk
         self.storage_path = Path(config.memory.storage_path)
-        
+
         logger.info(
             f"ConversationMemory initialized (max_length={self.max_length}, "
             f"persistence={self.persist_enabled})"
         )
-        
+
         # Validate storage path is writable if persistence enabled
         if self.persist_enabled:
             self._validate_storage_path()
-            
+
             # Attempt to load saved conversation
             if auto_load:
                 try:
                     self.load()
-                    logger.info(
-                        f"Loaded {len(self._messages)} messages from persistent storage"
-                    )
+                    logger.info(f"Loaded {len(self._messages)} messages from persistent storage")
                 except FileNotFoundError:
                     logger.debug("No saved conversation found; starting fresh")
                 except Exception as e:
                     logger.warning(f"Failed to load saved conversation: {e}")
-    
+
     def _validate_storage_path(self) -> None:
         """
         Validate that storage path is writable.
-        
+
         Raises:
             OSError: If path is not writable
         """
         try:
             # Ensure parent directory exists
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Check if directory is writable
             if self.storage_path.parent.exists():
                 # Try to create a test file
@@ -92,7 +91,7 @@ class ConversationMemory:
                 test_file.unlink()
             else:
                 raise OSError(f"Cannot create storage directory: {self.storage_path.parent}")
-                
+
         except (PermissionError, OSError) as e:
             error_msg = (
                 f"Storage path '{self.storage_path.parent}' is not writable: {e}\n"
@@ -121,7 +120,7 @@ class ConversationMemory:
         # Warn if approaching limit
         if len(self._messages) >= self.max_length * 0.9:
             logger.warning(f"Memory nearing limit: {len(self._messages)}/{self.max_length}")
-        
+
         # Persist after each message if enabled
         if self.persist_enabled:
             try:
@@ -158,7 +157,7 @@ class ConversationMemory:
         message_count = len(self._messages)
         self._messages.clear()
         logger.info(f"Memory cleared ({message_count} messages removed)")
-        
+
         # Delete persisted file if exists
         if self.persist_enabled and self.storage_path.exists():
             try:
@@ -178,27 +177,27 @@ class ConversationMemory:
         """
         if not self.persist_enabled:
             return
-        
+
         try:
-            from datetime import datetime, timezone
-            
+            from datetime import datetime
+
             data = {
                 "version": "1.0",
                 "max_length": self.max_length,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "messages": list(self._messages),
             }
-            
+
             # Ensure parent directory exists
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            
+
             # Write with pretty formatting for readability
             with open(self.storage_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
-            
+
             logger.debug(f"Saved {len(self._messages)} messages to {self.storage_path}")
-            
-        except (OSError, IOError) as e:
+
+        except OSError as e:
             error_msg = f"Failed to save conversation to {self.storage_path}: {e}"
             logger.error(error_msg)
             raise OSError(error_msg) from e
@@ -217,38 +216,40 @@ class ConversationMemory:
         """
         if not self.persist_enabled:
             return
-        
+
         if not self.storage_path.exists():
             logger.debug(f"Persistent storage file not found: {self.storage_path}")
             raise FileNotFoundError(f"Storage file not found: {self.storage_path}")
-        
+
         try:
-            with open(self.storage_path, "r", encoding="utf-8") as f:
+            with open(self.storage_path, encoding="utf-8") as f:
                 data = json.load(f)
-            
+
             # Validate format version
             version = data.get("version", "1.0")
             if version != "1.0":
                 raise ValueError(f"Unsupported storage format version: {version}")
-            
+
             # Clear existing messages
             self._messages.clear()
-            
+
             # Load messages
             for msg in data.get("messages", []):
                 if "role" in msg and "content" in msg:
-                    self._messages.append({
-                        "role": msg["role"],
-                        "content": msg["content"],
-                    })
-            
+                    self._messages.append(
+                        {
+                            "role": msg["role"],
+                            "content": msg["content"],
+                        }
+                    )
+
             logger.info(f"Loaded {len(self._messages)} messages from {self.storage_path}")
-            
+
         except json.JSONDecodeError as e:
             error_msg = f"Corrupted storage file {self.storage_path}: {e}"
             logger.error(error_msg)
             raise json.JSONDecodeError(error_msg, "", 0) from e
-        except (OSError, IOError) as e:
+        except OSError as e:
             error_msg = f"Failed to read storage file {self.storage_path}: {e}"
             logger.error(error_msg)
             raise OSError(error_msg) from e

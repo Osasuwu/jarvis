@@ -1,0 +1,342 @@
+name: Project Sync
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled, milestoned, demilestoned, closed]
+  pull_request:
+    types: [opened, reopened, ready_for_review, labeled, unlabeled, closed]
+
+env:
+  PROJECT_OWNER: Osasuwu
+  PROJECT_NUMBER: "3"
+  PROJECT_ID: "PVT_kwHOCQcMGs4BSPd1"
+
+  STATUS_FIELD_ID: "PVTSSF_lAHOCQcMGs4BSPd1zg_1YYQ"
+  AREA_FIELD_ID: "PVTSSF_lAHOCQcMGs4BSPd1zg_1swk"
+  PHASE_FIELD_ID: "PVTSSF_lAHOCQcMGs4BSPd1zg_1swg"
+  PRIORITY_FIELD_ID: "PVTSSF_lAHOCQcMGs4BSPd1zg_1sug"
+
+  STATUS_TODO_OPTION: "f75ad846"
+  STATUS_IN_PROGRESS_OPTION: "47fc9ee4"
+  STATUS_DONE_OPTION: "98236657"
+
+  PRIORITY_CRITICAL_OPTION: "adbf738e"
+  PRIORITY_HIGH_OPTION: "ea606f7c"
+  PRIORITY_MEDIUM_OPTION: "5b0c1aab"
+  PRIORITY_LOW_OPTION: "f991b94a"
+
+  PHASE_P1_OPTION: "207a1be9"
+  PHASE_P2_OPTION: "5af065f7"
+  PHASE_P3_OPTION: "77618227"
+  PHASE_P4_OPTION: "7ec1d668"
+  PHASE_P5_OPTION: "c34ac8d8"
+
+  AREA_CORE_AGENT_OPTION: "3585dbdd"
+  AREA_WORKFLOW_GITHUB_OPTION: "7567e8d6"
+  AREA_TOOLS_OPTION: "fdf66f92"
+  AREA_QUALITY_OPTION: "6ac7cb0a"
+  AREA_DOCS_OPTION: "832ed0e1"
+  AREA_RELEASE_OPTION: "2935165f"
+
+jobs:
+  sync-issues:
+    if: ${{ github.event_name == 'issues' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      pull-requests: read
+    steps:
+      - name: Sync issue to project
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ITEM_URL: ${{ github.event.issue.html_url }}
+          CONTENT_NODE_ID: ${{ github.event.issue.node_id }}
+          LABELS_JSON: ${{ toJson(github.event.issue.labels.*.name) }}
+          MILESTONE_TITLE: ${{ github.event.issue.milestone.title || '' }}
+          ISSUE_ACTION: ${{ github.event.action }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ITEM_URL}" ] || [ -z "${CONTENT_NODE_ID}" ]; then
+            echo "Missing issue URL or node ID, skipping."
+            exit 0
+          fi
+
+          # Add item to project; ignore if it already exists.
+          gh project item-add "${PROJECT_NUMBER}" --owner "${PROJECT_OWNER}" --url "${ITEM_URL}" >/dev/null 2>&1 || true
+
+          # Resolve project item id for this issue by content node id.
+          query='query($owner: String!, $number: Int!, $cursor: String) {
+            user(login: $owner) {
+              projectV2(number: $number) {
+                items(first: 100, after: $cursor) {
+                  nodes {
+                    id
+                    content {
+                      ... on Issue { id }
+                      ... on PullRequest { id }
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+          }'
+
+          item_id=""
+          cursor=""
+          while :; do
+            if [ -n "$cursor" ]; then
+              response=$(gh api graphql -f query="$query" -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" -f cursor="$cursor")
+            else
+              response=$(gh api graphql -f query="$query" -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}")
+            fi
+
+            match=$(echo "$response" | jq -r --arg cid "$CONTENT_NODE_ID" '.data.user.projectV2.items.nodes[] | select(.content.id == $cid) | .id' | head -n1)
+            if [ -n "$match" ]; then
+              item_id="$match"
+              break
+            fi
+
+            has_next=$(echo "$response" | jq -r '.data.user.projectV2.items.pageInfo.hasNextPage')
+            if [ "$has_next" != "true" ]; then
+              break
+            fi
+            cursor=$(echo "$response" | jq -r '.data.user.projectV2.items.pageInfo.endCursor')
+          done
+
+          if [ -z "$item_id" ]; then
+            echo "Project item id not found for issue content id ${CONTENT_NODE_ID}."
+            exit 1
+          fi
+
+          echo "Resolved issue project item id: $item_id"
+
+          priority_label=$(echo "${LABELS_JSON}" | jq -r '.[] | select(startswith("priority:"))' | head -n1)
+          area_label=$(echo "${LABELS_JSON}" | jq -r '.[] | select(startswith("area:"))' | head -n1)
+          status_label=$(echo "${LABELS_JSON}" | jq -r '.[] | select(startswith("status:"))' | head -n1)
+
+          status_option=""
+          case "${ISSUE_ACTION}" in
+            closed)
+              status_option="${STATUS_DONE_OPTION}"
+              ;;
+            *)
+              case "${status_label}" in
+                status:in-progress|status:review)
+                  status_option="${STATUS_IN_PROGRESS_OPTION}"
+                  ;;
+                status:children-done)
+                  status_option="${STATUS_DONE_OPTION}"
+                  ;;
+                *)
+                  status_option="${STATUS_TODO_OPTION}"
+                  ;;
+              esac
+              ;;
+          esac
+
+          priority_option=""
+          case "${priority_label}" in
+            priority:critical)
+              priority_option="${PRIORITY_CRITICAL_OPTION}"
+              ;;
+            priority:high)
+              priority_option="${PRIORITY_HIGH_OPTION}"
+              ;;
+            priority:medium)
+              priority_option="${PRIORITY_MEDIUM_OPTION}"
+              ;;
+            priority:low)
+              priority_option="${PRIORITY_LOW_OPTION}"
+              ;;
+          esac
+
+          area_option=""
+          case "${area_label}" in
+            area:core-agent)
+              area_option="${AREA_CORE_AGENT_OPTION}"
+              ;;
+            area:workflow-github)
+              area_option="${AREA_WORKFLOW_GITHUB_OPTION}"
+              ;;
+            area:tools)
+              area_option="${AREA_TOOLS_OPTION}"
+              ;;
+            area:quality)
+              area_option="${AREA_QUALITY_OPTION}"
+              ;;
+            area:docs)
+              area_option="${AREA_DOCS_OPTION}"
+              ;;
+            area:release)
+              area_option="${AREA_RELEASE_OPTION}"
+              ;;
+          esac
+
+          phase_option=""
+          case "${MILESTONE_TITLE}" in
+            "P1 Foundation")
+              phase_option="${PHASE_P1_OPTION}"
+              ;;
+            "P2 PM+TechLead MVP")
+              phase_option="${PHASE_P2_OPTION}"
+              ;;
+            "P3 Reliability")
+              phase_option="${PHASE_P3_OPTION}"
+              ;;
+            "P4 Capability Expansion")
+              phase_option="${PHASE_P4_OPTION}"
+              ;;
+            "P5 Stabilization")
+              phase_option="${PHASE_P5_OPTION}"
+              ;;
+          esac
+
+          gh project item-edit --id "$item_id" --project-id "${PROJECT_ID}" --field-id "${STATUS_FIELD_ID}" --single-select-option-id "${status_option}"
+
+          if [ -n "${priority_option}" ]; then
+            gh project item-edit --id "$item_id" --project-id "${PROJECT_ID}" --field-id "${PRIORITY_FIELD_ID}" --single-select-option-id "${priority_option}"
+          fi
+
+          if [ -n "${area_option}" ]; then
+            gh project item-edit --id "$item_id" --project-id "${PROJECT_ID}" --field-id "${AREA_FIELD_ID}" --single-select-option-id "${area_option}"
+          fi
+
+          if [ -n "${phase_option}" ]; then
+            gh project item-edit --id "$item_id" --project-id "${PROJECT_ID}" --field-id "${PHASE_FIELD_ID}" --single-select-option-id "${phase_option}"
+          fi
+
+  sync-prs:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Sync pull request to project
+        env:
+          ITEM_URL: ${{ github.event.pull_request.html_url }}
+          CONTENT_NODE_ID: ${{ github.event.pull_request.node_id }}
+          LABELS_JSON: ${{ toJson(github.event.pull_request.labels.*.name) }}
+          PR_ACTION: ${{ github.event.action }}
+          PR_MERGED: ${{ github.event.pull_request.merged || false }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ITEM_URL}" ] || [ -z "${CONTENT_NODE_ID}" ]; then
+            echo "Missing PR URL or node ID, skipping."
+            exit 0
+          fi
+
+          gh project item-add "${PROJECT_NUMBER}" --owner "${PROJECT_OWNER}" --url "${ITEM_URL}" >/dev/null 2>&1 || true
+
+          query='query($owner: String!, $number: Int!, $cursor: String) {
+            user(login: $owner) {
+              projectV2(number: $number) {
+                items(first: 100, after: $cursor) {
+                  nodes {
+                    id
+                    content {
+                      ... on Issue { id }
+                      ... on PullRequest { id }
+                    }
+                  }
+                  pageInfo {
+                    hasNextPage
+                    endCursor
+                  }
+                }
+              }
+            }
+          }'
+
+          item_id=""
+          cursor=""
+          while :; do
+            if [ -n "$cursor" ]; then
+              response=$(gh api graphql -f query="$query" -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" -f cursor="$cursor")
+            else
+              response=$(gh api graphql -f query="$query" -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}")
+            fi
+
+            match=$(echo "$response" | jq -r --arg cid "$CONTENT_NODE_ID" '.data.user.projectV2.items.nodes[] | select(.content.id == $cid) | .id' | head -n1)
+            if [ -n "$match" ]; then
+              item_id="$match"
+              break
+            fi
+
+            has_next=$(echo "$response" | jq -r '.data.user.projectV2.items.pageInfo.hasNextPage')
+            if [ "$has_next" != "true" ]; then
+              break
+            fi
+            cursor=$(echo "$response" | jq -r '.data.user.projectV2.items.pageInfo.endCursor')
+          done
+
+          if [ -z "$item_id" ]; then
+            echo "Project item id not found for PR content id ${CONTENT_NODE_ID}."
+            exit 1
+          fi
+
+          echo "Resolved PR project item id: $item_id"
+
+          priority_label=$(echo "${LABELS_JSON}" | jq -r '.[] | select(startswith("priority:"))' | head -n1)
+          area_label=$(echo "${LABELS_JSON}" | jq -r '.[] | select(startswith("area:"))' | head -n1)
+
+          status_option="${STATUS_IN_PROGRESS_OPTION}"
+          if [ "${PR_ACTION}" = "closed" ] && [ "${PR_MERGED}" = "true" ]; then
+            status_option="${STATUS_DONE_OPTION}"
+          fi
+
+          priority_option=""
+          case "${priority_label}" in
+            priority:critical)
+              priority_option="${PRIORITY_CRITICAL_OPTION}"
+              ;;
+            priority:high)
+              priority_option="${PRIORITY_HIGH_OPTION}"
+              ;;
+            priority:medium)
+              priority_option="${PRIORITY_MEDIUM_OPTION}"
+              ;;
+            priority:low)
+              priority_option="${PRIORITY_LOW_OPTION}"
+              ;;
+          esac
+
+          area_option=""
+          case "${area_label}" in
+            area:core-agent)
+              area_option="${AREA_CORE_AGENT_OPTION}"
+              ;;
+            area:workflow-github)
+              area_option="${AREA_WORKFLOW_GITHUB_OPTION}"
+              ;;
+            area:tools)
+              area_option="${AREA_TOOLS_OPTION}"
+              ;;
+            area:quality)
+              area_option="${AREA_QUALITY_OPTION}"
+              ;;
+            area:docs)
+              area_option="${AREA_DOCS_OPTION}"
+              ;;
+            area:release)
+              area_option="${AREA_RELEASE_OPTION}"
+              ;;
+          esac
+
+          gh project item-edit --id "$item_id" --project-id "${PROJECT_ID}" --field-id "${STATUS_FIELD_ID}" --single-select-option-id "${status_option}"
+
+          if [ -n "${priority_option}" ]; then
+            gh project item-edit --id "$item_id" --project-id "${PROJECT_ID}" --field-id "${PRIORITY_FIELD_ID}" --single-select-option-id "${priority_option}"
+          fi
+
+          if [ -n "${area_option}" ]; then
+            gh project item-edit --id "$item_id" --project-id "${PROJECT_ID}" --field-id "${AREA_FIELD_ID}" --single-select-option-id "${area_option}"
+          fi

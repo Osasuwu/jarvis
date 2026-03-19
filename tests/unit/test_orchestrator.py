@@ -1,8 +1,8 @@
 """Tests for Orchestrator."""
 
-import pytest
 from unittest.mock import AsyncMock
 
+import pytest
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.llm.base import LLMResponse, ToolCall
 from jarvis.memory import ConversationMemory
@@ -40,7 +40,7 @@ async def test_orchestrator_initialization() -> None:
     registry = ToolRegistry()
     memory = ConversationMemory(auto_load=False)
     memory.persist_enabled = False
-    
+
     orchestrator = Orchestrator(mock_llm, registry, memory, max_iterations=5)
 
     assert orchestrator.max_iterations == 5

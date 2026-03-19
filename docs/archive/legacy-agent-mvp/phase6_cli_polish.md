@@ -1,7 +1,7 @@
 # Phase 6: CLI & Polish
 
-**Status:** ✅ Реализовано (16 января 2026)  
-**Tests:** 34 unit-тестов, все пройдены  
+**Status:** ✅ Реализовано (16 января 2026)
+**Tests:** 34 unit-тестов, все пройдены
 **Coverage:** CLI модуль 75.82% (formatter), 84.31% (history), 48.42% (interface)
 
 ## Обзор
@@ -197,19 +197,19 @@ import asyncio
 async def main():
     formatter = OutputFormatter()
     cli = CLIInterface(formatter)
-    
+
     # Регистрировать команды
     def list_handler(args):
         items = ["Item 1", "Item 2", "Item 3"]
         formatter.print_list(items, title="Items")
-    
+
     def config_handler(args):
         config = {"debug": True, "timeout": 30}
         formatter.print_dict(config, title="Configuration")
-    
+
     cli.register_command("list", list_handler, "List items")
     cli.register_command("config", config_handler, "Show config")
-    
+
     # Запустить интерактивный режим
     await cli.start_interactive_mode()
 
@@ -227,28 +227,28 @@ class JarvisCLI(CLIInterface):
     def __init__(self, orchestrator):
         super().__init__()
         self.orchestrator = orchestrator
-        
+
         # Регистрировать команды агента
         self.register_command(
-            "ask", 
-            self._ask_handler, 
+            "ask",
+            self._ask_handler,
             "Ask Jarvis to do something"
         )
         self.register_command(
-            "tools", 
-            self._tools_handler, 
+            "tools",
+            self._tools_handler,
             "Show available tools"
         )
-    
+
     async def _ask_handler(self, args):
         if not args:
             self.formatter.print_warning("Please provide a task")
             return
-        
+
         self.formatter.print_info(f"Processing: {args}")
         result = await self.orchestrator.execute(args)
         self.formatter.print_success(f"Completed: {result}")
-    
+
     def _tools_handler(self, args):
         tools = self.orchestrator.get_available_tools()
         self.formatter.print_list(tools, title="Available Tools")
@@ -355,7 +355,7 @@ class JarvisCLI(CLIInterface):
         super().__init__()
         self.orchestrator = orchestrator
         self._setup_jarvis_commands()
-    
+
     def _setup_jarvis_commands(self):
         self.register_command(
             "ask",
@@ -452,9 +452,9 @@ history.export_to_json("analysis.json")
 
 ---
 
-**Дата завершения:** 16 января 2026  
-**Total commits:** 2  
-**Строк кода:** 470+ (formatter, history, interface)  
-**Тестов:** 34 unit-тестов, все пройдены ✅  
-**Coverage:** 75.82% formatter, 84.31% history, 48.42% interface  
+**Дата завершения:** 16 января 2026
+**Total commits:** 2
+**Строк кода:** 470+ (formatter, history, interface)
+**Тестов:** 34 unit-тестов, все пройдены ✅
+**Coverage:** 75.82% formatter, 84.31% history, 48.42% interface
 **Full suite:** 167 тестов, 79.65% coverage

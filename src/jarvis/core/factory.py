@@ -20,12 +20,10 @@ All functions are dependency-injectable for testing.
 import logging
 import os
 from pathlib import Path
-from typing import Optional
 
 from jarvis.config import get_config
-from jarvis.core.executor import Executor
 from jarvis.core.orchestrator import Orchestrator
-from jarvis.llm import GroqProvider, LocalStubProvider, LLMProvider
+from jarvis.llm import GroqProvider, LLMProvider, LocalStubProvider
 from jarvis.memory.conversation import ConversationMemory
 from jarvis.safety.auditor import AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt
@@ -52,25 +50,24 @@ def _create_llm_provider() -> LLMProvider:
         ValueError: If configuration is invalid
     """
     config = get_config()
-    
+
     # Check for local LLM override
     use_local = os.getenv("USE_LOCAL_LLM", "").lower() in ("1", "true", "yes")
     if use_local:
         local_model = os.getenv("LOCAL_LLM_MODEL", "qwen2:4b")
         logger.info(f"Using local LLM provider with model: {local_model}")
         return LocalStubProvider(model=local_model)
-    
+
     # Try Groq if API key is set
     if config.llm.groq_api_key:
         logger.info(
-            f"Using Groq provider: {config.llm.model} "
-            f"(timeout={config.llm.groq_timeout}s)"
+            f"Using Groq provider: {config.llm.model} " f"(timeout={config.llm.groq_timeout}s)"
         )
         return GroqProvider(
             api_key=config.llm.groq_api_key,
             model=config.llm.model,
         )
-    
+
     # Fallback to local stub
     logger.warning(
         "GROQ_API_KEY not configured; using local stub provider. "
@@ -96,7 +93,7 @@ def _create_tool_registry() -> ToolRegistry:
         RuntimeError: If tool discovery fails
     """
     registry = ToolRegistry()
-    
+
     try:
         discovery = ToolDiscovery()
         discovered_tools = discovery.discover_all(
@@ -104,7 +101,7 @@ def _create_tool_registry() -> ToolRegistry:
             config_file=None,  # Optional: "configs/tools.yaml"
             custom_paths=None,  # Optional: ["./custom_tools"]
         )
-        
+
         registered_count = 0
         for tool in discovered_tools:
             try:
@@ -112,14 +109,14 @@ def _create_tool_registry() -> ToolRegistry:
                 registered_count += 1
             except Exception as e:
                 logger.warning(f"Failed to register tool {tool.name}: {e}")
-        
+
         logger.info(f"Tool registry initialized with {registered_count} tools")
-        
+
         if registered_count == 0:
             logger.warning("No tools were registered; agent will have no capabilities")
-        
+
         return registry
-        
+
     except Exception as e:
         error_msg = f"Failed to initialize tool registry: {e}"
         logger.error(error_msg)
@@ -127,7 +124,7 @@ def _create_tool_registry() -> ToolRegistry:
 
 
 def _create_safety_layer(
-    config_storage_path: Optional[str] = None,
+    config_storage_path: str | None = None,
 ) -> tuple[ConfirmationPrompt, WhitelistManager, AuditLogger]:
     """
     Create safety layer components.
@@ -144,11 +141,11 @@ def _create_safety_layer(
         Tuple of (confirmation, whitelist, auditor)
     """
     config = get_config()
-    
+
     # Confirmation prompts
     confirmation = ConfirmationPrompt()
     logger.debug("ConfirmationPrompt initialized")
-    
+
     # Whitelist for safe operations
     whitelist = WhitelistManager()
     # Add default safe patterns
@@ -160,13 +157,13 @@ def _create_safety_layer(
     whitelist.add_command_pattern("ls*")
     whitelist.add_command_pattern("cd*")
     logger.debug("WhitelistManager initialized with default patterns")
-    
+
     # Audit logging
     storage_path = Path(config_storage_path or config.memory.storage_path)
     audit_log_path = storage_path / "audit.json"
     auditor = AuditLogger(log_file=audit_log_path)
     logger.debug(f"AuditLogger initialized (path={audit_log_path})")
-    
+
     return confirmation, whitelist, auditor
 
 
@@ -194,12 +191,12 @@ def _create_memory(auto_load: bool = True) -> ConversationMemory:
 
 
 def create_orchestrator(
-    llm_provider: Optional[LLMProvider] = None,
-    tool_registry: Optional[ToolRegistry] = None,
-    memory: Optional[ConversationMemory] = None,
-    confirmation: Optional[ConfirmationPrompt] = None,
-    whitelist: Optional[WhitelistManager] = None,
-    auditor: Optional[AuditLogger] = None,
+    llm_provider: LLMProvider | None = None,
+    tool_registry: ToolRegistry | None = None,
+    memory: ConversationMemory | None = None,
+    confirmation: ConfirmationPrompt | None = None,
+    whitelist: WhitelistManager | None = None,
+    auditor: AuditLogger | None = None,
 ) -> Orchestrator:
     """
     Create fully initialized orchestrator for agent operation.
@@ -231,27 +228,27 @@ def create_orchestrator(
         RuntimeError: If initialization fails
     """
     config = get_config()
-    
+
     # Validate configuration at startup
     try:
         config.validate()
     except ValueError as e:
         logger.error(f"Configuration validation failed: {e}")
         raise
-    
+
     # Create dependencies (using injected versions or factories)
     llm = llm_provider if llm_provider is not None else _create_llm_provider()
     registry = tool_registry if tool_registry is not None else _create_tool_registry()
     # Note: Pass auto_load=False for factory-created memory; auto-loading happens only for
     # persistent/resumed conversations, not fresh instances
     mem = memory if memory is not None else _create_memory(auto_load=False)
-    
+
     if confirmation is None or whitelist is None or auditor is None:
         conf, wl, aud = _create_safety_layer()
         confirmation = confirmation or conf
         whitelist = whitelist or wl
         auditor = auditor or aud
-    
+
     # Create Orchestrator with all components
     orchestrator = Orchestrator(
         llm_provider=llm,
@@ -261,6 +258,6 @@ def create_orchestrator(
         whitelist=whitelist,
         auditor=auditor,
     )
-    
+
     logger.info("Orchestrator created successfully")
     return orchestrator

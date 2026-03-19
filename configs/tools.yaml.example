@@ -9,7 +9,7 @@ tools:
   #   enabled: true
   #   kwargs:
   #     precision: 10
-  
+
   # Example: Another custom tool
   # - name: database_query
   #   module: my_tools.database

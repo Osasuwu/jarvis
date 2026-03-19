@@ -4,11 +4,11 @@ import json
 from typing import Any
 
 from rich.console import Console
-from rich.syntax import Syntax
-from rich.table import Table
+from rich.markup import escape
 from rich.panel import Panel
 from rich.progress import Progress
-from rich.markup import escape
+from rich.syntax import Syntax
+from rich.table import Table
 
 
 class OutputFormatter:

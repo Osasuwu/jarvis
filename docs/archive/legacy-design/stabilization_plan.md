@@ -1,6 +1,6 @@
 # Stabilization Plan: Backend & System Reliability
 
-**Document Status:** STABILIZATION (MEDIUM TASKS ACTIVE) | **Created:** January 17, 2026 | **Last Updated:** January 17, 2026  
+**Document Status:** STABILIZATION (MEDIUM TASKS ACTIVE) | **Created:** January 17, 2026 | **Last Updated:** January 17, 2026
 **Audience:** Backend Engineering Team | **Phase:** Production-Ready (v0.7.0)
 
 ---
@@ -85,7 +85,7 @@ This plan consolidated findings from the comprehensive project review into actio
 
 **Implementation Details:**
 - File: `src/jarvis/core/factory.py` (NEW, 267 lines)
-- Factory functions: 
+- Factory functions:
   - `create_orchestrator()` - Main DI entry point with full injection support
   - `_create_llm_provider()` - Creates Groq or LocalStub provider
   - `_create_tool_registry()` - Discovers and registers tools
@@ -134,7 +134,7 @@ This plan consolidated findings from the comprehensive project review into actio
 ---
 
 ### Goal 6: Integrate Testing at Orchestration Level (MEDIUM)
-**Current Risk:** MEDIUM | No end-to-end tests; cannot validate ReAct loop works; integration bugs hidden  
+**Current Risk:** MEDIUM | No end-to-end tests; cannot validate ReAct loop works; integration bugs hidden
 **Why Matters:** Regressions cannot be detected; orchestration assumptions untested; reliability unproven
 
 **Success Definition:**
@@ -150,7 +150,7 @@ This plan consolidated findings from the comprehensive project review into actio
 ---
 
 ### Goal 7: Eliminate Implicit Logic & Unclear Ownership (MEDIUM)
-**Current Risk:** MEDIUM | `tool_called_once` flag undocumented; responsibility boundaries violated; intent unclear  
+**Current Risk:** MEDIUM | `tool_called_once` flag undocumented; responsibility boundaries violated; intent unclear
 **Why Matters:** Future maintainers cannot understand code; bugs hide in cracks between components; difficult to add features
 
 **Success Definition:**
@@ -256,7 +256,7 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 ## Part 3: High-Priority Stabilization Tasks
 
 ### Task 1: Implement Configuration Consistency Validation (HIGH)
-**Status:** ✅ COMPLETED | **Related Goal:** Goal 2  
+**Status:** ✅ COMPLETED | **Related Goal:** Goal 2
 **Critical Path:** Yes
 
 **Problem:**
@@ -281,14 +281,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 
 **Evidence:** `src/jarvis/config.py`, `src/jarvis/core/factory.py`, `tests/unit/test_config.py`.
 
-**Estimated Effort:** 6-8 hours  
-**Owner:** Backend Engineer (Config)  
+**Estimated Effort:** 6-8 hours
+**Owner:** Backend Engineer (Config)
 **Blocks:** Goal 2, Deployment
 
 ---
 
 ### Task 2: Centralize Logging with Request Context (HIGH)
-**Status:** ✅ COMPLETED | **Related Goal:** Goal 4  
+**Status:** ✅ COMPLETED | **Related Goal:** Goal 4
 **Critical Path:** Yes
 
 **Problem:**
@@ -315,15 +315,15 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 
 **Evidence:** `src/jarvis/observability/logging.py`, `src/jarvis/core/orchestrator.py`, `src/jarvis/core/executor.py`, `src/jarvis/core/exceptions.py`.
 
-**Estimated Effort:** 10-14 hours  
-**Owner:** Backend Engineer (Observability)  
-**Dependencies:** None  
+**Estimated Effort:** 10-14 hours
+**Owner:** Backend Engineer (Observability)
+**Dependencies:** None
 **Blocks:** Goal 4, Production readiness
 
 ---
 
 ### Task 3: Extract & Centralize Prompts (MEDIUM)
-**Status:** ✅ COMPLETED | **Related Goal:** Goal 5  
+**Status:** ✅ COMPLETED | **Related Goal:** Goal 5
 **Critical Path:** Yes for consistency
 
 **Problem:**
@@ -351,14 +351,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 
 **Evidence:** `src/jarvis/prompts.py`, `src/jarvis/llm/groq.py`, `src/jarvis/llm/local.py`.
 
-**Estimated Effort:** 8-12 hours  
-**Owner:** Backend Engineer (Prompts) + Prompt Engineer  
+**Estimated Effort:** 8-12 hours
+**Owner:** Backend Engineer (Prompts) + Prompt Engineer
 **Dependencies:** None (can be done independently)
 
 ---
 
 ### Task 4: Enforce Tool Availability Logic (MEDIUM)
-**Status:** ✅ COMPLETED (documented + tested; behavior retained with FIXME) | **Related Goal:** Goal 7  
+**Status:** ✅ COMPLETED (documented + tested; behavior retained with FIXME) | **Related Goal:** Goal 7
 **Critical Path:** Unblocks clarity
 
 **Problem:**
@@ -380,15 +380,15 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 
 **Evidence:** `tests/unit/test_tool_availability.py`, `src/jarvis/core/orchestrator.py` (FIXME comment).
 
-**Estimated Effort:** 3-6 hours  
-**Owner:** Backend Engineer (Orchestration) + Tech Lead  
-**Dependencies:** None  
+**Estimated Effort:** 3-6 hours
+**Owner:** Backend Engineer (Orchestration) + Tech Lead
+**Dependencies:** None
 **Blocks:** Code clarity, future maintenance
 
 ---
 
 ### Task 5: Clarify Discovery/Loader/Registry Responsibilities (MEDIUM)
-**Related Goal:** Goal 7  
+**Related Goal:** Goal 7
 **Critical Path:** Unblocks clarity
 
 **Problem:**
@@ -414,14 +414,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 - [ ] Integration test shows clean flow: Discover → Load → Register
 - [ ] Code comments explain boundaries
 
-**Estimated Effort:** 8-10 hours  
-**Owner:** Backend Engineer (Architecture)  
+**Estimated Effort:** 8-10 hours
+**Owner:** Backend Engineer (Architecture)
 **Dependencies:** None
 
 ---
 
 ### Task 6: Write Integration Tests for ReAct Loop (MEDIUM)
-**Related Goal:** Goal 6  
+**Related Goal:** Goal 6
 **Critical Path:** Validates orchestration
 
 **Problem:**
@@ -447,14 +447,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 - [ ] Tests use mocked LLM but real tool infrastructure
 - [ ] Tests run in < 5 seconds
 
-**Estimated Effort:** 12-16 hours  
-**Owner:** Backend Engineer (Testing)  
+**Estimated Effort:** 12-16 hours
+**Owner:** Backend Engineer (Testing)
 **Dependencies:** Task 3 (Orchestrator Coupling), Task 1 (Config Validation)
 
 ---
 
 ### Task 7: Document Implicit State Machine Logic (MEDIUM)
-**Related Goal:** Goal 7  
+**Related Goal:** Goal 7
 **Critical Path:** Unblocks understanding
 
 **Problem:**
@@ -476,14 +476,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 - [ ] Code comments added to run() method
 - [ ] New developer can understand flow from comments alone
 
-**Estimated Effort:** 5-8 hours  
-**Owner:** Backend Engineer (Documentation)  
+**Estimated Effort:** 5-8 hours
+**Owner:** Backend Engineer (Documentation)
 **Dependencies:** None
 
 ---
 
 ### Task 8: Add Memory Truncation Enforcement (MEDIUM)
-**Related Goal:** Goal 2  
+**Related Goal:** Goal 2
 **Critical Path:** No, but improves reliability
 
 **Problem:**
@@ -505,14 +505,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 - [ ] Tests verify truncation prevents message loss
 - [ ] Integration test shows behavior when memory full
 
-**Estimated Effort:** 6-9 hours  
-**Owner:** Backend Engineer (Memory)  
+**Estimated Effort:** 6-9 hours
+**Owner:** Backend Engineer (Memory)
 **Dependencies:** None
 
 ---
 
 ### Task 9: Fix Error Handling Consistency (MEDIUM)
-**Related Goal:** Goal 4  
+**Related Goal:** Goal 4
 **Critical Path:** Improves reliability
 
 **Problem:**
@@ -537,14 +537,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 - [ ] Request context included in all error messages
 - [ ] Integration test shows error logged with full context
 
-**Estimated Effort:** 10-12 hours  
-**Owner:** Backend Engineer (Error Handling)  
+**Estimated Effort:** 10-12 hours
+**Owner:** Backend Engineer (Error Handling)
 **Dependencies:** Task 2 (Logging)
 
 ---
 
 ### Task 10: Enable Request ID Cleanup (LOW)
-**Related Goal:** Goal 4  
+**Related Goal:** Goal 4
 **Critical Path:** No, but completes observability
 
 **Problem:**
@@ -562,14 +562,14 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 - [ ] No request ID leakage between requests
 - [ ] Test verifies cleanup occurs even on exception
 
-**Estimated Effort:** 2-3 hours  
-**Owner:** Backend Engineer (Observability)  
+**Estimated Effort:** 2-3 hours
+**Owner:** Backend Engineer (Observability)
 **Dependencies:** Task 2 (Logging)
 
 ---
 
 ### Task 11: Add Load & Stress Testing (LOW)
-**Related Goal:** Goal 6  
+**Related Goal:** Goal 6
 **Critical Path:** No, but validates reliability
 
 **Problem:**
@@ -590,8 +590,8 @@ This fixed issue where empty memory instances (with __len__ == 0) were considere
 - [ ] Response time p95 < X seconds (baseline)
 - [ ] No errors under load
 
-**Estimated Effort:** 8-12 hours  
-**Owner:** Backend Engineer (Testing/Performance)  
+**Estimated Effort:** 8-12 hours
+**Owner:** Backend Engineer (Testing/Performance)
 **Dependencies:** Task 6 (Integration Tests)
 
 ---
@@ -623,7 +623,7 @@ High-Priority (can start after blockers):
 ## Part 5: Execution Roadmap
 
 ### Phase 1: Critical Blockers (Weeks 1-3)
-**Objective:** Unblock testing and feature development  
+**Objective:** Unblock testing and feature development
 **Effort:** ~50-70 hours
 
 **Sequence:**
@@ -641,7 +641,7 @@ High-Priority (can start after blockers):
 ---
 
 ### Phase 2: Observability & Reliability (Weeks 3-5)
-**Objective:** Enable production monitoring and debugging  
+**Objective:** Enable production monitoring and debugging
 **Effort:** ~30-40 hours
 
 **Sequence:**
@@ -658,7 +658,7 @@ High-Priority (can start after blockers):
 ---
 
 ### Phase 3: Clarity & Documentation (Weeks 4-6)
-**Objective:** Improve maintainability and reduce tech debt  
+**Objective:** Improve maintainability and reduce tech debt
 **Effort:** ~25-35 hours
 
 **Sequence:**
@@ -676,7 +676,7 @@ High-Priority (can start after blockers):
 ---
 
 ### Phase 4: Testing & Validation (Weeks 5-7)
-**Objective:** Validate entire system works correctly  
+**Objective:** Validate entire system works correctly
 **Effort:** ~20-30 hours
 
 **Sequence:**
@@ -702,15 +702,15 @@ High-Priority (can start after blockers):
 5. **Tool registry:** Tool discovery/loading critical path has bugs but basic functionality works
 
 ### Open Questions
-1. **Tool availability logic:** Is `tool_called_once` intentional or a bug?  
+1. **Tool availability logic:** Is `tool_called_once` intentional or a bug?
    - Recommendation: Clarify with tech lead; if unintentional, remove it
-2. **Memory persistence backend:** JSON, SQLite, or custom format?  
+2. **Memory persistence backend:** JSON, SQLite, or custom format?
    - Recommendation: JSON for simplicity; SQL if concurrent access needed
-3. **Error recovery strategy:** Should agent auto-retry failed tools or ask user?  
+3. **Error recovery strategy:** Should agent auto-retry failed tools or ask user?
    - Recommendation: Auto-retry once, then ask user (current behavior)
-4. **Prompt versioning:** Should prompts be version-controlled separately?  
+4. **Prompt versioning:** Should prompts be version-controlled separately?
    - Recommendation: Keep in main code but centralized
-5. **Request context propagation:** How deep should context go?  
+5. **Request context propagation:** How deep should context go?
    - Recommendation: LLM API calls, Tool execution, but not internal library calls
 
 ### Success Metrics
@@ -792,7 +792,7 @@ However, **all critical blockers are resolved** and the system is now stable eno
 ## Part 8: Risk Mitigation
 
 ### Risk: Scope Creep During Stabilization
-**Mitigation:** 
+**Mitigation:**
 - Enforce "no new features" rule during stabilization phases
 - Code review checklist includes "does this add features?"
 - All changes must reference a stabilization task
@@ -830,7 +830,7 @@ However, **all critical blockers are resolved** and the system is now stable eno
 
 **Timeline:**
 - **Weeks 1-3:** Critical Blockers + Config Validation
-- **Weeks 3-5:** Logging + Error Handling  
+- **Weeks 3-5:** Logging + Error Handling
 - **Weeks 4-6:** Prompts + Documentation
 - **Weeks 5-7:** Integration Tests + Load Testing
 
@@ -842,6 +842,6 @@ However, **all critical blockers are resolved** and the system is now stable eno
 
 ---
 
-**Prepared by:** Senior Backend Engineer  
-**Review by:** Tech Lead, Architect  
+**Prepared by:** Senior Backend Engineer
+**Review by:** Tech Lead, Architect
 **Approval by:** Project Lead

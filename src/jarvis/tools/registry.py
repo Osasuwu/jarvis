@@ -3,7 +3,7 @@
 import logging
 from typing import Any
 
-from jarvis.tools.base import Tool, RiskLevel
+from jarvis.tools.base import RiskLevel, Tool
 
 logger = logging.getLogger(__name__)
 

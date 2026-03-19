@@ -164,7 +164,7 @@ class CopilotPrompt:
 ### Integration Points
 
 #### Reuse Existing Systems
-1. **Safety Layer (`src/jarvis/safety/`):** 
+1. **Safety Layer (`src/jarvis/safety/`):**
    - Reuse `confirmation.py` for approval UI
    - Extend `RiskLevel` enum if needed (e.g., `CODEBASE_MODIFICATION`)
 
@@ -717,7 +717,7 @@ The following issues from the code review have been addressed:
 
 **CP-1: VS Code Copilot Integration Method**
 - **Question:** What is the technical mechanism to invoke Copilot Chat from external code?
-- **Options:** 
+- **Options:**
   - VS Code Extension API (requires extension development)
   - Chat Participants API (if publicly available)
   - File-based queue with manual trigger (fallback)

@@ -8,7 +8,7 @@ from jarvis.safety.auditor import AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt
 from jarvis.safety.executor import SafeExecutor
 from jarvis.safety.whitelist import WhitelistManager
-from jarvis.tools.base import RiskLevel, ToolResult
+from jarvis.tools.base import ToolResult
 from jarvis.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class Executor:
         """
         self.tool_registry = tool_registry
         self.execution_count = 0
-        
+
         # Initialize safety layer
         require_confirmation_for = require_confirmation_for or ["HIGH"]
         self.safe_executor = SafeExecutor(
@@ -61,7 +61,7 @@ class Executor:
             auditor=auditor,
             require_confirmation_for=require_confirmation_for,
         )
-        
+
         logger.info(
             f"Executor initialized with safety layer "
             f"(require_confirmation_for={require_confirmation_for})"
@@ -87,10 +87,10 @@ class Executor:
             ToolResult with execution outcome
         """
         self.execution_count += 1
-        
+
         # Update log context to track tool execution
         update_log_context(operation=f"execute_tool_{tool_name}", tool_name=tool_name)
-        
+
         logger.info(
             f"Executing tool '{tool_name}' (execution #{self.execution_count})",
             extra={"tool_name": tool_name, "action": "execute_start"},
@@ -113,7 +113,7 @@ class Executor:
         # 3-6. Execute through safety layer (includes confirmation, whitelist, audit)
         try:
             logger.debug(f"Tool '{tool_name}' parameters: {arguments}")
-            
+
             # SafeExecutor handles:
             # - Whitelist checks
             # - User confirmation (if needed)

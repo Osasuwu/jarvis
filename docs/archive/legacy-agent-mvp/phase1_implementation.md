@@ -69,14 +69,14 @@ class MyTool(Tool):
     name = "my_tool"
     description = "Does something useful"
     risk_level = RiskLevel.LOW
-    
+
     async def execute(self, **kwargs) -> ToolResult:
         try:
             result = do_something(kwargs["input"])
             return ToolResult(success=True, output=result)
         except Exception as e:
             return ToolResult(success=False, error=str(e))
-    
+
     def get_parameters(self):
         return [
             ToolParameter(
@@ -182,7 +182,7 @@ class ReadFileTool(Tool):
     description = "Read contents of a file"
     risk_level = RiskLevel.LOW
     capabilities = ["filesystem", "read"]
-    
+
     async def execute(self, **kwargs) -> ToolResult:
         try:
             path = kwargs["path"]
@@ -194,7 +194,7 @@ class ReadFileTool(Tool):
                 success=False,
                 error=f"File not found: {path}"
             )
-    
+
     def get_parameters(self):
         return [
             ToolParameter(
@@ -256,7 +256,7 @@ if response.tool_calls:
             tool_call.name,
             **tool_call.arguments
         )
-        
+
         if is_valid:
             # Execute tool
             tool = registry.get(tool_call.name)

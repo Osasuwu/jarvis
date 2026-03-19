@@ -5,14 +5,13 @@ import time
 from typing import Any
 
 from jarvis.config import get_config
-from jarvis.core.exceptions import LLMError, ToolExecutionError, RetryableError
 from jarvis.core.executor import Executor
 from jarvis.core.planner import Planner
-from jarvis.core.resilience import retry_async, RetryPolicy
-from jarvis.llm import LLMProvider
+from jarvis.core.resilience import retry_async
 from jarvis.gap_analyzer import GapDetector, GapResearcher, ToolProposer
+from jarvis.llm import LLMProvider
 from jarvis.memory.conversation import ConversationMemory
-from jarvis.observability import set_log_context, update_log_context, clear_log_context
+from jarvis.observability import clear_log_context, set_log_context, update_log_context
 from jarvis.safety.auditor import AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt
 from jarvis.safety.whitelist import WhitelistManager
@@ -106,7 +105,7 @@ class Orchestrator:
         # Set logging context for tracking
         ctx = set_log_context(operation="react_loop")
         start_time = time.time()
-        
+
         logger.info(
             f"Starting ReAct loop for query: {user_input[:100]}...",
             extra={"component": "orchestrator", "action": "start"},
@@ -118,7 +117,7 @@ class Orchestrator:
 
             iteration = 0
             final_response = ""
-            
+
             # FIXME: Tool availability logic issue
             # This flag was originally designed to hide tools from LLM after the first tool call,
             # but this causes problems:
@@ -236,16 +235,10 @@ class Orchestrator:
                                 f"Hint: {proposal.implementation_hint}"
                             )
 
-                        final_response = (
-                            "Не удалось полностью выполнить запрос из-за ограничений инструментов.\n\n"
-                            "Причины:\n" +
-                            "\n".join(
-                                [
-                                    f"• {fr['tool']}: {fr['error'] or 'unknown error'}"
-                                    for fr in failed
-                                ]
-                            ) +
-                            "\n\nПредложения по решению:\n" + "\n".join(suggestions)
+                        final_response = "Не удалось полностью выполнить запрос из-за ограничений инструментов.\n\n" "Причины:\n" + "\n".join(
+                            [f"• {fr['tool']}: {fr['error'] or 'unknown error'}" for fr in failed]
+                        ) + "\n\nПредложения по решению:\n" + "\n".join(
+                            suggestions
                         )
                         self.memory.add_message("assistant", final_response)
                         break
@@ -270,7 +263,7 @@ class Orchestrator:
             # Log completion
             duration_ms = int((time.time() - start_time) * 1000)
             logger.info(
-                f"ReAct loop completed",
+                "ReAct loop completed",
                 extra={
                     "component": "orchestrator",
                     "action": "complete",
@@ -278,7 +271,7 @@ class Orchestrator:
                     "duration_ms": duration_ms,
                 },
             )
-            
+
             return final_response
         finally:
             # Clear request context

@@ -1,7 +1,6 @@
 """Tests for Tool base class."""
 
 import pytest
-
 from jarvis.tools.base import RiskLevel, Tool, ToolParameter, ToolResult
 
 

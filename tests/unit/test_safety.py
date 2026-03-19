@@ -1,17 +1,16 @@
 """Tests for safety and human-in-the-loop system."""
 
-import asyncio
 import json
-import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+import pytest
 from jarvis.safety.auditor import AuditEntry, AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt
 from jarvis.safety.executor import SafeExecutor
 from jarvis.safety.whitelist import WhitelistManager
-from jarvis.tools.base import RiskLevel, Tool, ToolResult, ToolParameter
+from jarvis.tools.base import RiskLevel, Tool, ToolParameter, ToolResult
 
 
 # Mock tool for testing

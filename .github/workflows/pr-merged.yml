@@ -1,0 +1,35 @@
+name: PR Merged
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master, main]
+
+jobs:
+  comment-on-linked-issues:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const regex = /(?:closes|fixes|resolves)\s+#(\d+)/gi;
+            const issues = [...body.matchAll(regex)].map(m => parseInt(m[1]));
+
+            const pr = context.payload.pull_request;
+            for (const issueNum of issues) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNum,
+                body: [
+                  `Closed via PR #${pr.number} (${pr.title})`,
+                  `Merge SHA: \`${pr.merge_commit_sha}\``,
+                  `Date: ${new Date().toISOString().split('T')[0]}`,
+                ].join('\n'),
+              });
+            }

@@ -198,6 +198,7 @@ SUCCESS_TEMPLATES = {
 # HELPER FUNCTIONS
 # ============================================================================
 
+
 def build_system_prompt(
     provider: str = "groq",
     tools: list[dict[str, Any]] | None = None,
@@ -205,12 +206,12 @@ def build_system_prompt(
 ) -> str:
     """
     Build a complete system prompt for the given provider.
-    
+
     Args:
         provider: LLM provider ("groq", "local", etc.)
         tools: List of available tools (for dynamic prompt building)
         include_tool_instructions: Include tool usage guidelines
-        
+
     Returns:
         Complete system prompt string
     """
@@ -222,24 +223,26 @@ def build_system_prompt(
     else:
         # Default to Groq prompt
         base_prompt = GROQ_SYSTEM_PROMPT
-    
+
     # Add tool instructions if requested
     if include_tool_instructions and tools:
-        tool_list = "\n".join([f"- {t.get('name', 'unknown')}: {t.get('description', '')}" for t in tools])
+        tool_list = "\n".join(
+            [f"- {t.get('name', 'unknown')}: {t.get('description', '')}" for t in tools]
+        )
         base_prompt += f"\n\n## Available Tools\n{tool_list}"
         base_prompt += f"\n\n{TOOL_USAGE_INSTRUCTIONS}"
-    
+
     return base_prompt
 
 
 def format_error_message(error_type: str, **kwargs: Any) -> str:
     """
     Format an error message using templates.
-    
+
     Args:
         error_type: Type of error (key in ERROR_TEMPLATES)
         **kwargs: Values to interpolate into template
-        
+
     Returns:
         Formatted error message
     """
@@ -253,25 +256,25 @@ def format_error_message(error_type: str, **kwargs: Any) -> str:
 def format_success_message(success_type: str, **kwargs: Any) -> str:
     """
     Format a success message using templates.
-    
+
     Args:
         success_type: Type of success (key in SUCCESS_TEMPLATES)
         **kwargs: Values to interpolate into template
-        
+
     Returns:
         Formatted success message
     """
     template = SUCCESS_TEMPLATES.get(success_type, "Operation completed.")
     try:
         return template.format(**kwargs)
-    except KeyError as e:
+    except KeyError:
         return f"Success (details: {kwargs})"
 
 
 def get_react_prompt() -> str:
     """
     Get the ReAct (Reasoning + Acting) pattern instructions.
-    
+
     Returns:
         ReAct pattern description
     """

@@ -1,7 +1,5 @@
 """Tests for configuration management."""
 
-import pytest
-
 from jarvis.config import (
     AgentSettings,
     JarvisConfig,

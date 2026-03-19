@@ -5,9 +5,9 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from jarvis.cli import CLIInterface, OutputFormatter, CommandHistory
+from jarvis.cli import CLIInterface, CommandHistory, OutputFormatter
 
 
 class TestOutputFormatter(unittest.TestCase):

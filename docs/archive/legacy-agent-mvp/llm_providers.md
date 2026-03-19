@@ -100,7 +100,7 @@ ollama pull nomic-embed-text  # ~274MB, очень легко
 class LLMProvider(ABC):
     @abstractmethod
     async def complete(
-        self, 
+        self,
         messages: list[dict],
         tools: list[Tool] = None,
         **kwargs

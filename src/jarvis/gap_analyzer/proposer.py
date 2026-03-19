@@ -1,7 +1,7 @@
 """Tool Proposer - generates tool proposals for gaps."""
 
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 from .detector import CapabilityGap
@@ -45,21 +45,21 @@ class ToolProposal:
         lines.extend(
             [
                 "",
-                f"## Returns",
+                "## Returns",
                 f"`{self.return_type}`",
                 "",
-                f"## Risk Level",
+                "## Risk Level",
                 f"{self.risk_level}",
                 "",
-                f"## Implementation Complexity",
+                "## Implementation Complexity",
                 f"{self.estimated_complexity} (~{self.estimated_effort} days)",
                 "",
-                f"## Example",
+                "## Example",
                 "```python",
                 self.example_usage,
                 "```",
                 "",
-                f"## Implementation Hint",
+                "## Implementation Hint",
                 self.implementation_hint,
             ]
         )

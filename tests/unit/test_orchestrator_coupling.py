@@ -1,20 +1,20 @@
 """Tests for Blocker 3: Orchestrator Coupling and Dependency Injection."""
 
-import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
+import pytest
 from jarvis.core.factory import (
-    create_orchestrator,
     _create_llm_provider,
-    _create_tool_registry,
     _create_memory,
     _create_safety_layer,
+    _create_tool_registry,
+    create_orchestrator,
 )
 from jarvis.core.orchestrator import Orchestrator
 from jarvis.llm import LLMProvider
-from jarvis.llm.base import LLMResponse, ToolCall
+from jarvis.llm.base import LLMResponse
 from jarvis.memory.conversation import ConversationMemory
 from jarvis.safety.auditor import AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt
@@ -41,23 +41,23 @@ class MockTool(Tool):
 async def test_create_orchestrator_uses_dependency_injection():
     """Test that create_orchestrator accepts and uses injected dependencies."""
     from tempfile import TemporaryDirectory
-    
+
     # Create mocked LLM
     mock_llm = AsyncMock(spec=LLMProvider)
-    
+
     # Create real registry
     mock_registry = ToolRegistry()
     mock_registry.register(MockTool())
-    
+
     # Create memory with a unique storage location to avoid loading saved data
     with TemporaryDirectory() as tmpdir:
         mock_memory = ConversationMemory(auto_load=False)
         mock_memory.storage_path = Path(tmpdir) / "memory.json"
         mock_memory.persist_enabled = False  # Disable persistence
-        
+
         # Add a marker message to verify it's the same object
         mock_memory.add_message("system", "MARKER_MESSAGE")
-        
+
         mock_confirmation = ConfirmationPrompt()
         mock_whitelist = WhitelistManager()
         mock_auditor = AuditLogger()
@@ -91,12 +91,12 @@ async def test_orchestrator_no_tight_coupling_to_initialization():
     mock_llm = AsyncMock(spec=LLMProvider)
     registry = ToolRegistry()
     registry.register(MockTool())
-    
+
     with TemporaryDirectory() as tmpdir:
         memory = ConversationMemory(auto_load=False)
         memory.storage_path = Path(tmpdir) / "memory.json"
         memory.persist_enabled = False
-        
+
         confirmation = ConfirmationPrompt()
         whitelist = WhitelistManager()
         auditor = AuditLogger()
@@ -258,7 +258,7 @@ async def test_create_orchestrator_full_integration():
 @pytest.mark.asyncio
 async def test_factory_allows_partial_injection():
     """Test that factory allows injecting some but not all dependencies."""
-    # Create one injected dependency  
+    # Create one injected dependency
     with TemporaryDirectory() as tmpdir:
         custom_memory = ConversationMemory(auto_load=False)
         custom_memory.storage_path = Path(tmpdir) / "memory.json"

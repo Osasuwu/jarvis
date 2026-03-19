@@ -1,202 +1,57 @@
-# Development Roadmap
+# Jarvis Roadmap
 
-## Phase 0: Подготовка ✅ (Завершено)
+This roadmap tracks the active direction: development-management agent (PM + Tech Lead).
 
-**Цель:** Настроить репозиторий и инфраструктуру разработки
+## P1 Foundation (current)
 
-**Выполнено:**
-- [x] Создана структура папок проекта
-- [x] Настроен pyproject.toml с зависимостями
-- [x] Настроены инструменты качества кода (black, ruff, mypy)
-- [x] Настроен pre-commit для автоматических проверок
-- [x] Создан GitHub Actions CI workflow
-- [x] Подготовлена базовая документация
-- [x] Создан .env.example для конфигурации
-- [x] Добавлен базовый CLI скелет
+Goal: repository and workflow are ready for agent-led delivery.
 
-**Дата завершения:** 16 января 2026
+Outcomes:
+- GitHub templates and workflows aligned to Jarvis.
+- Process instructions unified for Copilot and Claude-compatible agents.
+- Legacy scope archived and active docs normalized.
 
----
+## P2 PM+TechLead MVP
 
-## Phase 1: Core Foundation (В разработке)
+Goal: agent can reliably coordinate delivery with one human supervisor.
 
-**Длительность:** 3-5 дней  
-**Статус:** 🚧 Не начата
+Outcomes:
+- Daily triage loop and weekly reporting in regular use.
+- Stable issue decomposition patterns (epic -> task/bug).
+- Project field sync for Status/Priority/Phase/Area.
 
-### Задачи
+## P3 Reliability
 
-#### LLM Adapter
-- [ ] Создать абстрактный `LLMProvider` интерфейс
-- [ ] Реализовать `OpenAIProvider`
-- [ ] Добавить конфигурацию через Pydantic Settings
-- [ ] Реализовать обработку function calling
-- [ ] Добавить retry логику и error handling
-- [ ] Написать unit-тесты
+Goal: improve predictability and safety of delivery.
 
-#### Tool Registry
-- [ ] Создать базовый класс `Tool` с manifest
-- [ ] Реализовать `ToolRegistry` для discovery
-- [ ] Добавить автогенерацию схемы для LLM
-- [ ] Реализовать валидацию параметров
-- [ ] Добавить систему risk levels
-- [ ] Написать unit-тесты
+Outcomes:
+- Stronger CI and process checks.
+- Lower rate of metadata/process violations.
+- Improved lead time and reduced blocked-item age.
 
-**Критерии готовности:**
-- LLM может вызываться через единый интерфейс
-- Инструменты могут регистрироваться и находиться
-- Все компоненты покрыты тестами
+## P4 Capability Expansion
 
----
+Goal: broaden management capabilities within agreed scope.
 
-## Phase 2: Orchestrator MVP
+Outcomes:
+- Better prioritization support.
+- Better triage recommendations.
+- Better project health analytics.
 
-**Длительность:** 3-5 дней  
-**Статус:** ⏳ Ожидает Phase 1
+## P5 Stabilization
 
-### Задачи
+Goal: make the system consistently operable and maintainable.
 
-#### Task Parser
-- [ ] Парсинг пользовательского ввода
-- [ ] Извлечение intent и entities
-- [ ] Классификация типа задачи
+Outcomes:
+- Stable operating playbooks.
+- Low maintenance overhead.
+- Release-ready governance model.
 
-#### Planner
-- [ ] Выбор инструментов из registry
-- [ ] Составление плана выполнения
-- [ ] Декомпозиция сложных задач
+## Explicitly Deferred
 
-#### Execution Engine
-- [ ] Пошаговое выполнение плана
-- [ ] Обработка результатов инструментов
-- [ ] Обработка ошибок и retry
-- [ ] Базовый ReAct loop
-
-**Критерии готовности:**
-- Агент может выполнить простую задачу с одним инструментом
-- Реализован базовый ReAct loop (think → act → observe)
-
----
-
-## Phase 3: Базовые инструменты ✅ (Завершено)
-
-**Длительность:** 2-3 дня  
-**Статус:** ✅ Завершена (16 января 2026)
-
-### Инструменты
-
-- [x] `file_read` — чтение файлов
-- [x] `file_write` — запись файлов (с подтверждением)
-- [x] `list_directory` — список файлов в директории
-- [x] `shell_execute` — выполнение команд (с подтверждением)
-- [x] `web_search` — поиск в интернете
-- [x] `web_fetch` — загрузка содержимого URL
-
-**Критерии готовности:**
-- [x] Все 6 базовых инструментов работают
-- [x] Инструменты покрыты тестами (7 unit-тестов, 80.85% coverage)
-- [x] Документация по использованию (см. [Phase 3 docs](phase3_basic_tools.md))
-
----
-
-## Phase 4: Human-in-the-Loop ✅ (Завершено)
-
-**Длительность:** 2-3 дня  
-**Статус:** ✅ Завершена (16 января 2026)
-
-### Задачи
-
-- [x] Система уровней риска (LOW/MEDIUM/HIGH)
-- [x] Confirmation prompts для опасных операций
-- [x] Whitelist разрешенных команд/путей
-- [x] Полное логирование всех действий
-- [x] Audit trail для критических операций
-
-**Критерии готовности:**
-- [x] Опасные операции требуют подтверждения
-- [x] Все действия логируются
-- [x] Пользователь может видеть, что будет выполнено
-- [x] 18 unit-тестов (100% пройдено)
-- [x] 79.60% общее покрытие кода
-
----
-
-## Phase 5: Capability Gap Analyzer ✅ (Завершено)
-
-**Длительность:** 3-4 дня  
-**Статус:** ✅ Завершена (16 января 2026)
-
-### Компоненты
-
-#### Gap Detector
-- [x] Определение отсутствующих инструментов
-- [x] Анализ неудачных попыток
-- [x] Уровни важности и confidence scores
-- [x] JSON экспорт и статистика
-
-#### Researcher
-- [x] Поиск решений с кешированием
-- [x] Встроенная база решений для 5+ типов задач
-- [x] Async/await поддержка
-- [x] Экспорт результатов
-
-#### Tool Proposer
-- [x] Генерация спецификаций инструментов
-- [x] Примеры использования
-- [x] Markdown и JSON экспорт
-- [x] Приоритизация по complexity/effort
-
-**Критерии готовности:**
-- [x] Агент обнаруживает отсутствие инструментов
-- [x] Формирует понятное предложение для пользователя
-- [x] Может найти существующие библиотеки/API
-- [x] 25 unit-тестов (100% пройдено)
-- [x] 100% coverage для detector и researcher
-
----
-
-## Phase 6: CLI & Polish ✅ (Завершено)
-
-**Длительность:** 2-3 дня  
-**Статус:** ✅ Завершена (16 января 2026)
-
-### Задачи
-
-- [x] Красивый CLI с Rich library
-- [x] Интерактивный режим
-- [x] История команд
-- [x] Конфигурация пользователя
-- [x] Улучшенный вывод результатов
-- [x] Цветной форматированный вывод
-
-**Критерии готовности:**
-- [x] CLI удобен в использовании
-- [x] Красивый цветной вывод (таблицы, панели)
-- [x] Интерактивный режим работает
-- [x] 34 unit-теста (100% пройдено)
-- [x] История команд с поиском и экспортом
-
----
-
-## Future Features (Post-MVP)
-
-### Advanced Memory
-- Векторная БД для семантического поиска
-- Long-term memory
-- Персонализация на основе истории
-
-### Multi-Agent System
-- Специализированные агенты
-- Делегирование задач
-- Координация между агентами
-
-### Web Interface
-- FastAPI backend
-- React frontend
-- WebSocket для real-time обновлений
-
-### Plugin Marketplace
-- Публикация custom tools
-- Версионирование
-- Security review
-
+- self_improvement
+- multi-agent/debate
+- advanced vector memory
+- plugin marketplace
+- cloud/multi-device sync
 ---

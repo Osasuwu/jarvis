@@ -1,8 +1,8 @@
 """Tests for Blocker 2: Safety Layer Integration."""
 
-import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
+import pytest
 from jarvis.core.executor import Executor
 from jarvis.safety.auditor import AuditLogger
 from jarvis.safety.confirmation import ConfirmationPrompt

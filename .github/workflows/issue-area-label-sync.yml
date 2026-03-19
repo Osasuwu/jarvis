@@ -1,0 +1,53 @@
+name: Issue Area Label Sync
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+jobs:
+  sync-area-label:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const currentLabels = (issue.labels || []).map(l => l.name || l);
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
+
+            const areaLabels = [
+              'area:core-agent',
+              'area:workflow-github',
+              'area:tools',
+              'area:quality',
+              'area:docs',
+              'area:release',
+            ];
+
+            function extractArea(text) {
+              const match = text.match(/###\s*Area\s*\n\s*(area:[a-z\-]+)/i) ||
+                            text.match(/###\s*Primary Area\s*\n\s*(area:[a-z\-]+)/i);
+              return match ? match[1].toLowerCase() : null;
+            }
+
+            const area = extractArea(body);
+            if (!area || !areaLabels.includes(area)) {
+              return;
+            }
+
+            for (const label of currentLabels) {
+              if (areaLabels.includes(label) && label !== area) {
+                try {
+                  await github.rest.issues.removeLabel({ ...repo, issue_number: issue.number, name: label });
+                } catch (e) {
+                  // Ignore if missing.
+                }
+              }
+            }
+
+            if (!currentLabels.includes(area)) {
+              await github.rest.issues.addLabels({ ...repo, issue_number: issue.number, labels: [area] });
+            }

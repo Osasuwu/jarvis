@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class LocalStubProvider(LLMProvider):
     """Lightweight local LLM provider using Ollama.
-    
+
     This provider:
     - Connects to a local Ollama server
     - Uses a compact model (mistral, phi, etc.)
@@ -161,7 +161,7 @@ class LocalStubProvider(LLMProvider):
     ) -> LLMResponse:
         """Fallback to simple heuristics when Ollama is unavailable."""
         logger.info("Using fallback heuristic completion")
-        
+
         user_text = ""
         for m in reversed(messages):
             if m.get("role") == "user":

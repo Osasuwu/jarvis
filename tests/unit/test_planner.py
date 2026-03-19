@@ -1,9 +1,7 @@
 """Tests for Planner."""
 
 import pytest
-
 from jarvis.core.planner import Planner
-from jarvis.llm.base import LLMProvider
 from jarvis.tools.base import RiskLevel, Tool, ToolParameter, ToolResult
 from jarvis.tools.registry import ToolRegistry
 

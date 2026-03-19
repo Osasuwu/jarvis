@@ -64,7 +64,7 @@ class MemorySettings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
-    
+
     @field_validator("storage_path")
     @classmethod
     def validate_storage_path(cls, v: str) -> str:
@@ -119,7 +119,7 @@ class AgentSettings(BaseSettings):
 class JarvisConfig(BaseSettings):
     """
     Main Jarvis configuration with validation.
-    
+
     Configuration contracts:
     - If persist_to_disk=True, storage_path must be writable
     - If using Groq provider, groq_api_key must be set
@@ -138,16 +138,16 @@ class JarvisConfig(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
-    
+
     def validate(self) -> None:
         """
         Validate configuration contracts at startup.
-        
+
         Raises:
             ValueError: If configuration violates contract
         """
         errors: list[str] = []
-        
+
         # Validate memory settings
         if self.memory.persist_to_disk:
             try:
@@ -162,41 +162,35 @@ class JarvisConfig(BaseSettings):
                     f"Memory persistence enabled but storage path '{self.memory.storage_path}' "
                     f"is not writable: {e}"
                 )
-        
+
         # Validate memory limits
         if self.memory.max_conversation_length <= 0:
             errors.append(
                 f"max_conversation_length must be positive, got {self.memory.max_conversation_length}"
             )
-        
+
         # Validate LLM settings
         if self.llm.provider == "groq" and not self.llm.groq_api_key:
             errors.append(
                 "LLM provider is 'groq' but GROQ_API_KEY is not set. "
                 "Set GROQ_API_KEY environment variable or use USE_LOCAL_LLM=1"
             )
-        
+
         if self.llm.temperature < 0 or self.llm.temperature > 2.0:
-            errors.append(
-                f"LLM temperature must be between 0 and 2.0, got {self.llm.temperature}"
-            )
-        
+            errors.append(f"LLM temperature must be between 0 and 2.0, got {self.llm.temperature}")
+
         if self.llm.max_tokens <= 0:
-            errors.append(
-                f"LLM max_tokens must be positive, got {self.llm.max_tokens}"
-            )
-        
+            errors.append(f"LLM max_tokens must be positive, got {self.llm.max_tokens}")
+
         # Validate agent settings
         if self.agent.max_iterations <= 0:
-            errors.append(
-                f"agent.max_iterations must be positive, got {self.agent.max_iterations}"
-            )
-        
+            errors.append(f"agent.max_iterations must be positive, got {self.agent.max_iterations}")
+
         if self.agent.timeout_seconds <= 0:
             errors.append(
                 f"agent.timeout_seconds must be positive, got {self.agent.timeout_seconds}"
             )
-        
+
         # Raise all errors at once for clarity
         if errors:
             error_msg = "Configuration validation failed:\n  " + "\n  ".join(errors)
@@ -211,9 +205,9 @@ _config: JarvisConfig | None = None
 def get_config() -> JarvisConfig:
     """
     Get or create the global Jarvis configuration.
-    
+
     Validates configuration on first creation.
-    
+
     Raises:
         ValueError: If configuration is invalid
     """
@@ -227,9 +221,9 @@ def get_config() -> JarvisConfig:
 def reload_config() -> JarvisConfig:
     """
     Reload configuration from environment/files.
-    
+
     Validates configuration after reload.
-    
+
     Raises:
         ValueError: If configuration is invalid
     """

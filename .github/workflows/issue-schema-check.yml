@@ -1,0 +1,68 @@
+name: Issue Schema Check
+
+on:
+  issues:
+    types: [opened, edited, reopened, labeled, unlabeled]
+
+jobs:
+  validate-issue-structure:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            function extractParentNumber(body) {
+              if (!body) return null;
+
+              const directMatch = body.match(/(?:^|\n)\s*(?:Parent|Part of):\s*#(\d+)/im);
+              if (directMatch) return parseInt(directMatch[1], 10);
+
+              const formPatterns = [
+                /###\s*Parent Epic(?:\s*\(if tracked\)|\s*\(if sub-epic\))?\s*\n(?:.|\n){0,200}?#(\d+)\b/i,
+                /###\s*Parent\s*\n(?:.|\n){0,200}?#(\d+)\b/i,
+              ];
+
+              for (const pattern of formPatterns) {
+                const match = body.match(pattern);
+                if (match) return parseInt(match[1], 10);
+              }
+
+              return null;
+            }
+
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+            const labels = (issue.labels || []).map(l => l.name || l);
+
+            const isTask = labels.includes('task');
+            const isEpic = labels.includes('epic');
+            const isBug = labels.includes('bug');
+            const isHotfix = labels.includes('priority:critical');
+
+            const errors = [];
+
+            if (isTask) {
+              const parent = extractParentNumber(body);
+              if (!parent) {
+                errors.push('Task issues must include parent epic reference (e.g., Parent: #123).');
+              }
+            }
+
+            if (isEpic) {
+              if (!/##\s*Children/i.test(body) && !/###\s*Children/i.test(body)) {
+                errors.push('Epic issues must include a Children section.');
+              }
+              if (!/-\s*\[[ xX]\]/.test(body)) {
+                errors.push('Epic issues should list children as checkbox items (- [ ] #NNN description).');
+              }
+            }
+
+            if ((isTask || isBug) && !isHotfix && !issue.milestone) {
+              errors.push('Task and bug issues should have a milestone, unless critical/hotfix.');
+            }
+
+            if (errors.length > 0) {
+              core.setFailed(errors.join('\n'));
+            }

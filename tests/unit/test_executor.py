@@ -1,7 +1,6 @@
 """Tests for Executor."""
 
 import pytest
-
 from jarvis.core.executor import Executor
 from jarvis.tools.base import RiskLevel, Tool, ToolParameter, ToolResult
 from jarvis.tools.registry import ToolRegistry

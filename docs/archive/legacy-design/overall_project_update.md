@@ -396,7 +396,7 @@ The codebase demonstrates solid foundational structure with clear module separat
 - Tests must initialize full system to test single components
 - Swapping implementations (e.g., different memory backend) requires modifying main.py
 
-**Impact:** 
+**Impact:**
 - Cannot unit test components in isolation
 - Changes to Orchestrator signature break all initialization code
 - Fragile composition logic scattered between main.py and orchestrator.py
@@ -469,7 +469,7 @@ orchestrator = Orchestrator(
 **Example confusion:**
 ```python
 # discovery.py does deduplication (_seen_names set)
-# loader.py does validation (validate_tool_class)  
+# loader.py does validation (validate_tool_class)
 # registry.py does registration (with duplicate check)
 # Result: Responsibility is split; bugs can hide in the cracks
 ```
@@ -764,7 +764,7 @@ class Tool(ABC):
     risk_level: RiskLevel = RiskLevel.LOW
     requires_confirmation: bool = False
     capabilities: list[str] = field(default_factory=list)
-    
+
     async def execute(**kwargs) -> ToolResult
     def get_parameters() -> list[ToolParameter]
     def to_llm_schema() -> dict  # OpenAI function calling format

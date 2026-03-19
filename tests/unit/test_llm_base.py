@@ -1,7 +1,5 @@
 """Tests for LLM provider base class."""
 
-import pytest
-
 from jarvis.llm.base import LLMResponse, ToolCall
 
 

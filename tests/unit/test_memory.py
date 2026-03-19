@@ -1,7 +1,5 @@
 """Tests for ConversationMemory."""
 
-import pytest
-
 from jarvis.memory import ConversationMemory
 
 

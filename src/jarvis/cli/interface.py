@@ -1,7 +1,8 @@
 """Interactive CLI interface for Jarvis."""
 
 import asyncio
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from .formatter import OutputFormatter
 from .history import CommandHistory

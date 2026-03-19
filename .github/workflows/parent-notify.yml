@@ -1,0 +1,128 @@
+name: Parent Notification
+
+on:
+  issues:
+    types: [closed, reopened, edited]
+
+jobs:
+  notify-parent:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            function extractParentNumber(body) {
+              if (!body) return null;
+
+              const directMatch = body.match(/(?:^|\n)\s*(?:Parent|Part of):\s*#(\d+)/im);
+              if (directMatch) return parseInt(directMatch[1], 10);
+
+              const formPatterns = [
+                /###\s*Parent Epic(?:\s*\(if tracked\)|\s*\(if sub-epic\))?\s*\n(?:.|\n){0,200}?#(\d+)\b/i,
+                /###\s*Parent\s*\n(?:.|\n){0,200}?#(\d+)\b/i,
+              ];
+
+              for (const pattern of formPatterns) {
+                const match = body.match(pattern);
+                if (match) return parseInt(match[1], 10);
+              }
+
+              return null;
+            }
+
+            const body = context.payload.issue.body || '';
+            const currentIssue = context.payload.issue;
+            const currentIssueNumber = currentIssue.number;
+            const currentParent = extractParentNumber(body);
+            const oldBody = context.payload.changes?.body?.from || '';
+            const oldParent = extractParentNumber(oldBody);
+            const targetParents = [...new Set([currentParent, oldParent].filter(Boolean))];
+
+            if (targetParents.length === 0) {
+              console.log('No parent link found, skipping.');
+              return;
+            }
+
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
+
+            async function syncParentStatus(parentNum) {
+              // Verify parent exists and is open
+              let parent;
+              try {
+                const { data } = await github.rest.issues.get({ ...repo, issue_number: parentNum });
+                parent = data;
+              } catch (e) {
+                console.log(`Parent #${parentNum} not found: ${e.message}`);
+                return;
+              }
+
+              if (parent.state === 'closed') {
+                console.log(`Parent #${parentNum} already closed, skipping.`);
+                return;
+              }
+
+              const allIssues = await github.paginate(github.rest.issues.listForRepo, {
+                ...repo,
+                state: 'all',
+                per_page: 100,
+              });
+
+              const children = allIssues.filter(i => {
+                if (i.pull_request) return false;
+                if (i.number === parentNum) return false;
+                const p = extractParentNumber(i.body || '');
+                return p === parentNum;
+              });
+
+              const open = children.filter(i => i.state === 'open');
+              const closed = children.filter(i => i.state === 'closed');
+
+              if (open.length === 0 && closed.length > 0) {
+                // All children closed — notify and label.
+                if (context.payload.action === 'closed' && currentParent === parentNum) {
+                  await github.rest.issues.createComment({
+                    ...repo,
+                    issue_number: parentNum,
+                    body: [
+                      `All child issues (${closed.length}) are now closed.`,
+                      '',
+                      closed.map(c => `- #${c.number} ${c.title}`).join('\n'),
+                      '',
+                      'Please verify the Definition of Done and close this issue.',
+                    ].join('\n'),
+                  });
+                }
+
+                await github.rest.issues.addLabels({
+                  ...repo,
+                  issue_number: parentNum,
+                  labels: ['status:children-done'],
+                });
+              } else {
+                // Keep status label accurate if children were reopened/added.
+                try {
+                  await github.rest.issues.removeLabel({
+                    ...repo,
+                    issue_number: parentNum,
+                    name: 'status:children-done',
+                  });
+                } catch (e) {
+                  // Ignore 404 if label isn't present.
+                }
+
+                if (context.payload.action === 'closed' && currentParent === parentNum && open.length > 0) {
+                  const total = open.length + closed.length;
+                  await github.rest.issues.createComment({
+                    ...repo,
+                    issue_number: parentNum,
+                    body: `#${currentIssueNumber} closed. Progress: ${closed.length}/${total} done (${open.length} remaining).`,
+                  });
+                }
+              }
+            }
+
+            for (const parentNum of targetParents) {
+              await syncParentStatus(parentNum);
+            }

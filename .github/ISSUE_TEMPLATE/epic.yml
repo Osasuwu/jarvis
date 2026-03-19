@@ -1,0 +1,81 @@
+name: "Epic"
+description: "Group of related tasks that deliver a capability."
+labels: ["epic"]
+body:
+  - type: input
+    id: parent-epic
+    attributes:
+      label: "Parent Epic (if sub-epic)"
+      description: "Link to parent epic, e.g. #42"
+      placeholder: "#"
+    validations:
+      required: false
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Summary"
+      description: "What capability will this epic deliver?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: children
+    attributes:
+      label: "Children"
+      description: "List child tasks/sub-epics. Use '- [ ] #NNN description' format after creating them."
+      value: |
+        - [ ]
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: "Primary Area"
+      options:
+        - "area:core-agent"
+        - "area:workflow-github"
+        - "area:tools"
+        - "area:quality"
+        - "area:docs"
+        - "area:release"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: "Priority"
+      options:
+        - "priority:critical"
+        - "priority:high"
+        - "priority:medium"
+        - "priority:low"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: phase
+    attributes:
+      label: "Phase"
+      options:
+        - "P1 Foundation"
+        - "P2 PM+TechLead MVP"
+        - "P3 Reliability"
+        - "P4 Capability Expansion"
+        - "P5 Stabilization"
+    validations:
+      required: true
+
+  - type: textarea
+    id: done
+    attributes:
+      label: "Definition of Done"
+      description: "What must be true for this epic to be considered complete?"
+      value: |
+        - [ ] All child issues closed
+        - [ ] Integration verified
+        - [ ] Release notes/process notes updated if needed
+    validations:
+      required: true

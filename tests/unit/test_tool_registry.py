@@ -1,7 +1,6 @@
 """Tests for Tool Registry."""
 
 import pytest
-
 from jarvis.tools.base import RiskLevel, Tool, ToolParameter, ToolResult
 from jarvis.tools.registry import ToolRegistry
 

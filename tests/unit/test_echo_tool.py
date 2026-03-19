@@ -1,9 +1,8 @@
 """Tests for EchoTool."""
 
 import pytest
-
-from jarvis.tools.builtin import EchoTool
 from jarvis.tools.base import RiskLevel
+from jarvis.tools.builtin import EchoTool
 
 
 def test_echo_tool_properties() -> None:

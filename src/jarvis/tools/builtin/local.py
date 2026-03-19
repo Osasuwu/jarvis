@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import textwrap
 from pathlib import Path
 from typing import Any
-from urllib import request, error as urlerror
-import json
+from urllib import request
 
 from jarvis.tools.base import RiskLevel, Tool, ToolParameter, ToolResult
 

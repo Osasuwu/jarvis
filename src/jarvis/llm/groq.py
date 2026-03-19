@@ -4,7 +4,7 @@ import asyncio
 import logging
 from typing import Any
 
-from groq import Groq, APIError
+from groq import APIError, Groq
 
 from jarvis.config import get_config
 from jarvis.llm.base import LLMProvider, LLMResponse, ToolCall
@@ -57,12 +57,12 @@ class GroqProvider(LLMProvider):
     ) -> LLMResponse:
         """
         Send messages to Groq and get completion.
-        
+
         Automatically injects system prompt if not present.
         """
         temp = temperature if temperature is not None else self._temperature
         max_tok = max_tokens if max_tokens is not None else self._max_tokens
-        
+
         # Inject system prompt if not present
         messages_with_system = self._ensure_system_prompt(messages, tools)
 
@@ -79,35 +79,35 @@ class GroqProvider(LLMProvider):
         except APIError as e:
             logger.error(f"Groq API error: {e}")
             raise
-    
+
     def _ensure_system_prompt(
-        self, 
+        self,
         messages: list[dict],
         tools: list[dict] | None = None,
     ) -> list[dict]:
         """
         Ensure system prompt is present at the start of conversation.
-        
+
         Args:
             messages: Current conversation messages
             tools: Available tools (for tool instruction injection)
-            
+
         Returns:
             Messages with system prompt prepended if needed
         """
         # Check if system prompt already exists
         has_system = any(msg.get("role") == "system" for msg in messages)
-        
+
         if has_system:
             return messages
-        
+
         # Build and inject system prompt
         system_prompt = build_system_prompt(
             provider="groq",
             tools=tools,
             include_tool_instructions=bool(tools),
         )
-        
+
         return [{"role": "system", "content": system_prompt}] + messages
 
     def _sync_complete(
