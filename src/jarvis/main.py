@@ -98,6 +98,41 @@ def chat(query: str = typer.Argument(None, help="Query to send to Jarvis")) -> N
 
 
 @app.command()
+def triage(
+    stale_days: int = typer.Option(14, help="Days without update before flagging as stale"),
+    output: str = typer.Option("console", help="Output format: console or markdown"),
+    save: str = typer.Option(None, help="Save report to file path"),
+) -> None:
+    """Run daily triage checks against the GitHub issue board."""
+    from jarvis.triage.engine import TriageEngine
+    from jarvis.triage.reporter import to_console, to_markdown
+
+    console.print("[bold]Running daily triage...[/bold]\n")
+
+    engine = TriageEngine(stale_days=stale_days)
+    report = engine.run()
+
+    if output == "markdown":
+        text = to_markdown(report)
+        console.print(Markdown(text))
+    else:
+        text = to_console(report)
+        console.print(text)
+
+    if save:
+        md = to_markdown(report)
+        from pathlib import Path
+
+        path = Path(save)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(md, encoding="utf-8")
+        console.print(f"\n[dim]Report saved to {save}[/dim]")
+
+    if not report.is_healthy:
+        raise typer.Exit(1)
+
+
+@app.command()
 def version() -> None:
     """Show Jarvis version."""
     from jarvis import __version__
