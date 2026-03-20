@@ -35,6 +35,7 @@ jobs:
             const issue = context.payload.issue;
             const body = issue.body || '';
             const labels = (issue.labels || []).map(l => l.name || l);
+            const repo = { owner: context.repo.owner, repo: context.repo.repo };
 
             const isTask = labels.includes('task');
             const isEpic = labels.includes('epic');
@@ -42,11 +43,21 @@ jobs:
             const isHotfix = labels.includes('priority:critical');
 
             const errors = [];
+            let freshIssue = issue;
+
+            try {
+              const { data } = await github.rest.issues.get({
+                ...repo,
+                issue_number: issue.number,
+              });
+              freshIssue = data;
+            } catch (e) {
+              errors.push(`Unable to validate issue linkage via API: ${e.message}`);
+            }
 
             if (isTask) {
-              const parent = extractParentNumber(body);
-              if (!parent) {
-                errors.push('Task issues must include parent epic reference (e.g., Parent: #123).');
+              if (!isHotfix && !freshIssue.has_parent_issue) {
+                errors.push('Task issues must be linked to a parent epic via native GitHub Parent issue/Sub-issues relationship.');
               }
             }
 
@@ -56,6 +67,10 @@ jobs:
               }
               if (!/-\s*\[[ xX]\]/.test(body)) {
                 errors.push('Epic issues should list children as checkbox items (- [ ] #NNN description).');
+              }
+              const epicParent = extractParentNumber(body);
+              if (epicParent) {
+                errors.push('Epic issues must not have a parent epic reference. Use milestone + sub-issues with task/bug children.');
               }
             }
 

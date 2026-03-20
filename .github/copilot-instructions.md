@@ -36,8 +36,11 @@ Single human supervisor, agent-assisted delivery.
 
 Milestone -> Epic -> Task/Bug
 
-- Every task must include a parent epic reference in the body: `Parent: #NNN`.
+- Every task must be linked to parent epic using GitHub Parent issue/Sub-issues.
+- `Parent: #NNN` in body is optional and informational only.
 - Every epic must have a `Children` section with markdown checkboxes.
+- Epic children must be `task`/`bug` issues, not `epic` issues.
+- Use GitHub sub-issues for hierarchy visibility (link children to parent epic in GitHub UI/API).
 - Epics are closed manually after DoD verification.
 
 ## Labels

@@ -6,10 +6,10 @@ body:
     id: parent
     attributes:
       label: "Parent Epic"
-      description: "Link to parent epic, e.g. #42"
-      placeholder: "#"
+      description: "Optional reference only. Primary linkage must be set via GitHub Parent issue/Sub-issues UI."
+      placeholder: "#42 (optional note)"
     validations:
-      required: true
+      required: false
 
   - type: textarea
     id: description

@@ -11,7 +11,7 @@ Every day:
 - Move blocked items to `status:blocked` with blocker note.
 - Ensure each active task has one owner and one next action.
 - Ensure each task has:
-  - `Parent: #NNN` in body,
+  - parent linkage via GitHub Parent issue/Sub-issues,
   - one area label (`area:*`),
   - one priority label (`priority:*`),
   - valid status label.
@@ -19,6 +19,7 @@ Every day:
 ## 2. Planning Rules
 
 - Work starts from milestone goals and epics.
+- Epic children are execution items (`task`/`bug`), not nested epics.
 - Each task should map to one PR.
 - Large tasks (`XL`) must be split before implementation.
 - Hotfixes are allowed without parent only when labeled `priority:critical` and documented in triage notes.
@@ -41,6 +42,8 @@ Every day:
 
 ## 5. Parent/Epic Rules
 
+- Use GitHub sub-issues to link child tasks/bugs to each parent epic.
+- Keep `Parent: #NNN` in child issue body only as optional context.
 - Parent epics are not auto-closed.
 - When all children close, workflow adds `status:children-done`.
 - Human supervisor verifies DoD and closes epic manually.
@@ -55,7 +58,7 @@ Project fields in use:
 
 Automation responsibilities:
 - built-in project workflows: auto-add items, close -> Done
-- repository workflows: status/area sync from labels, PR -> In review, reopen -> Backlog
+- repository workflows: issue status from labels, priority/area/phase sync, PR open -> In Progress, issue reopen -> Todo
 
 ## 7. Weekly Cadence
 
