@@ -103,7 +103,7 @@ class Orchestrator:
             Final response to the user
         """
         # Set logging context for tracking
-        ctx = set_log_context(operation="react_loop")
+        set_log_context(operation="react_loop")
         start_time = time.time()
 
         logger.info(
@@ -147,9 +147,9 @@ class Orchestrator:
                 # Execute LLM call with retry logic
                 try:
                     response = await retry_async(
-                        lambda: self.llm.complete(
-                            messages=messages,
-                            tools=llm_tools if llm_tools else None,
+                        lambda msgs=messages, tools=llm_tools: self.llm.complete(
+                            messages=msgs,
+                            tools=tools if tools else None,
                         ),
                         max_attempts=2,
                         timeout=60.0,
@@ -179,9 +179,9 @@ class Orchestrator:
                     for tool_call in response.tool_calls:
                         try:
                             result = await retry_async(
-                                lambda: self.executor.execute_tool(
-                                    tool_name=tool_call.name,
-                                    arguments=tool_call.arguments,
+                                lambda tc=tool_call: self.executor.execute_tool(
+                                    tool_name=tc.name,
+                                    arguments=tc.arguments,
                                 ),
                                 max_attempts=2,
                                 timeout=30.0,

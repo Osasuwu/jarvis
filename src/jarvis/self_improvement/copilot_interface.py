@@ -61,10 +61,7 @@ class CopilotInterface:
 
     def _ensure_queue_directory(self) -> None:
         """Ensure the queue directory exists for file-based method."""
-        if (
-            self.config.method == IntegrationMethod.FILE_BASED
-            and self.config.queue_path
-        ):
+        if self.config.method == IntegrationMethod.FILE_BASED and self.config.queue_path:
             self.config.queue_path.mkdir(parents=True, exist_ok=True)
 
     def enqueue_prompt(self, prompt: CopilotPrompt) -> Path:
@@ -237,7 +234,9 @@ class CopilotInterface:
 
         # Check for failed file
         for failed_file in self.config.queue_path.glob(f"*_{prompt.id}.failed.md"):
-            meta_path = self.config.queue_path / f"{failed_file.stem.replace('.failed', '')}.meta.json"
+            meta_path = (
+                self.config.queue_path / f"{failed_file.stem.replace('.failed', '')}.meta.json"
+            )
 
             meta = {}
             if meta_path.exists():

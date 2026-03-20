@@ -64,9 +64,7 @@ class ImprovementResearcher:
         self.cache[cache_key] = result
         return result
 
-    async def _research_category(
-        self, opportunity: ImprovementOpportunity
-    ) -> ResearchResult:
+    async def _research_category(self, opportunity: ImprovementOpportunity) -> ResearchResult:
         """Research based on opportunity category."""
         # Simulate async research
         await asyncio.sleep(0.01)

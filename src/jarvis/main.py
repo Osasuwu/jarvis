@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
@@ -11,6 +12,9 @@ from rich.panel import Panel
 
 from jarvis.config import get_config
 from jarvis.core.factory import create_orchestrator
+
+if TYPE_CHECKING:
+    from jarvis.core.orchestrator import Orchestrator
 
 app = typer.Typer(
     name="jarvis",
@@ -51,12 +55,12 @@ def _create_orchestrator() -> "Orchestrator":
 
     except ValueError as e:
         console.print(f"[red]Configuration Error:[/red] {e}")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
     except Exception as e:
         console.print(f"[red]Failed to initialize Jarvis: {e}[/red]")
         logger = logging.getLogger(__name__)
         logger.exception("Orchestrator initialization failed")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -90,7 +94,7 @@ def chat(query: str = typer.Argument(None, help="Query to send to Jarvis")) -> N
         sys.exit(0)
     except Exception as e:
         console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()

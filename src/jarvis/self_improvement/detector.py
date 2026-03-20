@@ -254,9 +254,7 @@ class ComplexityAnalyzer(BaseAnalyzer):
                     for _file_path, functions in data.items():
                         for func in functions:
                             if func.get("complexity", 0) > 10:  # High complexity threshold
-                                opp = self._complexity_to_opportunity(
-                                    func, py_file, workspace_path
-                                )
+                                opp = self._complexity_to_opportunity(func, py_file, workspace_path)
                                 if opp:
                                     opportunities.append(opp)
 
@@ -313,9 +311,7 @@ class ComplexityAnalyzer(BaseAnalyzer):
                 metrics={"cyclomatic_complexity": complexity},
             ),
             atomic=endline - lineno < 50,
-            estimated_effort=(
-                EstimatedEffort.SMALL if complexity < 15 else EstimatedEffort.MEDIUM
-            ),
+            estimated_effort=(EstimatedEffort.SMALL if complexity < 15 else EstimatedEffort.MEDIUM),
         )
 
 
@@ -352,9 +348,7 @@ class ImprovementDetector:
         """
         self.analyzers.append(analyzer)
 
-    async def detect(
-        self, skip_detectors: set[str] | None = None
-    ) -> list[ImprovementOpportunity]:
+    async def detect(self, skip_detectors: set[str] | None = None) -> list[ImprovementOpportunity]:
         """Run all eligible analyzers and collect opportunities.
 
         Per spec Phase 1: Skip detectors whose last run produced only
@@ -375,7 +369,9 @@ class ImprovementDetector:
                 continue
 
             # Check if analyzer supports enabled categories
-            if not analyzer.supported_categories.intersection(self.config.enabled_categories or set()):
+            if not analyzer.supported_categories.intersection(
+                self.config.enabled_categories or set()
+            ):
                 continue
 
             # Run analyzer
@@ -387,8 +383,7 @@ class ImprovementDetector:
             opportunities = [
                 opp
                 for opp in opportunities
-                if opp.confidence >= self.config.min_confidence
-                or opp.severity == Severity.CRITICAL
+                if opp.confidence >= self.config.min_confidence or opp.severity == Severity.CRITICAL
             ]
 
             all_opportunities.extend(opportunities)
@@ -431,8 +426,15 @@ class ImprovementDetector:
                     if opp.line_range.overlaps(existing.line_range, threshold=0.8):
                         is_duplicate = True
                         # Keep higher severity one
-                        severity_order = [Severity.LOW, Severity.MEDIUM, Severity.HIGH, Severity.CRITICAL]
-                        if severity_order.index(opp.severity) > severity_order.index(existing.severity):
+                        severity_order = [
+                            Severity.LOW,
+                            Severity.MEDIUM,
+                            Severity.HIGH,
+                            Severity.CRITICAL,
+                        ]
+                        if severity_order.index(opp.severity) > severity_order.index(
+                            existing.severity
+                        ):
                             seen_ranges.remove(existing)
                             seen_ranges.append(opp)
                         break

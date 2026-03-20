@@ -20,7 +20,7 @@ class CLIInterface:
         self.formatter = formatter or OutputFormatter()
         self.history = CommandHistory()
         self.running = False
-        self.commands: dict[str, Callable] = {}
+        self.commands: dict[str, dict[str, Any]] = {}
         self._setup_default_commands()
 
     def _setup_default_commands(self) -> None:
@@ -83,7 +83,7 @@ class CLIInterface:
             self.history.add_command(command=command, status="error", error=str(e))
             return None
 
-    def _cmd_help(self, args: str) -> None:
+    def _cmd_help(self, _args: str) -> None:
         """Show help message."""
         self.formatter.print_section("Available Commands")
 
@@ -119,16 +119,16 @@ class CLIInterface:
             status_symbol = "✓" if cmd["status"] == "success" else "✗"
             self.formatter.console.print(f"  [{i}] {status_symbol} {cmd['command']}")
 
-    def _cmd_clear(self, args: str) -> None:
+    def _cmd_clear(self, _args: str) -> None:
         """Clear screen."""
         self.formatter.clear_screen()
 
-    def _cmd_exit(self, args: str) -> None:
+    def _cmd_exit(self, _args: str) -> None:
         """Exit application."""
         self.formatter.print_info("Goodbye!")
         self.running = False
 
-    def _cmd_stats(self, args: str) -> None:
+    def _cmd_stats(self, _args: str) -> None:
         """Show statistics."""
         summary = self.history.get_summary()
 

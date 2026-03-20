@@ -80,7 +80,7 @@ class MemorySettings(BaseSettings):
         except (PermissionError, OSError) as e:
             raise ValueError(
                 f"Storage path '{v}' is not writable or parent directory cannot be created: {e}"
-            )
+            ) from e
         return v
 
 

@@ -20,10 +20,7 @@ class OutputFormatter:
 
     def print_header(self, title: str, subtitle: str = "") -> None:
         """Print a formatted header."""
-        if subtitle:
-            content = f"{title}\n[dim]{subtitle}[/dim]"
-        else:
-            content = title
+        content = f"{title}\n[dim]{subtitle}[/dim]" if subtitle else title
 
         self.console.print(
             Panel(
@@ -152,10 +149,7 @@ class OutputFormatter:
 
     def input_prompt(self, prompt: str, default: str = "") -> str:
         """Get user input with formatted prompt."""
-        if default:
-            display = f"{prompt} [{dim}default: {default}{escape('[/dim')}]: "
-        else:
-            display = f"{prompt}: "
+        display = f"{prompt} [dim]default: {default}[/dim]: " if default else f"{prompt}: "
 
         return self.console.input(display) or default
 

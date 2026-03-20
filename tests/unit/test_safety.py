@@ -296,7 +296,7 @@ async def test_safe_executor_high_risk_with_auditing() -> None:
     tool = MockHighRiskTool()
 
     with patch("builtins.input", return_value="yes"):
-        result = await executor.execute(tool, action="test")
+        await executor.execute(tool, action="test")
 
     assert len(auditor.entries) == 1
     assert auditor.entries[0].risk_level == "HIGH"

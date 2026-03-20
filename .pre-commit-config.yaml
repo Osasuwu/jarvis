@@ -16,7 +16,7 @@ repos:
     rev: 24.1.1
     hooks:
       - id: black
-        language_version: python3.13
+        language_version: python3
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.2.1
@@ -28,9 +28,16 @@ repos:
     rev: v1.8.0
     hooks:
       - id: mypy
+        stages: [manual]
+        pass_filenames: false
         additional_dependencies: [
           pydantic>=2.6.0,
+          pydantic-settings>=2.1.0,
+          pytest>=8.0.0,
+          rich>=13.7.0,
+          httpx>=0.26.0,
+          groq>=0.4.0,
           types-PyYAML,
           types-aiofiles,
         ]
-        args: [--config-file=pyproject.toml]
+        args: [--config-file=pyproject.toml, src/jarvis]

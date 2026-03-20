@@ -166,7 +166,9 @@ class PromptProposer:
 
         # Preamble with context
         parts.append("## Context\n")
-        parts.append(f"File: `{opportunity.file}` (lines {opportunity.line_range.start}-{opportunity.line_range.end})\n")
+        parts.append(
+            f"File: `{opportunity.file}` (lines {opportunity.line_range.start}-{opportunity.line_range.end})\n"
+        )
         parts.append(f"Category: {opportunity.category.value}\n")
         parts.append(f"Detected by: {opportunity.detector}\n")
         parts.append("\n")

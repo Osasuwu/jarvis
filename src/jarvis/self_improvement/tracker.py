@@ -84,9 +84,7 @@ class ApprovalTracker:
             try:
                 with open(decisions_file, encoding="utf-8") as f:
                     data = json.load(f)
-                    self.decisions = [
-                        ApprovalDecision(**d) for d in data.get("decisions", [])
-                    ]
+                    self.decisions = [ApprovalDecision(**d) for d in data.get("decisions", [])]
                     # Load cooldowns
                     for key, state in data.get("cooldowns", {}).items():
                         self.cooldowns[key] = CooldownState(**state)
@@ -250,10 +248,7 @@ class ApprovalTracker:
         recent = self._get_recent_decisions(days=7)
 
         # Filter to this detector's decisions using detector_name field
-        detector_decisions = [
-            d for d in recent
-            if d.detector_name == detector_name
-        ]
+        detector_decisions = [d for d in recent if d.detector_name == detector_name]
 
         if len(detector_decisions) < 5:
             return False
@@ -285,19 +280,18 @@ class ApprovalTracker:
 
         # Global limit: max 20 per week
         week_decisions = [
-            d for d in self.decisions
-            if datetime.fromisoformat(d.timestamp) > week_ago
-            and d.decision == DecisionType.APPROVE
+            d
+            for d in self.decisions
+            if datetime.fromisoformat(d.timestamp) > week_ago and d.decision == DecisionType.APPROVE
         ]
         limits["global_weekly"] = len(week_decisions) >= self.rate_limit_config.global_max_per_week
 
         # Per-file limit: max 3 per 7 days
         if file_path:
-            file_decisions = [
-                d for d in week_decisions
-                if file_path in d.prompt_id  # Heuristic
-            ]
-            limits["per_file_weekly"] = len(file_decisions) >= self.rate_limit_config.per_file_max_per_week
+            file_decisions = [d for d in week_decisions if file_path in d.prompt_id]  # Heuristic
+            limits["per_file_weekly"] = (
+                len(file_decisions) >= self.rate_limit_config.per_file_max_per_week
+            )
 
         # Per-category limit is checked per-cycle, not here
         # See design_questions.md Q5: Cycle definition needs clarification
@@ -340,10 +334,7 @@ class ApprovalTracker:
         recent = self._get_recent_decisions(days=90)
 
         # Filter by category
-        category_decisions = [
-            d for d in recent
-            if category.value in d.prompt_id.lower()
-        ]
+        category_decisions = [d for d in recent if category.value in d.prompt_id.lower()]
 
         approved = sum(1 for d in category_decisions if d.decision == DecisionType.APPROVE)
         rejected = sum(1 for d in category_decisions if d.decision == DecisionType.REJECT)
@@ -399,18 +390,14 @@ class ApprovalTracker:
             return 1.0  # Assume success when no history
 
         successful = sum(
-            1 for r in recent_reports
-            if r.get("status") == ExecutionStatus.SUCCESS.value
+            1 for r in recent_reports if r.get("status") == ExecutionStatus.SUCCESS.value
         )
         return successful / len(recent_reports)
 
     def _get_recent_decisions(self, days: int) -> list[ApprovalDecision]:
         """Get decisions from the last N days."""
         cutoff = datetime.now() - timedelta(days=days)
-        return [
-            d for d in self.decisions
-            if datetime.fromisoformat(d.timestamp) > cutoff
-        ]
+        return [d for d in self.decisions if datetime.fromisoformat(d.timestamp) > cutoff]
 
     def get_file_edit_frequency(self, file_path: str, days: int = 7) -> int:  # noqa: ARG002
         """Get how many times a file has been edited recently.
@@ -452,16 +439,20 @@ class ApprovalTracker:
         log: list[dict[str, Any]] = []
 
         for decision in self.decisions:
-            log.append({
-                "type": "decision",
-                "data": decision.to_dict(),
-            })
+            log.append(
+                {
+                    "type": "decision",
+                    "data": decision.to_dict(),
+                }
+            )
 
         for report in self.execution_reports:
-            log.append({
-                "type": "execution",
-                "data": report.to_dict() if hasattr(report, "to_dict") else report,
-            })
+            log.append(
+                {
+                    "type": "execution",
+                    "data": report.to_dict() if hasattr(report, "to_dict") else report,
+                }
+            )
 
         # Sort by timestamp
         log.sort(key=lambda x: x["data"].get("timestamp", x["data"].get("generated_at", "")))

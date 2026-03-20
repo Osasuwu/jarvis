@@ -98,7 +98,7 @@ class ConversationMemory:
                 "Configuration error: persist_to_disk=True but storage path not writable"
             )
             logger.error(error_msg)
-            raise OSError(error_msg)
+            raise OSError(error_msg) from e
 
     def add_message(self, role: str, content: str) -> None:
         """

@@ -260,13 +260,13 @@ class TestCLIInterface(unittest.TestCase):
 
     async def test_run_help_command(self):
         """Test help command."""
-        result = await self.cli.run_command("help")
+        await self.cli.run_command("help")
         # Help command returns None
 
     async def test_run_exit_command(self):
         """Test exit command."""
         self.cli.running = True
-        result = await self.cli.run_command("exit")
+        await self.cli.run_command("exit")
         self.assertFalse(self.cli.running)
 
     def test_get_commands(self):

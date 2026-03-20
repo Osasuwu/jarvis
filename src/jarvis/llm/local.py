@@ -95,6 +95,7 @@ class LocalStubProvider(LLMProvider):
         Returns:
             LLMResponse with content and optional tool calls
         """
+        _ = max_tokens
         if not await self.validate_connection():
             logger.error(f"Ollama server is not running at {self._base_url}")
             # Fallback to simple heuristic if Ollama is unavailable
@@ -160,6 +161,7 @@ class LocalStubProvider(LLMProvider):
         tools: list[dict[str, Any]] | None = None,
     ) -> LLMResponse:
         """Fallback to simple heuristics when Ollama is unavailable."""
+        _ = tools
         logger.info("Using fallback heuristic completion")
 
         user_text = ""

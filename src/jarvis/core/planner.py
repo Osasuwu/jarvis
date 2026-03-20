@@ -29,7 +29,7 @@ class Planner:
         self.tool_registry = tool_registry
         logger.info("Planner initialized")
 
-    async def plan(self, task: str, context: list[dict] | None = None) -> dict[str, Any]:
+    async def plan(self, task: str, _context: list[dict] | None = None) -> dict[str, Any]:
         """
         Create a plan for executing a task.
 

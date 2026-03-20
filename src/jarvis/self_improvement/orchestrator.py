@@ -221,7 +221,9 @@ class SelfImprovementOrchestrator:
                 category_key = opportunity.category.value
                 category_counts[category_key] = category_counts.get(category_key, 0)
                 if category_counts[category_key] >= 5:
-                    logger.debug(f"Skipping {opportunity.id}: per-category limit (5) exceeded for {category_key}")
+                    logger.debug(
+                        f"Skipping {opportunity.id}: per-category limit (5) exceeded for {category_key}"
+                    )
                     continue
                 category_counts[category_key] += 1
 
@@ -526,7 +528,9 @@ class SelfImprovementOrchestrator:
             error_details = f"Scope mismatch: expected {expected_files}, got {modified_set}"
         else:
             status = ExecutionStatus.FAILED
-            failed_validations = [k for k, v in validations.items() if v.status == ValidationStatus.FAIL]
+            failed_validations = [
+                k for k, v in validations.items() if v.status == ValidationStatus.FAIL
+            ]
             error_details = f"Validations failed: {failed_validations}"
 
         # Extract timing metadata if available (Q7 implementation)

@@ -138,7 +138,7 @@ async def test_tool_availability_causes_limitation():
     )
 
     # Execute
-    result = await orchestrator.run("Test query")
+    await orchestrator.run("Test query")
 
     # Verify: Despite LLM wanting to use tools in iteration 2,
     # it doesn't receive tool schemas

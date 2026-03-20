@@ -104,11 +104,7 @@ class WhitelistManager:
             return True
 
         # Check if matches any allowed pattern
-        for pattern in self.path_patterns:
-            if fnmatch.fnmatch(path_str, pattern.lower()):
-                return True
-
-        return False
+        return any(fnmatch.fnmatch(path_str, pattern.lower()) for pattern in self.path_patterns)
 
     def save_config(self, filepath: str | Path) -> None:
         """

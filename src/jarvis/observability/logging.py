@@ -135,10 +135,7 @@ def setup_logging(
     handler.setLevel(log_level)
 
     # Set formatter
-    if structured:
-        formatter = StructuredFormatter(fmt)
-    else:
-        formatter = logging.Formatter(fmt)
+    formatter = StructuredFormatter(fmt) if structured else logging.Formatter(fmt)
 
     handler.setFormatter(formatter)
 
