@@ -217,7 +217,7 @@ jobs:
       issues: read
       pull-requests: read
     env:
-      GH_TOKEN: ${{ github.token }}
+      GH_TOKEN: ${{ secrets.PROJECT_SYNC != '' && secrets.PROJECT_SYNC || github.token }}
     steps:
       - name: Sync pull request to project
         env:
