@@ -1,8 +1,8 @@
 """
 Tests for tool availability logic and state management in orchestrator.
 
-These tests document the current behavior of the tool_called_once flag
-and verify that the known limitations are understood.
+These tests verify tools are consistently available to the LLM
+across all ReAct iterations and separate requests.
 """
 
 from unittest.mock import AsyncMock
@@ -32,19 +32,9 @@ class DummyTool(Tool):
 
 
 @pytest.mark.asyncio
-async def test_tool_availability_documented_behavior():
+async def test_tool_availability_provided_each_iteration():
     """
-    Test that documents the current tool_called_once behavior.
-
-    Current behavior (as of v0.7.0):
-    - Tools are provided to LLM on first iteration
-    - After any tool call, tools are hidden from LLM (llm_tools=None)
-    - This causes LLM to not see available tools in subsequent iterations
-
-    Known issue: This prevents multi-step tool usage where LLM needs to
-    call different tools across multiple iterations.
-
-    See: orchestrator.py FIXME comment and stabilization_plan.md Task 4
+    Tools should be provided on every iteration, including after tool calls.
     """
     # Setup
     registry = ToolRegistry()
@@ -63,7 +53,7 @@ async def test_tool_availability_documented_behavior():
         tool_calls=[ToolCall(name="dummy_tool", arguments={"value": "test"})],
     )
 
-    # Second call: LLM returns final response (no tools provided this time)
+    # Second call: LLM returns final response
     second_response = LLMResponse(
         content="Done!",
         tool_calls=None,
@@ -90,18 +80,16 @@ async def test_tool_availability_documented_behavior():
     assert first_call[1]["tools"] is not None
     assert len(first_call[1]["tools"]) > 0
 
-    # Second call should NOT have tools (current behavior - this is the documented issue)
+    # Second call should also have tools
     second_call = mock_llm.complete.call_args_list[1]
-    assert second_call[1]["tools"] is None  # Tools hidden after first use
+    assert second_call[1]["tools"] is not None
+    assert len(second_call[1]["tools"]) > 0
 
 
 @pytest.mark.asyncio
-async def test_tool_availability_causes_limitation():
+async def test_tool_availability_allows_multi_step_usage():
     """
-    Test that demonstrates the limitation of hiding tools after first use.
-
-    This test shows that if the LLM wants to call a tool in iteration 2+,
-    it cannot because tools are not provided. This is the known issue.
+    If LLM requests tools across multiple iterations, schemas should remain available.
     """
     # Setup
     registry = ToolRegistry()
@@ -113,8 +101,7 @@ async def test_tool_availability_causes_limitation():
     mock_llm.provider_name = "test"
     mock_llm.model_name = "test-model"
 
-    # LLM tries to call tool on first AND second iteration
-    # But second iteration won't have tools available
+    # LLM calls tool on first AND second iteration
     response_with_tool = LLMResponse(
         content="Using tool",
         tool_calls=[ToolCall(name="dummy_tool", arguments={"value": "test"})],
@@ -122,12 +109,11 @@ async def test_tool_availability_causes_limitation():
 
     final_response = LLMResponse(content="Done", tool_calls=None)
 
-    # Simulate: first call with tool, second call with tool (but no tools available),
-    # third call gives up
+    # Simulate: first call with tool, second call with tool, third call finalizes
     mock_llm.complete.side_effect = [
-        response_with_tool,  # Iteration 1: has tools
-        response_with_tool,  # Iteration 2: no tools provided (issue!)
-        final_response,  # Iteration 3: gives up
+        response_with_tool,
+        response_with_tool,
+        final_response,
     ]
 
     orchestrator = Orchestrator(
@@ -140,20 +126,16 @@ async def test_tool_availability_causes_limitation():
     # Execute
     await orchestrator.run("Test query")
 
-    # Verify: Despite LLM wanting to use tools in iteration 2,
-    # it doesn't receive tool schemas
+    # Verify tools are still provided in later iterations
     second_call = mock_llm.complete.call_args_list[1]
-    assert second_call[1]["tools"] is None  # This is the problem
-
-    # This demonstrates why multi-step tool workflows can fail
+    assert second_call[1]["tools"] is not None
+    assert len(second_call[1]["tools"]) > 0
 
 
 @pytest.mark.asyncio
 async def test_tool_availability_flag_resets_per_request():
     """
-    Test that tool_called_once flag is reset between different run() calls.
-
-    This verifies that the flag doesn't leak between separate user requests.
+    Verify tools are provided on first iteration of each separate request.
     """
     # Setup
     registry = ToolRegistry()
