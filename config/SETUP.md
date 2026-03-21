@@ -59,36 +59,41 @@ Install Ollama from https://ollama.com, then pull the model:
 ollama pull qwen3:8b
 ```
 
-OpenClaw provider config must be set directly in `~/.openclaw/openclaw.json` (individual `config set` commands fail validation because `baseUrl` and `models` are both required). Add to the JSON:
+OpenClaw provider config must be set directly in `~/.openclaw/openclaw.json` (individual `config set` commands fail validation because `baseUrl` and `models` are both required). **Merge** these sections into the existing config — do not replace the whole file:
+
+Add a `"models"` top-level key:
 
 ```json
-{
-  "models": {
-    "providers": {
-      "ollama": {
-        "baseUrl": "http://localhost:11434",
-        "apiKey": "ollama-local",
-        "api": "ollama",
-        "models": [
-          {
-            "id": "qwen3:8b",
-            "name": "Qwen3 8B",
-            "reasoning": true,
-            "input": ["text"],
-            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-            "contextWindow": 32768,
-            "maxTokens": 4096
-          }
-        ]
-      }
+"models": {
+  "providers": {
+    "ollama": {
+      "baseUrl": "http://localhost:11434",
+      "apiKey": "ollama-local",
+      "api": "ollama",
+      "models": [
+        {
+          "id": "qwen3:8b",
+          "name": "Qwen3 8B",
+          "reasoning": true,
+          "input": ["text"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 32768,
+          "maxTokens": 4096
+        }
+      ]
     }
-  },
-  "agents": {
-    "defaults": {
-      "model": {
-        "primary": "ollama/qwen3:8b",
-        "fallbacks": ["groq/llama-4-scout-17b-16e-instruct", "google/gemini-2.5-flash"]
-      }
+  }
+}
+```
+
+Add `"model"` inside the existing `agents.defaults` section:
+
+```json
+"agents": {
+  "defaults": {
+    "model": {
+      "primary": "ollama/qwen3:8b",
+      "fallbacks": ["groq/llama-4-scout-17b-16e-instruct", "google/gemini-2.5-flash"]
     }
   }
 }
