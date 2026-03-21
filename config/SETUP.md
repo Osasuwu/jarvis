@@ -4,6 +4,7 @@
 
 - Node.js 22+ (tested with v24.14.0)
 - npm 11+
+- OpenSSL (for token generation) or PowerShell
 - Windows 11 (primary), Linux (server)
 
 ## 1. Install OpenClaw
@@ -22,7 +23,10 @@ openclaw config set gateway.bind loopback
 openclaw config set gateway.port 18789
 
 # Auth token (generate once)
+# Linux/macOS:
 GATEWAY_TOKEN=$(openssl rand -hex 32)
+# Windows PowerShell (if openssl not available):
+# $GATEWAY_TOKEN = -join ((1..32) | ForEach-Object { "{0:x2}" -f (Get-Random -Max 256) })
 openclaw config set gateway.auth.mode token
 openclaw config set gateway.auth.token "$GATEWAY_TOKEN"
 
@@ -83,5 +87,5 @@ openclaw doctor --fix  # auto-fix common issues
 | Workspace | `~/.openclaw/workspace/` |
 | SOUL.md | `~/.openclaw/workspace/SOUL.md` |
 | Custom skills | `~/.openclaw/workspace/skills/` |
-| Logs | `/tmp/openclaw/` |
+| Logs | Linux: `/tmp/openclaw/`, Windows: see gateway output for log path |
 | Sessions | `~/.openclaw/agents/main/sessions/` |
