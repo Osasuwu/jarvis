@@ -29,3 +29,4 @@ Do not confuse the two.
 - Test skills against real GitHub projects before PR.
 - Keep CI green.
 - Add concise risk/rollback notes for non-trivial changes.
+- Before merging PRs, check and respond to GitHub Copilot auto-review comments (see `.github/copilot-instructions.md` for details).

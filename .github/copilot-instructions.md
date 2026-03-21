@@ -84,3 +84,10 @@ For code/skill changes:
 For process changes:
 - ensure issue templates and workflows remain consistent,
 - preserve parent-child traceability.
+
+## PR Reviews
+
+GitHub Copilot automatically reviews every PR. Before merging:
+1. Check review comments: `gh api repos/Osasuwu/personal-AI-agent/pulls/NUMBER/comments`.
+2. Address valid feedback with code changes or explain why no change is needed.
+3. Post a summary reply: `gh pr review NUMBER --comment`.
