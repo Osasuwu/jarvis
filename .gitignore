@@ -70,4 +70,4 @@ jarvis_data/
 
 # OS specific
 Thumbs.DB
-tmp_local_tools/
+tmp_local_tools/*.txt

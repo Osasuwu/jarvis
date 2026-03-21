@@ -49,12 +49,11 @@ body:
     attributes:
       label: "Area"
       options:
-        - "area:core-agent"
-        - "area:workflow-github"
-        - "area:tools"
+        - "area:skills"
+        - "area:config"
+        - "area:infrastructure"
         - "area:quality"
         - "area:docs"
-        - "area:release"
     validations:
       required: true
 

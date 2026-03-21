@@ -1,139 +1,147 @@
 # Jarvis Project Plan
 
-Version: 1.0
-Date: 2026-03-20
+Version: 2.0
+Date: 2026-03-21
 Status: Active
 
 ## 1. Purpose
 
-This is the strategic plan for Jarvis as a development-management AI agent.
+Strategic plan for Jarvis — a universal personal AI agent built on the OpenClaw platform.
 
 Use this document to:
+- understand the full vision and current priorities,
 - decide what to build next,
-- keep scope focused,
-- align issue workflow with delivery outcomes,
-- control risk in agent-assisted development.
+- keep scope focused on skills that deliver real value,
+- track the migration from custom Python codebase to OpenClaw.
 
 ## 2. Problem and Vision
 
 ### Problem
 
-Single-developer and small-team software projects lose time on planning, triage, and delivery coordination. Code can be generated quickly, but process quality degrades without strict governance.
+One person managing multiple software projects and learning across many domains cannot do everything alone. Development coordination, research, and routine tasks consume time that should go to creative and strategic work.
 
 ### Vision
 
-Jarvis acts as PM + Tech Lead assistant:
-- decomposes goals into epics/tasks,
-- keeps GitHub project metadata consistent,
-- guides coding agents through safe PR-based delivery,
-- provides daily and weekly execution visibility.
+Jarvis is a universal personal AI agent that:
+- manages development workflows across multiple GitHub projects,
+- helps research and learn new topics,
+- adapts to whatever the owner is working on right now,
+- communicates via Telegram (mobile) and direct UI (workstation),
+- runs locally on the owner's hardware.
+
+The name "Jarvis" reflects the full ambition: a personal assistant that grows with its owner.
+
+### Why OpenClaw
+
+Building a universal agent from scratch is impractical for one person. OpenClaw provides the platform layer (gateway, messaging integrations, skills system, dashboard), freeing Jarvis to focus on custom skills and personalization. The previous Python MVP code is archived — it validated core ideas but the infrastructure burden was too high.
 
 ## 3. Scope
 
-### In Scope (Current)
+### In Scope
 
-- GitHub workflow orchestration (issues, labels, milestones, PR linkage)
-- Delivery supervision loop (daily triage + weekly reports)
-- Controlled Git operations through PR flow
-- Repository health guardrails (CI + schema checks + process checks)
+Phase 1 (current):
+- OpenClaw setup with Telegram + direct UI
+- PM skills: triage, issue management, project health across all owner's repos
+- Local LLM via Ollama with free cloud fallback
+- SOUL.md personality configuration
+
+Phase 2 (next):
+- Research skills: web research, topic analysis, learning assistance
+
+Phase 3 (later):
+- Daily companion features as needed
+- Domain expansion based on real usage patterns
 
 ### Out of Scope (Current)
 
-- self_improvement rollout
-- multi-agent/debate orchestration
-- vector DB long-term memory
-- plugin marketplace
-- cloud/multi-device sync
+- Multi-user / team features (Jarvis serves one person)
+- Paid LLM APIs as primary provider
+- Cloud hosting (local-first, company server possible later)
+- Plugin marketplace
+- Mobile app (Telegram is the mobile interface)
 
 ## 4. Operating Model
 
-- One human supervisor owns priorities and final acceptance.
-- Agents execute implementation tasks through issues and PRs.
-- Every change must be traceable to a single issue.
-- Project board fields are the source of delivery truth.
+- One human owner defines priorities and approves critical actions.
+- Jarvis executes through OpenClaw skills triggered via Telegram or UI.
+- PM skills work across all owner's GitHub repositories, not just this one.
+- Safety: Jarvis does not get access to critical system resources that could break the machine.
 
 ## 5. Delivery Phases
 
-### P1 Foundation
-Goal: establish governance and workflow scaffolding.
-Exit criteria:
-- issue templates/workflows active,
-- labels and milestones normalized,
-- CI and PR checks enforced.
+### P1: OpenClaw Migration + PM Skills
 
-### P2 PM+TechLead MVP
-Goal: make Jarvis reliable for planning and supervision.
-Exit criteria:
-- daily triage loop running,
-- project board sync in place,
-- weekly reporting stable.
+Goal: Jarvis running on OpenClaw with PM capabilities usable in real work.
 
-### P3 Reliability
-Goal: strengthen quality and guardrails.
 Exit criteria:
-- stricter quality checks,
-- reduced process drift,
-- stable lead time and failure rate.
+- OpenClaw installed and configured locally,
+- Telegram and direct UI connected,
+- SOUL.md defined,
+- Ollama running with suitable model + free cloud fallback configured,
+- PM skills ported: daily triage, weekly report, issue health check,
+- Skills tested on real projects.
 
-### P4 Capability Expansion
-Goal: extend management features without scope creep.
-Exit criteria:
-- measurable planning improvements,
-- prioritized expansion based on telemetry.
+### P2: Research Skills
 
-### P5 Stabilization
-Goal: predictable and repeatable delivery.
+Goal: Jarvis helps with learning and information gathering.
+
 Exit criteria:
-- process documentation finalized,
-- low operational friction,
-- release readiness.
+- Web research skill functional,
+- Topic summarization and analysis available,
+- Research results storable and revisitable.
+
+### P3: Expansion
+
+Goal: Jarvis grows based on real usage patterns.
+
+Exit criteria:
+- New skills added based on actual friction points,
+- Daily companion features if needed,
+- Performance stable on local hardware.
 
 ## 6. Decision Rules
 
 When a new idea appears:
-1. classify as in-scope or out-of-scope,
-2. if out-of-scope, park in backlog with explicit label and no active task,
-3. if in-scope, attach to the current phase or next phase with rationale,
-4. split into epic/task before implementation.
+1. Does it solve a real problem the owner has right now?
+2. Can it be implemented as an OpenClaw skill?
+3. Does it work within local hardware constraints?
+4. If yes to all — create a task. Otherwise, park in backlog.
 
 When uncertain what to do next:
-1. unblock `status:blocked` high-priority tasks,
-2. finish in-progress work before starting new work,
-3. prefer tasks that improve process reliability over feature expansion.
+1. Finish in-progress work first.
+2. Prioritize skills that save the most time in daily work.
+3. Prefer simple implementations that can be tested immediately.
 
 ## 7. Risk Register
 
-R1: Process drift from issue/PR rules.
-- Mitigation: schema checks, PR body check, daily triage.
+R1: OpenClaw breaking changes.
+- Mitigation: pin versions, monitor releases, keep skills loosely coupled.
 
-R2: Scope creep into non-goals.
-- Mitigation: explicit non-goal policy, supervisor approval for exceptions.
+R2: Local hardware insufficient for quality LLM.
+- Mitigation: Ollama with quantized models (7B on RTX 3050 6GB), free cloud fallback.
+- Future: company server with RTX 40 series if available.
 
-R3: Agent-generated low-quality changes.
-- Mitigation: CI gates, small PR policy, mandatory risk/rollback notes.
+R3: Scope creep into features nobody uses.
+- Mitigation: only build skills for problems experienced in the last week.
 
-R4: Project board inconsistency.
-- Mitigation: label sync + project sync automation.
+R4: Security exposure through OpenClaw.
+- Mitigation: no access to critical system paths, network exposure limited to localhost.
 
 R5: Bus factor = 1.
-- Mitigation: documentation-first workflow and repeatable runbooks.
+- Mitigation: clear documentation, simple architecture, standard OpenClaw patterns.
 
-## 8. Cadence
+## 8. Technical Constraints
 
-Daily:
-- triage statuses,
-- fix metadata inconsistencies,
-- review blockers.
-
-Weekly:
-- review report,
-- adjust priorities and phase focus,
-- validate scope alignment.
+- Hardware (home): Intel i5 9400f, RTX 3050 6GB, 32GB RAM
+- Hardware (future server): 32GB+ RAM, RTX 40 series
+- LLM: Ollama local (7B quantized models), free cloud fallback
+- Platform: OpenClaw (Node.js, npm)
+- Communication: Telegram Bot API, OpenClaw direct UI
+- OS: Windows 11 (primary), potentially Linux (server)
 
 ## 9. Success Metrics
 
-- PRs linked to issues: 100%
-- CI pass rate before merge: 100%
-- tasks with valid parent linkage: >= 95%
-- blocked task aging trend: decreasing
-- weekly delivery predictability: improving phase-over-phase
+- Jarvis used daily for real work (not just testing)
+- Time saved on PM tasks measurable (fewer manual triage sessions)
+- Skills work reliably without constant debugging
+- Response quality acceptable on local LLM

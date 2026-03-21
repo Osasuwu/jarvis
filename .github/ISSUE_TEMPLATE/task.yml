@@ -24,12 +24,11 @@ body:
     attributes:
       label: "Area"
       options:
-        - "area:core-agent"
-        - "area:workflow-github"
-        - "area:tools"
+        - "area:skills"
+        - "area:config"
+        - "area:infrastructure"
         - "area:quality"
         - "area:docs"
-        - "area:release"
     validations:
       required: true
 
@@ -50,11 +49,9 @@ body:
     attributes:
       label: "Phase"
       options:
-        - "P1 Foundation"
-        - "P2 PM+TechLead MVP"
-        - "P3 Reliability"
-        - "P4 Capability Expansion"
-        - "P5 Stabilization"
+        - "P1 OpenClaw Migration + PM Skills"
+        - "P2 Research Skills"
+        - "P3 Expansion"
     validations:
       required: true
 

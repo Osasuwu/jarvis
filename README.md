@@ -1,59 +1,54 @@
 # Jarvis
 
-AI-assisted development management agent (PM + Tech Lead mode).
-
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+Universal personal AI agent built on [OpenClaw](https://github.com/openclaw/openclaw).
 
 ## What Jarvis Does
 
-Jarvis is focused on software delivery coordination:
-- decomposes work into epics/tasks,
-- enforces issue/PR traceability,
-- supports controlled Git workflows,
-- keeps project execution visible via triage and weekly reports.
+Jarvis is a personal assistant that manages development workflows, helps with research, and adapts to whatever its owner is working on. It communicates via Telegram (mobile) and direct UI (workstation), runs locally, and uses free LLM models.
 
-## Current Scope
+Current focus: PM skills for managing multiple GitHub projects.
 
-In scope:
-- governance-first repository workflow,
-- PM + Tech Lead supervision loop,
-- one-human-supervisor operating model.
+## Architecture
 
-Out of scope for current MVP:
-- self_improvement rollout,
-- multi-agent/debate,
-- vector DB long-term memory,
-- plugin marketplace,
-- cloud sync.
+- **Platform**: OpenClaw (gateway, messaging, skills framework, dashboard)
+- **LLM**: Ollama local (7B models) with free cloud fallback
+- **Communication**: Telegram Bot + OpenClaw direct UI
+- **Skills**: custom OpenClaw skills in `skills/` directory
+- **Personality**: defined in `SOUL.md`
 
-## Quick Start
+Jarvis does not fork OpenClaw — it extends it with custom skills and configuration.
 
-```bash
-git clone https://github.com/Osasuwu/personal-AI-agent.git
-cd personal-AI-agent
-python -m venv .venv
-.venv\Scripts\activate
-pip install -e ".[dev]"
-copy .env.example .env
-pytest -q
+## Project Structure
+
+```
+├── SOUL.md              # Jarvis personality and behavior
+├── skills/              # Custom OpenClaw skills
+│   ├── triage/          # Daily triage across GitHub projects
+│   ├── weekly-report/   # Weekly delivery report
+│   └── issue-health/    # Issue metadata validation
+├── config/              # OpenClaw configuration
+├── docs/                # Project documentation
+│   ├── PROJECT_PLAN.md  # Strategic plan
+│   ├── roadmap.md       # Delivery phases
+│   └── architecture.md  # Technical architecture
+└── .github/             # Dev process (CI, PR checks — NOT Jarvis features)
 ```
 
 ## Key Docs
 
-- Project plan: [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md)
-- Roadmap: [docs/roadmap.md](docs/roadmap.md)
-- Architecture: [docs/architecture.md](docs/architecture.md)
-- Process runbook: [.github/github-process-runbook.md](.github/github-process-runbook.md)
-- Copilot instructions: [.github/copilot-instructions.md](.github/copilot-instructions.md)
+- [Project Plan](docs/PROJECT_PLAN.md) — vision, scope, delivery phases
+- [Roadmap](docs/roadmap.md) — what's next
+- [Architecture](docs/architecture.md) — how it works
+- [Ideas](docs/archive/legacy-design/Ideas.md) — long-term vision
 
-## Development Workflow
+## Development
 
-1. Plan in issues and epics.
-2. Implement one task per PR.
-3. Link PR to issue using `Closes #NNN`.
-4. Pass checks and merge to `main`.
-5. Run daily triage and weekly review.
+This repo is developed with Claude Code. The `.github/` workflows handle CI and process checks for the repo itself.
+
+```bash
+git clone https://github.com/Osasuwu/personal-AI-agent.git
+cd personal-AI-agent
+```
 
 ## License
 

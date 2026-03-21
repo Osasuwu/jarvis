@@ -1,104 +1,109 @@
 # Jarvis Architecture
 
-Version: 1.0
-Date: 2026-03-20
+Version: 2.0
+Date: 2026-03-21
 Status: Active
 
 ## 1. System Overview
 
-Jarvis is a management-oriented AI agent for software delivery operations.
+Jarvis is a universal personal AI agent built on the OpenClaw platform. OpenClaw provides the runtime, communication gateway, and extensibility framework. Jarvis adds custom skills, personality, and domain-specific logic.
 
-Primary responsibilities:
-- planning and decomposition,
-- process supervision,
-- issue/PR/project state coherence,
-- controlled execution support.
+## 2. Platform: OpenClaw
 
-## 2. Architectural Style
+OpenClaw handles:
+- **Gateway**: central process managing connections and sessions
+- **Messaging**: Telegram (mobile), direct UI (workstation)
+- **LLM integration**: Ollama (local), cloud providers (fallback)
+- **Skills framework**: directory-based skills with SKILL.md metadata
+- **Dashboard**: web UI for configuration, chat, and monitoring
 
-The system uses a centralized orchestration model with strict human oversight.
+Jarvis does NOT fork or modify OpenClaw — it configures and extends it.
 
-Why this model now:
-- lowest coordination complexity,
-- clear accountability point,
-- strong fit for single-supervisor workflow.
+## 3. Jarvis Layer
 
-## 3. High-Level Components
+What this repository contains:
 
-### Runtime Layer
+```
+jarvis/
+├── SOUL.md              # Jarvis personality, expertise, communication style
+├── skills/              # Custom OpenClaw skills
+│   ├── triage/          # Daily triage across GitHub projects
+│   │   └── SKILL.md
+│   ├── weekly-report/   # Weekly delivery report
+│   │   └── SKILL.md
+│   ├── issue-health/    # Issue metadata validation
+│   │   └── SKILL.md
+│   └── ...              # Future skills
+├── config/              # OpenClaw configuration
+└── docs/                # Project documentation
+```
 
-- `core/orchestrator.py`: task loop and decision flow.
-- `core/executor.py`: tool execution with safety integration.
-- `core/factory.py`: dependency composition and bootstrap.
+Each skill is a directory with:
+- `SKILL.md` — metadata, description, tool permissions, instructions for the LLM
+- Supporting files as needed (templates, scripts)
 
-### Capability Layer
+## 4. Communication Flow
 
-- `tools/`: registry, discovery, loading, builtin tools.
-- `safety/`: confirmation, whitelist, audit.
-- `memory/`: conversation state and persistence.
+```
+User (Telegram / Direct UI)
+    ↓
+OpenClaw Gateway
+    ↓
+LLM (Ollama local → free cloud fallback)
+    ↓
+Skill execution (gh CLI, file ops, web search, etc.)
+    ↓
+Response back to user
+```
 
-### Governance Layer
+## 5. LLM Strategy
 
-- `.github/`: process templates, checks, and automation.
-- `docs/PROJECT_PLAN.md`: strategic source of truth.
-- GitHub Project fields: Status, Priority, Phase, Area.
+Primary: Ollama running locally
+- Hardware constraint: RTX 3050 6GB limits to ~7B quantized models
+- Candidates: Mistral 7B, Llama 3 8B (Q4 quantization)
 
-## 4. Delivery Control Flow
+Fallback: free cloud model
+- Must not lose significant quality vs local
+- Activated when local model is unavailable or task exceeds local capability
 
-1. Human defines objective through issue hierarchy.
-2. Agent executes one task through one PR.
-3. Workflow checks enforce process quality.
-4. Merge updates issue and parent progress.
-5. Daily triage and weekly report drive next steps.
+Future: company server with RTX 40 series enables larger models (13B+).
 
-## 5. Safety and Guardrails
+## 6. Skills Architecture
 
-- Risky operations require explicit confirmation.
-- Whitelist constrains sensitive execution paths.
-- Audit trail records actions for review.
-- CI and schema checks prevent process drift.
+### PM Skills (P1)
 
-## 6. Current Constraints
+**Triage skill**: runs `gh` CLI commands across configured repositories, checks for stale issues, missing metadata, blocked items. Produces summary report.
 
-Deferred capabilities are intentionally excluded from runtime decisions:
-- self_improvement,
-- multi-agent/debate,
-- vector memory,
-- marketplace,
-- cloud sync.
+**Weekly report skill**: collects closed issues and merged PRs from the past week across all projects. Generates markdown summary.
 
-## 7. Evolution Direction
+**Issue health skill**: validates issue templates compliance, parent-child linkage, label consistency.
 
-The architecture evolves in this order:
-1. Process reliability first.
-2. Management capability expansion second.
-3. Advanced autonomy only after governance stability is proven.
-- Tool Registry: JSON files
-- Conversation History: In-memory
-- User Config: YAML
+### Research Skills (P2)
 
-**Future:**
-- Vector DB для семантического поиска инструментов
-- SQLite для истории и состояния
+**Web research skill**: search, retrieve, summarize, cite sources. Store results for later reference.
 
-### Безопасность
+### Future Skills (P3+)
 
-1. **Sandboxing:** изоляция выполнения опасных команд
-2. **Whitelist:** разрешенные команды и пути
-3. **Approval Chain:** обязательное подтверждение для HIGH risk
-4. **Audit Log:** полная история действий
+Added based on real usage patterns, not speculation.
 
----
+## 7. Safety Model
 
-## Следующие шаги
+Pragmatic approach:
+- OpenClaw runs on localhost only, not exposed to network.
+- Skills do not get access to critical system paths.
+- Destructive operations (file deletion, system commands) require explicit user confirmation through OpenClaw's built-in mechanisms.
+- No over-engineering — trust the platform's defaults, add restrictions only where real risk exists.
 
-1. ✅ **Phase 0:** Подготовка репозитория
-2. 🚧 **Phase 1:** Реализация LLM Adapter и Tool Registry
-3. ⏳ **Phase 2:** Orchestrator MVP
-4. ⏳ **Phase 3:** Базовые инструменты
-5. ⏳ **Phase 4:** Human-in-the-Loop
-6. ⏳ **Phase 5:** Capability Gap Analyzer
+## 8. Data and State
 
----
+- **Conversation memory**: managed by OpenClaw
+- **Skill state**: files in skill directories as needed
+- **GitHub data**: accessed live via `gh` CLI (no local cache/DB)
+- **Configuration**: OpenClaw config files + SOUL.md
 
-**Статус документа:** Living Document — будет обновляться по мере развития проекта
+## 9. Development Workflow
+
+This repository is developed using Claude Code with GitHub workflows for CI and process checks. The `.github/` directory contains workflows and templates for developing Jarvis itself — they are NOT Jarvis features.
+
+Jarvis features = OpenClaw skills in `skills/` directory.
+Dev process tools = `.github/` workflows, issue templates, PR checks.

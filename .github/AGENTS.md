@@ -1,26 +1,34 @@
 # Agents Configuration (Workspace)
 
-This repository is optimized for agent-assisted development under one human supervisor.
+This repository is developed with agent-assisted tools (Claude Code, GitHub Copilot) under one human owner.
 
-Primary instructions for GitHub Copilot are in `.github/copilot-instructions.md`.
+Primary instructions: `.github/copilot-instructions.md`.
+
+## What This Repo Contains
+
+- OpenClaw skills for Jarvis (in `skills/`)
+- SOUL.md personality configuration
+- OpenClaw setup and configuration
+- Project documentation
 
 ## Rules for All Agents
 
 - Follow issue hierarchy: Milestone -> Epic -> Task/Bug.
 - Always link implementation PRs to one issue (`Closes #NNN`).
 - Respect branch naming convention and small-PR policy.
-- Keep project metadata healthy (status, priority, area, phase).
-- Do not introduce out-of-scope systems without explicit approval.
+- Skills are the deliverable — each skill is a directory with SKILL.md.
+- `.github/` workflows are dev process tools, NOT Jarvis features.
+- Do not introduce out-of-scope work without explicit approval.
 
 ## Active Scope
 
-- PM + TechLead MVP for development process management.
-- Controlled Git workflow execution with human supervision.
+- P1: OpenClaw setup + PM skills (triage, reporting, issue health)
+- Next: Research skills
 
 ## Out of Scope (Current)
 
-- self_improvement rollout
-- multi-agent/debate
-- vector database memory
-- plugin marketplace
-- cloud/multi-device sync
+- Multi-user / team features
+- Paid LLM APIs as primary
+- Cloud hosting
+- Plugin marketplace
+- Mobile app
