@@ -53,16 +53,66 @@ Note: on Windows, `openclaw gateway install` may fail due to permissions. Run ga
 
 ## 4. LLM Provider (Ollama)
 
-See issue #30 for Ollama setup. After Ollama is running:
+Install Ollama from https://ollama.com, then pull the model:
 
 ```bash
-openclaw config set models.providers.ollama.api ollama
-openclaw config set models.providers.ollama.baseUrl "http://localhost:11434"
-openclaw config set models.providers.ollama.apiKey "ollama-local"
-openclaw config set models.default "ollama/<model-name>"
+ollama pull qwen3:8b
 ```
 
-## 5. Telegram Bot
+OpenClaw provider config must be set directly in `~/.openclaw/openclaw.json` (individual `config set` commands fail validation because `baseUrl` and `models` are both required). Add to the JSON:
+
+```json
+{
+  "models": {
+    "providers": {
+      "ollama": {
+        "baseUrl": "http://localhost:11434",
+        "apiKey": "ollama-local",
+        "api": "ollama",
+        "models": [
+          {
+            "id": "qwen3:8b",
+            "name": "Qwen3 8B",
+            "reasoning": true,
+            "input": ["text"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 32768,
+            "maxTokens": 4096
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "ollama/qwen3:8b",
+        "fallbacks": ["groq/llama-4-scout-17b-16e-instruct", "google/gemini-2.5-flash"]
+      }
+    }
+  }
+}
+```
+
+Important: do NOT add `/v1` to Ollama baseUrl — it breaks tool calling.
+
+## 5. Cloud Fallback
+
+Cloud providers activate automatically when Ollama is unavailable. Set API keys as environment variables:
+
+```bash
+# Groq (https://console.groq.com — free tier)
+export GROQ_API_KEY="gsk_..."
+
+# Google Gemini (https://aistudio.google.com/apikey — free tier: 1000 req/day on Flash)
+export GEMINI_API_KEY="..."
+```
+
+Groq and Google are built-in providers — no `models.providers` config needed, just the env vars.
+
+Verify with `openclaw models` — fallbacks should show under "Fallbacks".
+
+## 6. Telegram Bot
 
 See issue #32 for Telegram setup. After creating bot via BotFather:
 
@@ -72,7 +122,7 @@ openclaw config set channels.telegram.token "$TELEGRAM_BOT_TOKEN"
 openclaw gateway restart
 ```
 
-## 6. Health Check
+## 7. Health Check
 
 ```bash
 openclaw doctor
