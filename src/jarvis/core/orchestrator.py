@@ -118,20 +118,6 @@ class Orchestrator:
             iteration = 0
             final_response = ""
 
-            # FIXME: Tool availability logic issue
-            # This flag was originally designed to hide tools from LLM after the first tool call,
-            # but this causes problems:
-            # - LLM cannot see available tools in later iterations
-            # - If a follow-up tool call is needed, LLM has no way to know what tools exist
-            # - Results in "tool not found" errors or LLM confusion
-            #
-            # Recommended fix: Always provide tools to LLM, OR implement proper tool availability
-            # negotiation based on conversation state. For now, keeping the flag but documenting
-            # the issue. This will be addressed in a future update.
-            #
-            # Related: Task 4 in stabilization_plan.md
-            tool_called_once = False
-
             while iteration < self.max_iterations:
                 iteration += 1
                 update_log_context(operation=f"react_iteration_{iteration}")
@@ -140,9 +126,8 @@ class Orchestrator:
                 # 1. THINK: Get current context and plan next action
                 messages = self.memory.get_messages()
 
-                # Tool availability: Currently tools are hidden after first use (see FIXME above)
-                # This behavior is under review and may change in future releases
-                llm_tools = self.tool_registry.get_llm_schemas() if not tool_called_once else None
+                # Always provide tool schemas so multi-step tool workflows remain possible.
+                llm_tools = self.tool_registry.get_llm_schemas()
 
                 # Execute LLM call with retry logic
                 try:
@@ -169,8 +154,6 @@ class Orchestrator:
                     # ACT: Execute tool calls
                     logger.debug(f"LLM response content: {response.content}")
                     logger.debug(f"LLM requested {len(response.tool_calls)} tool calls")
-
-                    tool_called_once = True
 
                     # Add assistant message with tool calls intent
                     self.memory.add_message("assistant", response.content or "Executing tools...")
