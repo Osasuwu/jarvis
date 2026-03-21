@@ -1,28 +1,24 @@
 # GitHub Process Runbook (Jarvis)
 
-This runbook defines the operating loop for the Jarvis management-agent project.
+This runbook defines the development process for the Jarvis repository itself.
+
+**Important**: this is a dev process document, not a Jarvis feature spec. Jarvis features are OpenClaw skills in `skills/`.
 
 Primary plan: `docs/PROJECT_PLAN.md`
 
-## 1. Daily Triage
+## 1. Daily Development
 
-Every day:
-- Review open issues by status and priority.
-- Move blocked items to `status:blocked` with blocker note.
-- Ensure each active task has one owner and one next action.
-- Ensure each task has:
-  - parent linkage via GitHub Parent issue/Sub-issues,
-  - one area label (`area:*`),
-  - one priority label (`priority:*`),
-  - valid status label.
+When working on this repo:
+- Check open issues by status and priority.
+- Finish in-progress work before starting new tasks.
+- Ensure each task has parent linkage, area label, priority label, and valid status.
 
 ## 2. Planning Rules
 
 - Work starts from milestone goals and epics.
 - Epic children are execution items (`task`/`bug`), not nested epics.
 - Each task should map to one PR.
-- Large tasks (`XL`) must be split before implementation.
-- Hotfixes are allowed without parent only when labeled `priority:critical` and documented in triage notes.
+- Large tasks must be split before implementation.
 
 ## 3. Implementation Rules
 
@@ -35,7 +31,7 @@ Every day:
 
 ## 4. Validation Rules
 
-- Run local test suite before PR.
+- Test skills against real GitHub projects before PR.
 - CI must pass before merge.
 - Any behavior-changing PR must include risk and rollback notes.
 - Keep `main` always releasable.
@@ -46,35 +42,12 @@ Every day:
 - Keep `Parent: #NNN` in child issue body only as optional context.
 - Parent epics are not auto-closed.
 - When all children close, workflow adds `status:children-done`.
-- Human supervisor verifies DoD and closes epic manually.
+- Human owner verifies DoD and closes epic manually.
 
-## 6. GitHub Project Sync
+## 6. Scope Guardrails
 
-Project fields in use:
-- `Status`
-- `Priority`
-- `Phase`
-- `Area`
+Current scope: OpenClaw skills development (PM, then research).
 
-Automation responsibilities:
-- built-in project workflows: auto-add items, close -> Done
-- repository workflows: issue status from labels, priority/area/phase sync, PR open -> In Progress, issue reopen -> Todo
+See `docs/PROJECT_PLAN.md` for full scope definition and out-of-scope items.
 
-## 7. Weekly Cadence
-
-Every week:
-- publish automated weekly report,
-- review velocity, blockers, and defect trend,
-- adjust next-week priorities,
-- confirm scope stays aligned with MVP non-goals.
-
-## 8. Scope Guardrails
-
-Current non-goals:
-- self-improvement module rollout,
-- multi-agent/debate orchestration,
-- advanced vector memory,
-- plugin marketplace,
-- cloud sync.
-
-Any issue that reintroduces non-goals must be flagged and explicitly approved before execution.
+Any issue that introduces out-of-scope work must be flagged and explicitly approved before execution.

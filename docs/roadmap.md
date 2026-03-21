@@ -1,57 +1,57 @@
 # Jarvis Roadmap
 
-This roadmap tracks the active direction: development-management agent (PM + Tech Lead).
+Universal personal AI agent built on OpenClaw.
 
-## P1 Foundation (current)
+## Current: P1 — OpenClaw Migration + PM Skills
 
-Goal: repository and workflow are ready for agent-led delivery.
+Goal: Jarvis running on OpenClaw, usable for daily PM work across all projects.
 
-Outcomes:
-- GitHub templates and workflows aligned to Jarvis.
-- Process instructions unified for Copilot and Claude-compatible agents.
-- Legacy scope archived and active docs normalized.
+Tasks:
+- [ ] Archive Python MVP code to `archive/python-mvp` branch
+- [ ] Install and configure OpenClaw locally
+- [ ] Configure Ollama with suitable 7B model + free cloud fallback
+- [ ] Connect Telegram Bot
+- [ ] Set up direct UI for workstation use
+- [ ] Write SOUL.md (Jarvis personality and behavior)
+- [ ] Port daily triage logic as OpenClaw skill
+- [ ] Port weekly report logic as OpenClaw skill
+- [ ] Port issue health check as OpenClaw skill
+- [ ] Test skills on all 3 real projects
 
-## P2 PM+TechLead MVP
+## Next: P2 — Research Skills
 
-Goal: agent can reliably coordinate delivery with one human supervisor.
+Goal: Jarvis helps with learning, research, and information analysis.
 
-Outcomes:
-- Daily triage loop and weekly reporting in regular use.
-- Stable issue decomposition patterns (epic -> task/bug).
-- Project field sync for Status/Priority/Phase/Area.
+Tasks:
+- [ ] Web research skill (search, summarize, cite)
+- [ ] Topic deep-dive skill (structured analysis)
+- [ ] Research persistence (save and revisit findings)
 
-## P3 Reliability
+## Later: P3 — Expansion
 
-Goal: improve predictability and safety of delivery.
+Goal: Jarvis grows based on real friction points in daily work.
 
-Outcomes:
-- Stronger CI and process checks.
-- Lower rate of metadata/process violations.
-- Improved lead time and reduced blocked-item age.
+Candidates (prioritized by actual need):
+- Daily companion (morning brief, reminders, context-keeping)
+- Context fusion (merge notes, tasks, calendar, code context)
+- Self-improvement loop (detect weak spots, propose skill upgrades)
+- Domain-specific skills as needed
 
-## P4 Capability Expansion
+## Long-Term Vision
 
-Goal: broaden management capabilities within agreed scope.
+From [Ideas.md](archive/legacy-design/Ideas.md):
+- Agent factory: spawn specialized sub-agents
+- Living memory graph: people, projects, concepts
+- Personal research lab: multi-step investigations
+- Vertical scaling: deeper expertise per domain
+- Horizontal scaling: more domains and tools
+- Temporal scaling: memory across months/years
 
-Outcomes:
-- Better prioritization support.
-- Better triage recommendations.
-- Better project health analytics.
+These are aspirational — they enter the roadmap only when driven by real need.
 
-## P5 Stabilization
+## Archived
 
-Goal: make the system consistently operable and maintainable.
-
-Outcomes:
-- Stable operating playbooks.
-- Low maintenance overhead.
-- Release-ready governance model.
-
-## Explicitly Deferred
-
-- self_improvement
-- multi-agent/debate
-- advanced vector memory
-- plugin marketplace
-- cloud/multi-device sync
----
+The original Python MVP (ReAct loop, tool registry, safety layer, triage engine) validated core concepts. Code archived in `archive/python-mvp` branch. Key lessons carried forward:
+- Safety-first approach matters but shouldn't be over-engineered
+- Triage and reporting are the highest-value PM features
+- Local LLM fallback is essential for cost-free operation

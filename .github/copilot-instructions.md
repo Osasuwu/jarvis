@@ -1,29 +1,31 @@
 # Jarvis Copilot Instructions
 
-Use when working in this repository with GitHub Copilot in VS Code.
+Instructions for AI agents working in this repository.
 
 ## Product Goal
 
-Build and operate a development-management AI agent that can:
-- plan and decompose IT project work,
-- coordinate delivery through issues, PRs, and project board states,
-- execute limited Git workflows safely under human supervision.
+Jarvis is a universal personal AI agent built on OpenClaw. This repository contains:
+- Custom OpenClaw skills (in `skills/`)
+- SOUL.md personality configuration
+- OpenClaw setup and configuration
+- Project documentation
 
-Current non-goals:
-- self-improvement/autonomous self-editing,
-- multi-agent/debate orchestration,
-- vector DB long-term memory,
-- plugin marketplace,
-- cloud/multi-device sync.
+Current priority: PM skills for managing multiple GitHub projects (triage, reporting, issue health).
+
+Next: research skills (web research, topic analysis, learning assistance).
+
+## What This Repo Is NOT
+
+The `.github/` workflows (CI, PR checks, issue validation) are development tools for this repository — they are NOT Jarvis features. Jarvis features are OpenClaw skills in `skills/`.
 
 ## Operating Model
 
-Single human supervisor, agent-assisted delivery.
+Single human owner, agent-assisted development.
 
 1. Plan in issues and epics.
 2. Execute through small PRs linked to one issue.
-3. Keep GitHub Project fields in sync.
-4. Run daily triage and weekly reporting.
+3. Skills are the deliverable — each skill is a directory with SKILL.md.
+4. Test skills on real projects before considering them done.
 
 ## Git Rules
 
@@ -40,7 +42,6 @@ Milestone -> Epic -> Task/Bug
 - `Parent: #NNN` in body is optional and informational only.
 - Every epic must have a `Children` section with markdown checkboxes.
 - Epic children must be `task`/`bug` issues, not `epic` issues.
-- Use GitHub sub-issues for hierarchy visibility (link children to parent epic in GitHub UI/API).
 - Epics are closed manually after DoD verification.
 
 ## Labels
@@ -55,24 +56,15 @@ Status labels:
 - `status:ready`, `status:in-progress`, `status:review`, `status:blocked`, `status:children-done`
 
 Area labels:
-- `area:core-agent`, `area:workflow-github`, `area:tools`, `area:quality`, `area:docs`, `area:release`
-
-## Project Phases
-
-- `P1 Foundation` - governance and delivery scaffolding
-- `P2 PM+TechLead MVP` - planning/triage/supervision loop
-- `P3 Reliability` - stronger guardrails and quality automation
-- `P4 Capability Expansion` - broaden management capabilities
-- `P5 Stabilization` - consistency, predictability, and release readiness
+- `area:skills`, `area:config`, `area:docs`, `area:quality`, `area:infrastructure`
 
 ## Quality Gates
 
-For code changes:
-- run tests locally before PR,
+For code/skill changes:
+- test skills against real GitHub projects before PR,
 - keep CI green,
-- document risks and rollback notes in PR.
+- document what the skill does and its limitations in SKILL.md.
 
 For process changes:
 - ensure issue templates and workflows remain consistent,
-- preserve parent-child traceability,
-- avoid introducing automations that silently mutate scope.
+- preserve parent-child traceability.
