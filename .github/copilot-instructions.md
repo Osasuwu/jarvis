@@ -38,11 +38,27 @@ Single human owner, agent-assisted development.
 
 Milestone -> Epic -> Task/Bug
 
-- Every task must be linked to parent epic using GitHub Parent issue/Sub-issues.
+- Every task must be linked to parent epic using GitHub sub-issues.
 - `Parent: #NNN` in body is optional and informational only.
 - Every epic must have a `Children` section with markdown checkboxes.
 - Epic children must be `task`/`bug` issues, not `epic` issues.
 - Epics are closed manually after DoD verification.
+
+### Linking sub-issues via API
+
+To link a child issue to a parent epic programmatically:
+
+```bash
+# Get the internal ID of the child issue (NOT the issue number)
+CHILD_ID=$(gh api repos/OWNER/REPO/issues/CHILD_NUMBER --jq '.id')
+
+# Add it as a sub-issue to the parent
+gh api repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues \
+  --method POST \
+  -F sub_issue_id="$CHILD_ID"
+```
+
+Note: use `-F` (not `-f`) so the ID is sent as integer.
 
 ## Labels
 

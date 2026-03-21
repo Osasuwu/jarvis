@@ -44,6 +44,18 @@ When working on this repo:
 - When all children close, workflow adds `status:children-done`.
 - Human owner verifies DoD and closes epic manually.
 
+### Linking sub-issues via API
+
+```bash
+# Get internal ID (not issue number), then link to parent
+CHILD_ID=$(gh api repos/OWNER/REPO/issues/CHILD_NUMBER --jq '.id')
+gh api repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues \
+  --method POST \
+  -F sub_issue_id="$CHILD_ID"
+```
+
+Use `-F` (not `-f`) — the ID must be sent as integer, not string.
+
 ## 6. Scope Guardrails
 
 Current scope: OpenClaw skills development (PM, then research).
