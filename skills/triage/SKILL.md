@@ -1,0 +1,134 @@
+---
+name: daily_triage
+description: "Daily triage across configured GitHub repos: finds stale issues, missing metadata, blocked items, and status inconsistencies. Produces a markdown summary. Trigger: /triage or on schedule."
+metadata:
+  {
+    "openclaw":
+      {
+        "emoji": "📋",
+        "requires": { "bins": ["gh"] },
+      },
+  }
+---
+
+# Daily Triage Skill
+
+Run a health check across all configured GitHub repositories. Report issues that need attention.
+
+## When to Use
+
+Use this skill when:
+- The user asks for a triage, daily report, or board health check
+- Triggered by schedule (cron)
+- The user says `/triage`
+
+## Configuration
+
+Repositories to check are listed in `repos.conf` (one `owner/repo` per line) in this skill's directory. If the file is missing, ask the user which repos to check.
+
+## Execution Steps
+
+### Step 1 — Load repo list
+
+Read the file `repos.conf` from this skill's directory. Each non-empty, non-comment line is an `owner/repo` to check.
+
+### Step 2 — Fetch open issues for each repo
+
+For each repo, run:
+
+```bash
+gh issue list --repo <owner/repo> --state open --json number,title,labels,milestone,state,assignees,updatedAt,createdAt,body --limit 200
+```
+
+### Step 3 — Run checks
+
+For every open issue, run these checks:
+
+#### 3a. Metadata check (ERROR severity)
+
+Non-epic issues must have all three label prefixes:
+- `status:*`
+- `priority:*`
+- `area:*`
+
+An issue is an epic if it has the `epic` label. Epics are exempt from this check.
+
+Report each missing prefix as a separate violation.
+
+#### 3b. Hierarchy check (WARNING severity)
+
+Non-epic issues should have a parent epic linkage (look for `Parent: #N` in the issue body, or check GitHub sub-issues via `gh api repos/{owner}/{repo}/issues/{number}/sub_issues --jq '.[] | .number'` on parent epics).
+
+Exception: issues with `priority:critical` label are allowed without a parent (standalone hotfixes).
+
+#### 3c. Blocked check (ERROR severity)
+
+Issues with the `status:blocked` label require supervisor attention. Report each one with a recommendation to review blockers, resolve, or re-prioritize.
+
+#### 3d. Staleness check (WARNING severity)
+
+Non-epic issues that have not been updated for 14+ days (based on `updatedAt` field) are potentially stale.
+
+Skip issues that are already `status:blocked` (they are reported by the blocked check).
+
+Calculate days since last update and include in the message.
+
+### Step 4 — Format report
+
+Produce a markdown report with this structure:
+
+```markdown
+# Daily Triage Report
+
+**Date:** YYYY-MM-DD
+**Repos checked:** repo1, repo2, ...
+
+| Metric | Value |
+|--------|-------|
+| Open issues | N |
+| Blocked | N |
+| Errors | N |
+| Warnings | N |
+
+> No violations — board is healthy.
+```
+
+If there are violations, group them by category:
+
+```markdown
+## Metadata
+
+- :red_circle: **#42** Issue title
+  - Missing required label with prefix 'status:'
+  - **Action:** Add a 'status:*' label to #42.
+
+## Hierarchy
+
+- :yellow_circle: **#15** Issue title
+  - Task has no parent epic linkage.
+  - **Action:** Link #15 to a parent epic via GitHub sub-issues, or mark priority:critical if standalone hotfix.
+
+## Blocked
+
+- :red_circle: **#7** Issue title
+  - Issue is blocked — requires supervisor attention.
+  - **Action:** Review #7 blockers, resolve or re-prioritize.
+
+## Staleness
+
+- :yellow_circle: **#23** Issue title
+  - No updates for 21 days.
+  - **Action:** Review #23: update status, close if done, or mark blocked with a note.
+```
+
+### Step 5 — Deliver
+
+Return the full markdown report to the user. The report must be readable in both Telegram (plain text fallback) and web UI (rendered markdown).
+
+## Important Rules
+
+- Use `gh` CLI for all GitHub API calls — no raw HTTP or tokens needed.
+- Process repos sequentially to avoid rate limits.
+- If `gh` fails for a repo, log the error and continue with other repos.
+- Do NOT modify any issues — this skill is read-only.
+- Keep the report concise: skip categories with zero violations.
