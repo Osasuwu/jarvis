@@ -51,7 +51,31 @@ openclaw gateway status
 
 Note: on Windows, `openclaw gateway install` may fail due to permissions. Run gateway manually or via startup script.
 
-## 4. LLM Provider (Ollama)
+## 4. LLM Providers
+
+### Model priority chain
+
+1. **Google Gemini 2.5 Flash** (primary) — free tier: 1000 req/day, fast, high quality
+2. **Groq Qwen3-32B** (fallback #1) — free tier, very fast inference, strong tool use
+3. **Ollama qwen3:8b** (fallback #2) — local, unlimited, slow on weak GPU
+
+Cloud models are primary while hardware is limited (RTX 3050 6GB). Ollama serves as unlimited offline safety net. When better GPU is available, flip Ollama back to primary.
+
+### Cloud API keys
+
+Set as environment variables (or in `.env`):
+
+```bash
+# Google Gemini (https://aistudio.google.com/apikey — free tier: 1000 req/day on Flash)
+export GEMINI_API_KEY="..."
+
+# Groq (https://console.groq.com — free tier)
+export GROQ_API_KEY="gsk_..."
+```
+
+Groq and Google are built-in providers — no `models.providers` config needed, just the env vars.
+
+### Ollama (local fallback)
 
 Install Ollama from https://ollama.com, then pull the model:
 
@@ -59,7 +83,9 @@ Install Ollama from https://ollama.com, then pull the model:
 ollama pull qwen3:8b
 ```
 
-OpenClaw provider config must be set directly in `~/.openclaw/openclaw.json` (individual `config set` commands fail validation because `baseUrl` and `models` are both required). **Merge** these sections into the existing config — do not replace the whole file:
+### OpenClaw model config
+
+Set directly in `~/.openclaw/openclaw.json` (individual `config set` commands fail validation because `baseUrl` and `models` are both required). **Merge** these sections into the existing config — do not replace the whole file:
 
 Add a `"models"` top-level key:
 
@@ -92,8 +118,8 @@ Add `"model"` inside the existing `agents.defaults` section:
 "agents": {
   "defaults": {
     "model": {
-      "primary": "ollama/qwen3:8b",
-      "fallbacks": ["groq/llama-4-scout-17b-16e-instruct", "google/gemini-2.5-flash"]
+      "primary": "google/gemini-2.5-flash",
+      "fallbacks": ["groq/qwen/qwen3-32b", "ollama/qwen3:8b"]
     }
   }
 }
@@ -101,21 +127,7 @@ Add `"model"` inside the existing `agents.defaults` section:
 
 Important: do NOT add `/v1` to Ollama baseUrl — it breaks tool calling.
 
-## 5. Cloud Fallback
-
-Cloud providers activate automatically when Ollama is unavailable. Set API keys as environment variables:
-
-```bash
-# Groq (https://console.groq.com — free tier)
-export GROQ_API_KEY="gsk_..."
-
-# Google Gemini (https://aistudio.google.com/apikey — free tier: 1000 req/day on Flash)
-export GEMINI_API_KEY="..."
-```
-
-Groq and Google are built-in providers — no `models.providers` config needed, just the env vars.
-
-Verify with `openclaw models` — fallbacks should show under "Fallbacks".
+Verify with `openclaw models list` — should show Gemini as default, Groq as fallback#1, Ollama as fallback#2.
 
 ## 6. Telegram Bot
 
