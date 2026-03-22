@@ -131,13 +131,39 @@ Verify with `openclaw models list` — should show Gemini as default, Groq as fa
 
 ## 6. Telegram Bot
 
-See issue #32 for Telegram setup. After creating bot via BotFather:
+### Create the bot
+
+1. Open Telegram, find [@BotFather](https://t.me/BotFather)
+2. Send `/newbot`, choose a name and username
+3. Copy the bot token (format: `123456:ABC-DEF...`)
+
+### Connect to OpenClaw
 
 ```bash
-openclaw config set channels.telegram.enabled true
-openclaw config set channels.telegram.token "$TELEGRAM_BOT_TOKEN"
+# Add Telegram channel with bot token
+openclaw channels add --channel telegram --token "$TELEGRAM_BOT_TOKEN"
+
+# Restrict to your Telegram user ID only (get it from @userinfobot)
+openclaw config set channels.telegram.allowFrom "[$YOUR_TELEGRAM_ID]"
+
+# Restart gateway to apply
 openclaw gateway restart
 ```
+
+### Verify
+
+Send any message to your bot in Telegram. It should reply and the conversation should appear in the dashboard at `http://127.0.0.1:18789/`.
+
+### Settings reference
+
+| Setting | Description |
+|---|---|
+| `channels.telegram.enabled` | Enable/disable the channel |
+| `channels.telegram.botToken` | Bot token from BotFather |
+| `channels.telegram.allowFrom` | Array of allowed Telegram user IDs |
+| `channels.telegram.dmPolicy` | `pairing` (default) — reply to anyone who writes first |
+| `channels.telegram.groupPolicy` | `allowlist` (default) — block all groups unless allowed |
+| `channels.telegram.streaming` | `partial` — stream responses as they generate |
 
 ## 7. Health Check
 
