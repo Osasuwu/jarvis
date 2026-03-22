@@ -56,38 +56,46 @@ Note: on Windows, `openclaw gateway install` may fail due to permissions. Run ga
 ### Model priority chain
 
 1. **Google Gemini 2.5 Flash** (primary) — free tier: 1000 req/day, fast, high quality
-2. **Groq Qwen3-32B** (fallback #1) — free tier, very fast inference, strong tool use
-3. **Ollama qwen3:8b** (fallback #2) — local, unlimited, slow on weak GPU
+2. **OpenAI GPT-4o-mini** (fallback) — paid, cheap, reliable, good tool use
 
-Cloud models are primary while hardware is limited (RTX 3050 6GB). Ollama serves as unlimited offline safety net. When better GPU is available, flip Ollama back to primary.
+Note: Groq free tier has 6K TPM limit which is too low for OpenClaw's system prompts. Ollama on weak GPUs (< 8GB VRAM) times out before generating responses. Both are excluded from the default chain.
 
-### Cloud API keys
+### API keys
 
-Set as environment variables (or in `.env`):
+Set as **persistent** environment variables so they survive reboots and are available when the gateway starts.
 
-```bash
-# Google Gemini (https://aistudio.google.com/apikey — free tier: 1000 req/day on Flash)
-export GEMINI_API_KEY="..."
-
-# Groq (https://console.groq.com — free tier)
-export GROQ_API_KEY="gsk_..."
+**Windows (PowerShell, permanent):**
+```powershell
+[System.Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "...", "User")
+[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-...", "User")
 ```
 
-Groq and Google are built-in providers — no `models.providers` config needed, just the env vars.
+**Linux/macOS (add to ~/.bashrc or ~/.zshrc):**
+```bash
+export GEMINI_API_KEY="..."
+export OPENAI_API_KEY="sk-..."
+```
 
-### Ollama (local fallback)
+Gemini and OpenAI are built-in providers — no `models.providers` config needed, just the env vars.
 
-Install Ollama from https://ollama.com, then pull the model:
+### OpenClaw model config
+
+```bash
+openclaw config set agents.defaults.model.primary "google/gemini-2.5-flash"
+openclaw config set agents.defaults.model.fallbacks '["openai/gpt-4o-mini"]'
+```
+
+Verify with `openclaw models list`.
+
+### Ollama (optional, for strong GPUs)
+
+Only useful with 8GB+ VRAM. Install from https://ollama.com, then:
 
 ```bash
 ollama pull qwen3:8b
 ```
 
-### OpenClaw model config
-
-Set directly in `~/.openclaw/openclaw.json` (individual `config set` commands fail validation because `baseUrl` and `models` are both required). **Merge** these sections into the existing config — do not replace the whole file:
-
-Add a `"models"` top-level key:
+Add Ollama provider in `~/.openclaw/openclaw.json` (merge into existing config):
 
 ```json
 "models": {
@@ -112,22 +120,7 @@ Add a `"models"` top-level key:
 }
 ```
 
-Add `"model"` inside the existing `agents.defaults` section:
-
-```json
-"agents": {
-  "defaults": {
-    "model": {
-      "primary": "google/gemini-2.5-flash",
-      "fallbacks": ["groq/qwen/qwen3-32b", "ollama/qwen3:8b"]
-    }
-  }
-}
-```
-
 Important: do NOT add `/v1` to Ollama baseUrl — it breaks tool calling.
-
-Verify with `openclaw models list` — should show Gemini as default, Groq as fallback#1, Ollama as fallback#2.
 
 ## 6. Telegram Bot
 
