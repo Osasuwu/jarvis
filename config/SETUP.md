@@ -140,11 +140,11 @@ Verify with `openclaw models list` — should show Gemini as default, Groq as fa
 ### Connect to OpenClaw
 
 ```bash
-# Add Telegram channel with bot token
-openclaw channels add --channel telegram --token "$TELEGRAM_BOT_TOKEN"
+# Add Telegram channel with bot token (replace with your token from BotFather)
+openclaw channels add --channel telegram --token "123456:ABC-DEF..."
 
-# Restrict to your Telegram user ID only (get it from @userinfobot)
-openclaw config set channels.telegram.allowFrom "[$YOUR_TELEGRAM_ID]"
+# Restrict to your Telegram user ID only (get yours from @userinfobot)
+openclaw config set channels.telegram.allowFrom "[123456789]"
 
 # Restart gateway to apply
 openclaw gateway restart
@@ -160,9 +160,9 @@ Send any message to your bot in Telegram. It should reply and the conversation s
 |---|---|
 | `channels.telegram.enabled` | Enable/disable the channel |
 | `channels.telegram.botToken` | Bot token from BotFather |
-| `channels.telegram.allowFrom` | Array of allowed Telegram user IDs |
-| `channels.telegram.dmPolicy` | `pairing` (default) — reply to anyone who writes first |
-| `channels.telegram.groupPolicy` | `allowlist` (default) — block all groups unless allowed |
+| `channels.telegram.allowFrom` | Primary safety control: array of allowed Telegram user IDs. If unset, the bot may respond to anyone. |
+| `channels.telegram.dmPolicy` | `pairing` (default) — within `allowFrom` set, pair with whoever writes first. Without `allowFrom`, replies to anyone. |
+| `channels.telegram.groupPolicy` | `allowlist` (default) — only respond in explicitly allowed groups. Without allowlist, drops all group messages. |
 | `channels.telegram.streaming` | `partial` — stream responses as they generate |
 
 ## 7. Health Check
