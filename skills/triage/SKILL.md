@@ -2,13 +2,11 @@
 name: daily_triage
 description: "Daily triage across configured GitHub repos: finds stale issues, missing metadata, blocked items, and status inconsistencies. Produces a markdown summary. Trigger: /triage or on schedule."
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "📋",
-        "requires": { "bins": ["gh"] },
-      },
-  }
+  openclaw:
+    emoji: "📋"
+    requires:
+      bins:
+        - gh
 ---
 
 # Daily Triage Skill
@@ -37,7 +35,7 @@ Read the file `repos.conf` from this skill's directory. Each non-empty, non-comm
 For each repo, run:
 
 ```bash
-gh issue list --repo <owner/repo> --state open --json number,title,labels,milestone,state,assignees,updatedAt,createdAt,body --limit 200
+gh issue list --repo <owner/repo> --state open --json number,title,labels,milestone,state,assignees,updatedAt,createdAt,body --limit 1000
 ```
 
 ### Step 3 — Run checks
@@ -57,7 +55,10 @@ Report each missing prefix as a separate violation.
 
 #### 3b. Hierarchy check (WARNING severity)
 
-Non-epic issues should have a parent epic linkage (look for `Parent: #N` in the issue body, or check GitHub sub-issues via `gh api repos/{owner}/{repo}/issues/{number}/sub_issues --jq '.[] | .number'` on parent epics).
+Non-epic issues should be linked to a parent epic. Use this approach:
+
+1. Look for `Parent: #N` or `Parent Epic: #N` in the issue body as a quick signal.
+2. If body has no parent hint, check sub-issues: first list all open epics once (`gh issue list --repo <owner/repo> --state open --label epic --json number`), then for each epic call `gh api repos/{owner}/{repo}/issues/{epicNumber}/sub_issues --jq '.[].number'` once to build a local map of child→parent. Do NOT call sub_issues API per child issue.
 
 Exception: issues with `priority:critical` label are allowed without a parent (standalone hotfixes).
 
@@ -98,25 +99,25 @@ If there are violations, group them by category:
 ```markdown
 ## Metadata
 
-- :red_circle: **#42** Issue title
+- 🔴 **#42** Issue title
   - Missing required label with prefix 'status:'
   - **Action:** Add a 'status:*' label to #42.
 
 ## Hierarchy
 
-- :yellow_circle: **#15** Issue title
+- 🟡 **#15** Issue title
   - Task has no parent epic linkage.
   - **Action:** Link #15 to a parent epic via GitHub sub-issues, or mark priority:critical if standalone hotfix.
 
 ## Blocked
 
-- :red_circle: **#7** Issue title
+- 🔴 **#7** Issue title
   - Issue is blocked — requires supervisor attention.
   - **Action:** Review #7 blockers, resolve or re-prioritize.
 
 ## Staleness
 
-- :yellow_circle: **#23** Issue title
+- 🟡 **#23** Issue title
   - No updates for 21 days.
   - **Action:** Review #23: update status, close if done, or mark blocked with a note.
 ```

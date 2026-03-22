@@ -2,13 +2,11 @@
 name: issue_health
 description: "Validate issue metadata across configured GitHub repos: required labels, type labels, parent linkage, epic structure, milestones. Trigger: /issue-health"
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "🩺",
-        "requires": { "bins": ["gh"] },
-      },
-  }
+  openclaw:
+    emoji: "🩺"
+    requires:
+      bins:
+        - gh
 ---
 
 # Issue Health Skill
@@ -28,7 +26,7 @@ Triage is a lightweight daily scan (stale, blocked, basic metadata). Issue healt
 
 ## Configuration
 
-Repositories are listed in `repos.conf` in the `triage` skill directory (shared config).
+Repositories are listed in the shared `repos.conf` file at `~/.openclaw/workspace/skills/triage/repos.conf` (source: `skills/triage/repos.conf` in the Jarvis repo).
 
 ## Execution Steps
 
@@ -37,17 +35,18 @@ Repositories are listed in `repos.conf` in the `triage` skill directory (shared 
 For each repo, run:
 
 ```bash
-gh issue list --repo <owner/repo> --state open --json number,title,labels,milestone,state,assignees,updatedAt,createdAt,body --limit 200
+gh issue list --repo <owner/repo> --state open --json number,title,labels,milestone,state,assignees,updatedAt,createdAt,body --limit 1000
 ```
 
 ### Step 2 — Run checks
 
 #### 2a. Type label check (ERROR)
 
-Every issue must have exactly one type label: `epic`, `task`, or `bug`.
-If the repo uses a different type convention (e.g. `child` instead of `task`), note it but do not flag as error.
+This check validates type labels per repository:
+- For the Jarvis repo (`personal-AI-agent`), valid type labels are: `epic`, `task`, `bug`.
+- For other repos, detect which type labels exist (e.g. `child`, `epic`) and validate against those.
 
-Report issues with zero or multiple type labels.
+Every issue must have exactly one type label from the repo's type-label set. Report issues with zero or multiple type labels. Do not flag issues solely because they use different type-label names than the Jarvis repo.
 
 #### 2b. Required labels check (ERROR)
 
@@ -60,9 +59,9 @@ Report each missing prefix separately.
 
 #### 2c. Parent linkage check (WARNING)
 
-Non-epic issues should be linked to a parent epic. Check for:
-- `Parent: #N` or `Parent Epic: #N` in the issue body
-- Or presence as a GitHub sub-issue
+Non-epic issues should be linked to a parent epic via GitHub sub-issues.
+- Primary check: verify the issue is linked as a GitHub sub-issue of an epic. To do this efficiently, list all open epics once (`gh issue list --repo <owner/repo> --state open --label epic --json number`), then for each epic call `gh api repos/{owner}/{repo}/issues/{epicNumber}/sub_issues --jq '.[].number'` once to build a local child→parent map.
+- Supplemental: look for `Parent: #N` or `Parent Epic: #N` in the body. A body hint without a sub-issue link should be flagged as a mismatch.
 
 Exceptions: issues with `priority:critical` are allowed without a parent.
 
@@ -70,9 +69,10 @@ Exceptions: issues with `priority:critical` are allowed without a parent.
 
 Epic issues should have:
 - A `## Children` or `## Child Issues` section in the body
-- At least one child reference (`#N`)
+- Children listed as markdown checkboxes (`- [ ] #N Description`), at least one
+- At least one child reference (`#N`) in checkbox form
 
-Report epics with no children section or empty children list.
+Report epics with no children section or with a children section that has no checkbox items.
 
 #### 2e. Milestone check (WARNING)
 
@@ -101,19 +101,19 @@ Issues with `status:in-progress` should have an assignee. Report unassigned in-p
 
 ### Errors
 
-- :red_circle: **#42** Issue title
+- 🔴 **#42** Issue title
   - Missing required label: `priority:*`
   - **Action:** Add a priority label.
 
 ### Warnings
 
-- :yellow_circle: **#15** Issue title
+- 🟡 **#15** Issue title
   - No parent epic linkage.
   - **Action:** Link to parent epic or mark priority:critical.
 
 ### Info
 
-- :large_blue_circle: **#8** Issue title
+- 🔵 **#8** Issue title
   - In-progress but no assignee.
   - **Action:** Assign someone or update status.
 

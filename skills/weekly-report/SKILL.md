@@ -2,13 +2,11 @@
 name: weekly_report
 description: "Weekly delivery report across configured GitHub repos: closed issues, merged PRs, blockers, velocity summary. Trigger: /weekly-report or on schedule."
 metadata:
-  {
-    "openclaw":
-      {
-        "emoji": "📊",
-        "requires": { "bins": ["gh"] },
-      },
-  }
+  openclaw:
+    emoji: "📊"
+    requires:
+      bins:
+        - gh
 ---
 
 # Weekly Report Skill
@@ -24,7 +22,7 @@ Use this skill when:
 
 ## Configuration
 
-Repositories to report on are listed in `repos.conf` in the `triage` skill directory (shared config). If the file is missing, ask the user which repos to report on.
+Repositories to report on are listed in the shared `repos.conf` file located at `skills/triage/repos.conf` in the Jarvis repo (deployed to `~/.openclaw/workspace/skills/triage/repos.conf`). If the file is missing, ask the user which repos to report on.
 
 ## Execution Steps
 
@@ -39,7 +37,7 @@ For each repo in the config, run these commands:
 #### Closed issues (last 7 days)
 
 ```bash
-gh issue list --repo <owner/repo> --state closed --json number,title,labels,closedAt,milestone --limit 100
+gh issue list --repo <owner/repo> --state closed --json number,title,labels,closedAt,milestone --limit 500
 ```
 
 Filter results to only include issues where `closedAt` is within the last 7 days.
@@ -47,7 +45,7 @@ Filter results to only include issues where `closedAt` is within the last 7 days
 #### Merged PRs (last 7 days)
 
 ```bash
-gh pr list --repo <owner/repo> --state merged --json number,title,author,mergedAt --limit 100
+gh pr list --repo <owner/repo> --state merged --json number,title,author,mergedAt --limit 500
 ```
 
 Filter results to only include PRs where `mergedAt` is within the last 7 days.
@@ -61,7 +59,8 @@ gh issue list --repo <owner/repo> --state open --label status:blocked --json num
 #### Open issues count
 
 ```bash
-gh issue list --repo <owner/repo> --state open --json number --jq 'length'
+# Note: --limit 1000 caps the count; increase if repo may have >1000 open issues.
+gh issue list --repo <owner/repo> --state open --json number --limit 1000 --jq 'length'
 ```
 
 ### Step 3 — Format report
@@ -96,7 +95,7 @@ Produce a markdown report with this structure:
 
 ### Blockers (N)
 
-- :red_circle: #7 Blocked issue title
+- 🔴 #7 Blocked issue title
 
 ## repo2
 
@@ -126,4 +125,4 @@ Return the full markdown report to the user. The report must be readable in both
 - Process repos sequentially to avoid rate limits.
 - This skill is read-only — no modifications to any repos.
 - Keep the report concise: skip empty subsections within repos that had some activity.
-- Use the shared `repos.conf` from the triage skill to stay consistent.
+- Use the shared `repos.conf` from `~/.openclaw/workspace/skills/triage/repos.conf`.
