@@ -1,177 +1,124 @@
-# Jarvis / OpenClaw Setup Guide
+# Jarvis Setup Guide (Claude Agent SDK + MCP)
 
 ## Prerequisites
 
-- Node.js 22+ (tested with v24.14.0)
-- npm 11+
-- OpenSSL (for token generation) or PowerShell
-- Windows 11 (primary), Linux (server)
+- Python 3.11+
+- GitHub CLI (`gh`) authenticated
+- Claude API key with billing enabled
+- Telegram bot token (optional for mobile interface)
+- Windows 11 (primary), Linux/macOS supported
 
-## 1. Install OpenClaw
+## 1. Python Environment
 
-```bash
-npm install -g openclaw@latest
-openclaw --version  # verify: 2026.3.13+
-```
-
-## 2. Configure Gateway
-
-```bash
-# Local-only, not exposed to network
-openclaw config set gateway.mode local
-openclaw config set gateway.bind loopback
-openclaw config set gateway.port 18789
-
-# Auth token (generate once)
-# Linux/macOS:
-GATEWAY_TOKEN=$(openssl rand -hex 32)
-# Windows PowerShell (if openssl not available):
-# $GATEWAY_TOKEN = -join ((1..32) | ForEach-Object { "{0:x2}" -f (Get-Random -Max 256) })
-openclaw config set gateway.auth.mode token
-openclaw config set gateway.auth.token "$GATEWAY_TOKEN"
-
-# Disable memory search (no embedding provider)
-openclaw config set agents.defaults.memorySearch.enabled false
-```
-
-Config is stored at `~/.openclaw/openclaw.json`.
-
-## 3. Start Gateway
-
-```bash
-# Foreground (for testing):
-openclaw gateway
-
-# Check status:
-openclaw gateway status
-
-# Dashboard:
-# http://127.0.0.1:18789/
-```
-
-Note: on Windows, `openclaw gateway install` may fail due to permissions. Run gateway manually or via startup script.
-
-## 4. LLM Providers
-
-### Model priority chain
-
-1. **Google Gemini 2.5 Flash** (primary) — free tier: 1000 req/day, fast, high quality
-2. **OpenAI GPT-4o-mini** (fallback) — paid, cheap, reliable, good tool use
-
-Note: Groq free tier has 6K TPM limit which is too low for OpenClaw's system prompts. Ollama on weak GPUs (< 8GB VRAM) times out before generating responses. Both are excluded from the default chain.
-
-### API keys
-
-Set as **persistent** environment variables so they survive reboots and are available when the gateway starts.
-
-**Windows (PowerShell, permanent):**
 ```powershell
-[System.Environment]::SetEnvironmentVariable("GEMINI_API_KEY", "...", "User")
-[System.Environment]::SetEnvironmentVariable("OPENAI_API_KEY", "sk-...", "User")
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 ```
 
-**Linux/macOS (add to ~/.bashrc or ~/.zshrc):**
-```bash
-export GEMINI_API_KEY="..."
-export OPENAI_API_KEY="sk-..."
+## 2. Install Runtime Dependencies
+
+```powershell
+pip install claude-agent-sdk
 ```
 
-Gemini and OpenAI are built-in providers — no `models.providers` config needed, just the env vars.
+If/when MCP transport libraries are required by implementation, add them to project dependencies.
 
-### OpenClaw model config
+## 3. Configure Secrets
 
-```bash
-openclaw config set agents.defaults.model.primary "google/gemini-2.5-flash"
-openclaw config set agents.defaults.model.fallbacks '["openai/gpt-4o-mini"]'
+Set user-level environment variables (persistent):
+
+```powershell
+[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
+[System.Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "123456:ABC-DEF...", "User")
 ```
 
-Verify with `openclaw models list`.
+Open a new terminal after setting variables.
 
-### Ollama (optional, for strong GPUs)
+Verify API key quickly:
 
-Only useful with 8GB+ VRAM. Install from https://ollama.com, then:
-
-```bash
-ollama pull qwen3:8b
+```powershell
+python -c "import os; print('ANTHROPIC_API_KEY set:', bool(os.getenv('ANTHROPIC_API_KEY')))"
 ```
 
-Add Ollama provider in `~/.openclaw/openclaw.json` (merge into existing config):
+## 4. Model Routing Policy
 
-```json
-"models": {
-  "providers": {
-    "ollama": {
-      "baseUrl": "http://localhost:11434",
-      "apiKey": "ollama-local",
-      "api": "ollama",
-      "models": [
-        {
-          "id": "qwen3:8b",
-          "name": "Qwen3 8B",
-          "reasoning": true,
-          "input": ["text"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 32768,
-          "maxTokens": 4096
-        }
-      ]
-    }
-  }
-}
+Use these defaults across Jarvis:
+
+- `claude-haiku-4.5`: triage, reports, self-check, simple routing
+- `claude-sonnet-4.6`: planning, research, coding tasks
+- `claude-opus-4.6`: manual-only for high-risk architectural decisions
+
+Budget target: $10-$30/month.
+
+## 5. MCP Configuration
+
+Create/update `.mcp.json` in repo root to declare required servers.
+
+Minimum set for M1:
+
+- GitHub MCP (issues, PRs, metadata)
+- Filesystem MCP (read/write within workspace)
+- Telegram bridge (MCP server or direct handler in `src/handlers/telegram.py`)
+
+Keep access narrow: only required tools per subagent.
+
+## 6. Telegram Integration
+
+Create bot via [@BotFather](https://t.me/BotFather), then configure:
+
+- `TELEGRAM_BOT_TOKEN`
+- allowlist of your Telegram user ID in bot handler config
+
+Test flow:
+
+1. Send `/triage`
+2. Jarvis receives message
+3. Command routes to PM subagent
+4. Reply returns to Telegram
+
+## 7. Scheduled Runs (Windows)
+
+Use Task Scheduler for recurring jobs:
+
+- Weekdays 09:00: daily triage
+- Friday 17:00: weekly report
+
+Runner command example:
+
+```powershell
+python src/main.py --command "/triage"
 ```
 
-Important: do NOT add `/v1` to Ollama baseUrl — it breaks tool calling.
+Alternative headless mode (when using CLI-based entrypoints):
 
-## 6. Telegram Bot
-
-### Create the bot
-
-1. Open Telegram, find [@BotFather](https://t.me/BotFather)
-2. Send `/newbot`, choose a name and username
-3. Copy the bot token (format: `123456:ABC-DEF...`)
-
-### Connect to OpenClaw
-
-```bash
-# Add Telegram channel with bot token (replace with your token from BotFather)
-openclaw channels add --channel telegram --token "123456:ABC-DEF..."
-
-# Restrict to your Telegram user ID only (get yours from @userinfobot)
-openclaw config set channels.telegram.allowFrom "[123456789]"
-
-# Restart gateway to apply
-openclaw gateway restart
+```powershell
+claude -p "/triage" --bare
 ```
 
-### Verify
+## 8. Safety Baseline
 
-Send any message to your bot in Telegram. It should reply and the conversation should appear in the dashboard at `http://127.0.0.1:18789/`.
+- Planner subagent: read-only tools
+- Coder subagent: branch + PR only, never direct push to `main`
+- Human review required before merge
+- Branch protections enabled in GitHub
 
-### Settings reference
+## 9. Quick Validation Checklist
 
-| Setting | Description |
-|---|---|
-| `channels.telegram.enabled` | Enable/disable the channel |
-| `channels.telegram.botToken` | Bot token from BotFather |
-| `channels.telegram.allowFrom` | Primary safety control: array of allowed Telegram user IDs. If unset, the bot may respond to anyone. |
-| `channels.telegram.dmPolicy` | `pairing` (default) — within `allowFrom` set, pair with whoever writes first. Without `allowFrom`, replies to anyone. |
-| `channels.telegram.groupPolicy` | `allowlist` (default) — only respond in explicitly allowed groups. Without allowlist, drops all group messages. |
-| `channels.telegram.streaming` | `partial` — stream responses as they generate |
-
-## 7. Health Check
-
-```bash
-openclaw doctor
-openclaw doctor --fix  # auto-fix common issues
-```
+- `gh auth status` is OK
+- `ANTHROPIC_API_KEY` is set
+- `TELEGRAM_BOT_TOKEN` is set (if Telegram enabled)
+- `/triage` runs from CLI
+- `/triage` runs from Telegram
+- Weekly schedule created and tested
 
 ## Key Paths
 
 | What | Path |
 |---|---|
-| Config | `~/.openclaw/openclaw.json` |
-| Workspace | `~/.openclaw/workspace/` |
-| SOUL.md | `~/.openclaw/workspace/SOUL.md` |
-| Custom skills | `~/.openclaw/workspace/skills/` |
-| Logs | Linux: `/tmp/openclaw/`, Windows: see gateway output for log path |
-| Sessions | `~/.openclaw/agents/main/sessions/` |
+| Personality | `config/SOUL.md` |
+| Setup | `config/SETUP.md` |
+| Strategy | `docs/PROJECT_PLAN.md` |
+| Architecture | `docs/architecture.md` |
+| Skills | `skills/*/SKILL.md` |
+| MCP config | `.mcp.json` |

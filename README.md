@@ -1,45 +1,43 @@
 # Jarvis
 
-Universal personal AI agent built on [OpenClaw](https://github.com/openclaw/openclaw).
+Universal personal AI agent built on [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-python) + [MCP](https://modelcontextprotocol.io/).
 
 ## What Jarvis Does
 
-Jarvis is a personal assistant that manages development workflows, helps with research, and adapts to whatever its owner is working on. It communicates via Telegram (mobile) and direct UI (workstation), runs locally, and uses free LLM models.
+Jarvis is a personal assistant that manages development workflows, helps with research, and adapts to whatever its owner is working on. It communicates via Telegram (mobile) and CLI (workstation), and uses Claude API for intelligence.
 
 Current focus: PM skills for managing multiple GitHub projects.
 
 ## Architecture
 
-- **Platform**: OpenClaw (gateway, messaging, skills framework, dashboard)
-- **LLM**: Ollama local (7B models) with free cloud fallback
-- **Communication**: Telegram Bot + OpenClaw direct UI
-- **Skills**: custom OpenClaw skills in `skills/` directory
-- **Personality**: defined in `SOUL.md`
+- **Runtime**: Claude Agent SDK (same engine as Claude Code)
+- **LLM**: Claude API — Haiku (routine), Sonnet (planning/code), Opus (rare)
+- **Integrations**: MCP servers (GitHub, Telegram, filesystem, web)
+- **Communication**: Telegram Bot + CLI
+- **Personality**: defined in `config/SOUL.md`
 
-Jarvis does not fork OpenClaw — it extends it with custom skills and configuration.
+Jarvis uses a tiered subagent architecture: a read-only planner for analysis and a write-capable coder that only works through branches and PRs. Human reviews all code changes.
 
 ## Project Structure
 
 ```
-├── SOUL.md              # Jarvis personality and behavior
-├── skills/              # Custom OpenClaw skills
+├── config/              # Jarvis personality, identity, setup
+├── skills/              # Skill definitions (subagent instructions)
 │   ├── triage/          # Daily triage across GitHub projects
 │   ├── weekly-report/   # Weekly delivery report
 │   └── issue-health/    # Issue metadata validation
-├── config/              # OpenClaw configuration
+├── src/                 # Agent SDK application code (future)
 ├── docs/                # Project documentation
 │   ├── PROJECT_PLAN.md  # Strategic plan
-│   ├── roadmap.md       # Delivery phases
 │   └── architecture.md  # Technical architecture
 └── .github/             # Dev process (CI, PR checks — NOT Jarvis features)
 ```
 
 ## Key Docs
 
-- [Project Plan](docs/PROJECT_PLAN.md) — vision, scope, delivery phases
-- [Roadmap](docs/roadmap.md) — what's next
+- [Project Plan](docs/PROJECT_PLAN.md) — vision, scope, delivery milestones
 - [Architecture](docs/architecture.md) — how it works
-- [Ideas](docs/archive/legacy-design/Ideas.md) — long-term vision
+- [GitHub Discussions](https://github.com/Osasuwu/personal-AI-agent/discussions) — ideas and brainstorming
 
 ## Development
 

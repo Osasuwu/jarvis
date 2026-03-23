@@ -1,5 +1,5 @@
 ---
-name: weekly_report
+name: weekly-report
 description: "Weekly delivery report across configured GitHub repos: closed issues, merged PRs, blockers, velocity summary. Trigger: /weekly-report or on schedule."
 metadata:
   openclaw:
@@ -10,6 +10,8 @@ metadata:
 ---
 
 # Weekly Report Skill
+
+> **EXECUTE IMMEDIATELY.** This document contains all instructions you need. Do NOT attempt to read, open, or fetch any files — the instructions are already in your context right now. Start at Step 1 below and follow each step in order. Use ONLY `gh` CLI commands.
 
 Generate a weekly delivery report across all configured GitHub repositories.
 
@@ -22,7 +24,7 @@ Use this skill when:
 
 ## Configuration
 
-Repositories to report on are listed in the shared `repos.conf` file located at `skills/triage/repos.conf` in the Jarvis repo (deployed to `~/.openclaw/workspace/skills/triage/repos.conf`). If the file is missing, ask the user which repos to report on.
+Repositories to report on are listed in the shared `repos.conf` file located at `skills/triage/repos.conf` in the Jarvis repo. If the file is missing, ask the user which repos to report on.
 
 ## Execution Steps
 
@@ -125,4 +127,15 @@ Return the full markdown report to the user. The report must be readable in both
 - Process repos sequentially to avoid rate limits.
 - This skill is read-only — no modifications to any repos.
 - Keep the report concise: skip empty subsections within repos that had some activity.
-- Use the shared `repos.conf` from `~/.openclaw/workspace/skills/triage/repos.conf`.
+- Use the shared `repos.conf` from `skills/triage/repos.conf`.
+
+## Strict Constraints
+
+These rules are mandatory. Violating any of them is a critical failure.
+
+- **No file creation.** Do NOT create, write, or modify any files (scripts, configs, reports, etc.).
+- **No git operations.** Do NOT run `git init`, `git add`, `git commit`, or any other git command.
+- **No script lookup.** This skill has NO executable scripts (.js, .py, .sh, etc.). All logic is in this document — follow the execution steps above directly.
+- **No package installs.** Do NOT run `npm`, `pip`, `apt`, or any package manager.
+- **Tool calls only.** The only shell commands you should run are `gh` CLI calls as described in the execution steps.
+- If you cannot complete a step, report the error in the output and move on — do NOT attempt workarounds that involve creating files or modifying the environment.

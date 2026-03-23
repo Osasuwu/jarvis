@@ -1,5 +1,5 @@
 ---
-name: issue_health
+name: issue-health
 description: "Validate issue metadata across configured GitHub repos: required labels, type labels, parent linkage, epic structure, milestones. Trigger: /issue-health"
 metadata:
   openclaw:
@@ -10,6 +10,8 @@ metadata:
 ---
 
 # Issue Health Skill
+
+> **EXECUTE IMMEDIATELY.** This document contains all instructions you need. Do NOT attempt to read, open, or fetch any files — the instructions are already in your context right now. Start at Step 1 below and follow each step in order. Use ONLY `gh` CLI commands.
 
 Deep validation of issue metadata and structure across all configured GitHub repositories.
 
@@ -26,7 +28,7 @@ Triage is a lightweight daily scan (stale, blocked, basic metadata). Issue healt
 
 ## Configuration
 
-Repositories are listed in the shared `repos.conf` file at `~/.openclaw/workspace/skills/triage/repos.conf` (source: `skills/triage/repos.conf` in the Jarvis repo).
+Repositories are listed in the shared `repos.conf` file at `skills/triage/repos.conf` in the Jarvis repo.
 
 ## Execution Steps
 
@@ -136,3 +138,14 @@ Return the full markdown report. Keep it readable in both Telegram and web UI.
 - If `gh` fails for a repo, log and continue.
 - Skip empty categories in the report.
 - Different repos may use different label conventions — note mismatches but adapt checks to what exists.
+
+## Strict Constraints
+
+These rules are mandatory. Violating any of them is a critical failure.
+
+- **No file creation.** Do NOT create, write, or modify any files (scripts, configs, reports, etc.).
+- **No git operations.** Do NOT run `git init`, `git add`, `git commit`, or any other git command.
+- **No script lookup.** This skill has NO executable scripts (.js, .py, .sh, etc.). All logic is in this document — follow the execution steps above directly.
+- **No package installs.** Do NOT run `npm`, `pip`, `apt`, or any package manager.
+- **Tool calls only.** The only shell commands you should run are `gh` CLI calls as described in the execution steps.
+- If you cannot complete a step, report the error in the output and move on — do NOT attempt workarounds that involve creating files or modifying the environment.

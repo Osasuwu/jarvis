@@ -11,6 +11,8 @@ metadata:
 
 # Daily Triage Skill
 
+> **EXECUTE IMMEDIATELY.** This document contains all instructions you need. Do NOT attempt to read, open, or fetch any files (SKILL.md, triage.js, etc.) — the instructions are already in your context right now. Start at Step 1 below and follow each step in order. Use ONLY `gh` CLI commands.
+
 Run a health check across all configured GitHub repositories. Report issues that need attention.
 
 ## When to Use
@@ -133,3 +135,14 @@ Return the full markdown report to the user. The report must be readable in both
 - If `gh` fails for a repo, log the error and continue with other repos.
 - Do NOT modify any issues — this skill is read-only.
 - Keep the report concise: skip categories with zero violations.
+
+## Strict Constraints
+
+These rules are mandatory. Violating any of them is a critical failure.
+
+- **No file creation.** Do NOT create, write, or modify any files (scripts, configs, reports, etc.).
+- **No git operations.** Do NOT run `git init`, `git add`, `git commit`, or any other git command.
+- **No script lookup.** This skill has NO executable scripts (.js, .py, .sh, etc.). All logic is in this document — follow the execution steps above directly.
+- **No package installs.** Do NOT run `npm`, `pip`, `apt`, or any package manager.
+- **Tool calls only.** The only shell commands you should run are `gh` CLI calls as described in the execution steps.
+- If you cannot complete a step, report the error in the output and move on — do NOT attempt workarounds that involve creating files or modifying the environment.
