@@ -8,9 +8,10 @@ from uuid import uuid4
 
 import requests
 
-from agents.registry import command_to_agent
+from agents.registry import command_to_agent, is_delegation_command
 from jarvis.costs import check_daily_budget, record_execution
 from jarvis.config import RuntimeConfig
+from jarvis.delegate import delegate_issue, parse_delegate_args
 from jarvis.dispatcher import (
     UnsupportedCommandError,
     build_prompt_for_user_input,
@@ -82,6 +83,7 @@ def _set_my_commands(token: str) -> None:
         "/weekly-report": "Weekly delivery report",
         "/issue-health": "Deep issue metadata validation",
         "/research": "Source-backed research by topic",
+        "/delegate": "Delegate issue to coding agent",
     }
     commands = []
     for cmd in _supported_commands():
@@ -135,8 +137,8 @@ def _normalize_command(text: str) -> str | None:
 
     canonical_map = _canonical_command_map()
     canonical_command = canonical_map.get(command_token)
-    if canonical_command == "/research":
-        return f"/research {arg}".strip()
+    if canonical_command in {"/research", "/delegate"}:
+        return f"{canonical_command} {arg}".strip()
     return canonical_command
 
 
@@ -146,8 +148,19 @@ def _handle_message(config: RuntimeConfig, parsed: TelegramMessage, session_id: 
     user_input = normalized_command or parsed.text.strip()
 
     if user_input == "/help":
-        help_lines = ["Available commands:", *(_supported_commands()), "/research <topic>"]
+        help_lines = ["Available commands:", *(_supported_commands())]
         return "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis."
+
+    # Delegation has its own pipeline
+    if is_delegation_command(user_input):
+        try:
+            repo, issue_number = parse_delegate_args(user_input)
+        except ValueError as exc:
+            return f"[jarvis] {exc}"
+        result = asyncio.run(delegate_issue(repo, issue_number))
+        if result.success:
+            return result.message
+        return f"[jarvis] delegation failed: {result.message}"
 
     try:
         prompt = build_prompt_for_user_input(user_input)

@@ -27,6 +27,14 @@ RESEARCH = AgentSpec(
     max_budget_usd=0.50,
 )
 
+# Delegation: brain uses Sonnet for decomposition, coding agent runs separately
+DELEGATE = AgentSpec(
+    name="delegate",
+    model="sonnet",
+    allowed_tools=["Read", "Grep", "Glob", "Bash"],
+    max_budget_usd=0.20,
+)
+
 # General chat: minimal tools, cheap
 CHAT = AgentSpec(
     name="chat",
@@ -43,4 +51,11 @@ def command_to_agent(user_input: str) -> AgentSpec:
         return PM_TRIAGE
     if command == "/research":
         return RESEARCH
+    if command == "/delegate":
+        return DELEGATE
     return CHAT
+
+
+def is_delegation_command(user_input: str) -> bool:
+    """Check if this is a /delegate command (needs special handling)."""
+    return user_input.strip().startswith("/delegate")

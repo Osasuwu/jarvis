@@ -5,10 +5,11 @@ import asyncio
 import sys
 from uuid import uuid4
 
-from agents.registry import command_to_agent
+from agents.registry import command_to_agent, is_delegation_command
 from handlers.telegram import run_telegram_loop
 from jarvis.costs import check_daily_budget, record_execution
 from jarvis.config import load_config
+from jarvis.delegate import delegate_issue, parse_delegate_args
 from jarvis.dispatcher import UnsupportedCommandError, build_prompt_for_user_input
 from jarvis.executor import execute_query
 
@@ -17,7 +18,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Jarvis — personal AI agent")
     parser.add_argument(
         "--command",
-        help="Command to execute, e.g. /triage, /weekly-report, /issue-health",
+        help="Command to execute, e.g. /triage, /delegate #42",
     )
     parser.add_argument(
         "--text",
@@ -34,6 +35,29 @@ def parse_args() -> argparse.Namespace:
         help="Show prompt preview without executing",
     )
     return parser.parse_args()
+
+
+async def run_delegation(user_input: str, config) -> int:
+    """Handle /delegate command — full pipeline."""
+    try:
+        repo, issue_number = parse_delegate_args(user_input)
+    except ValueError as exc:
+        print(f"[jarvis] {exc}", file=sys.stderr)
+        return 2
+
+    print(f"[jarvis] delegating #{issue_number} from {repo}")
+    print(f"[jarvis] pipeline: fetch → decompose → branch → code → PR")
+
+    result = await delegate_issue(repo, issue_number)
+
+    if result.success:
+        print(f"[jarvis] {result.message}")
+        if result.coding_summary:
+            print(f"\n--- Coding Agent Summary ---\n{result.coding_summary[:1000]}")
+        return 0
+    else:
+        print(f"[jarvis] delegation failed: {result.message}", file=sys.stderr)
+        return 1
 
 
 async def run_command(user_input: str, config) -> int:
@@ -110,6 +134,10 @@ def main() -> int:
         print(f"[jarvis] agent: {agent.name} | model: {agent.model}")
         print(f"[jarvis] prompt preview (first 600 chars):\n{prompt[:600]}")
         return 0
+
+    # Delegation has its own pipeline
+    if is_delegation_command(user_input):
+        return asyncio.run(run_delegation(user_input, config))
 
     return asyncio.run(run_command(user_input, config))
 
