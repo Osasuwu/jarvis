@@ -1,77 +1,130 @@
-# Migration Status
+# Roadmap: Self-Review + Self-Improve (48h)
 
 Status date: 2026-03-24
+Planning horizon: 2 days
+Target: reach the stage where Jarvis can assess its own code, propose an improvement plan, and safely improve itself by that plan.
 
-## M1: Architecture Migration — COMPLETE
+## Goal Definition (D+2)
 
-- [x] Runtime scaffold in `src/` with CLI entrypoint
-- [x] Command routing for `/triage`, `/weekly-report`, `/issue-health`, `/research`
-- [x] Environment and model configuration loader
-- [x] `.mcp.json` bootstrap for GitHub + filesystem MCP servers
-- [x] Telegram polling handler with end-to-end message flow
-- [x] Native Claude Agent SDK integration (replaced CLI subprocess bridge)
-- [ ] Scheduled runs (Task Scheduler or GitHub Actions trigger)
+By end of Day 2 Jarvis should be able to:
+1. Run a self-review and produce concrete findings with severity.
+2. Produce a prioritized improvement plan from those findings.
+3. Execute low-risk improvements autonomously via branch + PR flow.
+4. Trigger tools from plain chat by intent (without requiring slash command each time).
+5. Persist working memory (what was done, blockers, next actions) and reuse it in follow-up runs.
 
-## M2: Core Features — IN PROGRESS
+## Capacity and Limits Assumptions
 
-### Done
-- [x] Native SDK executor (`query()` instead of `subprocess.run`)
-- [x] Real token counting (SDK provides actual usage, no more `len(text)//4` heuristic)
-- [x] Per-query budget limit (`max_budget_usd` on every SDK call)
-- [x] Daily budget tracking and enforcement (blocks execution when limit reached)
-- [x] Skill prompt optimization (15KB → 5.6KB, -63% token overhead)
-- [x] Research skill implementation with web search + confidence scoring
-- [x] Agent tool permissions (`allowed_tools` per agent type)
+This roadmap is sized for using ~70% of Claude Pro capacity for this initiative.
 
-- [x] Delegation pipeline (Jarvis → coding agent → PR)
+- Pro usage allocation: ~70% to implementation/testing sessions for this roadmap, ~30% reserve for daily work.
+- Operational model: short execution batches with checkpoints to avoid hitting dynamic Pro rate caps.
+- Cost safety: keep API-side budget guardrails active (`per-query`, `per-day`) for planner/review paths.
 
-### Pending
-- [ ] Port PM skills to Agent SDK subagents (currently work via prompt+query, not dedicated subagents)
-- [ ] Scheduled execution (cron for daily triage, weekly reports)
-- [ ] Self-check skill
+## Issue Map
 
-## Architecture
+### Already exists (reuse)
 
-### Standard commands (PM, research, chat)
-```
-User Input (CLI/Telegram)
-    ↓
-dispatcher.py → build prompt from SKILL.md
-    ↓
-registry.py → select AgentSpec (model, tools, budget)
-    ↓
-executor.py → claude_agent_sdk.query(prompt, options)
-    ↓
-costs.py → record real tokens + USD from SDK
-    ↓
-Response → user
-```
+- #62 M3 Epic: Proactive Intelligence & Self-Improvement
+- #63 Opportunity Scanner: regular project/roadmap gap analysis
+- #65 Idea Quality Gate: impact/effort/risk scoring
+- #66 Risk Radar: early warning signals and regressions
+- #67 Learning Memory Loop: hypotheses/outcomes/lessons
+- #68 Experiment Runner: safe A/B strategy experiments
 
-### Delegation pipeline (/delegate)
-```
-/delegate #42
-    ↓
-delegate.py → fetch issue from GitHub (gh CLI)
-    ↓
-Jarvis brain (Sonnet, API) → decompose into coding prompt
-    ↓
-git checkout -b feature/42-title
-    ↓
-CodingAgent (Claude Code CLI, Pro subscription) → implement changes
-    ↓
-git commit + push → gh pr create
-    ↓
-PR URL → user
-```
+### Created now (missing and required)
 
-### Cost model
-- **Jarvis brain** (Haiku/Sonnet via API): cents per query for analysis/routing
-- **Coding agent** (Claude Code CLI via Pro subscription): included in $20/month
-- **Architecture principle**: cheap coordinator + specialized workers
+- #74 Autonomous Tool Routing from Plain Chat
+- #75 Self-Review Command: Jarvis evaluates its own code
+- #76 Self-Improve Loop: plan and safely apply improvements
 
-### Budget Safety Layers
-1. **Per-query**: SDK `max_budget_usd` hard limit (default $0.30)
-2. **Per-agent**: Each AgentSpec defines max budget (PM=$0.10, Research=$0.50, Delegate=$0.20)
-3. **Per-day**: `JARVIS_MAX_BUDGET_PER_DAY` check before execution (default $2.00)
-4. **Real tracking**: SDK provides actual token counts, no estimation
-5. **Coding agent**: Uses Pro subscription (free), not API
+All new issues are linked as sub-issues of #62.
+
+## 48h Execution Plan
+
+### Day 1 (Foundation + First Working Loop)
+
+#### Block A (3-4h): Plain-chat autonomous routing (#74)
+
+- Add intent classification for non-slash input.
+- Route high-confidence intent to tool-capable workflow (research/pm/delegate/self-review).
+- Keep low-confidence fallback to safe chat mode.
+- Add routing transparency in outputs (selected route + confidence).
+
+Deliverable:
+- Plain text requests like "продолжи работу над redrobot" invoke actionable workflow instead of chat-only mode.
+
+#### Block B (3-4h): Self-review baseline (#75)
+
+- Add `/self-review` command.
+- Compose checks: runtime errors, budget/config sanity, delegation health, changed-files risk review.
+- Produce structured report with critical/major/minor findings.
+
+Deliverable:
+- One reproducible self-review report from this repository.
+
+#### Block C (2-3h): Memory v0 bootstrap (#67, partial)
+
+- Start persistent work memory store (project, objective, attempted actions, blockers, next steps).
+- Write memory at end of `/self-review` and `/delegate` runs.
+- Read memory at start of related follow-up commands.
+
+Deliverable:
+- Jarvis remembers recent work context and blockers between runs.
+
+Day 1 exit criteria:
+- Autonomous routing works for at least 3 representative plain-chat prompts.
+- `/self-review` outputs actionable findings with file references.
+- Memory has at least one persisted run with blockers/next steps.
+
+### Day 2 (Self-Improve Automation + Safety)
+
+#### Block D (4-5h): Improvement planning + safe executor (#76)
+
+- Add `/self-improve` flow:
+  - read latest self-review findings,
+  - build prioritized plan with rationale,
+  - auto-apply low-risk items only,
+  - open PR with change summary and rollback notes.
+- High-risk items require explicit user approval before execution.
+
+Deliverable:
+- End-to-end: self-review -> plan -> apply safe subset -> PR.
+
+#### Block E (2-3h): Safety hardening (#66, #68 partial)
+
+- Add safety gates for self-modification (forbidden paths, destructive command denylist, confidence threshold).
+- Add one controlled experiment scenario to compare baseline vs improved behavior.
+
+Deliverable:
+- No unsafe autonomous edits during self-improve run.
+
+#### Block F (2h): Validation and stabilization (#63, #65 partial)
+
+- Run full dry cycle on this repo.
+- Measure quality signals: findings quality, accepted fixes, false positives.
+- Tune prioritization scoring and thresholds.
+
+Day 2 exit criteria:
+- Jarvis can independently propose and execute safe improvements.
+- At least one PR generated by `/self-improve` with clear summary and unresolved-items list.
+- Memory captures what was improved and what remains blocked.
+
+## Definition of Success for This Roadmap
+
+1. "Evaluate own code": done via `/self-review` report with severity and evidence.
+2. "Propose improvement plan": done via prioritized self-improve plan output.
+3. "Improve itself": done via guarded autonomous low-risk changes and PR creation.
+4. "Use tools from plain chat": done via autonomous routing in non-slash mode.
+5. "Accumulate memory now": done via persistent work memory updates each run.
+
+## Risks and Mitigations
+
+- Risk: Pro rate cap reached mid-session.
+  - Mitigation: smaller batches, checkpoint commits, reserve 30% subscription capacity.
+
+- Risk: unsafe self-modification.
+  - Mitigation: low-risk-only auto-execution, approval gate for medium/high risk, path/command guardrails.
+
+- Risk: noisy self-review findings.
+  - Mitigation: severity thresholds + quality gate scoring + feedback loop in memory.
