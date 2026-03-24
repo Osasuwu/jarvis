@@ -33,6 +33,9 @@ Single human owner, agent-assisted development.
 - PR body must include linked issue line: `Closes #<issue-number>` (or `Fixes`/`Resolves`).
 - Do not merge directly to `main`.
 - Keep one task per PR.
+- Default branch base is `main`.
+- Create an epic integration branch only when child tasks depend on unreleased epic changes.
+- If there is no dependency, create task branches directly from `main`.
 
 ## Issue Hierarchy
 

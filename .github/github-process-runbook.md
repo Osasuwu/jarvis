@@ -2,7 +2,7 @@
 
 This runbook defines the development process for the Jarvis repository itself.
 
-**Important**: this is a dev process document, not a Jarvis feature spec. Jarvis features are OpenClaw skills in `skills/`.
+**Important**: this is a dev process document, not a Jarvis feature spec. Jarvis features are skills and runtime code in `skills/` and `src/`.
 
 Primary plan: `docs/PROJECT_PLAN.md`
 
@@ -26,6 +26,8 @@ When working on this repo:
   - `feature/<issue-number>-<slug>`
   - `fix/<issue-number>-<slug>`
   - `chore/<issue-number>-<slug>`
+- Default base branch for task work is `main`.
+- Use epic integration branches only when child tasks depend on unreleased epic code.
 - PR body must include: `Closes #NNN` (or `Fixes`/`Resolves`).
 - One PR should not close multiple unrelated tasks.
 
@@ -58,7 +60,7 @@ Use `-F` (not `-f`) — the ID must be sent as integer, not string.
 
 ## 6. Scope Guardrails
 
-Current scope: OpenClaw skills development (PM, then research).
+Current scope: Claude Agent SDK + MCP migration, then PM and research skills expansion.
 
 See `docs/PROJECT_PLAN.md` for full scope definition and out-of-scope items.
 

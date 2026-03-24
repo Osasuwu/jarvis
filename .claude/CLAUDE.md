@@ -21,6 +21,7 @@ Do not confuse the two.
 
 - One issue per PR.
 - PR body must include linked issue (`Closes/Fixes/Resolves #NNN`).
+- Branches default from `main`; use epic integration branches only for real cross-task dependencies.
 - Preserve parent-child traceability across epics and tasks.
 - Follow project scope — check `docs/PROJECT_PLAN.md` before expanding scope.
 

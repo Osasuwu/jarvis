@@ -3,9 +3,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Iterable
+from uuid import uuid4
 
 import requests
 
+from agents.registry import command_to_agent
+from jarvis.costs import record_execution
 from jarvis.config import RuntimeConfig
 from jarvis.dispatcher import UnsupportedCommandError, build_prompt_for_command, get_skill_command_map
 from jarvis.executor import execute_prompt_with_claude
@@ -146,6 +149,7 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
             raise ValueError("TELEGRAM_ALLOW_USER_ID must be numeric") from exc
 
     offset: int | None = None
+    session_id = f"telegram-{uuid4().hex[:10]}"
     print("[jarvis] Telegram polling started")
     try:
         _set_my_commands(token)
@@ -193,11 +197,19 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
                 _send_message(token, parsed.chat_id, "[jarvis] ANTHROPIC_API_KEY is not set.")
                 continue
 
-            result = execute_prompt_with_claude(prompt)
+            selected_agent = command_to_agent(normalized_command)
+            result = execute_prompt_with_claude(prompt, model=selected_agent.model)
             if result.return_code != 0:
                 error = result.stderr.strip() or "unknown claude execution error"
                 _send_message(token, parsed.chat_id, f"[jarvis] command failed: {error}")
                 continue
+
+            record_execution(
+                model=selected_agent.model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                session_id=session_id,
+            )
 
             response_text = result.stdout.strip() or "[jarvis] Empty response"
             _send_message(token, parsed.chat_id, response_text)
