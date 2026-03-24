@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from typing import Iterable
@@ -8,14 +9,14 @@ from uuid import uuid4
 import requests
 
 from agents.registry import command_to_agent
-from jarvis.costs import record_execution
+from jarvis.costs import check_daily_budget, record_execution
 from jarvis.config import RuntimeConfig
 from jarvis.dispatcher import (
     UnsupportedCommandError,
     build_prompt_for_user_input,
     get_skill_command_map,
 )
-from jarvis.executor import execute_prompt_with_claude
+from jarvis.executor import execute_query
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_MESSAGE_LEN = 4096
@@ -29,7 +30,6 @@ def _supported_commands() -> list[str]:
 
 
 def _telegram_command_name(command: str) -> str:
-    # Telegram accepts only lowercase letters, digits and underscores in command names.
     return command.lstrip("/").replace("-", "_")
 
 
@@ -140,6 +140,53 @@ def _normalize_command(text: str) -> str | None:
     return canonical_command
 
 
+def _handle_message(config: RuntimeConfig, parsed: TelegramMessage, session_id: str) -> str:
+    """Process a single message and return the response text."""
+    normalized_command = _normalize_command(parsed.text)
+    user_input = normalized_command or parsed.text.strip()
+
+    if user_input == "/help":
+        help_lines = ["Available commands:", *(_supported_commands()), "/research <topic>"]
+        return "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis."
+
+    try:
+        prompt = build_prompt_for_user_input(user_input)
+    except (UnsupportedCommandError, FileNotFoundError) as exc:
+        return f"[jarvis] {exc}"
+
+    agent = command_to_agent(user_input)
+
+    # Daily budget check
+    allowed, remaining = check_daily_budget(config.budget.per_day_usd)
+    if not allowed:
+        return f"[jarvis] Daily budget exhausted (${config.budget.per_day_usd:.2f} limit)."
+
+    query_budget = min(agent.max_budget_usd, remaining)
+
+    result = asyncio.run(
+        execute_query(
+            prompt,
+            model=agent.model,
+            allowed_tools=agent.allowed_tools,
+            max_budget_usd=query_budget,
+        )
+    )
+
+    if result.cost_usd > 0 or result.input_tokens > 0:
+        record_execution(
+            model=agent.model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_usd=result.cost_usd,
+            session_id=session_id,
+        )
+
+    if not result.success:
+        return f"[jarvis] error: {result.error}"
+
+    return result.text.strip() or "[jarvis] Empty response"
+
+
 def run_telegram_loop(config: RuntimeConfig) -> int:
     token = config.telegram_bot_token
     if not token:
@@ -157,7 +204,7 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
     print("[jarvis] Telegram polling started")
     try:
         _set_my_commands(token)
-    except Exception as exc:  # pragma: no cover - network side effect
+    except Exception as exc:
         print(f"[jarvis] warning: failed to set Telegram commands: {exc}")
 
     while True:
@@ -172,43 +219,7 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
                 _send_message(token, parsed.chat_id, "Access denied for this user.")
                 continue
 
-            normalized_command = _normalize_command(parsed.text)
-            user_input = normalized_command or parsed.text.strip()
-
-            if user_input == "/help":
-                help_lines = ["Available commands:", *(_supported_commands()), "/research <topic>"]
-                _send_message(
-                    token,
-                    parsed.chat_id,
-                    "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis.",
-                )
-                continue
-
-            try:
-                prompt = build_prompt_for_user_input(user_input)
-            except (UnsupportedCommandError, FileNotFoundError) as exc:
-                _send_message(token, parsed.chat_id, f"[jarvis] {exc}")
-                continue
-
-            if not config.anthropic_api_key:
-                _send_message(token, parsed.chat_id, "[jarvis] ANTHROPIC_API_KEY is not set.")
-                continue
-
-            selected_agent = command_to_agent(user_input)
-            result = execute_prompt_with_claude(prompt, model=selected_agent.model)
-            if result.return_code != 0:
-                error = result.stderr.strip() or "unknown claude execution error"
-                _send_message(token, parsed.chat_id, f"[jarvis] command failed: {error}")
-                continue
-
-            record_execution(
-                model=selected_agent.model,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                session_id=session_id,
-            )
-
-            response_text = result.stdout.strip() or "[jarvis] Empty response"
-            _send_message(token, parsed.chat_id, response_text)
+            response = _handle_message(config, parsed, session_id)
+            _send_message(token, parsed.chat_id, response)
 
         time.sleep(1)
