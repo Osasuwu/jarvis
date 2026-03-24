@@ -7,6 +7,12 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[2]
 SKILLS_DIR = ROOT_DIR / "skills"
 
+JARVIS_IDENTITY = (
+    "You are Jarvis, a personal AI agent. "
+    "Be concise, direct, and respond in the user's language."
+)
+
+
 class UnsupportedCommandError(ValueError):
     pass
 
@@ -28,34 +34,23 @@ def get_skill_command_map() -> dict[str, Path]:
     return command_map
 
 
-
 def supported_commands() -> list[str]:
-    return sorted([*get_skill_command_map().keys(), "/research <topic>"])
+    return sorted(get_skill_command_map().keys())
 
 
-def _build_research_prompt(command: str) -> str:
-    topic = command.removeprefix("/research").strip()
-    if not topic:
-        raise UnsupportedCommandError("Usage: /research <topic>")
-
-    return (
-        "You are Jarvis researcher. Produce source-backed research with confidence score.\n\n"
-        f"Topic: {topic}\n\n"
-        "Output format:\n"
-        "1) Short summary\n"
-        "2) Key findings\n"
-        "3) Risks and unknowns\n"
-        "4) Sources\n"
-        "5) Confidence score (0-100) with justification\n"
-    )
+def _parse_command(text: str) -> tuple[str, str]:
+    """Parse '/command arg1 arg2' into ('/command', 'arg1 arg2')."""
+    parts = text.split(maxsplit=1)
+    command = parts[0]
+    args = parts[1].strip() if len(parts) > 1 else ""
+    return command, args
 
 
+def build_prompt_for_command(text: str) -> str:
+    command, args = _parse_command(text)
 
-def build_prompt_for_command(command: str) -> str:
-    if command.startswith("/research"):
-        return _build_research_prompt(command)
-
-    skill_file = get_skill_command_map().get(command)
+    skill_map = get_skill_command_map()
+    skill_file = skill_map.get(command)
     if skill_file is None:
         supported = ", ".join(supported_commands())
         raise UnsupportedCommandError(f"Unsupported command: {command}. Supported: {supported}")
@@ -64,13 +59,12 @@ def build_prompt_for_command(command: str) -> str:
         raise FileNotFoundError(f"Skill definition not found: {skill_file}")
 
     skill_instructions = skill_file.read_text(encoding="utf-8")
-    return (
-        "You are Jarvis. Execute the requested command strictly using the skill instructions below.\n\n"
-        f"Requested command: {command}\n\n"
-        "=== SKILL INSTRUCTIONS START ===\n"
-        f"{skill_instructions}\n"
-        "=== SKILL INSTRUCTIONS END ===\n"
-    )
+
+    prompt = f"{JARVIS_IDENTITY}\n\nExecute: {command}"
+    if args:
+        prompt += f"\nTopic/arguments: {args}"
+    prompt += f"\n\n{skill_instructions}\n"
+    return prompt
 
 
 def build_prompt_for_user_input(user_input: str) -> str:
@@ -81,8 +75,4 @@ def build_prompt_for_user_input(user_input: str) -> str:
     if text.startswith("/"):
         return build_prompt_for_command(text)
 
-    return (
-        "You are Jarvis, a personal AI assistant for project and research workflows. "
-        "Respond clearly in the user's language, and ask brief clarifying questions only when needed.\n\n"
-        f"User message:\n{text}\n"
-    )
+    return f"{JARVIS_IDENTITY}\n\n{text}\n"

@@ -1,41 +1,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 COSTS_FILE = ROOT_DIR / ".jarvis" / "costs.json"
-
-
-@dataclass(frozen=True)
-class ModelPrice:
-    input_per_million: float
-    output_per_million: float
-
-
-MODEL_PRICES = {
-    "claude-haiku-4.5": ModelPrice(input_per_million=1.0, output_per_million=5.0),
-    "claude-sonnet-4.6": ModelPrice(input_per_million=3.0, output_per_million=15.0),
-    "claude-opus-4.6": ModelPrice(input_per_million=5.0, output_per_million=25.0),
-}
-
-
-def estimate_tokens(text: str) -> int:
-    # Coarse heuristic to keep tracking simple without model-side usage metadata.
-    return max(1, len(text) // 4)
-
-
-def estimate_cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:
-    price = MODEL_PRICES.get(model)
-    if price is None:
-        return 0.0
-    return (
-        (input_tokens / 1_000_000) * price.input_per_million
-        + (output_tokens / 1_000_000) * price.output_per_million
-    )
 
 
 def _read_costs() -> dict:
@@ -49,16 +20,40 @@ def _write_costs(data: dict) -> None:
     COSTS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=True), encoding="utf-8")
 
 
-def record_execution(model: str, input_tokens: int, output_tokens: int, session_id: str) -> float:
+def get_today_spend() -> float:
+    """Return total USD spent today."""
+    data = _read_costs()
     day_key = datetime.now(UTC).strftime("%Y-%m-%d")
-    cost = estimate_cost_usd(model, input_tokens, output_tokens)
+    day = data.get("days", {}).get(day_key, {})
+    return day.get("cost_usd", 0.0)
+
+
+def check_daily_budget(limit_usd: float) -> tuple[bool, float]:
+    """Check if daily budget allows another query.
+
+    Returns (allowed, remaining_usd).
+    """
+    spent = get_today_spend()
+    remaining = limit_usd - spent
+    return remaining > 0, round(remaining, 6)
+
+
+def record_execution(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cost_usd: float,
+    session_id: str,
+) -> float:
+    """Record real cost from SDK (no estimation)."""
+    day_key = datetime.now(UTC).strftime("%Y-%m-%d")
 
     data = _read_costs()
 
     day = data["days"].setdefault(day_key, {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
     day["input_tokens"] += input_tokens
     day["output_tokens"] += output_tokens
-    day["cost_usd"] = round(day["cost_usd"] + cost, 6)
+    day["cost_usd"] = round(day["cost_usd"] + cost_usd, 6)
 
     session = data["sessions"].setdefault(
         session_id,
@@ -66,8 +61,8 @@ def record_execution(model: str, input_tokens: int, output_tokens: int, session_
     )
     session["input_tokens"] += input_tokens
     session["output_tokens"] += output_tokens
-    session["cost_usd"] = round(session["cost_usd"] + cost, 6)
+    session["cost_usd"] = round(session["cost_usd"] + cost_usd, 6)
     session["updated_day"] = day_key
 
     _write_costs(data)
-    return round(cost, 6)
+    return round(cost_usd, 6)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from typing import Iterable
@@ -7,15 +9,16 @@ from uuid import uuid4
 
 import requests
 
-from agents.registry import command_to_agent
-from jarvis.costs import record_execution
+from agents.registry import command_to_agent, is_delegation_command
+from jarvis.costs import check_daily_budget, record_execution
 from jarvis.config import RuntimeConfig
+from jarvis.delegate import delegate_issue, parse_delegate_args
 from jarvis.dispatcher import (
     UnsupportedCommandError,
     build_prompt_for_user_input,
     get_skill_command_map,
 )
-from jarvis.executor import execute_prompt_with_claude
+from jarvis.executor import execute_query
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_MESSAGE_LEN = 4096
@@ -29,7 +32,6 @@ def _supported_commands() -> list[str]:
 
 
 def _telegram_command_name(command: str) -> str:
-    # Telegram accepts only lowercase letters, digits and underscores in command names.
     return command.lstrip("/").replace("-", "_")
 
 
@@ -82,6 +84,7 @@ def _set_my_commands(token: str) -> None:
         "/weekly-report": "Weekly delivery report",
         "/issue-health": "Deep issue metadata validation",
         "/research": "Source-backed research by topic",
+        "/delegate": "Delegate issue to coding agent",
     }
     commands = []
     for cmd in _supported_commands():
@@ -135,9 +138,121 @@ def _normalize_command(text: str) -> str | None:
 
     canonical_map = _canonical_command_map()
     canonical_command = canonical_map.get(command_token)
-    if canonical_command == "/research":
-        return f"/research {arg}".strip()
+    if canonical_command in {"/research", "/delegate"}:
+        return f"{canonical_command} {arg}".strip()
     return canonical_command
+
+
+def _resolve_user_input(text: str) -> str:
+    normalized_command = _normalize_command(text)
+    return normalized_command or text.strip()
+
+
+def _run_delegation_in_background(
+    token: str,
+    chat_id: int,
+    config: RuntimeConfig,
+    user_input: str,
+    session_id: str,
+) -> None:
+    """Execute delegation in a background thread and post final result to Telegram."""
+    try:
+        repo, issue_number = parse_delegate_args(user_input)
+    except ValueError as exc:
+        _send_message(token, chat_id, f"[jarvis] {exc}")
+        return
+
+    allowed, remaining = check_daily_budget(config.budget.per_day_usd)
+    if not allowed:
+        _send_message(
+            token,
+            chat_id,
+            f"[jarvis] Daily budget exhausted (${config.budget.per_day_usd:.2f} limit).",
+        )
+        return
+
+    agent = command_to_agent(user_input)
+    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
+    if query_budget <= 0:
+        _send_message(token, chat_id, "[jarvis] No budget available for delegation.")
+        return
+
+    _send_message(
+        token,
+        chat_id,
+        (
+            f"[jarvis] Delegation started for #{issue_number} in {repo}.\n"
+            f"Pipeline: fetch -> decompose -> branch -> code -> PR\n"
+            f"Budget: ${query_budget:.2f}"
+        ),
+    )
+
+    delegate_session_id = f"{session_id}-delegate-{uuid4().hex[:8]}"
+    try:
+        result = asyncio.run(
+            delegate_issue(
+                repo,
+                issue_number,
+                max_budget_usd=query_budget,
+                session_id=delegate_session_id,
+                daily_budget_usd=config.budget.per_day_usd,
+                per_query_usd=config.budget.per_query_usd,
+            )
+        )
+    except Exception as exc:
+        _send_message(token, chat_id, f"[jarvis] delegation failed with unexpected error: {exc}")
+        return
+
+    if result.success:
+        _send_message(token, chat_id, result.message)
+        return
+
+    _send_message(token, chat_id, f"[jarvis] delegation failed: {result.message}")
+
+
+def _handle_message(config: RuntimeConfig, user_input: str, session_id: str) -> str:
+    """Process a single non-delegation message and return the response text."""
+
+    if user_input == "/help":
+        help_lines = ["Available commands:", *(_supported_commands())]
+        return "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis."
+
+    try:
+        prompt = build_prompt_for_user_input(user_input)
+    except (UnsupportedCommandError, FileNotFoundError) as exc:
+        return f"[jarvis] {exc}"
+
+    agent = command_to_agent(user_input)
+
+    # Daily budget check
+    allowed, remaining = check_daily_budget(config.budget.per_day_usd)
+    if not allowed:
+        return f"[jarvis] Daily budget exhausted (${config.budget.per_day_usd:.2f} limit)."
+
+    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
+
+    result = asyncio.run(
+        execute_query(
+            prompt,
+            model=agent.model,
+            allowed_tools=agent.allowed_tools,
+            max_budget_usd=query_budget,
+        )
+    )
+
+    if result.cost_usd > 0 or result.input_tokens > 0:
+        record_execution(
+            model=agent.model,
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
+            cost_usd=result.cost_usd,
+            session_id=session_id,
+        )
+
+    if not result.success:
+        return f"[jarvis] error: {result.error}"
+
+    return result.text.strip() or "[jarvis] Empty response"
 
 
 def run_telegram_loop(config: RuntimeConfig) -> int:
@@ -157,7 +272,7 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
     print("[jarvis] Telegram polling started")
     try:
         _set_my_commands(token)
-    except Exception as exc:  # pragma: no cover - network side effect
+    except Exception as exc:
         print(f"[jarvis] warning: failed to set Telegram commands: {exc}")
 
     while True:
@@ -172,43 +287,19 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
                 _send_message(token, parsed.chat_id, "Access denied for this user.")
                 continue
 
-            normalized_command = _normalize_command(parsed.text)
-            user_input = normalized_command or parsed.text.strip()
+            user_input = _resolve_user_input(parsed.text)
 
-            if user_input == "/help":
-                help_lines = ["Available commands:", *(_supported_commands()), "/research <topic>"]
-                _send_message(
-                    token,
-                    parsed.chat_id,
-                    "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis.",
+            if is_delegation_command(user_input):
+                _send_message(token, parsed.chat_id, "[jarvis] Delegation request accepted. Running in background...")
+                worker = threading.Thread(
+                    target=_run_delegation_in_background,
+                    args=(token, parsed.chat_id, config, user_input, session_id),
+                    daemon=True,
                 )
+                worker.start()
                 continue
 
-            try:
-                prompt = build_prompt_for_user_input(user_input)
-            except (UnsupportedCommandError, FileNotFoundError) as exc:
-                _send_message(token, parsed.chat_id, f"[jarvis] {exc}")
-                continue
-
-            if not config.anthropic_api_key:
-                _send_message(token, parsed.chat_id, "[jarvis] ANTHROPIC_API_KEY is not set.")
-                continue
-
-            selected_agent = command_to_agent(user_input)
-            result = execute_prompt_with_claude(prompt, model=selected_agent.model)
-            if result.return_code != 0:
-                error = result.stderr.strip() or "unknown claude execution error"
-                _send_message(token, parsed.chat_id, f"[jarvis] command failed: {error}")
-                continue
-
-            record_execution(
-                model=selected_agent.model,
-                input_tokens=result.input_tokens,
-                output_tokens=result.output_tokens,
-                session_id=session_id,
-            )
-
-            response_text = result.stdout.strip() or "[jarvis] Empty response"
-            _send_message(token, parsed.chat_id, response_text)
+            response = _handle_message(config, user_input, session_id)
+            _send_message(token, parsed.chat_id, response)
 
         time.sleep(1)
