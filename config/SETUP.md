@@ -41,6 +41,8 @@ Verify API key quickly:
 python -c "import os; print('ANTHROPIC_API_KEY set:', bool(os.getenv('ANTHROPIC_API_KEY')))"
 ```
 
+Optional for delegation mode: set `CLAUDE_CLI_PATH` if `claude` is not on PATH.
+
 ## 4. Model Routing Policy
 
 Use these defaults across Jarvis:

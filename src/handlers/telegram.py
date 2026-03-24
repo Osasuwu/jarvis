@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from dataclasses import dataclass
 from typing import Iterable
@@ -142,25 +143,79 @@ def _normalize_command(text: str) -> str | None:
     return canonical_command
 
 
-def _handle_message(config: RuntimeConfig, parsed: TelegramMessage, session_id: str) -> str:
-    """Process a single message and return the response text."""
-    normalized_command = _normalize_command(parsed.text)
-    user_input = normalized_command or parsed.text.strip()
+def _resolve_user_input(text: str) -> str:
+    normalized_command = _normalize_command(text)
+    return normalized_command or text.strip()
+
+
+def _run_delegation_in_background(
+    token: str,
+    chat_id: int,
+    config: RuntimeConfig,
+    user_input: str,
+    session_id: str,
+) -> None:
+    """Execute delegation in a background thread and post final result to Telegram."""
+    try:
+        repo, issue_number = parse_delegate_args(user_input)
+    except ValueError as exc:
+        _send_message(token, chat_id, f"[jarvis] {exc}")
+        return
+
+    allowed, remaining = check_daily_budget(config.budget.per_day_usd)
+    if not allowed:
+        _send_message(
+            token,
+            chat_id,
+            f"[jarvis] Daily budget exhausted (${config.budget.per_day_usd:.2f} limit).",
+        )
+        return
+
+    agent = command_to_agent(user_input)
+    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
+    if query_budget <= 0:
+        _send_message(token, chat_id, "[jarvis] No budget available for delegation.")
+        return
+
+    _send_message(
+        token,
+        chat_id,
+        (
+            f"[jarvis] Delegation started for #{issue_number} in {repo}.\n"
+            f"Pipeline: fetch -> decompose -> branch -> code -> PR\n"
+            f"Budget: ${query_budget:.2f}"
+        ),
+    )
+
+    delegate_session_id = f"{session_id}-delegate-{uuid4().hex[:8]}"
+    try:
+        result = asyncio.run(
+            delegate_issue(
+                repo,
+                issue_number,
+                max_budget_usd=query_budget,
+                session_id=delegate_session_id,
+                daily_budget_usd=config.budget.per_day_usd,
+                per_query_usd=config.budget.per_query_usd,
+            )
+        )
+    except Exception as exc:
+        _send_message(token, chat_id, f"[jarvis] delegation failed with unexpected error: {exc}")
+        return
+
+    if result.success:
+        _send_message(token, chat_id, result.message)
+        return
+
+    _send_message(token, chat_id, f"[jarvis] delegation failed: {result.message}")
+
+
+def _handle_message(config: RuntimeConfig, user_input: str, session_id: str) -> str:
+    """Process a single non-delegation message and return the response text."""
 
     if user_input == "/help":
         help_lines = ["Available commands:", *(_supported_commands())]
         return "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis."
-
-    # Delegation has its own pipeline
-    if is_delegation_command(user_input):
-        try:
-            repo, issue_number = parse_delegate_args(user_input)
-        except ValueError as exc:
-            return f"[jarvis] {exc}"
-        result = asyncio.run(delegate_issue(repo, issue_number))
-        if result.success:
-            return result.message
-        return f"[jarvis] delegation failed: {result.message}"
 
     try:
         prompt = build_prompt_for_user_input(user_input)
@@ -232,7 +287,19 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
                 _send_message(token, parsed.chat_id, "Access denied for this user.")
                 continue
 
-            response = _handle_message(config, parsed, session_id)
+            user_input = _resolve_user_input(parsed.text)
+
+            if is_delegation_command(user_input):
+                _send_message(token, parsed.chat_id, "[jarvis] Delegation request accepted. Running in background...")
+                worker = threading.Thread(
+                    target=_run_delegation_in_background,
+                    args=(token, parsed.chat_id, config, user_input, session_id),
+                    daemon=True,
+                )
+                worker.start()
+                continue
+
+            response = _handle_message(config, user_input, session_id)
             _send_message(token, parsed.chat_id, response)
 
         time.sleep(1)

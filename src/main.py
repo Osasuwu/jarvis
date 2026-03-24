@@ -45,10 +45,31 @@ async def run_delegation(user_input: str, config) -> int:
         print(f"[jarvis] {exc}", file=sys.stderr)
         return 2
 
+    allowed, remaining = check_daily_budget(config.budget.per_day_usd)
+    if not allowed:
+        print(f"[jarvis] Daily budget exhausted. Limit: ${config.budget.per_day_usd:.2f}", file=sys.stderr)
+        return 2
+
+    agent = command_to_agent(user_input)
+    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
+    if query_budget <= 0:
+        print("[jarvis] No budget available for delegation.", file=sys.stderr)
+        return 2
+
+    session_id = f"delegate-cli-{uuid4().hex[:10]}"
+
     print(f"[jarvis] delegating #{issue_number} from {repo}")
     print(f"[jarvis] pipeline: fetch → decompose → branch → code → PR")
+    print(f"[jarvis] delegation budget: ${query_budget:.2f}")
 
-    result = await delegate_issue(repo, issue_number)
+    result = await delegate_issue(
+        repo,
+        issue_number,
+        max_budget_usd=query_budget,
+        session_id=session_id,
+        daily_budget_usd=config.budget.per_day_usd,
+        per_query_usd=config.budget.per_query_usd,
+    )
 
     if result.success:
         print(f"[jarvis] {result.message}")

@@ -58,4 +58,8 @@ def command_to_agent(user_input: str) -> AgentSpec:
 
 def is_delegation_command(user_input: str) -> bool:
     """Check if this is a /delegate command (needs special handling)."""
-    return user_input.strip().startswith("/delegate")
+    text = user_input.strip()
+    if not text.startswith("/"):
+        return False
+    command = text.split(maxsplit=1)[0]
+    return command == "/delegate"

@@ -1,12 +1,13 @@
-"""Delegation pipeline: Jarvis decomposes a task → coding agent executes → PR.
+"""Delegation pipeline: Jarvis decomposes a task -> coding agent executes -> PR.
 
 Flow:
-1. Fetch issue details from GitHub
-2. Jarvis brain (cheap model) analyzes issue and builds a structured coding prompt
-3. Create a feature branch
-4. Hand off to coding agent (Claude Code CLI / Pro subscription)
-5. Commit changes + create PR
-6. Return PR URL to user
+1. Preflight: check working tree is clean
+2. Fetch issue details from GitHub
+3. Jarvis brain (cheap model) decomposes into structured coding prompt
+4. Create feature branch
+5. Hand off to coding agent (Claude Code CLI / Pro subscription)
+6. Commit changes + create PR
+7. Return PR URL to user
 """
 from __future__ import annotations
 
@@ -16,13 +17,13 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_REPO = "Osasuwu/personal-AI-agent"
-
 from agents.coding import CodingResult, get_coding_agent
+from jarvis.costs import check_daily_budget, record_execution
 from jarvis.executor import execute_query
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
+REPOS_CONF = ROOT_DIR / "skills" / "triage" / "repos.conf"
 
 
 @dataclass
@@ -31,6 +32,19 @@ class DelegationResult:
     message: str
     pr_url: str = ""
     coding_summary: str = ""
+    cost_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+def _get_default_repo() -> str:
+    """Read the first repo from repos.conf as the default."""
+    if REPOS_CONF.exists():
+        for line in REPOS_CONF.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                return line
+    return "Osasuwu/personal-AI-agent"
 
 
 def _run_gh(args: list[str], cwd: str | Path = ROOT_DIR) -> str:
@@ -65,6 +79,24 @@ def _run_git(args: list[str], cwd: str | Path = ROOT_DIR) -> str:
     return result.stdout.strip()
 
 
+def _checkout_main_safe(cwd: str | Path = ROOT_DIR) -> None:
+    """Checkout main branch, ignoring errors."""
+    try:
+        _run_git(["checkout", "main"], cwd=cwd)
+    except RuntimeError:
+        pass
+
+
+def preflight_check(cwd: str | Path = ROOT_DIR) -> None:
+    """Ensure working tree is clean before delegation."""
+    status = _run_git(["status", "--porcelain"], cwd=cwd)
+    if status.strip():
+        raise RuntimeError(
+            "Working tree is not clean. Commit or stash changes before delegating.\n"
+            f"Dirty files:\n{status}"
+        )
+
+
 def fetch_issue(repo: str, issue_number: int) -> dict:
     """Fetch issue details from GitHub."""
     raw = _run_gh([
@@ -83,11 +115,10 @@ def _sanitize_branch_name(title: str) -> str:
     return name[:50]
 
 
-async def decompose_issue(issue: dict, repo: str) -> str:
-    """Use Jarvis brain (cheap model) to analyze the issue and build a coding prompt.
+async def decompose_issue(issue: dict, repo: str, *, max_budget_usd: float = 0.15) -> tuple[str, float, int, int]:
+    """Use Jarvis brain to analyze issue and build a coding prompt.
 
-    This is the 'coordinator' step — Haiku/Sonnet reads the issue and produces
-    a clear, structured prompt for the coding agent.
+    Returns (prompt_text, cost_usd, input_tokens, output_tokens).
     """
     issue_text = (
         f"Issue #{issue['number']}: {issue['title']}\n\n"
@@ -118,21 +149,20 @@ async def decompose_issue(issue: dict, repo: str) -> str:
     result = await execute_query(
         analysis_prompt,
         model="sonnet",
-        allowed_tools=["Read", "Grep", "Glob", "Bash"],
-        max_budget_usd=0.15,
+        allowed_tools=("Read", "Grep", "Glob", "Bash"),
+        max_budget_usd=max_budget_usd,
     )
 
     if not result.success:
         raise RuntimeError(f"Decomposition failed: {result.error}")
 
-    return result.text
+    return result.text, result.cost_usd, result.input_tokens, result.output_tokens
 
 
 def create_branch(issue_number: int, title: str, cwd: str | Path = ROOT_DIR) -> str:
     """Create and checkout a feature branch for the issue."""
     branch_name = f"feature/{issue_number}-{_sanitize_branch_name(title)}"
 
-    # Ensure we're on main and up to date
     _run_git(["checkout", "main"], cwd=cwd)
     _run_git(["pull", "--ff-only"], cwd=cwd)
     _run_git(["checkout", "-b", branch_name], cwd=cwd)
@@ -142,7 +172,6 @@ def create_branch(issue_number: int, title: str, cwd: str | Path = ROOT_DIR) -> 
 
 def commit_and_push(branch: str, issue_number: int, title: str, cwd: str | Path = ROOT_DIR) -> None:
     """Stage all changes, commit, and push."""
-    # Check if there are changes
     status = _run_git(["status", "--porcelain"], cwd=cwd)
     if not status.strip():
         raise RuntimeError("No changes were made by the coding agent.")
@@ -171,7 +200,7 @@ def create_pr(
         f"- [ ] No unnecessary files modified\n"
         f"- [ ] Tests pass (if applicable)\n\n"
         f"Closes #{issue_number}\n\n"
-        f"🤖 Generated by Jarvis delegation pipeline"
+        f"Generated by Jarvis delegation pipeline"
     )
 
     pr_url = _run_gh([
@@ -189,13 +218,15 @@ def parse_delegate_args(user_input: str) -> tuple[str, int]:
     """Parse '/delegate [repo]#<number>' into (repo, issue_number).
 
     Formats:
-        /delegate #42                    → (DEFAULT_REPO, 42)
-        /delegate Osasuwu/my-repo#42     → ("Osasuwu/my-repo", 42)
-        /delegate 42                     → (DEFAULT_REPO, 42)
+        /delegate #42                    -> (default_repo, 42)
+        /delegate Osasuwu/my-repo#42     -> ("Osasuwu/my-repo", 42)
+        /delegate 42                     -> (default_repo, 42)
     """
     args = user_input.removeprefix("/delegate").strip()
     if not args:
         raise ValueError("Usage: /delegate [owner/repo]#<issue_number>")
+
+    default_repo = _get_default_repo()
 
     # Try repo#number format
     match = re.match(r"^([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(\d+)$", args)
@@ -205,7 +236,7 @@ def parse_delegate_args(user_input: str) -> tuple[str, int]:
     # Try #number format
     match = re.match(r"^#?(\d+)$", args)
     if match:
-        return DEFAULT_REPO, int(match.group(1))
+        return default_repo, int(match.group(1))
 
     raise ValueError(f"Cannot parse: '{args}'. Use: /delegate [owner/repo]#<number>")
 
@@ -216,20 +247,42 @@ async def delegate_issue(
     *,
     cwd: str | Path = ROOT_DIR,
     model: str = "sonnet",
+    max_budget_usd: float = 0.30,
+    session_id: str = "delegate",
+    daily_budget_usd: float | None = None,
+    per_query_usd: float | None = None,
     use_api_key: bool = False,
     timeout_sec: int = 600,
 ) -> DelegationResult:
-    """Full delegation pipeline: issue → decompose → branch → code → PR.
+    """Full delegation pipeline: preflight -> issue -> decompose -> branch -> code -> PR."""
 
-    Args:
-        repo: GitHub repo in owner/repo format
-        issue_number: Issue number to implement
-        cwd: Repository working directory
-        model: Model for the coding agent
-        use_api_key: If True, coding agent uses API instead of Pro subscription
-        timeout_sec: Timeout for the coding agent
-    """
-    # Step 1: Fetch issue
+    # Step 0: Budget gate for decomposition call
+    effective_budget = max_budget_usd
+    if daily_budget_usd is not None:
+        allowed, remaining = check_daily_budget(daily_budget_usd)
+        if not allowed:
+            return DelegationResult(
+                success=False,
+                message=f"Daily budget exhausted (${daily_budget_usd:.2f} limit).",
+            )
+        effective_budget = min(effective_budget, remaining)
+
+    if per_query_usd is not None:
+        effective_budget = min(effective_budget, per_query_usd)
+
+    if effective_budget <= 0:
+        return DelegationResult(
+            success=False,
+            message="No budget available for delegation decomposition step.",
+        )
+
+    # Step 1: Preflight — working tree must be clean
+    try:
+        preflight_check(cwd=cwd)
+    except RuntimeError as exc:
+        return DelegationResult(success=False, message=str(exc))
+
+    # Step 2: Fetch issue
     try:
         issue = fetch_issue(repo, issue_number)
     except RuntimeError as exc:
@@ -240,19 +293,35 @@ async def delegate_issue(
 
     title = issue["title"]
 
-    # Step 2: Decompose (Jarvis brain, cheap)
+    # Step 3: Decompose (Jarvis brain, API cost tracked)
     try:
-        coding_prompt = await decompose_issue(issue, repo)
+        coding_prompt, cost, in_tok, out_tok = await decompose_issue(
+            issue, repo, max_budget_usd=effective_budget
+        )
     except RuntimeError as exc:
         return DelegationResult(success=False, message=f"Decomposition failed: {exc}")
 
-    # Step 3: Create branch
+    # Record decomposition cost
+    if cost > 0 or in_tok > 0:
+        record_execution(
+            model="sonnet",
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cost_usd=cost,
+            session_id=session_id,
+        )
+
+    # Step 4: Create branch
     try:
         branch = create_branch(issue_number, title, cwd=cwd)
     except RuntimeError as exc:
-        return DelegationResult(success=False, message=f"Branch creation failed: {exc}")
+        return DelegationResult(
+            success=False,
+            message=f"Branch creation failed: {exc}",
+            cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok,
+        )
 
-    # Step 4: Execute coding agent
+    # Step 5: Execute coding agent (Pro subscription, no API cost)
     agent = get_coding_agent(use_api_key=use_api_key)
 
     full_prompt = (
@@ -271,40 +340,47 @@ async def delegate_issue(
     )
 
     if not coding_result.success:
-        # Cleanup: go back to main
+        _checkout_main_safe(cwd)
         try:
-            _run_git(["checkout", "main"], cwd=cwd)
             _run_git(["branch", "-D", branch], cwd=cwd)
         except RuntimeError:
             pass
         return DelegationResult(
             success=False,
             message=f"Coding agent failed: {coding_result.error}",
+            cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok,
         )
 
-    # Step 5: Commit and push
+    # Step 6: Commit and push
     try:
         commit_and_push(branch, issue_number, title, cwd=cwd)
     except RuntimeError as exc:
+        _checkout_main_safe(cwd)
         return DelegationResult(
             success=False,
-            message=f"Commit/push failed: {exc}",
+            message=f"Commit/push failed: {exc}. Branch '{branch}' may still exist locally.",
             coding_summary=coding_result.summary,
+            cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok,
         )
 
-    # Step 6: Create PR
+    # Step 7: Create PR
     try:
         pr_url = create_pr(repo, branch, issue_number, title, coding_result.summary)
     except RuntimeError as exc:
+        _checkout_main_safe(cwd)
         return DelegationResult(
             success=False,
-            message=f"PR creation failed (changes are on branch '{branch}'): {exc}",
+            message=f"PR creation failed (changes pushed to branch '{branch}'): {exc}",
             coding_summary=coding_result.summary,
+            cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok,
         )
+
+    _checkout_main_safe(cwd)
 
     return DelegationResult(
         success=True,
         message=f"PR created: {pr_url}",
         pr_url=pr_url,
         coding_summary=coding_result.summary,
+        cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok,
     )
