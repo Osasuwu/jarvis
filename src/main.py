@@ -9,7 +9,7 @@ from agents.registry import command_to_agent
 from handlers.telegram import run_telegram_loop
 from jarvis.costs import record_execution
 from jarvis.config import load_config
-from jarvis.dispatcher import UnsupportedCommandError, build_prompt_for_command
+from jarvis.dispatcher import UnsupportedCommandError, build_prompt_for_user_input
 from jarvis.executor import execute_prompt_with_claude
 
 
@@ -19,6 +19,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--command",
         help="Command to execute, e.g. /triage, /weekly-report, /issue-health",
+    )
+    parser.add_argument(
+        "--text",
+        help="Plain text message for normal Jarvis conversation mode",
     )
     parser.add_argument(
         "--telegram",
@@ -66,19 +70,20 @@ def main() -> int:
             print(f"[jarvis] telegram mode failed: {exc}", file=sys.stderr)
             return 2
 
-    if not args.command:
-        print("[jarvis] --command is required unless --telegram is provided.", file=sys.stderr)
+    user_input = args.command or args.text
+    if not user_input:
+        print("[jarvis] --command or --text is required unless --telegram is provided.", file=sys.stderr)
         return 2
 
     try:
-        prompt = build_prompt_for_command(args.command)
+        prompt = build_prompt_for_user_input(user_input)
     except (UnsupportedCommandError, FileNotFoundError) as exc:
         print(f"[jarvis] {exc}", file=sys.stderr)
         return 2
 
-    selected_agent = command_to_agent(args.command)
+    selected_agent = command_to_agent(user_input)
 
-    print(f"[jarvis] command: {args.command}")
+    print(f"[jarvis] input: {user_input}")
     print(f"[jarvis] default model: {config.models.default_model}")
     print(f"[jarvis] selected agent: {selected_agent.name} ({selected_agent.model})")
 

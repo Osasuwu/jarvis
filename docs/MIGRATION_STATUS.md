@@ -8,7 +8,7 @@ Status date: 2026-03-24
 - [x] Add command routing for `/triage`, `/weekly-report`, `/issue-health`
 - [x] Add baseline environment and model configuration loader
 - [x] Add `.mcp.json` bootstrap for GitHub + filesystem MCP servers
-- [ ] Connect Telegram handler and validate end-to-end message flow
+- [x] Connect Telegram handler and validate end-to-end message flow
 - [ ] Configure Claude Agent SDK direct runtime integration (beyond CLI bridge)
 - [ ] Add scheduled runs (Task Scheduler or GitHub Actions trigger)
 

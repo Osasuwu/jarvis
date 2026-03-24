@@ -71,3 +71,18 @@ def build_prompt_for_command(command: str) -> str:
         f"{skill_instructions}\n"
         "=== SKILL INSTRUCTIONS END ===\n"
     )
+
+
+def build_prompt_for_user_input(user_input: str) -> str:
+    text = user_input.strip()
+    if not text:
+        raise UnsupportedCommandError("Input is empty.")
+
+    if text.startswith("/"):
+        return build_prompt_for_command(text)
+
+    return (
+        "You are Jarvis, a personal AI assistant for project and research workflows. "
+        "Respond clearly in the user's language, and ask brief clarifying questions only when needed.\n\n"
+        f"User message:\n{text}\n"
+    )
