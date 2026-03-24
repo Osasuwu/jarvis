@@ -1,12 +1,6 @@
 ---
 name: weekly-report
 description: "Weekly delivery report across configured GitHub repos: closed issues, merged PRs, blockers, velocity summary. Trigger: /weekly-report or on schedule."
-metadata:
-  openclaw:
-    emoji: "📊"
-    requires:
-      bins:
-        - gh
 ---
 
 # Weekly Report Skill

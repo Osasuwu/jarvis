@@ -126,10 +126,11 @@ Results delivered to Telegram.
 │   ├── triage/              # Daily triage across GitHub projects
 │   ├── weekly-report/       # Weekly delivery report
 │   └── issue-health/        # Issue metadata validation
-├── src/                     # Agent SDK application code (future)
+├── src/                     # Agent SDK application code
 │   ├── main.py              # Entry point
-│   ├── handlers/            # Telegram, cron, webhook handlers
-│   └── agents/              # Subagent definitions
+│   ├── jarvis/              # Runtime config and command dispatcher
+│   ├── handlers/            # Telegram, cron, webhook handlers (planned)
+│   └── agents/              # Subagent definitions (planned)
 ├── docs/                    # Project documentation
 │   ├── PROJECT_PLAN.md      # Strategic plan
 │   └── architecture.md      # This file

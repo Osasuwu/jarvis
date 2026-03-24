@@ -26,7 +26,9 @@ Jarvis uses a tiered subagent architecture: a read-only planner for analysis and
 │   ├── triage/          # Daily triage across GitHub projects
 │   ├── weekly-report/   # Weekly delivery report
 │   └── issue-health/    # Issue metadata validation
-├── src/                 # Agent SDK application code (future)
+├── src/                 # Agent SDK application code
+│   ├── main.py          # CLI entrypoint: command routing and execution
+│   └── jarvis/          # Runtime config and dispatcher
 ├── docs/                # Project documentation
 │   ├── PROJECT_PLAN.md  # Strategic plan
 │   └── architecture.md  # Technical architecture
@@ -46,6 +48,12 @@ This repo is developed with Claude Code. The `.github/` workflows handle CI and 
 ```bash
 git clone https://github.com/Osasuwu/personal-AI-agent.git
 cd personal-AI-agent
+python -m venv .venv
+. .venv/Scripts/activate
+pip install -e .
+python src/main.py --command "/triage"
+python src/main.py --command "/research agentic workflows"
+python src/main.py --telegram
 ```
 
 ## License

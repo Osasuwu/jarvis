@@ -4,7 +4,7 @@ Repository-level instructions for Claude-compatible agents.
 
 ## What this project is
 
-Jarvis — universal personal AI agent built on OpenClaw. This repo contains custom skills, configuration, and documentation. See `docs/PROJECT_PLAN.md` for full context.
+Jarvis — universal personal AI agent built on Claude Agent SDK + MCP. This repo contains custom skills, runtime code, configuration, and documentation. See `docs/PROJECT_PLAN.md` for full context.
 
 ## Source of truth
 
@@ -12,7 +12,7 @@ Use `.github/copilot-instructions.md` as the canonical process and scope instruc
 
 ## Key distinction
 
-- `skills/` = Jarvis features (OpenClaw skills)
+- `skills/` and `src/` = Jarvis features
 - `.github/` = development process for this repo (CI, PR checks, issue templates)
 
 Do not confuse the two.
@@ -21,6 +21,7 @@ Do not confuse the two.
 
 - One issue per PR.
 - PR body must include linked issue (`Closes/Fixes/Resolves #NNN`).
+- Branches default from `main`; use epic integration branches only for real cross-task dependencies.
 - Preserve parent-child traceability across epics and tasks.
 - Follow project scope — check `docs/PROJECT_PLAN.md` before expanding scope.
 

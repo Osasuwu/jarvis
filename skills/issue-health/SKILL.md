@@ -1,12 +1,6 @@
 ---
 name: issue-health
 description: "Validate issue metadata across configured GitHub repos: required labels, type labels, parent linkage, epic structure, milestones. Trigger: /issue-health"
-metadata:
-  openclaw:
-    emoji: "🩺"
-    requires:
-      bins:
-        - gh
 ---
 
 # Issue Health Skill

@@ -1,12 +1,6 @@
 ---
-name: daily_triage
+name: triage
 description: "Daily triage across configured GitHub repos: finds stale issues, missing metadata, blocked items, and status inconsistencies. Produces a markdown summary. Trigger: /triage or on schedule."
-metadata:
-  openclaw:
-    emoji: "📋"
-    requires:
-      bins:
-        - gh
 ---
 
 # Daily Triage Skill

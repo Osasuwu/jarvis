@@ -4,10 +4,10 @@ Instructions for AI agents working in this repository.
 
 ## Product Goal
 
-Jarvis is a universal personal AI agent built on OpenClaw. This repository contains:
-- Custom OpenClaw skills (in `skills/`)
+Jarvis is a universal personal AI agent built on Claude Agent SDK + MCP. This repository contains:
+- Custom Jarvis skills (in `skills/`)
 - SOUL.md personality configuration
-- OpenClaw setup and configuration
+- Agent runtime setup and configuration
 - Project documentation
 
 Current priority: PM skills for managing multiple GitHub projects (triage, reporting, issue health).
@@ -16,7 +16,7 @@ Next: research skills (web research, topic analysis, learning assistance).
 
 ## What This Repo Is NOT
 
-The `.github/` workflows (CI, PR checks, issue validation) are development tools for this repository — they are NOT Jarvis features. Jarvis features are OpenClaw skills in `skills/`.
+The `.github/` workflows (CI, PR checks, issue validation) are development tools for this repository — they are NOT Jarvis features. Jarvis features are skills and runtime code in `skills/` and `src/`.
 
 ## Operating Model
 
@@ -33,6 +33,9 @@ Single human owner, agent-assisted development.
 - PR body must include linked issue line: `Closes #<issue-number>` (or `Fixes`/`Resolves`).
 - Do not merge directly to `main`.
 - Keep one task per PR.
+- Default branch base is `main`.
+- Create an epic integration branch only when child tasks depend on unreleased epic changes.
+- If there is no dependency, create task branches directly from `main`.
 
 ## Issue Hierarchy
 
