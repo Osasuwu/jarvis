@@ -10,7 +10,11 @@ import requests
 from agents.registry import command_to_agent
 from jarvis.costs import record_execution
 from jarvis.config import RuntimeConfig
-from jarvis.dispatcher import UnsupportedCommandError, build_prompt_for_command, get_skill_command_map
+from jarvis.dispatcher import (
+    UnsupportedCommandError,
+    build_prompt_for_user_input,
+    get_skill_command_map,
+)
 from jarvis.executor import execute_prompt_with_claude
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
@@ -169,26 +173,19 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
                 continue
 
             normalized_command = _normalize_command(parsed.text)
-            if normalized_command is None:
-                command_list = ", ".join(_supported_commands())
-                _send_message(
-                    token,
-                    parsed.chat_id,
-                    f"Unsupported input. Send one of: {command_list}, /research <topic>",
-                )
-                continue
+            user_input = normalized_command or parsed.text.strip()
 
-            if normalized_command == "/help":
+            if user_input == "/help":
                 help_lines = ["Available commands:", *(_supported_commands()), "/research <topic>"]
                 _send_message(
                     token,
                     parsed.chat_id,
-                    "\n".join(help_lines),
+                    "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis.",
                 )
                 continue
 
             try:
-                prompt = build_prompt_for_command(normalized_command)
+                prompt = build_prompt_for_user_input(user_input)
             except (UnsupportedCommandError, FileNotFoundError) as exc:
                 _send_message(token, parsed.chat_id, f"[jarvis] {exc}")
                 continue
@@ -197,7 +194,7 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
                 _send_message(token, parsed.chat_id, "[jarvis] ANTHROPIC_API_KEY is not set.")
                 continue
 
-            selected_agent = command_to_agent(normalized_command)
+            selected_agent = command_to_agent(user_input)
             result = execute_prompt_with_claude(prompt, model=selected_agent.model)
             if result.return_code != 0:
                 error = result.stderr.strip() or "unknown claude execution error"
