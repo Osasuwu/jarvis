@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
 class AgentSpec:
     name: str
     model: str
-    allowed_tools: list[str]
+    allowed_tools: tuple[str, ...]
     max_budget_usd: float = 0.30
 
 
@@ -15,7 +15,7 @@ class AgentSpec:
 PM_TRIAGE = AgentSpec(
     name="pm-triage",
     model="haiku",
-    allowed_tools=["Bash", "Read", "Glob", "Grep"],
+    allowed_tools=("Bash", "Read", "Glob", "Grep"),
     max_budget_usd=0.10,
 )
 
@@ -23,7 +23,7 @@ PM_TRIAGE = AgentSpec(
 RESEARCH = AgentSpec(
     name="research",
     model="sonnet",
-    allowed_tools=["WebSearch", "WebFetch", "Read", "Grep", "Glob", "Bash"],
+    allowed_tools=("WebSearch", "WebFetch", "Read", "Grep", "Glob", "Bash"),
     max_budget_usd=0.50,
 )
 
@@ -31,7 +31,7 @@ RESEARCH = AgentSpec(
 DELEGATE = AgentSpec(
     name="delegate",
     model="sonnet",
-    allowed_tools=["Read", "Grep", "Glob", "Bash"],
+    allowed_tools=("Read", "Grep", "Glob", "Bash"),
     max_budget_usd=0.20,
 )
 
@@ -39,7 +39,7 @@ DELEGATE = AgentSpec(
 CHAT = AgentSpec(
     name="chat",
     model="haiku",
-    allowed_tools=[],
+    allowed_tools=(),
     max_budget_usd=0.05,
 )
 

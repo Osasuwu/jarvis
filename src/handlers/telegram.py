@@ -174,7 +174,7 @@ def _handle_message(config: RuntimeConfig, parsed: TelegramMessage, session_id: 
     if not allowed:
         return f"[jarvis] Daily budget exhausted (${config.budget.per_day_usd:.2f} limit)."
 
-    query_budget = min(agent.max_budget_usd, remaining)
+    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
 
     result = asyncio.run(
         execute_query(

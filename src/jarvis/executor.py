@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from claude_agent_sdk import (
@@ -32,14 +32,14 @@ async def execute_query(
     prompt: str,
     *,
     model: str,
-    allowed_tools: list[str] | None = None,
+    allowed_tools: list[str] | tuple[str, ...] | None = None,
     max_budget_usd: float = 0.30,
     cwd: str | Path | None = None,
 ) -> ExecutionResult:
     """Execute a prompt via Claude Agent SDK query()."""
     options = ClaudeAgentOptions(
         model=model,
-        allowed_tools=allowed_tools or [],
+        allowed_tools=list(allowed_tools) if allowed_tools else [],
         max_budget_usd=max_budget_usd,
         permission_mode="bypassPermissions",
         cwd=cwd or ROOT_DIR,
@@ -100,7 +100,7 @@ def run_query_sync(
     prompt: str,
     *,
     model: str,
-    allowed_tools: list[str] | None = None,
+    allowed_tools: list[str] | tuple[str, ...] | None = None,
     max_budget_usd: float = 0.30,
     cwd: str | Path | None = None,
 ) -> ExecutionResult:

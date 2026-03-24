@@ -9,14 +9,6 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 COSTS_FILE = ROOT_DIR / ".jarvis" / "costs.json"
 
 
-# Pricing per 1M tokens (March 2026)
-MODEL_PRICES = {
-    "haiku": {"input": 1.0, "output": 5.0},
-    "sonnet": {"input": 3.0, "output": 15.0},
-    "opus": {"input": 5.0, "output": 25.0},
-}
-
-
 def _read_costs() -> dict:
     if not COSTS_FILE.exists():
         return {"days": {}, "sessions": {}}

@@ -61,3 +61,7 @@ gh issue list --repo <owner/repo> --state open --json number --limit 1000 --jq '
 
 No activity → "No activity this week." for that repo.
 Process repos sequentially. If `gh` fails, log error and continue.
+
+## Constraints
+- **Read-only**: do NOT modify repos, create files, run git commands, or install packages.
+- Only run `gh` CLI commands as described above.

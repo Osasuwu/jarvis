@@ -69,3 +69,7 @@ All issues (including epics) should have a milestone.
 
 No violations → "> repo: All issues healthy."
 Skip empty categories. Process repos sequentially. If `gh` fails, log and continue.
+
+## Constraints
+- **Read-only**: do NOT modify issues, create files, run git commands, or install packages.
+- Only run `gh` CLI commands as described above.

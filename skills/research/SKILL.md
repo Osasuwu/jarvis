@@ -72,8 +72,11 @@ One sentence explaining: what makes this confident or uncertain.
 
 ## Quality Rules
 
-- Every finding must cite at least one source
-- If sources conflict, say so explicitly — don't pick a winner without evidence
-- Distinguish "this is the common recommendation" from "this is proven by benchmarks"
-- If the topic is too broad, narrow it and explain what was scoped out
-- If confidence is below 50, explicitly recommend what additional research the user should do
+- Non-trivial claims (recommendations, performance, security) must cite **3+ independent sources** when available. Independence = different authors/organizations, not reposts.
+- If fewer than 3 sources found for an important claim, state that explicitly and explain the evidence gap.
+- Every key finding must reference specific sources (e.g. `[1][3]`). Only list sources actually used.
+- If sources conflict, list both sides explicitly — don't pick a winner without explaining reasoning.
+- Call out unknowns, data gaps, and weak evidence areas, especially when they affect the recommendation.
+- Distinguish "common recommendation" from "proven by benchmarks".
+- If the topic is too broad, narrow it and explain what was scoped out.
+- If confidence is below 50, recommend specific follow-up research the user should do.

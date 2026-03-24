@@ -76,8 +76,8 @@ async def run_command(user_input: str, config) -> int:
         print(f"[jarvis] Daily budget exhausted. Limit: ${config.budget.per_day_usd}", file=sys.stderr)
         return 2
 
-    # Per-query budget: use the smaller of agent default and remaining daily
-    query_budget = min(agent.max_budget_usd, remaining)
+    # Per-query budget: smallest of agent cap, global per-query cap, and remaining daily
+    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
 
     print(f"[jarvis] agent: {agent.name} | model: {agent.model} | budget: ${query_budget:.2f}")
 

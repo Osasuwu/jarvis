@@ -63,3 +63,7 @@ Non-epic issues not updated 14+ days (skip `status:blocked`). Show days since up
 
 Skip categories with zero violations. If all clean: "> No violations — board is healthy."
 Process repos sequentially. If `gh` fails for a repo, log error and continue.
+
+## Constraints
+- **Read-only**: do NOT modify issues, create files, run git commands, or install packages.
+- Only run `gh` CLI commands as described above.
