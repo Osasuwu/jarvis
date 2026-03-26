@@ -45,24 +45,77 @@ def record_execution(
     cost_usd: float,
     session_id: str,
 ) -> float:
-    """Record real cost from SDK (no estimation)."""
+    """Record real cost from SDK (no estimation).
+
+    Note: Sessions dict grows indefinitely. See cleanup_old_sessions() to prune.
+    """
     day_key = datetime.now(UTC).strftime("%Y-%m-%d")
 
     data = _read_costs()
 
-    day = data["days"].setdefault(day_key, {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+    # Initialize day record with new structure
+    day = data["days"].setdefault(
+        day_key,
+        {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": {}},
+    )
+
+    # Update daily aggregates
     day["input_tokens"] += input_tokens
     day["output_tokens"] += output_tokens
     day["cost_usd"] = round(day["cost_usd"] + cost_usd, 6)
 
+    # Ensure per-model aggregation structure exists (migrate older flat records if needed)
+    if "models" not in day or not isinstance(day["models"], dict):
+        day["models"] = {}
+    # Remove legacy single-model field to avoid misleading data
+    day.pop("model", None)
+
+    # Update per-model aggregates for the day
+    model_stats = day["models"].setdefault(
+        model,
+        {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+    )
+    model_stats["input_tokens"] += input_tokens
+    model_stats["output_tokens"] += output_tokens
+    model_stats["cost_usd"] = round(model_stats["cost_usd"] + cost_usd, 6)
+
     session = data["sessions"].setdefault(
         session_id,
-        {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "updated_day": day_key},
+        {"model": model, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "updated_day": day_key},
     )
     session["input_tokens"] += input_tokens
     session["output_tokens"] += output_tokens
     session["cost_usd"] = round(session["cost_usd"] + cost_usd, 6)
     session["updated_day"] = day_key
+    session["model"] = model
 
     _write_costs(data)
     return round(cost_usd, 6)
+
+
+def cleanup_old_sessions(days: int = 30) -> int:
+    """Remove sessions older than N days. Returns count of removed sessions.
+
+    Prevents sessions dict from growing unboundedly.
+    """
+    data = _read_costs()
+    if "sessions" not in data:
+        return 0
+
+    from datetime import timedelta  # noqa: WPS433
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    removed = 0
+    sessions_to_delete = [
+        sid for sid, session in data["sessions"].items()
+        if session.get("updated_day", "") < cutoff
+    ]
+
+    for sid in sessions_to_delete:
+        del data["sessions"][sid]
+        removed += 1
+
+    if removed > 0:
+        _write_costs(data)
+
+    return removed
