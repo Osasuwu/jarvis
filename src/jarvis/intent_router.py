@@ -111,7 +111,13 @@ def _classify_plain_text(text: str) -> tuple[str, float, str, str | None]:
         "сравни",
     )
     if _contains_any(lowered, research_words):
-        return "/research", 0.88, "matched research intent", text
+        # Extract topic by removing trigger words
+        topic = text
+        for word in research_words:
+            if word in lowered:
+                topic = text.replace(word, "").strip()
+                break
+        return "/research", 0.88, "matched research intent", topic if topic else None
 
     delegate_words = (
         "delegate",
