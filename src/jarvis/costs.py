@@ -53,11 +53,31 @@ def record_execution(
 
     data = _read_costs()
 
-    day = data["days"].setdefault(day_key, {"model": model, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+    # Initialize day record with new structure
+    day = data["days"].setdefault(
+        day_key,
+        {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "models": {}},
+    )
+
+    # Update daily aggregates
     day["input_tokens"] += input_tokens
     day["output_tokens"] += output_tokens
     day["cost_usd"] = round(day["cost_usd"] + cost_usd, 6)
-    day["model"] = model  # Track which model was used
+
+    # Ensure per-model aggregation structure exists (migrate older flat records if needed)
+    if "models" not in day or not isinstance(day["models"], dict):
+        day["models"] = {}
+    # Remove legacy single-model field to avoid misleading data
+    day.pop("model", None)
+
+    # Update per-model aggregates for the day
+    model_stats = day["models"].setdefault(
+        model,
+        {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+    )
+    model_stats["input_tokens"] += input_tokens
+    model_stats["output_tokens"] += output_tokens
+    model_stats["cost_usd"] = round(model_stats["cost_usd"] + cost_usd, 6)
 
     session = data["sessions"].setdefault(
         session_id,

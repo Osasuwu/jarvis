@@ -111,11 +111,13 @@ def _classify_plain_text(text: str) -> tuple[str, float, str, str | None]:
         "сравни",
     )
     if _contains_any(lowered, research_words):
-        # Extract topic by removing trigger words
+        # Extract topic by removing trigger words (case-insensitive, whole-word match)
         topic = text
         for word in research_words:
             if word in lowered:
-                topic = text.replace(word, "").strip()
+                # Use regex to remove trigger word case-insensitively and match whole words
+                pattern = r"\b" + re.escape(word) + r"\b"
+                topic = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
                 break
         return "/research", 0.88, "matched research intent", topic if topic else None
 

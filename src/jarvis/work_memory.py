@@ -57,10 +57,7 @@ def _parse_entry(raw: dict[str, Any]) -> WorkMemoryEntry | None:
 def append_work_memory(entry: WorkMemoryEntry) -> None:
     """Append an entry to the work memory log.
 
-    Note: File grows indefinitely. To clean up old entries:
-    - Retain only last N entries per workflow/project
-    - Archive entries older than 30 days
-    See rotate_old_entries() for cleanup.
+    Note: File grows indefinitely. To clean up old entries, call cleanup_old_entries().
     """
     MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     # Use ensure_ascii=False for better readability of multi-language entries
@@ -284,9 +281,14 @@ def cleanup_old_entries(days: int = 30) -> int:
             payload = json.loads(line)
             entry = _parse_entry(payload)
             if entry is None:
+                # Preserve lines that parse as JSON but don't match our schema
+                retained.append(line)
                 continue
             # Keep entries newer than cutoff
             entry_time = datetime.fromisoformat(entry.timestamp_utc.replace("Z", "+00:00"))
+            # Handle naive timestamps (no timezone info)
+            if entry_time.tzinfo is None:
+                entry_time = entry_time.replace(tzinfo=UTC)
             if entry_time >= cutoff:
                 retained.append(line)
             else:

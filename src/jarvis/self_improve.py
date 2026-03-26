@@ -67,14 +67,38 @@ def _discard_changes(cwd: Path = ROOT_DIR) -> None:
 
 
 def _get_changed_files(cwd: Path = ROOT_DIR) -> list[str]:
-    """Return list of changed file paths from git status."""
-    status = run_git(["status", "--porcelain"], cwd=cwd)
-    if not status.strip():
-        return []
-    return [
-        line[3:].strip() for line in status.splitlines()
-        if len(line) >= 4
-    ]
+    """Return list of changed file paths.
+
+    Uses git diff/ls-files instead of parsing --porcelain, which breaks for
+    renames/copies (e.g., "R  old -> new" produces synthetic paths).
+    """
+    changed: set[str] = set()
+
+    # Tracked files with unstaged changes
+    try:
+        unstaged = run_git(["diff", "--name-only"], cwd=cwd)
+        if unstaged.strip():
+            changed.update(line.strip() for line in unstaged.splitlines() if line.strip())
+    except RuntimeError:
+        pass
+
+    # Tracked files with staged changes
+    try:
+        staged = run_git(["diff", "--name-only", "--cached"], cwd=cwd)
+        if staged.strip():
+            changed.update(line.strip() for line in staged.splitlines() if line.strip())
+    except RuntimeError:
+        pass
+
+    # Untracked files (e.g., new files not yet added)
+    try:
+        untracked = run_git(["ls-files", "--others", "--exclude-standard"], cwd=cwd)
+        if untracked.strip():
+            changed.update(line.strip() for line in untracked.splitlines() if line.strip())
+    except RuntimeError:
+        pass
+
+    return sorted(changed)
 
 
 def _classify_findings(findings: tuple[Finding, ...]) -> list[ImprovementItem]:
@@ -333,8 +357,16 @@ async def run_self_improve(
                 except RuntimeError:
                     pass  # branch didn't exist, fine
 
-                # Fix #2: stash changes, checkout main, create branch, pop stash
-                run_git(["stash", "push", "-m", "self-improve-temp"])
+                # Check if there are changes to stash (stash push fails on clean tree)
+                has_stash = False
+                try:
+                    status = run_git(["status", "--porcelain"], cwd=ROOT_DIR)
+                    if status.strip():
+                        has_stash = True
+                        run_git(["stash", "push", "-u", "-m", "self-improve-temp"])
+                except RuntimeError:
+                    pass
+
                 try:
                     run_git(["checkout", "main"])
                     run_git(["pull", "--ff-only"])
@@ -344,11 +376,16 @@ async def run_self_improve(
                         run_git(["checkout", original_branch])
                     except RuntimeError:
                         pass
-                    run_git(["stash", "pop"])
+                    if has_stash:
+                        try:
+                            run_git(["stash", "pop"])
+                        except RuntimeError:
+                            pass
                     raise
 
                 run_git(["checkout", "-b", branch])
-                run_git(["stash", "pop"])
+                if has_stash:
+                    run_git(["stash", "pop"])
 
                 run_git(["add", "-A"])
                 commit_msg = (

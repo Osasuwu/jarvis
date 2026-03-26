@@ -10,10 +10,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
-
-ROOT_DIR = Path(__file__).resolve().parents[2]
 
 # ── Forbidden paths ──────────────────────────────────────────────────────
 # Files/dirs that must NEVER be modified by autonomous self-improve.
@@ -188,7 +186,17 @@ def validate_patch(files_changed: list[str]) -> tuple[bool, str]:
 
 
 def is_command_forbidden(command: str) -> bool:
-    """Check if a shell command matches the denylist."""
+    """Check if a shell command matches the denylist.
+
+    NOTE: This function is currently NOT integrated into the subprocess execution layer.
+    It is defined here as part of the safety module design, but no execution paths
+    currently call it before running shell commands. To activate command-level safety
+    blocking, wire this function into any subprocess wrappers used by autonomous
+    workflows (e.g., the coding agent or LLM tool layer).
+
+    Until then, this denylist provides documentation of which commands are considered
+    dangerous, but does not actually prevent their execution.
+    """
     lower = command.lower().strip()
 
     for forbidden in FORBIDDEN_COMMANDS:
