@@ -16,6 +16,7 @@ AVAILABLE_COMMANDS: dict[str, str] = {
     "/issue-health": "Deep issue metadata validation",
     "/research": "Source-backed research on a given topic (needs a topic argument)",
     "/delegate": "Delegate issue implementation to coding agent (needs #issue_number)",
+    "/opportunity-scan": "Scan repos for improvement opportunities: stale work, CI issues, milestone drift",
 }
 
 
@@ -89,6 +90,18 @@ def _classify_plain_text(text: str) -> tuple[str, float, str, str | None]:
     )
     if _contains_any(lowered, issue_health_words):
         return "/issue-health", 0.90, "matched issue-health intent", None
+
+    opportunity_words = (
+        "opportunity scan",
+        "opportunity-scan",
+        "scan for opportunities",
+        "what should we work on",
+        "что стоит сделать",
+        "найди возможности",
+        "scan repos",
+    )
+    if _contains_any(lowered, opportunity_words):
+        return "/opportunity-scan", 0.90, "matched opportunity-scan intent", None
 
     triage_words = (
         "triage",
