@@ -1,7 +1,7 @@
 # Jarvis Project Plan
 
-Version: 3.0
-Date: 2026-03-23
+Version: 4.0
+Date: 2026-03-28
 Status: Active
 
 ## 1. Purpose
@@ -27,7 +27,9 @@ Jarvis is a universal personal AI agent that:
 - helps research and learn new topics,
 - executes routine tasks autonomously (with human review for critical actions),
 - communicates via Telegram (mobile) and CLI (workstation),
-- delegates code changes to specialized coding agents with safeguards.
+- delegates code changes to specialized coding agents with safeguards,
+- remembers conversations, decisions, and context across sessions,
+- grows its capabilities through self-review and self-improvement.
 
 The name "Jarvis" reflects the full ambition: a personal assistant that grows with its owner.
 
@@ -37,27 +39,63 @@ The name "Jarvis" reflects the full ambition: a personal assistant that grows wi
 2. **OpenClaw** (abandoned 2026-03-23) — promising platform, but critical security issues (512 vulnerabilities, ~20% malicious skills on ClawHub, creator departing for OpenAI) made it unsuitable as a foundation.
 3. **Claude Agent SDK + MCP** (current) — production-ready framework from Anthropic. Same engine as Claude Code, programmable in Python/TypeScript, with MCP for external integrations.
 
-## 3. Scope
+## 3. Architecture
+
+### Agent Roles
+
+- **Jarvis (brain)**: orchestrator. Receives user input, classifies intent, routes to skills or delegates to coding agents. Has identity (SOUL.md), memory, and conversation context. Runs on Haiku/Sonnet.
+- **Coding agent (executor)**: Claude Code CLI subprocess. Receives structured prompts from Jarvis, writes code, returns results. Has NO Jarvis identity — follows repo-specific CLAUDE.md instructions. Uses Pro subscription.
+- **Owner (human)**: strategic decisions, PR review, go/no-go on critical actions.
+
+### Key Principle
+
+Jarvis is the brain, not a prompt router. It should:
+1. Understand context from memory and conversation history
+2. Decide whether to act itself or delegate
+3. Provide its identity (SOUL.md) to its own LLM calls, NOT to coding agents
+4. Receive structured summaries from every tool/agent it delegates to
+5. Write important decisions and context to memory
+
+The coding agent is just an executor. It gets: Jarvis's structured prompt + the target repo's CLAUDE.md. It doesn't need Jarvis's memory or identity.
+
+### Memory Architecture
+
+Three layers:
+1. **Conversation log** — full chat history per user session. New session daily or on demand. Compressed when context grows large. Enables continuity within a session.
+2. **Structured memory** — extracted knowledge: decisions, plans, user preferences, project context. Persists across sessions. Loaded into Jarvis prompts.
+3. **Execution log** — append-only JSONL of skill runs (work_memory.jsonl). Used by self-review/self-improve. Auto-cleanup after retention period.
+
+The coding agent does NOT receive Jarvis memory. It gets project context from the target repo's CLAUDE.md, plus a `[JARVIS-AUTOMATED]` tag to indicate it's running under automation.
+
+## 4. Scope
 
 ### In Scope
 
-Milestone 1 — Architecture Migration:
+Milestone 1 — Architecture Migration (DONE):
 - Claude Agent SDK project setup
-- Telegram integration via MCP
+- Telegram integration
 - Model tier configuration (Haiku/Sonnet/Opus)
 - Basic agent loop: receive command → execute → respond
 
-Milestone 2 — Core Features:
-- PM skills: triage, weekly report, issue health (ported from OpenClaw markdown skills)
-- Scheduled execution (cron for daily triage, weekly reports)
-- Delegation pipeline: Jarvis decomposes tasks → coding agent executes → PR for review
-- Self-check: Jarvis validates its own configuration and skill consistency
+Milestone 2 — Core Features (DONE):
+- PM skills on demand: triage, weekly report, issue health
+- Research skill: source-backed research with confidence scoring
+- Delegation pipeline: Jarvis decomposes → coding agent executes → PR
+- Cost control: daily budget, per-query limits, model tier routing
 
-Milestone 3 — Expansion:
-- Research skills: web research, topic analysis, learning assistance
-- Inbox aggregator: unified view of what needs attention
-- Context-switch helper: quick summary when switching between projects
-- Self-improvement: changelog watching, skill quality analysis
+Milestone 3 — Intelligence Layer (IN PROGRESS):
+- Identity: SOUL.md loaded into every Jarvis LLM call
+- Conversation memory: session-based chat history with compression
+- Structured long-term memory: decisions, plans, preferences persisted
+- Intent routing: plain text → skill classification without slash commands
+- Self-improvement: self-review → opportunity scan → risk radar → self-improve loop
+
+Milestone 4 — Expansion (PLANNED):
+- Multi-repo delegation (coding agent CWD fix)
+- Long-term memory with semantic search (vector store)
+- Inbox aggregator (when solo dev gets inbound volume)
+- Scheduled execution (when regular cadence becomes useful)
+- Context-switch helper (may be obsoleted by memory)
 
 ### Out of Scope (Current)
 
@@ -67,52 +105,54 @@ Milestone 3 — Expansion:
 - Mobile app (Telegram is the mobile interface)
 - Local LLM as primary (deferred; possible as auxiliary MCP tool later)
 
-## 4. Operating Model
+### Deferred (Build When Needed)
 
-### Decision Hierarchy
-
-- **Owner (human)**: strategic decisions, PR review, go/no-go on critical actions.
-- **Jarvis (planner)**: read-only access to repos, triage, research, task decomposition, monitoring. Runs on Haiku/Sonnet.
-- **Jarvis (coder)**: write access limited to branches + PRs. Executes specific tasks delegated by planner. Runs on Sonnet.
-- **Safeguard layer**: branch protection, required PR reviews, CLAUDE.md conservative mode instructions.
-
-### Key Principle
-
-The owner is the bridge between physical and virtual worlds. Jarvis handles tactical execution; the owner makes strategic decisions. The owner's job is not writing prompts for individual issues, but directing the agent at a higher level.
+- Scheduled cron execution — owner works irregular schedule, manual trigger preferred
+- Weekly report automation — rarely reviewed, on-demand is sufficient
+- Inbox aggregator — solo dev has minimal inbound; build when volume grows
 
 ## 5. Delivery Milestones
 
-### M1: Architecture Migration
+### M1: Architecture Migration ✅
 
 Goal: Jarvis running on Claude Agent SDK with basic Telegram connectivity.
 
+Exit criteria (all met):
+- Agent SDK project created and runnable
+- Claude API key configured with billing
+- Telegram bot receives messages and responds via Agent SDK
+- Model tiers configured (Haiku default, Sonnet for complex tasks)
+- Basic command routing works (/triage, /weekly-report, /issue-health)
+
+### M2: Core Features ✅
+
+Goal: PM capabilities functional + delegation pipeline working.
+
+Exit criteria (all met):
+- PM skills available on demand via Telegram and CLI
+- Research skill functional with source-backed findings
+- Delegation pipeline: Jarvis decomposes issue → coding agent implements → PR created
+- Cost control: daily budget tracking, per-query limits enforced
+
+### M3: Intelligence Layer 🔧
+
+Goal: Jarvis becomes a stateful assistant with identity and memory.
+
 Exit criteria:
-- Agent SDK project created and runnable,
-- Claude API key configured with billing,
-- Telegram bot receives messages and responds via Agent SDK,
-- Model tiers configured (Haiku default, Sonnet for complex tasks),
-- Basic command routing works (/triage, /weekly-report, /issue-health).
+- SOUL.md loaded into every Jarvis LLM call (identity)
+- Conversation history maintained per session (short-term memory)
+- Important context extracted and persisted across sessions (long-term memory)
+- Plain text messages routed to correct skills without slash commands
+- Self-improvement cycle functional: review → analyze → propose → apply
 
-### M2: Core Features
+### M4: Expansion 📋
 
-Goal: PM capabilities from OpenClaw era fully functional + new capabilities.
-
-Exit criteria:
-- Daily triage runs on schedule and delivers report via Telegram,
-- Weekly report runs on Friday and delivers via Telegram,
-- Issue health check available on demand,
-- Delegation pipeline: Jarvis can create structured prompts for coding tasks,
-- Self-check: Jarvis validates its own repos.conf and skill consistency.
-
-### M3: Expansion
-
-Goal: Jarvis grows beyond PM into research and self-improvement.
+Goal: Jarvis handles multiple repos and scales capabilities.
 
 Exit criteria:
-- Web research skill functional,
-- Inbox aggregator available,
-- Context-switch helper works across all owner's projects,
-- Scheduled skill execution reliable (cron-based).
+- Coding agent can work in any repo (not just Jarvis repo)
+- Long-term memory searchable via semantic similarity
+- Additional skills added as real needs emerge
 
 ## 6. Decision Rules
 
@@ -126,6 +166,7 @@ When uncertain what to do next:
 1. Finish in-progress work first.
 2. Prioritize capabilities that save the most time in daily work.
 3. Prefer simple implementations that can be tested immediately.
+4. Memory and identity features take priority over new skills.
 
 ## 7. Risk Register
 
@@ -139,12 +180,16 @@ R2: Vendor lock-in to Anthropic.
 
 R3: Scope creep into features nobody uses.
 - Mitigation: only build for problems experienced in the last week. Park ideas in GitHub Discussions.
+- New: defer inbox, scheduling, context-switch until real need emerges.
 
 R4: Coding agent produces bad code.
 - Mitigation: all code changes go through PR. Branch protection enforced. CLAUDE.md in each repo instructs conservative behavior for agent-generated tasks.
 
 R5: Bus factor = 1.
 - Mitigation: clear documentation, simple architecture, standard patterns.
+
+R6: Memory bloat / noise.
+- Mitigation: conversation logs compressed per session. Structured memory is selective — only decisions, plans, preferences. Execution logs auto-cleaned after retention period.
 
 ## 8. Technical Constraints
 
@@ -159,7 +204,8 @@ R5: Bus factor = 1.
 ## 9. Success Metrics
 
 - Jarvis used daily for real work (not just testing)
-- Time saved on PM tasks measurable (fewer manual triage sessions)
+- Jarvis remembers context from previous sessions without re-explanation
 - API cost stays within $30/month budget
 - Delegation pipeline produces usable PRs that need minimal human editing
 - Skills work reliably without constant debugging
+- Self-improvement cycle identifies real issues and proposes useful fixes
