@@ -16,6 +16,7 @@ AVAILABLE_COMMANDS: dict[str, str] = {
     "/issue-health": "Deep issue metadata validation",
     "/research": "Source-backed research on a given topic (needs a topic argument)",
     "/delegate": "Delegate issue implementation to coding agent (needs #issue_number)",
+    "/risk-radar": "Detect early risk signals: CI instability, security alerts, overdue milestones",
 }
 
 
@@ -89,6 +90,21 @@ def _classify_plain_text(text: str) -> tuple[str, float, str, str | None]:
     )
     if _contains_any(lowered, issue_health_words):
         return "/issue-health", 0.90, "matched issue-health intent", None
+
+    risk_words = (
+        "risk radar",
+        "risk-radar",
+        "риск",
+        "check for risks",
+        "risk scan",
+        "проверь риски",
+        "есть ли проблемы",
+        "early warning",
+        "security alerts",
+        "dependabot",
+    )
+    if _contains_any(lowered, risk_words):
+        return "/risk-radar", 0.88, "matched risk-radar intent", None
 
     triage_words = (
         "triage",
