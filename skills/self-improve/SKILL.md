@@ -1,3 +1,12 @@
+---
+name: self-improve
+description: "Auto-apply low-risk fixes from self-review findings, create PR for changes"
+model: sonnet
+max_budget_usd: 0.50
+handler: jarvis.self_improve:handle
+background: true
+---
+
 # /self-improve
 
 Autonomous self-improvement pipeline for Jarvis.

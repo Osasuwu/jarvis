@@ -509,3 +509,16 @@ async def run_self_review_pipeline(
     )
 
     return result, memory_summary
+
+
+async def handle(config: RuntimeConfig, args: str) -> "SkillResult":
+    """Skill handler entry point — called by dispatcher auto-discovery."""
+    from jarvis.dispatcher import SkillResult  # noqa: WPS433
+
+    result, memory_summary = await run_self_review_pipeline(config)
+
+    text = result.report_text
+    if memory_summary:
+        text = f"**Memory context:** {memory_summary}\n\n{text}"
+
+    return SkillResult(text=text, success=True)

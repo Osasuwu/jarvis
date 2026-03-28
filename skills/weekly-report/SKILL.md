@@ -1,6 +1,9 @@
 ---
 name: weekly-report
 description: "Weekly delivery report: closed issues, merged PRs, blockers, velocity"
+model: haiku
+tools: [Bash, Read, Glob, Grep]
+max_budget_usd: 0.10
 ---
 
 # Weekly Report

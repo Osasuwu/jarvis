@@ -48,16 +48,8 @@ def _contains_any(text: str, words: tuple[str, ...]) -> bool:
 def _classify_plain_text(text: str) -> tuple[str, float, str, str | None]:
     lowered = text.lower()
 
-    self_review_words = (
-        "self review",
-        "self-review",
-        "самопровер",
-        "сделай self review",
-        "проверь себя",
-    )
-    if _contains_any(lowered, self_review_words):
-        return "/self-review", 0.93, "matched self-review intent", None
-
+    # Check self-improve before self-review: "apply fixes from self review"
+    # should route to self-improve (the action intent wins).
     self_improve_words = (
         "self improve",
         "self-improve",
@@ -68,6 +60,16 @@ def _classify_plain_text(text: str) -> tuple[str, float, str, str | None]:
     )
     if _contains_any(lowered, self_improve_words):
         return "/self-improve", 0.92, "matched self-improve intent", None
+
+    self_review_words = (
+        "self review",
+        "self-review",
+        "самопровер",
+        "сделай self review",
+        "проверь себя",
+    )
+    if _contains_any(lowered, self_review_words):
+        return "/self-review", 0.93, "matched self-review intent", None
 
     weekly_words = (
         "weekly report",

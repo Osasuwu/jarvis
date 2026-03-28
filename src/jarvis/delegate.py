@@ -354,3 +354,35 @@ async def delegate_issue(
         coding_summary=coding_result.summary,
         cost_usd=cost, input_tokens=in_tok, output_tokens=out_tok,
     )
+
+
+async def handle(config: "RuntimeConfig", args: str) -> "SkillResult":
+    """Skill handler entry point — called by dispatcher auto-discovery."""
+    from jarvis.config import RuntimeConfig as _RC  # noqa: WPS433, F811
+    from jarvis.dispatcher import SkillResult  # noqa: WPS433
+
+    try:
+        repo, issue_number = parse_delegate_args(f"/delegate {args}")
+    except ValueError as exc:
+        return SkillResult(text=str(exc), success=False)
+
+    result = await delegate_issue(
+        repo,
+        issue_number,
+        max_budget_usd=min(0.30, config.budget.per_query_usd),
+        session_id="delegate-dispatch",
+        daily_budget_usd=config.budget.per_day_usd,
+        per_query_usd=config.budget.per_query_usd,
+    )
+
+    text = result.message
+    if result.coding_summary:
+        text += f"\n\n--- Coding Agent Summary ---\n{result.coding_summary[:1000]}"
+
+    return SkillResult(
+        text=text,
+        success=result.success,
+        cost_usd=result.cost_usd,
+        input_tokens=result.input_tokens,
+        output_tokens=result.output_tokens,
+    )

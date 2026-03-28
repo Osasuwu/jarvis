@@ -1,6 +1,11 @@
 ---
 name: delegate
-description: "Delegate a GitHub issue to a coding agent: decompose → branch → implement → PR"
+description: "Delegate a GitHub issue to a coding agent: decompose -> branch -> implement -> PR"
+model: sonnet
+tools: [Read, Grep, Glob, Bash]
+max_budget_usd: 0.30
+handler: jarvis.delegate:handle
+background: true
 ---
 
 # Delegate Skill

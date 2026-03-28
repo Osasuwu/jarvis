@@ -502,3 +502,23 @@ async def run_self_improve_pipeline(
     ))
 
     return result
+
+
+async def handle(config: RuntimeConfig, args: str) -> "SkillResult":
+    """Skill handler entry point — called by dispatcher auto-discovery."""
+    from jarvis.dispatcher import SkillResult  # noqa: WPS433
+
+    dry_run = "--dry-run" in args
+
+    result = await run_self_improve_pipeline(config, dry_run=dry_run)
+
+    lines = [result.message]
+    if result.pr_url:
+        lines.append(f"PR: {result.pr_url}")
+    if result.items:
+        lines.append(f"\nApplied: {result.auto_applied} | Needs approval: {result.needs_approval} | Skipped: {result.skipped}")
+        for it in result.items:
+            status = "applied" if it.applied else ("skipped" if it.skipped_reason else "needs-approval")
+            lines.append(f"  - [{it.finding.severity}] {it.finding.title} ({status})")
+
+    return SkillResult(text="\n".join(lines), success=result.success)

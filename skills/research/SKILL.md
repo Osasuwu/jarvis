@@ -1,6 +1,9 @@
 ---
 name: research
 description: "Source-backed research with confidence scoring — helps validate decisions and fill knowledge gaps"
+model: sonnet
+tools: [WebSearch, WebFetch, Read, Grep, Glob, Bash]
+max_budget_usd: 0.50
 ---
 
 # Research Skill

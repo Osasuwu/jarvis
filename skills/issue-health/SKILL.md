@@ -1,6 +1,9 @@
 ---
 name: issue-health
 description: "Deep issue metadata audit: labels, types, hierarchy, milestones, epic structure"
+model: haiku
+tools: [Bash, Read, Glob, Grep]
+max_budget_usd: 0.10
 ---
 
 # Issue Health

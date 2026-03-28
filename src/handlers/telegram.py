@@ -9,26 +9,16 @@ from uuid import uuid4
 
 import requests
 
-from agents.registry import command_to_agent, is_delegation_command
-from jarvis.costs import check_daily_budget, record_execution
 from jarvis.config import RuntimeConfig
-from jarvis.delegate import delegate_issue, parse_delegate_args
 from jarvis.dispatcher import (
-    UnsupportedCommandError,
-    build_prompt_for_user_input,
-    get_skill_command_map,
+    discover_skills,
+    dispatch_skill,
+    get_skill,
+    supported_commands,
 )
-from jarvis.executor import execute_query
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/{method}"
 MAX_MESSAGE_LEN = 4096
-
-
-def _supported_commands() -> list[str]:
-    commands = sorted(get_skill_command_map().keys())
-    if "/research" not in commands:
-        commands.append("/research")
-    return commands
 
 
 def _telegram_command_name(command: str) -> str:
@@ -36,8 +26,10 @@ def _telegram_command_name(command: str) -> str:
 
 
 def _canonical_command_map() -> dict[str, str]:
-    mapping = {cmd: cmd for cmd in _supported_commands()}
-    for cmd in _supported_commands():
+    """Map both hyphenated and underscored command forms to canonical command."""
+    commands = supported_commands()
+    mapping = {cmd: cmd for cmd in commands}
+    for cmd in commands:
         mapping[f"/{_telegram_command_name(cmd)}"] = cmd
     return mapping
 
@@ -79,19 +71,15 @@ def _send_message(token: str, chat_id: int, text: str) -> None:
 
 
 def _set_my_commands(token: str) -> None:
-    descriptions = {
-        "/triage": "Daily triage across repositories",
-        "/weekly-report": "Weekly delivery report",
-        "/issue-health": "Deep issue metadata validation",
-        "/research": "Source-backed research by topic",
-        "/delegate": "Delegate issue to coding agent",
-    }
+    """Register bot commands from auto-discovered skills."""
+    skills = discover_skills()
     commands = []
-    for cmd in _supported_commands():
+    for cmd in sorted(skills.keys()):
+        spec = skills[cmd]
         commands.append(
             {
                 "command": _telegram_command_name(cmd),
-                "description": descriptions.get(cmd, f"Run {cmd}"),
+                "description": spec.description[:256],
             }
         )
     _call_telegram(token, "setMyCommands", {"commands": commands})
@@ -125,6 +113,7 @@ def _poll_updates(token: str, offset: int | None) -> list[dict]:
 
 
 def _normalize_command(text: str) -> str | None:
+    """Normalize Telegram command input to canonical form."""
     line = text.strip().splitlines()[0] if text.strip() else ""
     if not line.startswith("/"):
         return None
@@ -138,8 +127,12 @@ def _normalize_command(text: str) -> str | None:
 
     canonical_map = _canonical_command_map()
     canonical_command = canonical_map.get(command_token)
-    if canonical_command in {"/research", "/delegate"}:
-        return f"{canonical_command} {arg}".strip()
+    if canonical_command is None:
+        return None
+
+    # Always pass args for commands that accept them.
+    if arg:
+        return f"{canonical_command} {arg}"
     return canonical_command
 
 
@@ -148,111 +141,66 @@ def _resolve_user_input(text: str) -> str:
     return normalized_command or text.strip()
 
 
-def _run_delegation_in_background(
+def _run_skill_in_background(
     token: str,
     chat_id: int,
     config: RuntimeConfig,
     user_input: str,
     session_id: str,
 ) -> None:
-    """Execute delegation in a background thread and post final result to Telegram."""
-    try:
-        repo, issue_number = parse_delegate_args(user_input)
-    except ValueError as exc:
-        _send_message(token, chat_id, f"[jarvis] {exc}")
-        return
-
-    allowed, remaining = check_daily_budget(config.budget.per_day_usd)
-    if not allowed:
-        _send_message(
-            token,
-            chat_id,
-            f"[jarvis] Daily budget exhausted (${config.budget.per_day_usd:.2f} limit).",
-        )
-        return
-
-    agent = command_to_agent(user_input)
-    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
-    if query_budget <= 0:
-        _send_message(token, chat_id, "[jarvis] No budget available for delegation.")
-        return
-
-    _send_message(
-        token,
-        chat_id,
-        (
-            f"[jarvis] Delegation started for #{issue_number} in {repo}.\n"
-            f"Pipeline: fetch -> decompose -> branch -> code -> PR\n"
-            f"Budget: ${query_budget:.2f}"
-        ),
-    )
-
-    delegate_session_id = f"{session_id}-delegate-{uuid4().hex[:8]}"
+    """Execute a skill in a background thread and post result to Telegram."""
     try:
         result = asyncio.run(
-            delegate_issue(
-                repo,
-                issue_number,
-                max_budget_usd=query_budget,
-                session_id=delegate_session_id,
-                daily_budget_usd=config.budget.per_day_usd,
-                per_query_usd=config.budget.per_query_usd,
-            )
+            dispatch_skill(user_input, config, session_id=session_id)
         )
     except Exception as exc:
-        _send_message(token, chat_id, f"[jarvis] delegation failed with unexpected error: {exc}")
+        _send_message(token, chat_id, f"[jarvis] background task failed: {exc}")
         return
 
     if result.success:
-        _send_message(token, chat_id, result.message)
-        return
-
-    _send_message(token, chat_id, f"[jarvis] delegation failed: {result.message}")
+        _send_message(token, chat_id, result.text or "[jarvis] Done (no output)")
+    else:
+        _send_message(token, chat_id, f"[jarvis] error: {result.text}")
 
 
 def _handle_message(config: RuntimeConfig, user_input: str, session_id: str) -> str:
-    """Process a single non-delegation message and return the response text."""
-
+    """Process a single foreground message and return the response text."""
     if user_input == "/help":
-        help_lines = ["Available commands:", *(_supported_commands())]
+        help_lines = ["Available commands:"]
+        skills = discover_skills()
+        for cmd in sorted(skills.keys()):
+            help_lines.append(f"  {cmd} — {skills[cmd].description}")
         return "\n".join(help_lines) + "\n\nYou can also send plain text to chat with Jarvis."
 
-    try:
-        prompt = build_prompt_for_user_input(user_input)
-    except (UnsupportedCommandError, FileNotFoundError) as exc:
-        return f"[jarvis] {exc}"
-
-    agent = command_to_agent(user_input)
-
-    # Daily budget check
-    allowed, remaining = check_daily_budget(config.budget.per_day_usd)
-    if not allowed:
-        return f"[jarvis] Daily budget exhausted (${config.budget.per_day_usd:.2f} limit)."
-
-    query_budget = min(agent.max_budget_usd, config.budget.per_query_usd, remaining)
-
     result = asyncio.run(
-        execute_query(
-            prompt,
-            model=agent.model,
-            allowed_tools=agent.allowed_tools,
-            max_budget_usd=query_budget,
-        )
+        dispatch_skill(user_input, config, session_id=session_id)
     )
 
-    if result.cost_usd > 0 or result.input_tokens > 0:
-        record_execution(
-            model=agent.model,
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-            cost_usd=result.cost_usd,
-            session_id=session_id,
-        )
-
     if not result.success:
-        return f"[jarvis] error: {result.error}"
+        return f"[jarvis] error: {result.text}"
 
     return result.text.strip() or "[jarvis] Empty response"
+
+
+def _should_run_in_background(user_input: str) -> bool:
+    """Check if this command should run in a background thread.
+
+    For plain-text messages, applies synchronous keyword-based intent routing
+    first so that phrases like "улучши себя" correctly resolve to /self-improve
+    (which is a background skill) before the check.
+    """
+    text = user_input.strip()
+    if not text.startswith("/"):
+        from jarvis.intent_router import route_user_input  # noqa: WPS433
+        route = route_user_input(text)
+        if not route.was_routed:
+            return False
+        text = route.resolved_input.strip()
+        if not text.startswith("/"):
+            return False
+    command = text.split(maxsplit=1)[0]
+    skill = get_skill(command)
+    return skill is not None and skill.background
 
 
 def run_telegram_loop(config: RuntimeConfig) -> int:
@@ -289,10 +237,15 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
 
             user_input = _resolve_user_input(parsed.text)
 
-            if is_delegation_command(user_input):
-                _send_message(token, parsed.chat_id, "[jarvis] Delegation request accepted. Running in background...")
+            if _should_run_in_background(user_input):
+                command = user_input.split(maxsplit=1)[0]
+                _send_message(
+                    token,
+                    parsed.chat_id,
+                    f"[jarvis] {command} started. Running in background...",
+                )
                 worker = threading.Thread(
-                    target=_run_delegation_in_background,
+                    target=_run_skill_in_background,
                     args=(token, parsed.chat_id, config, user_input, session_id),
                     daemon=True,
                 )

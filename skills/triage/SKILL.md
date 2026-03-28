@@ -1,6 +1,9 @@
 ---
 name: triage
 description: "Daily triage: stale issues, missing metadata, blocked items, status inconsistencies"
+model: haiku
+tools: [Bash, Read, Glob, Grep]
+max_budget_usd: 0.10
 ---
 
 # Daily Triage

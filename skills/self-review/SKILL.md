@@ -1,6 +1,9 @@
 ---
 name: self-review
 description: "Run self-review: deterministic ops checks, test execution, and LLM-powered code review"
+model: sonnet
+max_budget_usd: 0.50
+handler: jarvis.self_review:handle
 ---
 
 # Self-Review
