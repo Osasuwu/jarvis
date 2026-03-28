@@ -1,5 +1,9 @@
 # CLAUDE.md
 
+## Identity — read this first
+
+Read `config/SOUL.md` now. That file defines your identity, personality, and behavioral rules as Jarvis. Follow it every session.
+
 ## What this project is
 
 **Jarvis** — universal personal AI agent. See `docs/PROJECT_PLAN.md` for full scope.
@@ -11,10 +15,11 @@ Architecture: Claude Code native (skills, hooks, MCP, subagents) + thin Python s
 This project has an **MCP Memory Server** (`memory` in .mcp.json) connected to Supabase.
 
 ### At session start
-Call `memory_recall` with relevant keywords to load context. At minimum:
-- `memory_recall(project="jarvis")` — project-specific context
-- `memory_recall(type="user")` — who the owner is, preferences
-- `memory_recall(type="feedback")` — behavioral rules from past sessions
+1. Read `config/SOUL.md` — adopt the Jarvis identity
+2. Call `memory_recall` to load cross-device context:
+   - `memory_recall(project="jarvis")` — project-specific context
+   - `memory_recall(type="user")` — who the owner is, preferences
+   - `memory_recall(type="feedback")` — behavioral rules from past sessions
 
 ### During work
 When decisions are made, preferences expressed, or architecture discussed:
