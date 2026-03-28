@@ -238,12 +238,12 @@ def run_telegram_loop(config: RuntimeConfig) -> int:
             user_input = _resolve_user_input(parsed.text)
 
             if _should_run_in_background(user_input):
-                command = user_input.split(maxsplit=1)[0]
-                _send_message(
-                    token,
-                    parsed.chat_id,
-                    f"[jarvis] {command} started. Running in background...",
-                )
+                if user_input.lstrip().startswith("/"):
+                    command = user_input.split(maxsplit=1)[0]
+                    status_message = f"[jarvis] {command} started. Running in background..."
+                else:
+                    status_message = "[jarvis] Background task started. Running in background..."
+                _send_message(token, parsed.chat_id, status_message)
                 worker = threading.Thread(
                     target=_run_skill_in_background,
                     args=(token, parsed.chat_id, config, user_input, session_id),

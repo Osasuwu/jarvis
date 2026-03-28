@@ -12,7 +12,6 @@ Adding a new skill = create skills/<name>/SKILL.md with frontmatter. Done.
 from __future__ import annotations
 
 import importlib
-import re
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -307,6 +306,15 @@ async def dispatch_skill(
             result: SkillResult = await handler(config, args)
         except Exception as exc:
             return SkillResult(text=f"Handler error: {exc}", success=False)
+
+        if result.cost_usd > 0 or result.input_tokens > 0:
+            record_execution(
+                model=result.model or skill.model,
+                input_tokens=result.input_tokens,
+                output_tokens=result.output_tokens,
+                cost_usd=result.cost_usd,
+                session_id=session_id,
+            )
 
         if routing_footer:
             return SkillResult(

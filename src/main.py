@@ -11,7 +11,6 @@ from jarvis.dispatcher import (
     UnsupportedCommandError,
     build_prompt_for_user_input,
     dispatch_skill,
-    discover_skills,
     get_skill,
 )
 

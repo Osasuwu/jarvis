@@ -358,7 +358,7 @@ async def delegate_issue(
 
 async def handle(config: "RuntimeConfig", args: str) -> "SkillResult":
     """Skill handler entry point — called by dispatcher auto-discovery."""
-    from jarvis.config import RuntimeConfig as _RC  # noqa: WPS433, F811
+    from uuid import uuid4  # noqa: WPS433
     from jarvis.dispatcher import SkillResult  # noqa: WPS433
 
     try:
@@ -369,8 +369,8 @@ async def handle(config: "RuntimeConfig", args: str) -> "SkillResult":
     result = await delegate_issue(
         repo,
         issue_number,
-        max_budget_usd=min(0.30, config.budget.per_query_usd),
-        session_id="delegate-dispatch",
+        max_budget_usd=config.budget.per_query_usd,
+        session_id=f"delegate-{uuid4().hex[:10]}",
         daily_budget_usd=config.budget.per_day_usd,
         per_query_usd=config.budget.per_query_usd,
     )
