@@ -8,57 +8,55 @@ Five validated risk patterns:
   P5: Review backlog      — PRs with CHANGES_REQUESTED stale > 3 days
 
 Severity levels:
-  CRITICAL — requires immediate action; ⚠ flagged in all responses
-  HIGH     — address this sprint; surfaced in daily triage
-  MEDIUM   — monitor closely; surfaced in weekly report
-  LOW      — informational; logged to work memory only
+  CRITICAL — requires immediate action
+  HIGH     — address this sprint
+  MEDIUM   — monitor closely
+  LOW      — informational
 
-Escalation policy:
-  CRITICAL → immediate Telegram alert prefix + daily report
-  HIGH     → daily triage summary
-  MEDIUM   → weekly report only
-  LOW      → work_memory log, not surfaced
+Usage (standalone):
+  python src/risk_radar.py
+  python src/risk_radar.py --json   # machine-readable output
 """
 from __future__ import annotations
 
+import argparse
 import json as _json
 import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass, field
+import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from jarvis.config import RuntimeConfig
 
-
-ROOT_DIR = Path(__file__).resolve().parents[2]
+ROOT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = ROOT_DIR / "reports"
-REPOS_CONF = ROOT_DIR / "skills" / "triage" / "repos.conf"
+REPOS_CONF = ROOT_DIR / "config" / "repos.conf"
 
 # Pattern thresholds
-CI_CRITICAL_RATE = 0.50   # failure rate → CRITICAL
-CI_HIGH_RATE = 0.30       # failure rate → HIGH
-CI_MEDIUM_RATE = 0.15     # failure rate → MEDIUM
+CI_CRITICAL_RATE = 0.50
+CI_HIGH_RATE = 0.30
+CI_MEDIUM_RATE = 0.15
 CI_RUNS_SAMPLE = 20
 
-STAGNATION_DAYS = 7       # priority:high not updated → risk
-STAGNATION_HIGH = 5       # count threshold → HIGH vs MEDIUM
+STAGNATION_DAYS = 7
+STAGNATION_HIGH = 5
 
-CHANGES_STALE_DAYS = 3    # CHANGES_REQUESTED not updated → MEDIUM/HIGH
-CHANGES_HIGH_COUNT = 3    # count threshold → HIGH
+CHANGES_STALE_DAYS = 3
+CHANGES_HIGH_COUNT = 3
 
 SEVERITY_ORDER = {"critical": 4, "high": 3, "medium": 2, "low": 1}
 
 
-# ── Data classes ─────────────────────────────────────────────────────────────
+# ── Data classes ──────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class RiskAlert:
-    severity: str   # "critical" | "high" | "medium" | "low"
-    pattern: str    # P1-P5 slug
+    severity: str
+    pattern: str
     repo: str
     title: str
     details: str
@@ -141,9 +139,6 @@ def _check_ci_instability(repo: str) -> list[RiskAlert]:
         return []
 
     runs = _parse_json(out)
-    if not runs:
-        return []
-
     terminal = [r for r in runs if r.get("conclusion") in {
         "success", "failure", "timed_out", "cancelled"
     }]
@@ -176,7 +171,7 @@ def _check_ci_instability(repo: str) -> list[RiskAlert]:
     )]
 
 
-# ── P2: Critical issue stagnation ─────────────────────────────────────────────
+# ── P2: Critical issue stagnation ────────────────────────────────────────────
 
 
 def _check_critical_stagnation(repo: str) -> list[RiskAlert]:
@@ -205,8 +200,7 @@ def _check_critical_stagnation(repo: str) -> list[RiskAlert]:
         repo=repo,
         title=f"{count} priority:high issue{'s' if count != 1 else ''} stagnant >{STAGNATION_DAYS}d",
         details=(
-            f"{count} critical issues have not been updated in over {STAGNATION_DAYS} days. "
-            f"Unaddressed critical work risks delayed delivery."
+            f"{count} critical issues have not been updated in over {STAGNATION_DAYS} days."
         ),
         evidence="; ".join(sample),
     )]
@@ -221,7 +215,6 @@ def _check_security_alerts(repo: str) -> list[RiskAlert]:
         "--jq", '[.[] | select(.state == "open") | {severity:.security_vulnerability.severity, pkg:.dependency.package.name}]',
     ])
     if not ok:
-        # Dependabot not enabled or no access — skip silently.
         return []
 
     alerts = _parse_json(out)
@@ -245,10 +238,7 @@ def _check_security_alerts(repo: str) -> list[RiskAlert]:
         pattern="security-alert",
         repo=repo,
         title=f"{total} open Dependabot alert{'s' if total != 1 else ''} ({summary})",
-        details=(
-            f"Open security vulnerabilities detected in dependencies. "
-            f"Affected packages: {', '.join(pkgs)}."
-        ),
+        details=f"Affected packages: {', '.join(pkgs)}.",
         evidence=f"gh api repos/{repo}/dependabot/alerts",
     )]
 
@@ -337,7 +327,6 @@ def _check_review_backlog(repo: str) -> list[RiskAlert]:
 
 
 def _scan_repo(repo: str) -> list[RiskAlert]:
-    """Run all 5 patterns for one repo. Never raises."""
     alerts: list[RiskAlert] = []
     for checker in (
         _check_ci_instability,
@@ -349,7 +338,7 @@ def _scan_repo(repo: str) -> list[RiskAlert]:
         try:
             alerts.extend(checker(repo))
         except Exception:
-            pass  # individual pattern failure doesn't abort scan
+            pass
     return alerts
 
 
@@ -365,15 +354,11 @@ _ESCALATION_POLICY = """\
 | CRITICAL | Immediate: ⚠ header in all responses, include in every daily/weekly report |
 | HIGH     | Daily: surfaced in triage summary |
 | MEDIUM   | Weekly: included in weekly report |
-| LOW      | Archive: logged to work memory only, not surfaced |
+| LOW      | Archive: logged to memory only |
 """
 
 
-def _write_report(
-    alerts: list[RiskAlert],
-    repos: list[str],
-    timestamp: str,
-) -> tuple[str, Path]:
+def _write_report(alerts: list[RiskAlert], repos: list[str], timestamp: str) -> tuple[str, Path]:
     criticals = [a for a in alerts if a.severity == "critical"]
     highs = [a for a in alerts if a.severity == "high"]
     mediums = [a for a in alerts if a.severity == "medium"]
@@ -409,27 +394,18 @@ def _write_report(
     return report_text, report_path
 
 
-# ── Main pipeline ─────────────────────────────────────────────────────────────
+# ── Main ─────────────────────────────────────────────────────────────────────
 
 
-async def run_risk_radar(config: RuntimeConfig) -> RiskRadarResult:
-    """Scan all configured repos for risk signals and write report."""
+def run(as_json: bool = False) -> int:
+    """Scan all configured repos. Returns exit code (0=ok, 1=alerts found, 2=error)."""
     timestamp = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S")
-
     repos = _load_repos()
+
     if not repos:
-        msg = "No repos configured. Add entries to skills/triage/repos.conf."
-        return RiskRadarResult(
-            alerts=(),
-            report_text=msg,
-            report_path=Path(os.devnull),
-            scan_timestamp=timestamp,
-            repos_scanned=0,
-            critical_count=0,
-            high_count=0,
-            success=False,
-            error=msg,
-        )
+        msg = f"No repos configured. Add entries to {REPOS_CONF}"
+        print(msg, file=sys.stderr)
+        return 2
 
     all_alerts: list[RiskAlert] = []
     for repo in repos:
@@ -439,63 +415,28 @@ async def run_risk_radar(config: RuntimeConfig) -> RiskRadarResult:
     critical_count = sum(1 for a in all_alerts if a.severity == "critical")
     high_count = sum(1 for a in all_alerts if a.severity == "high")
 
+    if as_json:
+        print(_json.dumps({
+            "timestamp": timestamp,
+            "repos_scanned": len(repos),
+            "critical": critical_count,
+            "high": high_count,
+            "alerts": [
+                {"severity": a.severity, "pattern": a.pattern, "repo": a.repo,
+                 "title": a.title, "details": a.details}
+                for a in all_alerts
+            ],
+        }, indent=2))
+        return 0 if not all_alerts else 1
+
     report_text, report_path = _write_report(all_alerts, repos, timestamp)
-
-    # Log to work memory for trend tracking.
-    try:
-        from jarvis.work_memory import WorkMemoryEntry, append_work_memory  # noqa: WPS433
-        append_work_memory(WorkMemoryEntry(
-            timestamp_utc=timestamp,
-            workflow="risk-radar",
-            project=",".join(repos),
-            objective="detect early risk signals",
-            attempted_actions=tuple(f"[{a.severity}] {a.title} ({a.repo})" for a in all_alerts),
-            blockers=(),
-            next_steps=tuple(f"resolve: {a.title}" for a in all_alerts if a.severity in {"critical", "high"}),
-            status="completed",
-            metadata={
-                "repos_scanned": len(repos),
-                "critical": critical_count,
-                "high": high_count,
-                "report_path": str(report_path),
-            },
-        ))
-    except Exception:
-        pass
-
-    return RiskRadarResult(
-        alerts=tuple(all_alerts),
-        report_text=report_text,
-        report_path=report_path,
-        scan_timestamp=timestamp,
-        repos_scanned=len(repos),
-        critical_count=critical_count,
-        high_count=high_count,
-        success=True,
-    )
+    print(report_text)
+    print(f"\nReport saved: {report_path}", file=sys.stderr)
+    return 0 if not all_alerts else 1
 
 
-async def handle(config: RuntimeConfig, args: str) -> "SkillResult":
-    """Skill handler entry point — called by dispatcher auto-discovery."""
-    from jarvis.dispatcher import SkillResult  # noqa: WPS433
-
-    result = await run_risk_radar(config)
-
-    if not result.success:
-        return SkillResult(text=result.error, success=False)
-
-    # Prefix CRITICAL alerts prominently.
-    prefix = ""
-    if result.critical_count > 0:
-        prefix = f"⚠ {result.critical_count} CRITICAL risk{'s' if result.critical_count != 1 else ''} detected!\n\n"
-
-    summary = (
-        f"{prefix}Risk scan complete: {result.repos_scanned} repos · "
-        f"{result.critical_count} CRITICAL · {result.high_count} HIGH\n"
-        f"Report: {result.report_path}\n\n"
-    )
-    preview = result.report_text[:3000]
-    if len(result.report_text) > 3000:
-        preview += "\n\n[... truncated — see report file]"
-
-    return SkillResult(text=summary + preview, success=True)
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Risk Radar — project health scan")
+    parser.add_argument("--json", action="store_true", help="Output JSON instead of markdown")
+    args = parser.parse_args()
+    sys.exit(run(as_json=args.json))

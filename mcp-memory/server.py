@@ -273,12 +273,15 @@ async def _handle_recall(args: dict) -> list[TextContent]:
         q = q.eq("type", mem_type)
 
     if query_text:
-        # ILIKE search across name, description, content
-        q = q.or_(
-            f"name.ilike.%{query_text}%,"
-            f"description.ilike.%{query_text}%,"
-            f"content.ilike.%{query_text}%"
+        # ILIKE search across name, description, content.
+        # Split multi-word queries and OR all terms so "jarvis reboot" matches
+        # records containing "jarvis" OR "reboot", not only the exact phrase.
+        terms = query_text.split()
+        clauses = ",".join(
+            f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%"
+            for t in terms
         )
+        q = q.or_(clauses)
 
     result = q.limit(limit).order("updated_at", desc=True).execute()
 
