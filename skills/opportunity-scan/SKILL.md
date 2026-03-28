@@ -16,14 +16,14 @@ Scans configured repos for health signals and surfaces the top-5 most impactful 
 - **Stale PRs** — non-draft open PRs not updated in >5 days
 - **CI instability** — workflow run failure rate over last 20 runs
 - **Milestone drift** — open milestones with low completion percentage
-- **Critical backlog** — priority:high issues older than 30 days
+- **Critical backlog** — priority:high issues not updated in >30 days
 
 ## Output
 
 Markdown report saved to `reports/opportunity-scan-<timestamp>.md` containing:
 - Top-5 opportunities ranked by impact × confidence
 - Per-opportunity: title, category, repo, rationale, effort/impact/confidence
-- Signal summary table per repo
+- Signal summary per repo
 
 ## Usage
 

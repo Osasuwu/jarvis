@@ -27,8 +27,9 @@ Thumbs.DB
 # OpenClaw / Jarvis specific
 .jarvis/
 
-# Generated self-review reports (runtime artifacts - keep skill definitions)
+# Generated reports (runtime artifacts - keep skill definitions)
 reports/self-review-*.md
+reports/opportunity-scan-*.md
 
 # Legacy Python (may remain locally)
 __pycache__/

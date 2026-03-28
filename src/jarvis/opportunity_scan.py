@@ -13,6 +13,7 @@ Signal types:
 from __future__ import annotations
 
 import json as _json
+import os
 import re
 import shutil
 import subprocess
@@ -211,7 +212,7 @@ def _fetch_milestone_drift(repo: str) -> tuple[list[dict], str]:
         if total == 0:
             continue
         pct = round(ms["closed"] / total * 100, 1)
-        if ms["open"] > 0:  # only milestones with open work
+        if ms["open"] > 0 and pct < 80:  # exclude near-complete milestones
             drift.append({
                 "name": ms.get("title", ""),
                 "open": ms["open"],
@@ -226,7 +227,7 @@ def _fetch_critical_backlog(repo: str) -> tuple[int, str]:
     ok, out = _run_gh([
         "issue", "list", "--repo", repo, "--state", "open",
         "--label", "priority:high",
-        "--json", "number,updatedAt,createdAt",
+        "--json", "number,updatedAt",
         "--limit", "100",
     ])
     if not ok:
@@ -234,7 +235,7 @@ def _fetch_critical_backlog(repo: str) -> tuple[int, str]:
 
     count = sum(
         1 for issue in _parse_json(out)
-        if _days_ago(issue.get("createdAt", "")) >= CRITICAL_DAYS
+        if _days_ago(issue.get("updatedAt", "")) >= CRITICAL_DAYS
     )
     return count, ""
 
@@ -454,7 +455,7 @@ async def run_opportunity_scan(config: RuntimeConfig) -> OpportunityScanResult:
         return OpportunityScanResult(
             opportunities=(),
             report_text=msg,
-            report_path=Path("/dev/null"),
+            report_path=Path(os.devnull),
             scan_timestamp=timestamp,
             repos_scanned=0,
             success=False,
