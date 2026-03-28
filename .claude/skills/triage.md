@@ -9,7 +9,7 @@ Read-only health check across configured repos. Output: markdown report.
 
 ## Step 1 — Load repos
 
-Read `skills/triage/repos.conf`. Each non-empty, non-comment line = `owner/repo`.
+Read `config/repos.conf`. Each non-empty, non-comment line = `owner/repo`.
 
 ## Step 2 — Fetch open issues
 

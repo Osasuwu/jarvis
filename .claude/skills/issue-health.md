@@ -9,7 +9,7 @@ Deep structural audit of issue metadata. More thorough than triage. Output: mark
 
 ## Step 1 — Fetch open issues
 
-Read `skills/triage/repos.conf` for repo list. Per repo:
+Read `config/repos.conf` for repo list. Per repo:
 ```bash
 gh issue list --repo <owner/repo> --state open --json number,title,labels,milestone,state,assignees,updatedAt,createdAt,body --limit 1000
 ```

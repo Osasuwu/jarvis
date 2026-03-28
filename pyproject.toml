@@ -4,21 +4,64 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-agent"
-version = "0.1.0"
-description = "Jarvis personal AI agent bootstrap on Claude Agent SDK + MCP"
+version = "0.2.0"
+description = "Jarvis — universal personal AI agent built on Claude Code + MCP"
 readme = "README.md"
 requires-python = ">=3.11"
+license = { text = "MIT" }
 authors = [
-  { name = "petrk" }
+  { name = "Osasuwu", url = "https://github.com/Osasuwu" }
+]
+keywords = ["ai", "agent", "claude", "mcp", "personal-assistant"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
 ]
 dependencies = [
   "python-dotenv>=1.0.1",
-  "claude-agent-sdk>=0.0.0",
-  "requests>=2.32.3"
+  "requests>=2.32.3",
 ]
+
+[project.optional-dependencies]
+# Core: MCP memory server (cross-device persistent memory via Supabase)
+memory = [
+  "mcp>=1.0.0",
+  "supabase>=2.0.0",
+]
+# Telegram bridge (mobile access)
+telegram = [
+  "python-telegram-bot>=21.0",
+]
+# All runtime components
+full = [
+  "jarvis-agent[memory]",
+  "jarvis-agent[telegram]",
+]
+# Development
+dev = [
+  "pytest>=7.4",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.3",
+]
+
+[project.urls]
+Homepage = "https://github.com/Osasuwu/personal-AI-agent"
+Issues = "https://github.com/Osasuwu/personal-AI-agent/issues"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
