@@ -84,7 +84,12 @@ async def _embed(text: str, input_type: str = "document") -> list[float] | None:
             )
             resp.raise_for_status()
             return resp.json()["data"][0]["embedding"]
-    except Exception:
+    except asyncio.CancelledError:
+        # Let task cancellations propagate to allow proper shutdown.
+        raise
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+        # Network issues, non-2xx responses, or unexpected JSON shapes
+        # cause semantic search to be skipped and keyword fallback to be used.
         return None
 
 
