@@ -30,6 +30,8 @@ dependencies = [
 memory = [
   "mcp>=1.0.0",
   "supabase>=2.0.0",
+  "voyageai>=0.2.3",
+  "httpx>=0.27",
 ]
 # Telegram bridge (mobile access)
 telegram = [

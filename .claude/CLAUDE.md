@@ -4,7 +4,7 @@
 
 **Jarvis** — universal personal AI agent. See `docs/PROJECT_PLAN.md` for full scope.
 
-Architecture: Claude Code native (skills, hooks, MCP, subagents) + thin Python service for Telegram, scheduler, autonomous ops.
+Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory layer + SOUL.md identity. Telegram via Channels, scheduling via /loop — no custom Python services.
 
 ## Memory — USE IT
 
@@ -43,7 +43,7 @@ Owner explicitly wants honest criticism. Challenge bad ideas. Don't build prompt
 After conversations with decisions: `memory_store(...)`. The #1 frustration is context loss between sessions.
 
 ### Check native capabilities
-Before writing Python: can Claude Code skills, MCP servers, hooks, or subagents handle this? Only write external Python for Telegram, scheduler, autonomous ops, budget tracking.
+Before writing Python: can Claude Code skills, MCP servers, hooks, or subagents handle this? The only justified Python is `mcp-memory/server.py`. Everything else (Telegram → Channels, scheduling → /loop, background tasks → Desktop agents) is handled natively.
 
 ### Data-first skills
 Don't pay LLM tokens to run shell commands. Fetch data in Python, send only data to cheap LLM for analysis.

@@ -1,4 +1,4 @@
-"""Unit tests for jarvis.risk_radar — risk pattern detection.
+"""Unit tests for risk_radar — risk pattern detection.
 
 Tests cover all 5 patterns, severity thresholds, report generation,
 and intent routing. No gh CLI calls are made — all subprocess calls are mocked.
@@ -16,7 +16,7 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from jarvis.risk_radar import (
+from risk_radar import (
     CI_CRITICAL_RATE,
     CI_HIGH_RATE,
     CI_MEDIUM_RATE,
@@ -79,13 +79,13 @@ class TestParseJson:
 
 class TestLoadRepos:
     def test_missing_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jarvis.risk_radar.REPOS_CONF", tmp_path / "missing.conf")
+        monkeypatch.setattr("risk_radar.REPOS_CONF", tmp_path / "missing.conf")
         assert _load_repos() == []
 
     def test_parses_repos(self, tmp_path, monkeypatch):
         conf = tmp_path / "repos.conf"
         conf.write_text("# comment\nowner/repo1\nowner/repo2\n", encoding="utf-8")
-        monkeypatch.setattr("jarvis.risk_radar.REPOS_CONF", conf)
+        monkeypatch.setattr("risk_radar.REPOS_CONF", conf)
         assert _load_repos() == ["owner/repo1", "owner/repo2"]
 
 
@@ -102,44 +102,44 @@ class TestCiInstability:
 
     def test_critical_above_50pct(self):
         runs = self._make_runs(11, 20)  # 55% failure
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(runs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(runs)):
             alerts = _check_ci_instability("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "critical"
 
     def test_high_at_30_to_50pct(self):
         runs = self._make_runs(8, 20)  # 40% failure
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(runs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(runs)):
             alerts = _check_ci_instability("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "high"
 
     def test_medium_at_15_to_30pct(self):
         runs = self._make_runs(4, 20)  # 20% failure
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(runs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(runs)):
             alerts = _check_ci_instability("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "medium"
 
     def test_no_alert_below_threshold(self):
         runs = self._make_runs(1, 20)  # 5% failure
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(runs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(runs)):
             alerts = _check_ci_instability("r/r")
         assert alerts == []
 
     def test_no_alert_on_empty_runs(self):
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok([])):
+        with patch("risk_radar._run_gh", return_value=_gh_ok([])):
             alerts = _check_ci_instability("r/r")
         assert alerts == []
 
     def test_no_alert_on_gh_failure(self):
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_fail()):
+        with patch("risk_radar._run_gh", return_value=_gh_fail()):
             alerts = _check_ci_instability("r/r")
         assert alerts == []
 
     def test_pattern_slug_is_ci_instability(self):
         runs = self._make_runs(12, 20)
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(runs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(runs)):
             alerts = _check_ci_instability("r/r")
         assert alerts[0].pattern == "ci-instability"
 
@@ -156,32 +156,32 @@ class TestCriticalStagnation:
 
     def test_high_when_gte_threshold(self):
         issues = self._issues(STAGNATION_HIGH, STAGNATION_DAYS + 1)
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(issues)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(issues)):
             alerts = _check_critical_stagnation("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "high"
 
     def test_medium_below_threshold(self):
         issues = self._issues(STAGNATION_HIGH - 1, STAGNATION_DAYS + 1)
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(issues)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(issues)):
             alerts = _check_critical_stagnation("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "medium"
 
     def test_fresh_issues_not_flagged(self):
         issues = self._issues(10, STAGNATION_DAYS - 1)
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(issues)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(issues)):
             alerts = _check_critical_stagnation("r/r")
         assert alerts == []
 
     def test_no_alert_on_empty(self):
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok([])):
+        with patch("risk_radar._run_gh", return_value=_gh_ok([])):
             alerts = _check_critical_stagnation("r/r")
         assert alerts == []
 
     def test_pattern_slug(self):
         issues = self._issues(3, STAGNATION_DAYS + 2)
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(issues)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(issues)):
             alerts = _check_critical_stagnation("r/r")
         assert alerts[0].pattern == "critical-stagnation"
 
@@ -195,31 +195,31 @@ class TestSecurityAlerts:
             {"severity": "high", "pkg": "requests"},
             {"severity": "medium", "pkg": "urllib3"},
         ]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(alerts_data)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(alerts_data)):
             alerts = _check_security_alerts("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "critical"
 
     def test_medium_on_medium_severity_only(self):
         alerts_data = [{"severity": "medium", "pkg": "aiohttp"}]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(alerts_data)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(alerts_data)):
             alerts = _check_security_alerts("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "medium"
 
     def test_no_alert_on_empty(self):
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok([])):
+        with patch("risk_radar._run_gh", return_value=_gh_ok([])):
             alerts = _check_security_alerts("r/r")
         assert alerts == []
 
     def test_no_alert_on_gh_failure(self):
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_fail()):
+        with patch("risk_radar._run_gh", return_value=_gh_fail()):
             alerts = _check_security_alerts("r/r")
         assert alerts == []
 
     def test_pattern_slug(self):
         alerts_data = [{"severity": "critical", "pkg": "boto3"}]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(alerts_data)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(alerts_data)):
             alerts = _check_security_alerts("r/r")
         assert alerts[0].pattern == "security-alert"
 
@@ -234,21 +234,21 @@ class TestOverdueMilestones:
 
     def test_high_when_less_than_50pct_done(self):
         ms = [self._ms(5, 8, 2)]  # 20% done
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(ms)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(ms)):
             alerts = _check_overdue_milestones("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "high"
 
     def test_medium_when_more_than_50pct_done(self):
         ms = [self._ms(5, 2, 8)]  # 80% done
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(ms)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(ms)):
             alerts = _check_overdue_milestones("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "medium"
 
     def test_no_alert_when_no_open_issues(self):
         ms = [self._ms(5, 0, 10)]  # all done
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(ms)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(ms)):
             alerts = _check_overdue_milestones("r/r")
         assert alerts == []
 
@@ -256,13 +256,13 @@ class TestOverdueMilestones:
         # Milestone not yet past due
         future = (datetime.now(UTC) + timedelta(days=5)).isoformat()
         ms = [{"title": "v2.0", "due": future, "open": 5, "closed": 3}]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(ms)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(ms)):
             alerts = _check_overdue_milestones("r/r")
         assert alerts == []
 
     def test_pattern_slug(self):
         ms = [self._ms(3, 5, 1)]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(ms)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(ms)):
             alerts = _check_overdue_milestones("r/r")
         assert alerts[0].pattern == "overdue-milestone"
 
@@ -282,39 +282,39 @@ class TestReviewBacklog:
 
     def test_high_when_gte_threshold(self):
         prs = [self._pr(i, CHANGES_STALE_DAYS + 1) for i in range(CHANGES_HIGH_COUNT)]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(prs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(prs)):
             alerts = _check_review_backlog("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "high"
 
     def test_medium_below_threshold(self):
         prs = [self._pr(1, CHANGES_STALE_DAYS + 1)]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(prs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(prs)):
             alerts = _check_review_backlog("r/r")
         assert len(alerts) == 1
         assert alerts[0].severity == "medium"
 
     def test_drafts_excluded(self):
         prs = [self._pr(1, CHANGES_STALE_DAYS + 1, draft=True)]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(prs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(prs)):
             alerts = _check_review_backlog("r/r")
         assert alerts == []
 
     def test_fresh_prs_not_flagged(self):
         prs = [self._pr(1, CHANGES_STALE_DAYS - 1)]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(prs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(prs)):
             alerts = _check_review_backlog("r/r")
         assert alerts == []
 
     def test_approved_prs_not_flagged(self):
         prs = [self._pr(1, CHANGES_STALE_DAYS + 1, decision="APPROVED")]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(prs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(prs)):
             alerts = _check_review_backlog("r/r")
         assert alerts == []
 
     def test_pattern_slug(self):
         prs = [self._pr(1, CHANGES_STALE_DAYS + 2)]
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok(prs)):
+        with patch("risk_radar._run_gh", return_value=_gh_ok(prs)):
             alerts = _check_review_backlog("r/r")
         assert alerts[0].pattern == "review-backlog"
 
@@ -338,29 +338,29 @@ class TestSeverityOrder:
 
 class TestWriteReport:
     def test_creates_file(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jarvis.risk_radar.REPORTS_DIR", tmp_path)
+        monkeypatch.setattr("risk_radar.REPORTS_DIR", tmp_path)
         alert = RiskAlert("critical", "ci-instability", "r/r", "CI broken", "details", "evidence")
         text, path = _write_report([alert], ["r/r"], "2026-03-28T12:00:00")
         assert path.exists()
 
     def test_contains_alert_title(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jarvis.risk_radar.REPORTS_DIR", tmp_path)
+        monkeypatch.setattr("risk_radar.REPORTS_DIR", tmp_path)
         alert = RiskAlert("high", "critical-stagnation", "r/r", "5 issues stale", "d", "e")
         text, _ = _write_report([alert], ["r/r"], "2026-03-28T12:00:00")
         assert "5 issues stale" in text
 
     def test_no_risks_message(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jarvis.risk_radar.REPORTS_DIR", tmp_path)
+        monkeypatch.setattr("risk_radar.REPORTS_DIR", tmp_path)
         text, _ = _write_report([], ["r/r"], "2026-03-28T12:00:00")
         assert "No risks detected" in text
 
     def test_escalation_policy_included(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jarvis.risk_radar.REPORTS_DIR", tmp_path)
+        monkeypatch.setattr("risk_radar.REPORTS_DIR", tmp_path)
         text, _ = _write_report([], [], "2026-03-28T12:00:00")
         assert "Escalation Policy" in text
 
     def test_filename_includes_risk_radar(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("jarvis.risk_radar.REPORTS_DIR", tmp_path)
+        monkeypatch.setattr("risk_radar.REPORTS_DIR", tmp_path)
         _, path = _write_report([], [], "2026-03-28T12:00:00")
         assert "risk-radar" in path.name
 
@@ -378,33 +378,10 @@ class TestScanRepo:
             call_count += 1
             raise RuntimeError("simulated failure")
 
-        with patch("jarvis.risk_radar._run_gh", return_value=_gh_ok([])):
+        with patch("risk_radar._run_gh", return_value=_gh_ok([])):
             # All checkers will get empty data → no alerts, no crash.
             alerts = _scan_repo("r/r")
         assert isinstance(alerts, list)
 
 
 # ── Intent routing ────────────────────────────────────────────────────────────
-
-
-class TestRiskRadarIntentRouting:
-    def test_risk_radar_keyword(self):
-        from jarvis.intent_router import route_user_input
-        result = route_user_input("risk radar")
-        assert result.selected_route == "/risk-radar"
-        assert result.was_routed is True
-
-    def test_check_for_risks(self):
-        from jarvis.intent_router import route_user_input
-        result = route_user_input("check for risks please")
-        assert result.selected_route == "/risk-radar"
-
-    def test_russian_keyword(self):
-        from jarvis.intent_router import route_user_input
-        result = route_user_input("проверь риски")
-        assert result.selected_route == "/risk-radar"
-
-    def test_security_alerts_keyword(self):
-        from jarvis.intent_router import route_user_input
-        result = route_user_input("show me security alerts")
-        assert result.selected_route == "/risk-radar"
