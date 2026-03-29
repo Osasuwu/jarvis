@@ -4,7 +4,7 @@ Provides persistent, cross-device memory for Claude Code via Supabase.
 Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete.
 
 Semantic search via Voyage AI embeddings (voyage-3-lite, 512 dims).
-Uses httpx async HTTP — no blocking threads.
+Uses httpx async HTTP for Voyage AI embedding calls; other operations may still be synchronous.
 Falls back to ILIKE keyword search if VOYAGE_API_KEY is not set or on timeout.
 
 Usage in .mcp.json:
