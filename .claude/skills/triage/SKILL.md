@@ -1,6 +1,7 @@
 ---
 name: triage
-description: "Daily triage: stale issues, missing metadata, blocked items, status inconsistencies"
+description: This skill should be used when the user asks to triage issues, check the health of the GitHub board, review open tasks, find stale or blocked issues, or audit issue metadata. Trigger phrases include "триаж", "triage", "посмотри на issues", "что застряло", "здоровье доски", "stale issues", "что блокировано".
+version: 1.0.0
 ---
 
 # Daily Triage
@@ -9,7 +10,7 @@ Read-only health check across configured repos. Output: markdown report.
 
 ## Step 1 — Load repos
 
-Read `config/repos.conf`. Each non-empty, non-comment line = `owner/repo`.
+Read `personal-AI-agent/config/repos.conf`. Each non-empty, non-comment line = `owner/repo`.
 
 ## Step 2 — Fetch open issues
 
@@ -24,10 +25,7 @@ gh issue list --repo <owner/repo> --state open --json number,title,labels,milest
 Non-epic issues must have labels with prefixes: `status:*`, `priority:*`, `area:*`. Report each missing prefix.
 
 ### 3b. Hierarchy (WARNING)
-Non-epic issues should link to a parent epic. Check:
-1. `Parent: #N` or `Parent Epic: #N` in body
-2. If not found — list epics once (`gh issue list --label epic --json number`), then per epic `gh api repos/{owner}/{repo}/issues/{N}/sub_issues --jq '.[].number'` to build child→parent map.
-
+Non-epic issues should link to a parent epic. Check body for `Parent: #N` or use sub-issues API.
 Exception: `priority:critical` issues are allowed without parent.
 
 ### 3c. Blocked (ERROR)
@@ -62,8 +60,6 @@ Non-epic issues not updated 14+ days (skip `status:blocked`). Show days since up
 ```
 
 Skip categories with zero violations. If all clean: "> No violations — board is healthy."
-Process repos sequentially. If `gh` fails for a repo, log error and continue.
 
 ## Constraints
-- **Read-only**: do NOT modify issues, create files, run git commands, or install packages.
-- Only run `gh` CLI commands as described above.
+- **Read-only**: do NOT modify issues, create files, or run git commands.

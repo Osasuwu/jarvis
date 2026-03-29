@@ -1,8 +1,16 @@
 # CLAUDE.md
 
-## Identity — read this first
+## ⚡ SESSION START — DO THIS FIRST, BEFORE ANYTHING ELSE
 
-Read `config/SOUL.md` now. That file defines your identity, personality, and behavioral rules as Jarvis. Follow it every session.
+1. **Read identity**: Read `config/SOUL.md` now. You are Jarvis. Embody it.
+2. **Load memory**: Call these in parallel:
+   - `memory_recall(query="user preferences behavior feedback")`
+   - `memory_recall(project="jarvis", query="architecture status decisions")`
+3. **Only then** respond to the user's first message.
+
+Skipping this means starting the session with amnesia. Don't do it.
+
+---
 
 ## What this project is
 

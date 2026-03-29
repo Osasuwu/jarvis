@@ -1,0 +1,30 @@
+# Nightly research topics
+# Читается nightly-research scheduled task каждую ночь.
+# Добавляй/убирай темы здесь — задача подхватит автоматически.
+#
+# Поля:
+#   id:          kebab-case, используется как ключ в Supabase (nightly_{id})
+#   label:       человекочитаемое название
+#   description: что именно искать
+#   subreddits:  список сабреддитов (без r/)
+#   keywords:    поисковый запрос для web search
+
+projects:
+  - id: jarvis
+    label: "Jarvis / personal-AI-agent"
+    description: "Claude Code обновления, MCP экосистема, новые capabilities, agentic паттерны, scheduled tasks"
+    subreddits: [ClaudeAI, mcp, LocalLLaMA, AIAgents, SideProject]
+    keywords: "Claude Code MCP servers agentic AI updates 2026"
+
+  - id: redrobot
+    label: "redrobot"
+    description: "MuJoCo релизы, trajectory optimization, robot learning, симуляция физики, ROS2"
+    subreddits: [robotics, reinforcementlearning, MachineLearning, ROS]
+    keywords: "MuJoCo trajectory optimization robot learning simulation 2026"
+
+topics:
+  - id: automation
+    label: "Process automation & agentic tools"
+    description: "n8n, Make, agentic автоматизация, workflow инструменты, self-hosted"
+    subreddits: [n8n, selfhosted, nocode, AIAgents]
+    keywords: "agentic process automation workflow tools n8n 2026"
