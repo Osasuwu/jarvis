@@ -1,0 +1,125 @@
+name: Copilot Review Response
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  respond-to-copilot:
+    if: github.event.review.user.login == 'copilot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node.js (for Claude CLI)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch Copilot review comments
+        id: review
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          REVIEW_ID="${{ github.event.review.id }}"
+          REVIEW_BODY="${{ github.event.review.body }}"
+
+          # Fetch inline comments for this review
+          COMMENTS=$(gh api \
+            "/repos/${{ github.repository }}/pulls/$PR_NUMBER/comments" \
+            --jq '[.[] | select(.pull_request_review_id == '"$REVIEW_ID"') | {path: .path, line: .line, body: .body}]')
+
+          echo "review_body<<EOF" >> $GITHUB_OUTPUT
+          echo "$REVIEW_BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "comments<<EOF" >> $GITHUB_OUTPUT
+          echo "$COMMENTS" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "branch=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+
+      - name: Apply fixes via Claude
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ steps.review.outputs.pr_number }}"
+          BRANCH="${{ steps.review.outputs.branch }}"
+
+          cat > /tmp/review_prompt.txt << 'PROMPT_EOF'
+          You are responding to a GitHub Copilot code review on a pull request.
+
+          ## Your task
+
+          1. Read the review body and inline comments below.
+          2. Classify each finding by risk level:
+             - LOW: unused imports, dead code, cosmetic issues, typos
+             - MEDIUM: error handling improvements, simple refactors, missing docstrings on public API
+             - HIGH: logic changes, security fixes, architecture changes, anything that could break behavior
+             - CRITICAL: data loss risk, security vulnerabilities, breaking API changes
+
+          3. For LOW and MEDIUM findings: apply the fix directly by editing the relevant files.
+          4. For HIGH and CRITICAL findings: do NOT apply — collect them for a summary comment.
+
+          5. After applying all LOW/MEDIUM fixes, run: git diff --stat
+          6. If there are changes, commit them:
+             git add -A
+             git commit -m "fix: apply Copilot review suggestions (LOW/MEDIUM risk auto-fix)"
+
+          7. Post a PR comment via gh CLI summarizing:
+             - What was auto-applied (LOW/MEDIUM)
+             - What requires manual review (HIGH/CRITICAL) with specific file:line references
+
+          Use this format for the summary comment:
+          ```
+          ## Copilot Review Response (automated)
+
+          ### Auto-applied ✅
+          - `file.py:42` — removed unused import `os` [LOW]
+
+          ### Needs manual review ⚠️
+          - `file.py:100` — potential race condition in thread pool [HIGH]
+
+          *Applied by [copilot-review-response workflow](../../actions/workflows/copilot-review-response.yml)*
+          ```
+
+          If nothing was auto-applied and nothing needs manual review, post:
+          "Copilot review processed — no actionable items found."
+
+          ## Review body
+          PROMPT_EOF
+
+          echo "${{ steps.review.outputs.review_body }}" >> /tmp/review_prompt.txt
+          echo "" >> /tmp/review_prompt.txt
+          echo "## Inline comments" >> /tmp/review_prompt.txt
+          echo "${{ steps.review.outputs.comments }}" >> /tmp/review_prompt.txt
+          echo "" >> /tmp/review_prompt.txt
+          echo "## Context" >> /tmp/review_prompt.txt
+          echo "PR number: $PR_NUMBER" >> /tmp/review_prompt.txt
+          echo "Branch: $BRANCH" >> /tmp/review_prompt.txt
+          echo "Repo: ${{ github.repository }}" >> /tmp/review_prompt.txt
+          echo "" >> /tmp/review_prompt.txt
+          echo "Post the summary comment using: gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body '...'" >> /tmp/review_prompt.txt
+
+          # Run Claude with the prompt — non-interactive, tools enabled
+          claude --dangerously-skip-permissions -p "$(cat /tmp/review_prompt.txt)"
