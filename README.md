@@ -4,7 +4,7 @@ Universal personal AI agent built on [Claude Code](https://code.claude.com) + [M
 
 Jarvis extends Claude Code with persistent cross-device memory, a Telegram interface, and an autonomous self-improvement loop — turning it from a workstation tool into a personal assistant you can reach from anywhere.
 
-> **Status:** Active development. Core memory system functional. Reboot to Claude Code native architecture in progress.
+> **Status:** Active development. Core memory system and Claude Code native architecture functional.
 
 ## What makes this different
 
@@ -19,33 +19,34 @@ Jarvis adds exactly these missing pieces as a thin layer on top of Claude Code.
 ## Architecture
 
 ```
-┌─────────────┐    ┌─────────────────────────────────────┐
-│   Telegram  │    │           Claude Code                │
-│  (mobile)   │    │                                      │
-└──────┬──────┘    │  .claude/skills/   ← PM, research,  │
-       │           │  .claude/agents/      delegation     │
-       ▼           │  .claude/CLAUDE.md ← identity+rules  │
-┌─────────────┐    │                                      │
-│ Python      │    │  MCP Servers:                        │
-│ relay       │───▶│  - memory    ← Supabase (this repo) │
-│ service     │    │  - github    ← official MCP          │
-└─────────────┘    │  - filesystem ← official MCP         │
-                   └─────────────────────────────────────┘
-                                    │
-                              Supabase DB
-                         (memory syncs across
-                          all devices/projects)
+┌─────────────┐         ┌─────────────────────────────────────┐
+│   Telegram  │         │           Claude Code                │
+│  (mobile)   │         │                                      │
+└──────┬──────┘         │  .claude/skills/   ← PM, research,  │
+       │ Claude Code    │  .claude/agents/      delegation     │
+       │ Channels       │  .claude/CLAUDE.md ← identity+rules  │
+       └───────────────▶│  config/SOUL.md    ← personality     │
+                        │                                      │
+                        │  MCP Servers:                        │
+                        │  - memory    ← Supabase (this repo) │
+                        │  - github    ← official MCP          │
+                        │  - filesystem ← official MCP         │
+                        └─────────────────────────────────────┘
+                                         │
+                                   Supabase DB
+                              (memory syncs across
+                               all devices/projects)
 ```
 
 **Inside Claude Code** (native features — zero Python needed):
-- Skills: triage, weekly-report, issue-health, research, delegate, self-review
+- Skills: triage, issue-health, research, delegate, self-review, self-improve, risk-radar
 - Subagents with model routing (Haiku for cheap tasks, Sonnet for complex)
-- Hooks for lifecycle automation
 - SOUL.md personality loaded into every session
+- Telegram/Discord/iMessage via [Claude Code Channels](https://code.claude.com/docs/en/channels)
 
-**External Python service** (only what Claude Code can't do):
+**External Python** (only what Claude Code genuinely can't do):
 - `mcp-memory/` — MCP server for cross-device Supabase memory ✅
-- `src/telegram/` — Telegram → Claude SDK relay *(planned)*
+- `src/risk_radar.py` — standalone deterministic risk scan (no LLM) ✅
 - `src/scheduler/` — autonomous background tasks *(planned)*
 
 ## Features
@@ -53,20 +54,20 @@ Jarvis adds exactly these missing pieces as a thin layer on top of Claude Code.
 | Feature | Status |
 |---------|--------|
 | Cross-device memory (Supabase MCP) | ✅ Working |
-| PM skills (triage, weekly-report, issue-health) | ✅ Working |
+| PM skills (triage, issue-health, risk-radar) | ✅ Working |
 | Research skill (web search + source validation) | ✅ Working |
 | Delegation pipeline (issue → PR via coding agent) | ✅ Working |
+| Telegram interface (Claude Code Channels) | ✅ Working |
 | Self-review + self-improve loop | 🔧 In progress |
-| Telegram interface | 📋 Planned |
 | Autonomous scheduler | 📋 Planned |
 
 ## Prerequisites
 
-- [Claude Code](https://code.claude.com) installed and authenticated
+- [Claude Code](https://code.claude.com) v2.1.80+ installed and authenticated
+- [Bun](https://bun.sh) (required for Claude Code Channels plugins)
 - Python 3.11+
 - [Supabase](https://supabase.com) account (free tier sufficient)
 - [GitHub CLI](https://cli.github.com) authenticated
-- Claude API key (for delegation pipeline)
 
 ## Quick Start
 
@@ -96,14 +97,19 @@ export SUPABASE_KEY=your-anon-key
 
 4. The memory MCP server is already configured in `.mcp.json`. Claude Code will auto-connect when you open the project.
 
+### Set up Telegram
+
+See [docs/telegram-setup.md](docs/telegram-setup.md) for the full guide. Short version:
+
+1. Create a bot via [@BotFather](https://t.me/botfather) on Telegram → get `TELEGRAM_BOT_TOKEN`
+2. Install the plugin in Claude Code: `/plugin install telegram@claude-plugins-official`
+3. Set the token: write `TELEGRAM_BOT_TOKEN=<your-token>` to `~/.claude/channels/telegram/.env`
+4. Start with Channels: `claude --channels plugin:telegram@claude-plugins-official`
+5. Pair your account: `/telegram:access pair` → send the code to your bot → `/telegram:access policy allowlist`
+
 ### Verify
 
-Open the project in Claude Code and run:
-```
-/memory-list
-```
-
-Or ask Claude Code directly — it should call `memory_recall` at session start and have context about the project.
+Open the project in Claude Code and run `/triage` or ask "check risks". The agent should read `config/SOUL.md`, recall memory, and behave as Jarvis.
 
 ## Memory system
 
@@ -138,9 +144,12 @@ mcp-memory/
   requirements.txt  ← mcp, supabase, python-dotenv
 config/
   SOUL.md           ← Jarvis personality definition
+  repos.conf        ← repos to scan (triage, risk-radar)
 docs/
   PROJECT_PLAN.md   ← vision, milestones, architecture decisions
-src/                ← external Python services (telegram, scheduler)
+  telegram-setup.md ← step-by-step Telegram setup
+src/
+  risk_radar.py     ← standalone risk scan script
 .mcp.json           ← MCP server registry
 pyproject.toml      ← Python packaging
 ```
@@ -150,7 +159,7 @@ pyproject.toml      ← Python packaging
 1. Clone the repo on each device
 2. Set `SUPABASE_URL` and `SUPABASE_KEY` env vars on each device
 3. `pip install -e ".[memory]"` on each device
-4. Open in Claude Code — memory syncs automatically
+4. Open in Claude Code — memory syncs automatically via Supabase
 
 No other setup needed. All context lives in Supabase, all instructions live in the repo.
 
