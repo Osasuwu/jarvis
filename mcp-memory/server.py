@@ -3,6 +3,10 @@
 Provides persistent, cross-device memory for Claude Code via Supabase.
 Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete.
 
+Semantic search via Voyage AI embeddings (voyage-3-lite, 512 dims).
+Uses httpx async HTTP — no blocking threads.
+Falls back to ILIKE keyword search if VOYAGE_API_KEY is not set or on timeout.
+
 Usage in .mcp.json:
 {
   "memory": {
@@ -11,7 +15,8 @@ Usage in .mcp.json:
     "args": ["mcp-memory/server.py"],
     "env": {
       "SUPABASE_URL": "https://xxx.supabase.co",
-      "SUPABASE_KEY": "eyJ..."
+      "SUPABASE_KEY": "eyJ...",
+      "VOYAGE_API_KEY": "pa-..."
     }
   }
 }
@@ -19,11 +24,12 @@ Usage in .mcp.json:
 
 from __future__ import annotations
 
-import json
+import asyncio
 import os
 import sys
 from datetime import datetime, timezone
 
+import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
@@ -52,6 +58,38 @@ def _get_client():
 
     _supabase = create_client(url, key)
     return _supabase
+
+
+# ---------------------------------------------------------------------------
+# Voyage AI embedding — async via httpx (properly cancellable, no thread blocking)
+# ---------------------------------------------------------------------------
+
+VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
+VOYAGE_MODEL = "voyage-3-lite"
+EMBEDDING_DIMS = 512
+EMBED_TIMEOUT = 5.0  # seconds — rate limit responses arrive quickly
+
+
+async def _embed(text: str, input_type: str = "document") -> list[float] | None:
+    """Call Voyage AI REST API asynchronously. Returns None on timeout/error."""
+    api_key = os.environ.get("VOYAGE_API_KEY")
+    if not api_key:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
+            resp = await client.post(
+                VOYAGE_API_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": VOYAGE_MODEL, "input": [text], "input_type": input_type},
+            )
+            resp.raise_for_status()
+            return resp.json()["data"][0]["embedding"]
+    except Exception:
+        return None
+
+
+async def _embed_query(text: str) -> list[float] | None:
+    return await _embed(text, input_type="query")
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +149,8 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="memory_recall",
             description=(
-                "Search memories by keyword. Returns matching memories ranked by relevance. "
+                "Search memories by keyword or semantic meaning. "
+                "Uses vector similarity search when available, falls back to keyword matching. "
                 "Use at the START of a session to load relevant context, "
                 "or when the user references something discussed before."
             ),
@@ -120,7 +159,7 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search keywords (matched against name, description, content)",
+                        "description": "Search query — natural language or keywords",
                     },
                     "project": {
                         "type": ["string", "null"],
@@ -233,6 +272,10 @@ async def _handle_store(args: dict) -> list[TextContent]:
     if mem_type not in VALID_TYPES:
         return [TextContent(type="text", text=f"Invalid type: {mem_type}. Must be one of {VALID_TYPES}")]
 
+    # Generate embedding (async httpx — 5s timeout, falls back gracefully)
+    embed_text = f"{description}\n{content}".strip() if description else content
+    embedding = await _embed(embed_text)
+
     data = {
         "type": mem_type,
         "name": mem_name,
@@ -242,18 +285,23 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "tags": tags,
     }
 
-    # Upsert: if (project, name) exists, update; else insert
-    result = (
-        client.table("memories")
-        .upsert(data, on_conflict="project,name")
-        .execute()
-    )
+    # Manual upsert: check existence first (handles NULL project correctly)
+    q = client.table("memories").select("id")
+    q = q.eq("name", mem_name)
+    q = q.is_("project", "null") if project is None else q.eq("project", project)
+    existing = q.limit(1).execute()
 
-    if result.data:
-        action = "updated" if result.data[0].get("updated_at") != result.data[0].get("created_at") else "created"
-        return [TextContent(type="text", text=f"Memory '{mem_name}' {action} (project={project or 'global'})")]
+    if embedding is not None:
+        data["embedding"] = embedding
 
-    return [TextContent(type="text", text="Memory stored.")]
+    embed_note = " (with embedding)" if embedding is not None else ""
+
+    if existing.data:
+        client.table("memories").update(data).eq("id", existing.data[0]["id"]).execute()
+        return [TextContent(type="text", text=f"Memory '{mem_name}' updated (project={project or 'global'}){embed_note}")]
+    else:
+        client.table("memories").insert(data).execute()
+        return [TextContent(type="text", text=f"Memory '{mem_name}' created (project={project or 'global'}){embed_note}")]
 
 
 async def _handle_recall(args: dict) -> list[TextContent]:
@@ -264,18 +312,60 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     mem_type = args.get("type")
     limit = args.get("limit", 10)
 
+    # Try semantic search first (truly async httpx — 5s timeout, no thread blocking)
+    if query_text:
+        query_embedding = await _embed_query(query_text)
+        if query_embedding is not None:
+            return await _semantic_recall(client, query_embedding, query_text, project, mem_type, limit)
+
+    # Fallback: ILIKE keyword search
+    results = await _keyword_recall(client, query_text, project, mem_type, limit)
+
+    # Lazily backfill embeddings for records missing them (fire-and-forget)
+    asyncio.create_task(_backfill_missing_embeddings(client, project))
+
+    return results
+
+
+async def _semantic_recall(
+    client, query_embedding: list[float], query_text: str,
+    project, mem_type, limit: int
+) -> list[TextContent]:
+    """Vector similarity search via Supabase RPC."""
+    try:
+        params = {
+            "query_embedding": query_embedding,
+            "match_count": limit,
+        }
+        if project is not None:
+            params["filter_project"] = project
+        if mem_type:
+            params["filter_type"] = mem_type
+
+        result = client.rpc("match_memories", params).execute()
+
+        if not result.data:
+            # No semantic results — fall back to keyword
+            return await _keyword_recall(client, query_text, project, mem_type, limit)
+
+        formatted = _format_memories(result.data)
+        return [TextContent(type="text", text=f"Found {len(result.data)} memories (semantic search):\n\n" + "\n---\n".join(formatted))]
+
+    except Exception:
+        # RPC not set up yet — fall back to keyword
+        return await _keyword_recall(client, query_text, project, mem_type, limit)
+
+
+async def _keyword_recall(client, query_text: str, project, mem_type, limit: int) -> list[TextContent]:
+    """ILIKE keyword search (fallback)."""
     q = client.table("memories").select("name, type, project, description, content, tags, updated_at")
 
     if project is not None:
-        # Include both project-specific and global memories
         q = q.or_(f"project.eq.{project},project.is.null")
     if mem_type:
         q = q.eq("type", mem_type)
 
     if query_text:
-        # ILIKE search across name, description, content.
-        # Split multi-word queries and OR all terms so "jarvis reboot" matches
-        # records containing "jarvis" OR "reboot", not only the exact phrase.
         terms = query_text.split()
         clauses = ",".join(
             f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%"
@@ -288,8 +378,13 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     if not result.data:
         return [TextContent(type="text", text="No memories found.")]
 
+    formatted = _format_memories(result.data)
+    return [TextContent(type="text", text=f"Found {len(result.data)} memories (keyword search):\n\n" + "\n---\n".join(formatted))]
+
+
+def _format_memories(memories: list[dict]) -> list[str]:
     formatted = []
-    for mem in result.data:
+    for mem in memories:
         tags_str = f" [{', '.join(mem.get('tags', []))}]" if mem.get("tags") else ""
         formatted.append(
             f"## {mem['name']} ({mem['type']}, {mem.get('project') or 'global'}){tags_str}\n"
@@ -297,8 +392,25 @@ async def _handle_recall(args: dict) -> list[TextContent]:
             f"Updated: {mem.get('updated_at', '?')}\n\n"
             f"{mem['content']}\n"
         )
+    return formatted
 
-    return [TextContent(type="text", text=f"Found {len(result.data)} memories:\n\n" + "\n---\n".join(formatted))]
+
+async def _backfill_missing_embeddings(client, project) -> None:
+    """Fire-and-forget: generate embeddings for records saved without one."""
+    try:
+        q = client.table("memories").select("id, name, description, content")
+        q = q.is_("embedding", "null")
+        if project is not None:
+            q = q.or_(f"project.eq.{project},project.is.null")
+        rows = q.limit(1).execute().data  # Max 1 per recall to stay within 3 RPM
+        for mem in rows:
+            text = f"{mem.get('description', '')}\n{mem['content']}".strip()
+            embedding = await _embed(text)
+            if embedding is None:
+                break  # Rate limited — stop, retry next recall
+            client.table("memories").update({"embedding": embedding}).eq("id", mem["id"]).execute()
+    except Exception:
+        pass  # fire-and-forget: silently swallow all errors so caller never fails
 
 
 async def _handle_get(args: dict) -> list[TextContent]:
@@ -392,5 +504,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
