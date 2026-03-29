@@ -6,12 +6,14 @@ on:
 
 jobs:
   respond-to-copilot:
-    if: github.event.review.user.login == 'copilot[bot]'
+    # Only trigger on Copilot reviews of internal (non-fork) PRs
+    if: |
+      github.event.review.user.login == 'copilot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: write
       pull-requests: write
-      issues: write
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +28,8 @@ jobs:
           node-version: "20"
 
       - name: Install Claude CLI
-        run: npm install -g @anthropic-ai/claude-code
+        # Pinned to a specific major version for CI stability; update intentionally
+        run: npm install -g @anthropic-ai/claude-code@2
 
       - name: Configure git
         run: |
@@ -40,12 +43,15 @@ jobs:
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
           REVIEW_ID="${{ github.event.review.id }}"
-          REVIEW_BODY="${{ github.event.review.body }}"
 
-          # Fetch inline comments for this review
+          # Safe: read review body from event payload (avoids shell injection)
+          REVIEW_BODY="$(jq -r '.review.body // ""' "$GITHUB_EVENT_PATH")"
+
+          # Fetch inline comments for this review (paginated)
           COMMENTS=$(gh api \
-            "/repos/${{ github.repository }}/pulls/$PR_NUMBER/comments" \
-            --jq '[.[] | select(.pull_request_review_id == '"$REVIEW_ID"') | {path: .path, line: .line, body: .body}]')
+            "/repos/${{ github.repository }}/pulls/$PR_NUMBER/comments?per_page=100" \
+            --paginate \
+            --jq ".[] | select(.pull_request_review_id == $REVIEW_ID) | {path: .path, line: .line, body: .body}" | jq -s '.')
 
           echo "review_body<<EOF" >> $GITHUB_OUTPUT
           echo "$REVIEW_BODY" >> $GITHUB_OUTPUT
@@ -81,12 +87,14 @@ jobs:
           3. For LOW and MEDIUM findings: apply the fix directly by editing the relevant files.
           4. For HIGH and CRITICAL findings: do NOT apply — collect them for a summary comment.
 
-          5. After applying all LOW/MEDIUM fixes, run: git diff --stat
-          6. If there are changes, commit them:
-             git add -A
-             git commit -m "fix: apply Copilot review suggestions (LOW/MEDIUM risk auto-fix)"
+          5. After applying all LOW/MEDIUM fixes:
+             a. Run: git diff --stat
+             b. If there are changes, commit and push:
+                git add -A
+                git commit -m "fix: apply Copilot review suggestions (LOW/MEDIUM risk auto-fix)"
+                git push origin "$BRANCH"
 
-          7. Post a PR comment via gh CLI summarizing:
+          6. Post a PR comment via gh CLI summarizing:
              - What was auto-applied (LOW/MEDIUM)
              - What requires manual review (HIGH/CRITICAL) with specific file:line references
 
@@ -121,5 +129,7 @@ jobs:
           echo "" >> /tmp/review_prompt.txt
           echo "Post the summary comment using: gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body '...'" >> /tmp/review_prompt.txt
 
-          # Run Claude with the prompt — non-interactive, tools enabled
+          # Run Claude — dangerously-skip-permissions is required for non-interactive CI file edits.
+          # Blast radius is limited by: non-fork only gate (above), pinned CLI version,
+          # and no issues:write permission.
           claude --dangerously-skip-permissions -p "$(cat /tmp/review_prompt.txt)"
