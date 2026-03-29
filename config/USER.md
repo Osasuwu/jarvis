@@ -1,9 +1,9 @@
 # USER.md
 
 - **Name:** Petr Kudryavtsev
-- **What to call them:** Petr
-- **Timezone:** (auto-detect from system)
-- **Notes:** Communicates in Russian. CS student, solo developer managing multiple GitHub projects. Experienced programmer-architect.
+- **Nickname:** Osas
+- **Timezone:** UTC +5
+- **Notes:** Communicates in Russian. 2023 CS student, solo developer managing multiple GitHub projects. Experienced programmer-architect.
 
 ## Context
 
