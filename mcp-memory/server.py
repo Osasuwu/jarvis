@@ -4,7 +4,7 @@ Provides persistent, cross-device memory for Claude Code via Supabase.
 Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete.
 
 Semantic search via Voyage AI embeddings (voyage-3-lite, 512 dims).
-Uses httpx async HTTP — no blocking threads.
+Uses httpx async HTTP for Voyage AI embedding calls; other Supabase operations are synchronous.
 Falls back to ILIKE keyword search if VOYAGE_API_KEY is not set or on timeout.
 
 Usage in .mcp.json:
@@ -66,7 +66,6 @@ def _get_client():
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
-EMBEDDING_DIMS = 512
 EMBED_TIMEOUT = 5.0  # seconds — rate limit responses arrive quickly
 
 
@@ -84,7 +83,9 @@ async def _embed(text: str, input_type: str = "document") -> list[float] | None:
             )
             resp.raise_for_status()
             return resp.json()["data"][0]["embedding"]
-    except Exception:
+    except asyncio.CancelledError:
+        raise
+    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
         return None
 
 
@@ -285,23 +286,26 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "tags": tags,
     }
 
-    # Manual upsert: check existence first (handles NULL project correctly)
-    q = client.table("memories").select("id")
-    q = q.eq("name", mem_name)
-    q = q.is_("project", "null") if project is None else q.eq("project", project)
-    existing = q.limit(1).execute()
-
     if embedding is not None:
         data["embedding"] = embedding
 
     embed_note = " (with embedding)" if embedding is not None else ""
 
-    if existing.data:
-        client.table("memories").update(data).eq("id", existing.data[0]["id"]).execute()
-        return [TextContent(type="text", text=f"Memory '{mem_name}' updated (project={project or 'global'}){embed_note}")]
+    if project is not None:
+        # Atomic upsert via unique constraint on (project, name) — no race condition
+        client.table("memories").upsert(data, on_conflict="project,name").execute()
+        return [TextContent(type="text", text=f"Memory '{mem_name}' saved (project={project}){embed_note}")]
     else:
-        client.table("memories").insert(data).execute()
-        return [TextContent(type="text", text=f"Memory '{mem_name}' created (project={project or 'global'}){embed_note}")]
+        # Manual upsert for NULL project: PostgreSQL unique constraint doesn't
+        # deduplicate NULLs, so we handle this case explicitly.
+        q = client.table("memories").select("id").eq("name", mem_name).is_("project", "null")
+        existing = q.limit(1).execute()
+        if existing.data:
+            client.table("memories").update(data).eq("id", existing.data[0]["id"]).execute()
+            return [TextContent(type="text", text=f"Memory '{mem_name}' updated (project=global){embed_note}")]
+        else:
+            client.table("memories").insert(data).execute()
+            return [TextContent(type="text", text=f"Memory '{mem_name}' created (project=global){embed_note}")]
 
 
 async def _handle_recall(args: dict) -> list[TextContent]:
@@ -322,37 +326,66 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     results = await _keyword_recall(client, query_text, project, mem_type, limit)
 
     # Lazily backfill embeddings for records missing them (fire-and-forget)
-    asyncio.create_task(_backfill_missing_embeddings(client, project))
+    # Only schedule when Voyage is configured — avoids a pointless DB query otherwise
+    if os.environ.get("VOYAGE_API_KEY"):
+        asyncio.create_task(_backfill_missing_embeddings(client, project))
 
     return results
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two equal-length vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(xa * xb for xa, xb in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(x * x for x in b) ** 0.5
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
 
 
 async def _semantic_recall(
     client, query_embedding: list[float], query_text: str,
     project, mem_type, limit: int
 ) -> list[TextContent]:
-    """Vector similarity search via Supabase RPC."""
+    """In-process vector similarity search over stored embeddings.
+
+    Fetches all rows that have embeddings, computes cosine similarity locally,
+    and returns the top `limit` matches. No pgvector / Supabase RPC required.
+    Falls back to keyword search if no embeddings are stored yet.
+    """
     try:
-        params = {
-            "query_embedding": query_embedding,
-            "match_count": limit,
-        }
+        q = client.table("memories").select(
+            "name, type, project, description, content, tags, updated_at, embedding"
+        )
         if project is not None:
-            params["filter_project"] = project
+            q = q.or_(f"project.eq.{project},project.is.null")
         if mem_type:
-            params["filter_type"] = mem_type
+            q = q.eq("type", mem_type)
 
-        result = client.rpc("match_memories", params).execute()
+        rows = q.execute().data or []
+        candidates = [r for r in rows if isinstance(r.get("embedding"), list) and r["embedding"]]
 
-        if not result.data:
-            # No semantic results — fall back to keyword
+        if not candidates:
             return await _keyword_recall(client, query_text, project, mem_type, limit)
 
-        formatted = _format_memories(result.data)
-        return [TextContent(type="text", text=f"Found {len(result.data)} memories (semantic search):\n\n" + "\n---\n".join(formatted))]
+        for row in candidates:
+            row["_sim"] = _cosine_similarity(query_embedding, row["embedding"])
 
+        candidates.sort(key=lambda r: r["_sim"], reverse=True)
+        top = candidates[:limit]
+
+        for row in top:
+            row.pop("_sim", None)
+            row.pop("embedding", None)  # don't send 512 floats to the LLM
+
+        formatted = _format_memories(top)
+        return [TextContent(type="text", text=f"Found {len(top)} memories (semantic search):\n\n" + "\n---\n".join(formatted))]
+
+    except asyncio.CancelledError:
+        raise
     except Exception:
-        # RPC not set up yet — fall back to keyword
         return await _keyword_recall(client, query_text, project, mem_type, limit)
 
 
