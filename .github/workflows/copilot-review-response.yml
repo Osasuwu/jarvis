@@ -51,7 +51,7 @@ jobs:
           COMMENTS=$(gh api \
             "/repos/${{ github.repository }}/pulls/$PR_NUMBER/comments?per_page=100" \
             --paginate \
-            --jq "[.[] | select(.pull_request_review_id == $REVIEW_ID) | {path: .path, line: .line, body: .body}]")
+            --jq ".[] | select(.pull_request_review_id == $REVIEW_ID) | {path: .path, line: .line, body: .body}" | jq -s '.')
 
           echo "review_body<<EOF" >> $GITHUB_OUTPUT
           echo "$REVIEW_BODY" >> $GITHUB_OUTPUT
