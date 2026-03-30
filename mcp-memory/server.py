@@ -5,7 +5,7 @@ Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete.
 
 Semantic search via Voyage AI embeddings (voyage-3-lite, 512 dims).
 Uses httpx async HTTP for Voyage AI embedding calls; other Supabase operations are synchronous.
-Falls back to ILIKE keyword search if VOYAGE_API_KEY is not set or on timeout.
+Falls back to ILIKE keyword search if VOYAGE_API_KEY is not set or embedding fails.
 
 Usage in .mcp.json:
 {
@@ -66,27 +66,62 @@ def _get_client():
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
-EMBED_TIMEOUT = 5.0  # seconds — rate limit responses arrive quickly
+EMBED_TIMEOUT = 30.0  # seconds
 
 
 async def _embed(text: str, input_type: str = "document") -> list[float] | None:
-    """Call Voyage AI REST API asynchronously. Returns None on timeout/error."""
+    """Call Voyage AI REST API asynchronously. Retries up to 3x on 429."""
     api_key = os.environ.get("VOYAGE_API_KEY")
     if not api_key:
         return None
-    try:
-        async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
-            resp = await client.post(
-                VOYAGE_API_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": VOYAGE_MODEL, "input": [text], "input_type": input_type},
-            )
-            resp.raise_for_status()
-            return resp.json()["data"][0]["embedding"]
-    except asyncio.CancelledError:
-        raise
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
+                resp = await client.post(
+                    VOYAGE_API_URL,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"model": VOYAGE_MODEL, "input": [text], "input_type": input_type},
+                )
+                resp.raise_for_status()
+                return resp.json()["data"][0]["embedding"]
+        except asyncio.CancelledError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+                continue
+            return None
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+            return None
+    return None
+
+
+async def _embed_batch(texts: list[str], input_type: str = "document") -> list[list[float]] | None:
+    """Embed multiple texts in a single API call (up to 1000 per request)."""
+    api_key = os.environ.get("VOYAGE_API_KEY")
+    if not api_key or not texts:
         return None
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
+                resp = await client.post(
+                    VOYAGE_API_URL,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    json={"model": VOYAGE_MODEL, "input": texts, "input_type": input_type},
+                )
+                resp.raise_for_status()
+                data = sorted(resp.json()["data"], key=lambda x: x["index"])
+                return [item["embedding"] for item in data]
+        except asyncio.CancelledError:
+            raise
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429 and attempt < 2:
+                await asyncio.sleep(2 ** attempt)
+                continue
+            return None
+        except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
+            return None
+    return None
 
 
 async def _embed_query(text: str) -> list[float] | None:
@@ -429,18 +464,25 @@ def _format_memories(memories: list[dict]) -> list[str]:
 
 
 async def _backfill_missing_embeddings(client, project) -> None:
-    """Fire-and-forget: generate embeddings for records saved without one."""
+    """Fire-and-forget: generate embeddings for records saved without one.
+
+    Batches all missing records into a single Voyage AI call.
+    """
     try:
-        q = client.table("memories").select("id, name, description, content")
+        q = client.table("memories").select("id, description, content")
         q = q.is_("embedding", "null")
         if project is not None:
             q = q.or_(f"project.eq.{project},project.is.null")
-        rows = q.limit(1).execute().data  # Max 1 per recall to stay within 3 RPM
-        for mem in rows:
-            text = f"{mem.get('description', '')}\n{mem['content']}".strip()
-            embedding = await _embed(text)
-            if embedding is None:
-                break  # Rate limited — stop, retry next recall
+        rows = q.execute().data
+        if not rows:
+            return
+
+        texts = [f"{r.get('description', '')}\n{r['content']}".strip() for r in rows]
+        embeddings = await _embed_batch(texts)
+        if embeddings is None:
+            return
+
+        for mem, embedding in zip(rows, embeddings):
             client.table("memories").update({"embedding": embedding}).eq("id", mem["id"]).execute()
     except Exception:
         pass  # fire-and-forget: silently swallow all errors so caller never fails
