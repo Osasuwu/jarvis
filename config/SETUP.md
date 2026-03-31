@@ -1,126 +1,127 @@
-# Jarvis Setup Guide (Claude Agent SDK + MCP)
+# Jarvis Setup Guide
 
 ## Prerequisites
 
 - Python 3.11+
+- Claude Code CLI (`claude`) installed and authenticated
 - GitHub CLI (`gh`) authenticated
-- Claude API key with billing enabled
-- Telegram bot token (optional for mobile interface)
+- Node.js 18+ (for MCP servers via `npx`)
 - Windows 11 (primary), Linux/macOS supported
 
 ## 1. Python Environment
 
 ```powershell
+cd personal-AI-agent
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 ```
 
-## 2. Install Runtime Dependencies
+## 2. Install Dependencies
 
 ```powershell
-pip install claude-agent-sdk
+# MCP memory server (the only Python runtime component)
+pip install -r mcp-memory/requirements.txt
+
+# Or via pyproject.toml optional deps:
+pip install -e ".[memory]"
+
+# Dev tools (pytest, ruff)
+pip install -e ".[dev]"
 ```
 
-If/when MCP transport libraries are required by implementation, add them to project dependencies.
+The only justified Python in this project is `mcp-memory/server.py`. Everything else is Claude Code native (skills, hooks, subagents).
 
 ## 3. Configure Secrets
 
-Set user-level environment variables (persistent):
+Create a `.env` file in the **parent directory** (`~/Github/.env`) — this is shared across projects and loaded by the MCP memory server via `python-dotenv`:
 
-```powershell
-[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
-[System.Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "123456:ABC-DEF...", "User")
+```ini
+SUPABASE_URL=https://xxx.supabase.co
+SUPABASE_KEY=eyJ...
+VOYAGE_API_KEY=pa-...
 ```
 
-Open a new terminal after setting variables.
+Optional (set as system env vars if needed):
+- `ANTHROPIC_API_KEY` — only if using Claude API directly (not needed for Claude Code CLI)
+- `GITHUB_TOKEN` — for GitHub MCP server (falls back to `gh auth`)
+- `TELEGRAM_BOT_TOKEN` — for Telegram Channels integration
 
-Verify API key quickly:
+> **Note:** `.env` is in `.gitignore`. Never commit secrets.
 
-```powershell
-python -c "import os; print('ANTHROPIC_API_KEY set:', bool(os.getenv('ANTHROPIC_API_KEY')))"
-```
+## 4. Supabase Setup
 
-Optional for delegation mode: set `CLAUDE_CLI_PATH` if `claude` is not on PATH.
+1. Create a Supabase project at [supabase.com](https://supabase.com)
+2. Run the schema from `mcp-memory/schema.sql` in the SQL editor
+3. Copy the project URL and anon key to `.env`
 
-## 4. Model Routing Policy
-
-Use these defaults across Jarvis:
-
-- `claude-haiku-4.5`: triage, reports, self-check, simple routing
-- `claude-sonnet-4.6`: planning, research, coding tasks
-- `claude-opus-4.6`: manual-only for high-risk architectural decisions
-
-Budget target: $10-$30/month.
+This is the **only cross-device persistent memory** — local `~/.claude/` memory doesn't sync.
 
 ## 5. MCP Configuration
 
-Create/update `.mcp.json` in repo root to declare required servers.
+MCP servers are declared in `.mcp.json` (repo root). Current setup:
 
-Minimum set for M1:
+| Server | Purpose | Command |
+|--------|---------|---------|
+| `memory` | Supabase persistent memory | `python mcp-memory/server.py` |
+| `github` | Issues, PRs, metadata | `npx @modelcontextprotocol/server-github` |
+| `filesystem` | Read/write workspace files | `npx @modelcontextprotocol/server-filesystem` |
+| `reddit` | Reddit browsing (no auth) | `uvx reddit-no-auth-mcp-server` |
 
-- GitHub MCP (issues, PRs, metadata)
-- Filesystem MCP (read/write within workspace)
-- Telegram bridge (MCP server or direct handler in `src/handlers/telegram.py`)
-
-Keep access narrow: only required tools per subagent.
+The same `.mcp.json` is also symlinked/copied to `~/Github/.mcp.json` for cross-project access.
 
 ## 6. Telegram Integration
 
-Create bot via [@BotFather](https://t.me/BotFather), then configure:
+Telegram access uses **Claude Code Channels** (not custom Python):
 
-- `TELEGRAM_BOT_TOKEN`
-- allowlist of your Telegram user ID in bot handler config
+1. Create bot via [@BotFather](https://t.me/BotFather)
+2. Set `TELEGRAM_BOT_TOKEN` in `.env` or system env
+3. See `docs/telegram-setup.md` for detailed instructions
 
-Test flow:
+## 7. Model Routing Policy
 
-1. Send `/triage`
-2. Jarvis receives message
-3. Command routes to PM subagent
-4. Reply returns to Telegram
+| Task type | Model |
+|-----------|-------|
+| Triage, reports, searches, simple edits | Haiku |
+| Planning, coding, research, debugging | Sonnet (default) |
+| Deep architectural reasoning (manual only) | Opus |
 
-## 7. Scheduled Runs (Windows)
+Budget target: ~$20/month.
 
-Use Task Scheduler for recurring jobs:
+## 8. Skills
 
-- Weekdays 09:00: daily triage
-- Friday 17:00: weekly report
+Skills live in `.claude/skills/*/SKILL.md`:
 
-Runner command example:
+| Skill | Purpose |
+|-------|---------|
+| `triage` | Board health, issue triage |
+| `delegate` | Autonomous issue implementation |
+| `research` | Topic investigation, comparison |
+| `risk-radar` | CI health, security alerts, risk scan |
+| `self-review` | Codebase quality audit |
 
-```powershell
-python src/main.py --command "/triage"
-```
-
-Alternative headless mode (when using CLI-based entrypoints):
-
-```powershell
-claude -p "/triage" --bare
-```
-
-## 8. Safety Baseline
-
-- Planner subagent: read-only tools
-- Coder subagent: branch + PR only, never direct push to `main`
-- Human review required before merge
-- Branch protections enabled in GitHub
+Invoked via `/skill-name` in Claude Code.
 
 ## 9. Quick Validation Checklist
 
-- `gh auth status` is OK
-- `ANTHROPIC_API_KEY` is set
-- `TELEGRAM_BOT_TOKEN` is set (if Telegram enabled)
-- `/triage` runs from CLI
-- `/triage` runs from Telegram
-- Weekly schedule created and tested
+- [ ] `gh auth status` — GitHub CLI authenticated
+- [ ] `.venv` created and `mcp-memory/requirements.txt` installed
+- [ ] `.env` exists with `SUPABASE_URL`, `SUPABASE_KEY`
+- [ ] `python mcp-memory/server.py` starts without errors (Ctrl+C to stop)
+- [ ] `claude` CLI opens and MCP memory tools appear (check with `/mcp`)
+- [ ] `memory_store` / `memory_recall` work in a Claude Code session
 
 ## Key Paths
 
 | What | Path |
-|---|---|
+|------|------|
 | Personality | `config/SOUL.md` |
-| Setup | `config/SETUP.md` |
+| Setup | `config/SETUP.md` (this file) |
 | Strategy | `docs/PROJECT_PLAN.md` |
 | Architecture | `docs/architecture.md` |
-| Skills | `skills/*/SKILL.md` |
+| Telegram guide | `docs/telegram-setup.md` |
+| Skills | `.claude/skills/*/SKILL.md` |
 | MCP config | `.mcp.json` |
+| Memory server | `mcp-memory/server.py` |
+| Supabase schema | `mcp-memory/schema.sql` |
+| Python deps | `pyproject.toml` |
