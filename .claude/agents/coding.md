@@ -15,7 +15,7 @@ Implements GitHub issues. Called by the `/delegate` skill.
 - Make minimal changes — only what the issue asks for
 - Follow existing code patterns, don't introduce new patterns
 - Write tests if the codebase has tests for the changed area
-- Commit with clear message referencing the issue number
+- Commit with clear message referencing the issue number, always include `Co-Authored-By: Jarvis <jarvis@personal-ai-agent>` trailer to mark AI-generated commits
 
 ## Tools allowed
 

@@ -1,145 +1,178 @@
 # Jarvis Architecture
 
-Version: 3.0
-Date: 2026-03-23
+Version: 4.0
+Date: 2026-03-31
 Status: Active
 
 ## 1. System Overview
 
-Jarvis is a universal personal AI agent built on Claude Agent SDK with MCP integrations. The Agent SDK provides the core agent loop (same engine as Claude Code), while MCP servers connect Jarvis to external services (GitHub, Telegram, filesystem, etc.).
-
-## 2. Platform: Claude Agent SDK
-
-The Agent SDK handles:
-- **Agent loop**: prompt → tool calls → results → repeat until done
-- **Subagents**: specialized agents with isolated contexts and permissions
-- **MCP integration**: connect to any MCP-compatible service
-- **Model selection**: Haiku, Sonnet, or Opus per task
-- **Context management**: auto-compaction, sessions, streaming
-- **Headless mode**: `claude -p` for scripted/cron execution
-
-Jarvis is a Python/TypeScript application that uses the Agent SDK as its runtime.
-
-## 3. Tiered Agent Architecture
+Jarvis is a personal AI agent built on top of **Claude Code** — not a custom Python application. Claude Code is the runtime; Jarvis adds identity, memory, and skills on top of it.
 
 ```
-┌─────────────────────────────────────┐
-│            Owner (Human)            │
-│  Strategy, PR review, Go/No-Go     │
-└──────────┬──────────────────────────┘
-           │ Telegram / CLI
-           ▼
-┌─────────────────────────────────────┐
-│     Jarvis Main Agent (Sonnet)      │
-│  Command routing, orchestration     │
-│                                     │
-│  ┌───────────┐  ┌───────────────┐   │
-│  │ Subagent: │  │ Subagent:     │   │
-│  │ PM/Triage │  │ Code Writer   │   │
-│  │ (Haiku)   │  │ (Sonnet)      │   │
-│  │ read-only │  │ branch+PR only│   │
-│  └───────────┘  └───────────────┘   │
-│  ┌───────────┐  ┌───────────────┐   │
-│  │ Subagent: │  │ Subagent:     │   │
-│  │ Researcher│  │ Self-check    │   │
-│  │ (Sonnet)  │  │ (Haiku)       │   │
-│  │ web search│  │ read-only     │   │
-│  └───────────┘  └───────────────┘   │
-│                                     │
-│  MCP: GitHub, Telegram, Filesystem  │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│                   Claude Code                     │
+│                                                   │
+│  config/SOUL.md      ← Jarvis identity            │
+│  .claude/CLAUDE.md   ← session rules              │
+│  .claude/skills/     ← custom slash commands      │
+│  .claude/agents/     ← subagent definitions       │
+│                                                   │
+│  MCP Servers:                                     │
+│  ├── memory   ← Supabase (this repo)              │
+│  ├── github   ← official MCP                      │
+│  └── reddit   ← uvx, no auth                     │
+└──────────────────────┬───────────────────────────┘
+                       │
+                  Supabase DB
+           (memory syncs across all devices)
 ```
 
-### Permission Model
+## 2. What lives where
 
-| Subagent | Model | Tools | Writes |
-|----------|-------|-------|--------|
-| PM/Triage | Haiku | `gh` (read), Glob, Grep, Read | No |
-| Code Writer | Sonnet | Read, Edit, Bash, `gh` | Branches + PR only |
-| Researcher | Sonnet | WebSearch, WebFetch, Read | Notes only |
-| Self-check | Haiku | Read, Glob, Grep | No |
+### Inside Claude Code (zero custom Python)
 
-### Safety Layers
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Identity | `config/SOUL.md` | Personality, tone, behavior rules |
+| Session init | `.claude/CLAUDE.md` | What to do at session start |
+| Skills | `.claude/skills/*/SKILL.md` | User-invoked slash commands |
+| Commands | `.claude/commands/*.md` | Additional slash commands |
+| Subagents | `.claude/agents/*.md` | Delegated task runners |
 
-1. **Subagent permissions**: each agent has only the tools it needs.
-2. **Branch protection**: code changes go through PR, never direct to main.
-3. **CLAUDE.md instructions**: repos have conservative-mode rules for agent-generated tasks.
-4. **Human review**: owner reviews PRs before merge.
-5. **Cost controls**: Haiku by default, Sonnet/Opus only when needed.
+### External Python (only what Claude Code can't do)
 
-## 4. Communication Flow
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Memory server | `mcp-memory/server.py` | Cross-device Supabase memory via MCP |
+| Risk scanner | `src/risk_radar.py` | Deterministic pattern scan, no LLM |
 
-```
-User (Telegram / CLI)
-    ↓
-Jarvis Main Agent
-    ↓ routes command
-Appropriate Subagent (with restricted tools)
-    ↓ uses MCP servers
-GitHub API / Web / Filesystem
-    ↓
-Response back to user (Telegram / CLI)
-```
+Everything else (Telegram, scheduling, background tasks) uses Anthropic-native features — not custom code.
 
-## 5. LLM Strategy
+## 3. Memory architecture
 
-| Model | Cost (per 1M tokens) | Use case |
-|-------|---------------------|----------|
-| Haiku 4.5 | $1 input / $5 output | Triage, reports, self-check, simple routing |
-| Sonnet 4.6 | $3 input / $15 output | Planning, code writing, research, complex reasoning |
-| Opus 4.6 | $5 input / $25 output | Critical architecture decisions (rare, manual only) |
-
-Budget: $10-30/month. Default to Haiku; escalate to Sonnet when task requires reasoning.
-
-### Future: Local LLM as Auxiliary
-
-When ready, Ollama on work PC (RTX 4070) can be wrapped as a custom MCP server. Claude delegates simple tasks (summarization, formatting) to `ollama__*` tools. Not planned for M1/M2.
-
-## 6. Scheduled Execution
-
-Recurring tasks run via system cron (Windows Task Scheduler) or GitHub Actions:
-
-| Task | Schedule | Command |
-|------|----------|---------|
-| Daily triage | Weekdays 09:00 | `claude -p "/triage" --bare` |
-| Weekly report | Friday 17:00 | `claude -p "/weekly-report" --bare` |
-
-Results delivered to Telegram.
-
-## 7. Data and State
-
-- **Conversation context**: managed by Agent SDK (auto-compaction)
-- **Session persistence**: Agent SDK sessions (resume conversations)
-- **GitHub data**: accessed live via MCP GitHub server (no local cache)
-- **Configuration**: `.mcp.json`, `config/`, skill definitions
-- **Ideas/brainstorming**: GitHub Discussions on this repo
-
-## 8. Project Structure
+Cross-device memory is the core value-add over vanilla Claude Code.
 
 ```
+Device A (home)          Device B (work)          Device C (laptop)
+     │                        │                        │
+     └────────────────────────┼────────────────────────┘
+                              │
+                    mcp-memory/server.py
+                    (runs in .venv, stdio)
+                              │
+                         Supabase DB
+                    (pgvector + VoyageAI)
+```
+
+**How it works:**
+- `memory_store` — upsert by `(project, name)`, overwrites on conflict
+- `memory_recall` — semantic search via VoyageAI embeddings; falls back to ILIKE keyword search if `VOYAGE_API_KEY` not set
+- `memory_list` / `memory_get` / `memory_delete` — standard CRUD
+
+**Memory types:** `user`, `project`, `decision`, `feedback`, `reference`
+
+**Scoping:** `project=null` for cross-project (owner preferences, agent rules), `project="jarvis"` or `project="redrobot"` for project-specific context.
+
+## 4. Agent model
+
+Claude Code is the main agent. Subagents are spawned for isolated tasks.
+
+```
+Owner
+  │ CLI / Telegram Channels
+  ▼
+Claude Code (Sonnet — default)
+  │ orchestration, planning, architecture
+  ├── Explore subagent (Haiku) ← recon, file reads, searches
+  └── general-purpose subagent (Sonnet) ← implementation
+```
+
+### Model routing
+
+| Model | Use for |
+|-------|---------|
+| `claude-haiku-4-5` | Triage, reports, searches, simple edits |
+| `claude-sonnet-4-6` | Planning, coding, research, debugging |
+| `claude-opus-4-6` | Manual-only, high-risk architectural decisions |
+
+### Permission model
+
+| Agent | Writes | Tools |
+|-------|--------|-------|
+| Main (Sonnet) | Yes — full workspace | All |
+| Explore (Haiku) | No | Read, Glob, Grep, WebFetch, WebSearch |
+| Coding (Sonnet) | Branch + PR only | Read, Edit, Bash, `gh` |
+
+## 5. Skills
+
+Skills live in `.claude/skills/` and are invoked as `/skill-name`.
+
+| Skill | Model | Purpose |
+|-------|-------|---------|
+| `triage` | Haiku | GitHub board health, stale issues |
+| `research` | Sonnet | Topic investigation, source validation |
+| `delegate` | Sonnet | Issue → PR via coding subagent |
+| `risk-radar` | Haiku | CI health, security alerts, pattern scan |
+| `self-review` | Sonnet | Codebase quality audit |
+| `self-improve` | Sonnet | Auto-apply low/medium-risk fixes → PR |
+| `intel` | Haiku | Claude/MCP/AI ecosystem digest |
+
+Commands in `.claude/commands/`:
+
+| Command | Purpose |
+|---------|---------|
+| `end` | Session closure — save unsaved decisions |
+| `repo-health` | Structural audit (docs, branches, actions) |
+
+## 6. Mobile access
+
+Telegram via **Claude Code Channels** (official Anthropic plugin) — no custom relay code.
+
+Setup: `claude --channels plugin:telegram@claude-plugins-official`
+
+See `docs/telegram-setup.md` for full guide.
+
+## 7. Scheduling
+
+Recurring tasks via **Claude Code `/loop`** or Desktop scheduled tasks — no custom scheduler.
+
+Nightly research runs at 03:00, topics configured in `config/research-topics.yaml`.
+
+## 8. Safety baseline
+
+- Coder subagent: branch + PR only, never direct push to `main`
+- Human review required before merge
+- Protected files (never auto-modified): `.mcp.json`, `CLAUDE.md`, `mcp-memory/server.py`, `config/SOUL.md`
+- Cost default: Haiku; escalate to Sonnet only when reasoning required
+
+## 9. Project structure
+
+```
+personal-AI-agent/
 ├── config/
-│   ├── SOUL.md              # Jarvis personality and behavior
-│   ├── IDENTITY.md          # Core identity
-│   ├── USER.md              # Owner profile for personalization
-│   └── SETUP.md             # Setup instructions
-├── skills/                  # Skill definitions (subagent instructions)
-│   ├── triage/              # Daily triage across GitHub projects
-│   ├── weekly-report/       # Weekly delivery report
-│   └── issue-health/        # Issue metadata validation
-├── src/                     # Agent SDK application code
-│   ├── main.py              # Entry point
-│   ├── jarvis/              # Runtime config and command dispatcher
-│   ├── handlers/            # Telegram, cron, webhook handlers (planned)
-│   └── agents/              # Subagent definitions (planned)
-├── docs/                    # Project documentation
-│   ├── PROJECT_PLAN.md      # Strategic plan
-│   └── architecture.md      # This file
-└── .github/                 # Dev process (CI, PR checks — NOT Jarvis features)
+│   ├── SOUL.md              ← Jarvis personality (loaded every session)
+│   ├── SETUP.md             ← First-time device setup
+│   └── repos.conf           ← Repos scanned by triage/risk-radar
+├── mcp-memory/
+│   ├── server.py            ← MCP memory server (Supabase)
+│   ├── schema.sql           ← Supabase table + vector index
+│   └── requirements.txt     ← Python deps for server.py
+├── src/
+│   └── risk_radar.py        ← Standalone risk scanner (no LLM)
+├── tests/
+│   └── test_risk_radar.py
+├── docs/
+│   ├── PROJECT_PLAN.md      ← Vision, milestones
+│   ├── architecture.md      ← This file
+│   └── telegram-setup.md    ← Telegram Channels setup
+├── .claude/
+│   ├── CLAUDE.md            ← Session initialization rules
+│   ├── skills/              ← Slash commands (model-invoked)
+│   ├── commands/            ← Slash commands (user-invoked)
+│   └── agents/              ← Subagent definitions
+├── .github/
+│   └── workflows/           ← CI (PR checks, issue validation)
+├── .mcp.json                ← MCP server registry
+├── .env.example             ← Secrets template
+└── pyproject.toml           ← Python packaging (memory extra)
 ```
-
-## 9. Development Workflow
-
-This repository is developed using Claude Code. The `.github/` directory contains workflows and templates for developing Jarvis itself — they are NOT Jarvis features.
-
-Jarvis features = skills and agent code in `skills/` and `src/`.
-Dev process tools = `.github/` workflows, issue templates, PR checks.

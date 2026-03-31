@@ -39,7 +39,7 @@ Jarvis adds exactly these missing pieces as a thin layer on top of Claude Code.
 ```
 
 **Inside Claude Code** (native features — zero Python needed):
-- Skills: triage, issue-health, research, delegate, self-review, self-improve, risk-radar
+- Skills: triage, research, delegate, self-review, self-improve, risk-radar
 - Subagents with model routing (Haiku for cheap tasks, Sonnet for complex)
 - SOUL.md personality loaded into every session
 - Telegram/Discord/iMessage via [Claude Code Channels](https://code.claude.com/docs/en/channels)
@@ -47,19 +47,17 @@ Jarvis adds exactly these missing pieces as a thin layer on top of Claude Code.
 **External Python** (only what Claude Code genuinely can't do):
 - `mcp-memory/` — MCP server for cross-device Supabase memory ✅
 - `src/risk_radar.py` — standalone deterministic risk scan (no LLM) ✅
-- `src/scheduler/` — autonomous background tasks *(planned)*
 
 ## Features
 
 | Feature | Status |
 |---------|--------|
 | Cross-device memory (Supabase MCP) | ✅ Working |
-| PM skills (triage, issue-health, risk-radar) | ✅ Working |
+| PM skills (triage, risk-radar) | ✅ Working |
 | Research skill (web search + source validation) | ✅ Working |
 | Delegation pipeline (issue → PR via coding agent) | ✅ Working |
 | Telegram interface (Claude Code Channels) | ✅ Working |
-| Self-review + self-improve loop | 🔧 In progress |
-| Autonomous scheduler | 📋 Planned |
+| Self-review + self-improve loop | ✅ Working |
 
 ## Prerequisites
 
@@ -141,7 +139,7 @@ The MCP memory server (`mcp-memory/server.py`) provides persistent memory across
 mcp-memory/
   server.py         ← MCP memory server
   schema.sql        ← Supabase table schema
-  requirements.txt  ← mcp, supabase, python-dotenv
+  requirements.txt  ← mcp, supabase, voyageai, httpx, python-dotenv
 config/
   SOUL.md           ← Jarvis personality definition
   repos.conf        ← repos to scan (triage, risk-radar)
@@ -157,7 +155,7 @@ pyproject.toml      ← Python packaging
 ## Using on multiple devices
 
 1. Clone the repo on each device
-2. Set `SUPABASE_URL` and `SUPABASE_KEY` env vars on each device
+2. Add `SUPABASE_URL` and `SUPABASE_KEY` to `Github/.env` (shared) or `personal-AI-agent/.env`
 3. `pip install -e ".[memory]"` on each device
 4. Open in Claude Code — memory syncs automatically via Supabase
 

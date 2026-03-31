@@ -1,15 +1,15 @@
 ---
 name: self-improve
-description: "Autonomous self-improvement: run self-review → build fix plan → auto-apply low-risk → PR"
+description: "Autonomous self-improvement of personal-AI-agent: run self-review → build fix plan → auto-apply low and medium risk → PR"
 ---
 
 # Self-Improve
 
-Autonomous self-improvement pipeline. Runs self-review, builds a prioritized plan, auto-applies safe fixes, creates a PR.
+Autonomous self-improvement pipeline for Jarvis (personal-AI-agent).
 
 ## Usage
 
-- `/self-improve` — full pipeline (auto-apply low-risk, PR)
+- `/self-improve` — full pipeline (auto-apply low + medium risk, PR)
 - `/self-improve --dry-run` — plan only, no changes applied
 
 ## Pipeline
@@ -24,17 +24,17 @@ For each finding, assign risk level:
 | Risk | Criteria | Action |
 |------|----------|--------|
 | **Low** | Dead code, unused imports, simple renaming, cosmetic | Auto-apply |
-| **Medium** | Refactoring, error handling improvements, test additions | Report, ask for approval |
+| **Medium** | Refactoring, error handling improvements, test additions, missing docstrings | Auto-apply |
 | **High** | Architecture changes, security fixes, logic changes, file deletions | Report, require manual work |
 
-**Never auto-apply:** changes to `.mcp.json`, `CLAUDE.md`, `mcp-memory/server.py`, any secret/env file, git history.
+**Never auto-apply regardless of risk:** changes to `.mcp.json`, `CLAUDE.md`, `mcp-memory/server.py`, `config/SOUL.md`, any secret/env file, git history.
 
 ### Step 3 — Build plan
-For each low-risk item, write a specific fix description: what file, what change, why it's safe.
+For each low/medium-risk item, write a specific fix description: what file, what change, why it's safe.
 Present the plan before applying anything.
 
-### Step 4 — Apply low-risk fixes (skip in --dry-run)
-Apply each low-risk fix using Edit/Write tools. After each fix, verify the file still compiles:
+### Step 4 — Apply low + medium risk fixes (skip in --dry-run)
+Apply each fix using Edit/Write tools. After each fix, verify the file still compiles:
 ```bash
 python -m compileall <changed_file>
 ```
@@ -50,7 +50,7 @@ If tests fail, revert the last change and mark it as failed.
 ```bash
 git checkout -b self-improve/<date>
 git add -A
-git commit -m "self-improve: auto-apply N low-risk fixes"
+git commit -m "self-improve: auto-apply N low/medium-risk fixes"
 git push -u origin self-improve/<date>
 gh pr create --title "Self-improve: <date>" --body "<summary of changes>"
 ```
@@ -64,10 +64,7 @@ gh pr create --title "Self-improve: <date>" --body "<summary of changes>"
 - file.py:42 — removed unused import `os`
 
 ### Needs Approval (N)
-- file.py:100 — refactor long function (medium risk)
-
-### Skipped / High Risk (N)
-- server.py — architecture change, requires manual review
+- file.py:100 — high-risk architecture change
 
 ### PR
 <url> (or: --dry-run mode, no PR created)

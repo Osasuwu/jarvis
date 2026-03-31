@@ -26,7 +26,16 @@ For each unsaved item, call `memory_store` with the appropriate type:
 
 Don't batch. Save each one. Upsert existing memories rather than creating duplicates — check the name before creating new.
 
-### Step 3 — Output
+### Step 3 — Suggest reflect (if applicable)
+
+Check: are there any `decision` memories updated in the last 14 days that do NOT have an `## Outcome` section, AND have a resolved PR (merged/closed)?
+
+If yes, add one line to the output:
+> "Есть N решений с разрешёнными PR без исхода — запусти `/reflect` чтобы зафиксировать уроки."
+
+Don't run reflect automatically. Just surface it.
+
+### Step 4 — Output
 
 ```
 ## Session closed — YYYY-MM-DD
