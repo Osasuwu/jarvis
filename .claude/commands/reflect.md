@@ -72,7 +72,18 @@ memory_store(
 
 Only save if the lesson is non-obvious and would change future behavior. Don't save platitudes ("test your code").
 
-### Step 6 — Output
+### Step 6 — Flag stale project memories
+
+```
+memory_recall(type="project", limit=20)
+```
+
+Flag any `project` memory not updated in 14+ days. Output them separately as:
+> "⚠ Stale: **<name>** (last updated <date>) — verify or delete"
+
+Don't delete automatically. Just surface for the user.
+
+### Step 7 — Output
 
 ```
 ## Reflect — YYYY-MM-DD
@@ -85,6 +96,9 @@ Only save if the lesson is non-obvious and would change future behavior. Don't s
 
 ### Still open (N)
 - <decision_name>: <why skipped>
+
+### Stale project memories (N)
+- ⚠ <name> (last updated <date>)
 ```
 
 ## Example

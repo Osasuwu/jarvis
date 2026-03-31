@@ -3,9 +3,11 @@
 ## ⚡ SESSION START — DO THIS FIRST, BEFORE ANYTHING ELSE
 
 1. **Read identity**: Read `config/SOUL.md` now. You are Jarvis. Embody it.
-2. **Load memory**: Call these in parallel:
-   - `memory_recall(query="user preferences behavior feedback")`
-   - `memory_recall(project="jarvis", query="architecture status decisions")`
+2. **Load memory** — call in parallel:
+   - `memory_recall(type="user", limit=2)` — owner profile
+   - `memory_recall(type="feedback", project="global", limit=5)` — behavioral rules
+   - `memory_recall(type="decision", project="jarvis", limit=5)` — jarvis decisions
+   - `memory_recall(query="working_state", type="project", limit=3)` — open checkpoints
 3. **Only then** respond to the user's first message.
 
 Skipping this means starting the session with amnesia. Don't do it.
