@@ -70,6 +70,15 @@ def _get_client():
     from supabase import create_client
 
     _supabase = create_client(url, key)
+
+    # One-time migration: normalize legacy project='global' string rows to NULL.
+    # Before the 2026-03-31 fix, 'global' was stored as a literal string instead
+    # of NULL. This UPDATE is idempotent and safe to run on every startup.
+    try:
+        _supabase.table("memories").update({"project": None}).eq("project", "global").execute()
+    except Exception:
+        pass  # non-fatal — server still works without the migration
+
     return _supabase
 
 
