@@ -221,7 +221,7 @@ def _check_security_alerts(repo: str) -> list[RiskAlert]:
     if not alerts:
         return []
 
-    sev_map = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+    sev_map = SEVERITY_ORDER
     by_sev: dict[str, int] = {}
     for a in alerts:
         s = str(a.get("severity", "low")).lower()
