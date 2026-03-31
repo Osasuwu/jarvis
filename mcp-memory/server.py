@@ -28,6 +28,19 @@ import asyncio
 import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from repo root (two levels up from mcp-memory/server.py)
+_env_candidates = [
+    Path(__file__).resolve().parent.parent / ".env",  # personal-AI-agent/.env
+    Path(__file__).resolve().parent.parent.parent / ".env",  # Github/.env
+]
+for _env_path in _env_candidates:
+    if _env_path.exists():
+        load_dotenv(_env_path)
+        break
 
 import httpx
 from mcp.server import Server
