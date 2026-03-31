@@ -8,6 +8,10 @@
 - [Claude Code](https://claude.ai/code) installed and authenticated (`claude --version`)
 - [GitHub CLI](https://cli.github.com) installed and authenticated (`gh auth status`)
 - [Supabase](https://supabase.com) account (free tier sufficient)
+- Claude Code CLI (`claude`) installed and authenticated
+- GitHub CLI (`gh`) authenticated
+- Node.js 18+ (for MCP servers via `npx`)
+- Windows 11 (primary), Linux/macOS supported
 
 ---
 
@@ -17,6 +21,8 @@
 git clone https://github.com/Osasuwu/personal-AI-agent.git
 cd personal-AI-agent
 
+```powershell
+cd personal-AI-agent
 python -m venv .venv
 
 # Windows
@@ -28,15 +34,20 @@ source .venv/bin/activate
 python -m pip install --upgrade pip
 ```
 
-## 2. Install dependencies
+## 2. Install Dependencies
 
-The MCP memory server requires its own packages. Install via `pyproject.toml`:
+```powershell
+# MCP memory server (the only Python runtime component)
+pip install -r mcp-memory/requirements.txt
 
-```bash
+# Or via pyproject.toml optional deps:
 pip install -e ".[memory]"
+
+# Dev tools (pytest, ruff)
+pip install -e ".[dev]"
 ```
 
-This installs: `mcp`, `supabase`, `voyageai`, `httpx`, `python-dotenv`.
+The only justified Python in this project is `mcp-memory/server.py`. Everything else is Claude Code native (skills, hooks, subagents).
 
 > **Why not `pip install -r mcp-memory/requirements.txt`?**
 > `pyproject.toml` is the single source of truth. `requirements.txt` is a convenience mirror — keep them in sync.
