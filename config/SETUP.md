@@ -1,126 +1,181 @@
-# Jarvis Setup Guide (Claude Agent SDK + MCP)
+# Jarvis Setup Guide
+
+> First-time setup on a new device. Takes ~10 minutes.
 
 ## Prerequisites
 
 - Python 3.11+
-- GitHub CLI (`gh`) authenticated
-- Claude API key with billing enabled
-- Telegram bot token (optional for mobile interface)
-- Windows 11 (primary), Linux/macOS supported
+- [Claude Code](https://claude.ai/code) installed and authenticated (`claude --version`)
+- [GitHub CLI](https://cli.github.com) installed and authenticated (`gh auth status`)
+- [Supabase](https://supabase.com) account (free tier sufficient)
 
-## 1. Python Environment
+---
 
-```powershell
+## 1. Clone and create virtual environment
+
+```bash
+git clone https://github.com/Osasuwu/personal-AI-agent.git
+cd personal-AI-agent
+
 python -m venv .venv
+
+# Windows
 .\.venv\Scripts\Activate.ps1
+
+# Linux / macOS
+source .venv/bin/activate
+
 python -m pip install --upgrade pip
 ```
 
-## 2. Install Runtime Dependencies
+## 2. Install dependencies
 
-```powershell
-pip install claude-agent-sdk
+The MCP memory server requires its own packages. Install via `pyproject.toml`:
+
+```bash
+pip install -e ".[memory]"
 ```
 
-If/when MCP transport libraries are required by implementation, add them to project dependencies.
+This installs: `mcp`, `supabase`, `voyageai`, `httpx`, `python-dotenv`.
 
-## 3. Configure Secrets
+> **Why not `pip install -r mcp-memory/requirements.txt`?**
+> `pyproject.toml` is the single source of truth. `requirements.txt` is a convenience mirror — keep them in sync.
 
-Set user-level environment variables (persistent):
+## 3. Configure secrets
 
-```powershell
-[System.Environment]::SetEnvironmentVariable("ANTHROPIC_API_KEY", "sk-ant-...", "User")
-[System.Environment]::SetEnvironmentVariable("TELEGRAM_BOT_TOKEN", "123456:ABC-DEF...", "User")
+The memory server loads `.env` from two locations (first match wins):
+
+1. `personal-AI-agent/.env` — project-level override
+2. `Github/.env` — shared secrets for all projects ← **primary location**
+
+Copy the example into whichever location you prefer and fill in values:
+
+```bash
+# Option A: shared (recommended — one file for all projects)
+cp personal-AI-agent/.env.example .env   # run from Github/
+
+# Option B: project-local
+cp .env.example .env                      # run from personal-AI-agent/
 ```
 
-Open a new terminal after setting variables.
+Minimum required values:
 
-Verify API key quickly:
-
-```powershell
-python -c "import os; print('ANTHROPIC_API_KEY set:', bool(os.getenv('ANTHROPIC_API_KEY')))"
+```env
+ANTHROPIC_API_KEY=sk-ant-...
+SUPABASE_URL=https://your-project-id.supabase.co
+SUPABASE_KEY=your-anon-key-here
 ```
 
-Optional for delegation mode: set `CLAUDE_CLI_PATH` if `claude` is not on PATH.
+No Windows environment variables needed — `python-dotenv` handles it.
 
-## 4. Model Routing Policy
+> **Where to get Supabase credentials:**
+> Supabase dashboard → your project → Settings → API → Project URL + anon public key
 
-Use these defaults across Jarvis:
+## 4. Set up Supabase schema
 
-- `claude-haiku-4.5`: triage, reports, self-check, simple routing
-- `claude-sonnet-4.6`: planning, research, coding tasks
-- `claude-opus-4.6`: manual-only for high-risk architectural decisions
+Run `mcp-memory/schema.sql` in the Supabase SQL Editor:
 
-Budget target: $10-$30/month.
+1. Open your Supabase project → SQL Editor
+2. Paste contents of `mcp-memory/schema.sql`
+3. Click Run
 
-## 5. MCP Configuration
+This creates the `memories` table and vector search function.
 
-Create/update `.mcp.json` in repo root to declare required servers.
+## 5. Verify MCP memory server
 
-Minimum set for M1:
-
-- GitHub MCP (issues, PRs, metadata)
-- Filesystem MCP (read/write within workspace)
-- Telegram bridge (MCP server or direct handler in `src/handlers/telegram.py`)
-
-Keep access narrow: only required tools per subagent.
-
-## 6. Telegram Integration
-
-Create bot via [@BotFather](https://t.me/BotFather), then configure:
-
-- `TELEGRAM_BOT_TOKEN`
-- allowlist of your Telegram user ID in bot handler config
-
-Test flow:
-
-1. Send `/triage`
-2. Jarvis receives message
-3. Command routes to PM subagent
-4. Reply returns to Telegram
-
-## 7. Scheduled Runs (Windows)
-
-Use Task Scheduler for recurring jobs:
-
-- Weekdays 09:00: daily triage
-- Friday 17:00: weekly report
-
-Runner command example:
-
-```powershell
-python src/main.py --command "/triage"
+```bash
+python mcp-memory/server.py
 ```
 
-Alternative headless mode (when using CLI-based entrypoints):
+Expected: server starts and waits (no error). Press Ctrl+C to stop.
 
-```powershell
-claude -p "/triage" --bare
+If you see `SUPABASE_URL and SUPABASE_KEY must be set` — check your `.env`.
+
+## 6. Configure Claude Code global settings
+
+`~/.claude/settings.json` is device-local and not synced. Create it manually:
+
+```json
+{
+  "effortLevel": "low",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '=== SESSION START CONTEXT ===' && echo '--- personal-AI-agent ---' && git -C /c/Users/petrk/GitHub/personal-AI-agent status --short && echo '--- redrobot ---' && git -C /c/Users/petrk/GitHub/redrobot status --short && echo '========================='"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
-## 8. Safety Baseline
+> Adjust paths to match your device. The hook shows repo status at session start.
 
-- Planner subagent: read-only tools
+## 7. Telegram (optional)
+
+1. Create a bot via [@BotFather](https://t.me/BotFather) → get `TELEGRAM_BOT_TOKEN`
+2. Add to `.env`: `TELEGRAM_BOT_TOKEN=123456:ABC-DEF...`
+3. Install Claude Code Channels plugin: `/plugin install telegram@claude-plugins-official`
+4. Start with Channels: `claude --channels plugin:telegram@claude-plugins-official`
+5. Pair: `/telegram:access pair` → send the code to your bot → `/telegram:access policy allowlist`
+
+## 8. Model routing policy
+
+| Model | Use for |
+|-------|---------|
+| `claude-haiku-4-5` | Triage, reports, searches, simple edits |
+| `claude-sonnet-4-6` | Planning, coding, complex debugging |
+| `claude-opus-4-6` | Manual-only, high-risk architectural decisions |
+
+Budget target: ~$20/month.
+
+## 9. Safety baseline
+
+- Planner subagent: read-only tools only
 - Coder subagent: branch + PR only, never direct push to `main`
 - Human review required before merge
-- Branch protections enabled in GitHub
 
-## 9. Quick Validation Checklist
+## Validation checklist
 
-- `gh auth status` is OK
-- `ANTHROPIC_API_KEY` is set
-- `TELEGRAM_BOT_TOKEN` is set (if Telegram enabled)
-- `/triage` runs from CLI
-- `/triage` runs from Telegram
-- Weekly schedule created and tested
+After setup, verify everything works:
 
-## Key Paths
+```bash
+# Python dependencies
+python -c "import mcp, supabase, httpx; print('deps OK')"
+
+# Supabase connection
+python -c "
+from dotenv import load_dotenv; load_dotenv()
+import os; from supabase import create_client
+c = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_KEY'])
+print('Supabase OK:', c.table('memories').select('id').limit(1).execute())
+"
+
+# Claude Code
+claude --version
+
+# GitHub CLI
+gh auth status
+```
+
+Then open the project in Claude Code and run `/triage`.
+
+---
+
+## Key paths
 
 | What | Path |
-|---|---|
+|------|------|
+| Secrets | `.env` (not committed) |
+| Secrets template | `.env.example` |
 | Personality | `config/SOUL.md` |
-| Setup | `config/SETUP.md` |
-| Strategy | `docs/PROJECT_PLAN.md` |
-| Architecture | `docs/architecture.md` |
-| Skills | `skills/*/SKILL.md` |
-| MCP config | `.mcp.json` |
+| MCP config | `.mcp.json` (repo root) |
+| Memory server | `mcp-memory/server.py` |
+| Memory schema | `mcp-memory/schema.sql` |
+| Claude Code global config | `~/.claude/settings.json` (device-local) |
+| Skills | `.claude/skills/` |
