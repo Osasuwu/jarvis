@@ -316,6 +316,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
     content = args["content"]
     description = args.get("description", "")
     project = args.get("project")
+    if project == "global":
+        project = None  # "global" and null are synonymous — normalize to NULL in DB
     tags = args.get("tags", [])
 
     if mem_type not in VALID_TYPES:
@@ -361,6 +363,8 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
     query_text = args.get("query", "")
     project = args.get("project")
+    if project == "global":
+        project = None
     mem_type = args.get("type")
     limit = args.get("limit", 10)
 
@@ -506,6 +510,8 @@ async def _handle_get(args: dict) -> list[TextContent]:
 
     mem_name = args["name"]
     project = args.get("project")
+    if project == "global":
+        project = None
 
     q = client.table("memories").select("*").eq("name", mem_name)
     if project is not None:
@@ -536,6 +542,8 @@ async def _handle_list(args: dict) -> list[TextContent]:
     client = _get_client()
 
     project = args.get("project")
+    if project == "global":
+        project = None
     mem_type = args.get("type")
 
     q = client.table("memories").select("name, type, project, description, updated_at")
@@ -568,6 +576,8 @@ async def _handle_delete(args: dict) -> list[TextContent]:
 
     mem_name = args["name"]
     project = args.get("project")
+    if project == "global":
+        project = None  # normalize "global" → NULL, same as in _handle_store
 
     q = client.table("memories").delete().eq("name", mem_name)
     if project is not None:
