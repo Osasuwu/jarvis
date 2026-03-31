@@ -12,19 +12,24 @@
 projects:
   - id: jarvis
     label: "Jarvis / personal-AI-agent"
-    description: "Claude Code обновления, MCP экосистема, новые capabilities, agentic паттерны, scheduled tasks"
-    subreddits: [ClaudeAI, mcp, LocalLLaMA, AIAgents, SideProject]
-    keywords: "Claude Code MCP servers agentic AI updates 2026"
+    description: >
+      Как люди реально встраивают AI агентов в свою жизнь и работу — практики, паттерны, инсайты.
+      Что работает у соло-разработчиков с персональными агентами. Новые подходы к памяти, идентичности,
+      автономии агентов. Не конкретные инструменты — а то, что люди делают с ними.
+    search_strategy: "broad thematic — personal AI agents, solo dev workflows, AI in daily life, agentic patterns"
 
   - id: redrobot
     label: "redrobot"
-    description: "MuJoCo релизы, trajectory optimization, robot learning, симуляция физики, ROS2"
-    subreddits: [robotics, reinforcementlearning, MachineLearning, ROS]
-    keywords: "MuJoCo trajectory optimization robot learning simulation 2026"
+    description: >
+      Роботика в целом — свежие подходы, неожиданные применения, интересные проекты.
+      Как люди решают задачи планирования движений, безопасности, взаимодействия с реальным миром.
+      Не конкретно MuJoCo — а роботы, которые что-то делают в реальности.
+    search_strategy: "broad thematic — robotics real world, motion planning breakthroughs, robot manipulation 2026"
 
 topics:
   - id: automation
     label: "Process automation & agentic tools"
-    description: "n8n, Make, agentic автоматизация, workflow инструменты, self-hosted"
-    subreddits: [n8n, selfhosted, nocode, AIAgents]
-    keywords: "agentic process automation workflow tools n8n 2026"
+    description: >
+      Новые паттерны автоматизации — что люди автоматизируют, как думают о workflow,
+      что оказалось полезным а что нет. Акцент на практике и реальном опыте, не на обзорах инструментов.
+    search_strategy: "broad thematic — workflow automation real use cases, agentic tools in practice 2026"
