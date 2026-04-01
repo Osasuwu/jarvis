@@ -6,11 +6,18 @@ on:
 
 jobs:
   respond-to-copilot:
-    # Only trigger on Copilot reviews of internal (non-fork) PRs
+    # Only trigger on Copilot reviews of internal (non-fork) PRs.
+    # NOTE: GitHub Actions does not allocate runners for workflows triggered
+    # by bot actors (like Copilot) on free/education repos without explicit
+    # approval in repo Settings → Actions. If this keeps getting skipped or
+    # failing with runner_id=0, the workaround is manual review response.
     if: |
-      github.event.review.user.login == 'copilot[bot]' &&
+      github.event.review.user.type == 'Bot' &&
+      (
+        github.event.review.user.login == 'github-copilot[bot]' ||
+        github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+      ) &&
       github.event.pull_request.head.repo.full_name == github.repository
-    # Only trigger on Copilot reviews of internal (non-fork) PRs
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -37,6 +44,54 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+      - name: Check for safety-critical files in this PR
+        id: safety
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+
+          # Fetch all changed files in this PR (one filename per line across all pages)
+          FILES=$(gh api "/repos/${{ github.repository }}/pulls/$PR_NUMBER/files" \
+            --paginate --jq '.[].filename')
+
+          # Check if any file touches safety-critical paths
+          SAFETY_HIT=$(printf '%s\n' "$FILES" | jq -R -s 'split("\n")[:-1] | .[] | select(
+            startswith("mcp-memory/") or
+            . == "config/SOUL.md" or
+            . == ".mcp.json"
+          )' | head -20)
+
+          if [ -n "$SAFETY_HIT" ]; then
+            echo "safety_critical=true" >> $GITHUB_OUTPUT
+            echo "safety_files<<EOF" >> $GITHUB_OUTPUT
+            echo "$SAFETY_HIT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "safety_critical=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post safety block comment and exit
+        if: steps.safety.outputs.safety_critical == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body "$(cat <<'EOF'
+          ## Copilot Review Response — Safety Block ⛔
+
+          This PR touches safety-critical paths. Auto-apply is **disabled** for all findings.
+
+          **Affected files requiring manual review:**
+          ${{ steps.safety.outputs.safety_files }}
+
+          Please review all Copilot suggestions manually before merging.
+
+          *[copilot-review-response workflow](../../actions/workflows/copilot-review-response.yml)*
+          EOF
+          )"
+          exit 0
+
       - name: Fetch Copilot review comments
         id: review
         env:
@@ -48,11 +103,12 @@ jobs:
           # Safe: read review body from event payload (avoids shell injection)
           REVIEW_BODY="$(jq -r '.review.body // ""' "$GITHUB_EVENT_PATH")"
 
-          # Fetch inline comments for this review (paginated)
+          # Fetch inline comments for this review (paginated, slurped into single array)
           COMMENTS=$(gh api \
             "/repos/${{ github.repository }}/pulls/$PR_NUMBER/comments?per_page=100" \
             --paginate \
-            --jq ".[] | select(.pull_request_review_id == $REVIEW_ID) | {path: .path, line: .line, body: .body}" | jq -s '.')
+            --jq ".[] | select(.pull_request_review_id == $REVIEW_ID) | {path: .path, line: .line, body: .body}" \
+            | jq -s '.')
 
           echo "review_body<<EOF" >> $GITHUB_OUTPUT
           echo "$REVIEW_BODY" >> $GITHUB_OUTPUT
@@ -66,13 +122,16 @@ jobs:
           echo "branch=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
 
       - name: Apply fixes via Claude
+        if: steps.safety.outputs.safety_critical != 'true'
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVIEW_BODY: ${{ steps.review.outputs.review_body }}
+          REVIEW_COMMENTS: ${{ steps.review.outputs.comments }}
+          PR_NUMBER: ${{ steps.review.outputs.pr_number }}
+          BRANCH: ${{ steps.review.outputs.branch }}
+          REPO: ${{ github.repository }}
         run: |
-          PR_NUMBER="${{ steps.review.outputs.pr_number }}"
-          BRANCH="${{ steps.review.outputs.branch }}"
-
           cat > /tmp/review_prompt.txt << 'PROMPT_EOF'
           You are responding to a GitHub Copilot code review on a pull request.
 
@@ -118,17 +177,20 @@ jobs:
           ## Review body
           PROMPT_EOF
 
-          echo "${{ steps.review.outputs.review_body }}" >> /tmp/review_prompt.txt
+          # Use printf with env vars to avoid shell interpretation of review content.
+          # Direct GitHub expression interpolation breaks when review contains
+          # shell metacharacters (backticks, pipes, slashes, parentheses).
+          printf '%s\n' "$REVIEW_BODY" >> /tmp/review_prompt.txt
           echo "" >> /tmp/review_prompt.txt
           echo "## Inline comments" >> /tmp/review_prompt.txt
-          echo "${{ steps.review.outputs.comments }}" >> /tmp/review_prompt.txt
+          printf '%s\n' "$REVIEW_COMMENTS" >> /tmp/review_prompt.txt
           echo "" >> /tmp/review_prompt.txt
           echo "## Context" >> /tmp/review_prompt.txt
           echo "PR number: $PR_NUMBER" >> /tmp/review_prompt.txt
           echo "Branch: $BRANCH" >> /tmp/review_prompt.txt
-          echo "Repo: ${{ github.repository }}" >> /tmp/review_prompt.txt
+          echo "Repo: $REPO" >> /tmp/review_prompt.txt
           echo "" >> /tmp/review_prompt.txt
-          echo "Post the summary comment using: gh pr comment $PR_NUMBER --repo ${{ github.repository }} --body '...'" >> /tmp/review_prompt.txt
+          echo "Post the summary comment using: gh pr comment $PR_NUMBER --repo $REPO --body '...'" >> /tmp/review_prompt.txt
 
           # Run Claude — dangerously-skip-permissions is required for non-interactive CI file edits.
           # Blast radius is limited by: non-fork only gate (above), pinned CLI version,
