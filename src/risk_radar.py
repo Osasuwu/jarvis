@@ -221,18 +221,17 @@ def _check_security_alerts(repo: str) -> list[RiskAlert]:
     if not alerts:
         return []
 
-    sev_map = {"critical": 4, "high": 3, "medium": 2, "low": 1}
     by_sev: dict[str, int] = {}
     for a in alerts:
         s = str(a.get("severity", "low")).lower()
         by_sev[s] = by_sev.get(s, 0) + 1
 
-    top_sev = max(by_sev.keys(), key=lambda s: sev_map.get(s, 0))
+    top_sev = max(by_sev.keys(), key=lambda s: SEVERITY_ORDER.get(s, 0))
     severity = "critical" if top_sev in {"critical", "high"} else "medium"
 
     pkgs = list({a.get("pkg", "?") for a in alerts[:5]})
     total = len(alerts)
-    summary = ", ".join(f"{s}:{n}" for s, n in sorted(by_sev.items(), key=lambda x: -sev_map.get(x[0], 0)))
+    summary = ", ".join(f"{s}:{n}" for s, n in sorted(by_sev.items(), key=lambda x: -SEVERITY_ORDER.get(x[0], 0)))
     return [RiskAlert(
         severity=severity,
         pattern="security-alert",
@@ -269,7 +268,7 @@ def _check_overdue_milestones(repo: str) -> list[RiskAlert]:
             total = ms["open"] + ms.get("closed", 0)
             pct = round(ms["closed"] / total * 100) if total else 0
             overdue.append({"name": ms["title"], "open": ms["open"], "pct": pct,
-                            "days_late": round((now - due).days)})
+                            "days_late": (now - due).days})
 
     if not overdue:
         return []
