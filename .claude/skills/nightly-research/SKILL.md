@@ -44,7 +44,7 @@ Good: "how do people tune convergence thresholds in iterative planners to avoid 
 
 ## Step 3 — Fallback (if no gaps found)
 
-Read `personal-AI-agent/config/research-topics.yaml` for hint labels.
+Read `config/research-topics.yaml` for hint labels.
 Pick 3 and formulate specific research questions based on current context — don't just scan the category generically.
 
 ---
@@ -69,13 +69,13 @@ Rules:
 
 ## Step 5 — Save results
 
-For each topic, upsert to Supabase (fixed name = no accumulation):
+For each topic, upsert to Supabase. Use a **deterministic name** derived from the topic slug so the same topic always overwrites its previous entry (no accumulation):
 
 ```
 memory_store(
   type="reference",
-  name="nightly_{id}",
-  project="jarvis",
+  name="nightly_{topic_slug}",   # e.g. nightly_planner_convergence — stable across runs
+  project="jarvis",              # or "redrobot" if the finding belongs to redrobot
   description="Nightly research: {topic label}",
   content="## {topic}
 
@@ -87,6 +87,8 @@ memory_store(
 )
 ```
 
+Use `project="redrobot"` when the finding is about redrobot (MuJoCo, planning, trajectory, etc.) so project-scoped `memory_recall` returns it correctly.
+
 Also upsert a run summary:
 ```
 memory_store(
@@ -94,7 +96,7 @@ memory_store(
   name="nightly_last_run",
   project="jarvis",
   description="Last nightly research run",
-  content="{date} — topics: {topic1}, {topic2}, {topic3} — {N} actionable findings"
+  content="{date} — topics: {topic1}, {topic2}, {topic3} — findings: total={total}, actionable={actionable} — issues: created={created}, skipped={skipped}, duplicates={duplicates}, failed={failed}"
 )
 ```
 
@@ -107,7 +109,7 @@ For each finding where `Actionable: yes`, create a GitHub issue so it surfaces i
 ```bash
 # Check for duplicate first
 gh issue list --repo Osasuwu/personal-AI-agent \
-  --search "[RESEARCH] {topic}" --state open --json number --jq length
+  --search "[RESEARCH] {topic}" --state open --limit 1000 --json number --jq length
 # Only create if result is 0
 
 gh issue create \

@@ -12,7 +12,11 @@ jobs:
     # approval in repo Settings → Actions. If this keeps getting skipped or
     # failing with runner_id=0, the workaround is manual review response.
     if: |
-      contains(github.event.review.user.login, 'copilot') &&
+      github.event.review.user.type == 'Bot' &&
+      (
+        github.event.review.user.login == 'github-copilot[bot]' ||
+        github.event.review.user.login == 'copilot-pull-request-reviewer[bot]'
+      ) &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
@@ -47,12 +51,12 @@ jobs:
         run: |
           PR_NUMBER="${{ github.event.pull_request.number }}"
 
-          # Fetch all changed files in this PR
+          # Fetch all changed files in this PR (one filename per line across all pages)
           FILES=$(gh api "/repos/${{ github.repository }}/pulls/$PR_NUMBER/files" \
-            --paginate --jq '[.[].filename]')
+            --paginate --jq '.[].filename')
 
           # Check if any file touches safety-critical paths
-          SAFETY_HIT=$(echo "$FILES" | jq -r '.[] | select(
+          SAFETY_HIT=$(printf '%s\n' "$FILES" | jq -R -s 'split("\n")[:-1] | .[] | select(
             startswith("mcp-memory/") or
             . == "config/SOUL.md" or
             . == ".mcp.json"
@@ -99,11 +103,12 @@ jobs:
           # Safe: read review body from event payload (avoids shell injection)
           REVIEW_BODY="$(jq -r '.review.body // ""' "$GITHUB_EVENT_PATH")"
 
-          # Fetch inline comments for this review (paginated)
+          # Fetch inline comments for this review (paginated, slurped into single array)
           COMMENTS=$(gh api \
             "/repos/${{ github.repository }}/pulls/$PR_NUMBER/comments?per_page=100" \
             --paginate \
-            --jq "[.[] | select(.pull_request_review_id == $REVIEW_ID) | {path: .path, line: .line, body: .body}]")
+            --jq ".[] | select(.pull_request_review_id == $REVIEW_ID) | {path: .path, line: .line, body: .body}" \
+            | jq -s '.')
 
           echo "review_body<<EOF" >> $GITHUB_OUTPUT
           echo "$REVIEW_BODY" >> $GITHUB_OUTPUT
