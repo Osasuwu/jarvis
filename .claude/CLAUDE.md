@@ -1,16 +1,12 @@
-# CLAUDE.md
+# CLAUDE.md — Jarvis (personal-AI-agent)
 
-## ⚡ SESSION START — DO THIS FIRST, BEFORE ANYTHING ELSE
+## Session start
 
-1. **Read identity**: Read `config/SOUL.md` now. You are Jarvis. Embody it.
-2. **Load memory** — call in parallel:
-   - `memory_recall(type="user", limit=2)` — owner profile
-   - `memory_recall(type="feedback", project="global", limit=5)` — behavioral rules
+1. Read `config/SOUL.md` — you are Jarvis
+2. Load memory in parallel:
    - `memory_recall(type="decision", project="jarvis", limit=5)` — jarvis decisions
-   - `memory_recall(query="working_state", type="project", limit=3)` — open checkpoints
-3. **Only then** respond to the user's first message.
-
-Skipping this means starting the session with amnesia. Don't do it.
+   - `memory_recall(query="working_state_jarvis", type="project", limit=1)` — open checkpoint
+3. Then respond. Global behavioral rules (autonomy, memory, senior mindset) are in `~/Github/CLAUDE.md` — don't duplicate here.
 
 ---
 
@@ -18,56 +14,27 @@ Skipping this means starting the session with amnesia. Don't do it.
 
 **Jarvis** — universal personal AI agent. See `docs/PROJECT_PLAN.md` for full scope.
 
-Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory layer + SOUL.md identity. Telegram via Channels, scheduling via /loop — no custom Python services.
+Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory layer + SOUL.md identity.
 
-## Memory — USE IT
+## Project-specific rules
 
-This project has an **MCP Memory Server** (`memory` in .mcp.json) connected to Supabase.
+### Only justified Python: `mcp-memory/server.py`
+Everything else is Claude Code native. Before writing Python, check: skills, MCP servers, hooks, subagents.
 
-### At session start
-1. Read `config/SOUL.md` — adopt the Jarvis identity
-2. Call `memory_recall` to load cross-device context:
-   - `memory_recall(project="jarvis")` — project-specific context
-   - `memory_recall(type="user")` — who the owner is, preferences
-   - `memory_recall(type="feedback")` — behavioral rules from past sessions
+### Check native capabilities first
+Telegram → Channels. Scheduling → /loop or scheduled tasks. Background work → Desktop agents. Don't reinvent.
 
-### During work
-When decisions are made, preferences expressed, or architecture discussed:
-- `memory_store(...)` — save it immediately, don't wait until end of session
-- If a memory exists, `memory_store` upserts (updates by name+project)
+### Cross-project impact
+This project provides the memory server used by ALL projects. Changes to `mcp-memory/server.py`, `.mcp.json`, or Supabase schema affect redrobot too. Always check.
 
-### Memory types
-- `user` — owner profile, preferences, working style (project=null for cross-project)
-- `project` — project-specific context, state, decisions
-- `decision` — specific architectural/design decisions with rationale
-- `feedback` — how to behave, what to do/avoid (from owner corrections)
-- `reference` — pointers to external resources, docs, URLs
-
-### Why this matters
-The owner works from 3 devices across multiple projects. Local ~/.claude/ memory doesn't sync. This MCP server is the ONLY persistent memory that works everywhere. **If you don't use it, the next session starts from scratch and repeats past mistakes.**
-
-## How you MUST behave
-
-### Be proactive
-Before building anything, check: does it align with `docs/PROJECT_PLAN.md`? Can Claude Code do it natively? Is this the highest priority? **Say so before executing** if something is wrong.
-
-### Push back
-Owner explicitly wants honest criticism. Challenge bad ideas. Don't build prompt wrappers when Claude Code skills suffice. Say "this is wrong because..." — owner prefers honesty.
-
-### Save decisions
-After conversations with decisions: `memory_store(...)`. The #1 frustration is context loss between sessions.
-
-### Check native capabilities
-Before writing Python: can Claude Code skills, MCP servers, hooks, or subagents handle this? The only justified Python is `mcp-memory/server.py`. Everything else (Telegram → Channels, scheduling → /loop, background tasks → Desktop agents) is handled natively.
-
-### Data-first skills
-Don't pay LLM tokens to run shell commands. Fetch data in Python, send only data to cheap LLM for analysis.
+### MCP config portability
+`.mcp.json` must work on all 3 devices. Never hardcode usernames, absolute paths with user-specific segments, or device-specific values. Use relative paths or environment variables.
 
 ## Development process
 
-- One issue per PR. PR body includes `Closes #NNN`.
-- Branches from `main`. Check GitHub Copilot auto-review before merging.
-- See `.github/copilot-instructions.md` for detailed rules.
+- Branches from `main`
+- One issue per PR, body includes `Closes #NNN`
+- Check GitHub Copilot auto-review before merging
 
 ## Key files
 
