@@ -1,76 +1,132 @@
 ---
 name: self-improve
-description: "Autonomous self-improvement of personal-AI-agent: run self-review → build fix plan → auto-apply low and medium risk → PR"
+description: "Autonomous self-improvement of personal-AI-agent: identify gaps from context → ideate → research → implement. A meta-agent role: improves Jarvis by introducing new capabilities, not just fixing existing code."
 ---
 
 # Self-Improve
 
-Autonomous self-improvement pipeline for Jarvis (personal-AI-agent).
+**Goal: introduce something genuinely new to Jarvis** — not just fix existing code issues.
+
+A meta-agent mindset: you are an agent whose job is to make Jarvis better. Read the current state, find the most impactful gap, research it, then implement if risk is low enough.
+
+All commands run inside `personal-AI-agent/`:
+prefix bash with `cd /c/Users/petrk/GitHub/personal-AI-agent &&`
 
 ## Usage
 
-- `/self-improve` — full pipeline (auto-apply low + medium risk, PR)
-- `/self-improve --dry-run` — plan only, no changes applied
+- `/self-improve` — full pipeline
+- `/self-improve --dry-run` — plan only, no changes
+
+---
 
 ## Pipeline
 
-### Step 1 — Self-review
-Run `/self-review` to get current findings.
+### Step 1 — Health baseline
 
-### Step 2 — Classify by risk
+Run the self-review skill to understand current state of the codebase.
+Note: **don't fix self-review findings directly** — they're context for ideation, not the task list.
 
-For each finding, assign risk level:
+### Step 2 — Load context for gap identification
+
+Call in parallel:
+- `memory_recall(query="nightly research", limit=3)` — last nightly findings not yet acted on
+- `memory_recall(type="decision", project="jarvis", limit=5)` — recent decisions
+- `memory_recall(query="working state", project="jarvis", limit=2)` — open items
+
+Combine with self-review findings to build a picture of:
+- What's missing from Jarvis?
+- What friction keeps appearing in sessions?
+- What research findings have been sitting in memory without action?
+- What did the owner flag as "do later"?
+
+### Step 3 — Ideate
+
+Invoke the ideate skill (Mode 1: generate ideas).
+The ideate skill already reads memory + PROJECT_PLAN.md.
+
+If ideate produces no strong ideas (all Low impact or High risk):
+- Fallback to self-review findings for medium-risk code improvements
+- These are valid but lower value — note this in output
+
+### Step 4 — Pick the best idea
+
+Select the top-1 idea by: **High impact + Low/Medium effort + Low/Medium risk**.
+
+If multiple ideas tie: prefer the one that connects to nightly research findings (signals it's topical and grounded).
+
+### Step 5 — Targeted research
+
+Run a focused research pass on the selected idea:
+- Formulate a specific question: not "research X" but "how do people implement X for Y use case?"
+- Use firecrawl_search(limit=3) or WebSearch fallback
+- Goal: validate the idea and find implementation patterns
+
+If research shows the idea is bad or already solved differently → go back to Step 4, pick next idea.
+
+### Step 6 — Risk classification
 
 | Risk | Criteria | Action |
 |------|----------|--------|
-| **Low** | Dead code, unused imports, simple renaming, cosmetic | Auto-apply |
-| **Medium** | Refactoring, error handling improvements, test additions, missing docstrings | Auto-apply |
-| **High** | Architecture changes, security fixes, logic changes, file deletions | Report, require manual work |
+| **Low** | New skill/command, config update, prompt improvement, docs | Auto-implement |
+| **Medium** | New hook, new MCP config entry, tool wiring changes | Show plan → wait for confirmation |
+| **High** | Architecture change, mcp-memory/server.py, SOUL.md, CLAUDE.md | Propose only, no auto |
 
-**Never auto-apply regardless of risk:** changes to `.mcp.json`, `CLAUDE.md`, `mcp-memory/server.py`, `config/SOUL.md`, any secret/env file, git history.
+**Never auto-apply regardless of risk:** `.mcp.json`, `mcp-memory/server.py`, `config/SOUL.md`, `CLAUDE.md`, any secret/env file.
 
-### Step 3 — Build plan
-For each low/medium-risk item, write a specific fix description: what file, what change, why it's safe.
-Present the plan before applying anything.
+### Step 7 — Implement (skip in --dry-run)
 
-### Step 4 — Apply low + medium risk fixes (skip in --dry-run)
-Apply each fix using Edit/Write tools. After each fix, verify the file still compiles:
+For **Low risk**: implement directly.
+For **Medium risk**: show the plan explicitly, wait for owner confirmation, then implement.
+For **High risk**: output proposal only, stop.
+
+After each change, verify:
 ```bash
-python -m compileall <changed_file>
+cd /c/Users/petrk/GitHub/personal-AI-agent && python -m compileall <changed_file>
 ```
 
-### Step 5 — Validate
-Run full test suite:
+Run tests if relevant:
 ```bash
-python -m pytest tests/ -v --tb=short
-```
-If tests fail, revert the last change and mark it as failed.
-
-### Step 6 — Branch + PR (skip in --dry-run)
-```bash
-git checkout -b self-improve/<date>
-git add -A
-git commit -m "self-improve: auto-apply N low/medium-risk fixes"
-git push -u origin self-improve/<date>
-gh pr create --title "Self-improve: <date>" --body "<summary of changes>"
+cd /c/Users/petrk/GitHub/personal-AI-agent && python -m pytest tests/ -v --tb=short
 ```
 
-## Output
+### Step 8 — Branch + PR (skip in --dry-run, skip for High risk)
+
+```bash
+git -C /c/Users/petrk/GitHub/personal-AI-agent checkout -b self-improve/<date>-<slug>
+git -C /c/Users/petrk/GitHub/personal-AI-agent add <specific files>
+git -C /c/Users/petrk/GitHub/personal-AI-agent commit -m "self-improve: <what was added and why>"
+git -C /c/Users/petrk/GitHub/personal-AI-agent push -u origin self-improve/<date>-<slug>
+gh pr create --repo Osasuwu/personal-AI-agent \
+  --title "self-improve: <short description>" \
+  --body "## What\n<what was added>\n\n## Why\n<gap identified>\n\n## Research basis\n<what research found>\n\n## Risk\nLow/Medium — <reasoning>"
+```
+
+---
+
+## Output format
 
 ```markdown
 ## Self-Improve Run — YYYY-MM-DD
 
-### Applied (N)
-- file.py:42 — removed unused import `os`
+### Gaps identified
+- <gap 1> (source: nightly research / working state / self-review)
+- <gap 2>
 
-### Needs Approval (N)
-- file.py:100 — high-risk architecture change
+### Selected idea
+**[Idea title]** — Impact: H/M/L | Effort: H/M/L | Risk: L/M/H
+
+### Research finding
+<key insight that validates or shapes the implementation>
+
+### Implemented (or: Proposed / Needs approval)
+- <what was done / proposed>
 
 ### PR
-<url> (or: --dry-run mode, no PR created)
+<url> (or: --dry-run / high-risk, no PR)
 ```
 
+---
+
 ## Cost estimate
-- Self-review: ~$0.05-0.15 (Sonnet)
-- Plan + apply: ~$0.10-0.25 (Sonnet with tools)
-- Total: ~$0.20-0.50 per run
+
+~$0.15–0.40 per run (self-review + memory recalls + ideate + research + implementation)
