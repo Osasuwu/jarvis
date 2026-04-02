@@ -1,35 +1,14 @@
-# Nightly research topics
-# Читается nightly-research scheduled task каждую ночь.
-# Добавляй/убирай темы здесь — задача подхватит автоматически.
-#
-# Поля:
-#   id:          kebab-case, используется как ключ в Supabase (nightly_{id})
-#   label:       человекочитаемое название
-#   description: что именно искать
-#   subreddits:  список сабреддитов (без r/)
-#   keywords:    поисковый запрос для web search
+# Nightly research — fallback hints only
+# Used ONLY when the agent cannot identify gaps from context.
+# Intentionally minimal — no descriptions, no search strategies.
+# The agent decides what to research based on current project state.
 
-projects:
+fallback_hints:
   - id: jarvis
-    label: "Jarvis / personal-AI-agent"
-    description: >
-      Как люди реально встраивают AI агентов в свою жизнь и работу — практики, паттерны, инсайты.
-      Что работает у соло-разработчиков с персональными агентами. Новые подходы к памяти, идентичности,
-      автономии агентов. Не конкретные инструменты — а то, что люди делают с ними.
-    search_strategy: "broad thematic — personal AI agents, solo dev workflows, AI in daily life, agentic patterns"
+    label: "Jarvis / personal AI agents"
 
   - id: redrobot
-    label: "redrobot"
-    description: >
-      Роботика в целом — свежие подходы, неожиданные применения, интересные проекты.
-      Как люди решают задачи планирования движений, безопасности, взаимодействия с реальным миром.
-      Не конкретно MuJoCo — а роботы, которые что-то делают в реальности.
-    search_strategy: "broad thematic — robotics real world, motion planning breakthroughs, robot manipulation 2026"
+    label: "Robotics / motion planning"
 
-topics:
   - id: automation
     label: "Process automation & agentic tools"
-    description: >
-      Новые паттерны автоматизации — что люди автоматизируют, как думают о workflow,
-      что оказалось полезным а что нет. Акцент на практике и реальном опыте, не на обзорах инструментов.
-    search_strategy: "broad thematic — workflow automation real use cases, agentic tools in practice 2026"

@@ -39,3 +39,11 @@ export SUPABASE_URL="..."
 export SUPABASE_KEY="..."
 export VOYAGE_API_KEY="..."
 ```
+
+### Filesystem MCP
+
+`@modelcontextprotocol/server-filesystem` is configured in all `.mcp.json` files:
+- **Read**: `C:/`, `D:/`, `E:/` — all drives, universal across devices
+- **Write**: none (add explicitly when needed)
+
+No additional setup needed — runs via `npx` on first use. Provides Claude with device awareness (hostname, installed software, user profile) and works regardless of username or drive layout.

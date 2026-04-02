@@ -16,7 +16,7 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "."
+        "C:/", "D:/", "E:/"
       ]
     },
     "memory": {
