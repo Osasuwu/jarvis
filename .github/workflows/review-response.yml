@@ -1,0 +1,91 @@
+name: Review Response
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  respond:
+    # Trigger on reviews requesting changes (Copilot or human)
+    # Skip fork PRs for security
+    if: |
+      (github.event.review.state == 'changes_requested' || github.event.review.state == 'commented') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Check for safety-critical files
+        id: safety
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          FILES=$(gh api "/repos/${{ github.repository }}/pulls/$PR_NUMBER/files" \
+            --paginate --jq '.[].filename')
+
+          SAFETY_HIT=$(printf '%s\n' "$FILES" | grep -E '^(mcp-memory/|config/SOUL\.md$|\.mcp\.json$|\.claude/CLAUDE\.md$)' || true)
+
+          if [ -n "$SAFETY_HIT" ]; then
+            echo "safety_critical=true" >> $GITHUB_OUTPUT
+            echo "safety_files<<EOF" >> $GITHUB_OUTPUT
+            echo "$SAFETY_HIT" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+          else
+            echo "safety_critical=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Post safety block and exit
+        if: steps.safety.outputs.safety_critical == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ github.event.pull_request.number }}" \
+            --repo "${{ github.repository }}" \
+            --body "## Safety Block
+
+          This PR touches safety-critical paths. Auto-apply disabled.
+
+          **Files requiring manual review:**
+          ${{ steps.safety.outputs.safety_files }}
+
+          Review all suggestions manually before merging."
+
+      - name: Apply review suggestions via Claude Code
+        if: steps.safety.outputs.safety_critical != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            Read config/SOUL.md — you are Jarvis.
+            Do NOT follow session-start procedures. memory_recall/memory_store are not available here.
+
+            A PR review was submitted with change requests. Your task:
+
+            1. Read the PR description for context on WHY changes were made
+            2. Fetch review comments: `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate`
+            3. Parse suggestion blocks from comments
+            4. Classify each finding:
+               - LOW: unused imports, cosmetic, typos
+               - MEDIUM: error handling, simple refactors
+               - HIGH: logic changes, safety-adjacent
+               - CRITICAL: data loss, security, breaking API
+            5. Apply LOW and MEDIUM fixes directly (edit files)
+            6. Run lint and tests to verify
+            7. If changes made: commit and push
+            8. Post a summary comment on the PR:
+               - What was auto-applied (LOW/MEDIUM)
+               - What needs manual review (HIGH/CRITICAL) with file:line
+
+            Branch: ${{ github.event.pull_request.head.ref }}
+            PR: #${{ github.event.pull_request.number }}
+            Repo: ${{ github.repository }}
+          allowed_tools: |
+            Read,Edit,Write,Glob,Grep,Bash(git *),Bash(gh *),Bash(ruff *),Bash(npx tsc *),Bash(pytest *),Bash(npm run build)
