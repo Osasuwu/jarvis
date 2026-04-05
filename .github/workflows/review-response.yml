@@ -9,7 +9,7 @@ jobs:
     # Trigger on reviews requesting changes (Copilot or human)
     # Skip fork PRs for security
     if: |
-      github.event.review.state == 'changes_requested' &&
+      (github.event.review.state == 'changes_requested' || github.event.review.state == 'commented') &&
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
