@@ -24,8 +24,11 @@ logs/
 # OS specific
 Thumbs.DB
 
-# OpenClaw / Jarvis specific
+# Jarvis specific
 .jarvis/
+
+# Claude Code device-local settings (not shared)
+.claude/settings.local.json
 
 # Generated self-review reports (runtime artifacts - keep skill definitions)
 reports/self-review-*.md

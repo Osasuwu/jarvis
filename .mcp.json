@@ -1,8 +1,12 @@
 {
   "mcpServers": {
-    "reddit": {
-      "command": "uvx",
-      "args": ["reddit-no-auth-mcp-server"]
+    "memory": {
+      "command": "${MEMORY_PYTHON}",
+      "args": ["mcp-memory/server.py"],
+      "env": {
+        "SUPABASE_URL": "${SUPABASE_URL}",
+        "SUPABASE_KEY": "${SUPABASE_KEY}"
+      }
     },
     "github": {
       "command": "npx",
@@ -11,21 +15,24 @@
         "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
       }
     },
-    "filesystem": {
+    "context7": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-filesystem",
-        "C:/", "D:/", "E:/"
-      ]
+      "args": ["-y", "@upstash/context7-mcp@latest"]
     },
-    "memory": {
-      "command": "python",
-      "args": ["mcp-memory/server.py"],
+    "firecrawl": {
+      "command": "npx",
+      "args": ["-y", "firecrawl-mcp"],
       "env": {
-        "SUPABASE_URL": "${SUPABASE_URL}",
-        "SUPABASE_KEY": "${SUPABASE_KEY}"
+        "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
       }
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    },
+    "reddit": {
+      "command": "uvx",
+      "args": ["reddit-no-auth-mcp-server"]
     }
   }
 }

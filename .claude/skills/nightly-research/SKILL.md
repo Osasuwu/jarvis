@@ -12,13 +12,34 @@ Runs each night. Identifies what Jarvis/redrobot actually needs to know — base
 
 ---
 
+## Step 0 — Detect environment
+
+Check which persistence tools are available. This determines how you save results in Step 5.
+
+- If `memory_store` tool exists → use it (preferred, local MCP)
+- If only `execute_sql` exists → use SQL fallback (remote/cloud environment)
+- **NEVER write results to markdown files** — they don't sync across devices
+
+Also check which search tools are available: `firecrawl_search` > `WebSearch` > skip.
+
+---
+
 ## Step 1 — Load context
 
-Call in parallel:
+If `memory_recall` is available:
 - `memory_recall(type="decision", project="jarvis", limit=5)` — recent jarvis decisions
 - `memory_recall(type="decision", project="redrobot", limit=5)` — recent redrobot decisions
 - `memory_recall(query="working state", limit=3)` — open checkpoints
 - `memory_recall(query="nightly research", limit=3)` — what was already researched (avoid repeats)
+
+If only `execute_sql` is available:
+```sql
+SELECT name, content, tags, updated_at FROM memories
+WHERE (type = 'decision' AND project IN ('jarvis', 'redrobot'))
+   OR (name LIKE 'working_state_%')
+   OR (tags @> ARRAY['nightly'])
+ORDER BY updated_at DESC LIMIT 15;
+```
 
 ---
 
@@ -69,36 +90,55 @@ Rules:
 
 ## Step 5 — Save results
 
-For each topic, upsert to Supabase. Use a **deterministic name** derived from the topic slug so the same topic always overwrites its previous entry (no accumulation):
+For each topic, upsert to Supabase. Use a **deterministic name** derived from the topic slug so the same topic always overwrites its previous entry (no accumulation).
+
+Use `project="redrobot"` when the finding is about redrobot (MuJoCo, planning, trajectory, etc.) so project-scoped recall returns it correctly.
+
+### Option A: `memory_store` available (local sessions)
 
 ```
 memory_store(
   type="reference",
-  name="nightly_{topic_slug}",   # e.g. nightly_planner_convergence — stable across runs
-  project="jarvis",              # or "redrobot" if the finding belongs to redrobot
+  name="nightly_{topic_slug}",
+  project="jarvis",              # or "redrobot"
   description="Nightly research: {topic label}",
-  content="## {topic}
-
-**Question:** {the specific question researched}
-**Finding:** {key insight, max 200 words}
-**Actionable:** {yes/no — what to do with this}
-**Source:** {url}",
+  content="## {topic}\n\n**Question:** ...\n**Finding:** ...\n**Actionable:** ...\n**Source:** {url}",
   tags=["nightly", "research"]
 )
 ```
 
-Use `project="redrobot"` when the finding is about redrobot (MuJoCo, planning, trajectory, etc.) so project-scoped `memory_recall` returns it correctly.
-
-Also upsert a run summary:
+Run summary:
 ```
 memory_store(
-  type="project",
-  name="nightly_last_run",
-  project="jarvis",
+  type="project", name="nightly_last_run", project="jarvis",
   description="Last nightly research run",
-  content="{date} — topics: {topic1}, {topic2}, {topic3} — findings: total={total}, actionable={actionable} — issues: created={created}, skipped={skipped}, duplicates={duplicates}, failed={failed}"
+  content="{date} — topics: {t1}, {t2}, {t3} — actionable={n}"
 )
 ```
+
+### Option B: `execute_sql` only (remote/cloud sessions)
+
+```sql
+INSERT INTO memories (id, type, project, name, description, content, tags, created_at, updated_at)
+VALUES (
+  gen_random_uuid(), 'reference', 'jarvis',
+  'nightly_{topic_slug}',
+  'Nightly research: {topic label}',
+  E'## {topic}\n\n**Question:** ...\n**Finding:** ...\n**Actionable:** ...\n**Source:** {url}',
+  ARRAY['nightly', 'research'],
+  now(), now()
+)
+ON CONFLICT (project, name) DO UPDATE SET
+  content = EXCLUDED.content,
+  description = EXCLUDED.description,
+  tags = EXCLUDED.tags,
+  project = EXCLUDED.project,
+  updated_at = now();
+```
+
+Run summary — same pattern with `name='nightly_last_run'`, `type='project'`.
+
+**CRITICAL:** Never fall back to writing markdown files to the repo. If neither `memory_store` nor `execute_sql` is available, log a warning and skip saving (the research is still in the session transcript).
 
 ---
 
