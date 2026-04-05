@@ -65,7 +65,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
             Read config/SOUL.md — you are Jarvis.
-            Read .claude/CLAUDE.md for project rules.
+            Do NOT follow session-start procedures. memory_recall/memory_store are not available here.
 
             A PR review was submitted with change requests. Your task:
 
