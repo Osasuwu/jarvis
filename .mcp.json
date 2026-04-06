@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "memory": {
-      "command": "${MEMORY_PYTHON}",
-      "args": ["mcp-memory/server.py"],
+      "command": "bash",
+      "args": ["scripts/run-memory-server.sh"],
       "env": {
         "SUPABASE_URL": "${SUPABASE_URL}",
         "SUPABASE_KEY": "${SUPABASE_KEY}"
