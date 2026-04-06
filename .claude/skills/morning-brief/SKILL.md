@@ -16,8 +16,8 @@ Runs each morning. Checks overnight GitHub activity across all tracked repos, id
 
 This skill runs as a **cloud scheduled task** on Anthropic servers. Available tools:
 - **Supabase connector** (`execute_sql`) — for reading/writing memory
-- **GitHub MCP** (`list_pull_requests`, `list_issues`, `get_pull_request`, `get_pull_request_reviews`, `get_pull_request_status`) — for repo checks
-- **Bash** (`gh` CLI) — fallback for GitHub operations
+- **Bash** (`gh` CLI) — for GitHub operations (works with cross-owner private repos)
+- **GitHub MCP connector** — fallback if `gh` unavailable (limited: no private repos where owner is collaborator)
 
 Tools NOT available in cloud: `memory_store`, `memory_recall`, custom MCP servers.
 
@@ -46,24 +46,16 @@ execute_sql("
 
 ## Step 2 — Check overnight GitHub activity
 
-For **each repo from Step 0**, check PRs and issues.
+For **each repo from Step 0**, check PRs and issues via `gh` CLI:
 
-Use GitHub MCP tools:
-```
-list_pull_requests(owner="{owner}", repo="{repo}", state="open", sort="updated", direction="desc", per_page=10)
-list_issues(owner="{owner}", repo="{repo}", state="open", sort="updated", direction="desc", per_page=10)
-```
-
-For each open PR, check:
-```
-get_pull_request_reviews(owner="{owner}", repo="{repo}", pull_number={n})
-get_pull_request_status(owner="{owner}", repo="{repo}", pull_number={n})
-```
-
-Fallback to `gh` CLI if GitHub MCP unavailable:
 ```bash
 gh pr list --repo {owner}/{repo} --state open --json number,title,updatedAt,reviewDecision,statusCheckRollup --limit 10
 gh issue list --repo {owner}/{repo} --state open --sort updated --limit 10 --json number,title,labels,updatedAt
+```
+
+For PRs that look interesting (new reviews, status changes), get details:
+```bash
+gh pr view {n} --repo {owner}/{repo} --json reviews,statusCheckRollup,updatedAt
 ```
 
 ---

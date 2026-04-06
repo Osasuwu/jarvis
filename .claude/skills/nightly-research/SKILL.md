@@ -17,8 +17,8 @@ Runs each night. Identifies what the owner actually needs to know — based on o
 This skill runs as a **cloud scheduled task** on Anthropic servers. Available tools:
 - **Supabase connector** (`execute_sql`) — for reading/writing memory
 - **Firecrawl connector** (`firecrawl_search`) — for web research
-- **GitHub MCP** (`search_issues`, `create_issue`, `list_issues`) — for issue management
-- **Bash** (`gh` CLI) — fallback for GitHub operations
+- **Bash** (`gh` CLI) — for GitHub operations (works with cross-owner private repos)
+- **GitHub MCP connector** — fallback if `gh` unavailable (limited: no access to private repos where owner is collaborator but not owner)
 
 Tools NOT available in cloud: `memory_store`, `memory_recall`, custom MCP servers.
 
@@ -165,30 +165,28 @@ For each finding where `Actionable: yes`, create a GitHub issue.
 
 Determine the target `owner/repo` from `repos.conf` by matching the finding's project to the repo name.
 
-Use GitHub MCP tools if available:
-```
-# Check for duplicate
-list_issues(owner="{owner}", repo="{repo}", state="open")
-# Filter results for "[RESEARCH] {topic}" in title
-
-# If no duplicate:
-create_issue(
-  owner="{owner}",
-  repo="{repo}",
-  title="[RESEARCH] {topic — max 60 chars}",
-  body="## Finding\n{key insight}\n\n## Question researched\n{question}\n\n## Source\n{url}\n\n## Why actionable\n{what to do}\n\n---\n*Auto-created by nightly research — {date}*"
-)
-```
-
-Fallback to `gh` CLI if GitHub MCP unavailable:
 ```bash
+# Check for duplicate
 gh issue list --repo {owner}/{repo} \
   --search "[RESEARCH] {topic}" --state open --json number --jq length
 # Only create if result is 0
 
 gh issue create --repo {owner}/{repo} \
-  --title "[RESEARCH] {topic}" \
-  --body "..."
+  --title "[RESEARCH] {topic — max 60 chars}" \
+  --body "## Finding
+{key insight}
+
+## Question researched
+{question}
+
+## Source
+{url}
+
+## Why actionable
+{what to do}
+
+---
+*Auto-created by nightly research — {date}*"
 ```
 
 Rules:
