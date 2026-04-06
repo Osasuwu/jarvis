@@ -2,11 +2,7 @@
   "mcpServers": {
     "memory": {
       "command": "python",
-      "args": ["scripts/run-memory-server.py"],
-      "env": {
-        "SUPABASE_URL": "${SUPABASE_URL}",
-        "SUPABASE_KEY": "${SUPABASE_KEY}"
-      }
+      "args": ["scripts/run-memory-server.py"]
     },
     "github": {
       "type": "http",
