@@ -1,10 +1,10 @@
-# Setup — personal-AI-agent
+# Setup — Jarvis
 
 ## Quick start (new device)
 
 ```bash
-git clone https://github.com/Osasuwu/personal-AI-agent
-cd personal-AI-agent
+git clone https://github.com/Osasuwu/jarvis
+cd jarvis
 python scripts/setup-device.py
 ```
 
@@ -33,7 +33,7 @@ The script is idempotent — safe to re-run anytime.
 ## Architecture
 
 ```
-personal-AI-agent/           <- self-contained, this is Jarvis
+jarvis/           <- self-contained, this is Jarvis
 ├── CLAUDE.md                <- all rules (identity, autonomy, memory, delegation)
 ├── config/
 │   ├── SOUL.md              <- personality

@@ -18,7 +18,7 @@
 ## 1. Clone and create virtual environment
 
 ```bash
-git clone https://github.com/Osasuwu/personal-AI-agent.git
+git clone https://github.com/Osasuwu/jarvis.git
 cd personal-AI-agent
 
 ```powershell

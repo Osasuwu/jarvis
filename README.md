@@ -70,7 +70,7 @@ Jarvis adds exactly these missing pieces as a thin layer on top of Claude Code.
 ## Quick Start
 
 ```bash
-git clone https://github.com/Osasuwu/personal-AI-agent.git
+git clone https://github.com/Osasuwu/jarvis.git
 cd personal-AI-agent
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
@@ -165,7 +165,7 @@ No other setup needed. All context lives in Supabase, all instructions live in t
 
 This project is open source and welcomes contributions. See [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for the vision and current priorities.
 
-Before contributing, check existing GitHub Discussions for similar ideas. Issues are tracked in [GitHub Issues](https://github.com/Osasuwu/personal-AI-agent/issues).
+Before contributing, check existing GitHub Discussions for similar ideas. Issues are tracked in [GitHub Issues](https://github.com/Osasuwu/jarvis/issues).
 
 ## License
 

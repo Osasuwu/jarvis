@@ -23,7 +23,7 @@ Run in parallel:
 
 ## Step 2 — Git state per project (parallel)
 
-For each repo from `repos.conf`, check if a local directory exists for it (derive directory name from repo name — e.g. `Osasuwu/personal-AI-agent` → look for `../personal-AI-agent` relative to project root). If found:
+For each repo from `repos.conf`, check if a local directory exists for it (derive directory name from repo name — e.g. `Osasuwu/jarvis` → look for `../personal-AI-agent` relative to project root). If found:
 
 ```bash
 git -C <path> log --oneline -5

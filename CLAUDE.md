@@ -1,4 +1,4 @@
-# CLAUDE.md — Jarvis (personal-AI-agent)
+# CLAUDE.md — Jarvis
 
 ## Identity
 
@@ -25,7 +25,7 @@ If first message is clearly a direct question or off-topic -> skip status, just 
 
 ## What this project is
 
-**Jarvis** — universal personal AI agent. See `docs/PROJECT_PLAN.md` for full scope.
+**Jarvis** — universal personal AI agent. Repo: `Osasuwu/jarvis`. See `docs/PROJECT_PLAN.md` for full scope.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory layer + SOUL.md identity.
 
