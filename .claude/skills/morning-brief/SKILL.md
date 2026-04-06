@@ -1,12 +1,12 @@
 ---
 name: morning-brief
 description: "Morning brief: check GitHub activity overnight, propose action plan for the day"
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Morning Brief
 
-Runs each morning. Checks overnight GitHub activity across all repos, identifies action items, and outputs a prioritized daily plan.
+Runs each morning. Checks overnight GitHub activity across all tracked repos, identifies action items, and outputs a prioritized daily plan.
 
 **Owner scans this in 30 seconds — be concise.**
 
@@ -23,14 +23,21 @@ Tools NOT available in cloud: `memory_store`, `memory_recall`, custom MCP server
 
 ---
 
+## Step 0 — Discover repos
+
+Read `config/repos.conf` to get the list of tracked repos (one `owner/repo` per line, `#` = comment).
+This is the **single source of truth** — no repo names are hardcoded anywhere in this skill.
+
+---
+
 ## Step 1 — Load context
 
 ```sql
 execute_sql("
-  SELECT name, content, updated_at FROM memories
-  WHERE (type = 'project' AND name LIKE 'working_state_%')
-     OR (name = 'morning_brief_latest')
-     OR (name = 'nightly_last_run')
+  SELECT name, project, content, updated_at FROM memories
+  WHERE name LIKE 'working_state_%'
+     OR name = 'morning_brief_latest'
+     OR name = 'nightly_last_run'
   ORDER BY updated_at DESC LIMIT 10
 ")
 ```
@@ -39,7 +46,7 @@ execute_sql("
 
 ## Step 2 — Check overnight GitHub activity
 
-For each repo (Osasuwu/personal-AI-agent, SergazyNarynov/redrobot, Osasuwu/like_spotify_mobile_app):
+For **each repo from Step 0**, check PRs and issues.
 
 Use GitHub MCP tools:
 ```

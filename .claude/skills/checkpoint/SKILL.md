@@ -12,10 +12,11 @@ Saves current working state to Supabase so it can be restored after context comp
 
 ### 1. Determine active project scope
 
-Pick ONE primary project for this checkpoint:
-- `"redrobot"` — if working on robot code, trajectories, tests, CI
-- `"jarvis"` — if working on personal-AI-agent, skills, hooks, memory
-- `"orchestrator"` — if doing cross-project coordination
+Pick ONE primary project for this checkpoint based on conversation context:
+- What repo/directory is the current work in?
+- What topic is being discussed?
+
+Use the repo name or a short slug as the project value (e.g. `"redrobot"`, `"jarvis"`, `"spotify"`). Don't hardcode — derive from context.
 
 ### 2. Collect state
 

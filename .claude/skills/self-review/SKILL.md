@@ -6,8 +6,8 @@ version: 1.0.0
 
 # Self-Review
 
-Comprehensive health and code quality review of Jarvis (personal-AI-agent).
-All commands run inside `personal-AI-agent/` — prefix bash with `cd /c/Users/petrk/GitHub/personal-AI-agent &&`.
+Comprehensive health and code quality review of the personal-AI-agent project.
+All commands run from the project root (determined at runtime via `git rev-parse --show-toplevel` or CWD).
 
 ## Checks
 
@@ -15,7 +15,7 @@ All commands run inside `personal-AI-agent/` — prefix bash with `cd /c/Users/p
 
 1. **Runtime checks**:
    ```bash
-   cd /c/Users/petrk/GitHub/personal-AI-agent && python -m compileall src mcp-memory
+   python -m compileall src mcp-memory
    ```
 
 2. **Dependencies**:
@@ -27,12 +27,12 @@ All commands run inside `personal-AI-agent/` — prefix bash with `cd /c/Users/p
 
 4. **Git cleanliness**:
    ```bash
-   git -C /c/Users/petrk/GitHub/personal-AI-agent status && git -C /c/Users/petrk/GitHub/personal-AI-agent diff --stat
+   git status && git diff --stat
    ```
 
 5. **Tests**:
    ```bash
-   cd /c/Users/petrk/GitHub/personal-AI-agent && python -m pytest tests/ -v --tb=short 2>&1 | tail -30
+   python -m pytest tests/ -v --tb=short 2>&1 | tail -30
    ```
 
 ### LLM-powered analysis
@@ -46,7 +46,7 @@ All commands run inside `personal-AI-agent/` — prefix bash with `cd /c/Users/p
 
 7. **Memory review** — `memory_recall(query="self-review findings")` for recurring patterns.
 
-8. **Skills audit** — read all files in `~/Github/.claude/commands/` and `~/Github/.claude/skills/`. For each check:
+8. **Skills audit** — read all files in `.claude/skills/`. For each check:
    - Соответствует текущей архитектуре?
    - Есть дублирование?
    - Пути и команды актуальны?
@@ -71,5 +71,5 @@ N critical · N major · N minor findings
 1. Most important fix
 ```
 
-Save report to `personal-AI-agent/reports/self-review-<timestamp>.md`.
+Save report to `reports/self-review-<timestamp>.md`.
 Store via `memory_store(type="project", name="self_review_<date>", ...)`.

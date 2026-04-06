@@ -12,7 +12,7 @@ Autonomously implement one or more GitHub issues.
 
 Invoke when user says "реализуй #42", "delegate issue 55", "implement #X", etc.
 Supports multiple issues: "реализуй #42 #43" batches related work.
-Default repo: redrobot (SergazyNarynov/redrobot).
+Target repo: determined from context (CWD, recent conversation, user mention). If ambiguous, ask. Read `config/repos.conf` for the full list of tracked repos.
 
 ## Pipeline
 

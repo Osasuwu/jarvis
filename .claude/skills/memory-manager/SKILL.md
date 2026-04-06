@@ -31,11 +31,13 @@ Jarvis uses four conceptual tiers mapped onto Supabase memory types:
 
 ## Step 1 — Load all memories
 
+First discover all projects:
 ```
-memory_list(project="jarvis")
-memory_list(project=null)  // global
-memory_list(project="redrobot")
+memory_recall(query="*", type="project", limit=50)
 ```
+Or via SQL: `SELECT DISTINCT project FROM memories WHERE project IS NOT NULL ORDER BY project`
+
+Then load memories across all discovered projects.
 
 ## Step 2 — Classify and report
 
@@ -47,7 +49,7 @@ For `/memory` (health overview):
 ## Stats
 - Total: N memories
 - By type: user(N) | project(N) | decision(N) | feedback(N) | reference(N)
-- By project: jarvis(N) | redrobot(N) | global(N)
+- By project: <dynamically list all projects with counts>
 
 ## Working Memory (active checkpoints)
 - <name> — <description> (age: N days) [OK / STALE]
@@ -107,8 +109,8 @@ memory_recall(type="user", limit=3)
 # Get behavioral rules (procedural tier)
 memory_recall(type="feedback", limit=5)
 
-# Get recent decisions (semantic tier)
-memory_recall(type="decision", project="jarvis", limit=5)
+# Get recent decisions — scope to active project if known
+memory_recall(type="decision", project="<current_project>", limit=5)
 
 # Get research pointers (reference tier)
 memory_recall(type="reference", limit=5)

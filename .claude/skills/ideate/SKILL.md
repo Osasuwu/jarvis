@@ -16,11 +16,11 @@ Two modes depending on how you call it:
 
 ### Step 1 — Load context
 
-Call in parallel:
-- `memory_recall(type="decision", project="jarvis", limit=5)` — what's already decided / built
-- `memory_recall(query="backlog improvements", project="jarvis", limit=3)` — what's already in the queue
+Determine active project from conversation context (CWD, recent topic, user mention). Then:
+- `memory_recall(type="decision", project="<active_project>", limit=5)` — what's already decided / built
+- `memory_recall(query="backlog improvements", project="<active_project>", limit=3)` — what's already in the queue
 
-Read `docs/PROJECT_PLAN.md` for current scope and priorities.
+Read project docs (e.g. `docs/PROJECT_PLAN.md`) for current scope and priorities.
 
 ### Step 2 — Identify gaps
 
@@ -111,7 +111,7 @@ Don't just reject — always propose at least 2 alternatives if verdict is negat
 
 If verdict is positive, offer to create a GitHub issue:
 ```
-memory_store → type=decision, name=idea_<slug>, project=jarvis
+memory_store → type=decision, name=idea_<slug>, project=<active_project>
 gh issue create with scored description
 ```
 

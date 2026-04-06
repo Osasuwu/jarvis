@@ -1,12 +1,12 @@
 ---
 name: nightly-research
 description: "Nightly research: identifies gaps from current project context, selects 3 topics editorially, researches them, saves to Supabase. Runs automatically at 03:00."
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Nightly Research
 
-Runs each night. Identifies what Jarvis/redrobot actually needs to know — based on open problems, recent decisions, and unresolved questions — then researches those topics.
+Runs each night. Identifies what the owner actually needs to know — based on open problems, recent decisions, and unresolved questions across ALL active projects — then researches those topics.
 
 **Not a fixed topic scanner. The agent decides what matters tonight.**
 
@@ -24,15 +24,24 @@ Tools NOT available in cloud: `memory_store`, `memory_recall`, custom MCP server
 
 ---
 
+## Step 0 — Discover projects
+
+Read `config/repos.conf` to get the list of tracked repos (one `owner/repo` per line, `#` = comment).
+This is the **single source of truth** for which repos to monitor — no project names are hardcoded anywhere in this skill.
+
+---
+
 ## Step 1 — Load context
+
+Load recent decisions, working states, and past research across **all** projects:
 
 ```sql
 execute_sql("
   SELECT name, project, content, tags, updated_at FROM memories
-  WHERE (type = 'decision' AND project IN ('jarvis', 'redrobot'))
-     OR (name LIKE 'working_state_%')
-     OR (tags @> ARRAY['nightly'])
-  ORDER BY updated_at DESC LIMIT 15
+  WHERE type = 'decision'
+     OR name LIKE 'working_state_%'
+     OR tags @> ARRAY['nightly']
+  ORDER BY updated_at DESC LIMIT 20
 ")
 ```
 
@@ -114,7 +123,7 @@ execute_sql("
 ```
 
 Where:
-- `{project}` = `'jarvis'` or `'redrobot'` depending on topic
+- `{project}` = the project this finding belongs to (use the `project` value from memory context, or derive from the repo name in `repos.conf`)
 - `{topic_slug}` = short snake_case id, e.g. `planner_convergence`
 - `{escaped_content}` = content with single quotes doubled (`'` → `''`)
 
@@ -133,7 +142,7 @@ Run summary:
 execute_sql("
   INSERT INTO memories (id, type, project, name, description, content, tags, created_at, updated_at)
   VALUES (
-    gen_random_uuid(), 'project', 'jarvis',
+    gen_random_uuid(), 'project', 'global',
     'nightly_last_run',
     'Last nightly research run',
     '{date} — topics: {t1}, {t2}, {t3} — actionable={n}',
@@ -154,16 +163,18 @@ execute_sql("
 
 For each finding where `Actionable: yes`, create a GitHub issue.
 
+Determine the target `owner/repo` from `repos.conf` by matching the finding's project to the repo name.
+
 Use GitHub MCP tools if available:
 ```
 # Check for duplicate
-list_issues(owner="Osasuwu", repo="personal-AI-agent", state="open")
+list_issues(owner="{owner}", repo="{repo}", state="open")
 # Filter results for "[RESEARCH] {topic}" in title
 
 # If no duplicate:
 create_issue(
-  owner="Osasuwu",
-  repo="{personal-AI-agent or redrobot}",
+  owner="{owner}",
+  repo="{repo}",
   title="[RESEARCH] {topic — max 60 chars}",
   body="## Finding\n{key insight}\n\n## Question researched\n{question}\n\n## Source\n{url}\n\n## Why actionable\n{what to do}\n\n---\n*Auto-created by nightly research — {date}*"
 )
@@ -171,19 +182,19 @@ create_issue(
 
 Fallback to `gh` CLI if GitHub MCP unavailable:
 ```bash
-gh issue list --repo Osasuwu/personal-AI-agent \
+gh issue list --repo {owner}/{repo} \
   --search "[RESEARCH] {topic}" --state open --json number --jq length
 # Only create if result is 0
 
-gh issue create \
-  --repo Osasuwu/personal-AI-agent \
+gh issue create --repo {owner}/{repo} \
   --title "[RESEARCH] {topic}" \
   --body "..."
 ```
 
 Rules:
 - Only for `Actionable: yes` findings
-- For redrobot findings: use repo `Osasuwu/redrobot`
+- Target repo is derived from `repos.conf` matching — never hardcoded
+- If finding doesn't map to any specific repo, default to the first repo in `repos.conf`
 - Skip silently if duplicate exists or creation fails
 
 ---

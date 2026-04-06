@@ -16,14 +16,14 @@ Single-command overview of all projects. Designed for session-start context load
 ## Step 1 — Load repos and memory (parallel)
 
 Run in parallel:
-- Read `personal-AI-agent/config/repos.conf` for repo list
+- Read `config/repos.conf` for repo list (one `owner/repo` per line)
 - `memory_recall(query="working_state", type="project", limit=3)` — open checkpoints
 - `memory_recall(query="intel digest", limit=1)` — last intel run
 - `memory_recall(query="nightly research", limit=1)` — last nightly findings
 
 ## Step 2 — Git state per project (parallel)
 
-For each local project directory that exists:
+For each repo from `repos.conf`, check if a local directory exists for it (derive directory name from repo name — e.g. `Osasuwu/personal-AI-agent` → look for `../personal-AI-agent` relative to project root). If found:
 
 ```bash
 git -C <path> log --oneline -5
@@ -31,9 +31,7 @@ git -C <path> status --short
 git -C <path> branch --show-current
 ```
 
-Known project paths:
-- `personal-AI-agent` → `/c/Users/petrk/GitHub/personal-AI-agent`
-- `redrobot` → `/c/Users/petrk/GitHub/redrobot`
+Skip repos without local directories — they're still checked via GitHub in Step 3.
 
 ## Step 3 — GitHub state per repo (parallel)
 
