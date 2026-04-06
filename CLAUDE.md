@@ -124,9 +124,16 @@ Subagents deliver **end-to-end**, not just their slice:
 ## Memory
 
 ### Architecture
-- **Supabase MCP** (`memory_store` / `memory_recall`) — cross-device, persistent. Source of truth.
+- **Supabase** — cross-device, persistent. Source of truth.
 - **File-based** (`~/.claude/projects/.../memory/`) — device-local only, does NOT sync.
 - **Rule**: all important decisions -> Supabase. It's the only cross-device memory.
+
+### How to access Supabase memory
+Depends on environment:
+- **Local sessions** (Desktop/CLI): `memory_store` / `memory_recall` via custom MCP server in `.mcp.json`
+- **Cloud tasks** (scheduled via `/schedule`): `execute_sql` via Supabase connector — `.mcp.json` is NOT loaded in cloud
+
+Skills that run in both environments must use `execute_sql` as the primary method.
 
 ### Proactive saving (non-negotiable)
 Save immediately after any: decision, preference, architectural discussion, new fact, rejected approach (with why), working style observation. Don't batch. Don't wait for session end.
@@ -147,8 +154,13 @@ Owner often gives a task and leaves. Jarvis must work autonomously and deliver q
 
 ### How to run
 - **Remote Control**: `claude --remote-control` -> monitor from phone via claude.ai/code or mobile app
-- **Cloud tasks**: `/schedule` -> runs on Anthropic servers, no local machine needed, but only GitHub repos accessible
+- **Cloud tasks**: `/schedule` -> runs on Anthropic servers, no local machine needed
 - **Headless**: `claude -p "task" --allowedTools "Read,Edit,Bash,Grep,Glob,Write"` -> non-interactive
+
+### Cloud task limitations
+Cloud tasks do NOT load `.mcp.json` — they only have access to **connectors** configured on claude.ai/settings.
+Required connectors: **Supabase** (for memory), **Firecrawl** (for research).
+Skills for cloud tasks must use `execute_sql` instead of `memory_store`/`memory_recall`.
 
 ### Autonomous work rules
 When working without the owner, apply strict standards:
