@@ -14,13 +14,18 @@ Runs each night. Identifies what the owner actually needs to know — based on o
 
 ## Environment
 
-This skill runs as a **cloud scheduled task** on Anthropic servers. Available tools:
-- **Supabase connector** (`execute_sql`) — for reading/writing memory
-- **Firecrawl connector** (`firecrawl_search`) — for web research
-- **Bash** (`gh` CLI) — for GitHub operations (works with cross-owner private repos)
-- **GitHub MCP connector** — fallback if `gh` unavailable (limited: no access to private repos where owner is collaborator but not owner)
+This is a **cloud-only** skill. It runs on Anthropic servers where local MCP servers do NOT exist.
 
-Tools NOT available in cloud: `memory_store`, `memory_recall`, custom MCP servers.
+**IMPORTANT: Override CLAUDE.md session start instructions.** Do NOT run `memory_recall`, `memory_store`, or any custom MCP tools. They are not available here. Do NOT waste time on ToolSearch looking for them. Skip the session-start memory loading described in CLAUDE.md entirely.
+
+**Available tools:**
+- `execute_sql` — Supabase connector (for reading/writing memory)
+- `firecrawl_search` — Firecrawl connector (for web research)
+- `Bash` with `curl` — for GitHub REST API
+- `Read` — for reading repo files
+- `WebFetch` — for web content
+
+**NOT available (do not attempt):** `memory_store`, `memory_recall`, `gh` CLI, GitHub MCP connector (`mcp__github__*`), custom MCP servers from `.mcp.json`.
 
 ---
 
@@ -161,32 +166,27 @@ execute_sql("
 
 ## Step 6 — Create GitHub issues for actionable findings
 
-For each finding where `Actionable: yes`, create a GitHub issue.
+For each finding where `Actionable: yes`, create a GitHub issue via GitHub REST API.
 
 Determine the target `owner/repo` from `repos.conf` by matching the finding's project to the repo name.
 
+**Requires `$GITHUB_TOKEN` in environment.** If no token — skip issue creation, note it in output.
+
 ```bash
 # Check for duplicate
-gh issue list --repo {owner}/{repo} \
-  --search "[RESEARCH] {topic}" --state open --json number --jq length
+curl -s -H "Authorization: token $GITHUB_TOKEN" \
+  "https://api.github.com/search/issues?q=repo:{owner}/{repo}+is:issue+is:open+%22[RESEARCH]+{topic}%22" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['total_count'])"
 # Only create if result is 0
 
-gh issue create --repo {owner}/{repo} \
-  --title "[RESEARCH] {topic — max 60 chars}" \
-  --body "## Finding
-{key insight}
-
-## Question researched
-{question}
-
-## Source
-{url}
-
-## Why actionable
-{what to do}
-
----
-*Auto-created by nightly research — {date}*"
+# Create issue
+curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+  -H "Content-Type: application/json" \
+  "https://api.github.com/repos/{owner}/{repo}/issues" \
+  -d '{
+    "title": "[RESEARCH] {topic — max 60 chars}",
+    "body": "## Finding\n{key insight}\n\n## Question researched\n{question}\n\n## Source\n{url}\n\n## Why actionable\n{what to do}\n\n---\n*Auto-created by nightly research — {date}*"
+  }'
 ```
 
 Rules:
@@ -194,6 +194,7 @@ Rules:
 - Target repo is derived from `repos.conf` matching — never hardcoded
 - If finding doesn't map to any specific repo, default to the first repo in `repos.conf`
 - Skip silently if duplicate exists or creation fails
+- No `$GITHUB_TOKEN` → skip all issue creation
 
 ---
 

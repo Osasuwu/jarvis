@@ -1,7 +1,7 @@
 ---
 name: morning-brief
 description: "Morning brief: check GitHub activity overnight, propose action plan for the day"
-version: 2.1.0
+version: 3.0.0
 ---
 
 # Morning Brief
@@ -14,12 +14,17 @@ Runs each morning. Checks overnight GitHub activity across all tracked repos, id
 
 ## Environment
 
-This skill runs as a **cloud scheduled task** on Anthropic servers. Available tools:
-- **Supabase connector** (`execute_sql`) — for reading/writing memory
-- **Bash** (`gh` CLI) — for GitHub operations (works with cross-owner private repos)
-- **GitHub MCP connector** — fallback if `gh` unavailable (limited: no private repos where owner is collaborator)
+This is a **cloud-only** skill. It runs on Anthropic servers where local MCP servers do NOT exist.
 
-Tools NOT available in cloud: `memory_store`, `memory_recall`, custom MCP servers.
+**IMPORTANT: Override CLAUDE.md session start instructions.** Do NOT run `memory_recall`, `memory_store`, or any custom MCP tools. They are not available here. Do NOT waste time on ToolSearch looking for them. Skip the session-start memory loading described in CLAUDE.md entirely.
+
+**Available tools:**
+- `execute_sql` — Supabase connector (for reading/writing memory)
+- `Bash` with `curl` — for GitHub REST API
+- `Read` — for reading repo files
+- `WebFetch` — for web content
+
+**NOT available (do not attempt):** `memory_store`, `memory_recall`, `gh` CLI, GitHub MCP connector (`mcp__github__*`), custom MCP servers from `.mcp.json`.
 
 ---
 
@@ -46,17 +51,26 @@ execute_sql("
 
 ## Step 2 — Check overnight GitHub activity
 
-For **each repo from Step 0**, check PRs and issues via `gh` CLI:
+For **each repo from Step 0**, fetch open PRs and issues via GitHub REST API using `curl`:
 
 ```bash
-gh pr list --repo {owner}/{repo} --state open --json number,title,updatedAt,reviewDecision,statusCheckRollup --limit 10
-gh issue list --repo {owner}/{repo} --state open --sort updated --limit 10 --json number,title,labels,updatedAt
+# Open PRs (sorted by last update)
+curl -s "https://api.github.com/repos/{owner}/{repo}/pulls?state=open&sort=updated&direction=desc&per_page=10"
+
+# Open issues (sorted by last update)
+curl -s "https://api.github.com/repos/{owner}/{repo}/issues?state=open&sort=updated&direction=desc&per_page=10"
 ```
 
-For PRs that look interesting (new reviews, status changes), get details:
+For PRs with recent activity, get review status:
 ```bash
-gh pr view {n} --repo {owner}/{repo} --json reviews,statusCheckRollup,updatedAt
+curl -s "https://api.github.com/repos/{owner}/{repo}/pulls/{number}/reviews"
 ```
+
+**Authentication:** If `$GITHUB_TOKEN` is set in the environment, add `-H "Authorization: token $GITHUB_TOKEN"` to all curl commands. This enables access to private repos and higher rate limits.
+
+**Private repos without token:** Skip with a note "приватный репо, нет токена — пропускаю".
+
+**Rate limits:** Unauthenticated API allows 60 requests/hour. With 3 repos and ~3 calls each, this is sufficient.
 
 ---
 
@@ -107,7 +121,7 @@ Example format:
 ## Утренний брифинг — {date}
 
 ### Требует внимания
-- PR #109 personal-AI-agent — approved, CI green → можно мерджить
+- PR #109 jarvis — approved, CI green → можно мерджить
 - PR #42 redrobot — review requested 2 дня назад
 
 ### В работе
