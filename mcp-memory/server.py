@@ -25,6 +25,7 @@ Usage in .mcp.json:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from datetime import datetime, timezone
@@ -45,7 +46,7 @@ for _env_path in _env_candidates:
 import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import CallToolResult, TextContent, Tool
 
 # ---------------------------------------------------------------------------
 # Supabase client (lazy init)
@@ -298,17 +299,28 @@ async def list_tools() -> list[Tool]:
 
 # -- Tool handlers ----------------------------------------------------------
 
+MAX_RESULT_CHARS = 100_000  # Claude Code default truncates at ~20k; memories can be large
+
+
+def _big_result(content: list[TextContent]) -> CallToolResult:
+    """Wrap content in CallToolResult with maxResultSizeChars to prevent truncation."""
+    return CallToolResult(
+        content=content,
+        meta={"anthropic/maxResultSizeChars": MAX_RESULT_CHARS},
+    )
+
+
 @server.call_tool()
-async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolResult:
     try:
         if name == "memory_store":
             return await _handle_store(arguments)
         elif name == "memory_recall":
-            return await _handle_recall(arguments)
+            return _big_result(await _handle_recall(arguments))
         elif name == "memory_get":
-            return await _handle_get(arguments)
+            return _big_result(await _handle_get(arguments))
         elif name == "memory_list":
-            return await _handle_list(arguments)
+            return _big_result(await _handle_list(arguments))
         elif name == "memory_delete":
             return await _handle_delete(arguments)
         else:
@@ -367,6 +379,9 @@ async def _handle_store(args: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"Memory '{mem_name}' created (project=global){embed_note}")]
 
 
+SIMILARITY_THRESHOLD = 0.25  # minimum cosine similarity to include in results
+
+
 async def _handle_recall(args: dict) -> list[TextContent]:
     client = _get_client()
 
@@ -377,81 +392,101 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     mem_type = args.get("type")
     limit = args.get("limit", 10)
 
-    # Try semantic search first (truly async httpx — 5s timeout, no thread blocking)
+    # Hybrid search: combine semantic + keyword results via RRF
     if query_text:
         query_embedding = await _embed_query(query_text)
         if query_embedding is not None:
-            return await _semantic_recall(client, query_embedding, query_text, project, mem_type, limit)
+            rows, results = await _hybrid_recall(client, query_embedding, query_text, project, mem_type, limit)
+            # Track reads (fire-and-forget)
+            ids = [r["id"] for r in rows if r.get("id")]
+            if ids:
+                asyncio.create_task(_touch_memories(client, ids))
+            return results
 
-    # Fallback: ILIKE keyword search
+    # Fallback: keyword-only search
     results = await _keyword_recall(client, query_text, project, mem_type, limit)
 
     # Lazily backfill embeddings for records missing them (fire-and-forget)
-    # Only schedule when Voyage is configured — avoids a pointless DB query otherwise
     if os.environ.get("VOYAGE_API_KEY"):
         asyncio.create_task(_backfill_missing_embeddings(client, project))
 
     return results
 
 
-def _cosine_similarity(a: list[float], b: list[float]) -> float:
-    """Cosine similarity between two equal-length vectors."""
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(xa * xb for xa, xb in zip(a, b))
-    norm_a = sum(x * x for x in a) ** 0.5
-    norm_b = sum(x * x for x in b) ** 0.5
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-async def _semantic_recall(
+async def _hybrid_recall(
     client, query_embedding: list[float], query_text: str,
     project, mem_type, limit: int
 ) -> list[TextContent]:
-    """In-process vector similarity search over stored embeddings.
+    """Hybrid search: server-side pgvector semantic + pg_trgm keyword, merged via RRF.
 
-    Fetches all rows that have embeddings, computes cosine similarity locally,
-    and returns the top `limit` matches. No pgvector / Supabase RPC required.
-    Falls back to keyword search if no embeddings are stored yet.
+    Uses Supabase RPC functions (match_memories, keyword_search_memories) to
+    push all computation to the database. No embeddings fetched to client.
     """
     try:
-        q = client.table("memories").select(
-            "name, type, project, description, content, tags, updated_at, embedding"
-        )
-        if project is not None:
-            q = q.or_(f"project.eq.{project},project.is.null")
-        if mem_type:
-            q = q.eq("type", mem_type)
+        # Fetch double the limit from each source to give RRF good candidates
+        fetch_limit = limit * 2
 
-        rows = q.execute().data or []
-        candidates = [r for r in rows if isinstance(r.get("embedding"), list) and r["embedding"]]
+        # Server-side semantic search via pgvector HNSW
+        sem_result = client.rpc("match_memories", {
+            "query_embedding": query_embedding,
+            "match_limit": fetch_limit,
+            "similarity_threshold": SIMILARITY_THRESHOLD,
+            "filter_project": project,
+            "filter_type": mem_type,
+        }).execute()
+        semantic_rows = sem_result.data or []
 
-        if not candidates:
-            return await _keyword_recall(client, query_text, project, mem_type, limit)
+        # Server-side keyword search via pg_trgm
+        kw_result = client.rpc("keyword_search_memories", {
+            "search_query": query_text,
+            "match_limit": fetch_limit,
+            "filter_project": project,
+            "filter_type": mem_type,
+        }).execute()
+        keyword_rows = kw_result.data or []
 
-        for row in candidates:
-            row["_sim"] = _cosine_similarity(query_embedding, row["embedding"])
+        # Reciprocal Rank Fusion (k=60)
+        merged = _rrf_merge(semantic_rows, keyword_rows, limit)
 
-        candidates.sort(key=lambda r: r["_sim"], reverse=True)
-        top = candidates[:limit]
+        if not merged:
+            return [], await _keyword_recall(client, query_text, project, mem_type, limit)
 
-        for row in top:
-            row.pop("_sim", None)
-            row.pop("embedding", None)  # don't send 512 floats to the LLM
-
-        formatted = _format_memories(top)
-        return [TextContent(type="text", text=f"Found {len(top)} memories (semantic search):\n\n" + "\n---\n".join(formatted))]
+        formatted = _format_memories(merged)
+        search_type = "hybrid" if keyword_rows else "semantic"
+        return merged, [TextContent(type="text", text=f"Found {len(merged)} memories ({search_type} search):\n\n" + "\n---\n".join(formatted))]
 
     except asyncio.CancelledError:
         raise
     except Exception:
-        return await _keyword_recall(client, query_text, project, mem_type, limit)
+        # RPC not available (e.g. migration not applied) — fall back to keyword
+        return [], await _keyword_recall(client, query_text, project, mem_type, limit)
+
+
+def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, k: int = 60) -> list[dict]:
+    """Reciprocal Rank Fusion: combine two ranked lists into one.
+
+    Score = sum(1 / (k + rank)) for each list the item appears in.
+    Higher k gives more weight to items appearing in both lists.
+    """
+    scores: dict[str, float] = {}
+    by_id: dict[str, dict] = {}
+
+    for rank, row in enumerate(semantic_rows):
+        rid = row.get("id") or row["name"]
+        scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
+        by_id[rid] = row
+
+    for rank, row in enumerate(keyword_rows):
+        rid = row.get("id") or row["name"]
+        scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
+        by_id[rid] = row
+
+    ranked = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
+    return [by_id[rid] for rid in ranked[:limit]]
 
 
 async def _keyword_recall(client, query_text: str, project, mem_type, limit: int) -> list[TextContent]:
-    """ILIKE keyword search (fallback)."""
+    """ILIKE keyword search (fallback when semantic unavailable)."""
     q = client.table("memories").select("name, type, project, description, content, tags, updated_at")
 
     if project is not None:
@@ -474,6 +509,14 @@ async def _keyword_recall(client, query_text: str, project, mem_type, limit: int
 
     formatted = _format_memories(result.data)
     return [TextContent(type="text", text=f"Found {len(result.data)} memories (keyword search):\n\n" + "\n---\n".join(formatted))]
+
+
+async def _touch_memories(client, ids: list[str]) -> None:
+    """Fire-and-forget: update last_accessed_at for accessed memories via RPC."""
+    try:
+        client.rpc("touch_memories", {"memory_ids": ids}).execute()
+    except Exception:
+        pass
 
 
 def _format_memories(memories: list[dict]) -> list[str]:
