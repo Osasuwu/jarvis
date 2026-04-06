@@ -1,49 +1,58 @@
 # Setup — personal-AI-agent
 
-Steps to configure on a new device.
-
-## 1. Clone repos
+## Quick start (new device)
 
 ```bash
 git clone https://github.com/Osasuwu/personal-AI-agent ~/GitHub/personal-AI-agent
+cd ~/GitHub/personal-AI-agent
+bash scripts/setup-device.sh
+```
+
+The script is idempotent — safe to re-run anytime.
+
+## What the script does
+
+1. **Python venv** — creates `.venv/`, installs `mcp-memory/requirements.txt`
+2. **`.env`** — copies from `.env.example`, adds `MEMORY_PYTHON` path
+3. **Git hook** — installs `post-commit` for skills sync to parent `~/GitHub`
+4. **User settings** — creates minimal `~/.claude/settings.json` (model pref only)
+5. **Validation** — checks Python packages, env vars, config files
+
+## Manual steps after script
+
+1. **Fill secrets** in `.env`:
+   - `SUPABASE_URL` / `SUPABASE_KEY` — required (get from Supabase dashboard)
+   - `GITHUB_TOKEN` — for MCP GitHub server
+   - `FIRECRAWL_API_KEY` — for web research
+   - `VOYAGE_API_KEY` — optional, for semantic memory search
+
+2. **Verify**: `cd ~/GitHub/personal-AI-agent && claude` — check skills load, `/status` works
+
+## Architecture
+
+```
+personal-AI-agent/           ← self-contained, this is Jarvis
+├── CLAUDE.md                ← all rules (identity, autonomy, memory, delegation)
+├── config/SOUL.md           ← personality
+├── .mcp.json                ← project-scope MCP servers (env vars, no hardcoded paths)
+├── .env                     ← secrets (gitignored)
+├── .claude/
+│   ├── skills/              ← all skills (checkpoint, delegate, research, etc.)
+│   ├── settings.json        ← project hooks (git-tracked)
+│   └── settings.local.json  ← device overrides (gitignored)
+├── mcp-memory/              ← Supabase memory MCP server (Python)
+├── scripts/
+│   ├── setup-device.sh      ← this setup script
+│   └── post-commit          ← git hook for skills sync
+└── .github/workflows/       ← CI/CD
+```
+
+## Parent repo (optional, local workspace only)
+
+If you also use the parent `~/GitHub` workspace for cross-project work:
+
+```bash
 git clone https://github.com/Osasuwu/GitHub ~/GitHub
 ```
 
-## 2. Python environment (MCP memory server only)
-
-```bash
-cd ~/GitHub/personal-AI-agent
-python -m venv .venv
-.venv/Scripts/activate  # Windows
-pip install -r mcp-memory/requirements.txt
-```
-
-## 3. Install git hook (skills sync)
-
-Syncs `.claude/skills/` to `~/GitHub` automatically on commit.
-
-```bash
-cp ~/GitHub/personal-AI-agent/scripts/post-commit \
-   ~/GitHub/personal-AI-agent/.git/hooks/post-commit
-chmod +x ~/GitHub/personal-AI-agent/.git/hooks/post-commit
-```
-
-After this: any commit in personal-AI-agent that touches `.claude/skills/` will automatically commit the updated skills to `~/GitHub` as well.
-
-## 4. MCP config
-
-`.mcp.json` files are committed — no manual setup needed. Supabase credentials are read from environment variables. Add to your shell profile:
-
-```bash
-export SUPABASE_URL="..."
-export SUPABASE_KEY="..."
-export VOYAGE_API_KEY="..."
-```
-
-### Filesystem MCP
-
-`@modelcontextprotocol/server-filesystem` is configured in all `.mcp.json` files:
-- **Read**: `C:/`, `D:/`, `E:/` — all drives, universal across devices
-- **Write**: none (add explicitly when needed)
-
-No additional setup needed — runs via `npx` on first use. Provides Claude with device awareness (hostname, installed software, user profile) and works regardless of username or drive layout.
+The parent repo provides local cross-project awareness but is NOT required — `personal-AI-agent` is fully self-contained.
