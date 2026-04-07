@@ -7,10 +7,8 @@ version: 1.0.0
 cases:
   - id: reviews_recent_decisions
     description: "Reflect should look at decisions from recent sessions"
-    check_type: memory_recall
-    query: "decision"
-    expect:
-      accessed: true
+    check_type: manual
+    note: "Verify reflect skill invoked memory_recall for decision-type memories"
 
   - id: checks_outcomes
     description: "For decisions with outcomes, verify what actually happened"

@@ -40,5 +40,5 @@ cases:
 
   - id: respects_research_topics_config
     description: "Topics come from config/research-topics.yaml, not random"
-    check_type: config_alignment
-    config_file: "config/research-topics.yaml"
+    check_type: manual
+    note: "Verify nightly-research selects topics from config/research-topics.yaml file"

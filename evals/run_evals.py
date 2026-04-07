@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,33 +42,43 @@ def load_eval(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def check_memory_exists(sb, pattern: str, expect: dict) -> tuple[bool, str]:
+def check_memory_exists(sb, pattern: str, expect: dict, project: str | None = None) -> tuple[bool, str]:
     """Check if memories matching pattern exist."""
     # Use ILIKE for pattern matching
     like_pattern = pattern.replace("*", "%")
-    result = sb.table("memories").select("name, type").ilike("name", like_pattern).execute()
+    query = sb.table("memories").select("name, type, project").ilike("name", like_pattern)
+
+    # Filter by project if specified
+    if project is not None:
+        query = query.eq("project", project)
+
+    result = query.execute()
     rows = result.data or []
+
+    # Filter by type if specified
+    if "type" in expect:
+        rows = [r for r in rows if r.get("type") == expect["type"]]
 
     if "min_count" in expect:
         if len(rows) >= expect["min_count"]:
             return True, f"Found {len(rows)} memories (need >= {expect['min_count']})"
         return False, f"Found {len(rows)} memories (need >= {expect['min_count']})"
 
-    if "type" in expect:
-        typed = [r for r in rows if r.get("type") == expect["type"]]
-        if typed:
-            return True, f"Found {len(typed)} memories of type={expect['type']}"
-        return False, f"No memories of type={expect['type']} matching {pattern}"
-
     if rows:
         return True, f"Found {len(rows)} memories matching {pattern}"
     return False, f"No memories matching {pattern}"
 
 
-def check_memory_content(sb, pattern: str, expect: dict) -> tuple[bool, str]:
+def check_memory_content(sb, pattern: str, expect: dict, project: str | None = None) -> tuple[bool, str]:
     """Check memory content for expected strings."""
     like_pattern = pattern.replace("*", "%")
-    result = sb.table("memories").select("name, content").ilike("name", like_pattern).execute()
+    query = sb.table("memories").select("name, content, project").ilike("name", like_pattern)
+
+    # Filter by project if specified
+    if project is not None:
+        query = query.eq("project", project)
+
+    result = query.execute()
     rows = result.data or []
 
     if not rows:
@@ -87,25 +98,33 @@ def check_memory_content(sb, pattern: str, expect: dict) -> tuple[bool, str]:
 
     if "min_length" in expect:
         for row in rows:
-            if len(row.get("content") or "") >= expect["min_length"]:
-                return True, f"Memory {row['name']} has {len(row['content'])} chars"
+            content = row.get("content") or ""
+            if len(content) >= expect["min_length"]:
+                return True, f"Memory {row['name']} has {len(content)} chars"
         return False, f"No memory with >= {expect['min_length']} chars"
 
     return True, "Content check passed (no specific criteria)"
 
 
-def check_uniqueness(sb, pattern: str) -> tuple[bool, str]:
+def check_uniqueness(sb, pattern: str, project: str | None = None) -> tuple[bool, str]:
     """Check that no duplicate names exist."""
     like_pattern = pattern.replace("*", "%")
-    result = sb.table("memories").select("name").ilike("name", like_pattern).execute()
+    query = sb.table("memories").select("name, project").ilike("name", like_pattern)
+
+    # Filter by project if specified
+    if project is not None:
+        query = query.eq("project", project)
+
+    result = query.execute()
     names = [r["name"] for r in (result.data or [])]
-    dupes = [n for n in names if names.count(n) > 1]
+    counts = Counter(names)
+    dupes = [name for name, count in counts.items() if count > 1]
     if dupes:
-        return False, f"Duplicate names: {set(dupes)}"
+        return False, f"Duplicate names: {dupes}"
     return True, f"All {len(names)} names unique"
 
 
-def run_eval(sb, eval_data: dict) -> dict:
+def run_eval(sb, eval_data: dict, project: str | None = None) -> dict:
     """Run all cases in an eval, return results."""
     skill = eval_data["skill"]
     results = []
@@ -124,13 +143,13 @@ def run_eval(sb, eval_data: dict) -> dict:
                 "reason": f"Manual check: {case.get('note', case['description'])}",
             })
         elif check_type == "memory_exists":
-            passed, reason = check_memory_exists(sb, pattern, expect)
+            passed, reason = check_memory_exists(sb, pattern, expect, project)
             results.append({"id": case_id, "passed": passed, "status": "PASS" if passed else "FAIL", "reason": reason})
         elif check_type == "memory_content":
-            passed, reason = check_memory_content(sb, pattern, expect)
+            passed, reason = check_memory_content(sb, pattern, expect, project)
             results.append({"id": case_id, "passed": passed, "status": "PASS" if passed else "FAIL", "reason": reason})
         elif check_type == "uniqueness":
-            passed, reason = check_uniqueness(sb, pattern)
+            passed, reason = check_uniqueness(sb, pattern, project)
             results.append({"id": case_id, "passed": passed, "status": "PASS" if passed else "FAIL", "reason": reason})
         else:
             results.append({"id": case_id, "passed": None, "status": "SKIP", "reason": f"Unknown check_type: {check_type}"})
@@ -167,6 +186,7 @@ def print_report(report: dict) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Run skill evals")
     parser.add_argument("--skill", help="Run eval for a specific skill only")
+    parser.add_argument("--project", default=None, help="Filter checks to specific project (default: all projects)")
     args = parser.parse_args()
 
     evals_dir = Path(__file__).parent
@@ -183,7 +203,7 @@ def main():
 
     for eval_file in eval_files:
         eval_data = load_eval(eval_file)
-        report = run_eval(sb, eval_data)
+        report = run_eval(sb, eval_data, project=args.project)
         print_report(report)
         all_reports.append(report)
 

@@ -18,9 +18,12 @@ python evals/run_evals.py
 
 # Run single skill eval
 python evals/run_evals.py --skill nightly-research
+
+# Filter checks to a specific project
+python evals/run_evals.py --project jarvis
 ```
 
-Results are saved to Supabase: `type=project, name=eval_<skill>_<date>`.
+Results are printed to stdout. Future: save to Supabase for trend tracking.
 
 ## Adding evals
 
