@@ -1,0 +1,35 @@
+# Eval: reflect skill
+# Tests whether reflection cycle extracts useful lessons.
+
+skill: reflect
+version: 1.0.0
+
+cases:
+  - id: reviews_recent_decisions
+    description: "Reflect should look at decisions from recent sessions"
+    check_type: manual
+    note: "Verify reflect skill invoked memory_recall for decision-type memories"
+
+  - id: checks_outcomes
+    description: "For decisions with outcomes, verify what actually happened"
+    check_type: manual
+    note: "Check if reflect updated decision memories with outcome field"
+
+  - id: extracts_lessons
+    description: "Produces at least one new feedback memory"
+    check_type: memory_exists
+    memory_pattern: "*_lesson*"
+    expect:
+      type: feedback
+
+  - id: updates_hypothesis_status
+    description: "Hypotheses that were tested get updated status"
+    check_type: manual
+    note: "Check for 'Outcome:' field in decision memories after reflect"
+
+  - id: no_generic_lessons
+    description: "Lessons should be specific, not generic platitudes"
+    check_type: memory_content
+    memory_pattern: "*lesson*"
+    expect:
+      min_length: 100  # at least 100 chars of specific content
