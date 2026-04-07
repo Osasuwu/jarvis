@@ -5,7 +5,8 @@
       "mcp__memory__memory_recall",
       "mcp__scheduled-tasks__list_scheduled_tasks",
       "mcp__b494bd72-1378-40fd-a7fe-472b804916a6__execute_sql",
-      "mcp__mcp-registry__search_mcp_registry"
+      "mcp__mcp-registry__search_mcp_registry",
+      "WebSearch"
     ]
   }
 }

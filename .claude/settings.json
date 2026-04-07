@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '=== SESSION START ===' && git status --short 2>/dev/null && echo '========================='"
+            "command": "echo '=== SESSION START ===' && echo 'MANDATORY: Read config/SOUL.md FIRST. Then load memory (user, feedback, decisions, working_state) BEFORE responding to user.' && echo '========================='"
           }
         ]
       }
