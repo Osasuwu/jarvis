@@ -43,7 +43,10 @@ memory_recall(query="risk_radar_latest", type="project", limit=1)
 memory_recall(query="nightly research", type="reference", limit=3)
 memory_recall(query="working_state", type="project", limit=1)
 memory_recall(query="autonomous_action_log", type="project", limit=1)
+memory_recall(query="pm_report", type="project", limit=3)
 ```
+
+PM reports (tagged `pm-report`) contain structured findings from PM agents. Parse the `Status` field: CRITICAL/BLOCKED → high-priority candidate.
 
 ---
 
@@ -137,6 +140,27 @@ Or: `goal_update(slug=..., progress_pct=..., progress=[...])`, `memory_store(...
 
 ### Medium risk → do it with detailed record
 Execute the action. Then record every detail in the action log (Step 7).
+
+**Multi-project actions → dispatch PM agents:**
+When the top candidate involves a specific project (CI fix, PR merge, bug triage), dispatch a PM agent instead of acting directly. This keeps Jarvis at the strategic level.
+
+```python
+# Read the PM prompt template and fill per-project variables
+# Launch as background agent with full authority
+Agent(
+    description=f"{project_name} PM",
+    subagent_type="coding",
+    prompt=filled_pm_prompt,  # from config/pm-prompt.md with {{variables}} filled
+    run_in_background=True
+)
+```
+
+PM agents save structured reports to `pm_report_{project}` in memory. After PM completes, read the report and include findings in Step 7 action log.
+
+**When to use PM dispatch vs direct action:**
+- Single quick action (merge PR, close issue, update label) → direct
+- Project-scoped work (triage, implement, review multiple issues) → PM dispatch
+- Cross-project coordination → Jarvis directly
 
 ### High risk → proposal only
 ```

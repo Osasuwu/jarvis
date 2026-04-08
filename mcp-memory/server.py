@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import sys
 from datetime import datetime, timezone
@@ -163,6 +164,20 @@ VALID_GOAL_PRIORITIES = ("P0", "P1", "P2")
 VALID_GOAL_STATUSES = ("active", "achieved", "paused", "abandoned")
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# -- Memory 2.0: temporal scoring + auto-linking ----------------------------
+TEMPORAL_HALF_LIVES = {
+    "project": 7, "reference": 30, "decision": 60,
+    "feedback": 90, "user": 180,
+}
+DEFAULT_HALF_LIFE = 30
+ACCESS_BOOST_MAX = 0.3
+ACCESS_HALF_LIFE = 14
+LINK_SIM_THRESHOLD = 0.60
+SUPERSEDE_SIM_THRESHOLD = 0.85
+CONSOLIDATION_SIM_THRESHOLD = 0.80
+CONSOLIDATION_COUNT = 3
+MAX_AUTO_LINKS = 5
 
 
 # -- Tool definitions -------------------------------------------------------
@@ -384,6 +399,11 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Max results (default 10)",
                         "default": 10,
+                    },
+                    "include_links": {
+                        "type": "boolean",
+                        "description": "Include 1-hop linked memories in results",
+                        "default": False,
                     },
                 },
             },
@@ -762,19 +782,55 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
     if project is not None:
         # Atomic upsert via unique constraint on (project, name) — no race condition
-        client.table("memories").upsert(data, on_conflict="project,name").execute()
-        return [TextContent(type="text", text=f"Memory '{mem_name}' saved (project={project}){embed_note}")]
+        result = client.table("memories").upsert(data, on_conflict="project,name").execute()
+        stored_id = result.data[0]["id"] if result.data else None
+        action = "saved"
+        proj_label = f"project={project}"
     else:
         # Manual upsert for NULL project: PostgreSQL unique constraint doesn't
         # deduplicate NULLs, so we handle this case explicitly.
         q = client.table("memories").select("id").eq("name", mem_name).is_("project", "null")
         existing = q.limit(1).execute()
         if existing.data:
-            client.table("memories").update(data).eq("id", existing.data[0]["id"]).execute()
-            return [TextContent(type="text", text=f"Memory '{mem_name}' updated (project=global){embed_note}")]
+            stored_id = existing.data[0]["id"]
+            client.table("memories").update(data).eq("id", stored_id).execute()
+            action = "updated"
         else:
-            client.table("memories").insert(data).execute()
-            return [TextContent(type="text", text=f"Memory '{mem_name}' created (project=global){embed_note}")]
+            result = client.table("memories").insert(data).execute()
+            stored_id = result.data[0]["id"] if result.data else None
+            action = "created"
+        proj_label = "project=global"
+
+    msg = f"Memory '{mem_name}' {action} ({proj_label}){embed_note}"
+
+    # -- Memory 2.0: auto-linking + consolidation hints --
+    if embedding is not None and stored_id:
+        try:
+            similar = client.rpc("find_similar_memories", {
+                "query_embedding": embedding,
+                "exclude_id": stored_id,
+                "match_limit": MAX_AUTO_LINKS + 5,
+                "similarity_threshold": LINK_SIM_THRESHOLD,
+                "filter_type": None,
+            }).execute()
+            similar_rows = similar.data or []
+
+            # Consolidation hint: 3+ memories above 0.80 similarity
+            consolidation_candidates = [
+                r for r in similar_rows
+                if r.get("similarity", 0) >= CONSOLIDATION_SIM_THRESHOLD
+            ]
+            if len(consolidation_candidates) >= CONSOLIDATION_COUNT:
+                names = [r["name"] for r in consolidation_candidates[:5]]
+                msg += f"\n\n⚠ Consolidation hint: {len(consolidation_candidates)} similar memories found: {', '.join(names)}"
+
+            # Fire-and-forget: create links
+            if similar_rows:
+                asyncio.create_task(_create_auto_links(client, stored_id, similar_rows, mem_type))
+        except Exception:
+            pass  # auto-linking is best-effort, never blocks store
+
+    return [TextContent(type="text", text=msg)]
 
 
 SIMILARITY_THRESHOLD = 0.25  # minimum cosine similarity to include in results
@@ -790,11 +846,15 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     mem_type = args.get("type")
     limit = args.get("limit", 10)
 
-    # Hybrid search: combine semantic + keyword results via RRF
+    include_links = args.get("include_links", False)
+
+    # Hybrid search: combine semantic + keyword results via RRF + temporal scoring
     if query_text:
         query_embedding = await _embed_query(query_text)
         if query_embedding is not None:
-            rows, results = await _hybrid_recall(client, query_embedding, query_text, project, mem_type, limit)
+            rows, results = await _hybrid_recall(
+                client, query_embedding, query_text, project, mem_type, limit, include_links
+            )
             # Track reads (fire-and-forget)
             ids = [r["id"] for r in rows if r.get("id")]
             if ids:
@@ -813,12 +873,12 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
 async def _hybrid_recall(
     client, query_embedding: list[float], query_text: str,
-    project, mem_type, limit: int
+    project, mem_type, limit: int, include_links: bool = False
 ) -> list[TextContent]:
     """Hybrid search: server-side pgvector semantic + pg_trgm keyword, merged via RRF.
 
-    Uses Supabase RPC functions (match_memories, keyword_search_memories) to
-    push all computation to the database. No embeddings fetched to client.
+    Memory 2.0: adds temporal scoring (recency × access frequency) and optional
+    1-hop link expansion for graph-aware recall.
     """
     try:
         # Fetch double the limit from each source to give RRF good candidates
@@ -843,15 +903,32 @@ async def _hybrid_recall(
         }).execute()
         keyword_rows = kw_result.data or []
 
-        # Reciprocal Rank Fusion (k=60)
+        # Reciprocal Rank Fusion (k=60) + temporal scoring
         merged = _rrf_merge(semantic_rows, keyword_rows, limit)
 
         if not merged:
             return [], await _keyword_recall(client, query_text, project, mem_type, limit)
 
+        _apply_temporal_scoring(merged)
+
         formatted = _format_memories(merged)
-        search_type = "hybrid" if keyword_rows else "semantic"
-        return merged, [TextContent(type="text", text=f"Found {len(merged)} memories ({search_type} search):\n\n" + "\n---\n".join(formatted))]
+        search_type = "hybrid+temporal" if keyword_rows else "semantic+temporal"
+        text = f"Found {len(merged)} memories ({search_type} search):\n\n" + "\n---\n".join(formatted)
+
+        # Optional: expand with 1-hop linked memories
+        if include_links:
+            ids = [r["id"] for r in merged if r.get("id")]
+            if ids:
+                linked = await _expand_with_links(client, ids)
+                if linked:
+                    # Deduplicate against already-found IDs
+                    found_ids = set(ids)
+                    unique_linked = [r for r in linked if r.get("id") not in found_ids]
+                    if unique_linked:
+                        link_formatted = _format_memories(unique_linked, link_info=True)
+                        text += f"\n\n### Linked memories ({len(unique_linked)}):\n\n" + "\n---\n".join(link_formatted)
+
+        return merged, [TextContent(type="text", text=text)]
 
     except asyncio.CancelledError:
         raise
@@ -880,7 +957,12 @@ def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, 
         by_id[rid] = row
 
     ranked = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
-    return [by_id[rid] for rid in ranked[:limit]]
+    result = []
+    for rid in ranked[:limit]:
+        row = by_id[rid]
+        row["_rrf_score"] = scores[rid]
+        result.append(row)
+    return result
 
 
 async def _keyword_recall(client, query_text: str, project, mem_type, limit: int) -> list[TextContent]:
@@ -917,12 +999,17 @@ async def _touch_memories(client, ids: list[str]) -> None:
         pass
 
 
-def _format_memories(memories: list[dict]) -> list[str]:
+def _format_memories(memories: list[dict], link_info: bool = False) -> list[str]:
     formatted = []
     for mem in memories:
         tags_str = f" [{', '.join(mem.get('tags', []))}]" if mem.get("tags") else ""
+        link_str = ""
+        if link_info and mem.get("link_type"):
+            link_str = f" ← {mem['link_type']}"
+            if mem.get("link_strength"):
+                link_str += f" ({mem['link_strength']:.2f})"
         formatted.append(
-            f"## {mem['name']} ({mem['type']}, {mem.get('project') or 'global'}){tags_str}\n"
+            f"## {mem['name']} ({mem['type']}, {mem.get('project') or 'global'}){tags_str}{link_str}\n"
             f"*{mem.get('description', '')}*\n"
             f"Updated: {mem.get('updated_at', '?')}\n\n"
             f"{mem['content']}\n"
@@ -953,6 +1040,78 @@ async def _backfill_missing_embeddings(client, project) -> None:
             client.table("memories").update({"embedding": embedding}).eq("id", mem["id"]).execute()
     except Exception:
         pass  # fire-and-forget: silently swallow all errors so caller never fails
+
+
+async def _create_auto_links(client, stored_id: str, similar_rows: list[dict], mem_type: str) -> None:
+    """Fire-and-forget: create links between stored memory and similar ones."""
+    try:
+        links = []
+        for row in similar_rows[:MAX_AUTO_LINKS]:
+            sim = row.get("similarity", 0)
+            # Supersession: two decisions with very high similarity
+            if mem_type == "decision" and row.get("type") == "decision" and sim >= SUPERSEDE_SIM_THRESHOLD:
+                link_type = "supersedes"
+            else:
+                link_type = "related"
+            links.append({
+                "source_id": stored_id,
+                "target_id": row["id"],
+                "link_type": link_type,
+                "strength": round(sim, 3),
+            })
+        if links:
+            client.table("memory_links").upsert(
+                links, on_conflict="source_id,target_id,link_type"
+            ).execute()
+    except Exception:
+        pass
+
+
+async def _expand_with_links(client, memory_ids: list[str]) -> list[dict]:
+    """Fetch 1-hop linked memories via graph traversal RPC."""
+    try:
+        result = client.rpc("get_linked_memories", {
+            "memory_ids": memory_ids,
+            "link_types": None,
+        }).execute()
+        return result.data or []
+    except Exception:
+        return []
+
+
+def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
+    """Re-rank rows by combining RRF score with temporal decay and access frequency."""
+    now = datetime.now(timezone.utc)
+    for row in rows:
+        rrf = row.get("_rrf_score", 0.01)
+        mem_type = row.get("type", "decision")
+        half_life = TEMPORAL_HALF_LIVES.get(mem_type, DEFAULT_HALF_LIFE)
+
+        # Parse updated_at
+        updated_str = row.get("updated_at", "")
+        try:
+            updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
+            days_since_update = max(0, (now - updated).total_seconds() / 86400)
+        except (ValueError, AttributeError):
+            days_since_update = half_life  # assume mid-decay if unparsable
+
+        # Parse last_accessed_at
+        accessed_str = row.get("last_accessed_at") or ""
+        try:
+            accessed = datetime.fromisoformat(accessed_str.replace("Z", "+00:00"))
+            days_since_access = max(0, (now - accessed).total_seconds() / 86400)
+        except (ValueError, AttributeError):
+            days_since_access = days_since_update * 2  # never accessed = low boost
+
+        # Exponential decay: recency factor (0..1)
+        recency = math.exp(-0.693 * days_since_update / half_life)
+        # Access frequency boost (1..1+ACCESS_BOOST_MAX)
+        access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
+
+        row["_temporal_score"] = rrf * recency * access
+
+    rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
+    return rows
 
 
 async def _handle_get(args: dict) -> list[TextContent]:

@@ -27,9 +27,11 @@ create index if not exists idx_memories_project on memories(project);
 create index if not exists idx_memories_type on memories(type);
 create index if not exists idx_memories_tags on memories using gin(tags);
 
--- Voyage AI embedding storage (optional — set VOYAGE_API_KEY to enable semantic search)
--- Stored as real[] (512 floats); similarity is computed in-process, no pgvector required.
-alter table memories add column if not exists embedding real[];
+-- Voyage AI embedding storage (512-dim vectors via pgvector extension)
+alter table memories add column if not exists embedding vector(512);
+
+-- Read tracking for temporal scoring (Memory 2.0)
+alter table memories add column if not exists last_accessed_at timestamptz;
 
 -- Partial index to efficiently find rows missing embeddings (for backfill queries)
 create index if not exists idx_memories_no_embedding on memories(id) where embedding is null;
@@ -180,3 +182,94 @@ create policy "Allow all for authenticated" on events
 
 create policy "Allow all for anon" on events
   for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- Memory Links — Memory 2.0: Graph Relationships
+-- Auto-generated on memory_store, tracks related/superseded/consolidated
+-- =========================================================================
+
+create table if not exists memory_links (
+  id uuid primary key default gen_random_uuid(),
+  source_id uuid not null references memories(id) on delete cascade,
+  target_id uuid not null references memories(id) on delete cascade,
+  link_type text not null default 'related'
+    check (link_type in ('related', 'supersedes', 'consolidates')),
+  strength float not null default 1.0
+    check (strength >= 0 and strength <= 1),
+  created_at timestamptz default now(),
+  unique(source_id, target_id, link_type),
+  check(source_id != target_id)
+);
+
+create index if not exists idx_memory_links_source on memory_links(source_id);
+create index if not exists idx_memory_links_target on memory_links(target_id);
+create index if not exists idx_memory_links_type on memory_links(link_type);
+
+alter table memory_links enable row level security;
+
+create policy "Allow all for authenticated" on memory_links
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on memory_links
+  for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- RPC Functions — Memory 2.0
+-- =========================================================================
+
+-- Find memories semantically similar to a given embedding (for auto-linking on store)
+-- Uses existing HNSW index on memories.embedding
+create or replace function find_similar_memories(
+    query_embedding vector,
+    exclude_id uuid,
+    match_limit int default 5,
+    similarity_threshold float default 0.6,
+    filter_type text default null
+)
+returns table(id uuid, name text, type text, project text, similarity float)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           1 - (m.embedding <=> query_embedding) as similarity
+    from memories m
+    where m.embedding is not null
+      and m.id != exclude_id
+      and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
+      and (filter_type is null or m.type = filter_type)
+    order by m.embedding <=> query_embedding
+    limit match_limit;
+$$;
+
+-- Get 1-hop linked memories for graph-aware recall
+create or replace function get_linked_memories(
+    memory_ids uuid[],
+    link_types text[] default null
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz,
+    link_type text, link_strength float, linked_from uuid
+)
+language sql stable as $$
+    select * from (
+        select m.id, m.name, m.type, m.project, m.description, m.content, m.tags, m.updated_at,
+               l.link_type, l.strength as link_strength, l.source_id as linked_from
+        from memory_links l
+        join memories m on m.id = l.target_id
+        where l.source_id = any(memory_ids)
+          and not (l.target_id = any(memory_ids))
+          and (link_types is null or l.link_type = any(link_types))
+        union
+        select m.id, m.name, m.type, m.project, m.description, m.content, m.tags, m.updated_at,
+               l.link_type, l.strength as link_strength, l.target_id as linked_from
+        from memory_links l
+        join memories m on m.id = l.source_id
+        where l.target_id = any(memory_ids)
+          and not (l.source_id = any(memory_ids))
+          and (link_types is null or l.link_type = any(link_types))
+    ) sub
+    order by link_strength desc
+    limit 10;
+$$;
