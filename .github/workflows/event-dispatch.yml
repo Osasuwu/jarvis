@@ -1,0 +1,147 @@
+name: Event Dispatch
+
+# Captures critical GitHub events and writes them to Supabase events table.
+# The autonomous-loop orchestrator reads unprocessed events and takes action.
+#
+# Required secrets:
+#   SUPABASE_URL      — project URL (https://xxx.supabase.co)
+#   SUPABASE_ANON_KEY — publishable anon key
+#
+# To add this to another repo (e.g. redrobot):
+#   1. Copy this file to .github/workflows/event-dispatch.yml
+#   2. Add the same SUPABASE_URL and SUPABASE_ANON_KEY secrets
+#   3. Events from all repos land in the same events table
+
+on:
+  workflow_run:
+    types: [completed]
+    branches: [main, master]
+
+  pull_request_review:
+    types: [submitted]
+
+  # Dependabot alerts (if available)
+  # Note: requires 'security_events: read' permission
+  # dependabot_alert:
+  #   types: [created]
+
+jobs:
+  # ── CI Failure on default branch ──────────────────────────────────
+  ci-failure:
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.event != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch CI failure event
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          REPO="${{ github.repository }}"
+          WORKFLOW="${{ github.event.workflow_run.name }}"
+          RUN_ID="${{ github.event.workflow_run.id }}"
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          URL="${{ github.event.workflow_run.html_url }}"
+
+          curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{
+              \"event_type\": \"ci_failure\",
+              \"severity\": \"high\",
+              \"repo\": \"${REPO}\",
+              \"source\": \"github_action\",
+              \"title\": \"CI failed: ${WORKFLOW} on ${BRANCH}\",
+              \"payload\": {
+                \"workflow\": \"${WORKFLOW}\",
+                \"run_id\": ${RUN_ID},
+                \"branch\": \"${BRANCH}\",
+                \"sha\": \"${SHA}\",
+                \"url\": \"${URL}\"
+              },
+              \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+            }"
+
+  # ── PR Approved ───────────────────────────────────────────────────
+  pr-approved:
+    if: >
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch PR approved event
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          REPO="${{ github.repository }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          REVIEWER="${{ github.event.review.user.login }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+
+          # Escape double quotes in PR title
+          PR_TITLE_ESCAPED=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
+
+          curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{
+              \"event_type\": \"pr_approved\",
+              \"severity\": \"info\",
+              \"repo\": \"${REPO}\",
+              \"source\": \"github_action\",
+              \"title\": \"PR #${PR_NUM} approved by ${REVIEWER}\",
+              \"payload\": {
+                \"pr_number\": ${PR_NUM},
+                \"pr_title\": \"${PR_TITLE_ESCAPED}\",
+                \"reviewer\": \"${REVIEWER}\",
+                \"url\": \"${PR_URL}\"
+              },
+              \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+            }"
+
+  # ── CI Success on default branch (all checks passed) ─────────────
+  ci-success:
+    if: >
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch CI success event
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          REPO="${{ github.repository }}"
+          WORKFLOW="${{ github.event.workflow_run.name }}"
+          BRANCH="${{ github.event.workflow_run.head_branch }}"
+          URL="${{ github.event.workflow_run.html_url }}"
+
+          curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{
+              \"event_type\": \"ci_success\",
+              \"severity\": \"low\",
+              \"repo\": \"${REPO}\",
+              \"source\": \"github_action\",
+              \"title\": \"CI passed: ${WORKFLOW} on ${BRANCH}\",
+              \"payload\": {
+                \"workflow\": \"${WORKFLOW}\",
+                \"branch\": \"${BRANCH}\",
+                \"url\": \"${URL}\"
+              },
+              \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+            }"

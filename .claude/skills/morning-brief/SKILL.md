@@ -34,6 +34,8 @@ Run in parallel:
 memory_recall(query="working_state", type="project", limit=5)
 memory_recall(query="morning_brief_latest", type="project", limit=1)
 memory_recall(query="nightly_last_run", type="project", limit=1)
+memory_recall(query="risk_radar_latest", type="project", limit=1)
+goal_list(status="active")
 ```
 
 ---
@@ -67,12 +69,21 @@ Categorize into:
 
 ---
 
+## Step 3.5 — Goal health check
+
+For each active goal from Step 1:
+- **Deadline alert**: if deadline is within 3 days → flag as urgent
+- **Stale progress**: if no progress update in goal data for >7 days → flag
+- **P0 neglect**: if P0 goal exists but no related work in overnight activity → flag
+
+Include any flags in the output under "Goal alerts".
+
 ## Step 4 — Draft daily plan
 
 Create a concise prioritized list:
-1. Urgent: respond to reviews, fix broken CI
+1. Urgent: respond to reviews, fix broken CI, **goal deadline alerts**
 2. Continue: in-progress work from checkpoints
-3. New: highest-priority unclaimed issues
+3. New: highest-priority unclaimed issues (aligned with active goals)
 4. Proactive: improvements identified from context
 
 ---
@@ -95,7 +106,14 @@ Output the brief in Russian. Format as a clean dashboard — not a report. Owner
 
 Example format:
 ```
-## Utrenний brифинг — {date}
+## Утренний брифинг — {date}
+
+### Цели
+- P0 redrobot-apr13-workshop — дедлайн через 3 дня!
+- P1 autonomous-loop — прогресс 30%, обновлений за 7 дней нет
+
+### Риски (из risk-radar)
+- [HIGH] CI Instability: redrobot failure rate 40%
 
 ### Требует внимания
 - PR #109 jarvis — approved, CI green -> можно мерджить

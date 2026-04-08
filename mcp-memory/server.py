@@ -162,6 +162,8 @@ VALID_TYPES = ("user", "project", "decision", "feedback", "reference")
 VALID_GOAL_PRIORITIES = ("P0", "P1", "P2")
 VALID_GOAL_STATUSES = ("active", "achieved", "paused", "abandoned")
 
+SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
 
 # -- Tool definitions -------------------------------------------------------
 
@@ -443,6 +445,67 @@ async def list_tools() -> list[Tool]:
                 "required": ["name"],
             },
         ),
+        # ---- Event tools ----
+        Tool(
+            name="events_list",
+            description=(
+                "List events from the event queue. By default returns unprocessed events "
+                "sorted by severity. GitHub Actions write events here; the orchestrator reads them."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "repo": {
+                        "type": "string",
+                        "description": "Filter by repo (e.g. 'Osasuwu/jarvis')",
+                    },
+                    "event_type": {
+                        "type": "string",
+                        "description": "Filter by event type (e.g. 'ci_failure', 'pr_approved')",
+                    },
+                    "severity": {
+                        "type": "string",
+                        "enum": ["critical", "high", "medium", "low", "info"],
+                        "description": "Filter by minimum severity",
+                    },
+                    "include_processed": {
+                        "type": "boolean",
+                        "description": "Include already-processed events (default: false)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 20)",
+                        "default": 20,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="events_mark_processed",
+            description=(
+                "Mark one or more events as processed. "
+                "Call after the orchestrator has handled an event."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "event_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of event UUIDs to mark as processed",
+                    },
+                    "processed_by": {
+                        "type": "string",
+                        "description": "Who processed it (e.g. 'autonomous-loop', 'risk-radar', 'manual')",
+                    },
+                    "action_taken": {
+                        "type": "string",
+                        "description": "What was done in response",
+                    },
+                },
+                "required": ["event_ids", "processed_by"],
+            },
+        ),
     ]
 
 
@@ -482,6 +545,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return _big_result(await _handle_list(arguments))
         elif name == "memory_delete":
             return await _handle_delete(arguments)
+        # Event tools
+        elif name == "events_list":
+            return _big_result(await _handle_events_list(arguments))
+        elif name == "events_mark_processed":
+            return await _handle_events_mark_processed(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as exc:
@@ -972,6 +1040,83 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     if result.data:
         return [TextContent(type="text", text=f"Deleted memory '{mem_name}' (project={project or 'global'}).")]
     return [TextContent(type="text", text=f"Memory '{mem_name}' not found.")]
+
+
+# -- Event handlers ---------------------------------------------------------
+
+async def _handle_events_list(args: dict) -> list[TextContent]:
+    client = _get_client()
+
+    q = client.table("events").select("*")
+
+    if not args.get("include_processed", False):
+        q = q.eq("processed", False)
+
+    if args.get("repo"):
+        q = q.eq("repo", args["repo"])
+    if args.get("event_type"):
+        q = q.eq("event_type", args["event_type"])
+
+    min_severity = args.get("severity")
+    if min_severity and min_severity in SEVERITY_ORDER:
+        allowed = [s for s, v in SEVERITY_ORDER.items() if v <= SEVERITY_ORDER[min_severity]]
+        q = q.in_("severity", allowed)
+
+    limit = args.get("limit", 20)
+    result = q.order("created_at", desc=True).limit(limit).execute()
+
+    if not result.data:
+        return [TextContent(type="text", text="No events found.")]
+
+    # Sort by severity (critical first), then by time
+    events = sorted(result.data, key=lambda e: (SEVERITY_ORDER.get(e["severity"], 4), e["created_at"]))
+
+    lines = [f"# Events ({len(events)})\n"]
+    for ev in events:
+        processed_mark = " [PROCESSED]" if ev.get("processed") else ""
+        payload_str = ""
+        if ev.get("payload"):
+            p = ev["payload"]
+            if isinstance(p, str):
+                try:
+                    p = json.loads(p)
+                except (ValueError, TypeError):
+                    p = {}
+            if p.get("url"):
+                payload_str = f"\n  URL: {p['url']}"
+
+        lines.append(
+            f"## [{ev['severity'].upper()}] {ev['title']}{processed_mark}\n"
+            f"  ID: `{ev['id']}`\n"
+            f"  Type: {ev['event_type']} | Repo: {ev['repo']} | Source: {ev['source']}\n"
+            f"  Time: {ev.get('event_at', ev['created_at'])}"
+            f"{payload_str}\n"
+        )
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+async def _handle_events_mark_processed(args: dict) -> list[TextContent]:
+    client = _get_client()
+
+    event_ids = args["event_ids"]
+    processed_by = args["processed_by"]
+    action_taken = args.get("action_taken", "")
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    updated = 0
+    for eid in event_ids:
+        result = client.table("events").update({
+            "processed": True,
+            "processed_at": now,
+            "processed_by": processed_by,
+            "action_taken": action_taken,
+        }).eq("id", eid).execute()
+        if result.data:
+            updated += 1
+
+    return [TextContent(type="text", text=f"Marked {updated}/{len(event_ids)} events as processed.")]
 
 
 # ---------------------------------------------------------------------------

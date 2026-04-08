@@ -132,3 +132,51 @@ create policy "Allow all for authenticated" on goals
 
 create policy "Allow all for anon" on goals
   for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- Events table — Jarvis Pillar 2: Event-Driven Perception
+-- GitHub Actions write events here, orchestrator reads them.
+-- =========================================================================
+
+create table if not exists events (
+  id uuid primary key default gen_random_uuid(),
+
+  -- Event classification
+  event_type text not null,          -- 'ci_failure', 'security_alert', 'pr_approved', 'deployment', etc.
+  severity text not null default 'info'
+    check (severity in ('critical', 'high', 'medium', 'low', 'info')),
+
+  -- Source
+  repo text not null,                -- 'Osasuwu/jarvis', 'SergazyNarynov/redrobot', etc.
+  source text not null default 'github_action',  -- 'github_action', 'webhook', 'manual'
+
+  -- Content
+  title text not null,               -- one-line summary
+  payload jsonb default '{}',        -- structured event data (PR number, workflow name, alert details)
+
+  -- Processing
+  processed boolean not null default false,
+  processed_at timestamptz,
+  processed_by text,                 -- 'autonomous-loop', 'risk-radar', 'manual'
+  action_taken text,                 -- what was done in response
+
+  -- Timestamps
+  created_at timestamptz default now(),
+  event_at timestamptz default now() -- when the event actually occurred (may differ from insert time)
+);
+
+-- Indexes
+create index if not exists idx_events_unprocessed on events(processed, severity) where not processed;
+create index if not exists idx_events_repo on events(repo);
+create index if not exists idx_events_type on events(event_type);
+create index if not exists idx_events_created on events(created_at desc);
+
+-- RLS
+alter table events enable row level security;
+
+create policy "Allow all for authenticated" on events
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on events
+  for all to anon using (true) with check (true);
