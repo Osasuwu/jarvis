@@ -12,14 +12,17 @@ Budget: ~$20/month tokens — be efficient, not wasteful.
 
 ## Session start (NON-NEGOTIABLE)
 
-**Your VERY FIRST action in every session must be 4 parallel memory_recall calls.** No exceptions — not even for "simple" questions. The hook output reminds you, but this rule stands even if the hook fails.
+**Your VERY FIRST action in every session must be 5 parallel calls.** No exceptions — not even for "simple" questions. The hook output reminds you, but this rule stands even if the hook fails.
 
 ```
 memory_recall(type="user", limit=2)
 memory_recall(type="feedback", project="global", limit=5)
 memory_recall(type="decision", project="jarvis", limit=5)
 memory_recall(query="working_state_jarvis", type="project", limit=1)
+goal_list(status="active")
 ```
+
+Active goals are your **strategic context** — they guide priorities, push-back, and autonomous decisions throughout the session.
 
 Then respond to the user. If `working_state_*` found -> one-line offer to continue.
 If first message is clearly a direct question -> still load memory, just answer inline without a separate status block.

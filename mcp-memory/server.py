@@ -159,12 +159,161 @@ server = Server("jarvis-memory")
 
 VALID_TYPES = ("user", "project", "decision", "feedback", "reference")
 
+VALID_GOAL_PRIORITIES = ("P0", "P1", "P2")
+VALID_GOAL_STATUSES = ("active", "achieved", "paused", "abandoned")
+
 
 # -- Tool definitions -------------------------------------------------------
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
     return [
+        # ---- Goal tools ----
+        Tool(
+            name="goal_set",
+            description=(
+                "Create or update a goal (upsert by slug). "
+                "Goals are strategic objectives that guide Jarvis's priorities and decisions."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "slug": {
+                        "type": "string",
+                        "description": "Unique identifier (e.g. 'redrobot-demo', 'jarvis-goals-system')",
+                    },
+                    "title": {"type": "string", "description": "Human-readable goal title"},
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope (e.g. 'redrobot', 'jarvis'). null = cross-project.",
+                    },
+                    "direction": {
+                        "type": ["string", "null"],
+                        "description": "Strategic direction this goal belongs to",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": list(VALID_GOAL_PRIORITIES),
+                        "description": "P0 = critical, P1 = important, P2 = nice to have",
+                    },
+                    "status": {
+                        "type": "string",
+                        "enum": list(VALID_GOAL_STATUSES),
+                    },
+                    "why": {"type": "string", "description": "Motivation — why this goal matters"},
+                    "success_criteria": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of success criteria",
+                    },
+                    "deadline": {
+                        "type": ["string", "null"],
+                        "description": "Deadline date (YYYY-MM-DD)",
+                    },
+                    "progress": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "item": {"type": "string"},
+                                "done": {"type": "boolean"},
+                            },
+                        },
+                        "description": "Progress milestones",
+                    },
+                    "progress_pct": {
+                        "type": "integer",
+                        "description": "Overall progress percentage (0-100)",
+                    },
+                    "risks": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Known risks",
+                    },
+                    "owner_focus": {"type": "string", "description": "What the owner is working on"},
+                    "jarvis_focus": {"type": "string", "description": "What Jarvis should handle"},
+                    "parent_id": {
+                        "type": ["string", "null"],
+                        "description": "Parent goal UUID (for sub-goals)",
+                    },
+                },
+                "required": ["slug", "title"],
+            },
+        ),
+        Tool(
+            name="goal_list",
+            description=(
+                "List goals with optional filters. "
+                "Use at session start to load active goals as strategic context."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": list(VALID_GOAL_STATUSES),
+                        "description": "Filter by status (default: all)",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Filter by project",
+                    },
+                    "priority": {
+                        "type": "string",
+                        "enum": list(VALID_GOAL_PRIORITIES),
+                        "description": "Filter by priority",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="goal_get",
+            description="Get a specific goal by slug with full details.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string", "description": "Goal slug"},
+                },
+                "required": ["slug"],
+            },
+        ),
+        Tool(
+            name="goal_update",
+            description=(
+                "Partial update of a goal. Only provided fields are updated. "
+                "Use to update progress, status, focus, risks, etc."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string", "description": "Goal slug to update"},
+                    "title": {"type": "string"},
+                    "priority": {"type": "string", "enum": list(VALID_GOAL_PRIORITIES)},
+                    "status": {"type": "string", "enum": list(VALID_GOAL_STATUSES)},
+                    "why": {"type": "string"},
+                    "success_criteria": {"type": "array", "items": {"type": "string"}},
+                    "deadline": {"type": ["string", "null"]},
+                    "progress": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "item": {"type": "string"},
+                                "done": {"type": "boolean"},
+                            },
+                        },
+                    },
+                    "progress_pct": {"type": "integer"},
+                    "risks": {"type": "array", "items": {"type": "string"}},
+                    "owner_focus": {"type": "string"},
+                    "jarvis_focus": {"type": "string"},
+                    "outcome": {"type": "string", "description": "What happened (for closing)"},
+                    "lessons": {"type": "string", "description": "What was learned (for closing)"},
+                },
+                "required": ["slug"],
+            },
+        ),
+        # ---- Memory tools ----
         Tool(
             name="memory_store",
             description=(
@@ -313,7 +462,17 @@ def _big_result(content: list[TextContent]) -> CallToolResult:
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolResult:
     try:
-        if name == "memory_store":
+        # Goal tools
+        if name == "goal_set":
+            return await _handle_goal_set(arguments)
+        elif name == "goal_list":
+            return _big_result(await _handle_goal_list(arguments))
+        elif name == "goal_get":
+            return _big_result(await _handle_goal_get(arguments))
+        elif name == "goal_update":
+            return await _handle_goal_update(arguments)
+        # Memory tools
+        elif name == "memory_store":
             return await _handle_store(arguments)
         elif name == "memory_recall":
             return _big_result(await _handle_recall(arguments))
@@ -328,6 +487,177 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
     except Exception as exc:
         return [TextContent(type="text", text=f"Error: {exc}")]
 
+
+# -- Goal handlers ----------------------------------------------------------
+
+GOAL_FIELDS = (
+    "slug", "title", "project", "direction", "priority", "status",
+    "why", "success_criteria", "deadline", "progress", "progress_pct",
+    "risks", "owner_focus", "jarvis_focus", "parent_id", "outcome", "lessons",
+)
+
+
+def _format_goal(g: dict) -> str:
+    """Format a single goal for display."""
+    deadline_str = f" | Deadline: {g['deadline']}" if g.get("deadline") else ""
+    direction_str = f" | Direction: {g['direction']}" if g.get("direction") else ""
+    parent_str = f" | Sub-goal of: {g['parent_id']}" if g.get("parent_id") else ""
+
+    lines = [
+        f"## {g['title']}",
+        f"Slug: `{g['slug']}` | Project: {g.get('project') or 'cross-project'} | "
+        f"Priority: {g['priority']} | Status: {g['status']}{deadline_str}{direction_str}{parent_str}",
+    ]
+
+    if g.get("why"):
+        lines.append(f"\n**Why:** {g['why']}")
+
+    if g.get("success_criteria"):
+        criteria = g["success_criteria"]
+        if isinstance(criteria, str):
+            import json as _json
+            try:
+                criteria = _json.loads(criteria)
+            except (ValueError, TypeError):
+                criteria = [criteria]
+        if criteria:
+            lines.append("\n**Success criteria:**")
+            for c in criteria:
+                lines.append(f"- {c}")
+
+    if g.get("progress"):
+        progress = g["progress"]
+        if isinstance(progress, str):
+            import json as _json
+            try:
+                progress = _json.loads(progress)
+            except (ValueError, TypeError):
+                progress = []
+        if progress:
+            pct = g.get("progress_pct", 0)
+            lines.append(f"\n**Progress ({pct}%):**")
+            for p in progress:
+                check = "x" if p.get("done") else " "
+                lines.append(f"- [{check}] {p.get('item', p)}")
+
+    if g.get("risks"):
+        risks = g["risks"]
+        if isinstance(risks, str):
+            import json as _json
+            try:
+                risks = _json.loads(risks)
+            except (ValueError, TypeError):
+                risks = [risks]
+        if risks:
+            lines.append("\n**Risks:**")
+            for r in risks:
+                lines.append(f"- {r}")
+
+    if g.get("owner_focus"):
+        lines.append(f"\n**Owner focus:** {g['owner_focus']}")
+    if g.get("jarvis_focus"):
+        lines.append(f"**Jarvis focus:** {g['jarvis_focus']}")
+
+    if g.get("outcome"):
+        lines.append(f"\n**Outcome:** {g['outcome']}")
+    if g.get("lessons"):
+        lines.append(f"**Lessons:** {g['lessons']}")
+
+    return "\n".join(lines)
+
+
+async def _handle_goal_set(args: dict) -> list[TextContent]:
+    client = _get_client()
+    slug = args["slug"]
+
+    data = {k: args[k] for k in GOAL_FIELDS if k in args}
+
+    # Convert JSONB fields
+    for field in ("success_criteria", "progress", "risks"):
+        if field in data and isinstance(data[field], list):
+            data[field] = json.dumps(data[field])
+
+    # Upsert by slug
+    existing = client.table("goals").select("id").eq("slug", slug).limit(1).execute()
+    if existing.data:
+        client.table("goals").update(data).eq("slug", slug).execute()
+        return [TextContent(type="text", text=f"Goal '{slug}' updated.")]
+    else:
+        client.table("goals").insert(data).execute()
+        return [TextContent(type="text", text=f"Goal '{slug}' created.")]
+
+
+async def _handle_goal_list(args: dict) -> list[TextContent]:
+    client = _get_client()
+
+    q = client.table("goals").select("*")
+
+    status = args.get("status")
+    project = args.get("project")
+    priority = args.get("priority")
+
+    if status:
+        q = q.eq("status", status)
+    if project:
+        q = q.eq("project", project)
+    if priority:
+        q = q.eq("priority", priority)
+
+    result = q.order("priority").order("deadline", desc=False, nullsfirst=False).execute()
+
+    if not result.data:
+        return [TextContent(type="text", text="No goals found.")]
+
+    formatted = [_format_goal(g) for g in result.data]
+    return [TextContent(
+        type="text",
+        text=f"# Goals ({len(result.data)})\n\n" + "\n\n---\n\n".join(formatted),
+    )]
+
+
+async def _handle_goal_get(args: dict) -> list[TextContent]:
+    client = _get_client()
+    slug = args["slug"]
+
+    result = client.table("goals").select("*").eq("slug", slug).limit(1).execute()
+
+    if not result.data:
+        return [TextContent(type="text", text=f"Goal '{slug}' not found.")]
+
+    return [TextContent(type="text", text=_format_goal(result.data[0]))]
+
+
+async def _handle_goal_update(args: dict) -> list[TextContent]:
+    client = _get_client()
+    slug = args["slug"]
+
+    data = {k: args[k] for k in GOAL_FIELDS if k in args and k != "slug"}
+
+    if not data:
+        return [TextContent(type="text", text="No fields to update.")]
+
+    # Convert JSONB fields
+    for field in ("success_criteria", "progress", "risks"):
+        if field in data and isinstance(data[field], list):
+            data[field] = json.dumps(data[field])
+
+    # Auto-set closed_at when status changes to achieved/abandoned
+    if data.get("status") in ("achieved", "abandoned"):
+        data["closed_at"] = datetime.now(timezone.utc).isoformat()
+
+    result = client.table("goals").update(data).eq("slug", slug).execute()
+
+    if not result.data:
+        return [TextContent(type="text", text=f"Goal '{slug}' not found.")]
+
+    status_note = ""
+    if data.get("status") in ("achieved", "abandoned"):
+        status_note = f" Status: {data['status']}. closed_at set."
+
+    return [TextContent(type="text", text=f"Goal '{slug}' updated.{status_note}")]
+
+
+# -- Memory handlers --------------------------------------------------------
 
 async def _handle_store(args: dict) -> list[TextContent]:
     client = _get_client()

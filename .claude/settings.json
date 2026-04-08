@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '=== SESSION START ===' && echo '--- SOUL.md ---' && cat config/SOUL.md && echo '--- END SOUL.md ---' && echo '' && echo 'MANDATORY: Load memory BEFORE first response. Run these 4 calls in parallel:' && echo '  memory_recall(type=\"user\", limit=2)' && echo '  memory_recall(type=\"feedback\", project=\"global\", limit=5)' && echo '  memory_recall(type=\"decision\", project=\"jarvis\", limit=5)' && echo '  memory_recall(query=\"working_state_jarvis\", type=\"project\", limit=1)' && echo '' && echo 'If first message is a direct question — still load memory, but answer inline.' && echo '========================='"
+            "command": "echo '=== SESSION START ===' && echo '--- SOUL.md ---' && cat config/SOUL.md && echo '--- END SOUL.md ---' && echo '' && echo 'MANDATORY: Load memory AND goals BEFORE first response. Run these 5 calls in parallel:' && echo '  memory_recall(type=\"user\", limit=2)' && echo '  memory_recall(type=\"feedback\", project=\"global\", limit=5)' && echo '  memory_recall(type=\"decision\", project=\"jarvis\", limit=5)' && echo '  memory_recall(query=\"working_state_jarvis\", type=\"project\", limit=1)' && echo '  goal_list(status=\"active\")' && echo '' && echo 'Active goals are your STRATEGIC CONTEXT — they guide priorities and decisions.' && echo 'If first message is a direct question — still load memory+goals, but answer inline.' && echo '========================='"
           }
         ]
       }
