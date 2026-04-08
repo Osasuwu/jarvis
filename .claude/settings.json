@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo '=== SESSION START ===' && echo 'MANDATORY: Read config/SOUL.md FIRST. Then load memory (user, feedback, decisions, working_state) BEFORE responding to user.' && echo '========================='"
+            "command": "echo '=== SESSION START ===' && echo '--- SOUL.md ---' && cat config/SOUL.md && echo '--- END SOUL.md ---' && echo '' && echo 'MANDATORY: Load memory BEFORE first response. Run these 4 calls in parallel:' && echo '  memory_recall(type=\"user\", limit=2)' && echo '  memory_recall(type=\"feedback\", project=\"global\", limit=5)' && echo '  memory_recall(type=\"decision\", project=\"jarvis\", limit=5)' && echo '  memory_recall(query=\"working_state_jarvis\", type=\"project\", limit=1)' && echo '' && echo 'If first message is a direct question — still load memory, but answer inline.' && echo '========================='"
           }
         ]
       }
