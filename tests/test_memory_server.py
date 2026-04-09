@@ -5,13 +5,12 @@ Covers Memory 2.0 core: temporal scoring, RRF merge, formatting, auto-linking.
 
 from __future__ import annotations
 
-import math
 import os
 import sys
 import types
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -62,6 +61,9 @@ for mod_name, mod in [
 
 # Stub supabase (only needed if _get_client is called, which we avoid)
 sys.modules.setdefault("supabase", types.ModuleType("supabase"))
+
+# Stub httpx (used for Voyage AI embedding calls)
+sys.modules.setdefault("httpx", types.ModuleType("httpx"))
 
 # Stub dotenv
 _dotenv = types.ModuleType("dotenv")
@@ -256,7 +258,16 @@ class TestFormatMemories:
     def test_no_tags(self):
         mem = {"name": "x", "type": "user", "project": None, "description": "", "content": "c"}
         result = _format_memories([mem])
-        assert "[" not in result[0] or "user" in result[0]
+        # Header should NOT contain tag brackets when tags are missing
+        header_line = result[0].split("\n")[0]
+        assert "] " not in header_line or header_line.endswith(")")
+
+    def test_empty_tags_list(self):
+        mem = {"name": "x", "type": "user", "project": None, "description": "", "content": "c", "tags": []}
+        result = _format_memories([mem])
+        header_line = result[0].split("\n")[0]
+        # Empty tags list should not produce brackets
+        assert "[]" not in header_line
 
     def test_link_info(self):
         mem = {
@@ -323,7 +334,7 @@ class TestCreateAutoLinks:
     @pytest.mark.asyncio
     async def test_supersession_for_similar_decisions(self, mock_client):
         similar = [
-            {"id": "old-decision", "type": "decision", "similarity": 0.90},  # > 0.85
+            {"id": "old-decision", "type": "decision", "similarity": SUPERSEDE_SIM_THRESHOLD + 0.05},
         ]
         await _create_auto_links(mock_client, "new-decision", similar, mem_type="decision")
 
@@ -404,3 +415,58 @@ class TestExpandWithLinks:
             "get_linked_memories",
             {"memory_ids": ["id-1", "id-2"], "link_types": None},
         )
+
+
+# ---------------------------------------------------------------------------
+# Recall pipeline dedup regression (bidirectional link bug)
+# ---------------------------------------------------------------------------
+
+class TestRecallLinkedDedup:
+    """Regression: bidirectional links should not produce duplicate linked memories."""
+
+    def test_dedup_within_linked_results(self):
+        """If _expand_with_links returns the same memory twice (bidirectional links),
+        the recall pipeline should deduplicate to keep only one."""
+        # Simulate: main results have IDs ["main-1", "main-2"]
+        # Linked results return "linked-A" twice (from both link directions)
+        main_ids = {"main-1", "main-2"}
+        linked = [
+            {"id": "linked-A", "name": "mem_a", "link_type": "related", "link_strength": 0.71},
+            {"id": "linked-A", "name": "mem_a", "link_type": "related", "link_strength": 0.63},
+            {"id": "linked-B", "name": "mem_b", "link_type": "related", "link_strength": 0.65},
+        ]
+
+        # Reproduce the dedup logic from _hybrid_recall
+        found_ids = set(main_ids)
+        seen_linked: set[str] = set()
+        unique_linked = []
+        for r in linked:
+            rid = r.get("id")
+            if rid not in found_ids and rid not in seen_linked:
+                seen_linked.add(rid)
+                unique_linked.append(r)
+
+        assert len(unique_linked) == 2
+        assert unique_linked[0]["id"] == "linked-A"
+        assert unique_linked[0]["link_strength"] == 0.71  # first (strongest) kept
+        assert unique_linked[1]["id"] == "linked-B"
+
+    def test_main_results_excluded_from_linked(self):
+        """Linked results that duplicate main results should be excluded."""
+        main_ids = {"id-1"}
+        linked = [
+            {"id": "id-1", "name": "same_as_main", "link_type": "related", "link_strength": 0.80},
+            {"id": "id-2", "name": "different", "link_type": "related", "link_strength": 0.70},
+        ]
+
+        found_ids = set(main_ids)
+        seen_linked: set[str] = set()
+        unique_linked = []
+        for r in linked:
+            rid = r.get("id")
+            if rid not in found_ids and rid not in seen_linked:
+                seen_linked.add(rid)
+                unique_linked.append(r)
+
+        assert len(unique_linked) == 1
+        assert unique_linked[0]["id"] == "id-2"

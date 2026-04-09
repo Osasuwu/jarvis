@@ -277,7 +277,7 @@ language sql stable as $$
               and not (l.source_id = any(memory_ids))
               and (link_types is null or l.link_type = any(link_types))
         ) sub
-        order by sub.id, sub.link_strength desc
+        order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
     ) deduped
     order by deduped.link_strength desc
     limit 10;
