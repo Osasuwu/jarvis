@@ -526,6 +526,35 @@ async def list_tools() -> list[Tool]:
                 "required": ["event_ids", "processed_by"],
             },
         ),
+        # ---- Graph tools ----
+        Tool(
+            name="memory_graph",
+            description=(
+                "Explore the memory link graph. "
+                "Modes: 'overview' (stats, top connected, orphans), "
+                "'links' (all connections for a specific memory by name), "
+                "'clusters' (groups of tightly connected memories for consolidation)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["overview", "links", "clusters"],
+                        "description": (
+                            "overview = link stats + top connected + orphans. "
+                            "links = all connections for a memory (requires 'name'). "
+                            "clusters = tightly connected groups."
+                        ),
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Memory name (required for 'links' mode).",
+                    },
+                },
+                "required": ["mode"],
+            },
+        ),
     ]
 
 
@@ -565,6 +594,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return _big_result(await _handle_list(arguments))
         elif name == "memory_delete":
             return await _handle_delete(arguments)
+        # Graph tools
+        elif name == "memory_graph":
+            return _big_result(await _handle_graph(arguments))
         # Event tools
         elif name == "events_list":
             return _big_result(await _handle_events_list(arguments))
@@ -1205,6 +1237,239 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     if result.data:
         return [TextContent(type="text", text=f"Deleted memory '{mem_name}' (project={project or 'global'}).")]
     return [TextContent(type="text", text=f"Memory '{mem_name}' not found.")]
+
+
+# -- Graph handlers ---------------------------------------------------------
+
+
+async def _handle_graph(args: dict) -> list[TextContent]:
+    mode = args.get("mode", "overview")
+    client = _get_client()
+
+    if mode == "overview":
+        return await _graph_overview(client)
+    elif mode == "links":
+        name = args.get("name")
+        if not name:
+            return [TextContent(type="text", text="Error: 'name' is required for 'links' mode.")]
+        return await _graph_links(client, name)
+    elif mode == "clusters":
+        return await _graph_clusters(client)
+    else:
+        return [TextContent(type="text", text=f"Unknown graph mode: {mode}")]
+
+
+async def _graph_overview(client) -> list[TextContent]:
+    """Graph overview: link stats, top connected memories, orphans."""
+    lines = ["## Memory Graph Overview\n"]
+
+    # 1. Link stats by type
+    all_links = client.table("memory_links").select("link_type, strength").execute()
+    link_data = all_links.data or []
+    total = len(link_data)
+
+    if total == 0:
+        return [TextContent(type="text", text="No memory links found. Store more memories to build the graph.")]
+
+    type_stats: dict[str, list[float]] = {}
+    for row in link_data:
+        lt = row["link_type"]
+        type_stats.setdefault(lt, []).append(row["strength"])
+
+    lines.append(f"### Link Statistics ({total} total)\n")
+    lines.append("| Type | Count | Avg Strength | Min | Max |")
+    lines.append("|------|-------|-------------|-----|-----|")
+    for lt, strengths in sorted(type_stats.items()):
+        avg = sum(strengths) / len(strengths)
+        lines.append(f"| {lt} | {len(strengths)} | {avg:.3f} | {min(strengths):.3f} | {max(strengths):.3f} |")
+
+    # 2. Top connected memories
+    links_src = client.table("memory_links").select("source_id").execute()
+    links_tgt = client.table("memory_links").select("target_id").execute()
+    counts: dict[str, int] = {}
+    for row in links_src.data or []:
+        mid = row["source_id"]
+        counts[mid] = counts.get(mid, 0) + 1
+    for row in links_tgt.data or []:
+        mid = row["target_id"]
+        counts[mid] = counts.get(mid, 0) + 1
+
+    top_ids = sorted(counts.keys(), key=lambda k: counts[k], reverse=True)[:10]
+    if top_ids:
+        # Fetch names for top IDs
+        names_result = client.table("memories").select("id, name, type, project").in_("id", top_ids).execute()
+        id_to_mem = {r["id"]: r for r in (names_result.data or [])}
+
+        lines.append(f"\n### Top Connected ({len(top_ids)})\n")
+        lines.append("| Memory | Type | Project | Links |")
+        lines.append("|--------|------|---------|-------|")
+        for mid in top_ids:
+            mem = id_to_mem.get(mid, {})
+            name = mem.get("name", mid[:8])
+            mtype = mem.get("type", "?")
+            proj = mem.get("project") or "global"
+            lines.append(f"| {name} | {mtype} | {proj} | {counts[mid]} |")
+
+    # 3. Orphans (have embedding, no links)
+    total_with_emb = client.table("memories").select("id", count="exact").not_.is_("embedding", "null").execute()
+    total_emb_count = total_with_emb.count or 0
+    linked_ids = set(counts.keys())
+    all_emb = client.table("memories").select("id, name, type, project").not_.is_("embedding", "null").execute()
+    orphans = [r for r in (all_emb.data or []) if r["id"] not in linked_ids]
+
+    lines.append(f"\n### Orphans ({len(orphans)} of {total_emb_count} embedded memories have no links)\n")
+    if orphans:
+        for o in orphans[:15]:
+            proj = o.get("project") or "global"
+            lines.append(f"- **{o['name']}** ({o['type']}, {proj})")
+        if len(orphans) > 15:
+            lines.append(f"- ... and {len(orphans) - 15} more")
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+async def _graph_links(client, name: str) -> list[TextContent]:
+    """All connections for a specific memory."""
+    # Find memory by name
+    mem_result = client.table("memories").select("id, name, type, project").eq("name", name).execute()
+    if not mem_result.data:
+        return [TextContent(type="text", text=f"Memory '{name}' not found.")]
+
+    mem = mem_result.data[0]
+    mem_id = mem["id"]
+    proj = mem.get("project") or "global"
+
+    lines = [f"## Links for: {name} ({mem['type']}, {proj})\n"]
+
+    # Outgoing links (this memory → others)
+    out_result = (
+        client.table("memory_links")
+        .select("target_id, link_type, strength")
+        .eq("source_id", mem_id)
+        .order("strength", desc=True)
+        .execute()
+    )
+    out_links = out_result.data or []
+
+    # Incoming links (others → this memory)
+    in_result = (
+        client.table("memory_links")
+        .select("source_id, link_type, strength")
+        .eq("target_id", mem_id)
+        .order("strength", desc=True)
+        .execute()
+    )
+    in_links = in_result.data or []
+
+    # Resolve target/source names
+    all_ids = [r["target_id"] for r in out_links] + [r["source_id"] for r in in_links]
+    id_to_name = {}
+    if all_ids:
+        names = client.table("memories").select("id, name, type, project").in_("id", all_ids).execute()
+        id_to_name = {r["id"]: r for r in (names.data or [])}
+
+    # Format outgoing
+    lines.append(f"### Outgoing ({len(out_links)})\n")
+    if out_links:
+        for link in out_links:
+            target = id_to_name.get(link["target_id"], {})
+            tname = target.get("name", link["target_id"][:8])
+            ttype = target.get("type", "?")
+            lines.append(f"- → **{tname}** ({ttype}) [{link['link_type']}, {link['strength']:.3f}]")
+    else:
+        lines.append("- (none)")
+
+    # Format incoming
+    lines.append(f"\n### Incoming ({len(in_links)})\n")
+    if in_links:
+        for link in in_links:
+            source = id_to_name.get(link["source_id"], {})
+            sname = source.get("name", link["source_id"][:8])
+            stype = source.get("type", "?")
+            lines.append(f"- ← **{sname}** ({stype}) [{link['link_type']}, {link['strength']:.3f}]")
+    else:
+        lines.append("- (none)")
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+async def _graph_clusters(client) -> list[TextContent]:
+    """Find clusters of tightly connected memories (mutual links, strength > 0.7)."""
+    # Get all strong links
+    links_result = (
+        client.table("memory_links")
+        .select("source_id, target_id, link_type, strength")
+        .gte("strength", 0.7)
+        .execute()
+    )
+    links = links_result.data or []
+
+    if not links:
+        return [TextContent(type="text", text="No strong links (strength >= 0.7) found.")]
+
+    # Build adjacency: collect neighbors for each memory
+    neighbors: dict[str, set[str]] = {}
+    link_info: dict[tuple[str, str], dict] = {}
+    for link in links:
+        s, t = link["source_id"], link["target_id"]
+        neighbors.setdefault(s, set()).add(t)
+        neighbors.setdefault(t, set()).add(s)
+        link_info[(s, t)] = link
+
+    # Simple clustering: connected components via BFS
+    visited: set[str] = set()
+    clusters: list[set[str]] = []
+    for node in neighbors:
+        if node in visited:
+            continue
+        cluster: set[str] = set()
+        queue = [node]
+        while queue:
+            current = queue.pop(0)
+            if current in visited:
+                continue
+            visited.add(current)
+            cluster.add(current)
+            for neighbor in neighbors.get(current, set()):
+                if neighbor not in visited:
+                    queue.append(neighbor)
+        if len(cluster) >= 2:
+            clusters.append(cluster)
+
+    # Sort clusters by size (largest first)
+    clusters.sort(key=len, reverse=True)
+
+    # Resolve names
+    all_ids = list(set().union(*clusters)) if clusters else []
+    id_to_mem = {}
+    if all_ids:
+        mems = client.table("memories").select("id, name, type, project").in_("id", all_ids).execute()
+        id_to_mem = {r["id"]: r for r in (mems.data or [])}
+
+    lines = [f"## Memory Clusters ({len(clusters)} clusters, strength >= 0.7)\n"]
+
+    for i, cluster in enumerate(clusters[:10], 1):
+        # Calculate average internal strength
+        internal_strengths = []
+        for s, t in link_info:
+            if s in cluster and t in cluster:
+                internal_strengths.append(link_info[(s, t)]["strength"])
+
+        avg_str = sum(internal_strengths) / len(internal_strengths) if internal_strengths else 0
+
+        lines.append(f"### Cluster {i} ({len(cluster)} memories, avg strength: {avg_str:.3f})\n")
+        for mid in sorted(cluster, key=lambda m: id_to_mem.get(m, {}).get("name", "")):
+            mem = id_to_mem.get(mid, {})
+            name = mem.get("name", mid[:8])
+            mtype = mem.get("type", "?")
+            proj = mem.get("project") or "global"
+            lines.append(f"- **{name}** ({mtype}, {proj})")
+        lines.append("")
+
+    if len(clusters) > 10:
+        lines.append(f"... and {len(clusters) - 10} more clusters")
+
+    return [TextContent(type="text", text="\n".join(lines))]
 
 
 # -- Event handlers ---------------------------------------------------------

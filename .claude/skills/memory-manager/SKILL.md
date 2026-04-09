@@ -16,6 +16,9 @@ Browse, audit, and maintain Jarvis's memory system. Adds structured retrieval ti
 - `/memory stale` — find memories older than 14 days that haven't been validated
 - `/memory cleanup` — interactive cleanup of stale/orphaned working states
 - `/memory stats` — count by type, project, tag distribution
+- `/memory graph` — link graph overview: stats, top connected, orphans
+- `/memory links <name>` — all connections for a specific memory
+- `/memory clusters` — tightly connected memory groups (consolidation candidates)
 
 ## Memory Tiers
 
@@ -115,6 +118,28 @@ memory_recall(type="decision", project="<current_project>", limit=5)
 # Get research pointers (reference tier)
 memory_recall(type="reference", limit=5)
 ```
+
+## Graph Exploration (Memory 2.0)
+
+Memory 2.0 auto-links memories on store via semantic similarity. Use the `memory_graph` MCP tool to explore the link graph.
+
+**`/memory graph`** — overview:
+```
+memory_graph(mode="overview")
+```
+Shows: link stats by type (related/supersedes/consolidates), top-10 most connected memories, orphans (embedded but unlinked).
+
+**`/memory links <name>`** — per-memory connections:
+```
+memory_graph(mode="links", name="<memory_name>")
+```
+Shows: all outgoing (→) and incoming (←) links with type and strength.
+
+**`/memory clusters`** — find consolidation candidates:
+```
+memory_graph(mode="clusters")
+```
+Shows: groups of tightly connected memories (strength >= 0.7). These are candidates for consolidation — merging related memories into one.
 
 ## Naming Conventions (enforced)
 
