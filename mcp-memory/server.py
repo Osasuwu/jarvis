@@ -921,9 +921,15 @@ async def _hybrid_recall(
             if ids:
                 linked = await _expand_with_links(client, ids)
                 if linked:
-                    # Deduplicate against already-found IDs
+                    # Deduplicate against already-found IDs and within linked results
                     found_ids = set(ids)
-                    unique_linked = [r for r in linked if r.get("id") not in found_ids]
+                    seen_linked = set()
+                    unique_linked = []
+                    for r in linked:
+                        rid = r.get("id")
+                        if rid not in found_ids and rid not in seen_linked:
+                            seen_linked.add(rid)
+                            unique_linked.append(r)
                     if unique_linked:
                         link_formatted = _format_memories(unique_linked, link_info=True)
                         text += f"\n\n### Linked memories ({len(unique_linked)}):\n\n" + "\n---\n".join(link_formatted)
