@@ -253,23 +253,32 @@ returns table(
     link_type text, link_strength float, linked_from uuid
 )
 language sql stable as $$
+    -- Outer query re-orders deduped results by strength
     select * from (
-        select m.id, m.name, m.type, m.project, m.description, m.content, m.tags, m.updated_at,
-               l.link_type, l.strength as link_strength, l.source_id as linked_from
-        from memory_links l
-        join memories m on m.id = l.target_id
-        where l.source_id = any(memory_ids)
-          and not (l.target_id = any(memory_ids))
-          and (link_types is null or l.link_type = any(link_types))
-        union
-        select m.id, m.name, m.type, m.project, m.description, m.content, m.tags, m.updated_at,
-               l.link_type, l.strength as link_strength, l.target_id as linked_from
-        from memory_links l
-        join memories m on m.id = l.source_id
-        where l.target_id = any(memory_ids)
-          and not (l.source_id = any(memory_ids))
-          and (link_types is null or l.link_type = any(link_types))
-    ) sub
-    order by link_strength desc
+        -- DISTINCT ON keeps only the strongest link per target memory
+        select distinct on (sub.id)
+            sub.id, sub.name, sub.type, sub.project, sub.description,
+            sub.content, sub.tags, sub.updated_at,
+            sub.link_type, sub.link_strength, sub.linked_from
+        from (
+            select m.id, m.name, m.type, m.project, m.description, m.content, m.tags, m.updated_at,
+                   l.link_type, l.strength as link_strength, l.source_id as linked_from
+            from memory_links l
+            join memories m on m.id = l.target_id
+            where l.source_id = any(memory_ids)
+              and not (l.target_id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+            union all
+            select m.id, m.name, m.type, m.project, m.description, m.content, m.tags, m.updated_at,
+                   l.link_type, l.strength as link_strength, l.target_id as linked_from
+            from memory_links l
+            join memories m on m.id = l.source_id
+            where l.target_id = any(memory_ids)
+              and not (l.source_id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+        ) sub
+        order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
+    ) deduped
+    order by deduped.link_strength desc
     limit 10;
 $$;
