@@ -526,6 +526,89 @@ async def list_tools() -> list[Tool]:
                 "required": ["event_ids", "processed_by"],
             },
         ),
+        # ---- Outcome tracking tools (Pillar 3) ----
+        Tool(
+            name="outcome_record",
+            description=(
+                "Record a task outcome for tracking and learning. "
+                "Call after completing a delegation, fix, research, or autonomous action."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "task_type": {
+                        "type": "string",
+                        "enum": ["delegation", "research", "fix", "review", "autonomous"],
+                        "description": "Type of action performed.",
+                    },
+                    "task_description": {
+                        "type": "string",
+                        "description": "What was done (concise).",
+                    },
+                    "outcome_status": {
+                        "type": "string",
+                        "enum": ["pending", "success", "partial", "failure", "unknown"],
+                        "description": "Outcome: success/partial/failure/pending/unknown.",
+                    },
+                    "outcome_summary": {
+                        "type": "string",
+                        "description": "What actually happened.",
+                    },
+                    "goal_slug": {
+                        "type": ["string", "null"],
+                        "description": "Related goal slug.",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope.",
+                    },
+                    "issue_url": {"type": "string", "description": "GitHub issue URL."},
+                    "pr_url": {"type": "string", "description": "GitHub PR URL."},
+                    "tests_passed": {"type": "boolean"},
+                    "pr_merged": {"type": "boolean"},
+                    "quality_score": {
+                        "type": "integer",
+                        "description": "Quality 0-100.",
+                    },
+                    "lessons": {"type": "string", "description": "What was learned."},
+                    "pattern_tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Pattern tags for learning.",
+                    },
+                },
+                "required": ["task_type", "task_description", "outcome_status"],
+            },
+        ),
+        Tool(
+            name="outcome_list",
+            description=(
+                "List recent task outcomes, optionally filtered by project, goal, or status. "
+                "Use to review what worked and what didn't."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Filter by project.",
+                    },
+                    "goal_slug": {
+                        "type": ["string", "null"],
+                        "description": "Filter by goal slug.",
+                    },
+                    "outcome_status": {
+                        "type": "string",
+                        "enum": ["pending", "success", "partial", "failure", "unknown"],
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 20).",
+                        "default": 20,
+                    },
+                },
+            },
+        ),
         # ---- Graph tools ----
         Tool(
             name="memory_graph",
@@ -597,6 +680,11 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
         # Graph tools
         elif name == "memory_graph":
             return _big_result(await _handle_graph(arguments))
+        # Outcome tracking tools (Pillar 3)
+        elif name == "outcome_record":
+            return await _handle_outcome_record(arguments)
+        elif name == "outcome_list":
+            return _big_result(await _handle_outcome_list(arguments))
         # Event tools
         elif name == "events_list":
             return _big_result(await _handle_events_list(arguments))
@@ -1547,6 +1635,81 @@ async def _handle_events_mark_processed(args: dict) -> list[TextContent]:
             updated += 1
 
     return [TextContent(type="text", text=f"Marked {updated}/{len(event_ids)} events as processed.")]
+
+
+# -- Outcome tracking handlers (Pillar 3) ------------------------------------
+
+
+async def _handle_outcome_record(args: dict) -> list[TextContent]:
+    """Record a task outcome to task_outcomes table."""
+    client = _get_client()
+
+    row = {
+        "task_type": args["task_type"],
+        "task_description": args["task_description"],
+        "outcome_status": args["outcome_status"],
+    }
+    # Optional fields
+    for key in (
+        "outcome_summary", "goal_slug", "project", "issue_url", "pr_url",
+        "tests_passed", "pr_merged", "quality_score", "lessons",
+    ):
+        if key in args and args[key] is not None:
+            row[key] = args[key]
+    if "pattern_tags" in args:
+        row["pattern_tags"] = args["pattern_tags"]
+
+    result = client.table("task_outcomes").insert(row).execute()
+    if result.data:
+        oid = result.data[0]["id"]
+        return [TextContent(type="text", text=f"Outcome recorded: {oid}")]
+    return [TextContent(type="text", text="Failed to record outcome.")]
+
+
+async def _handle_outcome_list(args: dict) -> list[TextContent]:
+    """List task outcomes with optional filters."""
+    client = _get_client()
+    limit = args.get("limit", 20)
+
+    query = (
+        client.table("task_outcomes")
+        .select("id, task_type, task_description, outcome_status, outcome_summary, "
+                "goal_slug, project, pr_url, tests_passed, pr_merged, quality_score, "
+                "lessons, pattern_tags, created_at, verified_at")
+        .order("created_at", desc=True)
+        .limit(limit)
+    )
+
+    if args.get("project"):
+        query = query.eq("project", args["project"])
+    if args.get("goal_slug"):
+        query = query.eq("goal_slug", args["goal_slug"])
+    if args.get("outcome_status"):
+        query = query.eq("outcome_status", args["outcome_status"])
+
+    result = query.execute()
+
+    if not result.data:
+        return [TextContent(type="text", text="No outcomes found.")]
+
+    lines = [f"# Task Outcomes ({len(result.data)})\n"]
+    for o in result.data:
+        status_icon = {"success": "+", "partial": "~", "failure": "-", "pending": "?", "unknown": "."}.get(
+            o["outcome_status"], "?"
+        )
+        lines.append(
+            f"[{status_icon}] {o['task_type']}: {o['task_description']}"
+        )
+        if o.get("outcome_summary"):
+            lines.append(f"    {o['outcome_summary']}")
+        if o.get("goal_slug"):
+            lines.append(f"    Goal: {o['goal_slug']}")
+        if o.get("lessons"):
+            lines.append(f"    Lesson: {o['lessons']}")
+        lines.append(f"    {o['created_at'][:10]} | {o['outcome_status']}")
+        lines.append("")
+
+    return [TextContent(type="text", text="\n".join(lines))]
 
 
 # ---------------------------------------------------------------------------
