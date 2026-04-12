@@ -52,6 +52,17 @@ For each repo, compute:
 
 **Review backlog**: non-draft PRs awaiting review >2 days.
 
+**Repo hygiene** (if local directory exists):
+```bash
+# Local branches whose remote tracking branch is deleted
+git -C <path> branch -vv | grep ': gone]'
+# Local branches not merged into master/main
+git -C <path> branch --no-merged master 2>/dev/null || git -C <path> branch --no-merged main
+# Stashes
+git -C <path> stash list
+```
+Flag: N stale branches (remote gone), M unmerged branches, K stashes.
+
 **Goal alerts** (from session context — goals are already loaded):
 - Deadline within 3 days → urgent flag
 - P0 goal with no related activity → neglect flag
@@ -71,6 +82,7 @@ For each repo, compute:
 **PRs:** N open (<titles of notable ones>)
 **Issues:** N open, M stale, K blocked
 **Security:** N alerts (or clean)
+**Hygiene:** N stale branches, M unmerged, K stashes (or clean)
 
 ## <Repo 2>
 ...

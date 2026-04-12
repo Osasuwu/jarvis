@@ -29,6 +29,10 @@
     "reddit": {
       "command": "uvx",
       "args": ["reddit-no-auth-mcp-server"]
+    },
+    "obsidian": {
+      "command": "npx",
+      "args": ["-y", "@bitbonsai/mcpvault@latest", "C:/Users/petrk/OneDrive/Документы/Obsidian Vault"]
     }
   }
 }

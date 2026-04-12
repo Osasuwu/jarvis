@@ -127,6 +127,16 @@ When implementing multiple related issues:
 - Separate branches for independent changes (can be merged independently)
 - Address Copilot review comments promptly
 
+### 7. Post-merge cleanup
+
+After a PR is merged (or when returning to a previously merged branch):
+```bash
+git checkout master && git pull
+git branch -d feat/<N>-<slug>
+```
+
+This prevents stale branch accumulation. If the branch has unmerged work, `-d` will refuse — that's correct, don't force it.
+
 ## Safety rules
 - Check `git status` before branching — abort if dirty
 - Never force-push, never merge PRs without review

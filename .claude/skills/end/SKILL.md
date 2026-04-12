@@ -41,7 +41,25 @@ This is the handoff to the next session. If open items exist in Step 5 output, t
 
 Only exception: truly empty session (user asked one question and left).
 
-## Step 4 — Commit
+## Step 4 — Branch cleanup
+
+Check for local branches whose remote tracking branch has been deleted:
+```bash
+git branch -vv | grep ': gone]' | awk '{print $1}'
+```
+
+If any found, for each branch:
+1. Try `git branch -d <name>` (safe delete)
+2. If it fails ("not fully merged") — this usually means the PR was squash-merged. Verify:
+   ```bash
+   gh pr list --head <branch> --state merged --json number --limit 1
+   ```
+3. If PR confirmed merged → `git branch -D <name>` (force delete is safe)
+4. If no merged PR found → report in output, don't delete
+
+Skip if none found.
+
+## Step 5 — Commit
 
 Run `git status` and `git diff --stat`.
 
@@ -56,7 +74,7 @@ Run `git status` and `git diff --stat`.
 
 Stage only session-related files. Standard commit format with Co-Authored-By.
 
-## Step 5 — Output
+## Step 6 — Output
 
 ```
 ## Session closed — YYYY-MM-DD
