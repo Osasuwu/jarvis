@@ -30,11 +30,16 @@ Review the conversation for unsaved items:
 
 Upsert existing memories, don't create duplicates. Check name before creating new.
 
-## Step 3 — Working state
+## Step 3 — Working state (non-negotiable)
 
-If there is unfinished work or important context for next session:
-- Save `working_state_jarvis` (type=project) with: what was done, what's pending, key decisions, blockers
-- If no meaningful state to preserve — skip
+Save `working_state_jarvis` (type=project) to Supabase. Always. Content:
+- What was done this session
+- Open items: unfinished work, things to fix, deferred tasks
+- Key context for next session (blockers, decisions pending review)
+
+This is the handoff to the next session. If open items exist in Step 5 output, they MUST be in this memory too — output is ephemeral, memory persists.
+
+Only exception: truly empty session (user asked one question and left).
 
 ## Step 4 — Commit
 
