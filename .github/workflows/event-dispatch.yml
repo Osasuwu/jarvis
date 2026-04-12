@@ -14,6 +14,13 @@ name: Event Dispatch
 
 on:
   workflow_run:
+    workflows:
+      - "Copilot Review Response"
+      - "Issue Checks"
+      - "PR Body Check"
+      - "PR Merged"
+      - "Project Sync"
+      - "Review Response"
     types: [completed]
     branches: [main, master]
 
