@@ -1,73 +1,75 @@
 ---
 name: end
-description: "Close the session: save memories, commit changes, output handoff for next session"
+description: "Full session close: behavioral reflection, decision log, memory save, commit, handoff. ~5 min."
 ---
 
-# End Session
+# End Session (Full)
 
-Closes the current session completely. Saves knowledge, commits work, hands off cleanly.
+Closes the session with quality reflection. For quick exit, use `/end-quick`.
 
-## Steps
+## Step 1 — Behavioral reflection
 
-### Step 1 — Scan the conversation
-Review the full conversation history. Find anything NOT explicitly saved during the session:
-- Decisions made (architecture, tools, approaches chosen or rejected)
-- Preferences expressed by the owner
-- New facts learned about the owner (profile, habits, goals)
-- Project state changes (what was built, what was deferred)
-- Feedback given (corrections, confirmations of non-obvious approaches)
+Review your own behavior this session against feedback memories (already in context from session start):
 
-### Step 2 — Save to Supabase
-For each unsaved item, call `memory_store` with the appropriate type:
-- `decision` — architectural/design choices with rationale
-- `feedback` — behavioral rules, corrections, confirmed approaches
-- `user` — owner profile, preferences, working style (project=null)
-- `project` — project state, current work, what's pending
+1. **Rule violations**: did you break any known rules? (e.g., skipped memory load, assumed instead of verified, added unrequested features, was sycophantic)
+2. **Missed context**: did you ignore goals, forget cross-project impact, miss something obvious?
+3. **Quality**: did you deliver end-to-end or leave loose ends? Did you verify your work?
+4. **Communication**: were you too verbose? Too terse? Did you ask when you should have acted, or act when you should have asked?
 
-Don't batch. Save each one. Upsert existing memories rather than creating duplicates — check the name before creating new.
+If you find a pattern worth recording (not a one-off): save as `feedback` memory. Include **why** it matters and **how to apply** next time.
 
-### Step 3 — Commit changes (if work is complete)
+If nothing notable — skip. Don't fabricate observations.
 
-Run `git status` and `git diff --stat` to check for uncommitted changes.
+## Step 2 — Decision & knowledge scan
 
-**Commit if ALL of these are true:**
-- There ARE uncommitted changes (staged or unstaged)
-- The work from this session is **complete** — not half-done, not mid-refactor, not broken
-- The changes form a **coherent unit** — not a mix of unrelated edits that should be separate commits
+Review the conversation for unsaved items:
+- **Decisions** made (architecture, approach, rejection of alternatives) → `decision` memory
+- **User preferences** or profile updates → `user` memory
+- **Project state** changes → `project` memory
+- **Feedback** given by owner → `feedback` memory
 
-**Do NOT commit if ANY of these are true:**
-- The session ended mid-task (interrupted, ran out of context, hit a blocker)
-- Changes are experimental / exploratory and the owner hasn't approved the direction
-- Tests are failing because of the changes
-- There are merge conflicts
+Upsert existing memories, don't create duplicates. Check name before creating new.
 
-**If committing:** follow the standard commit flow (git add specific files, write a descriptive message, Co-Authored-By). Stage only files related to the session's work — don't accidentally include unrelated changes that were already in the working tree before the session.
+## Step 3 — Working state
 
-**If NOT committing:** mention it in the output under "Open items" with a reason (e.g., "Uncommitted changes: mid-refactor, needs review before commit").
+If there is unfinished work or important context for next session:
+- Save `working_state_jarvis` (type=project) with: what was done, what's pending, key decisions, blockers
+- If no meaningful state to preserve — skip
 
-### Step 4 — Suggest reflect (if applicable)
+## Step 4 — Commit
 
-Check: are there any `decision` memories updated in the last 14 days that do NOT have an `## Outcome` section, AND have a resolved PR (merged/closed)?
+Run `git status` and `git diff --stat`.
 
-If yes, add one line:
-> "There are N decisions with resolved PRs but no outcome — run `/reflect` to capture lessons."
+**Commit if:**
+- There are uncommitted changes
+- Work is complete (not mid-refactor, not broken)
+- Changes form a coherent unit
 
-### Step 5 — Output
+**Don't commit if:**
+- Mid-task, experimental, tests failing, or merge conflicts
+- Instead, note in output under "Open items"
+
+Stage only session-related files. Standard commit format with Co-Authored-By.
+
+## Step 5 — Output
 
 ```
 ## Session closed — YYYY-MM-DD
 
+### Reflection
+- <1-3 behavioral observations, or "Clean session — no issues">
+
 ### Saved to memory (N)
-- <memory_name> — <one-line description>
+- <name> — <one-line>
 
 ### Committed
-- <commit hash + message, or "No commit — <reason>">
+- <hash + message, or "No commit — <reason>">
 
 ### What was done
-- <bullet>
+- <bullets>
 
-### Open items / next session
-- <anything unfinished, deferred, or worth picking up next time>
+### Open items
+- <unfinished work, deferred tasks, things for next session>
 ```
 
-Keep it brief. This is a handoff, not a report.
+Keep it concise. This is a handoff, not a report.

@@ -1,76 +1,84 @@
 ---
 name: status
-description: "Quick project dashboard — git state, open PRs, recent issues, last research findings, open checkpoints across all configured repos. Use when: session start context check, 'статус', 'status', 'что происходит', 'overview', 'dashboard'."
-version: 1.0.0
+description: "Project dashboard: git state, PRs, issues, CI health, risks, stale/blocked work, goal alerts. Absorbs morning-brief, risk-radar, triage. Use at session start or when needing cross-project awareness."
+version: 2.0.0
 ---
 
 # Status Dashboard
 
-Single-command overview of all projects. Designed for session-start context loading — replaces manual git checks and memory recalls.
+Single command for full project awareness. Replaces morning-brief, risk-radar, and triage.
 
 ## Usage
 
-- `/status` — all repos
+- `/status` — all repos, full dashboard
 - `/status <repo>` — single repo focus
 
-## Step 1 — Load repos and memory (parallel)
+## Step 1 — Load repos
 
-Run in parallel:
-- Read `config/repos.conf` for repo list (one `owner/repo` per line)
-- `memory_recall(query="working_state", type="project", limit=3)` — open checkpoints
-- `memory_recall(query="intel digest", limit=1)` — last intel run
-- `memory_recall(query="nightly research", limit=1)` — last nightly findings
+Read `config/repos.conf` (one `owner/repo` per line, `#` = comment). This is the single source of truth — no hardcoded repo names.
 
-## Step 2 — Git state per project (parallel)
+## Step 2 — Gather data (parallel)
 
-For each repo from `repos.conf`, check if a local directory exists for it (derive directory name from repo name — e.g. `Osasuwu/jarvis` → look for `../personal-AI-agent` relative to project root). If found:
+For each repo, run in parallel:
 
+**Git state** (if local directory exists):
 ```bash
 git -C <path> log --oneline -5
 git -C <path> status --short
 git -C <path> branch --show-current
 ```
 
-Skip repos without local directories — they're still checked via GitHub in Step 3.
-
-## Step 3 — GitHub state per repo (parallel)
-
-For each repo in repos.conf:
-
+**GitHub state:**
 ```bash
-gh pr list --repo <owner/repo> --state open --json number,title,author,updatedAt --limit 5
-gh issue list --repo <owner/repo> --state open --label "priority:high" --json number,title,updatedAt --limit 5
-gh run list --repo <owner/repo> --json conclusion,name --limit 5
+gh pr list --repo <R> --state open --json number,title,updatedAt,reviewDecision,isDraft --limit 10
+gh issue list --repo <R> --state open --json number,title,labels,updatedAt --limit 20
+gh run list --repo <R> --json conclusion,name --limit 10
 ```
 
-## Step 4 — Format output
+**Security** (skip silently on 403):
+```bash
+gh api repos/<R>/dependabot/alerts --jq '[.[] | select(.state=="open")]' 2>/dev/null
+```
+
+## Step 3 — Analyze
+
+For each repo, compute:
+
+**CI health**: failure rate from last 10 runs. >=50% CRITICAL, 30-49% HIGH, 15-29% MEDIUM.
+
+**Stale issues**: open issues not updated >14 days (skip blocked). Flag count.
+
+**Blocked work**: issues/PRs with `blocked` label or `CHANGES_REQUESTED` review >3 days old.
+
+**Review backlog**: non-draft PRs awaiting review >2 days.
+
+**Goal alerts** (from session context — goals are already loaded):
+- Deadline within 3 days → urgent flag
+- P0 goal with no related activity → neglect flag
+
+## Step 4 — Output
 
 ```markdown
 # Status — YYYY-MM-DD
 
-## Open Checkpoints
-- <checkpoint name> — <summary> (or: none)
+## Goal Alerts
+- <P0 deadline, neglect warnings, or "Goals on track">
 
 ## <Repo Name>
 **Branch:** main | **Clean:** yes/no
-**Recent commits:** (last 3, one-line each)
-**Open PRs:** N (list titles)
-**High-priority issues:** N (list titles)
-**CI:** N/M passed (last 5 runs)
+**CI:** N/M passed (CRITICAL/HIGH/MEDIUM/ok)
+**Recent:** <last 3 commits, one-line>
+**PRs:** N open (<titles of notable ones>)
+**Issues:** N open, M stale, K blocked
+**Security:** N alerts (or clean)
 
 ## <Repo 2>
 ...
 
-## Intel / Research
-**Last intel:** <date> — <top finding>
-**Last nightly:** <date> — <top finding>
-
-## Suggested next action
-<based on what's most urgent: stale PR, failing CI, open checkpoint, etc.>
+## Action items
+1. <most urgent thing — fix CI, respond to review, merge ready PR>
+2. <next priority>
+3. <etc>
 ```
 
-Keep the output concise. Skip sections with nothing to report.
-
-## Cost estimate
-
-~$0.02–0.05 per run (mostly gh CLI calls, minimal LLM)
+Keep concise. Skip empty sections. Owner scans in 30 seconds.

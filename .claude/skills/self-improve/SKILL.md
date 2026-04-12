@@ -1,13 +1,12 @@
 ---
 name: self-improve
-description: "Autonomous self-improvement: identify gaps from context, ideate, research, implement. A meta-agent role — improves Jarvis by introducing new capabilities."
+description: "Autonomous self-improvement: health check, gap analysis, ideation, research, implementation. Absorbs ideate, self-review, repo-health."
+version: 2.0.0
 ---
 
 # Self-Improve
 
-**Goal: introduce something genuinely new** — not just fix existing issues.
-
-A meta-agent mindset: you are an agent whose job is to make the system better.
+Meta-agent: identify gaps, generate ideas, research, implement. Goal: introduce something genuinely new.
 
 ## Usage
 
@@ -16,59 +15,69 @@ A meta-agent mindset: you are an agent whose job is to make the system better.
 
 ## Pipeline
 
-### Step 1 — Health baseline
+### Step 1 — Health check
 
-Run the self-review skill to understand current codebase state.
-Note: **don't fix self-review findings directly** — they're context for ideation.
+Quick codebase scan (replaces separate self-review + repo-health):
+- Run tests: `python -m pytest tests/ -q` (if tests exist)
+- Check for obvious issues: broken imports, stale configs, TODO/FIXME density
+- Note findings as context — don't fix directly yet
 
 ### Step 2 — Load context
 
 In parallel:
-- `memory_recall(query="nightly research", limit=3)` — unacted findings
-- `memory_recall(type="decision", limit=5)` — recent decisions
-- `memory_recall(query="working state", limit=2)` — open items
+```
+memory_recall(type="decision", limit=5)
+memory_recall(query="working_state", type="project", limit=2)
+memory_recall(type="feedback", limit=5)
+```
 
-Build a picture of: what's missing, what friction repeats, what research sits unacted.
+Build a picture: what friction repeats, what's missing, what research sits unacted.
 
 ### Step 3 — Ideate
 
-Invoke the ideate skill (Mode 1: generate ideas).
+Generate 3-5 ideas for improvement. For each, score:
+- **Impact**: H/M/L — how much does this improve Jarvis?
+- **Effort**: H/M/L — how long to implement?
+- **Risk**: H/M/L — what could break?
 
-If no strong ideas: fallback to self-review findings for code improvements (lower value, note this).
+Sources of ideas:
+- Health check findings (code quality, missing tests)
+- Repeated friction patterns (from feedback memories)
+- Unacted research findings
+- Missing capabilities observed in recent sessions
+- Opportunities from new Claude Code / MCP features
 
-### Step 4 — Pick the best idea
+If no strong ideas: fall back to health check findings for code improvements.
 
-Top-1 by: **High impact + Low/Medium effort + Low/Medium risk**.
-Prefer ideas connected to nightly research (topical, grounded).
+### Step 4 — Select
 
-### Step 5 — Targeted research
+Top-1 by: High impact + Low/Medium effort + Low/Medium risk.
+Prefer ideas connected to real observed problems over theoretical improvements.
+
+### Step 5 — Research
 
 Focused search on the selected idea:
 - Specific question, not generic scan
 - `firecrawl_search(limit=3)` or `WebSearch`
-- If research invalidates the idea, go back to Step 4
+- If research invalidates the idea → go back to Step 4
 
 ### Step 6 — Risk classification
 
 | Risk | Criteria | Action |
 |------|----------|--------|
-| **Low** | New skill, config, prompt improvement, docs | Auto-implement |
+| **Low** | New skill, config tweak, prompt improvement, docs | Auto-implement |
 | **Medium** | New hook, MCP config, tool wiring | Show plan, wait for confirmation |
 | **High** | Architecture, memory server, SOUL.md, CLAUDE.md | Propose only |
 
-**Never auto-apply:** `.mcp.json`, `mcp-memory/server.py`, `config/SOUL.md`, `CLAUDE.md`, env files.
+**Never auto-apply:** `.mcp.json`, `mcp-memory/server.py`, `config/SOUL.md`, `CLAUDE.md`, `.env`.
 
 ### Step 7 — Implement (skip in --dry-run)
 
-Low risk: implement directly.
-Medium risk: show plan, wait for confirmation.
-High risk: output proposal only.
+Low risk → implement directly.
+Medium risk → show plan, wait for confirmation.
+High risk → output proposal only.
 
-Verify after changes:
-```bash
-python -m compileall <changed_files>
-python -m pytest tests/ -v --tb=short
-```
+Verify: `python -m pytest tests/ -q` if applicable.
 
 ### Step 8 — Branch + PR (skip in --dry-run or High risk)
 
@@ -85,16 +94,21 @@ gh pr create --title "self-improve: <description>" --body "..."
 ```markdown
 ## Self-Improve — YYYY-MM-DD
 
-### Gaps identified
-- <gap> (source: nightly / working state / self-review)
+### Health check
+- <key findings, or "Clean">
 
-### Selected idea
-**[Title]** — Impact: H/M/L | Effort: H/M/L | Risk: L/M/H
+### Ideas (scored)
+| Idea | Impact | Effort | Risk |
+|------|--------|--------|------|
+| ... | H/M/L | H/M/L | H/M/L |
 
-### Research finding
+### Selected
+**[Title]** — Impact: H | Effort: L | Risk: L
+
+### Research
 <key insight>
 
 ### Result
 - Implemented / Proposed / Needs approval
-- PR: <url> (or --dry-run / high-risk)
+- PR: <url> (or --dry-run)
 ```

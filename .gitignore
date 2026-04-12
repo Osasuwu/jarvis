@@ -29,6 +29,10 @@ Thumbs.DB
 
 # Claude Code device-local settings (not shared)
 .claude/settings.local.json
+.claude/worktrees/
+
+# Device-specific config (auto-generated per machine)
+config/device.json
 
 # Generated self-review reports (runtime artifacts - keep skill definitions)
 reports/self-review-*.md
