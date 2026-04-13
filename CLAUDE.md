@@ -91,7 +91,7 @@ This project provides the memory server used by ALL projects. Changes to `mcp-me
 
 | Project | Repo | Description |
 |---------|------|-------------|
-| redrobot | `Osasuwu/redrobot` | Industrial robot control — Python + FastAPI + React/Three.js + MuJoCo |
+| redrobot | `SergazyNarynov/redrobot` | Industrial robot control — Python + FastAPI + React/Three.js + MuJoCo |
 
 Projects share infrastructure. Changes here can break redrobot:
 - `mcp-memory/server.py` -> memory server used by both projects
@@ -149,7 +149,7 @@ After context compression → `memory_recall(query="working state")` first, then
 
 ## Skill routing
 
-Six skills. Use them — don't reinvent with raw tools.
+Seven skills. Use them — don't reinvent with raw tools.
 
 | Situation | Skill | Trigger |
 |-----------|-------|---------|
@@ -160,6 +160,7 @@ Six skills. Use them — don't reinvent with raw tools.
 | Investigate a topic | **/research** | "исследуй", "research", "что лучше", "сравни". Also autonomous discovery mode for scheduled runs |
 | Improve Jarvis itself | **/self-improve** | "улучши себя", "self-improve", or scheduled autonomous runs. Gap → ideate → research → implement |
 | Manage goals | **/goals** | "цели", "goals", "приоритеты", "что в фокусе" |
+| Sprint report + release | **/sprint-report** | End of sprint in redrobot. "отчёт по спринту", "sprint report", "релиз спринта". Generates release notes + draft report for Sergazy |
 
 **Rules:**
 - GitHub issue implementation → /delegate. No exceptions. Raw Agent loses PR structure, issue linking, verification
