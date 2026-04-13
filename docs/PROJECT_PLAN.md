@@ -1,99 +1,125 @@
-# Jarvis Project Plan
+# Jarvis 2.0 — Project Plan
 
-Version: 6.0
-Date: 2026-03-31
+Version: 7.0
+Date: 2026-04-13
 
 ## Purpose
 
-Reference document. When it's unclear what to build next or whether something belongs in Jarvis — answer is here.
+Reference document. When it's unclear what to build next, whether something belongs in Jarvis, or how to approach implementation — answer is here.
 
 ---
 
 ## Vision
 
-Jarvis is a **thin, permanent layer on top of Claude Code** that provides:
+> **Jarvis — cognitive extension of a developer: sees the full picture, works while you sleep, argues when you're wrong, and gets more accurate every day.**
 
-1. **Identity** — consistent personality across all sessions (`config/SOUL.md`)
-2. **Cross-device memory** — context that survives sessions and syncs across all machines (Supabase MCP)
-3. **Custom extensions** — skills and MCP servers tailored to the owner's workflow
-
-Everything else is handled by Anthropic's native stack. Jarvis only adds what Claude Code genuinely can't do.
+Not a tool, not an assistant — an extension of thinking capacity, memory, and executive function. See `docs/VISION.md` for the full vision document.
 
 ---
 
-## Workspace architecture
+## Pillars
 
-| Workspace | Purpose |
-|-----------|---------|
-| `~/GitHub/` | Primary orchestrator — all sessions start here. Houses shared skills and commands. |
-| `personal-AI-agent/` | Identity (`SOUL.md`), memory server (`mcp-memory/`), project docs |
-| `redrobot/`, etc. | Project-specific work — opened directly in VS Code when working on that project |
+9 pillars organized in two layers. Core pillars are internal capabilities (how Jarvis thinks and works). Reach pillars are external capabilities (how Jarvis interacts with the world).
 
-Skills created in `personal-AI-agent/.claude/skills/` are auto-synced to `~/GitHub/.claude/skills/` via post-commit hook.
+### Core
 
----
+| # | Pillar | Status | What it is |
+|---|--------|--------|------------|
+| 1 | Goals & Strategic Context | Achieved | Goal-aware decision making, push-back, priority tracking |
+| 2 | Autonomous Work Loop | ~90% | Event perception, judgment, continuous operation without owner |
+| 3 | Outcome Tracking & Learning | ~40% | Verify results, learn from patterns, improve over time |
+| 4 | Memory 2.0 | ~85% | Graph relations, temporal awareness, auto-hygiene |
 
-## What Claude Code handles natively (don't rebuild)
+### Reach
 
-| Need | Native solution |
-|------|----------------|
-| Scheduling / cron | `/loop` + Desktop scheduled tasks |
-| Background agents | Claude Code Desktop background agents |
-| Delegation (issue → PR) | Subagents with model routing |
-| Mobile access | Dispatch (Claude mobile → Desktop) |
-| Messaging interfaces | Claude Code Channels |
+| # | Pillar | Status | What it is |
+|---|--------|--------|------------|
+| 5 | Integrations / Data Access | Early | Read access to all owner's accounts and services |
+| 6 | Data Intelligence | Not started | Cross-platform search, content curation, pattern detection |
+| 7 | Agent System | Prototype | Scalable multi-agent architecture (PM is one use case) |
+| 8 | Identity & Interface | Partial | TTS/STT, Telegram, professional mask for documents |
+| 9 | Security & Digital Hygiene | Not started | Password audit, breach monitoring, proactive protection |
 
----
-
-## What Jarvis adds on top
-
-| Gap | Solution |
-|-----|----------|
-| Cross-device memory | `mcp-memory/server.py` → Supabase |
-| Identity continuity | `config/SOUL.md` loaded at every session start |
-| Workflow automation | `.claude/skills/` — task-specific skills |
-| External integrations | MCP servers (where skills aren't enough) |
+Pillars are stable — they only grow, never change. Implementation within each pillar is flexible.
 
 ---
 
-## Extension principles
+## Planning process
 
-**Skills** (`.claude/skills/`) — for workflow automation: anything that involves reading context, making decisions, calling tools, producing output. Claude invokes these automatically or on request.
+Hybrid goals + agile:
 
-**MCP servers** — for persistent services, external data sources, or capabilities that need to run outside Claude's context. Use when a skill would require repeated identical tool calls.
+- **Goals** (Supabase) — strategic layer: vision, directions, priorities
+- **Milestones** (GitHub) — major deliverables within each pillar
+- **Issues** (GitHub) — decomposed tasks within milestones
+- **Labels** — `needs-research` (topic not studied yet) and `decision-made` (decision documented in issue)
 
-**Rule: native first.** Before adding anything:
-1. Can Claude Code do this natively? (hooks, /loop, subagents, Desktop agents)
+Decisions are documented in GitHub issues, not in Supabase memory. Memory is for cross-cutting context only.
+
+---
+
+## Access philosophy
+
+Jarvis has **read access to all owner's data** across all accounts and services. Full context = better decisions.
+
+- **Read**: default for everything — email, calendar, messengers, dev tools, hobbies
+- **Write**: configured manually per integration, never assumed
+- **People**: factual context (who is who, role) — OK. Managing relationships — no
+- **Professional mask**: draft documents/emails in owner's style — OK. Personal communications — no
+
+---
+
+## Infrastructure principles
+
+### Current runtime
+Claude Code (Claude Max subscription) + Supabase (memory, events, goals) + GitHub (issues, PRs, Actions).
+
+### Flexibility rules
+- Pillars are permanent. Implementation is swappable
+- Abstract provider-specific details — no lock-in to Claude, Supabase, or any vendor
+- Keep data portable (Supabase can be self-hosted)
+- Design for expansion — every module should accommodate future integrations
+- Future possibilities: own Linux server, local models, different LLM providers
+
+### Extension hierarchy
+Before building anything:
+1. Can Claude Code do this natively? (hooks, skills, subagents, scheduled tasks)
 2. Can an existing MCP server handle it?
-3. Skill or new MCP server?
-4. Only as last resort: new Python in `mcp-memory/`-style
+3. New skill or new MCP server?
+4. Only as last resort: custom Python service
+
+The only justified custom Python today: `mcp-memory/server.py` (cross-device Supabase sync).
+
+### Decision rule
+> Would this still be needed if Anthropic shipped it natively next month? If no — don't build it.
 
 ---
 
-## Permanently out of scope
+## Boundaries
 
-- Custom messaging relay (Channels handles it)
-- Custom scheduler (/ loop handles it)
-- Budget tracking (Anthropic dashboard)
+### Out of scope
 - Multi-user features (Jarvis serves one person)
 - Duplicate abstractions around what Claude Code already does
+- Managing other people's personal information
+- Impersonating owner in personal communications
+
+### Learned the hard way
+Three rewrites before the current architecture:
+1. Custom Python MVP — too much infrastructure for one person
+2. OpenClaw — 512 vulnerabilities, malicious skills
+3. Claude Agent SDK wrappers — 6 of 8 skills unnecessarily wrapped native features
+
+Lesson: self-hosting costs more time than it saves. Anthropic ships fast.
 
 ---
 
-## Why not custom Python services
+## Key files
 
-Jarvis went through three rewrites before reaching this architecture:
-
-1. **Custom Python MVP** — validated ideas, too much infrastructure to maintain alone
-2. **OpenClaw** — abandoned (512 security vulnerabilities, malicious skills)
-3. **Claude Agent SDK wrappers** — 6 of 8 skills were unnecessary wrapping of native Claude Code capabilities
-
-Lesson: self-hosting costs more time than it saves. Anthropic ships fast — building duplicates means maintaining things that get obsoleted in weeks.
-
-The only justified Python: `mcp-memory/server.py` (cross-device Supabase sync — genuinely not possible natively).
-
----
-
-## Decision rule
-
-When unsure whether to build something: **would this still be needed if Anthropic shipped this natively next month?** If no — don't build it.
+| What | Where |
+|------|-------|
+| Vision | `docs/VISION.md` |
+| Jarvis personality | `config/SOUL.md` |
+| Device config | `config/device.json` |
+| MCP config | `.mcp.json` |
+| Memory server | `mcp-memory/server.py` |
+| Session context loader | `scripts/session-context.py` |
+| Process rules | `.github/copilot-instructions.md` |

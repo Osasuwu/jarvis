@@ -2,8 +2,8 @@
 
 > **Jarvis — cognitive extension of a developer: sees the full picture, works while you sleep, argues when you're wrong, and gets more accurate every day.**
 
-Version: 1.0
-Date: 2026-04-08
+Version: 2.0
+Date: 2026-04-13
 
 ---
 
@@ -144,23 +144,38 @@ Not the capabilities — Claude can already code, research, analyze, argue. The 
 
 ---
 
-## Implementation Pillars (ordered by dependency)
+## Implementation Pillars
 
-### Pillar 1: Goals & Strategic Context
-The foundation. Without goals, nothing else has direction.
+### Core (internal capabilities)
 
-Jarvis knows what the owner is working on this week, what's priority, what deadlines are approaching, and what outcome matters — not "close issue" but "product ready for demo."
+**Pillar 1: Goals & Strategic Context** — *achieved*
+The foundation. Jarvis knows what the owner is working on, what's priority, what deadlines are approaching, and what outcome matters.
 
-### Pillar 2: Autonomous Work Loop
-The engine. Capabilities + judgment + continuous operation.
+**Pillar 2: Autonomous Work Loop**
+The engine. Capabilities + judgment + continuous operation. Perceives events, evaluates against goals, decides and acts. Judgment, not automation.
 
-GitHub events, CI failures, deadline proximity, knowledge gaps, routine maintenance — Jarvis perceives, evaluates against goals, decides, and acts. Or proposes. Or waits. Judgment, not automation.
+**Pillar 3: Outcome Tracking & Learning**
+The feedback loop. Every action has an expected outcome. Later — check the actual outcome. Patterns emerge: what works, what doesn't, where Jarvis is accurate, where it's not.
 
-### Pillar 3: Outcome Tracking & Learning
-The feedback loop. Every action has an expected outcome. Later — check the actual outcome. PR merged? Research useful? Suggestion accepted? Patterns emerge: what works, what doesn't, where Jarvis is accurate, where it's not.
+**Pillar 4: Memory 2.0**
+The knowledge infrastructure. Relationships between entities (graph, not flat list). Temporal awareness (when recorded, when relevant, when stale). Automatic hygiene. Priority-based recall.
 
-### Pillar 4: Memory 2.0
-The knowledge infrastructure. Relationships between entities (graph, not flat list). Temporal awareness (when recorded, when relevant, when stale). Automatic hygiene. Priority-based recall. Separate deep design effort.
+### Reach (external capabilities)
+
+**Pillar 5: Integrations / Data Access**
+Tentacles everywhere: email, calendar, messengers, services, hobbies, dev tools. Read access by default, write — manually configured per tool. The more Jarvis sees, the better decisions it makes.
+
+**Pillar 6: Data Intelligence**
+What to do with all that data: cross-platform search ("where did I see X?"), content curation, pattern detection in activity/rhythms, synthesis across sources.
+
+**Pillar 7: Agent System**
+Scalable multi-agent architecture. Each major capability block gets its own agent instance. PM is one application, not the whole system. Shared communication bus, unified context passing.
+
+**Pillar 8: Identity & Interface**
+How Jarvis presents itself: TTS/STT (voice), Telegram, professional document drafting in owner's style. Jarvis is its own personality but can "wear a mask" for professional output.
+
+**Pillar 9: Security & Digital Hygiene**
+Proactive protection: password audit, breach monitoring, credential rotation, subscription tracking, expiring tokens. Not reactive — preventive.
 
 ---
 
