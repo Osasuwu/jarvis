@@ -154,6 +154,7 @@ jarvis/
 1. Clone the repo
 2. Run `python scripts/setup-device.py`
 3. Open in Claude Code
+4. (Optional) Run `/setup-tasks` to register scheduled automation (daily briefs, risk radar, etc.)
 
 Memory syncs automatically via Supabase. All config lives in the repo.
 
