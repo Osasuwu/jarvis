@@ -337,6 +337,7 @@ language sql stable as $$
 $$;
 
 
+
 -- Find memories semantically similar to a given embedding (for auto-linking on store)
 -- Uses HNSW index on memories.embedding
 create or replace function find_similar_memories(
