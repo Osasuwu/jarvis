@@ -69,7 +69,7 @@ Try: "что у нас в M3?" — Jarvis should recall memory and answer in con
 To keep Jarvis available 24/7 on a home PC, create a Windows Task Scheduler task or a PowerShell service that runs:
 
 ```powershell
-cd C:\path\to\personal-AI-agent
+cd C:\path\to\jarvis
 claude --channels plugin:telegram@claude-plugins-official
 ```
 

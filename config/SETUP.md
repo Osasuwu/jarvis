@@ -19,10 +19,10 @@
 
 ```bash
 git clone https://github.com/Osasuwu/jarvis.git
-cd personal-AI-agent
+cd jarvis
 
 ```powershell
-cd personal-AI-agent
+cd jarvis
 python -m venv .venv
 
 # Windows
@@ -56,17 +56,13 @@ The only justified Python in this project is `mcp-memory/server.py`. Everything 
 
 The memory server loads `.env` from two locations (first match wins):
 
-1. `personal-AI-agent/.env` — project-level override
-2. `Github/.env` — shared secrets for all projects ← **primary location**
+1. `jarvis/.env` — project-level (recommended)
+2. Parent directory `.env` — shared secrets for all projects
 
-Copy the example into whichever location you prefer and fill in values:
+Copy the example and fill in values:
 
 ```bash
-# Option A: shared (recommended — one file for all projects)
-cp personal-AI-agent/.env.example .env   # run from Github/
-
-# Option B: project-local
-cp .env.example .env                      # run from personal-AI-agent/
+cp .env.example .env   # run from jarvis/
 ```
 
 Minimum required values:
@@ -116,7 +112,7 @@ If you see `SUPABASE_URL and SUPABASE_KEY must be set` — check your `.env`.
         "hooks": [
           {
             "type": "command",
-            "command": "echo '=== SESSION START CONTEXT ===' && echo '--- personal-AI-agent ---' && git -C /c/Users/petrk/GitHub/personal-AI-agent status --short && echo '--- redrobot ---' && git -C /c/Users/petrk/GitHub/redrobot status --short && echo '========================='"
+            "command": "echo '=== SESSION START CONTEXT ===' && echo '--- jarvis ---' && git -C /path/to/jarvis status --short && echo '========================='"
           }
         ]
       }

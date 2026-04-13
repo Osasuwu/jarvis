@@ -148,7 +148,7 @@ Nightly research runs at 03:00, topics configured in `config/research-topics.yam
 ## 9. Project structure
 
 ```
-personal-AI-agent/
+jarvis/
 ├── config/
 │   ├── SOUL.md              ← Jarvis personality (loaded every session)
 │   ├── SETUP.md             ← First-time device setup

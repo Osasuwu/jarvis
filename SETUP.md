@@ -28,7 +28,7 @@ The script is idempotent — safe to re-run anytime.
    - Supabase connector — claude.ai/settings/connectors
    - Firecrawl connector — claude.ai/settings/connectors
 
-3. **Verify**: `cd personal-AI-agent && claude` — check skills load, `/status` works
+3. **Verify**: `cd jarvis && claude` — check skills load, `/status` works
 
 ## Architecture
 

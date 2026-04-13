@@ -98,7 +98,7 @@ Full list: 25+ types supported by Kroki.
 ## Diagram storage convention
 
 Diagrams are saved to `docs/diagrams/` inside each project repository:
-- `personal-AI-agent/docs/diagrams/`
+- `jarvis/docs/diagrams/`
 - `redrobot/docs/diagrams/`
 
 Format: SVG (vector, renders in GitHub, small size).

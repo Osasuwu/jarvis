@@ -32,7 +32,7 @@
     },
     "obsidian": {
       "command": "npx",
-      "args": ["-y", "@bitbonsai/mcpvault@latest", "C:/Users/petrk/OneDrive/Документы/Obsidian Vault"]
+      "args": ["-y", "@bitbonsai/mcpvault@latest", "${OBSIDIAN_VAULT_PATH}"]
     }
   }
 }

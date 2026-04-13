@@ -71,7 +71,7 @@ Jarvis adds exactly these missing pieces as a thin layer on top of Claude Code.
 
 ```bash
 git clone https://github.com/Osasuwu/jarvis.git
-cd personal-AI-agent
+cd jarvis
 python -m venv .venv
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -e ".[memory]"
@@ -155,7 +155,7 @@ pyproject.toml      ← Python packaging
 ## Using on multiple devices
 
 1. Clone the repo on each device
-2. Add `SUPABASE_URL` and `SUPABASE_KEY` to `Github/.env` (shared) or `personal-AI-agent/.env`
+2. Add `SUPABASE_URL` and `SUPABASE_KEY` to `.env` in the project root
 3. `pip install -e ".[memory]"` on each device
 4. Open in Claude Code — memory syncs automatically via Supabase
 
