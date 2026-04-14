@@ -2,39 +2,34 @@
 # https://github.com/gitleaks/gitleaks
 
 title = "Gitleaks config for Jarvis"
-extend_exclude_regex = '''
-  # Build artifacts
-  \.build/|dist/|node_modules/|\.venv/|__pycache__/|
-  # IDE/Editor files
-  \.vscode/|\.idea/|\.mypy_cache/|\.pytest_cache/|\.ruff_cache/|
-  # OS specific
-  \.DS_Store|Thumbs\.db|
-  # Test fixtures (if any contain intentional secrets for testing)
-  tests/fixtures/|test-data/
-'''
 
-[[rules]]
-id = "jarvis-env-local"
-description = "Ignore local .env files which are already in .gitignore"
-regex = '''(?i)^\.env\.local$'''
-path = '''\.env\.local'''
-entropy = 0.0
-secretGroup = 1
-
-# Allowlist for common false positives specific to this project
-[[allowlist]]
-description = "AWS region patterns - common in examples, not secrets"
-regex = '''(us-east-1|us-west-2|eu-west-1|ap-southeast-1)'''
+# Paths to exclude from scanning
+[extend]
 paths = [
-  '''docs/.*\.md$''',
-  '''\.md$''',
+  '''.build/''',
+  '''dist/''',
+  '''node_modules/''',
+  '''.venv/''',
+  '''__pycache__/''',
+  '''.vscode/''',
+  '''.idea/''',
+  '''.mypy_cache/''',
+  '''.pytest_cache/''',
+  '''.ruff_cache/''',
+  '''tests/fixtures/''',
+  '''test-data/''',
 ]
 
-[[allowlist]]
-description = "Supabase URL patterns in docs/config - these are meant to be public"
-regex = '''(supabase\.co|https://[a-z0-9]+\.supabase\.co)'''
+# Allowlist for common false positives specific to this project
+[allowlist]
+description = "Global allowlist"
 paths = [
-  '''docs/.*\.md$''',
-  '''config/.*\.md$''',
   '''\.gitleaks\.toml$''',
+]
+regexTarget = "match"
+regexes = [
+  # AWS region patterns in docs — not secrets
+  '''(us-east-1|us-west-2|eu-west-1|ap-southeast-1|ap-south-1)''',
+  # Supabase public project URLs
+  '''https://[a-z0-9]+\.supabase\.co''',
 ]

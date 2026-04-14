@@ -6,5 +6,5 @@ repos:
         name: Detect secrets with gitleaks
         entry: gitleaks detect --verbose --exit-code 1 -c .gitleaks.toml
         language: system
-        types: [text]
-        stages: [commit]
+        pass_filenames: false
+        stages: [pre-commit]

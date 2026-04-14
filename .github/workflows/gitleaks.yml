@@ -3,14 +3,14 @@ name: Gitleaks Secret Scanning
 on:
   pull_request:
     paths-ignore:
-      - '**.md'
+      - '**/*.md'
       - 'docs/**'
       - '.gitignore'
   push:
     branches:
       - main
     paths-ignore:
-      - '**.md'
+      - '**/*.md'
       - 'docs/**'
       - '.gitignore'
 
