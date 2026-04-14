@@ -149,11 +149,12 @@ After context compression → `memory_recall(query="working state")` first, then
 
 ## Skill routing
 
-Seven skills. Use them — don't reinvent with raw tools.
+Nine skills. Use them — don't reinvent with raw tools.
 
 | Situation | Skill | Trigger |
 |-----------|-------|---------|
 | Implement a GitHub issue | **/delegate** | Owner says "реализуй", "implement", "#42" — or Jarvis decides to implement. **Always** use /delegate, never raw Agent for issue work |
+| Verify task outcomes | **/verify** | "проверь результаты", "verify outcomes", or scheduled after delegations. Checks PR merge, tests, updates outcome records |
 | End of session | **/end** | Owner says "end", "закончим", "конец сессии". Full: behavioral reflection + decisions + commit (~5 min) |
 | Quick exit | **/end-quick** | Owner says "end quick", "быстро закончим". Checkpoint + commit only (~30 sec) |
 | Project overview | **/status** | Start of work session, "статус", "что происходит", or when Jarvis needs cross-project awareness |
