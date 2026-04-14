@@ -95,8 +95,9 @@ jobs:
               errors.push(`Unable to validate issue linkage via API: ${e.message}`);
             }
 
+            // Parent link is recommended but not enforced — agile workflow allows standalone tasks.
             if (isTask && !isHotfix && !freshIssue.has_parent_issue) {
-              errors.push('Task issues must be linked to a parent epic via native GitHub Parent issue/Sub-issues relationship.');
+              console.log('Note: Task #' + issue.number + ' has no parent epic. Consider linking for traceability.');
             }
 
             if (isEpic) {
@@ -112,7 +113,7 @@ jobs:
             }
 
             if ((isTask || isBug) && !isHotfix && !issue.milestone) {
-              errors.push('Task and bug issues should have a milestone, unless critical/hotfix.');
+              console.log('Note: Task/bug #' + issue.number + ' has no milestone.');
             }
 
             if (errors.length > 0) {
