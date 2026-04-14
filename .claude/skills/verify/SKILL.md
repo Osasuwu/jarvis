@@ -65,13 +65,51 @@ WHERE id = '<outcome_id>';
 
 Use Supabase project ID: `svwrzttdkxeselkpxfgm`.
 
-## Step 4 — Extract lessons
+## Step 4 — Detect patterns
 
-Review all outcomes verified in this run. Look for patterns:
+**Minimum data**: skip pattern analysis if fewer than 5 total outcomes exist.
 
-1. **Repeated failures** in the same area → save as `feedback` memory
-2. **Successful patterns** worth repeating → save as `feedback` memory
-3. **Quality trends** (low quality_score clusters) → flag in output
+Run these queries via `execute_sql` (project: `svwrzttdkxeselkpxfgm`):
+
+### 4a. Success rate by task type
+```sql
+SELECT task_type,
+       COUNT(*) AS total,
+       COUNT(*) FILTER (WHERE outcome_status = 'success') AS succeeded,
+       ROUND(100.0 * COUNT(*) FILTER (WHERE outcome_status = 'success') / COUNT(*)) AS success_pct
+FROM task_outcomes
+WHERE outcome_status != 'pending'
+GROUP BY task_type
+ORDER BY total DESC;
+```
+
+### 4b. Failure clusters by pattern_tags
+```sql
+SELECT tag, COUNT(*) AS failures
+FROM task_outcomes, LATERAL unnest(pattern_tags) AS tag
+WHERE outcome_status = 'failure'
+GROUP BY tag
+HAVING COUNT(*) >= 2
+ORDER BY failures DESC;
+```
+
+### 4c. Repeated lessons (same lesson appearing 2+ times)
+```sql
+SELECT lessons, COUNT(*) AS occurrences
+FROM task_outcomes
+WHERE lessons IS NOT NULL AND lessons != ''
+GROUP BY lessons
+HAVING COUNT(*) >= 2
+ORDER BY occurrences DESC
+LIMIT 5;
+```
+
+### Pattern → feedback memory rules
+
+Save as `feedback` memory when:
+- A task type has **success rate < 60%** with 3+ samples → save: "task_type X has low success rate — investigate root cause"
+- A pattern_tag appears in **2+ failures** → save: "area X is failure-prone — add extra verification"
+- A lesson repeats **3+ times** → save: "recurring lesson — make this a permanent rule"
 
 Only save non-obvious patterns. Don't save "PR was merged successfully" — that's expected.
 
@@ -87,9 +125,14 @@ Only save non-obvious patterns. Don't save "PR was merged successfully" — that
 ### Still pending (N)
 - [?] <task_description> — PR open, awaiting review
 
-### Patterns found
-- <pattern description, or "None">
+### Patterns (last 30 days)
+| Task Type | Total | Success % |
+|-----------|-------|-----------|
+| delegation | N | N% |
 
-### Lessons saved (N)
+Failure clusters: <tag1 (N), tag2 (N), or "None">
+Repeated lessons: <lesson (Nx), or "None">
+
+### Feedback saved (N)
 - <memory name> — <one-line>
 ```

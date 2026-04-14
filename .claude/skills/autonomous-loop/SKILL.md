@@ -31,6 +31,7 @@ In parallel, load:
 - `memory_recall(query="risk radar")` — CI failures, security alerts, stale issues
 - `memory_recall(query="research findings unacted")` — research outputs waiting for action
 - `memory_recall(query="autonomous_loop_last_run")` — dedup check (don't run twice in same day)
+- `memory_recall(query="outcome patterns feedback")` — past pattern detections to inform scoring
 
 **Dedup rule:** If `autonomous_loop_last_run` exists and is today's date, skip gracefully (return "Already ran today").
 
