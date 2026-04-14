@@ -31,7 +31,7 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 | risk-radar | `7 9,14,19 * * *` | Quick risk scan: check CI status, stale issues, security alerts across repos in `config/repos.conf` |
 | autonomous-loop | `3 9 * * *` | Read and run `.claude/skills/autonomous-loop/SKILL.md` |
 | intel | `12 10 * * 1` | Weekly tech intelligence: search for new Claude Code features, MCP servers, AI agent patterns. Save findings to memory. |
-| reflect | `47 16 * * 5` | Weekly reflection: review decisions made this week, check outcomes, extract lessons, update hypotheses. |
+| verify | `47 16 * * 5` | Read and run `.claude/skills/verify/SKILL.md` — verify pending outcomes, detect patterns, save lessons. |
 
 ## Notes
 
