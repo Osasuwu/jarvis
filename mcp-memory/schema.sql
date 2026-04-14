@@ -216,11 +216,129 @@ create policy "Allow all for anon" on memory_links
 
 
 -- =========================================================================
+-- Task Outcomes — Pillar 3: Outcome Tracking & Learning
+-- Records results of delegations, research, fixes, autonomous actions.
+-- =========================================================================
+
+create table if not exists task_outcomes (
+  id uuid primary key default gen_random_uuid(),
+
+  -- What was done
+  task_type text not null
+    check (task_type in ('delegation', 'research', 'fix', 'review', 'autonomous')),
+  task_description text not null,
+  outcome_status text not null default 'pending'
+    check (outcome_status in ('pending', 'success', 'partial', 'failure', 'unknown')),
+  outcome_summary text,
+
+  -- Links
+  goal_slug text,           -- related goal
+  project text,             -- project scope
+  issue_url text,           -- GitHub issue URL
+  pr_url text,              -- GitHub PR URL
+
+  -- Quality signals
+  tests_passed boolean,
+  pr_merged boolean,
+  quality_score integer check (quality_score is null or (quality_score >= 0 and quality_score <= 100)),
+
+  -- Learning
+  lessons text,
+  pattern_tags text[] default '{}',
+
+  -- Verification
+  verified_at timestamptz,  -- when outcome was verified (e.g. PR merged check)
+
+  -- Timestamps
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_task_outcomes_project on task_outcomes(project);
+create index if not exists idx_task_outcomes_goal on task_outcomes(goal_slug);
+create index if not exists idx_task_outcomes_status on task_outcomes(outcome_status);
+create index if not exists idx_task_outcomes_created on task_outcomes(created_at desc);
+create index if not exists idx_task_outcomes_tags on task_outcomes using gin(pattern_tags);
+
+-- RLS
+alter table task_outcomes enable row level security;
+
+create policy "Allow all for authenticated" on task_outcomes
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on task_outcomes
+  for all to anon using (true) with check (true);
+
+
+-- =========================================================================
 -- RPC Functions — Memory 2.0
 -- =========================================================================
 
+-- HNSW index for fast vector similarity search (pgvector)
+-- Without this, find_similar_memories() does slow sequential scan.
+create index if not exists idx_memories_embedding_hnsw
+  on memories using hnsw (embedding vector_cosine_ops)
+  with (m = 16, ef_construction = 64);
+
+-- Semantic search for hybrid recall (used by memory_recall's RRF pipeline)
+-- Returns memories ranked by cosine similarity via HNSW index.
+create or replace function match_memories(
+    query_embedding vector,
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, last_accessed_at timestamptz,
+    similarity float
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.last_accessed_at,
+           1 - (m.embedding <=> query_embedding) as similarity
+    from memories m
+    where m.embedding is not null
+      and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+    order by m.embedding <=> query_embedding
+    limit match_limit;
+$$;
+
+
+-- Keyword search for hybrid recall (used by memory_recall's RRF pipeline)
+-- Uses full-text search (tsvector) with ranking.
+create or replace function keyword_search_memories(
+    search_query text,
+    match_limit int default 10,
+    filter_project text default null,
+    filter_type text default null
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, last_accessed_at timestamptz,
+    rank real
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.last_accessed_at,
+           ts_rank(m.fts, websearch_to_tsquery('english', search_query)) as rank
+    from memories m
+    where m.fts @@ websearch_to_tsquery('english', search_query)
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+    order by rank desc
+    limit match_limit;
+$$;
+
+
 -- Find memories semantically similar to a given embedding (for auto-linking on store)
--- Uses existing HNSW index on memories.embedding
+-- Uses HNSW index on memories.embedding
 create or replace function find_similar_memories(
     query_embedding vector,
     exclude_id uuid,
@@ -281,4 +399,14 @@ language sql stable as $$
     ) deduped
     order by deduped.link_strength desc
     limit 10;
+$$;
+
+
+-- Update last_accessed_at for temporal scoring (called fire-and-forget on recall)
+create or replace function touch_memories(memory_ids uuid[])
+returns void
+language sql volatile as $$
+    update memories
+    set last_accessed_at = now()
+    where id = any(memory_ids);
 $$;

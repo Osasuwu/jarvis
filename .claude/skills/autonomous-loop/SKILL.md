@@ -94,16 +94,24 @@ Based on risk classification:
 
 ## Step 7 — Record Outcome
 
-Every action logs to memory:
+Every action logs to both memory and task_outcomes (Pillar 3):
 
 ```
-memory_store(
-  type="project",
-  name="autonomous_action_log",
-  content="<what was done, outcome, reasoning>",
-  description="autonomous-loop run on YYYY-MM-DD"
+outcome_record(
+  task_type: "autonomous",
+  task_description: "<action title>",
+  outcome_status: "success" | "partial" | "failure",
+  outcome_summary: "<what was done, reasoning, result>",
+  goal_slug: "<aligned goal slug if any>",
+  project: "jarvis",
+  lessons: "<what was learned>",
+  pattern_tags: ["autonomous-loop", "<action-area>"]
 )
+```
 
+Also update dedup marker and goal progress:
+
+```
 memory_store(
   type="project",
   name="autonomous_loop_last_run",
@@ -112,7 +120,7 @@ memory_store(
 )
 ```
 
-Also update goal progress if action advances a goal.
+If action advances a goal → `goal_update(slug=..., progress_pct=...)`.
 
 ## Safety Rules
 

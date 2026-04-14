@@ -120,14 +120,36 @@ EOF
 
 **Why this matters**: Copilot and human reviewers see reasoning inline, not just diff. HIGH/CRITICAL risks are flagged before review starts. No back-and-forth asking "why did you do X?"
 
-### 6. Batch optimization
+### 6. Record outcome
+
+After PR creation (or failure at any step), record the outcome for Pillar 3 tracking:
+
+```
+outcome_record(
+  task_type: "delegation",
+  task_description: "<issue title> (#N)",
+  outcome_status: "success" | "partial" | "failure",
+  outcome_summary: "<what happened — PR created, tests passed/failed, etc.>",
+  goal_slug: "<related goal if known>",
+  project: "<repo name>",
+  issue_url: "<issue URL>",
+  pr_url: "<PR URL if created>",
+  tests_passed: true/false,
+  lessons: "<anything non-obvious learned>",
+  pattern_tags: ["delegation", "<area>"]
+)
+```
+
+**Always record**, even on failure — failed outcomes are the most valuable for learning.
+
+### 7. Batch optimization
 
 When implementing multiple related issues:
 - Group into one branch if they touch the same files
 - Separate branches for independent changes (can be merged independently)
 - Address Copilot review comments promptly
 
-### 7. Post-merge cleanup
+### 8. Post-merge cleanup
 
 After a PR is merged (or when returning to a previously merged branch):
 ```bash
