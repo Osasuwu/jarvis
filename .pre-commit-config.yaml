@@ -1,0 +1,10 @@
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.2
+    hooks:
+      - id: gitleaks
+        name: Detect secrets with gitleaks
+        entry: gitleaks detect --verbose --exit-code 1 -c .gitleaks.toml
+        language: system
+        types: [text]
+        stages: [commit]
