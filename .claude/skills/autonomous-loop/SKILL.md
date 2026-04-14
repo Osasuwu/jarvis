@@ -45,6 +45,7 @@ From perception outputs, generate candidates:
 - **Actionable research** (marked in memory) → execute finding
 - **Events** from event queue (HIGH+ severity) → handle event
 - **Morning-brief** items marked "needs action" → act on them
+- **Memory clusters** from `find_consolidation_clusters()` → consolidation action (Low-risk)
 
 ## Step 3 — Score Each Candidate
 
@@ -94,6 +95,7 @@ Execute each independently:
 - Memory operations: `memory_store(...)`, `goal_update(...)`
 - Tag or label work: `gh issue edit`, `gh pr edit`
 - Triage events: `events_mark_processed(...)`
+- Memory consolidation: run `find_consolidation_clusters()` via `execute_sql`, for each cluster: read all memories, merge content into one authoritative memory via `memory_store`, archive originals via `archive_memories(ids)`
 
 ### Medium-risk (at most 1)
 Execute after Low-risk batch completes:
