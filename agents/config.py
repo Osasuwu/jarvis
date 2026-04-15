@@ -27,6 +27,12 @@ class AgentConfig:
     ollama_host: str
     ollama_model: str
     postgres_url: str
+    # Supabase bridge — shared with Claude Code's MCP memory server. Empty
+    # strings are intentionally allowed at load time so imports/tests don't
+    # require live credentials; `agents.supabase_client.get_client` raises
+    # with a clear error if someone tries to use the bridge without them.
+    supabase_url: str
+    supabase_key: str
 
 
 def load_config() -> AgentConfig:
@@ -35,4 +41,6 @@ def load_config() -> AgentConfig:
         ollama_host=os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST),
         ollama_model=os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL),
         postgres_url=os.environ.get("AGENTS_POSTGRES_URL", DEFAULT_POSTGRES_URL),
+        supabase_url=os.environ.get("SUPABASE_URL", ""),
+        supabase_key=os.environ.get("SUPABASE_KEY", ""),
     )
