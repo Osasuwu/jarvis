@@ -18,6 +18,7 @@ owners of the knowledge base.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -55,17 +56,26 @@ def list_memories(
 ) -> list[dict[str, Any]]:
     """Return memory rows — same table Claude Code reads via ``memory_recall``.
 
+    Semantics mirror the MCP server (``mcp-memory/server.py``):
+
+    * Soft-deleted rows (``deleted_at IS NOT NULL``) are excluded — agents
+      must never see memories the user has removed.
+    * When ``project`` is specified, global (NULL-project) memories are
+      included alongside the project-scoped rows. Global memories carry
+      cross-project rules/feedback that the agent still needs.
+
     Ordering matches the MCP server's default: most recently updated first.
     """
     cli = client or get_client(config)
     q = (
         cli.table("memories")
         .select("id, name, type, project, description, content, tags, updated_at")
+        .is_("deleted_at", "null")
         .order("updated_at", desc=True)
         .limit(limit)
     )
     if project is not None:
-        q = q.eq("project", project)
+        q = q.or_(f"project.eq.{project},project.is.null")
     if type is not None:
         q = q.eq("type", type)
     return q.execute().data or []
@@ -107,6 +117,9 @@ def list_goals(
 ) -> list[dict[str, Any]]:
     """Return goals — strategic context Claude Code loads at session start."""
     cli = client or get_client(config)
+    # Ordering mirrors the MCP server's _handle_goal_list: priority first,
+    # deadline as tiebreaker (NULL deadlines last — those are open-ended goals
+    # and should fall behind anything with a concrete date).
     q = (
         cli.table("goals")
         .select(
@@ -114,6 +127,7 @@ def list_goals(
             "success_criteria, progress_pct, updated_at"
         )
         .order("priority")
+        .order("deadline", desc=False, nullsfirst=False)
         .limit(limit)
     )
     if status is not None:
@@ -167,7 +181,12 @@ def mark_event_processed(
     client: Client | None = None,
     config: AgentConfig | None = None,
 ) -> None:
-    """Close an event — mirrors the MCP ``events_mark_processed`` tool."""
+    """Close an event — mirrors the MCP ``events_mark_processed`` tool.
+
+    Raises ``RuntimeError`` if ``event_id`` matched no row. A silent no-op
+    would let the caller think the event was closed when nothing actually
+    changed — typically a sign of a stale id or wrong-environment lookup.
+    """
     cli = client or get_client(config)
     update: dict[str, Any] = {
         "processed": True,
@@ -176,7 +195,31 @@ def mark_event_processed(
     }
     if action_taken is not None:
         update["action_taken"] = action_taken
-    cli.table("events").update(update).eq("id", event_id).execute()
+    result = cli.table("events").update(update).eq("id", event_id).execute()
+    rows = result.data or []
+    if not rows:
+        raise RuntimeError(f"Event not found or not updated: event_id={event_id!r}")
+
+
+def _parse_progress(raw: Any) -> list[Any]:
+    """Normalize ``goals.progress`` into a list.
+
+    PostgREST sometimes surfaces jsonb columns as already-decoded lists and
+    sometimes as JSON strings (depends on client version + column config).
+    The MCP ``_format_goal`` helper handles both; so must the agent bridge
+    — otherwise a string payload would silently reset progress to ``[]``.
+    Only a genuine parse failure (or a non-list/non-string value) falls
+    back to an empty list.
+    """
+    if isinstance(raw, list):
+        return list(raw)
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        return list(decoded) if isinstance(decoded, list) else []
+    return []
 
 
 def update_goal_progress(
@@ -185,22 +228,53 @@ def update_goal_progress(
     *,
     client: Client | None = None,
     config: AgentConfig | None = None,
+    max_retries: int = 3,
 ) -> None:
     """Append an entry to ``goals.progress`` (jsonb list).
 
     Matches the MCP ``goal_update`` semantics: progress is an append-only
     log of timestamped observations, not an overwrite.
+
+    The update is read-modify-write, so concurrent writers could otherwise
+    overwrite each other. We guard with optimistic concurrency: the UPDATE
+    matches on the ``updated_at`` we just read, and on no-row-match we
+    re-read and retry up to ``max_retries`` times before raising.
     """
     cli = client or get_client(config)
-    current = cli.table("goals").select("progress").eq("slug", slug).limit(1).execute()
-    rows = current.data or []
-    if not rows:
-        raise RuntimeError(f"Goal not found: slug={slug!r}")
-    prior = rows[0].get("progress")
-    if not isinstance(prior, list):
-        prior = []
-    prior.append(progress_entry)
-    cli.table("goals").update({"progress": prior}).eq("slug", slug).execute()
+    for _ in range(max_retries):
+        current = (
+            cli.table("goals").select("progress, updated_at").eq("slug", slug).limit(1).execute()
+        )
+        rows = current.data or []
+        if not rows:
+            raise RuntimeError(f"Goal not found: slug={slug!r}")
+
+        row = rows[0]
+        prior = _parse_progress(row.get("progress"))
+        next_progress = [*prior, progress_entry]
+        next_updated_at = datetime.now(timezone.utc).isoformat()
+
+        update_q = (
+            cli.table("goals")
+            .update({"progress": next_progress, "updated_at": next_updated_at})
+            .eq("slug", slug)
+        )
+        current_updated_at = row.get("updated_at")
+        if current_updated_at is None:
+            update_q = update_q.is_("updated_at", "null")
+        else:
+            update_q = update_q.eq("updated_at", current_updated_at)
+
+        result = update_q.execute()
+        if result.data:
+            return
+        # No match → another writer committed between our read and write.
+        # Re-read and retry with fresh state.
+
+    raise RuntimeError(
+        f"Concurrent update prevented appending goal progress after "
+        f"{max_retries} retries: slug={slug!r}"
+    )
 
 
 def audit(
