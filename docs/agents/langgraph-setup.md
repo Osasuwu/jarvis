@@ -27,6 +27,7 @@ This pulls:
 | `langgraph-checkpoint-postgres` | Postgres checkpointer backend |
 | `psycopg[binary,pool]` | Postgres driver + connection pool |
 | `ollama` | Official Python client (used directly for chat with `think=False`) |
+| `supabase` | Agent bridge to the shared knowledge base (memories, events, goals, audit_log) |
 
 ## Start local Postgres
 
@@ -52,9 +53,13 @@ Copy the relevant lines from `.env.example` into `.env`:
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=qwen3:4b
 AGENTS_POSTGRES_URL=postgresql://jarvis:jarvis@localhost:5433/agents?sslmode=disable
+
+# Supabase bridge — same vars the MCP memory server uses; re-used here.
+SUPABASE_URL=https://<project>.supabase.co
+SUPABASE_KEY=<anon-or-service-key>
 ```
 
-Defaults in `agents/config.py` match these values, so `.env` is optional for the dev setup. Override when pointing at a different Ollama host or a self-hosted Postgres.
+Defaults in `agents/config.py` match the Ollama and Postgres values, so `.env` is optional for local inference/checkpointing. `SUPABASE_URL` / `SUPABASE_KEY` have no default — the bridge fails loudly (`RuntimeError`) if an agent tries to call Supabase without them configured.
 
 ## Run the minimal graph
 
@@ -95,6 +100,12 @@ See memory `self_hosted_postgres_future_plan`. Sprint 1 uses local Docker Postgr
 ### Why port 5433?
 
 Port 5432 is the default for system Postgres installs. Running the dev container on 5433 avoids collisions and lets the two coexist.
+
+### Why a separate Supabase bridge (not MCP)?
+
+MCP is Claude Code's protocol; it isn't available inside LangGraph nodes. `agents/supabase_client.py` is a thin wrapper over `supabase-py` that exposes the subset of reads/writes agents actually need (`list_memories`, `list_events`, `list_goals`, `store_event`, `mark_event_processed`, `update_goal_progress`, `audit`). Both sides hit the same tables, so what an agent writes shows up in Claude Code's `memory_recall` / `events_list` / `goal_list` and vice versa.
+
+Agent writes to `audit_log` set `agent_id` (e.g. `"langgraph-monitor"`); MCP writes leave it NULL — the column doubles as the actor differentiator.
 
 ## Troubleshooting
 
