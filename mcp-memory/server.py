@@ -1,7 +1,7 @@
 """Jarvis Memory MCP Server.
 
 Provides persistent, cross-device memory for Claude Code via Supabase.
-Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete.
+Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete, memory_restore.
 
 Semantic search via Voyage AI embeddings (voyage-3-lite, 512 dims).
 Uses httpx async HTTP for Voyage AI embedding calls; other Supabase operations are synchronous.
@@ -449,13 +449,31 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="memory_delete",
-            description="Delete a memory by name and project scope.",
+            description="Soft-delete a memory by name. Recoverable for 30 days via memory_restore.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
                         "description": "Memory name to delete",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope. null = global.",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="memory_restore",
+            description="Restore a soft-deleted memory within the 30-day retention window.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Memory name to restore",
                     },
                     "project": {
                         "type": ["string", "null"],
@@ -782,6 +800,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return _big_result(await _handle_list(arguments))
         elif name == "memory_delete":
             return await _handle_delete(arguments)
+        elif name == "memory_restore":
+            return await _handle_restore(arguments)
         # Graph tools
         elif name == "memory_graph":
             return _big_result(await _handle_graph(arguments))
@@ -1007,6 +1027,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "description": description,
         "project": project,
         "tags": tags,
+        "deleted_at": None,  # clear soft-delete on store/upsert
     }
 
     if embedding is not None:
@@ -1207,7 +1228,7 @@ def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, 
 
 async def _keyword_recall(client, query_text: str, project, mem_type, limit: int) -> list[TextContent]:
     """ILIKE keyword search (fallback when semantic unavailable)."""
-    q = client.table("memories").select("name, type, project, description, content, tags, updated_at")
+    q = client.table("memories").select("name, type, project, description, content, tags, updated_at").is_("deleted_at", "null")
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1264,7 +1285,7 @@ async def _backfill_missing_embeddings(client, project) -> None:
     """
     try:
         q = client.table("memories").select("id, description, content")
-        q = q.is_("embedding", "null")
+        q = q.is_("embedding", "null").is_("deleted_at", "null")
         if project is not None:
             q = q.or_(f"project.eq.{project},project.is.null")
         rows = q.execute().data
@@ -1362,7 +1383,7 @@ async def _handle_get(args: dict) -> list[TextContent]:
     if project == "global":
         project = None
 
-    q = client.table("memories").select("*").eq("name", mem_name)
+    q = client.table("memories").select("*").eq("name", mem_name).is_("deleted_at", "null")
     if project is not None:
         q = q.eq("project", project)
     else:
@@ -1395,7 +1416,7 @@ async def _handle_list(args: dict) -> list[TextContent]:
         project = None
     mem_type = args.get("type")
 
-    q = client.table("memories").select("name, type, project, description, updated_at")
+    q = client.table("memories").select("name, type, project, description, updated_at").is_("deleted_at", "null")
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1428,7 +1449,7 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     if project == "global":
         project = None  # normalize "global" → NULL, same as in _handle_store
 
-    q = client.table("memories").delete().eq("name", mem_name)
+    q = client.table("memories").update({"deleted_at": datetime.now(timezone.utc).isoformat()}).eq("name", mem_name).is_("deleted_at", "null")
     if project is not None:
         q = q.eq("project", project)
     else:
@@ -1437,8 +1458,29 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     result = q.execute()
 
     if result.data:
-        return [TextContent(type="text", text=f"Deleted memory '{mem_name}' (project={project or 'global'}).")]
+        return [TextContent(type="text", text=f"Soft-deleted memory '{mem_name}' (project={project or 'global'}). Recoverable for 30 days via memory_restore.")]
     return [TextContent(type="text", text=f"Memory '{mem_name}' not found.")]
+
+
+async def _handle_restore(args: dict) -> list[TextContent]:
+    client = _get_client()
+
+    mem_name = args["name"]
+    project = args.get("project")
+    if project == "global":
+        project = None
+
+    q = client.table("memories").update({"deleted_at": None}).eq("name", mem_name).not_.is_("deleted_at", "null")
+    if project is not None:
+        q = q.eq("project", project)
+    else:
+        q = q.is_("project", "null")
+
+    result = q.execute()
+
+    if result.data:
+        return [TextContent(type="text", text=f"Restored memory '{mem_name}' (project={project or 'global'}).")]
+    return [TextContent(type="text", text=f"No soft-deleted memory '{mem_name}' found.")]
 
 
 # -- Graph handlers ---------------------------------------------------------
@@ -1499,7 +1541,7 @@ async def _graph_overview(client) -> list[TextContent]:
     top_ids = sorted(counts.keys(), key=lambda k: counts[k], reverse=True)[:10]
     if top_ids:
         # Fetch names for top IDs
-        names_result = client.table("memories").select("id, name, type, project").in_("id", top_ids).execute()
+        names_result = client.table("memories").select("id, name, type, project").in_("id", top_ids).is_("deleted_at", "null").execute()
         id_to_mem = {r["id"]: r for r in (names_result.data or [])}
 
         lines.append(f"\n### Top Connected ({len(top_ids)})\n")
@@ -1513,10 +1555,10 @@ async def _graph_overview(client) -> list[TextContent]:
             lines.append(f"| {name} | {mtype} | {proj} | {counts[mid]} |")
 
     # 3. Orphans (have embedding, no links)
-    total_with_emb = client.table("memories").select("id", count="exact").not_.is_("embedding", "null").execute()
+    total_with_emb = client.table("memories").select("id", count="exact").not_.is_("embedding", "null").is_("deleted_at", "null").execute()
     total_emb_count = total_with_emb.count or 0
     linked_ids = set(counts.keys())
-    all_emb = client.table("memories").select("id, name, type, project").not_.is_("embedding", "null").execute()
+    all_emb = client.table("memories").select("id, name, type, project").not_.is_("embedding", "null").is_("deleted_at", "null").execute()
     orphans = [r for r in (all_emb.data or []) if r["id"] not in linked_ids]
 
     lines.append(f"\n### Orphans ({len(orphans)} of {total_emb_count} embedded memories have no links)\n")
@@ -1533,7 +1575,7 @@ async def _graph_overview(client) -> list[TextContent]:
 async def _graph_links(client, name: str) -> list[TextContent]:
     """All connections for a specific memory."""
     # Find memory by name
-    mem_result = client.table("memories").select("id, name, type, project").eq("name", name).execute()
+    mem_result = client.table("memories").select("id, name, type, project").eq("name", name).is_("deleted_at", "null").execute()
     if not mem_result.data:
         return [TextContent(type="text", text=f"Memory '{name}' not found.")]
 
@@ -1567,7 +1609,7 @@ async def _graph_links(client, name: str) -> list[TextContent]:
     all_ids = [r["target_id"] for r in out_links] + [r["source_id"] for r in in_links]
     id_to_name = {}
     if all_ids:
-        names = client.table("memories").select("id, name, type, project").in_("id", all_ids).execute()
+        names = client.table("memories").select("id, name, type, project").in_("id", all_ids).is_("deleted_at", "null").execute()
         id_to_name = {r["id"]: r for r in (names.data or [])}
 
     # Format outgoing
@@ -1645,7 +1687,7 @@ async def _graph_clusters(client) -> list[TextContent]:
     all_ids = list(set().union(*clusters)) if clusters else []
     id_to_mem = {}
     if all_ids:
-        mems = client.table("memories").select("id, name, type, project").in_("id", all_ids).execute()
+        mems = client.table("memories").select("id, name, type, project").in_("id", all_ids).is_("deleted_at", "null").execute()
         id_to_mem = {r["id"]: r for r in (mems.data or [])}
 
     lines = [f"## Memory Clusters ({len(clusters)} clusters, strength >= 0.7)\n"]
