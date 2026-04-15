@@ -65,6 +65,10 @@ git checkout -b feat/<N>-<slug>
 - Direct implementation is faster and avoids agent coordination overhead
 - Use Agent tool only for truly parallel independent tasks
 
+**Protected files — DO NOT modify (see `docs/security/agent-boundaries.md`):**
+`.mcp.json`, `config/SOUL.md`, `CLAUDE.md`, `mcp-memory/server.py`, `.claude/settings.json`, `.gitleaks.toml`, `.pre-commit-config.yaml`
+If a change to a protected file is needed, document it in the PR description and leave it for the owner.
+
 **For each change:**
 - Read existing code first (Read tool)
 - Check patterns in the codebase (Grep/Glob)
