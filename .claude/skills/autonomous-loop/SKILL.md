@@ -140,7 +140,7 @@ memory_store(
 )
 ```
 
-If any action advances a goal → `goal_update(slug=..., progress_pct=...)`.
+If any action advances a goal → `goal_update(slug=..., progress=[...])` — append `{item: "<5-word summary> (YYYY-MM-DD)", done: true}` to existing progress array.
 
 ## Safety Rules
 

@@ -30,7 +30,19 @@ Review the conversation for unsaved items:
 
 Upsert existing memories, don't create duplicates. Check name before creating new.
 
-## Step 3 — Working state (non-negotiable)
+## Step 3 — Goal progress log
+
+If work this session advanced any active goal:
+
+1. Call `goal_list(status="active")`
+2. For each goal that was advanced, call `goal_update(slug=..., progress=[...])` — append new items as `{item: "<5-word summary> (YYYY-MM-DD)", done: true}`
+3. Keep existing progress items unchanged. Only append new ones.
+
+Keep items terse — "secret scanner + credential registry (2026-04-13)", not a sentence. Details live in git history.
+
+Skip if the session didn't advance any goal (e.g., pure discussion, research without deliverables).
+
+## Step 4 — Working state (non-negotiable)
 
 Save `working_state_jarvis` (type=project) to Supabase. Always. Content:
 - What was done this session
@@ -41,7 +53,7 @@ This is the handoff to the next session. If open items exist in Step 5 output, t
 
 Only exception: truly empty session (user asked one question and left).
 
-## Step 4 — Branch cleanup
+## Step 5 — Branch cleanup
 
 Check for local branches whose remote tracking branch has been deleted:
 ```bash
@@ -59,7 +71,7 @@ If any found, for each branch:
 
 Skip if none found.
 
-## Step 5 — Commit (non-negotiable: leave nothing uncommitted)
+## Step 6 — Commit (non-negotiable: leave nothing uncommitted)
 
 Check ALL project repos for uncommitted changes (jarvis, redrobot, any other repo touched this session).
 
@@ -86,7 +98,7 @@ For each repo with changes:
 **Goal: zero uncommitted changes across all repos after /end.**
 If stashing (mid-task), report the stash ref and repo in output so next session can recover.
 
-## Step 6 — Output
+## Step 7 — Output
 
 ```
 ## Session closed — YYYY-MM-DD
