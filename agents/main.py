@@ -24,6 +24,7 @@ import json
 import sys
 from typing import TypedDict
 
+from dotenv import load_dotenv
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 
@@ -50,7 +51,12 @@ class DemoState(TypedDict):
 
 
 def respond(state: DemoState) -> dict[str, object]:
-    """Single graph node — asks Ollama for a schema-enforced ack."""
+    """Single graph node — asks Ollama for a schema-enforced ack.
+
+    The output is validated strictly: a non-JSON response or a missing
+    `status` field fails the run. Silent fallback would defeat the whole
+    point of the foundation check.
+    """
     raw = ollama_chat(
         messages=[
             {
@@ -64,10 +70,12 @@ def respond(state: DemoState) -> dict[str, object]:
     )
     try:
         parsed = json.loads(raw)
-        reply = str(parsed.get("status", "")).strip()
-    except json.JSONDecodeError:
-        reply = raw.strip()
-    return {"reply": reply, "step": state.get("step", 0) + 1}
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Ollama returned non-JSON despite format schema: {raw!r}") from exc
+    status = parsed.get("status")
+    if not isinstance(status, str) or not status:
+        raise RuntimeError(f"Ollama JSON missing required `status` field: {parsed!r}")
+    return {"reply": status.strip(), "step": state.get("step", 0) + 1}
 
 
 def build_graph() -> StateGraph:
@@ -114,6 +122,9 @@ def run(thread_id: str, resume: bool) -> int:
 
 
 def main() -> int:
+    # Load .env from the working directory — entry-point-only so that
+    # library callers (and tests) keep full control over the environment.
+    load_dotenv()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--thread",

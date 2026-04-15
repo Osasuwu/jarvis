@@ -9,10 +9,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from dotenv import load_dotenv
-
-# Load .env from repo root if present. Safe to call multiple times.
-load_dotenv()
+# NOTE: `.env` loading happens in the application entry point (see `main.py`),
+# not at module import. This keeps `load_config()` deterministic in tests —
+# callers that clear env vars get the documented defaults regardless of
+# whether a local `.env` is present.
 
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"

@@ -58,10 +58,14 @@ Homepage = "https://github.com/Osasuwu/jarvis"
 Issues = "https://github.com/Osasuwu/jarvis/issues"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
+# Mixed layout:
+#   - `agents/` package lives at repo root (Pillar 7 agents)
+#   - `risk_radar.py` remains a flat module under `src/` (legacy)
+# Explicit declarations so `pip install -e ".[agents]"` installs the root-layout
+# `agents` package correctly, rather than silently skipping it.
+package-dir = {"" = "src", "agents" = "agents"}
+packages = ["agents"]
+py-modules = ["risk_radar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
