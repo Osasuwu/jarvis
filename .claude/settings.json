@@ -29,6 +29,15 @@
             "command": "python scripts/secret-scanner.py"
           }
         ]
+      },
+      {
+        "matcher": "mcp__memory__memory_store",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/secret-scanner.py"
+          }
+        ]
       }
     ]
   }
