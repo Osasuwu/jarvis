@@ -85,6 +85,38 @@ Expected output (first run):
 
 `--resume` in a brand-new Python process should print the same `reply`, `step`, and `checkpoint_id` — that is what validates "survives restart".
 
+## Run the event monitor (issue #174)
+
+The first real agent. Polls GitHub Events, classifies via Ollama, writes non-noise events to Supabase.
+
+```bash
+# Default: watch Osasuwu/jarvis, thread "event-monitor"
+python -m agents.event_monitor
+
+# Custom repo and thread
+python -m agents.event_monitor --repo Osasuwu/jarvis --thread smoke
+```
+
+Expected output:
+
+```
+[monitor] thread=event-monitor
+[monitor] repos:   Osasuwu/jarvis
+[monitor] fetched: 3
+[monitor] stored:  2
+[monitor] cursors: {'Osasuwu/jarvis': '<latest-event-id>'}
+```
+
+Restart-safety check: run the command twice in a row. The second run should show `fetched: 0` unless new activity landed in between — cursors persist in the Postgres checkpoint.
+
+Optional env for higher rate limits:
+
+```
+GITHUB_TOKEN=ghp_...   # unauthenticated = 60 req/hour per IP
+```
+
+The agent identifies itself in `events.source` and `audit_log.agent_id` as `langgraph-monitor`.
+
 ## Architecture notes
 
 ### Why both `ollama` and `langchain-ollama`?

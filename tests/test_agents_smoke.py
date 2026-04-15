@@ -132,3 +132,84 @@ def test_supabase_client_surface() -> None:
     assert callable(sb.mark_event_processed)
     assert callable(sb.update_goal_progress)
     assert callable(sb.audit)
+
+
+def test_github_client_event_allowlist() -> None:
+    """Allow-list includes the six event types the monitor acts on."""
+    from agents.github_client import RELEVANT_EVENT_TYPES
+
+    for needed in (
+        "IssuesEvent",
+        "PullRequestEvent",
+        "PullRequestReviewEvent",
+        "IssueCommentEvent",
+        "PullRequestReviewCommentEvent",
+        "PushEvent",
+    ):
+        assert needed in RELEVANT_EVENT_TYPES
+    # Things we intentionally drop as noise.
+    assert "WatchEvent" not in RELEVANT_EVENT_TYPES
+    assert "ForkEvent" not in RELEVANT_EVENT_TYPES
+
+
+def test_summarise_event_covers_known_types() -> None:
+    """Every event-type branch produces a string with actor + repo + detail."""
+    from agents.github_client import summarise_event
+
+    common = {"actor": {"login": "alice"}, "repo": {"name": "o/r"}}
+    cases = [
+        {
+            **common,
+            "type": "IssuesEvent",
+            "payload": {"action": "opened", "issue": {"number": 42, "title": "bug"}},
+        },
+        {
+            **common,
+            "type": "PullRequestEvent",
+            "payload": {"action": "opened", "pull_request": {"number": 7, "title": "feat"}},
+        },
+        {
+            **common,
+            "type": "PullRequestReviewEvent",
+            "payload": {"review": {"state": "approved"}, "pull_request": {"number": 7}},
+        },
+        {
+            **common,
+            "type": "IssueCommentEvent",
+            "payload": {"action": "created", "issue": {"number": 42}},
+        },
+        {
+            **common,
+            "type": "PushEvent",
+            "payload": {"ref": "refs/heads/main", "commits": [{}, {}]},
+        },
+        {**common, "type": "WeirdEvent", "payload": {}},  # fallback branch
+    ]
+    for event in cases:
+        s = summarise_event(event)
+        assert "alice" in s, s
+        assert "o/r" in s, s
+        assert event["type"] in s, s
+
+
+def test_event_monitor_graph_builds() -> None:
+    """The monitor graph compiles to fetch -> classify -> store."""
+    pytest.importorskip("langgraph")
+    pytest.importorskip("supabase")
+
+    from agents.event_monitor import MonitorState, build_graph
+
+    graph = build_graph()
+    assert {"fetch_events", "classify", "store"} <= set(graph.nodes)
+    assert {"repos", "cursors", "fetched_events", "classified_events", "stored_count"} <= set(
+        MonitorState.__annotations__
+    )
+
+
+def test_event_monitor_classification_schema() -> None:
+    """Classifier enum stays three-tier — Ollama prompt depends on it."""
+    from agents.event_monitor import _CLASSIFY_SCHEMA
+
+    enum = _CLASSIFY_SCHEMA["properties"]["classification"]["enum"]
+    assert set(enum) == {"noise", "info", "action"}
+    assert set(_CLASSIFY_SCHEMA["required"]) == {"classification", "reason"}

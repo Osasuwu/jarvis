@@ -6,4 +6,10 @@ and PostgreSQL checkpointer for state that survives restart.
 See docs/agents/ for setup and operational notes.
 """
 
-__all__ = ["config", "ollama_client", "supabase_client"]
+__all__ = [
+    "config",
+    "event_monitor",
+    "github_client",
+    "ollama_client",
+    "supabase_client",
+]
