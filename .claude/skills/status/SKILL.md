@@ -40,6 +40,12 @@ gh run list --repo <R> --json conclusion,name --limit 10
 gh api repos/<R>/dependabot/alerts --jq '[.[] | select(.state=="open")]' 2>/dev/null
 ```
 
+**Credential expiry** (once, not per repo):
+```
+credential_check_expiry(days_ahead=14)
+```
+If results returned, include in output. If no credentials expiring — silent (no noise).
+
 ## Step 3 — Analyze
 
 For each repo, compute:
@@ -72,8 +78,9 @@ Flag: N stale branches (remote gone), M unmerged branches, K stashes.
 ```markdown
 # Status — YYYY-MM-DD
 
-## Goal Alerts
+## Alerts
 - <P0 deadline, neglect warnings, or "Goals on track">
+- <Credential expiry warnings, if any>
 
 ## <Repo Name>
 **Branch:** main | **Clean:** yes/no

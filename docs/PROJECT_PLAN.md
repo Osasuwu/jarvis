@@ -38,7 +38,7 @@ Not a tool, not an assistant — an extension of thinking capacity, memory, and 
 | 6 | Data Intelligence | Not started | Cross-platform search, content curation, pattern detection |
 | 7 | Agent System | Prototype | Scalable multi-agent architecture (PM is one use case) |
 | 8 | Identity & Interface | Partial | TTS/STT, Telegram, professional mask for documents |
-| 9 | Security & Digital Hygiene | Early | Password audit, breach monitoring, proactive protection |
+| 9 | Security & Digital Hygiene | ~40% | Threat model, secret scanner hooks, credential registry, MCP audit |
 
 Pillars are stable — they only grow, never change. Implementation within each pillar is flexible.
 
