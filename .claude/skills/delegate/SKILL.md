@@ -168,3 +168,28 @@ This prevents stale branch accumulation. If the branch has unmerged work, `-d` w
 - Never force-push, never merge PRs without review
 - If change fails tests or breaks build, fix before pushing
 - Safety-critical code: analyze and comment, don't implement without approval
+- When spawning Agent for parallel work, use `isolation: "worktree"` to prevent git conflicts
+
+## Diff review (before marking done)
+
+Before creating the PR, review your own changes:
+```bash
+git diff main...HEAD --stat
+git diff main...HEAD
+```
+
+Check for:
+- Files that shouldn't have been modified (especially protected files)
+- Debug code, console.log, print statements left behind
+- Unrelated changes that crept in
+- Secrets or credentials in any form
+
+If the diff looks wrong, fix it before pushing.
+
+## Recovery playbook
+
+See `docs/security/recovery-playbook.md` for how to handle:
+- Agent broke a file → revert from main
+- Agent corrupted memory → `memory_restore`
+- Agent created bad PR → close + delete branch
+- Agent committed to wrong branch → cherry-pick + reset
