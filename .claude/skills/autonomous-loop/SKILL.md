@@ -50,12 +50,16 @@ From perception outputs, generate candidates:
 ## Step 3 — Score Each Candidate
 
 ```
-score = goal_alignment(0-3) × urgency(1-3) + severity_bonus
+score = goal_alignment(0-3) × urgency(1-3) + severity_bonus + outcome_adjustment
 ```
 
 - **goal_alignment**: 3 = directly serves P0 | 2 = serves P1 | 1 = serves P2 | 0 = unaligned
 - **urgency**: 3 = blocking/deadline | 2 = should be soon | 1 = can wait
 - **severity_bonus**: +3 for CRITICAL risk | +2 for HIGH | +1 for MEDIUM
+- **outcome_adjustment**: check outcome history for the candidate's area (pattern_tags overlap):
+  - Area has 3+ recent failures → -2 (deprioritize, needs investigation first)
+  - Area has high success rate (>80%) → +1 (proven approach)
+  - No outcome data → 0 (neutral)
 
 **Disqualify:** unaligned (goal_alignment=0) or uncertain candidates.
 
@@ -91,7 +95,7 @@ Process the selected actions in order. Track results as `{action, status, detail
 
 ### Low-risk batch (up to 5)
 Execute each independently:
-- Create GitHub issue: `issue_write(method="create", ...)`
+- Create GitHub issue: `gh issue create --repo <R> --title "..." --body "..."`
 - Memory operations: `memory_store(...)`, `goal_update(...)`
 - Tag or label work: `gh issue edit`, `gh pr edit`
 - Triage events: `events_mark_processed(...)`

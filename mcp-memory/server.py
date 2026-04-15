@@ -581,9 +581,40 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="outcome_update",
+            description=(
+                "Update a task outcome after verification. Use to flip status from pending "
+                "to success/failure, record verified_at, pr_merged, lessons, etc."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Outcome UUID to update."},
+                    "outcome_status": {
+                        "type": "string",
+                        "enum": ["pending", "success", "partial", "failure", "unknown"],
+                    },
+                    "outcome_summary": {"type": "string"},
+                    "pr_merged": {"type": "boolean"},
+                    "tests_passed": {"type": "boolean"},
+                    "quality_score": {"type": "integer", "description": "0-100."},
+                    "lessons": {"type": "string"},
+                    "pattern_tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "verified_at": {
+                        "type": "string",
+                        "description": "ISO timestamp. Defaults to now() if omitted when status changes.",
+                    },
+                },
+                "required": ["id"],
+            },
+        ),
+        Tool(
             name="outcome_list",
             description=(
-                "List recent task outcomes, optionally filtered by project, goal, or status. "
+                "List recent task outcomes, optionally filtered by project, goal, status, or pattern_tags. "
                 "Use to review what worked and what didn't."
             ),
             inputSchema={
@@ -600,6 +631,10 @@ async def list_tools() -> list[Tool]:
                     "outcome_status": {
                         "type": "string",
                         "enum": ["pending", "success", "partial", "failure", "unknown"],
+                    },
+                    "pattern_tag": {
+                        "type": "string",
+                        "description": "Filter by pattern tag (outcomes containing this tag).",
                     },
                     "limit": {
                         "type": "integer",
@@ -683,6 +718,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
         # Outcome tracking tools (Pillar 3)
         elif name == "outcome_record":
             return await _handle_outcome_record(arguments)
+        elif name == "outcome_update":
+            return await _handle_outcome_update(arguments)
         elif name == "outcome_list":
             return _big_result(await _handle_outcome_list(arguments))
         # Event tools
@@ -1666,6 +1703,35 @@ async def _handle_outcome_record(args: dict) -> list[TextContent]:
     return [TextContent(type="text", text="Failed to record outcome.")]
 
 
+async def _handle_outcome_update(args: dict) -> list[TextContent]:
+    """Update a task outcome (verification, status flip, lessons)."""
+    client = _get_client()
+    oid = args["id"]
+
+    updates: dict = {}
+    for key in (
+        "outcome_status", "outcome_summary", "pr_merged", "tests_passed",
+        "quality_score", "lessons", "pattern_tags",
+    ):
+        if key in args and args[key] is not None:
+            updates[key] = args[key]
+
+    # Auto-set verified_at when status changes from pending
+    if "outcome_status" in updates and updates["outcome_status"] != "pending":
+        if "verified_at" in args and args["verified_at"]:
+            updates["verified_at"] = args["verified_at"]
+        else:
+            updates["verified_at"] = datetime.now(timezone.utc).isoformat()
+
+    if not updates:
+        return [TextContent(type="text", text="Nothing to update.")]
+
+    result = client.table("task_outcomes").update(updates).eq("id", oid).execute()
+    if result.data:
+        return [TextContent(type="text", text=f"Outcome {oid} updated: {list(updates.keys())}")]
+    return [TextContent(type="text", text=f"Outcome {oid} not found or update failed.")]
+
+
 async def _handle_outcome_list(args: dict) -> list[TextContent]:
     """List task outcomes with optional filters."""
     client = _get_client()
@@ -1686,6 +1752,8 @@ async def _handle_outcome_list(args: dict) -> list[TextContent]:
         query = query.eq("goal_slug", args["goal_slug"])
     if args.get("outcome_status"):
         query = query.eq("outcome_status", args["outcome_status"])
+    if args.get("pattern_tag"):
+        query = query.contains("pattern_tags", [args["pattern_tag"]])
 
     result = query.execute()
 

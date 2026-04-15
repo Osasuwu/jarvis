@@ -36,9 +36,8 @@ gh pr view <number> --json state,mergedAt,closedAt,title --repo <owner/repo>
 
 Update resolved outcomes:
 ```
-outcome_record(
-  task_type=<same>,
-  task_description=<same>,
+outcome_update(
+  id="<outcome_id>",
   outcome_status="success"/"failure"/"partial",
   outcome_summary="<what happened>",
   pr_merged=true/false,

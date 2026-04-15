@@ -53,6 +53,21 @@ jarvis/           <- self-contained, this is Jarvis
 └── .github/workflows/       <- CI/CD
 ```
 
+## GitHub Actions secrets
+
+Required secrets in GitHub repo settings (Settings → Secrets and variables → Actions):
+
+| Secret | Used by | Purpose |
+|--------|---------|---------|
+| `ANTHROPIC_API_KEY` | `copilot-review-response.yml` | Claude CLI for auto-fixing Copilot review suggestions |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `review-response.yml` | `anthropics/claude-code-action` for PR review responses |
+| `SUPABASE_URL` | `event-dispatch.yml` | Supabase project URL for event logging |
+| `SUPABASE_ANON_KEY` | `event-dispatch.yml` | Supabase publishable anon key for event logging |
+
+`GITHUB_TOKEN` is auto-provisioned by GitHub Actions — no setup needed.
+
+`PROJECT_SYNC` is optional — falls back to `github.token` if not set.
+
 ## Cloud scheduled tasks
 
 Scheduled tasks on claude.ai don't load `.mcp.json` — they use connectors only.

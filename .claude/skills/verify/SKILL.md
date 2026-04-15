@@ -51,19 +51,19 @@ gh issue view <issue_url> --json state,stateReason --jq '{state, stateReason}'
 
 ## Step 3 — Update verified outcomes
 
-For each outcome that changed status, run via `execute_sql`:
+For each outcome that changed status:
 
-```sql
-UPDATE task_outcomes
-SET outcome_status = '<new_status>',
-    pr_merged = <true/false>,
-    tests_passed = <true/false>,
-    verified_at = now(),
-    outcome_summary = COALESCE(outcome_summary, '') || E'\n[Verified] <brief result>'
-WHERE id = '<outcome_id>';
+```
+outcome_update(
+  id="<outcome_id>",
+  outcome_status="<new_status>",
+  pr_merged=<true/false>,
+  tests_passed=<true/false>,
+  lessons="<brief result if any>"
+)
 ```
 
-Use Supabase project ID: `svwrzttdkxeselkpxfgm`.
+`verified_at` is set automatically when status changes from pending.
 
 ## Step 4 — Detect patterns
 
