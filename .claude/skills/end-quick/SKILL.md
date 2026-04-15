@@ -13,11 +13,14 @@ If there is meaningful unfinished work:
 - Save `working_state_jarvis` (type=project) to Supabase: what was done, what's pending, key context
 - If nothing notable — skip
 
-## Step 2 — Commit
+## Step 2 — Commit (leave nothing uncommitted)
 
-Run `git status`. If there are changes and they're complete:
-- Stage relevant files, commit with descriptive message
-- If mid-task or broken — don't commit, just note it
+Check ALL project repos for uncommitted changes (jarvis, redrobot, any other repo touched this session).
+
+For each repo with changes:
+1. `git status`
+2. If on an **unrelated branch** → `git stash && git checkout $(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@') && git pull --ff-only && git stash pop` (resolve conflicts if any)
+3. Complete work → stage and commit. Mid-task → `git stash push -m "session YYYY-MM-DD: <description>"` and note stash ref.
 
 ## Step 3 — Output
 

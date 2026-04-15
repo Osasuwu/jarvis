@@ -59,20 +59,32 @@ If any found, for each branch:
 
 Skip if none found.
 
-## Step 5 — Commit
+## Step 5 — Commit (non-negotiable: leave nothing uncommitted)
 
-Run `git status` and `git diff --stat`.
+Check ALL project repos for uncommitted changes (jarvis, redrobot, any other repo touched this session).
 
-**Commit if:**
-- There are uncommitted changes
-- Work is complete (not mid-refactor, not broken)
-- Changes form a coherent unit
+For each repo with changes:
 
-**Don't commit if:**
-- Mid-task, experimental, tests failing, or merge conflicts
-- Instead, note in output under "Open items"
+1. `git status` and `git diff --stat`
+2. Determine if changes are committable:
+   - Complete work → commit
+   - Mid-task, broken, merge conflicts → stash with descriptive message (`git stash push -m "session YYYY-MM-DD: <description>"`) and note in output
+3. **Branch handling** (before committing):
+   - On `main` → commit directly
+   - On a feature branch **created/used for this session's work** → commit there
+   - On an **unrelated branch** (pre-existing branch for different work) → relocate changes:
+     ```bash
+     git stash
+     DEFAULT_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+     git checkout $DEFAULT_BRANCH
+     git pull --ff-only  # get latest, fail-safe
+     git stash pop
+     ```
+     Then commit on the default branch. If stash pop has conflicts, resolve them (add our version). If pull fails, commit as-is (don't block on upstream).
+4. Stage only session-related files. Standard commit format with Co-Authored-By.
 
-Stage only session-related files. Standard commit format with Co-Authored-By.
+**Goal: zero uncommitted changes across all repos after /end.**
+If stashing (mid-task), report the stash ref and repo in output so next session can recover.
 
 ## Step 6 — Output
 
