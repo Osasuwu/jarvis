@@ -83,7 +83,7 @@ Goal: Ship redrobot demo
 Why: presentation in 2 weeks
 Success: demo runs, 3 scenarios without crashes
 Priority: P0 — everything else is subordinate
-Progress: 60% — scenarios 1-2 work
+Done: scenarios 1-2 work
 Risks: #38 harder than it looks
 Owner's focus: scenario 3
 Jarvis's focus: monitor #38, infrastructure, research for scenario 3
