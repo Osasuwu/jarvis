@@ -80,6 +80,13 @@ def fetch_repo_events(
         for e in events
         if e.get("type") in RELEVANT_EVENT_TYPES and int(e.get("id", "0")) > cursor
     ]
+    # Re-sort oldest-first before the limit slice. GitHub's response is
+    # newest-first, so a naive ``filtered[:limit]`` would pick the N newest
+    # and the monitor would then advance the cursor to the max id in that
+    # slice — permanently skipping the older-but-still-new events that
+    # didn't fit. Taking the oldest N instead makes the cursor advance
+    # contiguous: next poll resumes right after the last stored event.
+    filtered.sort(key=lambda e: int(e.get("id", "0")))
     return filtered[:limit]
 
 

@@ -152,6 +152,42 @@ def test_github_client_event_allowlist() -> None:
     assert "ForkEvent" not in RELEVANT_EVENT_TYPES
 
 
+def test_fetch_repo_events_slices_oldest_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When new events outnumber ``limit``, pick the oldest N so the
+    monitor's cursor advance stays contiguous.
+
+    Regression guard for the bug Copilot flagged on #179: GitHub returns
+    newest-first; a naive ``filtered[:limit]`` picks the newest N and the
+    monitor then advances the cursor to the max id — permanently skipping
+    the older-but-still-new events that didn't fit.
+    """
+    from agents import github_client
+
+    # 12 relevant events, newest first — like the real /events endpoint.
+    raw = [
+        {"id": str(i), "type": "IssuesEvent", "actor": {}, "repo": {}, "payload": {}}
+        for i in range(20, 8, -1)
+    ]
+
+    class _Resp:
+        def __init__(self, data: list[dict[str, object]]) -> None:
+            self._data = data
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict[str, object]]:
+            return self._data
+
+    monkeypatch.setattr(github_client.httpx, "get", lambda *a, **kw: _Resp(raw))
+
+    out = github_client.fetch_repo_events("o/r", after_event_id="8", limit=5)
+
+    # Must return the 5 OLDEST new events (ids 9–13), not the 5 newest (16–20).
+    ids = [int(e["id"]) for e in out]
+    assert ids == [9, 10, 11, 12, 13], ids
+
+
 def test_summarise_event_covers_known_types() -> None:
     """Every event-type branch produces a string with actor + repo + detail."""
     from agents.github_client import summarise_event
@@ -208,6 +244,11 @@ def test_event_monitor_graph_builds() -> None:
 
 def test_event_monitor_classification_schema() -> None:
     """Classifier enum stays three-tier — Ollama prompt depends on it."""
+    # agents.event_monitor imports langgraph + supabase at module load, so
+    # skip (not error) when the optional [agents] extras aren't installed.
+    pytest.importorskip("langgraph")
+    pytest.importorskip("supabase")
+
     from agents.event_monitor import _CLASSIFY_SCHEMA
 
     enum = _CLASSIFY_SCHEMA["properties"]["classification"]["enum"]
