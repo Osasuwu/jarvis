@@ -17,6 +17,7 @@ scan_secrets = secret_scanner.scan_secrets
 scan_bash_dangers = secret_scanner.scan_bash_dangers
 extract_github_text = secret_scanner.extract_github_text
 extract_bash_command = secret_scanner.extract_bash_command
+extract_memory_text = secret_scanner.extract_memory_text
 strip_heredocs = secret_scanner.strip_heredocs
 
 
@@ -205,6 +206,56 @@ def test_extract_bash_command():
 def test_extract_bash_empty():
     cmd = extract_bash_command({})
     assert cmd == ""
+
+
+# ── Memory extraction ──────────────────────────────────────────────────
+
+def test_extract_memory_fields():
+    text = extract_memory_text({"name": "test", "content": "data", "description": "desc"})
+    assert "data" in text and "desc" in text and "test" in text
+
+def test_extract_memory_empty():
+    assert extract_memory_text({}) == ""
+
+
+# ── Memory scanning: blocked ──────────────────────────────────────────
+
+def test_memory_blocks_api_key():
+    text = extract_memory_text({"content": "key is sk-ant-api03-abc123def456ghi789jklmnop", "name": "test"})
+    assert scan_secrets(text)
+
+def test_memory_blocks_jwt():
+    text = extract_memory_text({"content": "token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0", "name": "creds"})
+    assert scan_secrets(text)
+
+def test_memory_blocks_github_token():
+    text = extract_memory_text({"content": "Use ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij for access", "name": "setup"})
+    assert scan_secrets(text)
+
+
+# ── Memory scanning: allowed ─────────────────────────────────────────
+
+def test_memory_allows_credential_metadata():
+    text = extract_memory_text({
+        "content": "ANTHROPIC_API_KEY stored in .env, expires 2026-06-01. Rotate via Anthropic console.",
+        "description": "Anthropic credential metadata",
+        "name": "credential_anthropic",
+    })
+    assert not scan_secrets(text)
+
+def test_memory_allows_normal_content():
+    text = extract_memory_text({
+        "content": "Decision: use soft delete for memories. 30-day retention. Cleanup via scheduled task.",
+        "name": "soft_delete_decision",
+    })
+    assert not scan_secrets(text)
+
+def test_memory_allows_project_state():
+    text = extract_memory_text({
+        "content": "Sprint 2 in progress. Issues #158-#163. Focus on security before multi-agent.",
+        "name": "working_state_jarvis",
+    })
+    assert not scan_secrets(text)
 
 
 # ── Run ──────────────────────────────────────────────────────────────────

@@ -1,8 +1,9 @@
 """PreToolUse hook: scan tool inputs for secret patterns before execution.
 
-Handles two tool types:
+Handles three tool types:
 - GitHub MCP write tools: scans body/title/content fields
 - Bash tool: scans command string for secrets and dangerous exfiltration patterns
+- Memory MCP tools: scans content/description fields for secrets
 
 Reads tool_input from stdin (JSON). Exits 2 to block if secrets detected.
 Does NOT scan for personal data — only credentials that grant access.
@@ -101,6 +102,16 @@ def extract_bash_command(tool_input: dict) -> str:
     return cmd if isinstance(cmd, str) else ""
 
 
+def extract_memory_text(tool_input: dict) -> str:
+    """Pull text fields from memory_store input."""
+    parts = []
+    for key in ("content", "description", "name"):
+        val = tool_input.get(key)
+        if isinstance(val, str):
+            parts.append(val)
+    return "\n".join(parts)
+
+
 # Regex to match heredoc bodies: <<'EOF'...EOF or <<EOF...EOF (multiline)
 _HEREDOC_RE = re.compile(
     r"<<-?\s*'?(\w+)'?\s*\n.*?\n\s*\1\s*(?:\)|$)",
@@ -188,6 +199,12 @@ def main():
         findings.extend(scan_secrets(command))
         # Check for dangerous exfiltration patterns
         findings.extend(scan_bash_dangers(command))
+    elif "memory" in tool_name:
+        # Memory MCP tools (memory_store)
+        text = extract_memory_text(tool_input)
+        if not text:
+            sys.exit(0)
+        findings.extend(scan_secrets(text))
     else:
         # GitHub MCP tools
         text = extract_github_text(tool_input)
