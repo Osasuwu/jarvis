@@ -2,6 +2,7 @@
 
 Provides persistent, cross-device memory for Claude Code via Supabase.
 Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete, memory_restore.
+Audit: write operations logged to audit_log table (fire-and-forget).
 
 Semantic search via Voyage AI embeddings (voyage-3-lite, 512 dims).
 Uses httpx async HTTP for Voyage AI embedding calls; other Supabase operations are synchronous.
@@ -82,6 +83,24 @@ def _get_client():
         pass  # non-fatal — server still works without the migration
 
     return _supabase
+
+
+# ---------------------------------------------------------------------------
+# Audit logging — lightweight, fire-and-forget
+# ---------------------------------------------------------------------------
+
+
+def _audit_log(client, tool_name: str, action: str, target: str | None = None, details: dict | None = None):
+    """Fire-and-forget audit log entry. Never fails the caller."""
+    try:
+        client.table("audit_log").insert({
+            "tool_name": tool_name,
+            "action": action,
+            "target": target,
+            "details": details or {},
+        }).execute()
+    except Exception:
+        pass  # audit is best-effort — never block operations
 
 
 # ---------------------------------------------------------------------------
@@ -923,9 +942,11 @@ async def _handle_goal_set(args: dict) -> list[TextContent]:
     existing = client.table("goals").select("id").eq("slug", slug).limit(1).execute()
     if existing.data:
         client.table("goals").update(data).eq("slug", slug).execute()
+        _audit_log(client, "goal_set", "update", slug)
         return [TextContent(type="text", text=f"Goal '{slug}' updated.")]
     else:
         client.table("goals").insert(data).execute()
+        _audit_log(client, "goal_set", "create", slug)
         return [TextContent(type="text", text=f"Goal '{slug}' created.")]
 
 
@@ -996,6 +1017,8 @@ async def _handle_goal_update(args: dict) -> list[TextContent]:
     if data.get("status") in ("achieved", "abandoned"):
         status_note = f" Status: {data['status']}. closed_at set."
 
+    updated_fields = [k for k in data if k != "closed_at"]
+    _audit_log(client, "goal_update", "update", slug, {"fields": updated_fields})
     return [TextContent(type="text", text=f"Goal '{slug}' updated.{status_note}")]
 
 
@@ -1057,6 +1080,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
         proj_label = "project=global"
 
     msg = f"Memory '{mem_name}' {action} ({proj_label}){embed_note}"
+
+    _audit_log(client, "memory_store", action, mem_name, {"project": project or "global", "type": mem_type})
 
     # -- Memory 2.0: auto-linking + consolidation hints --
     if embedding is not None and stored_id:
@@ -1458,6 +1483,7 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     result = q.execute()
 
     if result.data:
+        _audit_log(client, "memory_delete", "soft_delete", mem_name, {"project": project or "global"})
         return [TextContent(type="text", text=f"Soft-deleted memory '{mem_name}' (project={project or 'global'}). Recoverable for 30 days via memory_restore.")]
     return [TextContent(type="text", text=f"Memory '{mem_name}' not found.")]
 
@@ -1479,6 +1505,7 @@ async def _handle_restore(args: dict) -> list[TextContent]:
     result = q.execute()
 
     if result.data:
+        _audit_log(client, "memory_restore", "restore", mem_name, {"project": project or "global"})
         return [TextContent(type="text", text=f"Restored memory '{mem_name}' (project={project or 'global'}).")]
     return [TextContent(type="text", text=f"No soft-deleted memory '{mem_name}' found.")]
 
