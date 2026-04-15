@@ -15,6 +15,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # `anthropics/claude-code-action@v1` authenticates via OIDC — without
+      # this, the step fails with `Unable to get ACTIONS_ID_TOKEN_REQUEST_URL`.
+      id-token: write
 
     steps:
       - uses: actions/checkout@v6
