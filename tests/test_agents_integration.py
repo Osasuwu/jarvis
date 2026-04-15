@@ -56,6 +56,12 @@ def _synth_event(event_id: str, marker: str, repo: str) -> dict[str, Any]:
 def _delete_by_marker(marker: str) -> None:
     """Best-effort cleanup of rows tagged with ``marker``.
 
+    Every test embeds ``marker`` into both the event title and the repo
+    name, so the same tag reaches ``events.title`` (via ``_synth_event``)
+    and ``audit_log.target`` (via ``store_node``'s ``",".join(repos)``).
+    Cleaning both tables by that tag keeps the shared Supabase project
+    free of test rows even when the suite runs often.
+
     Called from test teardown; swallowed errors only matter in that they'd
     leave rows behind. The marker keeps those rows obviously-test, so a
     human can spot and drop them manually if cleanup ever fails.
@@ -65,6 +71,7 @@ def _delete_by_marker(marker: str) -> None:
     try:
         cli = get_client()
         cli.table("events").delete().like("title", f"%{marker}%").execute()
+        cli.table("audit_log").delete().like("target", f"%{marker}%").execute()
     except Exception:
         pass
 
@@ -92,7 +99,9 @@ def test_full_pipeline_injects_and_stores(
 
     from agents import event_monitor, supabase_client
 
-    repo = "e2e/marker-repo"
+    # Marker embedded in repo so the audit_log.target row this run writes
+    # is also deletable in teardown — see ``_delete_by_marker``.
+    repo = f"e2e/marker-repo-{marker}"
     fake_events = [_synth_event("900000001", marker, repo)]
 
     # Only fetch is mocked — classify + store run for real.
@@ -126,7 +135,10 @@ def test_restart_skips_via_cursor(
 
     from agents import event_monitor, supabase_client
 
-    repo = "e2e/marker-repo"
+    # Per-test unique repo tag — keeps this run's audit_log.target rows
+    # distinct from other concurrent test runs, and from the first test's
+    # cleanup query in ``_delete_by_marker``.
+    repo = f"e2e/restart-repo-{marker}"
     fake_id = "900000002"
     fake_events = [_synth_event(fake_id, marker, repo)]
 
@@ -191,11 +203,9 @@ def test_audit_log_records_poll(
         .data
         or []
     )
-    try:
-        assert audit_rows, f"no audit rows for target={repo!r}"
-        assert audit_rows[0]["agent_id"] == "langgraph-monitor"
-        assert audit_rows[0]["tool_name"] == "event_monitor"
-        assert audit_rows[0]["action"] == "poll"
-    finally:
-        # Cleanup: remove the audit rows this test created.
-        cli.table("audit_log").delete().eq("target", repo).execute()
+    assert audit_rows, f"no audit rows for target={repo!r}"
+    assert audit_rows[0]["agent_id"] == "langgraph-monitor"
+    assert audit_rows[0]["tool_name"] == "event_monitor"
+    assert audit_rows[0]["action"] == "poll"
+    # Cleanup is handled by the ``marker`` fixture — the repo tag contains
+    # the marker, so audit rows are swept by ``_delete_by_marker``.

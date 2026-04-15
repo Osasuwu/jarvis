@@ -49,9 +49,12 @@ Three tests:
 | `test_restart_skips_via_cursor` | Invoking the graph twice with the same thread id does **not** create duplicate rows — the checkpointed cursor filters out already-processed events. |
 | `test_audit_log_records_poll` | Every poll (including empty ones) leaves an `audit_log` row with `agent_id=langgraph-monitor`, `tool_name=event_monitor`, `action=poll`. |
 
-Each test tags its rows with a UUID marker and deletes them on teardown.
-Thread ids are also UUID-suffixed so parallel invocations (and the
-production `event-monitor` thread) never collide.
+Each test embeds a UUID marker in both the event title and the repo
+name, so teardown can delete its rows from `events` (match on
+`title LIKE '%<marker>%'`) and `audit_log` (match on
+`target LIKE '%<marker>%'`). Thread ids are also UUID-suffixed so
+parallel invocations (and the production `event-monitor` thread) never
+share checkpoint state.
 
 Expected runtime: about one minute — most of it is Ollama classification.
 
