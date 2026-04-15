@@ -216,6 +216,94 @@ create policy "Allow all for anon" on memory_links
 
 
 -- =========================================================================
+-- Memory Consolidation — Memory 2.0: Merge similar memories
+-- Finds clusters of 3+ memories with cosine similarity >= 0.80
+-- Returns clusters for LLM-driven merge (content merging is not pure SQL)
+-- =========================================================================
+
+-- Find groups of memories that should be consolidated
+create or replace function find_consolidation_clusters(
+  min_cluster_size int default 3,
+  sim_threshold float default 0.80
+)
+returns table (
+  cluster_id int,
+  memory_id uuid,
+  memory_name text,
+  memory_type text,
+  content text,
+  similarity float,
+  updated_at timestamptz
+)
+language sql stable
+as $$
+  with pairs as (
+    select
+      a.id as id_a, b.id as id_b,
+      a.name as name_a, b.name as name_b,
+      a.type as type_a,
+      a.content as content_a, b.content as content_b,
+      a.updated_at as updated_a, b.updated_at as updated_b,
+      1 - (a.embedding <=> b.embedding) as sim
+    from memories a
+    join memories b on a.id < b.id
+      and a.type = b.type
+      and a.embedding is not null
+      and b.embedding is not null
+    where 1 - (a.embedding <=> b.embedding) >= sim_threshold
+  ),
+  -- Group connected pairs into clusters via the oldest memory as anchor
+  anchors as (
+    select id_a as anchor, id_a as member, name_a as name, type_a as type,
+           content_a as content, sim, updated_a as updated_at from pairs
+    union all
+    select id_a as anchor, id_b as member, name_b as name, type_a as type,
+           content_b as content, sim, updated_b as updated_at from pairs
+  ),
+  clusters as (
+    select
+      dense_rank() over (order by anchor) as cid,
+      member, name, type, content, sim, updated_at
+    from anchors
+  ),
+  sized as (
+    select *, count(*) over (partition by cid) as cluster_size
+    from clusters
+  )
+  select
+    cid::int as cluster_id,
+    member as memory_id,
+    name as memory_name,
+    type as memory_type,
+    content,
+    sim as similarity,
+    updated_at
+  from sized
+  where cluster_size >= min_cluster_size
+  order by cid, updated_at desc;
+$$;
+
+-- Archive superseded memories: mark as archived (soft delete)
+-- Keeps data but prevents recall from returning them
+create or replace function archive_memories(memory_ids uuid[])
+returns int
+language plpgsql volatile
+as $$
+declare
+  archived_count int;
+begin
+  update memories
+  set type = type || '_archived',
+      description = '[ARCHIVED — consolidated] ' || coalesce(description, '')
+  where id = any(memory_ids)
+    and type not like '%_archived';
+  get diagnostics archived_count = row_count;
+  return archived_count;
+end;
+$$;
+
+
+-- =========================================================================
 -- Task Outcomes — Pillar 3: Outcome Tracking & Learning
 -- Records results of delegations, research, fixes, autonomous actions.
 -- =========================================================================
@@ -335,6 +423,7 @@ language sql stable as $$
     order by rank desc
     limit match_limit;
 $$;
+
 
 
 -- Find memories semantically similar to a given embedding (for auto-linking on store)
