@@ -117,6 +117,8 @@ GITHUB_TOKEN=ghp_...   # unauthenticated = 60 req/hour per IP
 
 The agent identifies itself in `events.source` and `audit_log.agent_id` as `langgraph-monitor`.
 
+For the full end-to-end validation (automated suite + manual walkthrough), see [e2e-test.md](e2e-test.md).
+
 ## Architecture notes
 
 ### Why both `ollama` and `langchain-ollama`?
