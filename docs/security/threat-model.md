@@ -82,10 +82,10 @@ Key flows to protect:
 |--------|-----------|--------|------|--------|
 | Secret leaked in GitHub PR/issue | Low | Critical | High | Mitigated (scanner) |
 | Secret leaked in bash command | Low | Critical | High | Mitigated (scanner) |
-| Secret stored in Supabase memory | Low | High | Medium | Sprint 2 (#159) |
+| Secret stored in Supabase memory | Low | High | Medium | Mitigated (scanner #159) |
 | Agent deletes important memory | Medium | Medium | Medium | Mitigated (soft delete #160) |
-| Agent modifies protected config | Low | High | Medium | Sprint 2 (#162) |
-| Agent breaks git state | Medium | Low | Medium | Sprint 2 (#163) |
+| Agent modifies protected config | Low | High | Medium | Mitigated (boundaries #162) |
+| Agent breaks git state | Medium | Low | Medium | Mitigated (rollback #163) |
 | Prompt injection via web scrape | Low | Medium | Low | Accepted (Claude instruction hierarchy) |
 | Supply chain attack via dependency | Low | High | Medium | Partial (Dependabot) |
 | Prompt injection via GitHub issue | Low | Medium | Low | Accepted (trusted repo) |
@@ -96,20 +96,20 @@ Key flows to protect:
 ### Preventive (stop it from happening)
 - [x] Secret scanner on GitHub writes (PreToolUse hook)
 - [x] Secret scanner on bash commands (PreToolUse hook)
-- [ ] Secret scanner on memory_store (#159)
-- [ ] Protected file write blocking (#162)
+- [x] Secret scanner on memory_store (#159)
+- [x] Protected file write blocking (#162)
 - [x] SOUL.md behavioral rules (never read .env, never output secrets)
 - [x] Gitleaks pre-commit hook + CI workflow
 - [x] Credential registry with CHECK constraint (no values stored)
 
 ### Detective (know when it happened)
 - [x] Gitleaks CI on PRs
-- [ ] Audit trail for agent actions (#161)
+- [x] Audit trail for agent actions (#161)
 - [ ] Dependabot alerts (partially configured)
 
 ### Corrective (undo damage)
 - [x] Soft delete for memory with 30-day retention (#160)
-- [ ] Rollback strategy for agent work (#163)
+- [x] Rollback strategy for agent work (#163)
 - [x] Git history (revert commits)
 
 ### Accepted Risks
