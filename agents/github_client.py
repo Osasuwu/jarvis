@@ -4,8 +4,9 @@ Scope (Sprint 1, issue #174): fetch recent repo events for classification.
 Nothing else — no issue creation, no PR management. The agent observes;
 it doesn't act.
 
-Uses ``httpx`` (already pulled in transitively by ``supabase-py``) so no
-new dependency is needed.
+Uses ``httpx``, declared as a direct dependency of the ``[agents]`` extra
+in ``pyproject.toml``. (It was originally picked up transitively via
+``supabase-py`` — see #183 for why the contract was tightened.)
 """
 
 from __future__ import annotations

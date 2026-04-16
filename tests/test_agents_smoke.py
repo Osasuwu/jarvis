@@ -11,14 +11,29 @@ import os
 import pytest
 
 
+def _require_httpx() -> None:
+    """Skip if real ``httpx`` isn't installed.
+
+    ``importorskip`` alone is too lenient: ``test_memory_server.py`` may put
+    an empty stub module in ``sys.modules`` when real httpx is missing, so
+    ``import httpx`` succeeds but the stub has no ``get`` attribute — and
+    ``monkeypatch.setattr(github_client.httpx, "get", ...)`` then raises
+    ``AttributeError``. Check for ``get`` to detect the stub case and skip
+    properly.
+    """
+    hx = pytest.importorskip("httpx")
+    if not hasattr(hx, "get"):
+        pytest.skip("real httpx not installed (only stub present)")
+
+
 def _require_supabase() -> None:
     """Skip if real ``supabase`` isn't installed.
 
-    ``importorskip`` alone is too lenient: ``test_memory_server.py`` puts an
-    empty stub module in ``sys.modules`` when real supabase is missing, so
-    ``import supabase`` succeeds but later ``from supabase import Client``
-    fails with an unhelpful ImportError. Check for ``Client`` to detect the
-    stub case and skip properly.
+    Same rationale as ``_require_httpx``: ``test_memory_server.py`` may put
+    an empty stub module in ``sys.modules`` when real supabase is missing,
+    so ``import supabase`` succeeds but later ``from supabase import
+    Client`` fails with an unhelpful ImportError. Check for ``Client`` to
+    detect the stub case and skip properly.
     """
     sb = pytest.importorskip("supabase")
     if not hasattr(sb, "Client"):
@@ -150,7 +165,7 @@ def test_supabase_client_surface() -> None:
 
 def test_github_client_event_allowlist() -> None:
     """Allow-list includes the six event types the monitor acts on."""
-    pytest.importorskip("httpx")
+    _require_httpx()
     from agents.github_client import RELEVANT_EVENT_TYPES
 
     for needed in (
@@ -189,7 +204,7 @@ def test_fetch_repo_events_slices_oldest_first(monkeypatch: pytest.MonkeyPatch) 
     monitor then advances the cursor to the max id — permanently skipping
     the older-but-still-new events that didn't fit.
     """
-    pytest.importorskip("httpx")
+    _require_httpx()
     from agents import github_client
 
     # 12 relevant events, newest first — like the real /events endpoint.
@@ -217,7 +232,7 @@ def test_fetch_repo_events_paginates_past_first_page(monkeypatch: pytest.MonkeyP
     newer than the cursor) were permanently skipped once the cursor
     advanced to the newest-seen id.
     """
-    pytest.importorskip("httpx")
+    _require_httpx()
     from agents import github_client
 
     # Simulate a 250-event backlog, newest-first. per_page=100, so this is
@@ -261,7 +276,7 @@ def test_fetch_repo_events_stops_at_cursor(monkeypatch: pytest.MonkeyPatch) -> N
     """Pagination halts as soon as a page's oldest event id is <= cursor,
     since every subsequent page is strictly older.
     """
-    pytest.importorskip("httpx")
+    _require_httpx()
     from agents import github_client
 
     # Page 1 has ids 120..21 (100 events); cursor=50 means the oldest on
@@ -299,7 +314,7 @@ def test_fetch_repo_events_stops_at_cursor(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_summarise_event_covers_known_types() -> None:
     """Every event-type branch produces a string with actor + repo + detail."""
-    pytest.importorskip("httpx")
+    _require_httpx()
     from agents.github_client import summarise_event
 
     common = {"actor": {"login": "alice"}, "repo": {"name": "o/r"}}
@@ -341,8 +356,8 @@ def test_summarise_event_covers_known_types() -> None:
 def test_event_monitor_graph_builds() -> None:
     """The monitor graph compiles to fetch -> classify -> store."""
     pytest.importorskip("langgraph")
-    pytest.importorskip("supabase")
-    pytest.importorskip("httpx")
+    _require_supabase()
+    _require_httpx()
 
     from agents.event_monitor import MonitorState, build_graph
 
@@ -359,8 +374,8 @@ def test_event_monitor_classification_schema() -> None:
     # github_client) at module load, so skip (not error) when the optional
     # [agents] extras aren't installed.
     pytest.importorskip("langgraph")
-    pytest.importorskip("supabase")
-    pytest.importorskip("httpx")
+    _require_supabase()
+    _require_httpx()
 
     from agents.event_monitor import _CLASSIFY_SCHEMA
 
