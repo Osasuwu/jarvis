@@ -1,7 +1,7 @@
 ---
 name: status
 description: "Project dashboard: git state, PRs, issues, CI health, risks, stale/blocked work, goal alerts. Absorbs morning-brief, risk-radar, triage. Use at session start or when needing cross-project awareness."
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Status Dashboard
@@ -16,6 +16,8 @@ Single command for full project awareness. Replaces morning-brief, risk-radar, a
 ## Step 1 — Load repos
 
 Read `config/repos.conf` (one `owner/repo` per line, `#` = comment). This is the single source of truth — no hardcoded repo names.
+
+Local path resolution (portable across 3 devices): `{device.json.repos_path}/{repo-name}` where `repo-name` is the segment after `/`. Example on Main PC: `C:/Users/petrk/GitHub/redrobot`. If the directory doesn't exist (e.g. not cloned on this device), skip local git checks gracefully — GitHub-side checks still run.
 
 ## Step 2 — Gather data (parallel)
 

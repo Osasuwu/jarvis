@@ -1,7 +1,7 @@
 ---
 name: autonomous-loop
 description: "Autonomous orchestrator: perceive events, evaluate against goals, decide and act within safety bounds. Runs daily via scheduled task or manual invocation."
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Autonomous Loop Orchestrator
@@ -32,6 +32,7 @@ In parallel, load:
 - `memory_recall(query="research findings unacted")` — research outputs waiting for action
 - `memory_recall(query="autonomous_loop_last_run")` — dedup check (don't run twice in same day)
 - `memory_recall(query="outcome patterns feedback")` — past pattern detections to inform scoring
+- Read `config/repos.conf` — target repos for perception + hygiene sweep
 
 **Dedup rule:** If `autonomous_loop_last_run` exists and is today's date, skip gracefully (return "Already ran today").
 
@@ -46,6 +47,36 @@ From perception outputs, generate candidates:
 - **Events** from event queue (HIGH+ severity) → handle event
 - **Morning-brief** items marked "needs action" → act on them
 - **Memory clusters** from `find_consolidation_clusters()` → consolidation action (Low-risk)
+- **Workflow hygiene sweep** (per repo in `config/repos.conf`) — see Step 2a.
+
+### Step 2a — Workflow hygiene sweep
+
+For each repo `R` in `config/repos.conf`, query in parallel:
+
+```bash
+# Milestones
+gh api "repos/<R>/milestones?state=open&per_page=50" --jq '.[] | {number,title,state,open_issues,closed_issues,due_on}'
+# Epics without milestone
+gh issue list --repo <R> --label epic --state open --json number,title,milestone,labels --limit 30
+# CI runs for failure rate
+gh run list --repo <R> --json conclusion,name,createdAt --limit 20
+```
+
+Generate candidates:
+
+| Signal | Detection | Risk | Action |
+|--------|-----------|------|--------|
+| **Orphan milestone** | `state==open && open_issues==0` | Low | `gh api repos/<R>/milestones/<N> -X PATCH -F state=closed` |
+| **Orphan sprint** | `label==epic && /Sprint/i.test(title) && milestone==null` | Medium | Create milestone from epic title + attach epic + merged-PRs that reference it |
+| **CI workflow broken** | Same-name workflow ≥50% fail rate in last 10 runs AND ≥24h old | Medium | Spawn debug task via `/delegate` pointing at the workflow file |
+| **Milestone deadline risk** | `due_on within 3 days && open_issues > 0` | — (flag only) | Add to `## Alerts` in output; don't auto-act |
+| **Epic missing Children heading** | body fails `/##+\s*Children/i` regex | Low | Flag + record proposal (don't auto-rewrite body — content judgment) |
+
+**Write-action permissions (enforced here):**
+- Repos under `Osasuwu/*` → all Low/Medium actions execute normally.
+- Repos under any other owner (e.g. `SergazyNarynov/redrobot`) → **flag-only**: record the finding in memory (`type=project, name=hygiene_sweep_proposals_<repo>_<date>`) and surface it in the output, but never execute the action. Owner acts manually or flips the repo to an owned org.
+
+**Dedup per-finding:** before closing a milestone / creating a retroactive one, check `outcome_list(task_type='autonomous', pattern_tags=['hygiene'])` for matching description from last 3 days. Skip if same finding already actioned.
 
 ## Step 3 — Score Each Candidate
 
@@ -102,12 +133,16 @@ Execute each independently:
 - Tag or label work: `gh issue edit`, `gh pr edit`
 - Triage events: `events_mark_processed(...)`
 - Memory consolidation: run `find_consolidation_clusters()` via `execute_sql`, for each cluster: read all memories, merge content into one authoritative memory via `memory_store`, archive originals via `archive_memories(ids)`
+- **Hygiene: close orphan milestone** (only on `Osasuwu/*` repos): `gh api repos/<R>/milestones/<N> -X PATCH -F state=closed` — for each milestone with `state=open && open_issues==0`.
+- **Hygiene: flag epic missing Children heading**: record proposal via `memory_store(type="project", name="hygiene_epic_<N>_needs_children", ...)`. Don't auto-rewrite bodies.
 
 ### Medium-risk (at most 1)
 Execute after Low-risk batch completes:
 - Invoke skill: `/self-improve`, `/research`, `/verify`
 - Create PR: delegate via `/delegate` or `gh pr create`
 - Update goal: `goal_update(slug=..., progress=...)`
+- **Hygiene: retroactive milestone** for orphan sprint — `gh api repos/<R>/milestones -X POST` with title from epic, attach epic + linked merged PRs, close milestone. Only on `Osasuwu/*`.
+- **Hygiene: broken CI debug** — `/delegate` a task to investigate the failing workflow, pointing at the specific workflow file and failure rate. Only on `Osasuwu/*`.
 
 ### High-risk (proposals only)
 Never execute — save to memory:
@@ -151,6 +186,7 @@ If any action advances a goal → `goal_update(slug=..., progress=[...])` — ap
 - Create more than 1 PR per run (even in a batch)
 - Execute more than 5 Low-risk + 1 Medium-risk per run
 - Execute High-risk actions without explicit proposal
+- Execute write actions (close milestone, create milestone, delete branch, `gh issue/pr edit`) on repos outside `Osasuwu/*`. For other owners (e.g. `SergazyNarynov/redrobot`): flag-only — record the finding and surface in output, owner executes manually.
 
 **Always:**
 - Dedup: check `autonomous_loop_last_run` before acting
