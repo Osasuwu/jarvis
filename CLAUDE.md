@@ -190,6 +190,18 @@ Owner often gives a task and leaves. Jarvis must work autonomously and deliver q
 - One issue per PR, body includes `Closes #NNN`
 - Check GitHub Copilot auto-review before merging
 
+### Sprint vs pillar hygiene (non-negotiable)
+
+**Pillars** live in memory, never close — they evolve. A pillar is a multi-sprint capability area (e.g. Pillar 7: Multi-agent architecture). Don't treat a pillar as done after one sprint (see memory `pillar_is_not_one_task`).
+
+**Sprints = GitHub milestones.** Concrete, time-boxed, close cleanly.
+
+Rules:
+1. **Start of sprint** — create the milestone *before* creating any sprint-scoped issue. Every sprint issue gets attached at creation time. No orphan "Sprint N" issues without a milestone.
+2. **End of sprint** — when closing the last issue/PR in a milestone, close the milestone in the same action. A milestone with 0 open items but `state=open` is a bug.
+3. **Retroactive fix** — if a sprint ships without a milestone, create the milestone after the fact, attach all issues+PRs, close it. History must be recoverable for `/sprint-report`.
+4. **When owner rushes and skips steps** — that's exactly what Jarvis exists to catch. Remind him: "milestone for this sprint?" before creating issues; "close milestone M<N>?" when the last issue in it closes. Don't be a silent executor.
+
 ## Token economy
 - Don't pay LLM tokens to run shell commands — fetch data first, send only data to LLM
 - Prefer editing existing files over creating new ones

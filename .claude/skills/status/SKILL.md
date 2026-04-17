@@ -33,6 +33,7 @@ git -C <path> branch --show-current
 gh pr list --repo <R> --state open --json number,title,updatedAt,reviewDecision,isDraft --limit 10
 gh issue list --repo <R> --state open --json number,title,labels,updatedAt --limit 20
 gh run list --repo <R> --json conclusion,name --limit 10
+gh api "repos/<R>/milestones?state=open&per_page=50" --jq '.[] | {number, title, open_issues, closed_issues, due_on}'
 ```
 
 **Security** (skip silently on 403):
@@ -72,6 +73,12 @@ Flag: N stale branches (remote gone), M unmerged branches, K stashes.
 **Goal alerts** (from session context — goals are already loaded):
 - Deadline within 3 days → urgent flag
 - P0 goal with no related activity → neglect flag
+
+**Milestone hygiene** (from `gh api .../milestones?state=open`):
+- `open_issues == 0 && state == "open"` → **orphan milestone** (work done, milestone never closed). Flag with proposal to close.
+- Issue labeled `epic` with "Sprint" in title but `milestone == null` → **orphan sprint** (sprint running without milestone tracking). Flag with proposal to create+attach milestone.
+- Milestone `due_on` within 3 days and `open_issues > 0` → **sprint deadline risk**.
+- Treat these as actionable items, not just reports — suggest the fix command inline.
 
 ## Step 4 — Output
 
