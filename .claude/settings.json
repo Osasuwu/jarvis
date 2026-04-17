@@ -9,6 +9,15 @@
             "command": "python scripts/device-info.py && echo '' && cat config/SOUL.md && echo '' && python scripts/session-context.py"
           }
         ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/device-info.py && echo '' && cat config/SOUL.md && echo '' && python scripts/session-context.py"
+          }
+        ]
       }
     ],
     "PreToolUse": [
