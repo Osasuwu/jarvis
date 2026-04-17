@@ -41,6 +41,18 @@ if sys.stderr.encoding != "utf-8":
     sys.stderr.reconfigure(encoding="utf-8")
 
 
+KNOWN_PROJECTS = {"jarvis", "redrobot"}
+
+
+def _detect_project():
+    """Return current project name if cwd basename matches a known project, else None."""
+    try:
+        name = Path(os.getcwd()).name.lower()
+    except Exception:
+        return None
+    return name if name in KNOWN_PROJECTS else None
+
+
 def main():
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
@@ -54,35 +66,32 @@ def main():
         print(f"[session-context] Supabase connect failed: {e}", file=sys.stderr)
         return
 
+    project = _detect_project()
     sections = []
 
-    # 1. User memories — who is the owner
+    # 1. User memories — who is the owner (always)
     section = _query_memories(client, mem_type="user", limit=2)
     if section:
         sections.append("## User Profile\n" + section)
 
-    # 2. Feedback — behavioral guidance
-    section = _query_memories(client, mem_type="feedback", limit=5)
+    # 2. Always-load memories — evergreen rules not tied to any single project.
+    #    Everything else (feedback/decisions) is loaded task-aware via
+    #    UserPromptSubmit hook (scripts/memory-recall-hook.py).
+    section = _query_always_load(client)
     if section:
-        sections.append("## Feedback & Rules\n" + section)
+        sections.append("## Always-Load Rules\n" + section)
 
-    # 3. Decisions — jarvis project + global
-    section = _query_memories(
-        client, mem_type="decision", limit=5,
-        extra_filter=lambda q: q.or_("project.eq.jarvis,project.is.null"),
-    )
-    if section:
-        sections.append("## Recent Decisions\n" + section)
+    # 3. Working state — ONLY when session is inside a known project dir.
+    #    In a non-project cwd (e.g. scheduled research) working_state is noise.
+    if project:
+        section = _query_memories(
+            client, mem_type="project", limit=1,
+            extra_filter=lambda q: q.eq("name", f"working_state_{project}"),
+        )
+        if section:
+            sections.append(f"## Working State ({project})\n" + section)
 
-    # 4. Working state checkpoint
-    section = _query_memories(
-        client, mem_type="project", limit=1,
-        extra_filter=lambda q: q.ilike("name", "%working_state%"),
-    )
-    if section:
-        sections.append("## Working State\n" + section)
-
-    # 5. Active goals
+    # 4. Active goals (always)
     goal_section = _query_goals(client)
     if goal_section:
         sections.append(goal_section)
@@ -116,6 +125,23 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None):
             return "\n---\n".join(_fmt_memory(m) for m in result.data)
     except Exception as e:
         print(f"[session-context] {mem_type} query failed: {e}", file=sys.stderr)
+    return None
+
+
+def _query_always_load(client):
+    """Query memories tagged 'always_load' (evergreen, cross-project rules)."""
+    try:
+        result = (
+            client.table("memories")
+            .select(_MEMORY_COLS)
+            .contains("tags", ["always_load"])
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        if result.data:
+            return "\n---\n".join(_fmt_memory(m) for m in result.data)
+    except Exception as e:
+        print(f"[session-context] always_load query failed: {e}", file=sys.stderr)
     return None
 
 

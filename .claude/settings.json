@@ -45,6 +45,20 @@
           {
             "type": "command",
             "command": "python scripts/secret-scanner.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/memory-dedup-check.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/memory-recall-hook.py"
           }
         ]
       }
