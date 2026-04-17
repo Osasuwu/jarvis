@@ -96,6 +96,8 @@ Process the selected actions in order. Track results as `{action, status, detail
 ### Low-risk batch (up to 5)
 Execute each independently:
 - Create GitHub issue: `gh issue create --repo <R> --title "..." --body "..."`
+  - **Epics** (`--label epic`) MUST use the `.github/ISSUE_TEMPLATE/epic.yml` structure: body requires `### Children` heading with `- [ ]` checkbox items, else `Issue Checks` CI fails. No `Parent: #NNN` — epics use milestones, not parent links.
+  - **Tasks/bugs**: link parent via GitHub sub-issue relationship or `Parent: #NNN` at top of body.
 - Memory operations: `memory_store(...)`, `goal_update(...)`
 - Tag or label work: `gh issue edit`, `gh pr edit`
 - Triage events: `events_mark_processed(...)`
