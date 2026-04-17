@@ -4,8 +4,9 @@ Scope (Sprint 1, issue #174): fetch recent repo events for classification.
 Nothing else — no issue creation, no PR management. The agent observes;
 it doesn't act.
 
-Uses ``httpx`` (already pulled in transitively by ``supabase-py``) so no
-new dependency is needed.
+Uses ``httpx``, declared as a direct dependency of the ``[agents]`` extra
+in ``pyproject.toml``. (It was originally picked up transitively via
+``supabase-py`` — see #183 for why the contract was tightened.)
 """
 
 from __future__ import annotations
@@ -41,6 +42,12 @@ def _headers(token: str | None) -> dict[str, str]:
     return headers
 
 
+# GitHub's /events endpoint serves at most ~300 events total across up to
+# 3 pages. ``per_page=100`` is the maximum the API accepts.
+_MAX_EVENTS_PAGES = 3
+_PER_PAGE = 100
+
+
 def fetch_repo_events(
     repo: str,
     *,
@@ -49,45 +56,63 @@ def fetch_repo_events(
     token: str | None = None,
     timeout: float = 10.0,
 ) -> list[dict[str, Any]]:
-    """Return recent public events for ``repo`` (newest first).
+    """Return recent events for ``repo`` filtered to RELEVANT_EVENT_TYPES,
+    oldest first.
+
+    GitHub returns events newest-first; this function paginates (up to 3
+    pages of 100), filters to the allow-list, and re-sorts ascending before
+    slicing to ``limit``. Taking the oldest N makes the monitor's cursor
+    advance contiguous: the next poll resumes right after the last stored
+    event rather than skipping past older-but-still-new activity that didn't
+    fit in the slice.
 
     * ``after_event_id`` — drop any event whose id is <= this one. GitHub
-      event ids are monotonically increasing strings-of-integers, so
-      string-compare by integer value is the correct semantics.
-    * ``limit`` — cap Ollama classification cost; defaults to 10 per run.
+      event ids are monotonically increasing integer-strings; this function
+      converts them with ``int(...)`` and compares numerically.
+    * ``limit`` — cap how many matching events to return per call (and
+      therefore how many Ollama classifications are paid for). Default 10.
     * ``token`` — optional GitHub token. Unauthenticated requests hit a
       60 req/hour rate limit per IP, which is fine for low-frequency
       monitoring but will trip on busy repos.
 
-    Filtered to ``RELEVANT_EVENT_TYPES``. Returns raw GitHub event dicts.
+    Pagination stops early when a page's oldest event id is <= the cursor
+    (nothing newer can exist on later pages) or when a short page signals
+    the end of available history. This prevents silent event loss on busy
+    repos where more than one page of relevant activity lands between polls.
     """
     auth_token = token if token is not None else os.environ.get("GITHUB_TOKEN")
-    url = f"https://api.github.com/repos/{repo}/events"
-    response = httpx.get(
-        url,
-        headers=_headers(auth_token),
-        params={"per_page": 30},  # fetch a wider page, filter client-side
-        timeout=timeout,
-    )
-    response.raise_for_status()
-    events: list[dict[str, Any]] = response.json()
-
-    # GitHub returns newest first. For cursor comparison, use integer
-    # conversion — the API guarantees numeric ids.
     cursor = int(after_event_id) if after_event_id else 0
-    filtered = [
-        e
-        for e in events
-        if e.get("type") in RELEVANT_EVENT_TYPES and int(e.get("id", "0")) > cursor
-    ]
-    # Re-sort oldest-first before the limit slice. GitHub's response is
-    # newest-first, so a naive ``filtered[:limit]`` would pick the N newest
-    # and the monitor would then advance the cursor to the max id in that
-    # slice — permanently skipping the older-but-still-new events that
-    # didn't fit. Taking the oldest N instead makes the cursor advance
-    # contiguous: next poll resumes right after the last stored event.
-    filtered.sort(key=lambda e: int(e.get("id", "0")))
-    return filtered[:limit]
+    url = f"https://api.github.com/repos/{repo}/events"
+
+    collected: list[dict[str, Any]] = []
+    for page in range(1, _MAX_EVENTS_PAGES + 1):
+        response = httpx.get(
+            url,
+            headers=_headers(auth_token),
+            params={"per_page": _PER_PAGE, "page": page},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        page_events: list[dict[str, Any]] = response.json()
+        if not page_events:
+            break
+
+        for event in page_events:
+            if event.get("type") in RELEVANT_EVENT_TYPES and int(event.get("id", "0")) > cursor:
+                collected.append(event)
+
+        # The last element on each page is the oldest on that page (GitHub
+        # returns newest-first). If it's already <= cursor, every event on
+        # subsequent pages is strictly older — no further matches possible.
+        oldest_on_page = int(page_events[-1].get("id", "0"))
+        if oldest_on_page <= cursor:
+            break
+        # A partial page means GitHub has no more history to return.
+        if len(page_events) < _PER_PAGE:
+            break
+
+    collected.sort(key=lambda e: int(e.get("id", "0")))
+    return collected[:limit]
 
 
 def summarise_event(event: dict[str, Any]) -> str:

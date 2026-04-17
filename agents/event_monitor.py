@@ -100,22 +100,24 @@ def classify_node(state: MonitorState) -> dict[str, Any]:
     classified: list[dict[str, Any]] = []
     for event in state.get("fetched_events", []):
         summary = summarise_event(event)
-        raw = ollama_chat(
-            messages=[
-                {"role": "system", "content": _CLASSIFY_SYSTEM},
-                {"role": "user", "content": summary},
-            ],
-            format=_CLASSIFY_SCHEMA,
-            options={"temperature": 0, "num_predict": 80},
-        )
         try:
+            raw = ollama_chat(
+                messages=[
+                    {"role": "system", "content": _CLASSIFY_SYSTEM},
+                    {"role": "user", "content": summary},
+                ],
+                format=_CLASSIFY_SCHEMA,
+                options={"temperature": 0, "num_predict": 80},
+            )
             parsed = json.loads(raw)
             label = parsed["classification"]
             reason = parsed["reason"]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
-            # Bad classifier output — prefer surfacing to silent drop.
-            # The reason field records what broke so it shows up in the
-            # events table payload for later inspection.
+        except Exception as exc:  # noqa: BLE001 — classifier failures must never abort the run
+            # Any classifier failure — Ollama daemon down, network/timeout,
+            # malformed output — defaults to "info" so the event still
+            # surfaces and the store node's audit write for this run still
+            # happens. The reason field records what broke for later
+            # inspection via the events table.
             label = "info"
             reason = f"classifier_error: {exc}"
         classified.append(

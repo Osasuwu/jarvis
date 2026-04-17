@@ -179,15 +179,19 @@ Owner often gives a task and leaves. Jarvis must work autonomously and deliver q
 1. **Don't interpret the task — understand it**. Re-read the issue, related discussions. If unclear — do less but correctly
 2. **Acceptance criteria — before code, not after**
 3. **Tests verify requirements, not implementation**
-4. **Stuck → research, don't hack**. Web search, Context7, docs — all tools are available
-5. **Check against the goal at every step**. Don't drift
+4. **Transform tasks into verifiable goals**:
+   - "Fix the bug" → write a test that reproduces it, then make it pass
+   - "Add validation" → write tests for invalid inputs, then make them pass
+   - "Refactor X" → ensure tests pass before and after
+5. **Stuck → research, don't hack**. Web search, Context7, docs — all tools are available
+6. **Check against the goal at every step**. Don't drift
 
 ---
 
 ## Development process
 
 - Branches from `main`
-- One issue per PR, body includes `Closes #NNN`
+- One issue per PR, body includes `Closes #NNN`. For review follow-ups or drive-by fixes without a parent issue, create a post-factum issue-bucket summarizing the scope (see #183 as a reference pattern)
 - Check GitHub Copilot auto-review before merging
 
 ### Sprint vs pillar hygiene (non-negotiable)

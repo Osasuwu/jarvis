@@ -67,8 +67,14 @@ try:
 except ImportError:
     sys.modules["supabase"] = types.ModuleType("supabase")
 
-# Stub httpx (used for Voyage AI embedding calls)
-sys.modules.setdefault("httpx", types.ModuleType("httpx"))
+# Stub httpx only if it's not actually installed. A blind setdefault
+# would shadow a real install for the rest of the pytest session (e.g.
+# test_agents_smoke.py needs real `httpx.get` to monkey-patch the
+# GitHub client).
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules["httpx"] = types.ModuleType("httpx")
 
 # Stub dotenv
 _dotenv = types.ModuleType("dotenv")
