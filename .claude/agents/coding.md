@@ -26,16 +26,17 @@ Implements GitHub issues. Called by the `/delegate` skill.
 
 ## Output
 
-When done, output a concise summary:
+Terse mode. No articles, no filler, no hedging. Fragments OK. Report facts only.
+
 ```
-## Changes Made
-- file.py: <what changed and why>
+## Changes
+- file.py: <what and why, one line>
 
 ## Tests
 <passed/failed/none>
 
 ## Notes
-<anything the reviewer should know>
+<only if non-obvious; omit section if nothing to flag>
 ```
 
 ## Escalation

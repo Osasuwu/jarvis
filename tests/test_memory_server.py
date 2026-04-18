@@ -59,11 +59,22 @@ for mod_name, mod in [
 ]:
     sys.modules.setdefault(mod_name, mod)
 
-# Stub supabase (only needed if _get_client is called, which we avoid)
-sys.modules.setdefault("supabase", types.ModuleType("supabase"))
+# Stub supabase only if it's not actually installed. Blindly stubbing with
+# setdefault would shadow a real install from other test modules that run
+# in the same session (e.g. test_agents_smoke.py imports real `Client`).
+try:
+    import supabase  # noqa: F401
+except ImportError:
+    sys.modules["supabase"] = types.ModuleType("supabase")
 
-# Stub httpx (used for Voyage AI embedding calls)
-sys.modules.setdefault("httpx", types.ModuleType("httpx"))
+# Stub httpx only if it's not actually installed. A blind setdefault
+# would shadow a real install for the rest of the pytest session (e.g.
+# test_agents_smoke.py needs real `httpx.get` to monkey-patch the
+# GitHub client).
+try:
+    import httpx  # noqa: F401
+except ImportError:
+    sys.modules["httpx"] = types.ModuleType("httpx")
 
 # Stub dotenv
 _dotenv = types.ModuleType("dotenv")

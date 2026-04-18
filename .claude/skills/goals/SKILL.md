@@ -21,11 +21,11 @@ Strategic goal management. Goals are NOT tasks — they are outcomes Jarvis purs
 1. Call `goal_list(status="active")`
 2. Display goals ordered by priority, with:
    - Title, project, priority, deadline (if any)
-   - Progress percentage and milestones
+   - Accomplishment log (progress items marked done, with dates)
    - Risks (if any)
    - Owner focus / Jarvis focus
 3. If any goals have deadline within 7 days — highlight them
-4. If any P0 goals have progress < 50% — flag risk
+4. If any P0 goals have no recent progress (no done items in last 14 days) — flag risk
 
 ### `/goals set` — Create or Update
 
@@ -54,14 +54,13 @@ If a slug already exists, update the existing goal.
 1. Call `goal_list(status="active")`
 2. For each goal:
    - Check GitHub issues/PRs related to the project (if applicable)
-   - Evaluate progress against milestones
+   - Review accomplishment log — what's been done since last review?
    - Check if deadline is at risk
-   - Propose progress_pct update
+   - Identify what's NOT progressing (success_criteria without matching accomplishments)
 3. Output:
-   - Per-goal status with delta since last update
-   - Risks and blockers
+   - Per-goal status: recent accomplishments, gaps, risks
    - Concrete suggestions: re-prioritize? adjust scope? escalate?
-4. Call `goal_update(...)` for each goal with new progress data
+4. Append any newly discovered accomplishments via `goal_update(slug=..., progress=[...])`
 5. If any goal should be closed — propose it
 
 ### `/goals close <slug>` — Close a Goal
@@ -94,11 +93,12 @@ This is not a feature — it's the operating model.
 
 ## [P0] Redrobot Demo (redrobot)
 Deadline: 2026-04-20 (12 days) | Direction: Redrobot production-ready
-Progress: 60%
-- [x] Scenario 1
-- [x] Scenario 2
-- [ ] Scenario 3
-- [ ] UI polish
+Done:
+- Scenario 1 (2026-04-01)
+- Scenario 2 (2026-04-08)
+Remaining (from success_criteria):
+- Scenario 3
+- UI polish
 Risks: #38 harder than expected
 Owner: Scenario 3 | Jarvis: Monitor #38, infra
 
@@ -106,10 +106,11 @@ Owner: Scenario 3 | Jarvis: Monitor #38, infra
 
 ## [P1] Goals System (jarvis)
 No deadline | Direction: Jarvis 2.0
-Progress: 40%
-- [x] Design
-- [x] DB + MCP methods
-- [ ] Skill
-- [ ] Integration (CLAUDE.md, SOUL.md)
+Done:
+- Design (2026-03-20)
+- DB + MCP methods (2026-03-25)
+Remaining:
+- Skill
+- Integration (CLAUDE.md, SOUL.md)
 Owner: Review | Jarvis: Implement
 ```

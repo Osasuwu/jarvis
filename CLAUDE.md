@@ -149,11 +149,13 @@ After context compression → `memory_recall(query="working state")` first, then
 
 ## Skill routing
 
-Seven skills. Use them — don't reinvent with raw tools.
+Ten skills. Use them — don't reinvent with raw tools.
 
 | Situation | Skill | Trigger |
 |-----------|-------|---------|
 | Implement a GitHub issue | **/delegate** | Owner says "реализуй", "implement", "#42" — or Jarvis decides to implement. **Always** use /delegate, never raw Agent for issue work |
+| Verify task outcomes | **/verify** | "проверь результаты", "verify outcomes", or scheduled after delegations. Checks PR merge, tests, updates outcome records |
+| Review decisions + learn | **/reflect** | "что сработало", "reflect", "уроки". Reviews decisions, checks outcomes, extracts lessons, updates hypotheses |
 | End of session | **/end** | Owner says "end", "закончим", "конец сессии". Full: behavioral reflection + decisions + commit (~5 min) |
 | Quick exit | **/end-quick** | Owner says "end quick", "быстро закончим". Checkpoint + commit only (~30 sec) |
 | Project overview | **/status** | Start of work session, "статус", "что происходит", or when Jarvis needs cross-project awareness |
@@ -177,16 +179,32 @@ Owner often gives a task and leaves. Jarvis must work autonomously and deliver q
 1. **Don't interpret the task — understand it**. Re-read the issue, related discussions. If unclear — do less but correctly
 2. **Acceptance criteria — before code, not after**
 3. **Tests verify requirements, not implementation**
-4. **Stuck → research, don't hack**. Web search, Context7, docs — all tools are available
-5. **Check against the goal at every step**. Don't drift
+4. **Transform tasks into verifiable goals**:
+   - "Fix the bug" → write a test that reproduces it, then make it pass
+   - "Add validation" → write tests for invalid inputs, then make them pass
+   - "Refactor X" → ensure tests pass before and after
+5. **Stuck → research, don't hack**. Web search, Context7, docs — all tools are available
+6. **Check against the goal at every step**. Don't drift
 
 ---
 
 ## Development process
 
 - Branches from `main`
-- One issue per PR, body includes `Closes #NNN`
+- One issue per PR, body includes `Closes #NNN`. For review follow-ups or drive-by fixes without a parent issue, create a post-factum issue-bucket summarizing the scope (see #183 as a reference pattern)
 - Check GitHub Copilot auto-review before merging
+
+### Sprint vs pillar hygiene (non-negotiable)
+
+**Pillars** live in memory, never close — they evolve. A pillar is a multi-sprint capability area (e.g. Pillar 7: Multi-agent architecture). Don't treat a pillar as done after one sprint (see memory `pillar_is_not_one_task`).
+
+**Sprints = GitHub milestones.** Concrete, time-boxed, close cleanly.
+
+Rules:
+1. **Start of sprint** — create the milestone *before* creating any sprint-scoped issue. Every sprint issue gets attached at creation time. No orphan "Sprint N" issues without a milestone.
+2. **End of sprint** — when closing the last issue/PR in a milestone, close the milestone in the same action. A milestone with 0 open items but `state=open` is a bug.
+3. **Retroactive fix** — if a sprint ships without a milestone, create the milestone after the fact, attach all issues+PRs, close it. History must be recoverable for `/sprint-report`.
+4. **When owner rushes and skips steps** — that's exactly what Jarvis exists to catch. Remind him: "milestone for this sprint?" before creating issues; "close milestone M<N>?" when the last issue in it closes. Don't be a silent executor.
 
 ## Token economy
 - Don't pay LLM tokens to run shell commands — fetch data first, send only data to LLM

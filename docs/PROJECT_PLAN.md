@@ -25,10 +25,10 @@ Not a tool, not an assistant — an extension of thinking capacity, memory, and 
 
 | # | Pillar | Status | What it is |
 |---|--------|--------|------------|
-| 1 | Goals & Strategic Context | Achieved | Goal-aware decision making, push-back, priority tracking |
-| 2 | Autonomous Work Loop | ~90% | Event perception, judgment, continuous operation without owner |
-| 3 | Outcome Tracking & Learning | ~40% | Verify results, learn from patterns, improve over time |
-| 4 | Memory 2.0 | ~85% | Graph relations, temporal awareness, auto-hygiene |
+| 1 | Goals & Strategic Context | Mature | Goal-aware decision making, push-back, priority tracking |
+| 2 | Autonomous Work Loop | Mature | Event perception, judgment, continuous operation without owner |
+| 3 | Outcome Tracking & Learning | Mature | Verify results, learn from patterns, improve over time |
+| 4 | Memory 2.0 | Mature | Graph relations, temporal awareness, auto-hygiene |
 
 ### Reach
 
@@ -36,11 +36,13 @@ Not a tool, not an assistant — an extension of thinking capacity, memory, and 
 |---|--------|--------|------------|
 | 5 | Integrations / Data Access | Early | Read access to all owner's accounts and services |
 | 6 | Data Intelligence | Not started | Cross-platform search, content curation, pattern detection |
-| 7 | Agent System | Prototype | Scalable multi-agent architecture (PM is one use case) |
-| 8 | Identity & Interface | Partial | TTS/STT, Telegram, professional mask for documents |
-| 9 | Security & Digital Hygiene | Not started | Password audit, breach monitoring, proactive protection |
+| 7 | Agent System | Early | Scalable multi-agent architecture (PM is one use case) |
+| 8 | Identity & Interface | Early | TTS/STT, Telegram, professional mask for documents |
+| 9 | Security & Digital Hygiene | Mature | Threat model, secret scanner hooks, credential registry, MCP audit |
 
 Pillars are stable — they only grow, never change. Implementation within each pillar is flexible.
+
+Status levels: **Not started** → **Early** (first steps) → **Active** (regular work) → **Mature** (core complete, incremental improvements). No percentages — they create false precision.
 
 ---
 

@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-  { name = "Osasuwu", url = "https://github.com/Osasuwu" }
+  { name = "Osasuwu" }
 ]
 keywords = ["ai", "agent", "claude", "mcp", "personal-assistant"]
 classifiers = [
@@ -33,9 +33,25 @@ memory = [
   "httpx>=0.27",
   "pyyaml>=6.0",
 ]
+# Pillar 7: LangGraph persistent agents (Ollama + Postgres checkpointer + Supabase bridge)
+agents = [
+  "langgraph>=0.2.50",
+  "langchain-ollama>=0.2.0",
+  "langgraph-checkpoint-postgres>=2.0.0",
+  "psycopg[binary,pool]>=3.1",
+  "ollama>=0.4.0",
+  # Supabase bridge — agents read/write memories/events/goals/audit_log directly
+  # (MCP is Claude-Code-only, so graph nodes need a native client).
+  "supabase>=2.0.0",
+  # GitHub Events API client. supabase-py pulls httpx transitively today,
+  # but agents/github_client.py depends on it unconditionally — declare it
+  # explicitly so the contract doesn't depend on a transitive.
+  "httpx>=0.27",
+]
 # All runtime components
 full = [
   "jarvis-agent[memory]",
+  "jarvis-agent[agents]",
 ]
 # Development
 dev = [
@@ -49,14 +65,18 @@ Homepage = "https://github.com/Osasuwu/jarvis"
 Issues = "https://github.com/Osasuwu/jarvis/issues"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
+# Mixed layout:
+#   - `agents/` package lives at repo root (Pillar 7 agents)
+#   - `risk_radar.py` remains a flat module under `src/` (legacy)
+# Explicit declarations so `pip install -e ".[agents]"` installs the root-layout
+# `agents` package correctly, rather than silently skipping it.
+package-dir = {"" = "src", "agents" = "agents"}
+packages = ["agents"]
+py-modules = ["risk_radar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 asyncio_mode = "auto"
 
 [tool.ruff]

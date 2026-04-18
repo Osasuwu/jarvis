@@ -1,7 +1,8 @@
 """Jarvis Memory MCP Server.
 
 Provides persistent, cross-device memory for Claude Code via Supabase.
-Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete.
+Tools: memory_store, memory_recall, memory_get, memory_list, memory_delete, memory_restore.
+Audit: write operations logged to audit_log table (fire-and-forget).
 
 Semantic search via Voyage AI embeddings (voyage-3-lite, 512 dims).
 Uses httpx async HTTP for Voyage AI embedding calls; other Supabase operations are synchronous.
@@ -82,6 +83,24 @@ def _get_client():
         pass  # non-fatal — server still works without the migration
 
     return _supabase
+
+
+# ---------------------------------------------------------------------------
+# Audit logging — lightweight, fire-and-forget
+# ---------------------------------------------------------------------------
+
+
+def _audit_log(client, tool_name: str, action: str, target: str | None = None, details: dict | None = None):
+    """Fire-and-forget audit log entry. Never fails the caller."""
+    try:
+        client.table("audit_log").insert({
+            "tool_name": tool_name,
+            "action": action,
+            "target": target,
+            "details": details or {},
+        }).execute()
+    except Exception:
+        pass  # audit is best-effort — never block operations
 
 
 # ---------------------------------------------------------------------------
@@ -449,13 +468,31 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="memory_delete",
-            description="Delete a memory by name and project scope.",
+            description="Soft-delete a memory by name. Recoverable for 30 days via memory_restore.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
                         "description": "Memory name to delete",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope. null = global.",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
+        Tool(
+            name="memory_restore",
+            description="Restore a soft-deleted memory within the 30-day retention window.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Memory name to restore",
                     },
                     "project": {
                         "type": ["string", "null"],
@@ -581,9 +618,40 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="outcome_update",
+            description=(
+                "Update a task outcome after verification. Use to flip status from pending "
+                "to success/failure, record verified_at, pr_merged, lessons, etc."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "Outcome UUID to update."},
+                    "outcome_status": {
+                        "type": "string",
+                        "enum": ["pending", "success", "partial", "failure", "unknown"],
+                    },
+                    "outcome_summary": {"type": "string"},
+                    "pr_merged": {"type": "boolean"},
+                    "tests_passed": {"type": "boolean"},
+                    "quality_score": {"type": "integer", "description": "0-100."},
+                    "lessons": {"type": "string"},
+                    "pattern_tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "verified_at": {
+                        "type": "string",
+                        "description": "ISO timestamp. Defaults to now() if omitted when status changes.",
+                    },
+                },
+                "required": ["id"],
+            },
+        ),
+        Tool(
             name="outcome_list",
             description=(
-                "List recent task outcomes, optionally filtered by project, goal, or status. "
+                "List recent task outcomes, optionally filtered by project, goal, status, or pattern_tags. "
                 "Use to review what worked and what didn't."
             ),
             inputSchema={
@@ -600,6 +668,10 @@ async def list_tools() -> list[Tool]:
                     "outcome_status": {
                         "type": "string",
                         "enum": ["pending", "success", "partial", "failure", "unknown"],
+                    },
+                    "pattern_tag": {
+                        "type": "string",
+                        "description": "Filter by pattern tag (outcomes containing this tag).",
                     },
                     "limit": {
                         "type": "integer",
@@ -636,6 +708,76 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["mode"],
+            },
+        ),
+        # ---- Credential registry tools (Pillar 9) ----
+        Tool(
+            name="credential_list",
+            description=(
+                "List registered credentials (metadata only — never returns secret values). "
+                "Shows service name, env var name, storage location, expiry, rotation notes."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "scope": {
+                        "type": ["string", "null"],
+                        "description": "Filter by scope (e.g. 'jarvis'). null = all.",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="credential_add",
+            description=(
+                "Register a credential in the metadata-only registry. "
+                "Stores service name, env var name, where it's kept, and rotation info. "
+                "NEVER pass actual secret values — the table rejects them."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "service": {"type": "string", "description": "Service name (e.g. 'Supabase', 'GitHub')"},
+                    "env_var": {"type": "string", "description": "Env variable NAME, not value (e.g. 'SUPABASE_KEY')"},
+                    "stored_in": {
+                        "type": "string",
+                        "description": "Where the value lives (e.g. '.env', 'GitHub Actions', 'system env')",
+                        "default": ".env",
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "Project scope (e.g. 'jarvis')",
+                        "default": "jarvis",
+                    },
+                    "expires_at": {
+                        "type": ["string", "null"],
+                        "description": "Expiry date ISO format (null = no expiry)",
+                    },
+                    "rotation_notes": {
+                        "type": ["string", "null"],
+                        "description": "How to rotate (e.g. 'Anthropic Console → API Keys')",
+                    },
+                    "notes": {"type": ["string", "null"], "description": "Additional notes"},
+                },
+                "required": ["service", "env_var"],
+            },
+        ),
+        Tool(
+            name="credential_check_expiry",
+            description=(
+                "Check for credentials expiring within N days. "
+                "Returns list with service, env var, expiry date, and rotation notes. "
+                "Use in morning-brief for proactive alerts."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "days_ahead": {
+                        "type": "integer",
+                        "description": "Alert window in days (default 30)",
+                        "default": 30,
+                    },
+                },
             },
         ),
     ]
@@ -677,14 +819,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return _big_result(await _handle_list(arguments))
         elif name == "memory_delete":
             return await _handle_delete(arguments)
+        elif name == "memory_restore":
+            return await _handle_restore(arguments)
         # Graph tools
         elif name == "memory_graph":
             return _big_result(await _handle_graph(arguments))
         # Outcome tracking tools (Pillar 3)
         elif name == "outcome_record":
             return await _handle_outcome_record(arguments)
+        elif name == "outcome_update":
+            return await _handle_outcome_update(arguments)
         elif name == "outcome_list":
             return _big_result(await _handle_outcome_list(arguments))
+        # Credential registry tools (Pillar 9)
+        elif name == "credential_list":
+            return _big_result(await _handle_credential_list(arguments))
+        elif name == "credential_add":
+            return await _handle_credential_add(arguments)
+        elif name == "credential_check_expiry":
+            return _big_result(await _handle_credential_check_expiry(arguments))
         # Event tools
         elif name == "events_list":
             return _big_result(await _handle_events_list(arguments))
@@ -789,9 +942,11 @@ async def _handle_goal_set(args: dict) -> list[TextContent]:
     existing = client.table("goals").select("id").eq("slug", slug).limit(1).execute()
     if existing.data:
         client.table("goals").update(data).eq("slug", slug).execute()
+        _audit_log(client, "goal_set", "update", slug)
         return [TextContent(type="text", text=f"Goal '{slug}' updated.")]
     else:
         client.table("goals").insert(data).execute()
+        _audit_log(client, "goal_set", "create", slug)
         return [TextContent(type="text", text=f"Goal '{slug}' created.")]
 
 
@@ -862,6 +1017,8 @@ async def _handle_goal_update(args: dict) -> list[TextContent]:
     if data.get("status") in ("achieved", "abandoned"):
         status_note = f" Status: {data['status']}. closed_at set."
 
+    updated_fields = [k for k in data if k != "closed_at"]
+    _audit_log(client, "goal_update", "update", slug, {"fields": updated_fields})
     return [TextContent(type="text", text=f"Goal '{slug}' updated.{status_note}")]
 
 
@@ -893,6 +1050,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "description": description,
         "project": project,
         "tags": tags,
+        "deleted_at": None,  # clear soft-delete on store/upsert
     }
 
     if embedding is not None:
@@ -922,6 +1080,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
         proj_label = "project=global"
 
     msg = f"Memory '{mem_name}' {action} ({proj_label}){embed_note}"
+
+    _audit_log(client, "memory_store", action, mem_name, {"project": project or "global", "type": mem_type})
 
     # -- Memory 2.0: auto-linking + consolidation hints --
     if embedding is not None and stored_id:
@@ -1093,7 +1253,7 @@ def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, 
 
 async def _keyword_recall(client, query_text: str, project, mem_type, limit: int) -> list[TextContent]:
     """ILIKE keyword search (fallback when semantic unavailable)."""
-    q = client.table("memories").select("name, type, project, description, content, tags, updated_at")
+    q = client.table("memories").select("name, type, project, description, content, tags, updated_at").is_("deleted_at", "null")
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1150,7 +1310,7 @@ async def _backfill_missing_embeddings(client, project) -> None:
     """
     try:
         q = client.table("memories").select("id, description, content")
-        q = q.is_("embedding", "null")
+        q = q.is_("embedding", "null").is_("deleted_at", "null")
         if project is not None:
             q = q.or_(f"project.eq.{project},project.is.null")
         rows = q.execute().data
@@ -1248,7 +1408,7 @@ async def _handle_get(args: dict) -> list[TextContent]:
     if project == "global":
         project = None
 
-    q = client.table("memories").select("*").eq("name", mem_name)
+    q = client.table("memories").select("*").eq("name", mem_name).is_("deleted_at", "null")
     if project is not None:
         q = q.eq("project", project)
     else:
@@ -1281,7 +1441,7 @@ async def _handle_list(args: dict) -> list[TextContent]:
         project = None
     mem_type = args.get("type")
 
-    q = client.table("memories").select("name, type, project, description, updated_at")
+    q = client.table("memories").select("name, type, project, description, updated_at").is_("deleted_at", "null")
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1314,7 +1474,7 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     if project == "global":
         project = None  # normalize "global" → NULL, same as in _handle_store
 
-    q = client.table("memories").delete().eq("name", mem_name)
+    q = client.table("memories").update({"deleted_at": datetime.now(timezone.utc).isoformat()}).eq("name", mem_name).is_("deleted_at", "null")
     if project is not None:
         q = q.eq("project", project)
     else:
@@ -1323,8 +1483,31 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     result = q.execute()
 
     if result.data:
-        return [TextContent(type="text", text=f"Deleted memory '{mem_name}' (project={project or 'global'}).")]
+        _audit_log(client, "memory_delete", "soft_delete", mem_name, {"project": project or "global"})
+        return [TextContent(type="text", text=f"Soft-deleted memory '{mem_name}' (project={project or 'global'}). Recoverable for 30 days via memory_restore.")]
     return [TextContent(type="text", text=f"Memory '{mem_name}' not found.")]
+
+
+async def _handle_restore(args: dict) -> list[TextContent]:
+    client = _get_client()
+
+    mem_name = args["name"]
+    project = args.get("project")
+    if project == "global":
+        project = None
+
+    q = client.table("memories").update({"deleted_at": None}).eq("name", mem_name).not_.is_("deleted_at", "null")
+    if project is not None:
+        q = q.eq("project", project)
+    else:
+        q = q.is_("project", "null")
+
+    result = q.execute()
+
+    if result.data:
+        _audit_log(client, "memory_restore", "restore", mem_name, {"project": project or "global"})
+        return [TextContent(type="text", text=f"Restored memory '{mem_name}' (project={project or 'global'}).")]
+    return [TextContent(type="text", text=f"No soft-deleted memory '{mem_name}' found.")]
 
 
 # -- Graph handlers ---------------------------------------------------------
@@ -1385,7 +1568,7 @@ async def _graph_overview(client) -> list[TextContent]:
     top_ids = sorted(counts.keys(), key=lambda k: counts[k], reverse=True)[:10]
     if top_ids:
         # Fetch names for top IDs
-        names_result = client.table("memories").select("id, name, type, project").in_("id", top_ids).execute()
+        names_result = client.table("memories").select("id, name, type, project").in_("id", top_ids).is_("deleted_at", "null").execute()
         id_to_mem = {r["id"]: r for r in (names_result.data or [])}
 
         lines.append(f"\n### Top Connected ({len(top_ids)})\n")
@@ -1399,10 +1582,10 @@ async def _graph_overview(client) -> list[TextContent]:
             lines.append(f"| {name} | {mtype} | {proj} | {counts[mid]} |")
 
     # 3. Orphans (have embedding, no links)
-    total_with_emb = client.table("memories").select("id", count="exact").not_.is_("embedding", "null").execute()
+    total_with_emb = client.table("memories").select("id", count="exact").not_.is_("embedding", "null").is_("deleted_at", "null").execute()
     total_emb_count = total_with_emb.count or 0
     linked_ids = set(counts.keys())
-    all_emb = client.table("memories").select("id, name, type, project").not_.is_("embedding", "null").execute()
+    all_emb = client.table("memories").select("id, name, type, project").not_.is_("embedding", "null").is_("deleted_at", "null").execute()
     orphans = [r for r in (all_emb.data or []) if r["id"] not in linked_ids]
 
     lines.append(f"\n### Orphans ({len(orphans)} of {total_emb_count} embedded memories have no links)\n")
@@ -1419,7 +1602,7 @@ async def _graph_overview(client) -> list[TextContent]:
 async def _graph_links(client, name: str) -> list[TextContent]:
     """All connections for a specific memory."""
     # Find memory by name
-    mem_result = client.table("memories").select("id, name, type, project").eq("name", name).execute()
+    mem_result = client.table("memories").select("id, name, type, project").eq("name", name).is_("deleted_at", "null").execute()
     if not mem_result.data:
         return [TextContent(type="text", text=f"Memory '{name}' not found.")]
 
@@ -1453,7 +1636,7 @@ async def _graph_links(client, name: str) -> list[TextContent]:
     all_ids = [r["target_id"] for r in out_links] + [r["source_id"] for r in in_links]
     id_to_name = {}
     if all_ids:
-        names = client.table("memories").select("id, name, type, project").in_("id", all_ids).execute()
+        names = client.table("memories").select("id, name, type, project").in_("id", all_ids).is_("deleted_at", "null").execute()
         id_to_name = {r["id"]: r for r in (names.data or [])}
 
     # Format outgoing
@@ -1531,7 +1714,7 @@ async def _graph_clusters(client) -> list[TextContent]:
     all_ids = list(set().union(*clusters)) if clusters else []
     id_to_mem = {}
     if all_ids:
-        mems = client.table("memories").select("id, name, type, project").in_("id", all_ids).execute()
+        mems = client.table("memories").select("id, name, type, project").in_("id", all_ids).is_("deleted_at", "null").execute()
         id_to_mem = {r["id"]: r for r in (mems.data or [])}
 
     lines = [f"## Memory Clusters ({len(clusters)} clusters, strength >= 0.7)\n"]
@@ -1666,6 +1849,35 @@ async def _handle_outcome_record(args: dict) -> list[TextContent]:
     return [TextContent(type="text", text="Failed to record outcome.")]
 
 
+async def _handle_outcome_update(args: dict) -> list[TextContent]:
+    """Update a task outcome (verification, status flip, lessons)."""
+    client = _get_client()
+    oid = args["id"]
+
+    updates: dict = {}
+    for key in (
+        "outcome_status", "outcome_summary", "pr_merged", "tests_passed",
+        "quality_score", "lessons", "pattern_tags",
+    ):
+        if key in args and args[key] is not None:
+            updates[key] = args[key]
+
+    # Auto-set verified_at when status changes from pending
+    if "outcome_status" in updates and updates["outcome_status"] != "pending":
+        if "verified_at" in args and args["verified_at"]:
+            updates["verified_at"] = args["verified_at"]
+        else:
+            updates["verified_at"] = datetime.now(timezone.utc).isoformat()
+
+    if not updates:
+        return [TextContent(type="text", text="Nothing to update.")]
+
+    result = client.table("task_outcomes").update(updates).eq("id", oid).execute()
+    if result.data:
+        return [TextContent(type="text", text=f"Outcome {oid} updated: {list(updates.keys())}")]
+    return [TextContent(type="text", text=f"Outcome {oid} not found or update failed.")]
+
+
 async def _handle_outcome_list(args: dict) -> list[TextContent]:
     """List task outcomes with optional filters."""
     client = _get_client()
@@ -1686,6 +1898,8 @@ async def _handle_outcome_list(args: dict) -> list[TextContent]:
         query = query.eq("goal_slug", args["goal_slug"])
     if args.get("outcome_status"):
         query = query.eq("outcome_status", args["outcome_status"])
+    if args.get("pattern_tag"):
+        query = query.contains("pattern_tags", [args["pattern_tag"]])
 
     result = query.execute()
 
@@ -1707,6 +1921,95 @@ async def _handle_outcome_list(args: dict) -> list[TextContent]:
         if o.get("lessons"):
             lines.append(f"    Lesson: {o['lessons']}")
         lines.append(f"    {o['created_at'][:10]} | {o['outcome_status']}")
+        lines.append("")
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+# -- Credential registry handlers (Pillar 9) --------------------------------
+
+
+async def _handle_credential_list(args: dict) -> list[TextContent]:
+    """List registered credentials — metadata only, never secret values."""
+    client = _get_client()
+    query = (
+        client.table("credential_registry")
+        .select("service, env_var, stored_in, scope, expires_at, last_rotated_at, rotation_notes, notes")
+        .order("service")
+    )
+    if args.get("scope"):
+        query = query.eq("scope", args["scope"])
+
+    result = query.execute()
+    if not result.data:
+        return [TextContent(type="text", text="No credentials registered.")]
+
+    lines = [f"# Credential Registry ({len(result.data)} entries)\n"]
+    for c in result.data:
+        expiry = f" | Expires: {c['expires_at'][:10]}" if c.get("expires_at") else ""
+        rotated = f" | Last rotated: {c['last_rotated_at'][:10]}" if c.get("last_rotated_at") else ""
+        lines.append(f"**{c['service']}** — `{c['env_var']}`")
+        lines.append(f"  Stored in: {c['stored_in']} | Scope: {c['scope']}{expiry}{rotated}")
+        if c.get("rotation_notes"):
+            lines.append(f"  Rotation: {c['rotation_notes']}")
+        if c.get("notes"):
+            lines.append(f"  Note: {c['notes']}")
+        lines.append("")
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+async def _handle_credential_add(args: dict) -> list[TextContent]:
+    """Register a new credential (metadata only)."""
+    client = _get_client()
+
+    row = {
+        "service": args["service"],
+        "env_var": args["env_var"],
+        "stored_in": args.get("stored_in", ".env"),
+        "scope": args.get("scope", "jarvis"),
+    }
+    for key in ("expires_at", "rotation_notes", "notes"):
+        if args.get(key):
+            row[key] = args[key]
+
+    result = (
+        client.table("credential_registry")
+        .upsert(row, on_conflict="env_var")
+        .execute()
+    )
+    if result.data:
+        return [TextContent(type="text", text=f"Credential registered: {args['service']} ({args['env_var']})")]
+    return [TextContent(type="text", text="Failed to register credential.")]
+
+
+async def _handle_credential_check_expiry(args: dict) -> list[TextContent]:
+    """Check for credentials expiring within N days."""
+    client = _get_client()
+    days = args.get("days_ahead", 30)
+
+    # Calculate the cutoff date
+    from datetime import timedelta
+    cutoff = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+    result = (
+        client.table("credential_registry")
+        .select("service, env_var, expires_at, rotation_notes")
+        .not_.is_("expires_at", "null")
+        .lte("expires_at", cutoff)
+        .order("expires_at")
+        .execute()
+    )
+
+    if not result.data:
+        return [TextContent(type="text", text=f"No credentials expiring within {days} days.")]
+
+    lines = [f"# Credentials expiring within {days} days ({len(result.data)})\n"]
+    for c in result.data:
+        exp_date = c["expires_at"][:10] if c.get("expires_at") else "?"
+        lines.append(f"**{c['service']}** — `{c['env_var']}` — expires {exp_date}")
+        if c.get("rotation_notes"):
+            lines.append(f"  How to rotate: {c['rotation_notes']}")
         lines.append("")
 
     return [TextContent(type="text", text="\n".join(lines))]

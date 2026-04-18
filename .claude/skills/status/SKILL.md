@@ -1,7 +1,7 @@
 ---
 name: status
 description: "Project dashboard: git state, PRs, issues, CI health, risks, stale/blocked work, goal alerts. Absorbs morning-brief, risk-radar, triage. Use at session start or when needing cross-project awareness."
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Status Dashboard
@@ -16,6 +16,8 @@ Single command for full project awareness. Replaces morning-brief, risk-radar, a
 ## Step 1 — Load repos
 
 Read `config/repos.conf` (one `owner/repo` per line, `#` = comment). This is the single source of truth — no hardcoded repo names.
+
+Local path resolution (portable across 3 devices): `{device.json.repos_path}/{repo-name}` where `repo-name` is the segment after `/`. Example on Main PC: `C:/Users/petrk/GitHub/redrobot`. If the directory doesn't exist (e.g. not cloned on this device), skip local git checks gracefully — GitHub-side checks still run.
 
 ## Step 2 — Gather data (parallel)
 
@@ -33,12 +35,19 @@ git -C <path> branch --show-current
 gh pr list --repo <R> --state open --json number,title,updatedAt,reviewDecision,isDraft --limit 10
 gh issue list --repo <R> --state open --json number,title,labels,updatedAt --limit 20
 gh run list --repo <R> --json conclusion,name --limit 10
+gh api "repos/<R>/milestones?state=open&per_page=50" --jq '.[] | {number, title, open_issues, closed_issues, due_on}'
 ```
 
 **Security** (skip silently on 403):
 ```bash
 gh api repos/<R>/dependabot/alerts --jq '[.[] | select(.state=="open")]' 2>/dev/null
 ```
+
+**Credential expiry** (once, not per repo):
+```
+credential_check_expiry(days_ahead=14)
+```
+If results returned, include in output. If no credentials expiring — silent (no noise).
 
 ## Step 3 — Analyze
 
@@ -67,13 +76,20 @@ Flag: N stale branches (remote gone), M unmerged branches, K stashes.
 - Deadline within 3 days → urgent flag
 - P0 goal with no related activity → neglect flag
 
+**Milestone hygiene** (from `gh api .../milestones?state=open`):
+- `open_issues == 0 && state == "open"` → **orphan milestone** (work done, milestone never closed). Flag with proposal to close.
+- Issue labeled `epic` with "Sprint" in title but `milestone == null` → **orphan sprint** (sprint running without milestone tracking). Flag with proposal to create+attach milestone.
+- Milestone `due_on` within 3 days and `open_issues > 0` → **sprint deadline risk**.
+- Treat these as actionable items, not just reports — suggest the fix command inline.
+
 ## Step 4 — Output
 
 ```markdown
 # Status — YYYY-MM-DD
 
-## Goal Alerts
+## Alerts
 - <P0 deadline, neglect warnings, or "Goals on track">
+- <Credential expiry warnings, if any>
 
 ## <Repo Name>
 **Branch:** main | **Clean:** yes/no
