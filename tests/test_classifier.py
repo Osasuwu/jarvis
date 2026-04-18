@@ -10,7 +10,6 @@ import json
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
 
 # Stub httpx if not installed (mirrors test_memory_server.py setup).
 try:

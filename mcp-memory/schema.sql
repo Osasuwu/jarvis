@@ -709,7 +709,7 @@ $$;
 --
 -- Workflow:
 --   1. memory_store computes embedding, upserts the row (stored_id).
---   2. Looks up top-K similar neighbors above CLASSIFIER_TRIGGER_SIM (~0.75).
+--   2. Looks up top-K similar neighbors above CLASSIFIER_TRIGGER_SIM (~0.70).
 --   3. If any → calls Haiku-4.5 with {candidate, neighbors} → JSON decision.
 --   4. confidence >= APPLY_THRESHOLD (~0.7): apply the decision
 --      (UPDATE/DELETE marks the target as superseded/expired).

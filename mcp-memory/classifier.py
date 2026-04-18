@@ -16,7 +16,8 @@ paraphrase similarity sits ~0.80) and too coarse (couldn't tell
 Async + httpx so we don't add the anthropic SDK as a dependency. The
 endpoint is the public Messages API; the format is documented and
 stable. A 3s timeout keeps memory_store latency bounded — on timeout
-or any error we return None and the caller falls back to plain ADD.
+or any error we return None and the caller falls back to the legacy
+SUPERSEDE_SIM_THRESHOLD heuristic (so we never regress to "do nothing").
 """
 
 from __future__ import annotations

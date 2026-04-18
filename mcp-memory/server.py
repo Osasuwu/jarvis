@@ -1550,33 +1550,67 @@ async def _apply_classifier_decision(
             target_id = None
             apply_now = False
 
-    queue_status = "auto_applied" if apply_now and decision.decision != "ADD" else "pending"
     if decision.decision == "ADD":
         # ADD just confirms the upsert we already did. No queue entry needed
         # unless the classifier had low confidence (then we want a record).
         if decision.confidence >= CLASSIFIER_APPLY_THRESHOLD:
             return
         queue_status = "pending"
-
-    applied_at = None
-    if apply_now and target_id and decision.decision == "UPDATE":
+        applied_at = None
+    elif apply_now and target_id and decision.decision == "UPDATE":
+        # Try to mutate; only mark auto_applied if the row was actually changed.
+        # rowcount==0 happens when the target was already superseded by someone
+        # else — a real race we want to flag for review, not silently overwrite.
+        mutated = False
         try:
-            client.table("memories").update({"superseded_by": stored_id}) \
+            res = client.table("memories").update({"superseded_by": stored_id}) \
                 .eq("id", target_id) \
                 .is_("superseded_by", "null") \
                 .execute()
-            applied_at = datetime.now(timezone.utc).isoformat()
+            mutated = bool(getattr(res, "data", None))
         except Exception:
+            mutated = False
+        if mutated:
+            # Upgrade the auto-created `related` link to `supersedes` so the
+            # graph reflects the supersession (matches legacy fallback behavior).
+            try:
+                client.table("memory_links").upsert({
+                    "source_id": stored_id,
+                    "target_id": target_id,
+                    "link_type": "supersedes",
+                    "strength": 1.0,
+                }, on_conflict="source_id,target_id,link_type").execute()
+            except Exception:
+                pass  # link upgrade is cosmetic; don't roll back the supersession
+            queue_status = "auto_applied"
+            applied_at = datetime.now(timezone.utc).isoformat()
+        else:
+            queue_status = "pending"
             applied_at = None
     elif apply_now and target_id and decision.decision == "DELETE":
+        mutated = False
         try:
-            client.table("memories").update({
+            res = client.table("memories").update({
                 "expired_at": datetime.now(timezone.utc).isoformat(),
             }).eq("id", target_id).is_("expired_at", "null").execute()
-            applied_at = datetime.now(timezone.utc).isoformat()
+            mutated = bool(getattr(res, "data", None))
         except Exception:
+            mutated = False
+        if mutated:
+            queue_status = "auto_applied"
+            applied_at = datetime.now(timezone.utc).isoformat()
+        else:
+            queue_status = "pending"
             applied_at = None
-    # NOOP: nothing to mutate. We still record the decision below.
+    elif apply_now and decision.decision == "NOOP":
+        # NOOP: nothing to mutate, but the decision was applied (no-op is the
+        # desired state). Record as auto_applied for audit.
+        queue_status = "auto_applied"
+        applied_at = datetime.now(timezone.utc).isoformat()
+    else:
+        # Low confidence (or UPDATE/DELETE without a valid target) — queue for review.
+        queue_status = "pending"
+        applied_at = None
 
     # Record the decision (always — auditability).
     try:

@@ -428,28 +428,58 @@ class TestApplyClassifierDecision:
     @pytest.fixture
     def mock_client(self):
         client = MagicMock()
-        client.table.return_value.update.return_value.eq.return_value.is_.return_value.execute.return_value = MagicMock()
-        client.table.return_value.insert.return_value.execute.return_value = MagicMock()
+        # Per-table mocks so we can filter calls by table name.
+        # Each call to client.table("foo") returns the same mock instance
+        # for "foo", but a *different* mock for "bar" — that's how we tell
+        # an insert into memory_review_queue from one into memory_links.
+        client._tables = {}
+
+        def _get_table(name):
+            if name not in client._tables:
+                t = MagicMock()
+                # update().eq().is_().execute() returns truthy .data so the
+                # rowcount check in _apply_classifier_decision sees a hit.
+                t.update.return_value.eq.return_value.is_.return_value \
+                    .execute.return_value = MagicMock(data=[{"id": "row"}])
+                t.insert.return_value.execute.return_value = MagicMock()
+                t.upsert.return_value.execute.return_value = MagicMock()
+                client._tables[name] = t
+            return client._tables[name]
+
+        client.table.side_effect = _get_table
         return client
 
-    def _update_calls(self, mock_client, key: str):
-        """Find update() calls whose payload contains a given key."""
+    def _update_calls(self, mock_client, key: str, table: str = "memories"):
+        """Find update() calls on a specific table whose payload contains a key."""
+        t = mock_client._tables.get(table)
+        if t is None:
+            return []
         return [
-            c for c in mock_client.table.return_value.update.call_args_list
+            c for c in t.update.call_args_list
             if isinstance(c[0][0], dict) and key in c[0][0]
         ]
 
     def _queue_inserts(self, mock_client):
-        """Find insert calls into memory_review_queue."""
-        # Collect inserts by walking call history and matching the table name
-        # that immediately preceded each insert.
-        inserts = []
-        for i, call in enumerate(mock_client.table.call_args_list):
-            if call[0][0] == "memory_review_queue":
-                # Each table() call returns the same MagicMock, so insert
-                # appears in the shared insert.call_args_list.
-                pass
-        return mock_client.table.return_value.insert.call_args_list
+        """Find insert calls into memory_review_queue specifically."""
+        t = mock_client._tables.get("memory_review_queue")
+        if t is None:
+            return []
+        return t.insert.call_args_list
+
+    def _link_upserts(self, mock_client, link_type: str | None = None):
+        """Find upsert calls into memory_links, optionally filtered by link_type."""
+        t = mock_client._tables.get("memory_links")
+        if t is None:
+            return []
+        calls = t.upsert.call_args_list
+        if link_type is None:
+            return calls
+        out = []
+        for c in calls:
+            payload = c[0][0]
+            if isinstance(payload, dict) and payload.get("link_type") == link_type:
+                out.append(c)
+        return out
 
     @pytest.mark.asyncio
     async def test_high_confidence_update_marks_superseded(self, mock_client):
@@ -464,6 +494,13 @@ class TestApplyClassifierDecision:
         sup_calls = self._update_calls(mock_client, "superseded_by")
         assert len(sup_calls) == 1
         assert sup_calls[0][0][0]["superseded_by"] == "new-id"
+
+        # The related-link was upgraded to a `supersedes` link in memory_links.
+        sup_links = self._link_upserts(mock_client, link_type="supersedes")
+        assert len(sup_links) == 1
+        link_payload = sup_links[0][0][0]
+        assert link_payload["source_id"] == "new-id"
+        assert link_payload["target_id"] == "old-id"
 
         # And the decision was recorded with status=auto_applied.
         inserts = self._queue_inserts(mock_client)
