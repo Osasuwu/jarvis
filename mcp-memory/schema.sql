@@ -44,6 +44,13 @@ alter table memories add column if not exists fts tsvector
 
 create index if not exists idx_memories_fts on memories using gin(fts);
 
+-- Generated project scope key for tiebreakers / grouping on a non-null text.
+-- Applied in production via an out-of-band migration; re-declared here so
+-- schema.sql matches the live DB. Must stay in update_updated_at's strip
+-- list (GENERATED ALWAYS STORED cols appear NULL in BEFORE UPDATE NEW).
+alter table memories add column if not exists project_key text
+  generated always as (coalesce(project, '')) stored;
+
 -- Auto-update updated_at on changes
 create or replace function update_updated_at()
 returns trigger as $$
@@ -904,17 +911,23 @@ create policy "Allow all for anon" on episodes
 -- session-context.py selects user memories by updated_at — neither should
 -- be perturbed by the access-frequency touch.
 --
--- Implementation: JSONB diff of old/new rows with the touch-affected columns
--- stripped. Generated columns (fts, project_key) are also stripped because
--- BEFORE UPDATE triggers see them as NULL in NEW while OLD has the stored
--- value (PostgreSQL quirk for GENERATED ALWAYS STORED), so including them
--- would always register as a diff. If new generated columns are added,
--- list them here too.
+-- Implementation: cheap short-circuit first — if last_accessed_at isn't
+-- changing, this is a normal edit and updated_at must bump. Only on
+-- touch-shaped UPDATEs do we pay for a JSONB diff of old vs new. This keeps
+-- the hot path (regular writes) free of to_jsonb cost on the full row
+-- (content can be kilobytes).
+--
+-- The JSONB diff strips last_accessed_at + updated_at (touch cols) and the
+-- generated cols (fts, project_key), which appear NULL in NEW under BEFORE
+-- UPDATE while OLD has the stored value (PostgreSQL quirk for GENERATED
+-- ALWAYS STORED), so including them would always register as a diff. If
+-- new generated columns are added, list them here too.
 create or replace function update_updated_at()
 returns trigger as $$
 begin
-  if (to_jsonb(new) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key')
-       = (to_jsonb(old) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key') then
+  if new.last_accessed_at is distinct from old.last_accessed_at
+     and (to_jsonb(new) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key')
+           = (to_jsonb(old) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key') then
     return new;
   end if;
   new.updated_at = now();

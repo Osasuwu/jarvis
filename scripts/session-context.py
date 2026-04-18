@@ -104,8 +104,9 @@ def main():
     # access-frequency boost in temporal scoring off this column, so
     # session-start loads should count as access. The content_updated_at /
     # updated_at trigger is not fired because we go through the touch_memories
-    # RPC which updates only last_accessed_at.
-    _touch_accessed(client, touched_ids)
+    # RPC which updates only last_accessed_at. Dedup preserves order — same
+    # memory can surface in multiple sections (e.g. always_load + user).
+    _touch_accessed(client, list(dict.fromkeys(touched_ids)))
 
     # Output
     if sections:
@@ -169,8 +170,9 @@ def _query_always_load(client):
 def _touch_accessed(client, ids):
     """Bump last_accessed_at via the same RPC server.py uses on recall.
 
-    Fire-and-forget — never block session start on this. Failures are
-    logged to stderr for visibility but don't surface to the user.
+    Best-effort / non-fatal: the call is synchronous (one REST round-trip,
+    typically 50-200ms), but any exception is logged to stderr and swallowed
+    so session start is never blocked by Supabase issues.
     """
     if not ids:
         return
