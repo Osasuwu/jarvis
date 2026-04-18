@@ -64,7 +64,7 @@ One sentence: what makes this confident or uncertain.
 
 Save to Supabase if finding is significant:
 ```
-memory_store(type="reference", name="research_{slug}", description="...", content="...")
+memory_store(type="reference", name="research_{slug}", description="...", content="...", source_provenance="skill:research")
 ```
 
 If finding is actionable → create GitHub issue in appropriate repo:
@@ -108,14 +108,14 @@ For each topic: `WebSearch` or `firecrawl_search`, max 3 searches per topic.
 
 Per topic:
 ```
-memory_store(type="reference", name="research_{slug}", project="{project}", content="...")
+memory_store(type="reference", name="research_{slug}", project="{project}", content="...", source_provenance="skill:research")
 ```
 
 Actionable findings → GitHub issues (check for duplicates first).
 
 Dedup marker:
 ```
-memory_store(type="project", name="research_last_run", content="{date} — topics: {t1}, {t2}, {t3}")
+memory_store(type="project", name="research_last_run", content="{date} — topics: {t1}, {t2}, {t3}", source_provenance="skill:research")
 ```
 
 ---

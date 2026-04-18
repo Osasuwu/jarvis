@@ -140,7 +140,8 @@ memory_store(
   project="redrobot",
   description="Sprint N results: <one-line summary>",
   tags=["sprint", "report", "release"],
-  content=<sprint summary with key metrics and decisions>
+  content=<sprint summary with key metrics and decisions>,
+  source_provenance="skill:sprint-report"
 )
 ```
 

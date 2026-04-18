@@ -499,3 +499,373 @@ language sql volatile as $$
     set last_accessed_at = now()
     where id = any(memory_ids);
 $$;
+
+
+-- =========================================================================
+-- Phase 0 (memory overhaul, Osasuwu/jarvis#185) — lifecycle + provenance
+-- fields. Non-breaking: all columns have defaults; server.py still reads
+-- the old columns until Phase 1.
+--
+-- Rationale: every column below is driven by either (a) a convergent signal
+-- from the research synthesis — production systems (Zep/Graphiti, Mem0,
+-- A-MEM, LangMem) agreeing with theory (AGM, JTMS, ACT-R, CLS), or (b) a
+-- production risk the research flagged that we hadn't noticed (embedding
+-- migration). See docs/design/memory-overhaul.md §2.
+-- =========================================================================
+
+-- Bi-temporal: valid time ≠ transaction time (Snodgrass; Zep/Graphiti)
+-- - content_updated_at: set only when the memory's content/description/tags
+--   actually change. Phase 1 will drive decay off this instead of updated_at
+--   (session-start reads currently bump updated_at and defeat decay).
+-- - valid_from / valid_to: when the fact was true in the world.
+-- - expired_at: when we stopped believing it (transaction time soft-delete).
+alter table memories add column if not exists content_updated_at timestamptz;
+alter table memories add column if not exists valid_from timestamptz;
+alter table memories add column if not exists valid_to timestamptz;
+alter table memories add column if not exists expired_at timestamptz;
+
+-- Direct supersession pointer for chain walks in recall (Phase 1 filter).
+-- memory_links.link_type='supersedes' still holds the graph; this is a
+-- denormalized shortcut that lets recall filter in one join.
+alter table memories add column if not exists superseded_by uuid
+    references memories(id) on delete set null;
+
+-- Entrenchment (Gärdenfors) / confidence. 0.0–1.0.
+-- User-stated = 1.0, inferred from single session = 0.5, guessed from one
+-- tool output = 0.2. Phase 2's classifier writes this; low-confidence memories
+-- get aggressive decay and are hidden from default recall.
+alter table memories add column if not exists confidence real default 0.5
+    check (confidence is null or (confidence >= 0 and confidence <= 1));
+
+-- JTMS justification — we cannot revise what we cannot attribute.
+-- Free-form text so we can record arbitrary provenance (URL, tool name,
+-- session id, actor namespace). Phase 2 classifier + Phase 4 episodic
+-- layer will populate consistently.
+alter table memories add column if not exists source_provenance text;
+
+-- Profiles (overwrite-single-row) vs collections (append) distinction,
+-- from LangMem. Eliminates supersession bugs by construction for rows where
+-- the owner wants single-instance semantics (owner_preferences, device_config).
+alter table memories add column if not exists single_instance boolean
+    not null default false;
+
+-- Embedding model migration safety. The day we upgrade from voyage-3-lite,
+-- every cosine similarity in the DB becomes incomparable across models. We
+-- need dual-column support during migration; these columns let us filter.
+alter table memories add column if not exists embedding_model text
+    default 'voyage-3-lite';
+alter table memories add column if not exists embedding_version text
+    default 'v1';
+
+-- Indexes that Phase 1+ will rely on:
+create index if not exists idx_memories_superseded_by
+    on memories(superseded_by) where superseded_by is not null;
+create index if not exists idx_memories_lifecycle_live
+    on memories(type, project) where expired_at is null and superseded_by is null;
+create index if not exists idx_memories_provenance
+    on memories(source_provenance) where source_provenance is not null;
+
+-- One-time backfill: copy updated_at -> content_updated_at for existing rows.
+-- After this, Phase 1 will update the trigger to only bump content_updated_at
+-- on actual content changes.
+update memories
+set content_updated_at = updated_at
+where content_updated_at is null;
+
+-- Denormalize existing memory_links.link_type='supersedes' edges into the
+-- new superseded_by column. Convention: link.source supersedes link.target,
+-- so the older (target) memory's superseded_by points to the newer (source).
+update memories m
+set superseded_by = l.source_id
+from memory_links l
+where l.link_type = 'supersedes'
+  and l.target_id = m.id
+  and m.superseded_by is null;
+
+
+-- =========================================================================
+-- Phase 1 (memory overhaul, Osasuwu/jarvis#185) — recall correctness
+--
+-- Goal: drive must_not violations to 0, stabilize MRR.
+--
+-- Changes:
+--   1. Split timestamps properly:
+--      - updated_at: bumped on any UPDATE (existing trigger, unchanged)
+--      - content_updated_at: bumped only when name/description/content/tags
+--        actually change (new trigger). This becomes the decay axis.
+--      - last_accessed_at: set by touch_memories only (existing).
+--      The old behavior bumped updated_at on every recall (via touch), which
+--      meant temporal scoring reshuffled itself on every run → MRR noise.
+--   2. Add default recall filter: exclude expired_at IS NOT NULL,
+--      superseded_by IS NOT NULL, and (valid_to IS NOT NULL AND valid_to <= now()).
+--   3. Add show_history flag to bypass the filter (for audit/debug queries).
+--   4. Return content_updated_at from RPCs so server.py can use it for decay.
+-- =========================================================================
+
+-- Trigger: only bump content_updated_at when the memory's content-bearing
+-- fields actually change. This is the field Phase 1 recall uses for decay,
+-- so it must not be perturbed by touch_memories (which updates only
+-- last_accessed_at but fires the generic update trigger).
+create or replace function update_content_updated_at()
+returns trigger as $$
+begin
+  if (new.name is distinct from old.name)
+     or (new.description is distinct from old.description)
+     or (new.content is distinct from old.content)
+     or (new.tags is distinct from old.tags)
+  then
+    new.content_updated_at = now();
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists memories_content_updated_at on memories;
+create trigger memories_content_updated_at
+  before update on memories
+  for each row execute function update_content_updated_at();
+
+-- Replace match_memories: add lifecycle filter + show_history + return
+-- content_updated_at. Signature adds two trailing optional params so
+-- existing callers keep working.
+drop function if exists match_memories(vector, int, float, text, text);
+drop function if exists match_memories(vector, int, float, text, text, boolean);
+create or replace function match_memories(
+    query_embedding vector,
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    similarity float
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           1 - (m.embedding <=> query_embedding) as similarity
+    from memories m
+    where m.embedding is not null
+      and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by m.embedding <=> query_embedding
+    limit match_limit;
+$$;
+
+-- Replace keyword_search_memories: same lifecycle filter + content_updated_at.
+drop function if exists keyword_search_memories(text, int, text, text);
+drop function if exists keyword_search_memories(text, int, text, text, boolean);
+create or replace function keyword_search_memories(
+    search_query text,
+    match_limit int default 10,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    rank real
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           ts_rank(m.fts, websearch_to_tsquery('english', search_query)) as rank
+    from memories m
+    where m.fts @@ websearch_to_tsquery('english', search_query)
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by rank desc
+    limit match_limit;
+$$;
+
+
+-- =========================================================================
+-- Phase 2b (memory overhaul, Osasuwu/jarvis#185) — write-time classifier
+--
+-- Goal: replace the SUPERSEDE_SIM_THRESHOLD heuristic with an LLM decision
+-- (Mem0-style ADD / UPDATE / DELETE / NOOP). Low-confidence decisions land
+-- in this review queue instead of being silently applied — same idea as
+-- LangMem's background mode, but synchronous on the write path because we
+-- need the decision to know whether to mark a neighbor superseded.
+--
+-- Workflow:
+--   1. memory_store computes embedding, upserts the row (stored_id).
+--   2. Looks up top-K similar neighbors above CLASSIFIER_TRIGGER_SIM (~0.70).
+--   3. If any → calls Haiku-4.5 with {candidate, neighbors} → JSON decision.
+--   4. confidence >= APPLY_THRESHOLD (~0.7): apply the decision
+--      (UPDATE/DELETE marks the target as superseded/expired).
+--   5. confidence < APPLY_THRESHOLD: write to memory_review_queue
+--      with status='pending' so the owner can audit before applying.
+--
+-- We always insert the candidate first (never lose data). DELETE/NOOP at
+-- low confidence still become "ADD-and-queue-the-decision-for-review".
+-- =========================================================================
+
+create table if not exists memory_review_queue (
+  id uuid primary key default gen_random_uuid(),
+
+  -- The just-stored candidate that triggered classification.
+  candidate_id uuid references memories(id) on delete cascade,
+
+  -- Classifier output.
+  decision text not null check (decision in ('ADD', 'UPDATE', 'DELETE', 'NOOP')),
+  target_id uuid references memories(id) on delete set null,
+  confidence real not null check (confidence >= 0 and confidence <= 1),
+  reasoning text,
+
+  -- Provenance for the decision itself (so we can audit which model said what).
+  classifier_model text default 'claude-haiku-4-5',
+  neighbors_seen jsonb,            -- snapshot of {id, name, similarity} fed to model
+
+  -- Lifecycle of the queue entry.
+  -- pending: awaiting owner review
+  -- approved: owner approved, will be applied (or already applied)
+  -- rejected: owner said no, decision discarded
+  -- auto_applied: confidence was high enough to skip review (recorded for audit)
+  status text not null default 'pending'
+    check (status in ('pending', 'approved', 'rejected', 'auto_applied')),
+
+  applied_at timestamptz,           -- when the decision actually mutated the row
+  reviewed_at timestamptz,
+  reviewed_by text,                 -- 'owner' / 'autonomous' / 'consolidation_job'
+
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_review_queue_pending
+    on memory_review_queue(created_at desc) where status = 'pending';
+create index if not exists idx_review_queue_candidate
+    on memory_review_queue(candidate_id);
+
+alter table memory_review_queue enable row level security;
+
+create policy "Allow all for authenticated" on memory_review_queue
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on memory_review_queue
+  for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- Phase 2c (memory overhaul, Osasuwu/jarvis#185, #196) — provenance required
+--
+-- Goal: close the audit gap left by Phase 2. Every memory must carry
+-- `source_provenance` so we can revise beliefs knowing who/what produced
+-- them (JTMS principle — can't revise what you can't attribute).
+--
+-- Before 2c: `source_provenance` was a nullable column, populated when
+-- convenient. In practice most rows were null, which defeated the purpose.
+-- After 2c: NOT NULL enforced. MCP server rejects writes missing it.
+-- Pre-policy rows get `legacy:pre-2c` so they're distinguishable from
+-- policy-compliant data without blocking the constraint.
+--
+-- Coordinates with Phase 4 (#197): episode extractor will populate
+-- `source_provenance = 'episode:<episode_id>'` — contract only, no overlap.
+-- =========================================================================
+
+-- Backfill pre-policy rows with a distinguishing marker. Literal string
+-- (not '') so future queries can filter `where source_provenance =
+-- 'legacy:pre-2c'` to find rows with no real provenance. Also catches
+-- whitespace-only values — prior callers could persist '   ' which is
+-- truthy in Python but carries no attribution.
+update memories
+set source_provenance = 'legacy:pre-2c'
+where source_provenance is null
+   or btrim(source_provenance) = '';
+
+-- Enforce going forward. Any caller bypassing the MCP server with a raw
+-- INSERT now errors out — which is the desired failure mode (those writes
+-- also skip the embedding + classifier pipeline and shouldn't exist).
+alter table memories
+    alter column source_provenance set not null;
+
+-- Soft-delete column. server.py has always written/filtered on this (store
+-- clears it, recall/list/get/delete filter `is deleted_at null`), but the
+-- column was never declared in schema.sql — meaning a fresh provision
+-- would error at runtime. Add as part of the 2c hardening pass since the
+-- provenance work is the first time the audit story is end-to-end.
+alter table memories add column if not exists deleted_at timestamptz;
+
+-- Partial index on tombstones. Mirrors the index already present in the
+-- live DB — small set, fast to scan when purging or auditing deletes.
+-- Live-row queries don't need a dedicated index: they combine deleted_at
+-- with type/project/lifecycle filters already covered by existing indexes.
+create index if not exists idx_memories_deleted_at
+  on memories(deleted_at) where deleted_at is not null;
+
+
+-- =========================================================================
+-- Phase 4 (memory overhaul, Osasuwu/jarvis#197) — episodic layer
+--
+-- Raw "what happened" buffer that an async extractor distills into candidate
+-- memories. Mirrors the episodic ↔ semantic separation from CLS theory and
+-- production systems (Letta tiered memory, A-MEM, LangMem background mode):
+-- non-lossy episodic buffer, consolidation happens offline.
+--
+-- Write path: hooks / skills / autonomous code insert rows here cheaply.
+-- Read path: episode_extractor.py batches unprocessed rows, synthesizes
+-- candidate memories via Haiku, and writes them through the existing
+-- memory_store flow with source_provenance='episode:<id>'.
+-- =========================================================================
+
+create table if not exists episodes (
+  id uuid primary key default gen_random_uuid(),
+
+  -- Who/what produced this episode.
+  -- Convention: 'session:<id>', 'scheduled:<skill>', 'hook:<name>',
+  -- 'skill:<name>', 'autonomous:<skill>'.
+  actor text not null,
+
+  -- Shape of the payload. Extractor may prompt differently per kind.
+  kind text not null
+    check (kind in ('tool_call', 'decision', 'user_message', 'assistant_message', 'observation')),
+
+  -- Arbitrary structured content. Schema is intentionally loose — episodes
+  -- are raw material, not normalized facts.
+  payload jsonb not null default '{}',
+
+  -- Transaction time: when the episode was recorded.
+  created_at timestamptz not null default now(),
+
+  -- Extractor marks this when it has consumed the episode (success or skip).
+  -- NULL = still in the backlog.
+  processed_at timestamptz
+);
+
+-- Backlog scan — partial index so the extractor's "fetch next batch" query
+-- stays cheap regardless of processed-history size.
+create index if not exists idx_episodes_unprocessed
+  on episodes(created_at) where processed_at is null;
+
+-- Per-actor filtering for debugging / per-source stats.
+create index if not exists idx_episodes_actor on episodes(actor);
+
+-- Chronological audit.
+create index if not exists idx_episodes_created on episodes(created_at desc);
+
+alter table episodes enable row level security;
+
+create policy "Allow all for authenticated" on episodes
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on episodes
+  for all to anon using (true) with check (true);

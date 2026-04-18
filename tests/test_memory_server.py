@@ -23,7 +23,20 @@ import pytest
 # Create stub modules for mcp.*
 _mcp_types = types.ModuleType("mcp.types")
 _mcp_types.CallToolResult = MagicMock
-_mcp_types.TextContent = MagicMock
+
+
+class _FakeTextContent:
+    """Minimal TextContent replica so tests can read back .text on returns.
+
+    The real mcp.types.TextContent is a pydantic model; tests don't need
+    validation, just attribute access for the error-path checks below.
+    """
+    def __init__(self, type: str = "text", text: str = ""):
+        self.type = type
+        self.text = text
+
+
+_mcp_types.TextContent = _FakeTextContent
 _mcp_types.Tool = MagicMock
 
 def _noop_decorator(*args, **kwargs):
@@ -94,10 +107,12 @@ from server import (
     _format_memories,
     _create_auto_links,
     _expand_with_links,
+    _handle_store,
     TEMPORAL_HALF_LIVES,
     SUPERSEDE_SIM_THRESHOLD,
     MAX_AUTO_LINKS,
 )
+import server as server_module
 
 
 # ---------------------------------------------------------------------------
@@ -318,13 +333,29 @@ class TestFormatMemories:
 # ---------------------------------------------------------------------------
 
 class TestCreateAutoLinks:
-    """Auto-linking creates memory_links entries based on similarity."""
+    """Auto-linking creates memory_links entries based on similarity.
+
+    Phase 2b changed the contract: links are always created as 'related'
+    first, then the classifier (or legacy fallback) decides whether to
+    upgrade to 'supersedes' / mark expired. We assert against the FIRST
+    upsert call (the related batch) where it matters.
+    """
 
     @pytest.fixture
     def mock_client(self):
         client = MagicMock()
         client.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
+        # Hydration query returns no rows (test path skips classifier anyway).
+        client.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(data=[])
         return client
+
+    def _first_links_upsert(self, mock_client):
+        """Return the first list-of-links arg passed to upsert."""
+        for call in mock_client.table.return_value.upsert.call_args_list:
+            arg = call[0][0]
+            if isinstance(arg, list):
+                return arg
+        return []
 
     @pytest.mark.asyncio
     async def test_creates_related_links(self, mock_client):
@@ -334,46 +365,61 @@ class TestCreateAutoLinks:
         ]
         await _create_auto_links(mock_client, "source-id", similar, mem_type="project")
 
-        mock_client.table.assert_called_with("memory_links")
-        call_args = mock_client.table.return_value.upsert.call_args
-        links = call_args[0][0]
+        links = self._first_links_upsert(mock_client)
         assert len(links) == 2
         assert all(l["link_type"] == "related" for l in links)
         assert links[0]["strength"] == 0.70
         assert links[1]["strength"] == 0.65
 
     @pytest.mark.asyncio
-    async def test_supersession_for_similar_decisions(self, mock_client):
+    async def test_legacy_fallback_supersedes_same_type(self, mock_client, monkeypatch):
+        """When the classifier is unavailable (no API key, no candidate),
+        the legacy heuristic fires: same type + sim >= 0.85 → supersede."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         similar = [
             {"id": "old-decision", "type": "decision", "similarity": SUPERSEDE_SIM_THRESHOLD + 0.05},
         ]
         await _create_auto_links(mock_client, "new-decision", similar, mem_type="decision")
 
-        links = mock_client.table.return_value.upsert.call_args[0][0]
-        assert links[0]["link_type"] == "supersedes"
+        # The legacy fallback updates memories.superseded_by on the target.
+        update_calls = [
+            c for c in mock_client.table.return_value.update.call_args_list
+            if c[0][0].get("superseded_by") == "new-decision"
+        ]
+        assert len(update_calls) == 1
 
     @pytest.mark.asyncio
-    async def test_no_supersession_for_non_decisions(self, mock_client):
+    async def test_no_supersession_when_below_threshold(self, mock_client, monkeypatch):
+        """Even same-type, below SUPERSEDE_SIM_THRESHOLD → no supersession."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         similar = [
-            {"id": "target", "type": "project", "similarity": 0.90},
+            {"id": "target", "type": "project", "similarity": 0.70},
         ]
         await _create_auto_links(mock_client, "source", similar, mem_type="project")
 
-        links = mock_client.table.return_value.upsert.call_args[0][0]
-        assert links[0]["link_type"] == "related"  # not supersedes
+        update_calls = [
+            c for c in mock_client.table.return_value.update.call_args_list
+            if c[0][0].get("superseded_by") == "source"
+        ]
+        assert update_calls == []
 
     @pytest.mark.asyncio
     async def test_max_links_limit(self, mock_client):
         similar = [{"id": f"t-{i}", "type": "project", "similarity": 0.70} for i in range(10)]
         await _create_auto_links(mock_client, "source", similar, mem_type="project")
 
-        links = mock_client.table.return_value.upsert.call_args[0][0]
+        links = self._first_links_upsert(mock_client)
         assert len(links) == MAX_AUTO_LINKS
 
     @pytest.mark.asyncio
     async def test_empty_similar_rows(self, mock_client):
         await _create_auto_links(mock_client, "source", [], mem_type="project")
-        mock_client.table.assert_not_called()
+        # No links to insert → the memory_links upsert should not fire.
+        link_calls = [
+            c for c in mock_client.table.call_args_list
+            if c[0][0] == "memory_links"
+        ]
+        assert link_calls == []
 
     @pytest.mark.asyncio
     async def test_swallows_exceptions(self, mock_client):
@@ -381,6 +427,184 @@ class TestCreateAutoLinks:
         mock_client.table.side_effect = Exception("DB error")
         # Should not raise
         await _create_auto_links(mock_client, "source", [{"id": "t", "type": "p", "similarity": 0.7}], "project")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2b classifier — _apply_classifier_decision routing + queue writes
+# ---------------------------------------------------------------------------
+
+from server import _apply_classifier_decision, CLASSIFIER_APPLY_THRESHOLD  # noqa: E402
+from classifier import ClassifierDecision  # noqa: E402
+
+
+class TestApplyClassifierDecision:
+    """Routing of classifier decisions: which DB mutations fire when."""
+
+    @pytest.fixture
+    def mock_client(self):
+        client = MagicMock()
+        # Per-table mocks so we can filter calls by table name.
+        # Each call to client.table("foo") returns the same mock instance
+        # for "foo", but a *different* mock for "bar" — that's how we tell
+        # an insert into memory_review_queue from one into memory_links.
+        client._tables = {}
+
+        def _get_table(name):
+            if name not in client._tables:
+                t = MagicMock()
+                # update().eq().is_().execute() returns truthy .data so the
+                # rowcount check in _apply_classifier_decision sees a hit.
+                t.update.return_value.eq.return_value.is_.return_value \
+                    .execute.return_value = MagicMock(data=[{"id": "row"}])
+                t.insert.return_value.execute.return_value = MagicMock()
+                t.upsert.return_value.execute.return_value = MagicMock()
+                client._tables[name] = t
+            return client._tables[name]
+
+        client.table.side_effect = _get_table
+        return client
+
+    def _update_calls(self, mock_client, key: str, table: str = "memories"):
+        """Find update() calls on a specific table whose payload contains a key."""
+        t = mock_client._tables.get(table)
+        if t is None:
+            return []
+        return [
+            c for c in t.update.call_args_list
+            if isinstance(c[0][0], dict) and key in c[0][0]
+        ]
+
+    def _queue_inserts(self, mock_client):
+        """Find insert calls into memory_review_queue specifically."""
+        t = mock_client._tables.get("memory_review_queue")
+        if t is None:
+            return []
+        return t.insert.call_args_list
+
+    def _link_upserts(self, mock_client, link_type: str | None = None):
+        """Find upsert calls into memory_links, optionally filtered by link_type."""
+        t = mock_client._tables.get("memory_links")
+        if t is None:
+            return []
+        calls = t.upsert.call_args_list
+        if link_type is None:
+            return calls
+        out = []
+        for c in calls:
+            payload = c[0][0]
+            if isinstance(payload, dict) and payload.get("link_type") == link_type:
+                out.append(c)
+        return out
+
+    @pytest.mark.asyncio
+    async def test_high_confidence_update_marks_superseded(self, mock_client):
+        decision = ClassifierDecision(
+            decision="UPDATE", target_id="old-id",
+            confidence=0.95, reasoning="refines target",
+        )
+        neighbors = [{"id": "old-id", "name": "old", "similarity": 0.82}]
+        await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
+
+        # The target was marked superseded.
+        sup_calls = self._update_calls(mock_client, "superseded_by")
+        assert len(sup_calls) == 1
+        assert sup_calls[0][0][0]["superseded_by"] == "new-id"
+
+        # The related-link was upgraded to a `supersedes` link in memory_links.
+        sup_links = self._link_upserts(mock_client, link_type="supersedes")
+        assert len(sup_links) == 1
+        link_payload = sup_links[0][0][0]
+        assert link_payload["source_id"] == "new-id"
+        assert link_payload["target_id"] == "old-id"
+
+        # And the decision was recorded with status=auto_applied.
+        inserts = self._queue_inserts(mock_client)
+        assert len(inserts) == 1
+        payload = inserts[0][0][0]
+        assert payload["decision"] == "UPDATE"
+        assert payload["status"] == "auto_applied"
+        assert payload["target_id"] == "old-id"
+
+    @pytest.mark.asyncio
+    async def test_high_confidence_delete_sets_expired(self, mock_client):
+        decision = ClassifierDecision(
+            decision="DELETE", target_id="old-id",
+            confidence=0.92, reasoning="negates target",
+        )
+        neighbors = [{"id": "old-id", "name": "old", "similarity": 0.85}]
+        await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
+
+        exp_calls = self._update_calls(mock_client, "expired_at")
+        assert len(exp_calls) == 1
+
+        inserts = self._queue_inserts(mock_client)
+        assert inserts[0][0][0]["decision"] == "DELETE"
+        assert inserts[0][0][0]["status"] == "auto_applied"
+
+    @pytest.mark.asyncio
+    async def test_low_confidence_update_queues_pending(self, mock_client):
+        """Low confidence: do NOT mutate target, write queue entry as pending."""
+        decision = ClassifierDecision(
+            decision="UPDATE", target_id="old-id",
+            confidence=CLASSIFIER_APPLY_THRESHOLD - 0.1,
+            reasoning="ambiguous",
+        )
+        neighbors = [{"id": "old-id", "name": "old", "similarity": 0.78}]
+        await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
+
+        sup_calls = self._update_calls(mock_client, "superseded_by")
+        assert sup_calls == []  # nothing mutated
+
+        inserts = self._queue_inserts(mock_client)
+        payload = inserts[0][0][0]
+        assert payload["status"] == "pending"
+        assert payload["applied_at"] is None
+
+    @pytest.mark.asyncio
+    async def test_noop_records_decision_no_mutation(self, mock_client):
+        decision = ClassifierDecision(
+            decision="NOOP", target_id=None,
+            confidence=0.9, reasoning="redundant",
+        )
+        neighbors = [{"id": "x", "name": "x", "similarity": 0.9}]
+        await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
+
+        # No supersede / expired mutations.
+        assert self._update_calls(mock_client, "superseded_by") == []
+        assert self._update_calls(mock_client, "expired_at") == []
+        # Decision still recorded for audit.
+        inserts = self._queue_inserts(mock_client)
+        assert len(inserts) == 1
+        assert inserts[0][0][0]["decision"] == "NOOP"
+
+    @pytest.mark.asyncio
+    async def test_high_confidence_add_no_queue_entry(self, mock_client):
+        """ADD with high confidence is the trivial case — don't pollute queue."""
+        decision = ClassifierDecision(
+            decision="ADD", target_id=None,
+            confidence=0.95, reasoning="genuinely new",
+        )
+        neighbors = [{"id": "x", "name": "x", "similarity": 0.76}]
+        await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
+
+        assert self._queue_inserts(mock_client) == []
+
+    @pytest.mark.asyncio
+    async def test_hallucinated_target_id_refused(self, mock_client):
+        """Model returned an id we never showed it → refuse to mutate."""
+        decision = ClassifierDecision(
+            decision="UPDATE", target_id="never-existed",
+            confidence=0.95, reasoning="...",
+        )
+        neighbors = [{"id": "real-id", "name": "real", "similarity": 0.85}]
+        await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
+
+        assert self._update_calls(mock_client, "superseded_by") == []
+        # Still recorded, but with status=pending and target_id=None.
+        inserts = self._queue_inserts(mock_client)
+        payload = inserts[0][0][0]
+        assert payload["status"] == "pending"
+        assert payload["target_id"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -481,3 +705,84 @@ class TestRecallLinkedDedup:
 
         assert len(unique_linked) == 1
         assert unique_linked[0]["id"] == "id-2"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c: memory_store must reject writes missing source_provenance
+# ---------------------------------------------------------------------------
+
+class TestHandleStoreProvenance:
+    """Phase 2c — every memory write carries a namespaced source_provenance.
+
+    The MCP boundary rejects missing/blank values with a readable error so
+    callers don't hit a raw NOT NULL violation from Postgres downstream.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _patch_client(self, monkeypatch):
+        """Swap _get_client for a mock so validation failures don't need live DB."""
+        self.client = MagicMock()
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_provenance(self):
+        result = await _handle_store({
+            "type": "project",
+            "name": "test_missing",
+            "content": "test content",
+            # no source_provenance
+        })
+        assert len(result) == 1
+        assert "source_provenance is required" in result[0].text
+        # Validation fired before any DB access.
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_blank_provenance(self):
+        result = await _handle_store({
+            "type": "project",
+            "name": "test_blank",
+            "content": "test content",
+            "source_provenance": "   ",
+        })
+        assert "source_provenance is required" in result[0].text
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_none_provenance(self):
+        result = await _handle_store({
+            "type": "project",
+            "name": "test_none",
+            "content": "test content",
+            "source_provenance": None,
+        })
+        assert "source_provenance is required" in result[0].text
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provenance_stripped_before_persist(self, monkeypatch):
+        """Accepted provenance is trimmed — no leading/trailing whitespace
+        leaks into the DB row, keeping audit queries clean."""
+        # Short-circuit embedding so we don't need Voyage env/network.
+        async def _fake_embed(_text):
+            return None
+        monkeypatch.setattr(server_module, "_embed", _fake_embed)
+
+        # project="jarvis" takes the upsert branch. Rig the chain to return
+        # a stored id so _handle_store completes without errors.
+        tbl = MagicMock()
+        tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "stored-1"}])
+        self.client.table.return_value = tbl
+
+        await _handle_store({
+            "type": "project",
+            "name": "test_strip",
+            "content": "test content",
+            "project": "jarvis",
+            "source_provenance": "  skill:test  ",
+        })
+
+        upsert_calls = tbl.upsert.call_args_list
+        assert upsert_calls, "expected at least one upsert call"
+        data_arg = upsert_calls[-1][0][0]
+        assert data_arg["source_provenance"] == "skill:test"

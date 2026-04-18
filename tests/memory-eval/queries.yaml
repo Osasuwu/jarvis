@@ -1,0 +1,127 @@
+# Memory recall eval set
+#
+# 20 hand-curated queries against the live Supabase corpus. Each query lists
+# the memory names that *should* appear in the top-k results. Metrics we score:
+#   - recall@5:  did at least one expected memory land in top 5?
+#   - recall@10: top 10?
+#   - mrr: reciprocal rank of the first expected hit (0 if none)
+#
+# The expected memories use `name` (not `id`) so the set survives ID churn. The
+# harness resolves names -> ids at runtime.
+#
+# Guidelines for adding queries:
+#   - Mix short (2-3 words) and long (natural-language) forms
+#   - Include both Russian and English
+#   - Tag `lifecycle: true` for queries that stress stale/superseded handling
+#     (these are the Phase 1+ improvement targets)
+#   - `expected` is a list; any match counts for recall. Use `must_not` for
+#     memories that *should not* surface (e.g. superseded).
+
+queries:
+  # --- Direct retrieval: unique, well-known memories ---
+  - id: q01
+    query: "VoyageAI rate limits tier paid"
+    expected: [feedback_voyage]
+    kind: direct
+
+  - id: q02
+    query: "Claude Max subscription tokens"
+    expected: [claude_max_upgrade]
+    kind: direct
+
+  - id: q03
+    query: "TDD сначала пишем тест который падает"
+    expected: [bug_fix_reproduce_first]
+    kind: direct
+
+  - id: q04
+    query: "always commit and push"
+    expected: [always_commit_and_push]
+    kind: direct
+
+  - id: q05
+    query: "act as senior engineer not executor"
+    expected: [be_the_manager]
+    kind: direct
+
+  # --- Topic queries: multiple valid memories ---
+  - id: q06
+    query: "Jarvis architecture direction v2"
+    expected: [jarvis_v2_multiagent_direction, jarvis_wrapping_direction, architecture_final]
+    kind: topic
+
+  - id: q07
+    query: "autonomous loop design"
+    expected: [autonomous_loop_v1_architecture, autonomous_loop_hygiene_sweep_v1]
+    kind: topic
+
+  - id: q08
+    query: "memory server improvements pgvector"
+    expected: [memory_server_v2_improvements, memory_2_0_implementation]
+    kind: topic
+
+  - id: q09
+    query: "delegating to subagents best practices"
+    expected: [lessons_agent_delegation, agent_delegation_precision, delegate_frontend_to_subagents]
+    kind: topic
+
+  - id: q10
+    query: "Claude Code native capabilities MCP hooks skills"
+    expected: [claude_code_capabilities]
+    kind: topic
+
+  # --- Behavioral/feedback queries ---
+  - id: q11
+    query: "recall memory before acting"
+    expected: [always_recall_before_action]
+    kind: behavior
+
+  - id: q12
+    query: "не галлюцинируй скриншоты"
+    expected: [dont_hallucinate_screenshots]
+    kind: behavior
+
+  - id: q13
+    query: "autonomous mode keep going don't stop"
+    expected: [autonomous_fixing_mode, autonomous_long_sessions]
+    kind: behavior
+
+  - id: q14
+    query: "check diagnostics for value diversity"
+    expected: [check_diagnostics_diversity]
+    kind: behavior
+
+  # --- Reference queries ---
+  - id: q15
+    query: "multi-agent frameworks landscape comparison"
+    expected: [competitive_landscape_multi_agent_2026]
+    kind: reference
+
+  - id: q16
+    query: "Telegram Claude integration channels"
+    expected: [claude_code_channels]
+    kind: reference
+
+  # --- User profile queries ---
+  - id: q17
+    query: "DnD dungeon master hobby"
+    expected: [dnd_dm_role, dnd_dm_philosophy]
+    kind: user
+
+  # --- LIFECYCLE queries (Phase 1+ targets) ---
+  - id: q18
+    query: "planning process Jarvis agile or goals"
+    expected: [jarvis_v2_hybrid_agile]
+    must_not: [jarvis_stays_goals_not_agile]  # superseded
+    kind: lifecycle
+
+  - id: q19
+    query: "как Jarvis планирует работу сейчас"
+    expected: [jarvis_v2_hybrid_agile]
+    must_not: [jarvis_stays_goals_not_agile]
+    kind: lifecycle
+
+  - id: q20
+    query: "cloud scheduled tasks remote MCP"
+    expected: [lesson_cloud_mcp_limitations, local_scheduled_tasks_only]
+    kind: topic

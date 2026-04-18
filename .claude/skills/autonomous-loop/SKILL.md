@@ -173,7 +173,8 @@ memory_store(
   type="project",
   name="autonomous_loop_last_run",
   content="{\"date\": \"YYYY-MM-DD\", \"actions_count\": N, \"succeeded\": N, \"failed\": N, \"top_action\": \"...\"}",
-  description="last orchestrator run"
+  description="last orchestrator run",
+  source_provenance="skill:autonomous-loop"
 )
 ```
 
