@@ -42,13 +42,30 @@ _env_candidates = [
 ]
 for _env_path in _env_candidates:
     if _env_path.exists():
-        load_dotenv(_env_path)
+        # override=True: a blank OS-level export (e.g. ANTHROPIC_API_KEY="")
+        # would otherwise shadow the real value in .env. Repo .env is the
+        # source of truth for this server's secrets.
+        load_dotenv(_env_path, override=True)
         break
 
 import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool
+
+# Phase 2b classifier — local module, optional at runtime.
+# If ANTHROPIC_API_KEY is unset or the import fails (e.g. in unit tests that
+# stub httpx) we silently fall back to the legacy heuristic.
+try:
+    from classifier import (  # type: ignore
+        classify_write,
+        ClassifierDecision,
+        CLASSIFIER_MODEL,
+    )
+except Exception:  # pragma: no cover — defensive
+    classify_write = None  # type: ignore
+    ClassifierDecision = None  # type: ignore
+    CLASSIFIER_MODEL = "claude-haiku-4-5"
 
 # ---------------------------------------------------------------------------
 # Supabase client (lazy init)
@@ -215,10 +232,17 @@ DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
 LINK_SIM_THRESHOLD = 0.60
-SUPERSEDE_SIM_THRESHOLD = 0.85
+# Phase 2b: classifier replaces the bare similarity gate. We still keep a
+# threshold, but it now decides *when to ask the classifier*, not whether to
+# fire supersession. The classifier's decision (with confidence) determines
+# the actual ADD/UPDATE/DELETE/NOOP outcome.
+SUPERSEDE_SIM_THRESHOLD = 0.85       # legacy heuristic — kept for fallback when classifier unavailable
+CLASSIFIER_TRIGGER_SIM = 0.70        # invoke classifier above this similarity (voyage-3-lite paraphrases sit ~0.73)
+CLASSIFIER_APPLY_THRESHOLD = 0.70    # auto-apply UPDATE/DELETE above this confidence; else queue
 CONSOLIDATION_SIM_THRESHOLD = 0.80
 CONSOLIDATION_COUNT = 3
 MAX_AUTO_LINKS = 5
+MAX_CLASSIFIER_NEIGHBORS = 5
 
 
 # -- Tool definitions -------------------------------------------------------
@@ -1150,9 +1174,22 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 names = [r["name"] for r in consolidation_candidates[:5]]
                 msg += f"\n\n⚠ Consolidation hint: {len(consolidation_candidates)} similar memories found: {', '.join(names)}"
 
-            # Fire-and-forget: create links
+            # Fire-and-forget: classify (Phase 2b) + create links.
+            # We pass the candidate so the classifier has full context;
+            # _create_auto_links falls back to the legacy heuristic if the
+            # classifier is unavailable.
             if similar_rows:
-                asyncio.create_task(_create_auto_links(client, stored_id, similar_rows, mem_type))
+                candidate_for_classifier = {
+                    "name": mem_name,
+                    "type": mem_type,
+                    "description": description,
+                    "content": content,
+                    "tags": tags,
+                }
+                asyncio.create_task(_create_auto_links(
+                    client, stored_id, similar_rows, mem_type,
+                    candidate=candidate_for_classifier,
+                ))
         except Exception:
             pass  # auto-linking is best-effort, never blocks store
 
@@ -1389,46 +1426,240 @@ async def _backfill_missing_embeddings(client, project) -> None:
         pass  # fire-and-forget: silently swallow all errors so caller never fails
 
 
-async def _create_auto_links(client, stored_id: str, similar_rows: list[dict], mem_type: str) -> None:
-    """Fire-and-forget: create links between stored memory and similar ones.
+async def _create_auto_links(
+    client,
+    stored_id: str,
+    similar_rows: list[dict],
+    mem_type: str,
+    candidate: dict | None = None,
+) -> None:
+    """Fire-and-forget: create links + apply Phase 2b classifier decision.
 
-    Phase 2a: supersession no longer gated on type=decision — any two memories
-    of the *same type* above SUPERSEDE_SIM_THRESHOLD are candidates. When
-    supersedes fires, also writes memories.superseded_by on the older row
-    (the link target) so Phase 1 recall filter picks it up immediately.
+    Pipeline:
+      1. Always create `related` links to every neighbor (graph signal).
+      2. For neighbors above CLASSIFIER_TRIGGER_SIM, ask the Haiku
+         classifier to choose ADD / UPDATE / DELETE / NOOP.
+      3. confidence >= CLASSIFIER_APPLY_THRESHOLD → apply the decision
+         immediately (UPDATE: target.superseded_by = stored_id;
+         DELETE: target.expired_at = now()). Record as auto_applied
+         in memory_review_queue for audit.
+      4. confidence < threshold → record in queue with status=pending,
+         do NOT mutate the target. Owner reviews later.
+      5. classifier unavailable (no API key, network fail, no candidate
+         metadata) → fall back to the legacy SUPERSEDE_SIM_THRESHOLD
+         heuristic so we never regress to "do nothing".
     """
     try:
+        # --- (1) base links: everything is `related` until a classifier upgrade ---
         links = []
-        supersede_target_ids: list[str] = []
         for row in similar_rows[:MAX_AUTO_LINKS]:
-            sim = row.get("similarity", 0)
-            # Supersession: two memories of the same type with very high similarity.
-            # (Phase 2b classifier will replace this heuristic with an LLM decision.)
-            if row.get("type") == mem_type and sim >= SUPERSEDE_SIM_THRESHOLD:
-                link_type = "supersedes"
-                if row.get("id"):
-                    supersede_target_ids.append(row["id"])
-            else:
-                link_type = "related"
             links.append({
                 "source_id": stored_id,
                 "target_id": row["id"],
-                "link_type": link_type,
-                "strength": round(sim, 3),
+                "link_type": "related",
+                "strength": round(row.get("similarity", 0), 3),
             })
         if links:
             client.table("memory_links").upsert(
                 links, on_conflict="source_id,target_id,link_type"
             ).execute()
-        # Phase 1 recall filter reads memories.superseded_by, so denormalize
-        # supersedes edges onto the column. Only set when currently null to
-        # preserve an existing supersession chain if the target was already
-        # superseded by something else.
-        if supersede_target_ids:
-            client.table("memories").update({"superseded_by": stored_id}) \
-                .in_("id", supersede_target_ids) \
+
+        # --- (2) classifier or fallback heuristic ---
+        # Pick the high-similarity slice we'd consider for supersession.
+        candidates_for_classifier = [
+            r for r in similar_rows[:MAX_CLASSIFIER_NEIGHBORS]
+            if r.get("similarity", 0) >= CLASSIFIER_TRIGGER_SIM
+        ]
+        if not candidates_for_classifier:
+            return  # nothing close enough — pure ADD, no supersession to consider
+
+        decision = None
+        if candidate is not None and classify_write is not None:
+            # Hydrate neighbors with description/content for richer prompting.
+            # find_similar_memories only returns id/name/type/similarity.
+            hydrated = await _hydrate_neighbors(client, candidates_for_classifier)
+            try:
+                decision = await classify_write(candidate, hydrated)
+            except Exception:
+                decision = None
+
+        if decision is not None:
+            await _apply_classifier_decision(
+                client, stored_id, decision, candidates_for_classifier
+            )
+        else:
+            # Legacy heuristic fallback: same-type + sim >= 0.85 → supersede.
+            await _apply_legacy_supersede(
+                client, stored_id, candidates_for_classifier, mem_type
+            )
+    except Exception:
+        pass
+
+
+async def _hydrate_neighbors(client, rows: list[dict]) -> list[dict]:
+    """Fetch description+content for the neighbor rows so the classifier
+    prompt has real context, not just names."""
+    ids = [r["id"] for r in rows if r.get("id")]
+    if not ids:
+        return rows
+    try:
+        full = client.table("memories") \
+            .select("id, name, type, description, content, tags") \
+            .in_("id", ids) \
+            .execute()
+        full_by_id = {row["id"]: row for row in (full.data or [])}
+    except Exception:
+        return rows
+
+    hydrated = []
+    for r in rows:
+        extra = full_by_id.get(r.get("id"), {})
+        hydrated.append({
+            "id": r.get("id"),
+            "name": r.get("name") or extra.get("name", ""),
+            "type": r.get("type") or extra.get("type", ""),
+            "similarity": r.get("similarity", 0),
+            "description": extra.get("description", ""),
+            "content": extra.get("content", ""),
+            "tags": extra.get("tags", []) or [],
+        })
+    return hydrated
+
+
+async def _apply_classifier_decision(
+    client,
+    stored_id: str,
+    decision,  # ClassifierDecision
+    neighbors: list[dict],
+) -> None:
+    """Apply the classifier's ADD/UPDATE/DELETE/NOOP decision and record
+    it in memory_review_queue (auto_applied if high confidence, pending if
+    we want a human in the loop).
+
+    The candidate is *already* persisted by the time we get here — that's
+    intentional, we never lose data. UPDATE/DELETE only mutate the target.
+    """
+    apply_now = decision.confidence >= CLASSIFIER_APPLY_THRESHOLD
+
+    target_id = decision.target_id
+    if decision.decision in ("UPDATE", "DELETE") and target_id:
+        # Sanity check: target_id must be one of the neighbors we showed it.
+        # Otherwise the model hallucinated an id — refuse to mutate.
+        valid_ids = {n.get("id") for n in neighbors}
+        if target_id not in valid_ids:
+            target_id = None
+            apply_now = False
+
+    if decision.decision == "ADD":
+        # ADD just confirms the upsert we already did. No queue entry needed
+        # unless the classifier had low confidence (then we want a record).
+        if decision.confidence >= CLASSIFIER_APPLY_THRESHOLD:
+            return
+        queue_status = "pending"
+        applied_at = None
+    elif apply_now and target_id and decision.decision == "UPDATE":
+        # Try to mutate; only mark auto_applied if the row was actually changed.
+        # rowcount==0 happens when the target was already superseded by someone
+        # else — a real race we want to flag for review, not silently overwrite.
+        mutated = False
+        try:
+            res = client.table("memories").update({"superseded_by": stored_id}) \
+                .eq("id", target_id) \
                 .is_("superseded_by", "null") \
                 .execute()
+            mutated = bool(getattr(res, "data", None))
+        except Exception:
+            mutated = False
+        if mutated:
+            # Upgrade the auto-created `related` link to `supersedes` so the
+            # graph reflects the supersession (matches legacy fallback behavior).
+            try:
+                client.table("memory_links").upsert({
+                    "source_id": stored_id,
+                    "target_id": target_id,
+                    "link_type": "supersedes",
+                    "strength": 1.0,
+                }, on_conflict="source_id,target_id,link_type").execute()
+            except Exception:
+                pass  # link upgrade is cosmetic; don't roll back the supersession
+            queue_status = "auto_applied"
+            applied_at = datetime.now(timezone.utc).isoformat()
+        else:
+            queue_status = "pending"
+            applied_at = None
+    elif apply_now and target_id and decision.decision == "DELETE":
+        mutated = False
+        try:
+            res = client.table("memories").update({
+                "expired_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", target_id).is_("expired_at", "null").execute()
+            mutated = bool(getattr(res, "data", None))
+        except Exception:
+            mutated = False
+        if mutated:
+            queue_status = "auto_applied"
+            applied_at = datetime.now(timezone.utc).isoformat()
+        else:
+            queue_status = "pending"
+            applied_at = None
+    elif apply_now and decision.decision == "NOOP":
+        # NOOP: nothing to mutate, but the decision was applied (no-op is the
+        # desired state). Record as auto_applied for audit.
+        queue_status = "auto_applied"
+        applied_at = datetime.now(timezone.utc).isoformat()
+    else:
+        # Low confidence (or UPDATE/DELETE without a valid target) — queue for review.
+        queue_status = "pending"
+        applied_at = None
+
+    # Record the decision (always — auditability).
+    try:
+        client.table("memory_review_queue").insert({
+            "candidate_id": stored_id,
+            "decision": decision.decision,
+            "target_id": target_id,
+            "confidence": round(decision.confidence, 3),
+            "reasoning": decision.reasoning,
+            "classifier_model": CLASSIFIER_MODEL,
+            "neighbors_seen": [
+                {"id": n.get("id"), "name": n.get("name"),
+                 "similarity": round(n.get("similarity", 0), 3)}
+                for n in neighbors
+            ],
+            "status": queue_status,
+            "applied_at": applied_at,
+        }).execute()
+    except Exception:
+        pass
+
+
+async def _apply_legacy_supersede(
+    client, stored_id: str, similar_rows: list[dict], mem_type: str
+) -> None:
+    """Fallback used when the classifier is unavailable. Same logic as
+    pre-Phase-2b: same-type + similarity >= SUPERSEDE_SIM_THRESHOLD →
+    mark target.superseded_by = stored_id."""
+    supersede_target_ids = [
+        r["id"] for r in similar_rows
+        if r.get("type") == mem_type
+        and r.get("similarity", 0) >= SUPERSEDE_SIM_THRESHOLD
+        and r.get("id")
+    ]
+    if not supersede_target_ids:
+        return
+    try:
+        client.table("memories").update({"superseded_by": stored_id}) \
+            .in_("id", supersede_target_ids) \
+            .is_("superseded_by", "null") \
+            .execute()
+        # Also upgrade the link type from `related` to `supersedes`.
+        for tid in supersede_target_ids:
+            client.table("memory_links").upsert({
+                "source_id": stored_id,
+                "target_id": tid,
+                "link_type": "supersedes",
+                "strength": 1.0,
+            }, on_conflict="source_id,target_id,link_type").execute()
     except Exception:
         pass
 
