@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# Pipeline constants — mirrored from mcp-memory/server.py as of Phase 0.5.
+# Pipeline constants — mirrored from mcp-memory/server.py as of Phase 1.
 # When server.py changes, re-sync OR deliberately let them differ to measure.
 # ---------------------------------------------------------------------------
 SIMILARITY_THRESHOLD = 0.25
@@ -116,7 +116,10 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
         mem_type = row.get("type", "decision")
         half_life = TEMPORAL_HALF_LIVES.get(mem_type, DEFAULT_HALF_LIFE)
 
-        updated_str = row.get("updated_at") or ""
+        # Phase 1: decay is driven by content_updated_at (content changes),
+        # not updated_at (which gets bumped by every recall's touch_memories).
+        # Fall back to updated_at for rows without backfilled content_updated_at.
+        updated_str = row.get("content_updated_at") or row.get("updated_at") or ""
         try:
             updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
             days_since_update = max(0, (now - updated).total_seconds() / 86400)
@@ -180,6 +183,7 @@ async def run_query(client, q: dict) -> QueryResult:
         "similarity_threshold": SIMILARITY_THRESHOLD,
         "filter_project": None,
         "filter_type": None,
+        "show_history": False,
     }).execute()
     sem_rows = sem.data or []
 
@@ -188,6 +192,7 @@ async def run_query(client, q: dict) -> QueryResult:
         "match_limit": 20,
         "filter_project": None,
         "filter_type": None,
+        "show_history": False,
     }).execute()
     kw_rows = kw.data or []
 

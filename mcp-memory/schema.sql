@@ -581,3 +581,118 @@ from memory_links l
 where l.link_type = 'supersedes'
   and l.target_id = m.id
   and m.superseded_by is null;
+
+
+-- =========================================================================
+-- Phase 1 (memory overhaul, Osasuwu/jarvis#185) — recall correctness
+--
+-- Goal: drive must_not violations to 0, stabilize MRR.
+--
+-- Changes:
+--   1. Split timestamps properly:
+--      - updated_at: bumped on any UPDATE (existing trigger, unchanged)
+--      - content_updated_at: bumped only when name/description/content/tags
+--        actually change (new trigger). This becomes the decay axis.
+--      - last_accessed_at: set by touch_memories only (existing).
+--      The old behavior bumped updated_at on every recall (via touch), which
+--      meant temporal scoring reshuffled itself on every run → MRR noise.
+--   2. Add default recall filter: exclude expired_at IS NOT NULL,
+--      superseded_by IS NOT NULL, and (valid_to IS NOT NULL AND valid_to <= now()).
+--   3. Add show_history flag to bypass the filter (for audit/debug queries).
+--   4. Return content_updated_at from RPCs so server.py can use it for decay.
+-- =========================================================================
+
+-- Trigger: only bump content_updated_at when the memory's content-bearing
+-- fields actually change. This is the field Phase 1 recall uses for decay,
+-- so it must not be perturbed by touch_memories (which updates only
+-- last_accessed_at but fires the generic update trigger).
+create or replace function update_content_updated_at()
+returns trigger as $$
+begin
+  if (new.name is distinct from old.name)
+     or (new.description is distinct from old.description)
+     or (new.content is distinct from old.content)
+     or (new.tags is distinct from old.tags)
+  then
+    new.content_updated_at = now();
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists memories_content_updated_at on memories;
+create trigger memories_content_updated_at
+  before update on memories
+  for each row execute function update_content_updated_at();
+
+-- Replace match_memories: add lifecycle filter + show_history + return
+-- content_updated_at. Signature adds two trailing optional params so
+-- existing callers keep working.
+drop function if exists match_memories(vector, int, float, text, text);
+drop function if exists match_memories(vector, int, float, text, text, boolean);
+create or replace function match_memories(
+    query_embedding vector,
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    similarity float
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           1 - (m.embedding <=> query_embedding) as similarity
+    from memories m
+    where m.embedding is not null
+      and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by m.embedding <=> query_embedding
+    limit match_limit;
+$$;
+
+-- Replace keyword_search_memories: same lifecycle filter + content_updated_at.
+drop function if exists keyword_search_memories(text, int, text, text);
+drop function if exists keyword_search_memories(text, int, text, text, boolean);
+create or replace function keyword_search_memories(
+    search_query text,
+    match_limit int default 10,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    rank real
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           ts_rank(m.fts, websearch_to_tsquery('english', search_query)) as rank
+    from memories m
+    where m.fts @@ websearch_to_tsquery('english', search_query)
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by rank desc
+    limit match_limit;
+$$;
