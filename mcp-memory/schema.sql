@@ -811,3 +811,61 @@ alter table memories add column if not exists deleted_at timestamptz;
 -- with type/project/lifecycle filters already covered by existing indexes.
 create index if not exists idx_memories_deleted_at
   on memories(deleted_at) where deleted_at is not null;
+
+
+-- =========================================================================
+-- Phase 4 (memory overhaul, Osasuwu/jarvis#197) — episodic layer
+--
+-- Raw "what happened" buffer that an async extractor distills into candidate
+-- memories. Mirrors the episodic ↔ semantic separation from CLS theory and
+-- production systems (Letta tiered memory, A-MEM, LangMem background mode):
+-- non-lossy episodic buffer, consolidation happens offline.
+--
+-- Write path: hooks / skills / autonomous code insert rows here cheaply.
+-- Read path: episode_extractor.py batches unprocessed rows, synthesizes
+-- candidate memories via Haiku, and writes them through the existing
+-- memory_store flow with source_provenance='episode:<id>'.
+-- =========================================================================
+
+create table if not exists episodes (
+  id uuid primary key default gen_random_uuid(),
+
+  -- Who/what produced this episode.
+  -- Convention: 'session:<id>', 'scheduled:<skill>', 'hook:<name>',
+  -- 'skill:<name>', 'autonomous:<skill>'.
+  actor text not null,
+
+  -- Shape of the payload. Extractor may prompt differently per kind.
+  kind text not null
+    check (kind in ('tool_call', 'decision', 'user_message', 'assistant_message', 'observation')),
+
+  -- Arbitrary structured content. Schema is intentionally loose — episodes
+  -- are raw material, not normalized facts.
+  payload jsonb not null default '{}',
+
+  -- Transaction time: when the episode was recorded.
+  created_at timestamptz not null default now(),
+
+  -- Extractor marks this when it has consumed the episode (success or skip).
+  -- NULL = still in the backlog.
+  processed_at timestamptz
+);
+
+-- Backlog scan — partial index so the extractor's "fetch next batch" query
+-- stays cheap regardless of processed-history size.
+create index if not exists idx_episodes_unprocessed
+  on episodes(created_at) where processed_at is null;
+
+-- Per-actor filtering for debugging / per-source stats.
+create index if not exists idx_episodes_actor on episodes(actor);
+
+-- Chronological audit.
+create index if not exists idx_episodes_created on episodes(created_at desc);
+
+alter table episodes enable row level security;
+
+create policy "Allow all for authenticated" on episodes
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on episodes
+  for all to anon using (true) with check (true);
