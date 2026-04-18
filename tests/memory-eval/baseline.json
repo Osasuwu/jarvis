@@ -1,10 +1,10 @@
 {
-  "timestamp": "2026-04-18T08:42:33.948278+00:00",
+  "timestamp": "2026-04-18T09:33:49.609123+00:00",
   "corpus_size": 289,
   "total_queries": 20,
   "recall_at_5": 0.85,
   "recall_at_10": 0.9,
-  "mrr": 0.6222222222222222,
+  "mrr": 0.5847222222222223,
   "must_not_violations": 0,
   "passed": 17,
   "failed": 3,
@@ -76,7 +76,7 @@
         "university_student_cse8012",
         "deficit_first_bulk_planner",
         "ux_ui_principles_always",
-        "review_before_push"
+        "_soft_delete_test"
       ],
       "first_hit_rank": 3,
       "hits_at_5": [
@@ -127,15 +127,15 @@
       ],
       "must_not": [],
       "top_names": [
-        "milestone_structure_v2",
-        "be_the_manager",
         "architecture_final",
-        "instructions_overhaul_2026_04_01",
+        "milestone_structure_v2",
         "dnd_dm_role",
+        "be_the_manager",
+        "instructions_overhaul_2026_04_01",
         "sand_physics_architecture_2026_04_06",
         "github_schema_restructured"
       ],
-      "first_hit_rank": 2,
+      "first_hit_rank": 4,
       "hits_at_5": [
         "be_the_manager"
       ],
@@ -196,8 +196,8 @@
         "autonomous_loop_v1_architecture",
         "autonomous_action_log",
         "autonomous_fixing_mode",
-        "autonomous_loop_last_run",
         "milestone_vs_pillar_hygiene",
+        "autonomous_loop_last_run",
         "autonomous_long_sessions"
       ],
       "first_hit_rank": 2,
@@ -225,10 +225,10 @@
         "memory_server_v2_improvements",
         "memory_2_0_implementation",
         "supabase_custom_mcp_preferred",
+        "pipeline_full_diagnostics_dump",
         "nightly_mcp_max_result_size",
         "owner_prefers_mcp_over_skills",
-        "pipeline_full_diagnostics_dump",
-        "working_state_jarvis",
+        "no_memory_hygiene_tool",
         "self_hosted_postgres_future_plan",
         "memory_graph_tool_added",
         "pipeline_v3_performance_research"
@@ -438,18 +438,18 @@
       ],
       "must_not": [],
       "top_names": [
-        "competitive_landscape_multi_agent_2026",
         "team_ai_agent_project_initiated",
+        "competitive_landscape_multi_agent_2026",
         "mcp_stack_2026_03_31",
-        "research_pillar7_multi_agent_frameworks",
         "jarvis_scalable_agent_system",
+        "research_pillar7_multi_agent_frameworks",
         "jarvis_v2_vision",
         "research_jarvis_meta_agent",
         "managed_agents_wait_and_see",
         "multiagent_pm_architecture_vision",
         "jarvis_v2_multiagent_direction"
       ],
-      "first_hit_rank": 1,
+      "first_hit_rank": 2,
       "hits_at_5": [
         "competitive_landscape_multi_agent_2026"
       ],
@@ -565,8 +565,8 @@
         "jarvis_v15_skill_final_plan",
         "jarvis_public_release_v020",
         "research_jarvis_meta_agent",
-        "no_jarvis_in_team_docs",
         "jarvis_v15_skill_restructure",
+        "no_jarvis_in_team_docs",
         "working_state_jarvis"
       ],
       "first_hit_rank": null,
