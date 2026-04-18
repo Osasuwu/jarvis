@@ -140,6 +140,15 @@ Skills that run in both environments must use `execute_sql` as the primary metho
 ### Proactive saving (non-negotiable)
 Save immediately after any: decision, preference, architectural discussion, new fact, rejected approach (with why), working style observation. Don't batch. Don't wait for session end.
 
+### Provenance required (Phase 2c)
+Every `memory_store` call MUST include `source_provenance` — the MCP server rejects writes missing it. Use a namespaced form so audits and consolidation can trace origin:
+- `skill:<name>` — invoked from a skill (e.g. `skill:research`, `skill:autonomous-loop`)
+- `session:<YYYY-MM-DD>` — saved mid-conversation (use today's date)
+- `hook:<name>` — written by a hook (e.g. `hook:session-start`)
+- `user:explicit` — owner said "save this"
+- `episode:<id>` — Phase 4 episode extractor (#197)
+- external source: URL, tool name, or `external:<system>`
+
 ### Working state
 Save working state to Supabase (`memory_store`, name=`working_state_jarvis`, type=project) at natural breakpoints. Clean up with `memory_delete` when task is done.
 

@@ -23,7 +23,20 @@ import pytest
 # Create stub modules for mcp.*
 _mcp_types = types.ModuleType("mcp.types")
 _mcp_types.CallToolResult = MagicMock
-_mcp_types.TextContent = MagicMock
+
+
+class _FakeTextContent:
+    """Minimal TextContent replica so tests can read back .text on returns.
+
+    The real mcp.types.TextContent is a pydantic model; tests don't need
+    validation, just attribute access for the error-path checks below.
+    """
+    def __init__(self, type: str = "text", text: str = ""):
+        self.type = type
+        self.text = text
+
+
+_mcp_types.TextContent = _FakeTextContent
 _mcp_types.Tool = MagicMock
 
 def _noop_decorator(*args, **kwargs):
@@ -94,10 +107,12 @@ from server import (
     _format_memories,
     _create_auto_links,
     _expand_with_links,
+    _handle_store,
     TEMPORAL_HALF_LIVES,
     SUPERSEDE_SIM_THRESHOLD,
     MAX_AUTO_LINKS,
 )
+import server as server_module
 
 
 # ---------------------------------------------------------------------------
@@ -690,3 +705,84 @@ class TestRecallLinkedDedup:
 
         assert len(unique_linked) == 1
         assert unique_linked[0]["id"] == "id-2"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2c: memory_store must reject writes missing source_provenance
+# ---------------------------------------------------------------------------
+
+class TestHandleStoreProvenance:
+    """Phase 2c — every memory write carries a namespaced source_provenance.
+
+    The MCP boundary rejects missing/blank values with a readable error so
+    callers don't hit a raw NOT NULL violation from Postgres downstream.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _patch_client(self, monkeypatch):
+        """Swap _get_client for a mock so validation failures don't need live DB."""
+        self.client = MagicMock()
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_provenance(self):
+        result = await _handle_store({
+            "type": "project",
+            "name": "test_missing",
+            "content": "test content",
+            # no source_provenance
+        })
+        assert len(result) == 1
+        assert "source_provenance is required" in result[0].text
+        # Validation fired before any DB access.
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_blank_provenance(self):
+        result = await _handle_store({
+            "type": "project",
+            "name": "test_blank",
+            "content": "test content",
+            "source_provenance": "   ",
+        })
+        assert "source_provenance is required" in result[0].text
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_none_provenance(self):
+        result = await _handle_store({
+            "type": "project",
+            "name": "test_none",
+            "content": "test content",
+            "source_provenance": None,
+        })
+        assert "source_provenance is required" in result[0].text
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provenance_stripped_before_persist(self, monkeypatch):
+        """Accepted provenance is trimmed — no leading/trailing whitespace
+        leaks into the DB row, keeping audit queries clean."""
+        # Short-circuit embedding so we don't need Voyage env/network.
+        async def _fake_embed(_text):
+            return None
+        monkeypatch.setattr(server_module, "_embed", _fake_embed)
+
+        # project="jarvis" takes the upsert branch. Rig the chain to return
+        # a stored id so _handle_store completes without errors.
+        tbl = MagicMock()
+        tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "stored-1"}])
+        self.client.table.return_value = tbl
+
+        await _handle_store({
+            "type": "project",
+            "name": "test_strip",
+            "content": "test content",
+            "project": "jarvis",
+            "source_provenance": "  skill:test  ",
+        })
+
+        upsert_calls = tbl.upsert.call_args_list
+        assert upsert_calls, "expected at least one upsert call"
+        data_arg = upsert_calls[-1][0][0]
+        assert data_arg["source_provenance"] == "skill:test"

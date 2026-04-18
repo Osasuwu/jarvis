@@ -435,13 +435,15 @@ async def list_tools() -> list[Tool]:
                     "source_provenance": {
                         "type": "string",
                         "description": (
-                            "Where this memory came from (URL, tool name, session id, "
-                            "actor). Populate when not self-evident. JTMS attribution — "
-                            "we can't revise what we can't attribute."
+                            "Where this memory came from. Required as of Phase 2c — "
+                            "JTMS attribution, we can't revise what we can't attribute. "
+                            "Use a namespaced form: 'session:<id>', 'skill:<name>', "
+                            "'hook:<name>', 'user:explicit', 'episode:<episode_id>' "
+                            "(Phase 4), or a URL/tool-name when external."
                         ),
                     },
                 },
-                "required": ["type", "name", "content"],
+                "required": ["type", "name", "content", "source_provenance"],
             },
         ),
         Tool(
@@ -1103,6 +1105,19 @@ async def _handle_store(args: dict) -> list[TextContent]:
     if mem_type not in VALID_TYPES:
         return [TextContent(type="text", text=f"Invalid type: {mem_type}. Must be one of {VALID_TYPES}")]
 
+    # Phase 2c: provenance required. Reject at the MCP boundary so callers get
+    # a readable error instead of a NOT NULL violation from Postgres. Strip
+    # whitespace so an accidental " " doesn't pass the guard.
+    source_provenance = (source_provenance or "").strip()
+    if not source_provenance:
+        return [TextContent(type="text", text=(
+            "Error: source_provenance is required (Phase 2c). "
+            "Use a namespaced source like 'session:<id>', 'skill:<name>', "
+            "'hook:<name>', 'user:explicit', or 'episode:<id>'. This is the "
+            "JTMS attribution for this memory — without it, future revisions "
+            "can't be traced."
+        ))]
+
     # Phase 2a: canonical-form embedding — include name + tags + description + content.
     # Name and tags carry high-signal lexical cues that raw content often dilutes
     # (long narrative memories where the key topic is only in the name).
@@ -1116,10 +1131,9 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "description": description,
         "project": project,
         "tags": tags,
+        "source_provenance": source_provenance,  # Phase 2c: always present, validated above
         "deleted_at": None,  # clear soft-delete on store/upsert
     }
-    if source_provenance:
-        data["source_provenance"] = source_provenance
 
     if embedding is not None:
         data["embedding"] = embedding
