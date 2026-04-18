@@ -90,7 +90,8 @@ If a pattern is non-obvious, save it:
 memory_store(
   name="lesson_<slug>", type="feedback",
   project=<same as decision or "global">,
-  content="<rule>\n\n**Why:** <what happened>\n**How to apply:** <when this kicks in>"
+  content="<rule>\n\n**Why:** <what happened>\n**How to apply:** <when this kicks in>",
+  source_provenance="skill:reflect"
 )
 ```
 
@@ -111,7 +112,8 @@ Creating new hypotheses (when user says "I think X might be true"):
 ```
 memory_store(
   name="hypothesis_<slug>", type="project",
-  content="claim: <X>\nmetric: <how to verify>\nstatus: testing\nevidence: none yet"
+  content="claim: <X>\nmetric: <how to verify>\nstatus: testing\nevidence: none yet",
+  source_provenance="skill:reflect"
 )
 ```
 

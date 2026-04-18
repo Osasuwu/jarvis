@@ -763,3 +763,34 @@ create policy "Allow all for authenticated" on memory_review_queue
 
 create policy "Allow all for anon" on memory_review_queue
   for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- Phase 2c (memory overhaul, Osasuwu/jarvis#185, #196) — provenance required
+--
+-- Goal: close the audit gap left by Phase 2. Every memory must carry
+-- `source_provenance` so we can revise beliefs knowing who/what produced
+-- them (JTMS principle — can't revise what you can't attribute).
+--
+-- Before 2c: `source_provenance` was a nullable column, populated when
+-- convenient. In practice most rows were null, which defeated the purpose.
+-- After 2c: NOT NULL enforced. MCP server rejects writes missing it.
+-- Pre-policy rows get `legacy:pre-2c` so they're distinguishable from
+-- policy-compliant data without blocking the constraint.
+--
+-- Coordinates with Phase 4 (#197): episode extractor will populate
+-- `source_provenance = 'episode:<episode_id>'` — contract only, no overlap.
+-- =========================================================================
+
+-- Backfill pre-policy rows with a distinguishing marker. Literal string
+-- (not '') so future queries can filter `where source_provenance =
+-- 'legacy:pre-2c'` to find rows with no real provenance.
+update memories
+set source_provenance = 'legacy:pre-2c'
+where source_provenance is null;
+
+-- Enforce going forward. Any caller bypassing the MCP server with a raw
+-- INSERT now errors out — which is the desired failure mode (those writes
+-- also skip the embedding + classifier pipeline and shouldn't exist).
+alter table memories
+    alter column source_provenance set not null;
