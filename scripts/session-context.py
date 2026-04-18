@@ -68,33 +68,45 @@ def main():
 
     project = _detect_project()
     sections = []
+    touched_ids: list[str] = []
 
     # 1. User memories — who is the owner (always)
-    section = _query_memories(client, mem_type="user", limit=2)
+    section, ids = _query_memories(client, mem_type="user", limit=2)
     if section:
         sections.append("## User Profile\n" + section)
+        touched_ids.extend(ids)
 
     # 2. Always-load memories — evergreen rules not tied to any single project.
     #    Everything else (feedback/decisions) is loaded task-aware via
     #    UserPromptSubmit hook (scripts/memory-recall-hook.py).
-    section = _query_always_load(client)
+    section, ids = _query_always_load(client)
     if section:
         sections.append("## Always-Load Rules\n" + section)
+        touched_ids.extend(ids)
 
     # 3. Working state — ONLY when session is inside a known project dir.
     #    In a non-project cwd (e.g. scheduled research) working_state is noise.
     if project:
-        section = _query_memories(
+        section, ids = _query_memories(
             client, mem_type="project", limit=1,
             extra_filter=lambda q: q.eq("name", f"working_state_{project}"),
         )
         if section:
             sections.append(f"## Working State ({project})\n" + section)
+            touched_ids.extend(ids)
 
     # 4. Active goals (always)
     goal_section = _query_goals(client)
     if goal_section:
         sections.append(goal_section)
+
+    # Bump last_accessed_at for every memory we just loaded. Phase 1 drives the
+    # access-frequency boost in temporal scoring off this column, so
+    # session-start loads should count as access. The content_updated_at /
+    # updated_at trigger is not fired because we go through the touch_memories
+    # RPC which updates only last_accessed_at. Dedup preserves order — same
+    # memory can surface in multiple sections (e.g. always_load + user).
+    _touch_accessed(client, list(dict.fromkeys(touched_ids)))
 
     # Output
     if sections:
@@ -111,25 +123,33 @@ def main():
 # Memory queries
 # ---------------------------------------------------------------------------
 
-_MEMORY_COLS = "name, type, project, description, content, tags, updated_at"
+_MEMORY_COLS = "id, name, type, project, description, content, tags, updated_at"
 
 
 def _query_memories(client, *, mem_type, limit, extra_filter=None):
-    """Query memories table with type filter, return formatted string or None."""
+    """Query memories table with type filter.
+
+    Returns (formatted_text, ids) — ids are used to bump last_accessed_at.
+    """
     try:
         q = client.table("memories").select(_MEMORY_COLS).eq("type", mem_type)
         if extra_filter:
             q = extra_filter(q)
         result = q.order("updated_at", desc=True).limit(limit).execute()
         if result.data:
-            return "\n---\n".join(_fmt_memory(m) for m in result.data)
+            text = "\n---\n".join(_fmt_memory(m) for m in result.data)
+            ids = [m["id"] for m in result.data if m.get("id")]
+            return text, ids
     except Exception as e:
         print(f"[session-context] {mem_type} query failed: {e}", file=sys.stderr)
-    return None
+    return None, []
 
 
 def _query_always_load(client):
-    """Query memories tagged 'always_load' (evergreen, cross-project rules)."""
+    """Query memories tagged 'always_load' (evergreen, cross-project rules).
+
+    Returns (formatted_text, ids).
+    """
     try:
         result = (
             client.table("memories")
@@ -139,10 +159,27 @@ def _query_always_load(client):
             .execute()
         )
         if result.data:
-            return "\n---\n".join(_fmt_memory(m) for m in result.data)
+            text = "\n---\n".join(_fmt_memory(m) for m in result.data)
+            ids = [m["id"] for m in result.data if m.get("id")]
+            return text, ids
     except Exception as e:
         print(f"[session-context] always_load query failed: {e}", file=sys.stderr)
-    return None
+    return None, []
+
+
+def _touch_accessed(client, ids):
+    """Bump last_accessed_at via the same RPC server.py uses on recall.
+
+    Best-effort / non-fatal: the call is synchronous (one REST round-trip,
+    typically 50-200ms), but any exception is logged to stderr and swallowed
+    so session start is never blocked by Supabase issues.
+    """
+    if not ids:
+        return
+    try:
+        client.rpc("touch_memories", {"memory_ids": ids}).execute()
+    except Exception as e:
+        print(f"[session-context] touch_memories failed: {e}", file=sys.stderr)
 
 
 def _fmt_memory(m):

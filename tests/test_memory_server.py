@@ -648,7 +648,16 @@ class TestExpandWithLinks:
         await _expand_with_links(mock_client, ["id-1", "id-2"])
         mock_client.rpc.assert_called_once_with(
             "get_linked_memories",
-            {"memory_ids": ["id-1", "id-2"], "link_types": None},
+            {"memory_ids": ["id-1", "id-2"], "link_types": None, "show_history": False},
+        )
+
+    @pytest.mark.asyncio
+    async def test_passes_show_history_to_rpc(self, mock_client):
+        mock_client.rpc.return_value.execute.return_value = MagicMock(data=[])
+        await _expand_with_links(mock_client, ["id-1"], show_history=True)
+        mock_client.rpc.assert_called_once_with(
+            "get_linked_memories",
+            {"memory_ids": ["id-1"], "link_types": None, "show_history": True},
         )
 
 

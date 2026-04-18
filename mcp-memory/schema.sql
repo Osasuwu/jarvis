@@ -44,6 +44,13 @@ alter table memories add column if not exists fts tsvector
 
 create index if not exists idx_memories_fts on memories using gin(fts);
 
+-- Generated project scope key for tiebreakers / grouping on a non-null text.
+-- Applied in production via an out-of-band migration; re-declared here so
+-- schema.sql matches the live DB. Must stay in update_updated_at's strip
+-- list (GENERATED ALWAYS STORED cols appear NULL in BEFORE UPDATE NEW).
+alter table memories add column if not exists project_key text
+  generated always as (coalesce(project, '')) stored;
+
 -- Auto-update updated_at on changes
 create or replace function update_updated_at()
 returns trigger as $$
@@ -869,3 +876,147 @@ create policy "Allow all for authenticated" on episodes
 
 create policy "Allow all for anon" on episodes
   for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- Phase 1 cont'd (memory overhaul, Osasuwu/jarvis#185) — supersedes-chain
+-- collapse in link expansion.
+--
+-- Problem: match_memories and keyword_search_memories already filter out
+-- superseded rows on the default path (show_history=false). But
+-- get_linked_memories walks memory_links directly, which still points at
+-- the older versions of a chain. So recall with include_links=true can
+-- surface a memory whose current head was deliberately hidden by the
+-- lifecycle filter — re-introducing the bug Phase 1 was meant to fix.
+--
+-- Fix:
+--   1. find_chain_head(uuid, int) — recursive CTE walking superseded_by
+--      to the terminal node. Returns the input id if it's already a head,
+--      or the deepest reachable descendant (capped at max_depth to guard
+--      against cycles from manual edits).
+--   2. get_linked_memories replaced to (a) resolve the neighbor id through
+--      find_chain_head before joining memories, (b) apply the same
+--      lifecycle filter the other recall RPCs use (show_history param),
+--      and (c) return content_updated_at + last_accessed_at so the caller
+--      can temporally rescore linked memories consistently with primaries.
+-- =========================================================================
+
+-- Touch-safe update_updated_at: don't bump updated_at when the only column
+-- changed is last_accessed_at (i.e. touch_memories RPC on recall). The
+-- schema-level comment under Phase 0 already flagged this ("last_accessed_at
+-- set by touch_memories only") but the generic trigger was rippling every
+-- touch into updated_at, making session-start reads look like edits.
+--
+-- Why this matters: the fallback _keyword_recall orders by updated_at, and
+-- session-context.py selects user memories by updated_at — neither should
+-- be perturbed by the access-frequency touch.
+--
+-- Implementation: cheap short-circuit first — if last_accessed_at isn't
+-- changing, this is a normal edit and updated_at must bump. Only on
+-- touch-shaped UPDATEs do we pay for a JSONB diff of old vs new. This keeps
+-- the hot path (regular writes) free of to_jsonb cost on the full row
+-- (content can be kilobytes).
+--
+-- The JSONB diff strips last_accessed_at + updated_at (touch cols) and the
+-- generated cols (fts, project_key), which appear NULL in NEW under BEFORE
+-- UPDATE while OLD has the stored value (PostgreSQL quirk for GENERATED
+-- ALWAYS STORED), so including them would always register as a diff. If
+-- new generated columns are added, list them here too.
+create or replace function update_updated_at()
+returns trigger as $$
+begin
+  if new.last_accessed_at is distinct from old.last_accessed_at
+     and (to_jsonb(new) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key')
+           = (to_jsonb(old) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key') then
+    return new;
+  end if;
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+
+create or replace function find_chain_head(mid uuid, max_depth int default 20)
+returns uuid
+language sql stable as $$
+    with recursive chain as (
+        select m.id, m.superseded_by, 0 as depth
+        from memories m
+        where m.id = mid
+        union all
+        select m.id, m.superseded_by, c.depth + 1
+        from chain c
+        join memories m on m.id = c.superseded_by
+        where c.superseded_by is not null
+          and c.depth < max_depth
+    )
+    -- Terminal node: either superseded_by IS NULL (a true head) or we hit
+    -- max_depth (chain too long or cyclic — return deepest we saw).
+    select id from chain order by depth desc limit 1;
+$$;
+
+drop function if exists get_linked_memories(uuid[], text[]);
+drop function if exists get_linked_memories(uuid[], text[], boolean);
+create or replace function get_linked_memories(
+    memory_ids uuid[],
+    link_types text[] default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    link_type text, link_strength float, linked_from uuid
+)
+language sql stable as $$
+    select * from (
+        -- DISTINCT ON collapses multiple edges between the same pair of
+        -- memories — keep the strongest one after chain resolution. Two
+        -- different originals may resolve to the same head, so we dedup
+        -- on the resolved id rather than the raw link target.
+        select distinct on (sub.id)
+            sub.id, sub.name, sub.type, sub.project, sub.description,
+            sub.content, sub.tags,
+            sub.updated_at, sub.content_updated_at, sub.last_accessed_at,
+            sub.link_type, sub.link_strength, sub.linked_from
+        from (
+            -- Outgoing edges: source ∈ memory_ids, target resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.source_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.target_id
+                     else find_chain_head(l.target_id) end,
+                l.target_id)
+            where l.source_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+            union all
+            -- Incoming edges: target ∈ memory_ids, source resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.target_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.source_id
+                     else find_chain_head(l.source_id) end,
+                l.source_id)
+            where l.target_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+        ) sub
+        order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
+    ) deduped
+    order by deduped.link_strength desc
+    limit 10;
+$$;

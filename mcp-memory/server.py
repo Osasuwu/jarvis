@@ -1303,7 +1303,7 @@ async def _hybrid_recall(
         if include_links:
             ids = [r["id"] for r in merged if r.get("id")]
             if ids:
-                linked = await _expand_with_links(client, ids)
+                linked = await _expand_with_links(client, ids, show_history=show_history)
                 if linked:
                     # Deduplicate against already-found IDs and within linked results
                     found_ids = set(ids)
@@ -1678,12 +1678,19 @@ async def _apply_legacy_supersede(
         pass
 
 
-async def _expand_with_links(client, memory_ids: list[str]) -> list[dict]:
-    """Fetch 1-hop linked memories via graph traversal RPC."""
+async def _expand_with_links(
+    client, memory_ids: list[str], show_history: bool = False,
+) -> list[dict]:
+    """Fetch 1-hop linked memories via graph traversal RPC.
+
+    show_history mirrors the primary recall flag: when true, skip the
+    lifecycle filter so history views don't drop linked neighbors.
+    """
     try:
         result = client.rpc("get_linked_memories", {
             "memory_ids": memory_ids,
             "link_types": None,
+            "show_history": show_history,
         }).execute()
         return result.data or []
     except Exception:
