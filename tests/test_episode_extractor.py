@@ -272,14 +272,16 @@ class TestParseSynthesisResponse:
 
 
 class TestSynthesizeCandidatesNoKey:
-    def test_returns_empty_without_api_key(self, monkeypatch):
+    def test_returns_none_without_api_key(self, monkeypatch):
+        """Missing API key is a failure signal (None), not a legit-empty []
+        — the caller must leave the batch unprocessed so a later run retries."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         out = asyncio.run(
             ee.synthesize_candidates(
                 [{"id": "e", "actor": "a", "kind": "user_message", "payload": {}}]
             )
         )
-        assert out == []
+        assert out is None
 
     def test_returns_empty_on_empty_batch(self):
         out = asyncio.run(ee.synthesize_candidates([]))
@@ -427,9 +429,10 @@ class TestProcessBatchWithEpisodes:
         ep_ops = [q.calls for q in client.tables["episodes"].queries]
         assert any(any(c[0] == "update" for c in call_list) for call_list in ep_ops)
 
-    def test_does_not_mark_processed_when_api_key_missing(self, monkeypatch):
-        """Without an API key, synthesis fails — we must leave episodes
-        unprocessed so a later run (with key) can retry."""
+    def test_does_not_mark_processed_when_synthesis_fails(self, monkeypatch):
+        """Synthesis failure (None return) must leave episodes unprocessed so
+        a later run can retry. We simulate this via missing API key — the
+        same path handles network errors."""
         client = _MockClient()
         client.tables["episodes"].fetch_result = _MockResp(
             [
@@ -448,8 +451,47 @@ class TestProcessBatchWithEpisodes:
         result = asyncio.run(ee.process_batch(client, batch_size=5))
 
         assert result.episode_ids == ["e1"]
-        assert "ANTHROPIC_API_KEY unset" in " ".join(result.errors)
+        assert "synthesis failed" in " ".join(result.errors)
         # Episode update must NOT have been called.
+        ep_ops = [q.calls for q in client.tables["episodes"].queries]
+        assert not any(any(c[0] == "update" for c in call_list) for call_list in ep_ops)
+
+    def test_does_not_mark_processed_when_insert_errors(self, monkeypatch):
+        """If a candidate fails to insert (_insert_candidate returns None),
+        the batch should be left unprocessed so a later run can retry the
+        whole pipeline — we don't want to silently lose episodes."""
+        client = _MockClient()
+        client.tables["episodes"].fetch_result = _MockResp(
+            [
+                {
+                    "id": "e1",
+                    "actor": "t",
+                    "kind": "user_message",
+                    "payload": {},
+                    "created_at": "2026-04-18",
+                },
+            ]
+        )
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+
+        async def fake_synth(episodes, **kwargs):
+            return [ee.Candidate("n", "project", "", "c", [])]
+
+        async def fake_embed(text):
+            return None
+
+        def fake_insert(client, candidate, embedding, source_provenance):
+            return None  # simulate insert failure
+
+        monkeypatch.setattr(ee, "synthesize_candidates", fake_synth)
+        monkeypatch.setattr(ee, "_embed", fake_embed)
+        monkeypatch.setattr(ee, "_insert_candidate", fake_insert)
+
+        result = asyncio.run(ee.process_batch(client, batch_size=5))
+
+        assert result.candidates_inserted == 0
+        assert any("failed to insert" in e for e in result.errors)
         ep_ops = [q.calls for q in client.tables["episodes"].queries]
         assert not any(any(c[0] == "update" for c in call_list) for call_list in ep_ops)
 

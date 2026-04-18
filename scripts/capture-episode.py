@@ -8,9 +8,10 @@ Usage:
   python scripts/capture-episode.py --actor session:2026-04-18 \
       --kind user_message --payload '{"text": "..."}'
 
-  # Or read payload from stdin:
+  # Or read payload from stdin (remember --from-stdin — otherwise the
+  # piped JSON is ignored and an empty {} payload is captured):
   echo '{"text": "..."}' | python scripts/capture-episode.py \
-      --actor hook:user-prompt --kind user_message
+      --actor hook:user-prompt --kind user_message --from-stdin
 
 Intended wiring from .claude/settings.json (UserPromptSubmit hook):
   {

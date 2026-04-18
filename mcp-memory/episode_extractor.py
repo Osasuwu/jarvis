@@ -2,10 +2,25 @@
 
 Background worker that drains the `episodes` table (raw "what happened"
 records written by hooks/skills/autonomous code) and distills batches
-into candidate memories via a Haiku synthesis step. Each candidate is
-routed through the Phase 2b classifier for ADD/UPDATE/DELETE/NOOP
-decision and, when appropriate, inserted into the `memories` table
-with `source_provenance='episode:<id>'`.
+into candidate memories via a Haiku synthesis step.
+
+Pipeline per candidate:
+  1. Embed the canonical form (same as server.py's Phase 2a write path).
+  2. If embedding succeeded, look up neighbors via `find_similar_memories`.
+  3. If any neighbor passes `CLASSIFIER_TRIGGER_SIM` (~0.70), call the
+     Phase 2b classifier for an ADD/UPDATE/DELETE/NOOP judgment.
+  4. NOOP at confidence >= `CLASSIFIER_APPLY_THRESHOLD` → skip insertion
+     (the candidate is judged a duplicate of an existing memory).
+  5. Otherwise → insert into `memories` directly with
+     `source_provenance='episode:<first-batch-id>'`. The classifier's
+     decision (when it ran) is recorded in `memory_review_queue` with
+     status='pending' for audit — the extractor never mutates existing
+     neighbors; that path lives in server.py where rowcount checks guard
+     against races.
+
+Classifier invocation is CONDITIONAL (only when neighbors exist). No
+neighbors → straight insert without a queue entry. Embedding failure is
+treated as "no neighbors" and also short-circuits the classifier.
 
 Theory (CLS, Tulving) and production (Letta, LangMem, A-MEM) agree on
 the same shape: a non-lossy episodic buffer, with semantic extraction
@@ -20,8 +35,13 @@ Run modes:
 
 Environment:
   SUPABASE_URL / SUPABASE_KEY   — required
-  VOYAGE_API_KEY                — required for embedding
-  ANTHROPIC_API_KEY             — required for synthesis + classifier
+  ANTHROPIC_API_KEY             — required for synthesis (and classifier
+                                  when it runs). Missing key leaves
+                                  episodes unprocessed for retry.
+  VOYAGE_API_KEY                — best-effort. Missing or erroring keeps
+                                  the pipeline alive but stores candidates
+                                  without embeddings and skips the
+                                  classifier round-trip entirely.
 """
 
 from __future__ import annotations
@@ -316,18 +336,26 @@ async def synthesize_candidates(
     *,
     model: str = SYNTHESIZER_MODEL,
     timeout: float = SYNTHESIZER_TIMEOUT,
-) -> list[Candidate]:
+) -> list[Candidate] | None:
     """Call Haiku to turn a batch of episodes into candidate memories.
 
-    Returns [] on any failure (no API key, network error, parse error) — the
-    caller treats this as "nothing extractable from this batch" and moves on
-    WITHOUT marking the episodes processed, so a later run can retry."""
+    Return contract:
+      - list[Candidate] (possibly empty) → synthesis ran. An empty list means
+        the model explicitly judged the batch as having no durable content;
+        the caller SHOULD mark the episodes processed.
+      - None → synthesis could not run (missing API key, network/API error).
+        The caller MUST NOT mark the episodes processed so a later run can
+        retry.
+
+    Parse-level noise (stray prose, malformed JSON inside an otherwise-OK
+    response) is tolerated and collapses to []: we trust the model's
+    "nothing here" signal rather than looping forever on a bad shape."""
     if not episodes:
         return []
 
     api_key = os.environ.get("ANTHROPIC_API_KEY")
     if not api_key:
-        return []
+        return None
 
     body = {
         "model": model,
@@ -352,7 +380,7 @@ async def synthesize_candidates(
     except asyncio.CancelledError:
         raise
     except (httpx.HTTPError, ValueError):
-        return []
+        return None
 
     blocks = payload.get("content", [])
     text = ""
@@ -464,7 +492,6 @@ def _insert_candidate(
         "description": candidate.description,
         "project": None,
         "tags": candidate.tags,
-        "deleted_at": None,
         "source_provenance": source_provenance,
     }
     if embedding is not None:
@@ -497,15 +524,15 @@ def _queue_classifier_decision(
     decision,
     neighbors: list[dict],
 ) -> None:
-    """Record the classifier's call on an episode-derived candidate. We do
-    NOT mutate neighbors from the extractor path — neighbor mutation belongs
-    to the synchronous write path in server.py, where rowcount checks guard
-    against races. Here we only record the decision for later audit.
+    """Record the classifier's call on an episode-derived candidate.
 
-    status='auto_applied' when confidence is high (means "we'd have mutated
-    but deferred"), 'pending' when low (owner reviews)."""
+    We do NOT mutate neighbors from the extractor path — neighbor mutation
+    belongs to the synchronous write path in server.py, where rowcount
+    checks guard against races. Because no mutation is ever applied here,
+    status is always 'pending' (per schema semantics: 'auto_applied' means
+    the decision was actually applied) and `reviewed_by` is left unset —
+    the owner (or a consolidation job) is the real reviewer."""
     try:
-        status = "auto_applied" if decision.confidence >= CLASSIFIER_APPLY_THRESHOLD else "pending"
         client.table("memory_review_queue").insert(
             {
                 "candidate_id": candidate_id,
@@ -518,8 +545,7 @@ def _queue_classifier_decision(
                     {"id": n.get("id"), "name": n.get("name"), "similarity": n.get("similarity")}
                     for n in neighbors
                 ],
-                "status": status,
-                "reviewed_by": "episode_extractor",
+                "status": "pending",
             }
         ).execute()
     except Exception:
@@ -607,20 +633,28 @@ async def process_batch(
         )
 
     candidates = await synthesize_candidates(episodes)
-    if not candidates:
-        # Synthesis found nothing extractable (or the API failed). Do NOT
-        # mark episodes processed when the API call itself failed — we'd
-        # lose retries. Distinguish via "api key set + zero candidates =
-        # legitimate empty result" heuristic.
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            if not dry_run:
-                mark_processed(client, episode_ids)
+    if candidates is None:
+        # Synthesis failed (no API key or transport error). Leave episodes
+        # unprocessed so a later run can retry.
         return BatchResult(
             episode_ids=episode_ids,
             candidates_synthesized=0,
             candidates_inserted=0,
             candidates_skipped_noop=0,
-            errors=[] if os.environ.get("ANTHROPIC_API_KEY") else ["ANTHROPIC_API_KEY unset"],
+            errors=["synthesis failed — episodes left unprocessed for retry"],
+        )
+
+    if not candidates:
+        # Legitimate empty result — model saw nothing worth saving. Mark
+        # processed so we don't loop on the same episodes.
+        if not dry_run:
+            mark_processed(client, episode_ids)
+        return BatchResult(
+            episode_ids=episode_ids,
+            candidates_synthesized=0,
+            candidates_inserted=0,
+            candidates_skipped_noop=0,
+            errors=[],
         )
 
     # Use the first episode's id as the provenance anchor. The full batch of
@@ -643,7 +677,10 @@ async def process_batch(
         except Exception as exc:  # pragma: no cover — defensive
             errors.append(f"{candidate.name}: {exc}")
 
-    if not dry_run:
+    # Only mark processed when everything succeeded — partial failures leave
+    # the batch for retry. Operators can manually intervene if a candidate
+    # keeps failing (e.g. malformed name blocks the insert on every retry).
+    if not dry_run and not errors:
         mark_processed(client, episode_ids)
 
     return BatchResult(
