@@ -6,8 +6,10 @@ Reciprocal Rank Fusion. This catches memories that match by literal terms
 but sit below the semantic threshold (e.g. proper nouns, rare keywords)
 without the cost of an LLM call on every prompt.
 
-Types ∈ {feedback, decision}. Scope: current project (cwd basename) +
-global. Capped at ~40K chars (~10K tokens, ~5% of 200K context).
+Types ∈ {feedback, decision, reference}. Scope: current project (cwd
+basename) + global. Capped at ~40K chars (~10K tokens, ~5% of 200K
+context). `user` + `project` are already loaded at session start by
+scripts/session-context.py and excluded here to avoid duplication.
 
 Touches accessed memories via RPC so the ACT-R access-frequency boost
 applies. Any failure → empty context, prompt proceeds unaffected.
@@ -115,14 +117,18 @@ def detect_project(cwd: str) -> str | None:
 def format_memory(m: dict) -> str:
     tags = m.get("tags") or []
     tags_str = f" [{', '.join(tags)}]" if tags else ""
-    # Phase 3: fan-out signal — prefer RRF score if present, else fall back to
-    # raw similarity (semantic-only path) or rank (keyword-only).
+    # Signal-accurate score display. rrf_merge only sets _rrf_score on
+    # rows hit by both signals, so single-signal hits fall through to
+    # their native field (similarity for semantic, rank for keyword/FTS).
     rrf = m.get("_rrf_score")
     sim = m.get("similarity")
+    rank = m.get("rank")
     if rrf is not None:
         score_str = f" (rrf {rrf:.3f})"
     elif sim is not None:
         score_str = f" (sim {sim:.2f})"
+    elif rank is not None:
+        score_str = f" (rank {rank:.2f})"
     else:
         score_str = ""
     proj = m.get("project") or "global"
@@ -136,33 +142,41 @@ def format_memory(m: dict) -> str:
 def rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], k: int = RRF_K) -> list[dict]:
     """Reciprocal Rank Fusion over two ranked lists.
 
-    Mirrors mcp-memory/server.py::_rrf_merge so the hook and the recall RPC
-    use the same scoring. A row appearing in both lists scores roughly
-    double vs. a row in only one — catches terms the embedding missed
-    (rare keywords, proper nouns) without letting pure-keyword hits
-    dominate over relevant semantic matches.
+    Same RRF math as mcp-memory/server.py::_rrf_merge (k=60, scores additive,
+    ranked desc), with two deliberate differences vs. the server:
+      - Keep the semantic row in `by_id` when a memory appears in both lists,
+        so the row still carries its `similarity` for display fallback. The
+        server overwrites with the keyword row; it doesn't care, we do.
+      - No `limit` slice. The caller caps by CHAR_BUDGET, not row count.
+
+    Only rows hit by BOTH signals get `_rrf_score` set — that's the semantic
+    meaning of "fusion", and `format_memory` depends on it to pick the right
+    display (rrf vs sim vs rank). A row seen once keeps its native score
+    field untouched.
     """
     scores: dict[str, float] = {}
+    hits: dict[str, int] = {}
     by_id: dict[str, dict] = {}
     for rank, row in enumerate(semantic_rows):
         rid = row.get("id") or row.get("name")
         if not rid:
             continue
         scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
+        hits[rid] = hits.get(rid, 0) + 1
         by_id[rid] = row
     for rank, row in enumerate(keyword_rows):
         rid = row.get("id") or row.get("name")
         if not rid:
             continue
         scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
-        # Keep the row we already have (semantic has similarity score); only
-        # overwrite if this is a keyword-only hit.
+        hits[rid] = hits.get(rid, 0) + 1
         by_id.setdefault(rid, row)
     ranked_ids = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
     out = []
     for rid in ranked_ids:
         row = by_id[rid]
-        row["_rrf_score"] = scores[rid]
+        if hits[rid] >= 2:
+            row["_rrf_score"] = scores[rid]
         out.append(row)
     return out
 
