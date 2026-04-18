@@ -1,10 +1,19 @@
 """UserPromptSubmit hook: task-aware hybrid recall injected as context.
 
-Phase 3 MVP (fan-out, no LLM rewriter yet): embeds the prompt AND runs a
-keyword/FTS search over the same text, then merges both ranked lists via
-Reciprocal Rank Fusion. This catches memories that match by literal terms
-but sit below the semantic threshold (e.g. proper nouns, rare keywords)
-without the cost of an LLM call on every prompt.
+Phase 3: LLM rewriter + fan-out. On each prompt we do, in parallel:
+  1. Embed the prompt (voyage-3-lite) for semantic search.
+  2. Call Haiku-4.5 to extract {entities, types} — literal keywords that
+     are likely to appear in relevant memories, plus an optional type
+     narrowing hint.
+Then we run `match_memories` (semantic) and `keyword_search_memories`
+(FTS on entities if available, else on the raw prompt) and merge both
+ranked lists via Reciprocal Rank Fusion (RRF, k=60).
+
+Why a rewriter? The raw prompt carries a lot of noise ("help me", "can
+you", conversational glue). FTS on that gives diluted matches. Haiku
+strips the prompt to its literal content signal (proper nouns, paths,
+technical identifiers) — the kind of tokens that match memories by
+keyword but not semantically.
 
 Types ∈ {feedback, decision, reference}. Scope: current project (cwd
 basename) + global. Capped at ~40K chars (~10K tokens, ~5% of 200K
@@ -12,13 +21,15 @@ context). `user` + `project` are already loaded at session start by
 scripts/session-context.py and excluded here to avoid duplication.
 
 Touches accessed memories via RPC so the ACT-R access-frequency boost
-applies. Any failure → empty context, prompt proceeds unaffected.
+applies. Any failure in semantic OR rewriter → falls back to
+keyword-only / raw prompt. Hook never blocks the prompt.
 """
 
 import json
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -38,7 +49,9 @@ from dotenv import load_dotenv
 
 for _env in [_root / ".env", _root.parent / ".env"]:
     if _env.exists():
-        load_dotenv(_env)
+        # override=True: shells on some devices export empty ANTHROPIC_API_KEY
+        # which would otherwise win over the .env value and disable the rewriter.
+        load_dotenv(_env, override=True)
         break
 
 from supabase import create_client
@@ -68,6 +81,43 @@ KNOWN_PROJECTS = {"jarvis", "redrobot"}
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 8.0  # keep responsive; hook blocks user prompt
+
+# Haiku rewriter: extracts {entities, types} from the raw prompt.
+# Budget is read-path — user is waiting — so 2.5s is the cap. On failure
+# we fall back to raw-prompt FTS and the default ALLOWED_TYPES.
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+REWRITER_MODEL = "claude-haiku-4-5"
+REWRITER_TIMEOUT = 2.5
+REWRITER_MAX_TOKENS = 200
+MIN_REWRITE_CHARS = 25   # shorter than this → LLM call not worth the latency
+REWRITER_MAX_ENTITIES = 8
+REWRITER_MAX_TYPES = 3
+# Types the rewriter is allowed to suggest. Subset of {feedback, decision,
+# reference} matches ALLOWED_TYPES; "episode" is rejected here because
+# episodic memories aren't yet surfaced by this hook (Phase 4 feature,
+# separate wiring).
+REWRITER_VALID_TYPES = {"feedback", "decision", "reference"}
+
+REWRITER_SYSTEM_PROMPT = """You extract recall signals from a user prompt for a personal AI agent's long-term memory system.
+
+Given the user's raw prompt, output two things:
+
+1. entities: 1-8 literal keywords or short phrases likely to appear verbatim in relevant memories. Prefer:
+   - proper nouns (project names, people, tools)
+   - file paths, function names, identifiers (e.g. memory_store, classifier.py)
+   - technical terms kept as multi-word phrases (e.g. "Phase 3", "RRF merge")
+   Drop stopwords, pronouns, conversational glue ("can you", "help me", "I want").
+   Lowercase everything. If nothing literal stands out, return an empty list.
+
+2. types: subset of {feedback, decision, reference} when the prompt clearly concerns ONE of them:
+   - feedback: user preferences, working style, corrections ("how do I like tests written?")
+   - decision: past architectural choices, rationale ("did we decide X?", "why did we pick Y?")
+   - reference: pointers to external systems, dashboards, repo links ("where is Z tracked?")
+   Empty list = no narrowing (default behavior, use when the prompt is a generic task).
+
+Output strict JSON only, no prose:
+{"entities": ["..."], "types": ["..."]}"""
 
 
 def emit(context: str):
@@ -103,6 +153,89 @@ def embed(text: str) -> list[float] | None:
             return resp.json()["data"][0]["embedding"]
     except Exception:
         return None
+
+
+def _parse_rewriter(text: str) -> dict | None:
+    """Parse Haiku's JSON reply. Tolerant of stray prose around the object.
+
+    Returns {"entities": [...], "types": [...]} with both lists validated
+    and capped, or None when the output is unusable (no JSON, wrong shape,
+    both lists empty after validation).
+    """
+    if not text:
+        return None
+    first = text.find("{")
+    last = text.rfind("}")
+    if first < 0 or last <= first:
+        return None
+    try:
+        data = json.loads(text[first : last + 1])
+    except json.JSONDecodeError:
+        return None
+
+    raw_entities = data.get("entities")
+    if isinstance(raw_entities, list):
+        entities = [
+            str(e).strip().lower()
+            for e in raw_entities
+            if isinstance(e, (str, int, float))
+        ]
+        entities = [e for e in entities if e][:REWRITER_MAX_ENTITIES]
+    else:
+        entities = []
+
+    raw_types = data.get("types")
+    if isinstance(raw_types, list):
+        types = [str(t).strip().lower() for t in raw_types if isinstance(t, str)]
+        types = [t for t in types if t in REWRITER_VALID_TYPES][:REWRITER_MAX_TYPES]
+    else:
+        types = []
+
+    if not entities and not types:
+        return None
+    return {"entities": entities, "types": types}
+
+
+def rewrite_prompt(prompt: str) -> dict | None:
+    """Ask Haiku to extract {entities, types} for better recall.
+
+    Returns the parsed dict or None on: too-short prompt, missing API key,
+    network/timeout error, unparseable output. Caller falls back to the
+    raw prompt for keyword search and the default ALLOWED_TYPES.
+    """
+    if len(prompt) < MIN_REWRITE_CHARS:
+        return None
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None
+    try:
+        with httpx.Client(timeout=REWRITER_TIMEOUT) as client:
+            resp = client.post(
+                ANTHROPIC_API_URL,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": ANTHROPIC_VERSION,
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": REWRITER_MODEL,
+                    "max_tokens": REWRITER_MAX_TOKENS,
+                    "system": REWRITER_SYSTEM_PROMPT,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+    except Exception:
+        return None
+
+    blocks = payload.get("content", [])
+    text = ""
+    for b in blocks:
+        if isinstance(b, dict) and b.get("type") == "text":
+            text = b.get("text", "")
+            break
+    return _parse_rewriter(text)
 
 
 def detect_project(cwd: str) -> str | None:
@@ -208,10 +341,30 @@ def main():
     if not url or not key:
         silent_exit()
 
-    query_embedding = embed(prompt)
-    # Semantic can fail-soft (no API key / timeout): still run keyword search
-    # on the prompt. Keyword-only is better than silent_exit — a user typing a
-    # literal identifier should still get relevant memories surfaced.
+    # Embed and rewrite run in parallel — both are network-bound, and the
+    # rewriter's output only feeds the keyword leg, so Voyage doesn't need
+    # to wait. If either fails, the other's result is still useful.
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        fut_embed = ex.submit(embed, prompt)
+        fut_rewrite = ex.submit(rewrite_prompt, prompt)
+        query_embedding = fut_embed.result()
+        rewritten = fut_rewrite.result()
+
+    entities = (rewritten or {}).get("entities") or []
+    requested_types = (rewritten or {}).get("types") or []
+
+    # Keyword query: joined entities (denoised) if rewriter gave us any,
+    # else the raw prompt (MVP behavior, still works without Haiku).
+    keyword_query = " ".join(entities) if entities else prompt
+
+    # Type narrowing: intersect requested types with ALLOWED_TYPES. If the
+    # rewriter suggested types outside our allowed set (shouldn't happen —
+    # system prompt constrains it — but fail-safe), fall back to defaults.
+    if requested_types:
+        narrowed = ALLOWED_TYPES & set(requested_types)
+        allowed_types = narrowed if narrowed else ALLOWED_TYPES
+    else:
+        allowed_types = ALLOWED_TYPES
 
     try:
         client = create_client(url, key)
@@ -235,7 +388,7 @@ def main():
     keyword_rows: list[dict] = []
     try:
         kw = client.rpc("keyword_search_memories", {
-            "search_query": prompt,
+            "search_query": keyword_query,
             "match_limit": FETCH_LIMIT,
             "filter_project": project,
             "filter_type": None,
@@ -246,8 +399,8 @@ def main():
 
     # Filter both lists to allowed types BEFORE merging, so RRF scores are
     # computed only over candidates we'll actually surface.
-    semantic_rows = [r for r in semantic_rows if r.get("type") in ALLOWED_TYPES]
-    keyword_rows = [r for r in keyword_rows if r.get("type") in ALLOWED_TYPES]
+    semantic_rows = [r for r in semantic_rows if r.get("type") in allowed_types]
+    keyword_rows = [r for r in keyword_rows if r.get("type") in allowed_types]
 
     if not semantic_rows and not keyword_rows:
         silent_exit()
@@ -263,7 +416,16 @@ def main():
         if semantic_rows
         else "keyword-only"
     )
-    header = f"# Memories on topic{scope}\n\nHybrid recall ({signal}):\n\n"
+    rewriter_note = ""
+    if rewritten:
+        bits = []
+        if entities:
+            bits.append(f"entities: {', '.join(entities)}")
+        if requested_types:
+            bits.append(f"types: {', '.join(sorted(requested_types))}")
+        if bits:
+            rewriter_note = f" — rewriter: {'; '.join(bits)}"
+    header = f"# Memories on topic{scope}\n\nHybrid recall ({signal}){rewriter_note}:\n\n"
     parts = [header]
     total = len(header)
     included_ids = []
