@@ -696,3 +696,70 @@ language sql stable as $$
     order by rank desc
     limit match_limit;
 $$;
+
+
+-- =========================================================================
+-- Phase 2b (memory overhaul, Osasuwu/jarvis#185) — write-time classifier
+--
+-- Goal: replace the SUPERSEDE_SIM_THRESHOLD heuristic with an LLM decision
+-- (Mem0-style ADD / UPDATE / DELETE / NOOP). Low-confidence decisions land
+-- in this review queue instead of being silently applied — same idea as
+-- LangMem's background mode, but synchronous on the write path because we
+-- need the decision to know whether to mark a neighbor superseded.
+--
+-- Workflow:
+--   1. memory_store computes embedding, upserts the row (stored_id).
+--   2. Looks up top-K similar neighbors above CLASSIFIER_TRIGGER_SIM (~0.75).
+--   3. If any → calls Haiku-4.5 with {candidate, neighbors} → JSON decision.
+--   4. confidence >= APPLY_THRESHOLD (~0.7): apply the decision
+--      (UPDATE/DELETE marks the target as superseded/expired).
+--   5. confidence < APPLY_THRESHOLD: write to memory_review_queue
+--      with status='pending' so the owner can audit before applying.
+--
+-- We always insert the candidate first (never lose data). DELETE/NOOP at
+-- low confidence still become "ADD-and-queue-the-decision-for-review".
+-- =========================================================================
+
+create table if not exists memory_review_queue (
+  id uuid primary key default gen_random_uuid(),
+
+  -- The just-stored candidate that triggered classification.
+  candidate_id uuid references memories(id) on delete cascade,
+
+  -- Classifier output.
+  decision text not null check (decision in ('ADD', 'UPDATE', 'DELETE', 'NOOP')),
+  target_id uuid references memories(id) on delete set null,
+  confidence real not null check (confidence >= 0 and confidence <= 1),
+  reasoning text,
+
+  -- Provenance for the decision itself (so we can audit which model said what).
+  classifier_model text default 'claude-haiku-4-5',
+  neighbors_seen jsonb,            -- snapshot of {id, name, similarity} fed to model
+
+  -- Lifecycle of the queue entry.
+  -- pending: awaiting owner review
+  -- approved: owner approved, will be applied (or already applied)
+  -- rejected: owner said no, decision discarded
+  -- auto_applied: confidence was high enough to skip review (recorded for audit)
+  status text not null default 'pending'
+    check (status in ('pending', 'approved', 'rejected', 'auto_applied')),
+
+  applied_at timestamptz,           -- when the decision actually mutated the row
+  reviewed_at timestamptz,
+  reviewed_by text,                 -- 'owner' / 'autonomous' / 'consolidation_job'
+
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_review_queue_pending
+    on memory_review_queue(created_at desc) where status = 'pending';
+create index if not exists idx_review_queue_candidate
+    on memory_review_queue(candidate_id);
+
+alter table memory_review_queue enable row level security;
+
+create policy "Allow all for authenticated" on memory_review_queue
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on memory_review_queue
+  for all to anon using (true) with check (true);
