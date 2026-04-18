@@ -784,13 +784,30 @@ create policy "Allow all for anon" on memory_review_queue
 
 -- Backfill pre-policy rows with a distinguishing marker. Literal string
 -- (not '') so future queries can filter `where source_provenance =
--- 'legacy:pre-2c'` to find rows with no real provenance.
+-- 'legacy:pre-2c'` to find rows with no real provenance. Also catches
+-- whitespace-only values — prior callers could persist '   ' which is
+-- truthy in Python but carries no attribution.
 update memories
 set source_provenance = 'legacy:pre-2c'
-where source_provenance is null;
+where source_provenance is null
+   or btrim(source_provenance) = '';
 
 -- Enforce going forward. Any caller bypassing the MCP server with a raw
 -- INSERT now errors out — which is the desired failure mode (those writes
 -- also skip the embedding + classifier pipeline and shouldn't exist).
 alter table memories
     alter column source_provenance set not null;
+
+-- Soft-delete column. server.py has always written/filtered on this (store
+-- clears it, recall/list/get/delete filter `is deleted_at null`), but the
+-- column was never declared in schema.sql — meaning a fresh provision
+-- would error at runtime. Add as part of the 2c hardening pass since the
+-- provenance work is the first time the audit story is end-to-end.
+alter table memories add column if not exists deleted_at timestamptz;
+
+-- Partial index on tombstones. Mirrors the index already present in the
+-- live DB — small set, fast to scan when purging or auditing deletes.
+-- Live-row queries don't need a dedicated index: they combine deleted_at
+-- with type/project/lifecycle filters already covered by existing indexes.
+create index if not exists idx_memories_deleted_at
+  on memories(deleted_at) where deleted_at is not null;
