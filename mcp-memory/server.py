@@ -184,6 +184,28 @@ VALID_GOAL_STATUSES = ("active", "achieved", "paused", "abandoned")
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
+# -- Canonical embed form (Phase 2a) ---------------------------------------
+
+def _canonical_embed_text(name: str, description: str, tags: list[str], content: str) -> str:
+    """Build the text used for embedding. Structured so name/tags get weight.
+
+    Why: a long-form memory whose key topic is in the name but whose content
+    drifts into narrative detail embeds poorly — name/tags get drowned out.
+    Prefixing them in a separate line gives them comparable weight under the
+    tokenizer.
+    """
+    parts: list[str] = []
+    if name:
+        parts.append(name.replace("_", " "))
+    if tags:
+        parts.append("tags: " + ", ".join(tags))
+    if description:
+        parts.append(description)
+    if content:
+        parts.append(content)
+    return "\n".join(p for p in parts if p).strip()
+
+
 # -- Memory 2.0: temporal scoring + auto-linking ----------------------------
 TEMPORAL_HALF_LIVES = {
     "project": 7, "reference": 30, "decision": 60,
@@ -385,6 +407,14 @@ async def list_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Tags for filtering (e.g. ['architecture', 'decision'])",
+                    },
+                    "source_provenance": {
+                        "type": "string",
+                        "description": (
+                            "Where this memory came from (URL, tool name, session id, "
+                            "actor). Populate when not self-evident. JTMS attribution — "
+                            "we can't revise what we can't attribute."
+                        ),
                     },
                 },
                 "required": ["type", "name", "content"],
@@ -1044,12 +1074,15 @@ async def _handle_store(args: dict) -> list[TextContent]:
     if project == "global":
         project = None  # "global" and null are synonymous — normalize to NULL in DB
     tags = args.get("tags", [])
+    source_provenance = args.get("source_provenance")
 
     if mem_type not in VALID_TYPES:
         return [TextContent(type="text", text=f"Invalid type: {mem_type}. Must be one of {VALID_TYPES}")]
 
-    # Generate embedding (async httpx — 5s timeout, falls back gracefully)
-    embed_text = f"{description}\n{content}".strip() if description else content
+    # Phase 2a: canonical-form embedding — include name + tags + description + content.
+    # Name and tags carry high-signal lexical cues that raw content often dilutes
+    # (long narrative memories where the key topic is only in the name).
+    embed_text = _canonical_embed_text(mem_name, description, tags, content)
     embedding = await _embed(embed_text)
 
     data = {
@@ -1061,9 +1094,13 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "tags": tags,
         "deleted_at": None,  # clear soft-delete on store/upsert
     }
+    if source_provenance:
+        data["source_provenance"] = source_provenance
 
     if embedding is not None:
         data["embedding"] = embedding
+        data["embedding_model"] = VOYAGE_MODEL
+        data["embedding_version"] = "v2"  # Phase 2a canonical form
 
     embed_note = " (with embedding)" if embedding is not None else ""
 
@@ -1325,7 +1362,7 @@ async def _backfill_missing_embeddings(client, project) -> None:
     Batches all missing records into a single Voyage AI call.
     """
     try:
-        q = client.table("memories").select("id, description, content")
+        q = client.table("memories").select("id, name, description, tags, content")
         q = q.is_("embedding", "null").is_("deleted_at", "null")
         if project is not None:
             q = q.or_(f"project.eq.{project},project.is.null")
@@ -1333,26 +1370,44 @@ async def _backfill_missing_embeddings(client, project) -> None:
         if not rows:
             return
 
-        texts = [f"{r.get('description', '')}\n{r['content']}".strip() for r in rows]
+        # Phase 2a: canonical form (name + tags + description + content)
+        texts = [
+            _canonical_embed_text(r.get("name", ""), r.get("description", ""), r.get("tags") or [], r["content"])
+            for r in rows
+        ]
         embeddings = await _embed_batch(texts)
         if embeddings is None:
             return
 
         for mem, embedding in zip(rows, embeddings):
-            client.table("memories").update({"embedding": embedding}).eq("id", mem["id"]).execute()
+            client.table("memories").update({
+                "embedding": embedding,
+                "embedding_model": VOYAGE_MODEL,
+                "embedding_version": "v2",
+            }).eq("id", mem["id"]).execute()
     except Exception:
         pass  # fire-and-forget: silently swallow all errors so caller never fails
 
 
 async def _create_auto_links(client, stored_id: str, similar_rows: list[dict], mem_type: str) -> None:
-    """Fire-and-forget: create links between stored memory and similar ones."""
+    """Fire-and-forget: create links between stored memory and similar ones.
+
+    Phase 2a: supersession no longer gated on type=decision — any two memories
+    of the *same type* above SUPERSEDE_SIM_THRESHOLD are candidates. When
+    supersedes fires, also writes memories.superseded_by on the older row
+    (the link target) so Phase 1 recall filter picks it up immediately.
+    """
     try:
         links = []
+        supersede_target_ids: list[str] = []
         for row in similar_rows[:MAX_AUTO_LINKS]:
             sim = row.get("similarity", 0)
-            # Supersession: two decisions with very high similarity
-            if mem_type == "decision" and row.get("type") == "decision" and sim >= SUPERSEDE_SIM_THRESHOLD:
+            # Supersession: two memories of the same type with very high similarity.
+            # (Phase 2b classifier will replace this heuristic with an LLM decision.)
+            if row.get("type") == mem_type and sim >= SUPERSEDE_SIM_THRESHOLD:
                 link_type = "supersedes"
+                if row.get("id"):
+                    supersede_target_ids.append(row["id"])
             else:
                 link_type = "related"
             links.append({
@@ -1365,6 +1420,15 @@ async def _create_auto_links(client, stored_id: str, similar_rows: list[dict], m
             client.table("memory_links").upsert(
                 links, on_conflict="source_id,target_id,link_type"
             ).execute()
+        # Phase 1 recall filter reads memories.superseded_by, so denormalize
+        # supersedes edges onto the column. Only set when currently null to
+        # preserve an existing supersession chain if the target was already
+        # superseded by something else.
+        if supersede_target_ids:
+            client.table("memories").update({"superseded_by": stored_id}) \
+                .in_("id", supersede_target_ids) \
+                .is_("superseded_by", "null") \
+                .execute()
     except Exception:
         pass
 

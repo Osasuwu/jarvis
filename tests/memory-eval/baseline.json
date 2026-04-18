@@ -1,13 +1,13 @@
 {
-  "timestamp": "2026-04-18T08:32:05.420190+00:00",
+  "timestamp": "2026-04-18T08:42:33.948278+00:00",
   "corpus_size": 289,
   "total_queries": 20,
-  "recall_at_5": 0.8,
+  "recall_at_5": 0.85,
   "recall_at_10": 0.9,
-  "mrr": 0.5801388888888889,
+  "mrr": 0.6222222222222222,
   "must_not_violations": 0,
-  "passed": 16,
-  "failed": 4,
+  "passed": 17,
+  "failed": 3,
   "results": [
     {
       "id": "q01",
@@ -18,9 +18,10 @@
       ],
       "must_not": [],
       "top_names": [
+        "goals_system_first_real_goals",
         "feedback_voyage"
       ],
-      "first_hit_rank": 1,
+      "first_hit_rank": 2,
       "hits_at_5": [
         "feedback_voyage"
       ],
@@ -40,10 +41,9 @@
       "must_not": [],
       "top_names": [
         "jarvis_event_driven_architecture",
-        "team_agent_v2_plan_complete",
-        "like_spotify_cross_device_simplified",
-        "claude_max_upgrade",
         "scheduled_tasks_subscription_not_api",
+        "team_agent_v2_plan_complete",
+        "claude_max_upgrade",
         "claudemd_consolidation_2026_04_08",
         "like_spotify_tech_profile",
         "planned_integrations_digital_twin"
@@ -68,17 +68,17 @@
       "must_not": [],
       "top_names": [
         "sand_direction_top_down",
-        "bug_fix_reproduce_first",
         "redrobot_sergazy_feedback_apr8",
+        "bug_fix_reproduce_first",
         "zigzag_removed_from_escalation",
         "redrobot_schedule_apr8",
-        "redrobot_agile_switch",
         "read_code_before_implementing",
+        "university_student_cse8012",
         "deficit_first_bulk_planner",
         "ux_ui_principles_always",
-        "_soft_delete_test"
+        "review_before_push"
       ],
-      "first_hit_rank": 2,
+      "first_hit_rank": 3,
       "hits_at_5": [
         "bug_fix_reproduce_first"
       ],
@@ -104,9 +104,9 @@
         "redrobot_hygiene_remaining_2026_04_18",
         "jarvis_public_release_v020",
         "owner_profile",
-        "redrobot_stash_and_milestone_cleanup_candidates",
         "no_hardcoded_context_in_claude_md",
-        "pycache_after_changes"
+        "pycache_after_changes",
+        "docs_in_wiki"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -129,10 +129,11 @@
       "top_names": [
         "milestone_structure_v2",
         "be_the_manager",
+        "architecture_final",
         "instructions_overhaul_2026_04_01",
-        "pillar_scope_and_pm_process",
-        "owner_claude_code_setup",
-        "sand_physics_architecture_2026_04_06"
+        "dnd_dm_role",
+        "sand_physics_architecture_2026_04_06",
+        "github_schema_restructured"
       ],
       "first_hit_rank": 2,
       "hits_at_5": [
@@ -155,24 +156,25 @@
       ],
       "must_not": [],
       "top_names": [
+        "jarvis_v2_multiagent_direction",
         "jarvis_v2_vision",
+        "jarvis_wrapping_direction",
         "jarvis_v2_hybrid_agile",
         "jarvis_vs_team_agent",
-        "jarvis_wrapping_direction",
         "multiagent_pm_architecture_vision",
-        "jarvis_v2_multiagent_direction",
         "no_deterministic_pipelines",
-        "research_jarvis_meta_agent",
+        "jarvis_scalable_agent_system",
         "pillar7_personal_vs_company_separation",
         "docs_in_wiki"
       ],
-      "first_hit_rank": 4,
+      "first_hit_rank": 1,
       "hits_at_5": [
+        "jarvis_v2_multiagent_direction",
         "jarvis_wrapping_direction"
       ],
       "hits_at_10": [
-        "jarvis_wrapping_direction",
-        "jarvis_v2_multiagent_direction"
+        "jarvis_v2_multiagent_direction",
+        "jarvis_wrapping_direction"
       ],
       "must_not_violations_at_5": [],
       "passed": true
@@ -187,25 +189,25 @@
       ],
       "must_not": [],
       "top_names": [
-        "autonomous_loop_v1_architecture",
         "no_deterministic_pipelines",
         "autonomous_loop_hygiene_sweep_v1",
         "local_scheduled_tasks_only",
+        "jarvis_v15_skill_restructure",
+        "autonomous_loop_v1_architecture",
         "autonomous_action_log",
-        "milestone_vs_pillar_hygiene",
-        "pm_dispatch_v1_architecture",
         "autonomous_fixing_mode",
-        "working_state_redrobot",
+        "autonomous_loop_last_run",
+        "milestone_vs_pillar_hygiene",
         "autonomous_long_sessions"
       ],
-      "first_hit_rank": 1,
+      "first_hit_rank": 2,
       "hits_at_5": [
-        "autonomous_loop_v1_architecture",
-        "autonomous_loop_hygiene_sweep_v1"
+        "autonomous_loop_hygiene_sweep_v1",
+        "autonomous_loop_v1_architecture"
       ],
       "hits_at_10": [
-        "autonomous_loop_v1_architecture",
-        "autonomous_loop_hygiene_sweep_v1"
+        "autonomous_loop_hygiene_sweep_v1",
+        "autonomous_loop_v1_architecture"
       ],
       "must_not_violations_at_5": [],
       "passed": true
@@ -221,15 +223,15 @@
       "must_not": [],
       "top_names": [
         "memory_server_v2_improvements",
-        "supabase_custom_mcp_preferred",
-        "memory_alternatives",
-        "working_state_jarvis",
         "memory_2_0_implementation",
+        "supabase_custom_mcp_preferred",
         "nightly_mcp_max_result_size",
         "owner_prefers_mcp_over_skills",
-        "linked_dedup_fix",
+        "pipeline_full_diagnostics_dump",
+        "working_state_jarvis",
         "self_hosted_postgres_future_plan",
-        "memory_graph_tool_added"
+        "memory_graph_tool_added",
+        "pipeline_v3_performance_research"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -256,14 +258,14 @@
       "top_names": [
         "lessons_agent_delegation",
         "delegate_frontend_to_subagents",
-        "verify_agent_findings_against_memory",
-        "jarvis_scalable_agent_system",
         "prefer_agents_for_parallel_bugs",
-        "pm_dispatch_v1_architecture",
         "pm_methodology_and_delegation",
+        "jarvis_scalable_agent_system",
+        "agent_delegation_precision",
+        "pm_dispatch_v1_architecture",
         "managed_agents_wait_and_see",
-        "claude_code_capabilities",
-        "review_before_push"
+        "jarvis_v2_multiagent_direction",
+        "competitive_landscape_multi_agent_2026"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -272,7 +274,8 @@
       ],
       "hits_at_10": [
         "lessons_agent_delegation",
-        "delegate_frontend_to_subagents"
+        "delegate_frontend_to_subagents",
+        "agent_delegation_precision"
       ],
       "must_not_violations_at_5": [],
       "passed": true
@@ -286,18 +289,18 @@
       ],
       "must_not": [],
       "top_names": [
-        "checkpoint_skill_architecture",
         "owner_prefers_mcp_over_skills",
-        "jarvis_wrapping_direction",
-        "nightly_mcp_max_result_size",
-        "claude_code_capabilities",
+        "checkpoint_skill_architecture",
         "mcp_stack_2026_03_31",
+        "claude_code_capabilities",
+        "jarvis_wrapping_direction",
         "pm_dispatch_v1_architecture",
-        "research_jarvis_meta_agent",
-        "use_playwright_for_testing",
-        "competitive_landscape_multi_agent_2026"
+        "competitive_landscape_multi_agent_2026",
+        "nightly_mcp_max_result_size",
+        "owner_claude_code_setup",
+        "team_knowledge_sharing_research_2026"
       ],
-      "first_hit_rank": 5,
+      "first_hit_rank": 4,
       "hits_at_5": [
         "claude_code_capabilities"
       ],
@@ -316,20 +319,26 @@
       ],
       "must_not": [],
       "top_names": [
-        "proactive_goal_tracking",
         "verify_agent_findings_against_memory",
+        "always_recall_before_action",
+        "linked_dedup_fix",
         "nightly_research_sql_fallback",
         "check_diagnostics_diversity",
-        "owner_thinks_architecturally",
+        "proactive_goal_tracking",
+        "pretooluse_action_triggers_idea",
+        "verify_before_assuming_implemented",
         "intel_claude_code_w14_2026_04_04",
-        "research_skill_firecrawl_v2",
-        "pretooluse_action_triggers_idea"
+        "owner_thinks_architecturally"
       ],
-      "first_hit_rank": null,
-      "hits_at_5": [],
-      "hits_at_10": [],
+      "first_hit_rank": 2,
+      "hits_at_5": [
+        "always_recall_before_action"
+      ],
+      "hits_at_10": [
+        "always_recall_before_action"
+      ],
       "must_not_violations_at_5": [],
-      "passed": false
+      "passed": true
     },
     {
       "id": "q12",
@@ -341,13 +350,13 @@
       "must_not": [],
       "top_names": [
         "redrobot_sergazy_feedback_apr8",
-        "sand_direction_top_down",
-        "redrobot_agile_switch",
         "pillar_is_not_one_task",
+        "sand_direction_top_down",
+        "sprint_sizing_feedback",
+        "redrobot_agile_switch",
+        "stage1_enrichment_not_visible",
         "ux_ui_principles_always",
-        "read_code_before_implementing",
         "deficit_first_bulk_planner",
-        "repo_improve_deferred",
         "dont_hallucinate_screenshots",
         "planned_integrations_digital_twin"
       ],
@@ -369,18 +378,18 @@
       ],
       "must_not": [],
       "top_names": [
-        "working_state_redrobot",
-        "autonomous_loop_v1_architecture",
+        "autonomous_loop_last_run",
         "autonomous_fixing_mode",
         "autonomous_action_log",
+        "working_state_redrobot",
         "autonomous_long_sessions",
-        "uw_madison_blade_control",
         "move_curve_caution",
         "nn_optimization_roadmap",
-        "autonomous_loop_hygiene_sweep_v1",
+        "pm_autonomy_redrobot",
+        "uw_madison_blade_control",
         "parallel_simulation_during_execution"
       ],
-      "first_hit_rank": 3,
+      "first_hit_rank": 2,
       "hits_at_5": [
         "autonomous_fixing_mode",
         "autonomous_long_sessions"
@@ -405,8 +414,10 @@
         "pipeline_verification_mandatory",
         "bug_analysis_575_576_577",
         "risk_radar_last_run",
-        "bug_fix_reproduce_first",
-        "_soft_delete_test"
+        "event_dispatch_spam_fix",
+        "_soft_delete_test",
+        "risk_radar_last_run",
+        "risk_radar_latest"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -427,18 +438,18 @@
       ],
       "must_not": [],
       "top_names": [
-        "mcp_stack_2026_03_31",
-        "jarvis_scalable_agent_system",
         "competitive_landscape_multi_agent_2026",
-        "research_jarvis_meta_agent",
+        "team_ai_agent_project_initiated",
+        "mcp_stack_2026_03_31",
         "research_pillar7_multi_agent_frameworks",
+        "jarvis_scalable_agent_system",
         "jarvis_v2_vision",
+        "research_jarvis_meta_agent",
         "managed_agents_wait_and_see",
         "multiagent_pm_architecture_vision",
-        "team_ai_agent_project_initiated",
-        "lessons_agent_delegation"
+        "jarvis_v2_multiagent_direction"
       ],
-      "first_hit_rank": 3,
+      "first_hit_rank": 1,
       "hits_at_5": [
         "competitive_landscape_multi_agent_2026"
       ],
@@ -461,9 +472,8 @@
         "telegram_mcp_integration",
         "lesson_cloud_mcp_limitations",
         "lessons_cloud_infrastructure",
-        "architecture_final",
-        "team_knowledge_sharing_research_2026",
-        "jarvis_v2_infra_flexibility",
+        "nightly_research_setup",
+        "user_university_student",
         "team_agent_complement_not_restrict",
         "windows_claude_installation",
         "supabase_connector_status"
@@ -488,14 +498,15 @@
       ],
       "must_not": [],
       "top_names": [
-        "nightly_research_sql_fallback",
-        "proactive_goal_tracking",
-        "owner_profile",
-        "sculpture_vision_system",
-        "research_skill_firecrawl_v2",
-        "owner_thinks_architecturally",
         "research_threejs_heightmap_visualization",
-        "intel_claude_code_w14_2026_04_04",
+        "sculpture_vision_system",
+        "nightly_research_sql_fallback",
+        "research_skill_firecrawl_v2",
+        "proactive_goal_tracking",
+        "cratergrader_technical_details",
+        "owner_thinks_architecturally",
+        "trajectory_visualization_research",
+        "skill_proliferation_antipattern",
         "redrobot_repo_location"
       ],
       "first_hit_rank": null,
@@ -517,14 +528,14 @@
       "top_names": [
         "jarvis_v2_hybrid_agile",
         "jarvis_v2_vision",
-        "goals_system_first_real_goals",
         "no_deterministic_pipelines",
         "autonomous_action_log",
         "goals_system_v1",
         "redrobot_agile_full_migration",
+        "jarvis_v15_skill_final_plan",
+        "working_state_jarvis",
         "jarvis_vs_team_agent",
-        "multiagent_pm_architecture_vision",
-        "working_state_jarvis"
+        "jarvis_v2_multiagent_direction"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -547,22 +558,20 @@
         "jarvis_stays_goals_not_agile"
       ],
       "top_names": [
-        "jarvis_vs_team_agent",
         "jarvis_wrapping_direction",
-        "pm_autonomy_redrobot",
-        "research_jarvis_meta_agent",
-        "multiagent_pm_architecture_vision",
-        "jarvis_public_release_v020",
+        "jarvis_vs_team_agent",
         "jarvis_v2_vision",
-        "jarvis_v2_hybrid_agile",
-        "no_deterministic_pipelines",
-        "no_jarvis_in_team_docs"
+        "multiagent_pm_architecture_vision",
+        "jarvis_v15_skill_final_plan",
+        "jarvis_public_release_v020",
+        "research_jarvis_meta_agent",
+        "no_jarvis_in_team_docs",
+        "jarvis_v15_skill_restructure",
+        "working_state_jarvis"
       ],
-      "first_hit_rank": 8,
+      "first_hit_rank": null,
       "hits_at_5": [],
-      "hits_at_10": [
-        "jarvis_v2_hybrid_agile"
-      ],
+      "hits_at_10": [],
       "must_not_violations_at_5": [],
       "passed": false
     },
@@ -577,14 +586,14 @@
       "must_not": [],
       "top_names": [
         "local_scheduled_tasks_only",
+        "supabase_custom_mcp_preferred",
         "event_driven_perception_v1",
         "lesson_cloud_mcp_limitations",
-        "autonomous_loop_v1_architecture",
-        "pm_dispatch_v1_architecture",
         "mcp_stack_2026_03_31",
+        "multiagent_pm_architecture_vision",
         "checkpoint_skill_architecture",
+        "pm_dispatch_v1_architecture",
         "claude_code_capabilities",
-        "scheduled_tasks_subscription_not_api",
         "sentry_mcp_pending"
       ],
       "first_hit_rank": 1,
