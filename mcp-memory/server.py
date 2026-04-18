@@ -424,6 +424,15 @@ async def list_tools() -> list[Tool]:
                         "description": "Include 1-hop linked memories in results",
                         "default": False,
                     },
+                    "show_history": {
+                        "type": "boolean",
+                        "description": (
+                            "Include superseded/expired memories. Default false "
+                            "(live memory only). Set true for audit/debug to see "
+                            "what beliefs were once held."
+                        ),
+                        "default": False,
+                    },
                 },
             },
         ),
@@ -1127,13 +1136,14 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     limit = args.get("limit", 10)
 
     include_links = args.get("include_links", False)
+    show_history = args.get("show_history", False)
 
     # Hybrid search: combine semantic + keyword results via RRF + temporal scoring
     if query_text:
         query_embedding = await _embed_query(query_text)
         if query_embedding is not None:
             rows, results = await _hybrid_recall(
-                client, query_embedding, query_text, project, mem_type, limit, include_links
+                client, query_embedding, query_text, project, mem_type, limit, include_links, show_history
             )
             # Track reads (fire-and-forget)
             ids = [r["id"] for r in rows if r.get("id")]
@@ -1153,12 +1163,16 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
 async def _hybrid_recall(
     client, query_embedding: list[float], query_text: str,
-    project, mem_type, limit: int, include_links: bool = False
+    project, mem_type, limit: int, include_links: bool = False,
+    show_history: bool = False,
 ) -> list[TextContent]:
     """Hybrid search: server-side pgvector semantic + pg_trgm keyword, merged via RRF.
 
     Memory 2.0: adds temporal scoring (recency × access frequency) and optional
     1-hop link expansion for graph-aware recall.
+
+    Phase 1: default filters out superseded/expired/valid_to-past memories via
+    the RPC's show_history=false path. Pass show_history=true to bypass.
     """
     try:
         # Fetch double the limit from each source to give RRF good candidates
@@ -1171,6 +1185,7 @@ async def _hybrid_recall(
             "similarity_threshold": SIMILARITY_THRESHOLD,
             "filter_project": project,
             "filter_type": mem_type,
+            "show_history": show_history,
         }).execute()
         semantic_rows = sem_result.data or []
 
@@ -1180,6 +1195,7 @@ async def _hybrid_recall(
             "match_limit": fetch_limit,
             "filter_project": project,
             "filter_type": mem_type,
+            "show_history": show_history,
         }).execute()
         keyword_rows = kw_result.data or []
 
@@ -1373,8 +1389,10 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
         mem_type = row.get("type", "decision")
         half_life = TEMPORAL_HALF_LIVES.get(mem_type, DEFAULT_HALF_LIFE)
 
-        # Parse updated_at
-        updated_str = row.get("updated_at", "")
+        # Parse content_updated_at (Phase 1: decay is driven by content edits,
+        # not any write — touch_memories bumps updated_at on every recall).
+        # Fall back to updated_at for rows backfilled before Phase 0.
+        updated_str = row.get("content_updated_at") or row.get("updated_at", "")
         try:
             updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
             days_since_update = max(0, (now - updated).total_seconds() / 86400)
