@@ -30,6 +30,7 @@ Thumbs.DB
 # Claude Code device-local settings (not shared)
 .claude/settings.local.json
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Device-specific config (auto-generated per machine)
 config/device.json
