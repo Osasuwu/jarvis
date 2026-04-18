@@ -21,8 +21,10 @@ context). `user` + `project` are already loaded at session start by
 scripts/session-context.py and excluded here to avoid duplication.
 
 Touches accessed memories via RPC so the ACT-R access-frequency boost
-applies. Any failure in semantic OR rewriter → falls back to
-keyword-only / raw prompt. Hook never blocks the prompt.
+applies. Semantic failure falls back to keyword-only search (still using
+rewriter-extracted entities when available); rewriter failure falls back
+to raw-prompt keyword search with the default type set. Hook never
+blocks the prompt.
 """
 
 import json
@@ -171,6 +173,13 @@ def _parse_rewriter(text: str) -> dict | None:
     try:
         data = json.loads(text[first : last + 1])
     except json.JSONDecodeError:
+        return None
+
+    # Guard against non-dict JSON slipping through brace-matching (e.g. the
+    # model wraps a list or string in a way that still brackets with {}).
+    # Without this, data.get below raises and the exception propagates out
+    # of the future, breaking the hook's fail-soft contract.
+    if not isinstance(data, dict):
         return None
 
     raw_entities = data.get("entities")

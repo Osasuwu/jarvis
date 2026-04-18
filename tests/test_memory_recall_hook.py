@@ -100,6 +100,18 @@ class TestParseRewriter:
     def test_empty_string_returns_none(self):
         assert mrh._parse_rewriter("") is None
 
+    def test_valid_non_object_json_array_returns_none(self):
+        # Array is valid JSON but the parser is dict-shaped — must not crash.
+        assert mrh._parse_rewriter("[]") is None
+
+    def test_valid_non_object_json_null_returns_none(self):
+        assert mrh._parse_rewriter("null") is None
+
+    def test_object_wrapping_non_dict_payload_returns_none(self):
+        # Pathological: braces matched but content is not a JSON object.
+        # The inner `{42}` is invalid JSON → JSONDecodeError → None.
+        assert mrh._parse_rewriter("prose {42} trailing") is None
+
 
 # ---------------------------------------------------------------------------
 # rrf_merge — same math as server._rrf_merge, must tag only dual-hit rows
