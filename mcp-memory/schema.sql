@@ -499,3 +499,85 @@ language sql volatile as $$
     set last_accessed_at = now()
     where id = any(memory_ids);
 $$;
+
+
+-- =========================================================================
+-- Phase 0 (memory overhaul, Osasuwu/jarvis#185) — lifecycle + provenance
+-- fields. Non-breaking: all columns have defaults; server.py still reads
+-- the old columns until Phase 1.
+--
+-- Rationale: every column below is driven by either (a) a convergent signal
+-- from the research synthesis — production systems (Zep/Graphiti, Mem0,
+-- A-MEM, LangMem) agreeing with theory (AGM, JTMS, ACT-R, CLS), or (b) a
+-- production risk the research flagged that we hadn't noticed (embedding
+-- migration). See docs/design/memory-overhaul.md §2.
+-- =========================================================================
+
+-- Bi-temporal: valid time ≠ transaction time (Snodgrass; Zep/Graphiti)
+-- - content_updated_at: set only when the memory's content/description/tags
+--   actually change. Phase 1 will drive decay off this instead of updated_at
+--   (session-start reads currently bump updated_at and defeat decay).
+-- - valid_from / valid_to: when the fact was true in the world.
+-- - expired_at: when we stopped believing it (transaction time soft-delete).
+alter table memories add column if not exists content_updated_at timestamptz;
+alter table memories add column if not exists valid_from timestamptz;
+alter table memories add column if not exists valid_to timestamptz;
+alter table memories add column if not exists expired_at timestamptz;
+
+-- Direct supersession pointer for chain walks in recall (Phase 1 filter).
+-- memory_links.link_type='supersedes' still holds the graph; this is a
+-- denormalized shortcut that lets recall filter in one join.
+alter table memories add column if not exists superseded_by uuid
+    references memories(id) on delete set null;
+
+-- Entrenchment (Gärdenfors) / confidence. 0.0–1.0.
+-- User-stated = 1.0, inferred from single session = 0.5, guessed from one
+-- tool output = 0.2. Phase 2's classifier writes this; low-confidence memories
+-- get aggressive decay and are hidden from default recall.
+alter table memories add column if not exists confidence real default 0.5
+    check (confidence is null or (confidence >= 0 and confidence <= 1));
+
+-- JTMS justification — we cannot revise what we cannot attribute.
+-- Free-form text so we can record arbitrary provenance (URL, tool name,
+-- session id, actor namespace). Phase 2 classifier + Phase 4 episodic
+-- layer will populate consistently.
+alter table memories add column if not exists source_provenance text;
+
+-- Profiles (overwrite-single-row) vs collections (append) distinction,
+-- from LangMem. Eliminates supersession bugs by construction for rows where
+-- the owner wants single-instance semantics (owner_preferences, device_config).
+alter table memories add column if not exists single_instance boolean
+    not null default false;
+
+-- Embedding model migration safety. The day we upgrade from voyage-3-lite,
+-- every cosine similarity in the DB becomes incomparable across models. We
+-- need dual-column support during migration; these columns let us filter.
+alter table memories add column if not exists embedding_model text
+    default 'voyage-3-lite';
+alter table memories add column if not exists embedding_version text
+    default 'v1';
+
+-- Indexes that Phase 1+ will rely on:
+create index if not exists idx_memories_superseded_by
+    on memories(superseded_by) where superseded_by is not null;
+create index if not exists idx_memories_lifecycle_live
+    on memories(type, project) where expired_at is null and superseded_by is null;
+create index if not exists idx_memories_provenance
+    on memories(source_provenance) where source_provenance is not null;
+
+-- One-time backfill: copy updated_at -> content_updated_at for existing rows.
+-- After this, Phase 1 will update the trigger to only bump content_updated_at
+-- on actual content changes.
+update memories
+set content_updated_at = updated_at
+where content_updated_at is null;
+
+-- Denormalize existing memory_links.link_type='supersedes' edges into the
+-- new superseded_by column. Convention: link.source supersedes link.target,
+-- so the older (target) memory's superseded_by points to the newer (source).
+update memories m
+set superseded_by = l.source_id
+from memory_links l
+where l.link_type = 'supersedes'
+  and l.target_id = m.id
+  and m.superseded_by is null;
