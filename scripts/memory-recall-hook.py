@@ -83,6 +83,19 @@ RRF_K = 60                   # matches _rrf_merge in mcp-memory/server.py
 # loses to an unboosted dual-signal hit (0.0167*1.5 < 0.0333).
 TYPE_BOOST_MULTIPLIER = 1.5
 
+# 1-hop BFS expansion on memory_links — fills coverage gaps where the
+# expected memory is linked from a retrieved row but not itself retrieved
+# by semantic+keyword fan-out. Seeds are the top-K RRF rows; linked
+# neighbors get a decayed RRF-like score so a good link at rank 0 can
+# still outrank a weak direct hit at rank 20+.
+#   LINK_EXPAND_TOP_K = seeds passed to get_linked_memories
+#   LINK_DECAY       = multiplier on the parent's 1/(k+rank) contribution
+#                      (0.5 → linked row worth half a direct hit at same rank)
+#   LINK_SCORE_FIELD = debug marker + display signal on linked-only rows
+LINK_EXPAND_TOP_K = 5
+LINK_DECAY = 0.5
+LINK_SCORE_FIELD = "_link_score"
+
 # Projects Jarvis tracks — cwd basename must match one of these to scope recall.
 # Anything else → no project filter (load from global + all projects).
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
@@ -272,14 +285,19 @@ def format_memory(m: dict) -> str:
     # _sort_score is set only on single-signal rows that were type-boosted
     # — without it, the displayed sim/rank would contradict the actual
     # ranking (the boost changed the sort key, not the native score).
+    # _link_score is set on rows pulled in by 1-hop BFS that weren't in
+    # the direct RRF result — surfaces link provenance to the reader.
     rrf = m.get("_rrf_score")
     sort_score = m.get("_sort_score")
+    link_score = m.get(LINK_SCORE_FIELD)
     sim = m.get("similarity")
     rank = m.get("rank")
     if rrf is not None:
         score_str = f" (rrf {rrf:.3f})"
     elif sort_score is not None:
         score_str = f" (boost {sort_score:.3f})"
+    elif link_score is not None:
+        score_str = f" (link {link_score:.3f})"
     elif sim is not None:
         score_str = f" (sim {sim:.2f})"
     elif rank is not None:
@@ -321,6 +339,11 @@ def rrf_merge(
     field untouched, *except* when the boost fires on a single-signal row:
     we set `_sort_score` on it so `format_memory` can show the true sort
     key. Otherwise the displayed sim/rank would contradict the ranking.
+
+    Every row also gets `_final_score` — the unified ranking key after any
+    boost. Downstream link expansion (`merge_with_links`) uses this to fold
+    linked neighbors into the same sort space without having to recompute
+    RRF positions.
     """
     scores: dict[str, float] = {}
     hits: dict[str, int] = {}
@@ -351,6 +374,131 @@ def rrf_merge(
         row = by_id[rid]
         if hits[rid] >= 2:
             row["_rrf_score"] = scores[rid]
+        row["_final_score"] = scores[rid]
+        out.append(row)
+    return out
+
+
+def _score_linked_rows(
+    top_rows: list[dict],
+    linked_rows: list[dict],
+    *,
+    top_k: int = LINK_EXPAND_TOP_K,
+    decay: float = LINK_DECAY,
+    k: int = RRF_K,
+) -> list[dict]:
+    """Annotate linked_rows with a synthetic RRF-like score derived from
+    their parent's rank in top_rows.
+
+    Pure function — takes already-fetched link rows (from
+    `get_linked_memories`, which carries `linked_from` pointing at the
+    seed id) and returns the subset whose parent is in the top-K seed
+    window, deduped against the seeds and against each other.
+
+    Score formula: `(1 / (k + parent_rank)) * decay * link_strength`.
+    Mirrors the RRF math in `rrf_merge` so link scores live in the same
+    space, then `decay` attenuates them (0.5 → linked hit worth half a
+    direct hit at the same rank). `link_strength` (0..1, from DB) scales
+    by edge confidence.
+    """
+    if not top_rows or not linked_rows:
+        return []
+    seed_rank: dict[str, int] = {}
+    for i, row in enumerate(top_rows[:top_k]):
+        rid = row.get("id")
+        if rid is not None and rid not in seed_rank:
+            seed_rank[rid] = i
+    if not seed_rank:
+        return []
+    seen: set[str] = set(seed_rank.keys())
+    out: list[dict] = []
+    for row in linked_rows:
+        rid = row.get("id")
+        if not rid or rid in seen:
+            continue
+        parent = row.get("linked_from")
+        if parent not in seed_rank:
+            continue
+        seen.add(rid)
+        strength = row.get("link_strength")
+        try:
+            strength_f = float(strength) if strength is not None else 1.0
+        except (TypeError, ValueError):
+            strength_f = 1.0
+        parent_rank = seed_rank[parent]
+        row[LINK_SCORE_FIELD] = (1.0 / (k + parent_rank)) * decay * strength_f
+        out.append(row)
+    return out
+
+
+def expand_links(
+    client,
+    top_rows: list[dict],
+    *,
+    link_types: list[str] | None = None,
+    top_k: int = LINK_EXPAND_TOP_K,
+    decay: float = LINK_DECAY,
+) -> list[dict]:
+    """Fetch 1-hop linked neighbors of the top-K rows via `get_linked_memories`.
+
+    Returns annotated linked rows (see `_score_linked_rows`). On RPC failure
+    returns []. Hook's fail-soft contract — links are a coverage bonus, not
+    a hard requirement.
+    """
+    seed_ids = [r["id"] for r in top_rows[:top_k] if r.get("id")]
+    if not seed_ids:
+        return []
+    try:
+        result = client.rpc(
+            "get_linked_memories",
+            {
+                "memory_ids": seed_ids,
+                "link_types": link_types,
+                "show_history": False,
+            },
+        ).execute()
+        linked_rows = result.data or []
+    except Exception:
+        return []
+    return _score_linked_rows(top_rows, linked_rows, top_k=top_k, decay=decay)
+
+
+def merge_with_links(
+    ranked_rows: list[dict], linked_rows: list[dict]
+) -> list[dict]:
+    """Fold linked rows into the already-ranked hybrid result.
+
+    Each `ranked_rows` entry carries `_final_score` (set by `rrf_merge`);
+    each `linked_rows` entry carries `_link_score` (set by
+    `_score_linked_rows`). Rows that appear in both keep the max. Sort
+    key after merge is the resulting score, written back to
+    `_final_score` so downstream budget trim + display stay consistent.
+    """
+    if not linked_rows:
+        return ranked_rows
+    by_id: dict[str, dict] = {}
+    scores: dict[str, float] = {}
+    for row in ranked_rows:
+        rid = row.get("id")
+        if not rid:
+            continue
+        by_id[rid] = row
+        scores[rid] = float(row.get("_final_score") or 0.0)
+    for row in linked_rows:
+        rid = row.get("id")
+        if not rid:
+            continue
+        link_s = float(row.get(LINK_SCORE_FIELD) or 0.0)
+        if rid in scores:
+            scores[rid] = max(scores[rid], link_s)
+        else:
+            by_id[rid] = row
+            scores[rid] = link_s
+    final_ids = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
+    out: list[dict] = []
+    for rid in final_ids:
+        row = by_id[rid]
+        row["_final_score"] = scores[rid]
         out.append(row)
     return out
 
@@ -447,6 +595,17 @@ def main():
 
     rows = rrf_merge(semantic_rows, keyword_rows, boost_types=boost_types)
 
+    # 1-hop BFS: pull linked neighbors of the top-K RRF rows and fold them
+    # into the ranking. Covers the "expected memory is one edge away from
+    # a retrieved row" failure mode (q15/q19 in the eval set). Linked rows
+    # are type-scoped like direct rows. Fail-soft: RPC or link_score error
+    # yields zero linked rows and the ranking is unchanged.
+    linked_rows_raw = expand_links(client, rows)
+    linked_rows = [r for r in linked_rows_raw if r.get("type") in ALLOWED_TYPES]
+    linked_count = len(linked_rows)
+    if linked_rows:
+        rows = merge_with_links(rows, linked_rows)
+
     # Accumulate under char budget
     scope = f" (project: {project}+global)" if project else " (all projects)"
     signal = (
@@ -456,6 +615,8 @@ def main():
         if semantic_rows
         else "keyword-only"
     )
+    if linked_count:
+        signal += f" + {linked_count} linked"
     rewriter_note = ""
     if rewritten:
         bits = []
