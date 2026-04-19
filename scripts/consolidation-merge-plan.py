@@ -700,7 +700,12 @@ def apply_plan(
 
 
 def queue_for_review(client, cluster: dict, plan: dict, *, today: str, model: str) -> dict:
-    """Route a low-confidence MERGE/SUPERSEDE plan to the review queue."""
+    """Route a low-confidence MERGE/SUPERSEDE plan to the review queue.
+
+    Raises RuntimeError if the queue insert returns no id — otherwise the
+    cluster would be silently dropped (and re-planned next week, burning
+    tokens) while the caller thinks it was queued.
+    """
     db_decision = DB_DECISION[plan["decision"]]
     source_provenance = f"skill:consolidation:{plan['decision'].lower()}:{today}"
     payload = build_payload(cluster, plan, source_provenance)
@@ -715,6 +720,11 @@ def queue_for_review(client, cluster: dict, plan: dict, *, today: str, model: st
         payload=payload,
         classifier_model=model,
     )
+    if not queue_id:
+        raise RuntimeError(
+            f"Queue insert returned no id for cluster {cluster['cluster_id']} "
+            f"({db_decision}) — refusing to report as queued"
+        )
     return {
         "cluster_id": cluster["cluster_id"],
         "decision": db_decision,
@@ -724,7 +734,12 @@ def queue_for_review(client, cluster: dict, plan: dict, *, today: str, model: st
 
 
 def note_keep_distinct(client, cluster: dict, plan: dict, *, today: str, model: str) -> dict:
-    """Record KEEP_DISTINCT so the same cluster isn't re-planned next week."""
+    """Record KEEP_DISTINCT so the same cluster isn't re-planned next week.
+
+    Raises RuntimeError if the queue insert returns no id — otherwise the
+    same cluster will be replanned on the next run (wasting Haiku tokens)
+    with no indication the audit row failed.
+    """
     source_provenance = f"skill:consolidation:keep_distinct:{today}"
     payload = build_payload(cluster, plan, source_provenance)
     queue_id = _queue_insert(
@@ -738,6 +753,11 @@ def note_keep_distinct(client, cluster: dict, plan: dict, *, today: str, model: 
         classifier_model=model,
         applied_at=datetime.now(timezone.utc).isoformat(),
     )
+    if not queue_id:
+        raise RuntimeError(
+            f"KEEP_DISTINCT queue insert returned no id for cluster "
+            f"{cluster['cluster_id']} — refusing to report as noted"
+        )
     return {
         "cluster_id": cluster["cluster_id"],
         "decision": "KEEP_DISTINCT",
