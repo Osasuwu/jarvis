@@ -144,8 +144,104 @@ def _rrf_merge(
     for rid in ranked[:limit]:
         row = by_id[rid]
         row["_rrf_score"] = scores[rid]
+        # _final_score is the unified sort key carried through any
+        # downstream merge step (e.g. link expansion in --with-links).
+        row["_final_score"] = scores[rid]
         result.append(row)
     return result
+
+
+# 1-hop BFS link expansion. Mirrors memory-recall-hook.py constants/logic
+# so eval predicts hook behavior. When both are enabled (--with-rewriter
+# --with-links) the combined mode measures the full Phase 3 pipeline.
+LINK_EXPAND_TOP_K = 5
+LINK_DECAY = 0.5
+LINK_SCORE_FIELD = "_link_score"
+
+
+def _score_linked_rows(
+    top_rows: list[dict],
+    linked_rows: list[dict],
+    *,
+    top_k: int = LINK_EXPAND_TOP_K,
+    decay: float = LINK_DECAY,
+    k: int = RRF_K,
+) -> list[dict]:
+    if not top_rows or not linked_rows:
+        return []
+    seed_rank: dict[str, int] = {}
+    for i, row in enumerate(top_rows[:top_k]):
+        rid = row.get("id")
+        if rid is not None and rid not in seed_rank:
+            seed_rank[rid] = i
+    if not seed_rank:
+        return []
+    seen: set[str] = set(seed_rank.keys())
+    out: list[dict] = []
+    for row in linked_rows:
+        rid = row.get("id")
+        if not rid or rid in seen:
+            continue
+        parent = row.get("linked_from")
+        if parent not in seed_rank:
+            continue
+        seen.add(rid)
+        strength = row.get("link_strength")
+        try:
+            strength_f = float(strength) if strength is not None else 1.0
+        except (TypeError, ValueError):
+            strength_f = 1.0
+        parent_rank = seed_rank[parent]
+        row[LINK_SCORE_FIELD] = (1.0 / (k + parent_rank)) * decay * strength_f
+        out.append(row)
+    return out
+
+
+def _expand_links(client, top_rows: list[dict]) -> list[dict]:
+    seed_ids = [r["id"] for r in top_rows[:LINK_EXPAND_TOP_K] if r.get("id")]
+    if not seed_ids:
+        return []
+    try:
+        result = client.rpc(
+            "get_linked_memories",
+            {"memory_ids": seed_ids, "link_types": None, "show_history": False},
+        ).execute()
+        linked_rows = result.data or []
+    except Exception:
+        return []
+    return _score_linked_rows(top_rows, linked_rows)
+
+
+def _merge_with_links(
+    ranked_rows: list[dict], linked_rows: list[dict]
+) -> list[dict]:
+    if not linked_rows:
+        return ranked_rows
+    by_id: dict[str, dict] = {}
+    scores: dict[str, float] = {}
+    for row in ranked_rows:
+        rid = row.get("id")
+        if not rid:
+            continue
+        by_id[rid] = row
+        scores[rid] = float(row.get("_final_score") or 0.0)
+    for row in linked_rows:
+        rid = row.get("id")
+        if not rid:
+            continue
+        link_s = float(row.get(LINK_SCORE_FIELD) or 0.0)
+        if rid in scores:
+            scores[rid] = max(scores[rid], link_s)
+        else:
+            by_id[rid] = row
+            scores[rid] = link_s
+    final_ids = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
+    out: list[dict] = []
+    for rid in final_ids:
+        row = by_id[rid]
+        row["_final_score"] = scores[rid]
+        out.append(row)
+    return out
 
 
 def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
@@ -200,12 +296,13 @@ class QueryResult:
     rewriter_entities: list[str] = field(default_factory=list)
     rewriter_types: list[str] = field(default_factory=list)
     rewriter_fired: bool = False         # True when rewriter returned a non-null result
+    links_added: int = 0                 # new rows added via 1-hop BFS
 
 
 @dataclass
 class EvalReport:
     timestamp: str
-    mode: str                            # "server_only" | "with_rewriter"
+    mode: str                            # e.g. "server_only", "with_rewriter+links"
     corpus_size: int
     total_queries: int
     recall_at_5: float
@@ -215,7 +312,17 @@ class EvalReport:
     passed: int
     failed: int
     rewriter_fired_count: int = 0        # queries where rewriter produced output
+    links_added_total: int = 0           # total new rows pulled in via link expansion
     results: list[dict] = field(default_factory=list)
+
+
+def _build_mode_string(with_rewriter: bool, with_links: bool) -> str:
+    parts: list[str] = []
+    if with_rewriter:
+        parts.append("with_rewriter")
+    if with_links:
+        parts.append("links")
+    return "+".join(parts) if parts else "server_only"
 
 
 async def run_query(
@@ -223,6 +330,7 @@ async def run_query(
     q: dict,
     rewriter: Callable[[str], dict | None] | None = None,
     boost_multiplier: float = 1.0,
+    with_links: bool = False,
 ) -> QueryResult:
     embedding = await _embed_query(q["query"])
 
@@ -265,13 +373,31 @@ async def run_query(
     # type-narrowing regression fix). No default scope filter — eval
     # doesn't model the hook's exclusion of user/project memories.
     boost_types = set(rw_types) if rw_types else None
+    # Pull a wider window (25) when link expansion is on so the BFS can
+    # reach the right seeds. Without this, top-5 seeds miss the parents
+    # that edge toward the expected memory.
+    merge_limit = 25 if with_links else 10
     merged = _rrf_merge(
         sem_rows,
         kw_rows,
-        limit=10,
+        limit=merge_limit,
         boost_types=boost_types,
         boost_multiplier=boost_multiplier,
     )
+
+    links_added = 0
+    if with_links:
+        linked = _expand_links(client, merged)
+        if linked:
+            before_ids = {r.get("id") for r in merged}
+            merged = _merge_with_links(merged, linked)
+            links_added = sum(
+                1 for r in merged if r.get("id") and r.get("id") not in before_ids
+            )
+        # Trim back to top-10 for metrics; any linked row that made it
+        # into top-10 has earned its place via the unified _final_score.
+        merged = merged[:10]
+
     _apply_temporal_scoring(merged)
 
     top_names = [r.get("name", "?") for r in merged]
@@ -307,6 +433,7 @@ async def run_query(
         rewriter_entities=rw_entities,
         rewriter_types=rw_types,
         rewriter_fired=rw_fired,
+        links_added=links_added,
     )
 
 
@@ -315,11 +442,16 @@ async def run_all(
     client,
     rewriter: Callable[[str], dict | None] | None = None,
     boost_multiplier: float = 1.0,
+    with_links: bool = False,
 ) -> EvalReport:
     results = []
     for q in queries:
         r = await run_query(
-            client, q, rewriter=rewriter, boost_multiplier=boost_multiplier
+            client,
+            q,
+            rewriter=rewriter,
+            boost_multiplier=boost_multiplier,
+            with_links=with_links,
         )
         results.append(r)
 
@@ -330,6 +462,7 @@ async def run_all(
     mn_viol = sum(1 for r in results if r.must_not_violations_at_5)
     passed = sum(1 for r in results if r.passed)
     rw_fired = sum(1 for r in results if r.rewriter_fired)
+    links_added_total = sum(r.links_added for r in results)
 
     # corpus size for context
     cs = client.table("memories").select("id", count="exact").is_("deleted_at", "null").limit(1).execute()
@@ -337,7 +470,7 @@ async def run_all(
 
     return EvalReport(
         timestamp=datetime.now(timezone.utc).isoformat(),
-        mode="with_rewriter" if rewriter is not None else "server_only",
+        mode=_build_mode_string(rewriter is not None, with_links),
         corpus_size=corpus_size,
         total_queries=total,
         recall_at_5=r5,
@@ -347,6 +480,7 @@ async def run_all(
         passed=passed,
         failed=total - passed,
         rewriter_fired_count=rw_fired,
+        links_added_total=links_added_total,
         results=[asdict(r) for r in results],
     )
 
@@ -394,8 +528,10 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
     print(f"MRR                : {report.mrr:.3f}")
     print(f"must_not violations: {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)")
     print(f"passed / failed    : {report.passed} / {report.failed}")
-    if report.mode == "with_rewriter":
+    if "with_rewriter" in report.mode:
         print(f"rewriter fired     : {report.rewriter_fired_count}/{report.total_queries}")
+    if "links" in report.mode:
+        print(f"links added (sum)  : {report.links_added_total}  (rows added via 1-hop BFS)")
     print()
 
 
@@ -456,6 +592,12 @@ def main() -> int:
                          "returned types narrow both RPC result sets Python-side. "
                          "Requires ANTHROPIC_API_KEY; falls back per-query to raw "
                          "prompt when the rewriter returns None.")
+    ap.add_argument("--with-links", action="store_true",
+                    help="Expand top-5 RRF rows with a 1-hop BFS on memory_links — "
+                         "closes coverage gaps where the expected memory is one "
+                         "edge away from a retrieved row. Uses get_linked_memories "
+                         "RPC with a decayed RRF score (decay=0.5); fails soft if "
+                         "the RPC is unavailable.")
     args = ap.parse_args()
 
     _load_env()
@@ -503,7 +645,8 @@ def main() -> int:
                   file=sys.stderr)
 
     report = asyncio.run(
-        run_all(queries, client, rewriter=rewriter, boost_multiplier=boost_multiplier)
+        run_all(queries, client, rewriter=rewriter,
+                boost_multiplier=boost_multiplier, with_links=args.with_links)
     )
     print_report(report, quiet=args.quiet)
 

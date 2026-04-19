@@ -152,6 +152,17 @@ class TestRrfMerge:
         out = mrh.rrf_merge(semantic, keyword)
         assert [r["id"] for r in out] == ["top", "mid", "bot"]
 
+    def test_final_score_set_on_every_row(self):
+        # _final_score is the unified sort key consumed by link merge.
+        # Must be present on single-hits and dual-hits alike — otherwise
+        # merge_with_links would treat unscored rows as 0 and reorder wildly.
+        semantic = [{"id": "a"}, {"id": "b"}]
+        keyword = [{"id": "b"}, {"id": "c"}]
+        out = mrh.rrf_merge(semantic, keyword)
+        for row in out:
+            assert "_final_score" in row
+            assert row["_final_score"] > 0
+
 
 # ---------------------------------------------------------------------------
 # rrf_merge — type boost behavior (Phase 3 soft-boost replaces hard filter)
@@ -303,3 +314,228 @@ class TestFormatMemory:
         out = mrh.format_memory(m)
         assert "(decision" in out  # type still rendered
         assert "rrf" not in out and "sim" not in out and "rank" not in out
+
+    def test_link_score_displays_after_rrf_and_boost(self):
+        # Linked-only rows (BFS hits with no direct retrieval signal) surface
+        # their synthetic `_link_score` so owners can spot when context came
+        # from a graph hop rather than the fuser.
+        m = {"name": "n", "type": "decision", "_link_score": 0.00833, "similarity": 0.4}
+        out = mrh.format_memory(m)
+        assert "link 0.008" in out
+        assert "sim" not in out
+
+    def test_rrf_score_wins_over_link_score(self):
+        # A dual-hit that also has a link edge keeps the stronger signal.
+        m = {"name": "n", "type": "decision", "_rrf_score": 0.05, "_link_score": 0.008}
+        out = mrh.format_memory(m)
+        assert "rrf 0.050" in out
+        assert "link" not in out
+
+
+# ---------------------------------------------------------------------------
+# _score_linked_rows — pure scorer for 1-hop BFS neighbors
+# ---------------------------------------------------------------------------
+
+
+class TestScoreLinkedRows:
+    def test_empty_inputs(self):
+        assert mrh._score_linked_rows([], []) == []
+        assert mrh._score_linked_rows([{"id": "a"}], []) == []
+        assert mrh._score_linked_rows([], [{"id": "b", "linked_from": "a"}]) == []
+
+    def test_scoring_formula(self):
+        # parent at rank 0, strength 1.0, default decay 0.5 →
+        # 1 / (60 + 0) * 0.5 * 1.0 = 0.008333...
+        seeds = [{"id": "parent"}]
+        linked = [{"id": "child", "linked_from": "parent", "link_strength": 1.0}]
+        out = mrh._score_linked_rows(seeds, linked)
+        assert len(out) == 1
+        expected = (1.0 / (mrh.RRF_K + 0)) * mrh.LINK_DECAY * 1.0
+        assert abs(out[0][mrh.LINK_SCORE_FIELD] - expected) < 1e-9
+
+    def test_rank_affects_score(self):
+        # Parent at rank 2 scores less than parent at rank 0.
+        seeds = [{"id": "p0"}, {"id": "p1"}, {"id": "p2"}]
+        linked = [
+            {"id": "c0", "linked_from": "p0", "link_strength": 1.0},
+            {"id": "c2", "linked_from": "p2", "link_strength": 1.0},
+        ]
+        out = mrh._score_linked_rows(seeds, linked)
+        by_id = {r["id"]: r[mrh.LINK_SCORE_FIELD] for r in out}
+        assert by_id["c0"] > by_id["c2"]
+
+    def test_strength_affects_score(self):
+        seeds = [{"id": "parent"}]
+        linked = [
+            {"id": "weak", "linked_from": "parent", "link_strength": 0.25},
+            {"id": "strong", "linked_from": "parent", "link_strength": 1.0},
+        ]
+        out = mrh._score_linked_rows(seeds, linked)
+        by_id = {r["id"]: r[mrh.LINK_SCORE_FIELD] for r in out}
+        assert by_id["strong"] == 4 * by_id["weak"]
+
+    def test_missing_strength_defaults_to_one(self):
+        # DB may return NULL link_strength; treat as full strength.
+        seeds = [{"id": "parent"}]
+        linked = [{"id": "child", "linked_from": "parent"}]  # no link_strength
+        out = mrh._score_linked_rows(seeds, linked)
+        expected = (1.0 / mrh.RRF_K) * mrh.LINK_DECAY * 1.0
+        assert abs(out[0][mrh.LINK_SCORE_FIELD] - expected) < 1e-9
+
+    def test_invalid_strength_defaults_to_one(self):
+        # Malformed strength (string, NaN-ish) must not raise — fall back to 1.
+        seeds = [{"id": "parent"}]
+        linked = [{"id": "child", "linked_from": "parent", "link_strength": "bad"}]
+        out = mrh._score_linked_rows(seeds, linked)
+        assert len(out) == 1
+        assert mrh.LINK_SCORE_FIELD in out[0]
+
+    def test_deduplicates_against_seeds(self):
+        # A linked row whose id coincides with a seed must be skipped.
+        seeds = [{"id": "a"}, {"id": "b"}]
+        linked = [{"id": "a", "linked_from": "b", "link_strength": 1.0}]
+        out = mrh._score_linked_rows(seeds, linked)
+        assert out == []
+
+    def test_skips_linked_from_outside_seeds(self):
+        # Only top-K seeds are candidates for expansion. A row pointing at
+        # a non-seed parent must be dropped (RPC might return extras).
+        seeds = [{"id": "a"}]
+        linked = [{"id": "x", "linked_from": "unseen", "link_strength": 1.0}]
+        out = mrh._score_linked_rows(seeds, linked)
+        assert out == []
+
+    def test_top_k_caps_seed_window(self):
+        # With top_k=1, only the first seed counts; child of p1 is dropped.
+        seeds = [{"id": "p0"}, {"id": "p1"}]
+        linked = [
+            {"id": "c1", "linked_from": "p1", "link_strength": 1.0},
+            {"id": "c0", "linked_from": "p0", "link_strength": 1.0},
+        ]
+        out = mrh._score_linked_rows(seeds, linked, top_k=1)
+        assert [r["id"] for r in out] == ["c0"]
+
+    def test_dedupes_duplicate_linked_ids(self):
+        # Same linked_id via multiple edges: keep the first, skip the rest.
+        seeds = [{"id": "p0"}, {"id": "p1"}]
+        linked = [
+            {"id": "shared", "linked_from": "p0", "link_strength": 1.0},
+            {"id": "shared", "linked_from": "p1", "link_strength": 1.0},
+        ]
+        out = mrh._score_linked_rows(seeds, linked)
+        assert len(out) == 1
+
+
+# ---------------------------------------------------------------------------
+# merge_with_links — fold BFS hits into the RRF-ranked list
+# ---------------------------------------------------------------------------
+
+
+class TestMergeWithLinks:
+    def test_no_linked_unchanged(self):
+        ranked = [{"id": "a", "_final_score": 0.05}, {"id": "b", "_final_score": 0.03}]
+        out = mrh.merge_with_links(ranked, [])
+        assert [r["id"] for r in out] == ["a", "b"]
+
+    def test_new_linked_row_added(self):
+        ranked = [{"id": "a", "_final_score": 0.05}]
+        linked = [{"id": "new", mrh.LINK_SCORE_FIELD: 0.01}]
+        out = mrh.merge_with_links(ranked, linked)
+        ids = [r["id"] for r in out]
+        assert "new" in ids
+        assert out[0]["id"] == "a"  # higher score stays on top
+
+    def test_duplicate_keeps_max_score(self):
+        # Row in both lists: final score = max(direct, link). The direct RRF
+        # score dominates here; _final_score should reflect that, not the
+        # weaker link score.
+        ranked = [{"id": "x", "_final_score": 0.05}]
+        linked = [{"id": "x", mrh.LINK_SCORE_FIELD: 0.01}]
+        out = mrh.merge_with_links(ranked, linked)
+        assert len(out) == 1
+        assert abs(out[0]["_final_score"] - 0.05) < 1e-9
+
+    def test_reordering_by_final_score(self):
+        # A strongly-linked row can outrank a weak direct hit, and the new
+        # ordering is written back to _final_score for downstream consumers.
+        ranked = [{"id": "weak", "_final_score": 0.005}]
+        linked = [{"id": "strong_link", mrh.LINK_SCORE_FIELD: 0.02}]
+        out = mrh.merge_with_links(ranked, linked)
+        assert [r["id"] for r in out] == ["strong_link", "weak"]
+        assert abs(out[0]["_final_score"] - 0.02) < 1e-9
+
+    def test_rows_without_id_skipped(self):
+        # Defensive: malformed rows (no id) can't be scored/sorted.
+        ranked = [{"_final_score": 0.5}]  # no id
+        linked = [{"id": "valid", mrh.LINK_SCORE_FIELD: 0.01}]
+        out = mrh.merge_with_links(ranked, linked)
+        assert [r["id"] for r in out] == ["valid"]
+
+    def test_missing_final_score_treated_as_zero(self):
+        # Edge: if upstream somehow fails to set _final_score, don't crash —
+        # treat as zero so link edges can still promote the row.
+        ranked = [{"id": "unscored"}]
+        linked = [{"id": "linked", mrh.LINK_SCORE_FIELD: 0.01}]
+        out = mrh.merge_with_links(ranked, linked)
+        assert out[0]["id"] == "linked"
+
+
+# ---------------------------------------------------------------------------
+# expand_links — fail-soft RPC wrapper
+# ---------------------------------------------------------------------------
+
+
+class _StubClient:
+    """Minimal supabase-client stand-in for expand_links tests."""
+    def __init__(self, *, data=None, raise_exc=None):
+        self._data = data or []
+        self._raise = raise_exc
+        self.rpc_calls: list[tuple[str, dict]] = []
+
+    def rpc(self, name, params):
+        self.rpc_calls.append((name, params))
+        return self
+
+    def execute(self):
+        if self._raise:
+            raise self._raise
+        return types.SimpleNamespace(data=self._data)
+
+
+class TestExpandLinks:
+    def test_empty_top_rows_no_rpc(self):
+        client = _StubClient(data=[{"id": "x"}])
+        out = mrh.expand_links(client, [])
+        assert out == []
+        assert client.rpc_calls == []
+
+    def test_all_top_rows_missing_id_no_rpc(self):
+        # Defensive: if all seeds lack ids, don't bother hitting the RPC.
+        client = _StubClient(data=[{"id": "x"}])
+        out = mrh.expand_links(client, [{"name": "no-id"}])
+        assert out == []
+        assert client.rpc_calls == []
+
+    def test_rpc_exception_returns_empty(self):
+        # Fail-soft contract: RPC failure must not raise or pollute results.
+        client = _StubClient(raise_exc=RuntimeError("connection lost"))
+        out = mrh.expand_links(client, [{"id": "seed"}])
+        assert out == []
+
+    def test_successful_rpc_returns_scored_rows(self):
+        client = _StubClient(data=[
+            {"id": "child", "linked_from": "seed", "link_strength": 1.0},
+        ])
+        out = mrh.expand_links(client, [{"id": "seed"}])
+        assert len(out) == 1
+        assert mrh.LINK_SCORE_FIELD in out[0]
+
+    def test_rpc_called_with_top_k_seed_ids(self):
+        # Seed slice must respect LINK_EXPAND_TOP_K — we don't want to expand
+        # a 25-row RRF list into a graph fetch.
+        client = _StubClient(data=[])
+        seeds = [{"id": f"s{i}"} for i in range(10)]
+        mrh.expand_links(client, seeds)
+        assert len(client.rpc_calls) == 1
+        call_params = client.rpc_calls[0][1]
+        assert call_params["memory_ids"] == [f"s{i}" for i in range(mrh.LINK_EXPAND_TOP_K)]
