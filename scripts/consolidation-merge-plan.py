@@ -168,8 +168,19 @@ def is_live(row: dict) -> bool:
     return True
 
 
+def _truncate(text: str, limit: int = MAX_MEMBER_CONTENT_CHARS) -> str:
+    if not text:
+        return ""
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
 def group_clusters(rpc_rows: list[dict], details_by_id: dict[str, dict]) -> list[dict]:
-    """Re-group RPC rows by cluster_id, drop dead memories, dedupe by id."""
+    """Re-group RPC rows by cluster_id, drop dead memories, dedupe by id.
+
+    Content is truncated at `MAX_MEMBER_CONTENT_CHARS` — it's what Haiku will
+    see and what ends up in `--json` output; keeping full text on every
+    cluster member bloats output for large memories with no benefit.
+    """
     by_cluster: dict[int, dict[str, dict]] = defaultdict(dict)
     for r in rpc_rows:
         mid = r["memory_id"]
@@ -188,7 +199,7 @@ def group_clusters(rpc_rows: list[dict], details_by_id: dict[str, dict]) -> list
             "updated_at": r["updated_at"],
             "description": details.get("description") or "",
             "tags": details.get("tags") or [],
-            "content": details.get("content") or "",
+            "content": _truncate(details.get("content") or ""),
         }
 
     clusters: list[dict] = []
@@ -204,12 +215,6 @@ def group_clusters(rpc_rows: list[dict], details_by_id: dict[str, dict]) -> list
         })
     clusters.sort(key=lambda c: (c["size"], c["max_similarity"]), reverse=True)
     return clusters
-
-
-def _truncate(text: str, limit: int = MAX_MEMBER_CONTENT_CHARS) -> str:
-    if not text:
-        return ""
-    return text if len(text) <= limit else text[:limit] + "…"
 
 
 def _build_user_message(cluster: dict) -> str:
@@ -275,20 +280,33 @@ def _parse_response(text: str, member_ids: list[str]) -> dict | None:
         supersede_ids_raw = []
     supersede_ids = [s for s in supersede_ids_raw if isinstance(s, str) and s in member_set]
 
-    # Cross-field consistency checks — if the model contradicts its own
-    # decision, downgrade to KEEP_DISTINCT with low confidence so the
-    # owner can look at it rather than silently trusting garbage.
-    if decision == "SUPERSEDE":
-        if canonical_id is None or canonical_id in supersede_ids or not supersede_ids:
-            return _downgrade(data, "SUPERSEDE missing canonical_id or empty supersede_ids")
-    elif decision == "MERGE":
+    # Cross-field consistency checks — downgrade to KEEP_DISTINCT with low
+    # confidence if Haiku contradicts its own decision, rather than silently
+    # trusting garbage. These checks run BEFORE invariant normalization so
+    # the downgrade reason reflects what Haiku actually said.
+    if decision == "SUPERSEDE" and canonical_id is None:
+        return _downgrade(data, "SUPERSEDE without canonical_id")
+    if decision == "MERGE":
         name = data.get("canonical_name")
         content = data.get("canonical_content")
         if not (isinstance(name, str) and name.strip()) or not (isinstance(content, str) and content.strip()):
             return _downgrade(data, "MERGE missing canonical_name or canonical_content")
-        # MERGE should mark all members for supersession; normalize if model forgot
-        if set(supersede_ids) != member_set:
-            supersede_ids = list(member_set)
+
+    # Enforce schema invariants — the model's output is advisory; downstream
+    # consumers (plan renderer, upcoming 5.1b-β --apply) rely on these
+    # invariants rather than trusting that Haiku filled every field
+    # consistently with its chosen decision.
+    if decision == "MERGE":
+        # All members get superseded by the new canonical; no existing id wins.
+        canonical_id = None
+        supersede_ids = sorted(member_set)
+    elif decision == "SUPERSEDE":
+        # Exactly one winner from the existing set; every other member loses.
+        # Derive supersede_ids deterministically so Haiku can't "forget" a loser.
+        supersede_ids = sorted(member_set - {canonical_id})
+    else:  # KEEP_DISTINCT
+        canonical_id = None
+        supersede_ids = []
 
     try:
         confidence = float(data.get("confidence", 0.5))
