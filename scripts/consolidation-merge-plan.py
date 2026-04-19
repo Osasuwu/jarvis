@@ -410,28 +410,35 @@ def member_ids_key(ids: list[str]) -> str:
     return ",".join(sorted(ids))
 
 
-def fetch_existing_queue_keys(client) -> set[str]:
-    """Return member_ids_key of every queue row we should treat as "seen".
+def fetch_existing_queue_keys(client, candidate_keys: list[str]) -> set[str]:
+    """Return member_ids_keys that already exist in the queue for current candidates.
 
     Excludes `rolled_back` — those are cases where the owner (or rollback
     script) explicitly wants the cluster reconsidered. Includes `pending`
     because those are awaiting review and we don't need a duplicate row.
+
+    Uses `.in_()` on `consolidation_payload->>member_ids_key` so queries hit
+    the functional index (`idx_review_queue_member_ids_key`) instead of a
+    full scan — matters once the KEEP_DISTINCT audit set grows large.
     """
+    if not candidate_keys:
+        return set()
+    quoted = ",".join(f'"{k}"' for k in candidate_keys)
     rows = (
         client.table("memory_review_queue")
-        .select("consolidation_payload, status")
-        .not_.is_("consolidation_payload", "null")
+        .select("consolidation_payload")
+        .filter("consolidation_payload->>member_ids_key", "in", f"({quoted})")
         .neq("status", "rolled_back")
         .execute()
         .data
     ) or []
-    keys: set[str] = set()
+    found: set[str] = set()
     for r in rows:
         payload = r.get("consolidation_payload") or {}
         k = payload.get("member_ids_key")
         if isinstance(k, str) and k:
-            keys.add(k)
-    return keys
+            found.add(k)
+    return found
 
 
 def canonical_tags_union(members: list[dict]) -> list[str]:
@@ -451,18 +458,20 @@ def canonical_tags_union(members: list[dict]) -> list[str]:
 def _canonical_embed_text(name: str, description: str, tags: list[str], content: str) -> str:
     """Mirror of mcp-memory/server.py:_canonical_embed_text.
 
-    Keeping the canonical form in sync with server.py matters for semantic
-    recall: the canonical memory must be embedded the same way as memories
-    written via the MCP server, otherwise cosine distances drift.
+    Must stay byte-exact with server.py or canonicals embed on a slightly
+    different axis than neighbours written via MCP — cosine drifts, future
+    clustering misses them.
     """
-    parts = [name or ""]
+    parts: list[str] = []
+    if name:
+        parts.append(name.replace("_", " "))
     if tags:
         parts.append("tags: " + ", ".join(tags))
     if description:
         parts.append(description)
     if content:
         parts.append(content)
-    return "\n".join(p for p in parts if p)
+    return "\n".join(p for p in parts if p).strip()
 
 
 def embed_document(text: str, *, timeout: float = VOYAGE_TIMEOUT) -> list[float] | None:
@@ -972,7 +981,8 @@ def main() -> int:
 
     skipped_seen = 0
     if not args.include_seen and clusters:
-        seen_keys = fetch_existing_queue_keys(client)
+        candidate_keys = [member_ids_key([m["id"] for m in c["members"]]) for c in clusters]
+        seen_keys = fetch_existing_queue_keys(client, candidate_keys)
         if seen_keys:
             before = len(clusters)
             clusters = [

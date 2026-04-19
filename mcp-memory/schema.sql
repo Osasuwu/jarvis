@@ -1097,7 +1097,7 @@ create index if not exists idx_review_queue_member_ids_key
 -- apply_consolidation_plan: atomic per cluster.
 --
 -- MERGE: synthesize a new canonical memory from Haiku's output, mark every
--- member superseded_by the new id, drop a `consolidates` link per member.
+-- member superseded_by the new id, insert a `consolidates` link per member.
 -- Embedding is populated out-of-band by the caller (Python has VoyageAI);
 -- the write leaves `embedding IS NULL` temporarily — acceptable since the
 -- lifecycle filter on members immediately hides them from recall, and the
@@ -1147,17 +1147,24 @@ begin
         )
         returning id into v_new_id;
 
-        -- Supersede every member. coalesce() preserves any pre-existing
-        -- lifecycle timestamp rather than clobbering it — matters if a
-        -- member was already expired for an unrelated reason and we're
-        -- consolidating after the fact.
+        -- Supersede every member. Set lifecycle timestamps unconditionally
+        -- (not coalesce) so rollback (which NULLs them) is symmetric. Members
+        -- come from find_consolidation_clusters, which guarantees they're
+        -- live (expired_at IS NULL, superseded_by IS NULL, deleted_at IS NULL,
+        -- valid_to IS NULL OR future). A future valid_to is overwritten by
+        -- now() — that future lifecycle plan is superseded by the consolidation,
+        -- and rollback restores to NULL rather than trying to reconstruct it
+        -- (documented behaviour; owner can re-set manually if needed).
         update memories
         set superseded_by = v_new_id,
-            valid_to = coalesce(valid_to, now()),
-            expired_at = coalesce(expired_at, now())
+            valid_to = now(),
+            expired_at = now()
         where id = any(v_supersede_ids);
         get diagnostics v_rows = row_count;
 
+        -- Insert `consolidates` links (canonical → each member). Rollback
+        -- drops them. ON CONFLICT is a safety net against a retried apply;
+        -- normal flow hits clean (source_id, target_id, link_type) tuples.
         insert into memory_links (source_id, target_id, link_type, strength)
         select v_new_id, unnest_id, 'consolidates', 1.0
         from unnest(v_supersede_ids) as unnest_id
@@ -1174,10 +1181,12 @@ begin
             raise exception 'SUPERSEDE_CONSOLIDATION requires canonical_id';
         end if;
 
+        -- Same lifecycle semantics as MERGE: unconditional now() for
+        -- round-trip symmetry with rollback.
         update memories
         set superseded_by = v_canonical_id,
-            valid_to = coalesce(valid_to, now()),
-            expired_at = coalesce(expired_at, now())
+            valid_to = now(),
+            expired_at = now()
         where id = any(v_supersede_ids)
           and id <> v_canonical_id;
         get diagnostics v_rows = row_count;
