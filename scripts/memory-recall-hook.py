@@ -75,6 +75,13 @@ FETCH_LIMIT = 50             # pull wide per signal, cap by budget in Python
 ALLOWED_TYPES = {"feedback", "decision", "reference"}
 MIN_PROMPT_CHARS = 15        # too-short prompts produce noisy embeddings
 RRF_K = 60                   # matches _rrf_merge in mcp-memory/server.py
+# Rewriter types are applied as a soft rank boost, not a hard filter. An
+# earlier version gated rows by requested_types and recall@5 dropped -5pp
+# on the eval set whenever Haiku misclassified a feedback/decision query
+# as `reference`. The boost keeps misclassified-but-relevant memories in
+# the candidate pool; calibrated so a boosted single-signal hit still
+# loses to an unboosted dual-signal hit (0.0167*1.5 < 0.0333).
+TYPE_BOOST_MULTIPLIER = 1.5
 
 # Projects Jarvis tracks — cwd basename must match one of these to scope recall.
 # Anything else → no project filter (load from global + all projects).
@@ -262,11 +269,17 @@ def format_memory(m: dict) -> str:
     # Signal-accurate score display. rrf_merge only sets _rrf_score on
     # rows hit by both signals, so single-signal hits fall through to
     # their native field (similarity for semantic, rank for keyword/FTS).
+    # _sort_score is set only on single-signal rows that were type-boosted
+    # — without it, the displayed sim/rank would contradict the actual
+    # ranking (the boost changed the sort key, not the native score).
     rrf = m.get("_rrf_score")
+    sort_score = m.get("_sort_score")
     sim = m.get("similarity")
     rank = m.get("rank")
     if rrf is not None:
         score_str = f" (rrf {rrf:.3f})"
+    elif sort_score is not None:
+        score_str = f" (boost {sort_score:.3f})"
     elif sim is not None:
         score_str = f" (sim {sim:.2f})"
     elif rank is not None:
@@ -281,7 +294,13 @@ def format_memory(m: dict) -> str:
     return f"{header}\n{body}"
 
 
-def rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], k: int = RRF_K) -> list[dict]:
+def rrf_merge(
+    semantic_rows: list[dict],
+    keyword_rows: list[dict],
+    k: int = RRF_K,
+    boost_types: set[str] | None = None,
+    boost_multiplier: float = TYPE_BOOST_MULTIPLIER,
+) -> list[dict]:
     """Reciprocal Rank Fusion over two ranked lists.
 
     Same RRF math as mcp-memory/server.py::_rrf_merge (k=60, scores additive,
@@ -291,10 +310,17 @@ def rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], k: int = RRF_
         server overwrites with the keyword row; it doesn't care, we do.
       - No `limit` slice. The caller caps by CHAR_BUDGET, not row count.
 
+    Optional `boost_types`: when set, rows whose `type` is in the set get
+    their final score multiplied by `boost_multiplier` before the rank sort.
+    Used to apply the Haiku rewriter's type hint as a soft nudge rather than
+    a hard filter — a type misclassification no longer drops relevant rows.
+
     Only rows hit by BOTH signals get `_rrf_score` set — that's the semantic
     meaning of "fusion", and `format_memory` depends on it to pick the right
     display (rrf vs sim vs rank). A row seen once keeps its native score
-    field untouched.
+    field untouched, *except* when the boost fires on a single-signal row:
+    we set `_sort_score` on it so `format_memory` can show the true sort
+    key. Otherwise the displayed sim/rank would contradict the ranking.
     """
     scores: dict[str, float] = {}
     hits: dict[str, int] = {}
@@ -313,6 +339,12 @@ def rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], k: int = RRF_
         scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
         hits[rid] = hits.get(rid, 0) + 1
         by_id.setdefault(rid, row)
+    if boost_types:
+        for rid, row in by_id.items():
+            if row.get("type") in boost_types:
+                scores[rid] *= boost_multiplier
+                if hits[rid] == 1:
+                    row["_sort_score"] = scores[rid]
     ranked_ids = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
     out = []
     for rid in ranked_ids:
@@ -366,14 +398,12 @@ def main():
     # else the raw prompt (MVP behavior, still works without Haiku).
     keyword_query = " ".join(entities) if entities else prompt
 
-    # Type narrowing: intersect requested types with ALLOWED_TYPES. If the
-    # rewriter suggested types outside our allowed set (shouldn't happen —
-    # system prompt constrains it — but fail-safe), fall back to defaults.
-    if requested_types:
-        narrowed = ALLOWED_TYPES & set(requested_types)
-        allowed_types = narrowed if narrowed else ALLOWED_TYPES
-    else:
-        allowed_types = ALLOWED_TYPES
+    # Rewriter's type hint becomes a soft boost (see TYPE_BOOST_MULTIPLIER
+    # comment). Intersecting with ALLOWED_TYPES keeps the boost confined
+    # to types the hook actually surfaces; an out-of-set suggestion (e.g.
+    # the rewriter hallucinates `episode`) resolves to no boost instead
+    # of falling through to "boost everything".
+    boost_types = (ALLOWED_TYPES & set(requested_types)) if requested_types else None
 
     try:
         client = create_client(url, key)
@@ -406,15 +436,16 @@ def main():
     except Exception:
         keyword_rows = []
 
-    # Filter both lists to allowed types BEFORE merging, so RRF scores are
-    # computed only over candidates we'll actually surface.
-    semantic_rows = [r for r in semantic_rows if r.get("type") in allowed_types]
-    keyword_rows = [r for r in keyword_rows if r.get("type") in allowed_types]
+    # Level 1 scope: always restrict to types the hook is responsible for.
+    # user/project memories are loaded by scripts/session-context.py at
+    # session start and excluded here to avoid duplication.
+    semantic_rows = [r for r in semantic_rows if r.get("type") in ALLOWED_TYPES]
+    keyword_rows = [r for r in keyword_rows if r.get("type") in ALLOWED_TYPES]
 
     if not semantic_rows and not keyword_rows:
         silent_exit()
 
-    rows = rrf_merge(semantic_rows, keyword_rows)
+    rows = rrf_merge(semantic_rows, keyword_rows, boost_types=boost_types)
 
     # Accumulate under char budget
     scope = f" (project: {project}+global)" if project else " (all projects)"
@@ -430,8 +461,8 @@ def main():
         bits = []
         if entities:
             bits.append(f"entities: {', '.join(entities)}")
-        if requested_types:
-            bits.append(f"types: {', '.join(sorted(requested_types))}")
+        if boost_types:
+            bits.append(f"boost: {', '.join(sorted(boost_types))}")
         if bits:
             rewriter_note = f" — rewriter: {'; '.join(bits)}"
     header = f"# Memories on topic{scope}\n\nHybrid recall ({signal}){rewriter_note}:\n\n"

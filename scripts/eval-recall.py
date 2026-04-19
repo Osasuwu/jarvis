@@ -43,6 +43,9 @@ from typing import Any, Callable
 # ---------------------------------------------------------------------------
 SIMILARITY_THRESHOLD = 0.25
 RRF_K = 60
+# TYPE_BOOST_MULTIPLIER intentionally not duplicated here. When --with-rewriter
+# is enabled, we load scripts/memory-recall-hook.py and read its constant,
+# so re-tuning the boost only needs to happen in one place.
 TEMPORAL_HALF_LIVES = {
     "user": 180,
     "feedback": 90,
@@ -59,12 +62,13 @@ VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 10.0
 
 
-def _load_rewriter() -> Callable[[str], dict | None] | None:
-    """Load `rewrite_prompt` from scripts/memory-recall-hook.py via importlib.
+def _load_hook_module():
+    """Load scripts/memory-recall-hook.py as a module via importlib.
 
-    Hyphen in the hook filename blocks normal imports. We load it as a module
-    named `memory_recall_hook` so the function is callable. Returns None if
-    the file is missing or import fails — caller then skips rewriter mode.
+    Hyphen in the hook filename blocks normal imports. Returning the whole
+    module lets callers pull both `rewrite_prompt` and `TYPE_BOOST_MULTIPLIER`
+    from the same source — eval and hook stay in lockstep when the boost is
+    re-tuned. Returns None if the file is missing or import fails.
     """
     here = Path(__file__).resolve().parent
     hook_path = here / "memory-recall-hook.py"
@@ -76,9 +80,9 @@ def _load_rewriter() -> Callable[[str], dict | None] | None:
             return None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return getattr(mod, "rewrite_prompt", None)
+        return mod
     except Exception as e:
-        print(f"WARN: failed to load rewriter from hook: {e}", file=sys.stderr)
+        print(f"WARN: failed to load hook module: {e}", file=sys.stderr)
         return None
 
 
@@ -113,7 +117,14 @@ async def _embed_query(text: str) -> list[float]:
         return resp.json()["data"][0]["embedding"]
 
 
-def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, k: int = RRF_K) -> list[dict]:
+def _rrf_merge(
+    semantic_rows: list[dict],
+    keyword_rows: list[dict],
+    limit: int,
+    k: int = RRF_K,
+    boost_types: set[str] | None = None,
+    boost_multiplier: float = 1.0,
+) -> list[dict]:
     scores: dict[str, float] = {}
     by_id: dict[str, dict] = {}
     for rank, row in enumerate(semantic_rows):
@@ -124,6 +135,10 @@ def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, 
         rid = row.get("id") or row["name"]
         scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
         by_id[rid] = row
+    if boost_types:
+        for rid, row in by_id.items():
+            if row.get("type") in boost_types:
+                scores[rid] *= boost_multiplier
     ranked = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
     result = []
     for rid in ranked[:limit]:
@@ -207,6 +222,7 @@ async def run_query(
     client,
     q: dict,
     rewriter: Callable[[str], dict | None] | None = None,
+    boost_multiplier: float = 1.0,
 ) -> QueryResult:
     embedding = await _embed_query(q["query"])
 
@@ -245,17 +261,17 @@ async def run_query(
     }).execute()
     kw_rows = kw.data or []
 
-    # Type narrowing: only apply when rewriter explicitly returned types.
-    # Unlike the hook (which also excludes user/project to avoid duplicating
-    # session-start context), eval does not apply a default type filter —
-    # the goal here is to isolate the rewriter's Phase-3 contribution, not
-    # model the hook's scope-restriction side effect.
-    if rw_types:
-        allowed = set(rw_types)
-        sem_rows = [r for r in sem_rows if r.get("type") in allowed]
-        kw_rows = [r for r in kw_rows if r.get("type") in allowed]
-
-    merged = _rrf_merge(sem_rows, kw_rows, limit=10)
+    # Rewriter types → soft boost (matches hook behavior after the
+    # type-narrowing regression fix). No default scope filter — eval
+    # doesn't model the hook's exclusion of user/project memories.
+    boost_types = set(rw_types) if rw_types else None
+    merged = _rrf_merge(
+        sem_rows,
+        kw_rows,
+        limit=10,
+        boost_types=boost_types,
+        boost_multiplier=boost_multiplier,
+    )
     _apply_temporal_scoring(merged)
 
     top_names = [r.get("name", "?") for r in merged]
@@ -298,10 +314,13 @@ async def run_all(
     queries: list[dict],
     client,
     rewriter: Callable[[str], dict | None] | None = None,
+    boost_multiplier: float = 1.0,
 ) -> EvalReport:
     results = []
     for q in queries:
-        r = await run_query(client, q, rewriter=rewriter)
+        r = await run_query(
+            client, q, rewriter=rewriter, boost_multiplier=boost_multiplier
+        )
         results.append(r)
 
     total = len(results)
@@ -464,18 +483,28 @@ def main() -> int:
     client = create_client(url, key)
 
     rewriter = None
+    boost_multiplier = 1.0  # no-op when rewriter disabled
     if args.with_rewriter:
-        rewriter = _load_rewriter()
-        if rewriter is None:
-            print("ERROR: --with-rewriter set but rewrite_prompt could not be loaded "
-                  "from scripts/memory-recall-hook.py", file=sys.stderr)
+        hook_mod = _load_hook_module()
+        if hook_mod is None:
+            print("ERROR: --with-rewriter set but scripts/memory-recall-hook.py "
+                  "could not be loaded as a module", file=sys.stderr)
             return 2
+        rewriter = getattr(hook_mod, "rewrite_prompt", None)
+        if rewriter is None:
+            print("ERROR: --with-rewriter set but rewrite_prompt not found in hook "
+                  "module", file=sys.stderr)
+            return 2
+        # Source boost calibration from the hook — single source of truth.
+        boost_multiplier = float(getattr(hook_mod, "TYPE_BOOST_MULTIPLIER", 1.5))
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
                   "rewriter will return None for every query (degrades to server_only).",
                   file=sys.stderr)
 
-    report = asyncio.run(run_all(queries, client, rewriter=rewriter))
+    report = asyncio.run(
+        run_all(queries, client, rewriter=rewriter, boost_multiplier=boost_multiplier)
+    )
     print_report(report, quiet=args.quiet)
 
     if args.diff == "baseline":
