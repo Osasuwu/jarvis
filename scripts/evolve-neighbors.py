@@ -81,6 +81,12 @@ MAX_CONTENT_CHARS = 700     # truncate each memory body before sending
 MAX_NEIGHBORS_PER_UPDATE = 8  # hard cap to bound Haiku cost per UPDATE
 
 VALID_ACTIONS = ("KEEP", "UPDATE_TAGS", "UPDATE_DESC", "UPDATE_BOTH")
+ACTIONABLE_ACTIONS = ("UPDATE_TAGS", "UPDATE_DESC", "UPDATE_BOTH")
+
+# Phase 5.2-β apply gate. Matches the 0.85 threshold owner confirmed for
+# consolidation on 2026-04-19. Gating is plan-level: the MIN confidence
+# across actionable proposals decides whether the whole plan applies.
+DEFAULT_CONFIDENCE_GATE = 0.85
 
 
 SYSTEM_PROMPT = """You are a memory-graph hygiene planner for a personal AI agent.
@@ -147,23 +153,73 @@ def fetch_recent_updates(
 ) -> list[dict]:
     """Fetch recent Phase 2 UPDATE/auto_applied queue rows.
 
-    `include_seen=False` is advisory — 5.2-α has no mutation, so it can't
-    actually mark an update 'seen'. We keep the flag for parity with 5.1b-α
-    and wire it fully in 5.2-β when the EVOLVE queue row exists.
+    When `include_seen=False` (default), drop rows that already have an
+    EVOLVE queue entry pointing to them. This is how 5.2-β avoids
+    re-evolving the same UPDATE on every run — the prior evolution's
+    status (pending/auto_applied/approved/rolled_back/rejected) doesn't
+    matter here, only its existence. A `rolled_back` or `rejected` row
+    means owner already weighed in; re-proposing the same mutations would
+    just burn Haiku tokens.
     """
+    # Pull a wider slice than `limit` so post-filter still yields `limit`
+    # usable rows in the common case. The fetch is cheap (one indexed
+    # query, small row size).
+    fetch_cap = max(limit * 3, 30)
     q = (
         client.table("memory_review_queue")
         .select("id, candidate_id, target_id, applied_at, confidence, reasoning")
         .eq("decision", "UPDATE")
         .eq("status", "auto_applied")
         .order("applied_at", desc=True)
-        .limit(limit)
+        .limit(fetch_cap)
     )
     if since:
         q = q.gte("applied_at", since)
     rows = q.execute().data or []
     # Drop rows missing either side — target can be null after an FK cascade.
-    return [r for r in rows if r.get("candidate_id") and r.get("target_id")]
+    rows = [r for r in rows if r.get("candidate_id") and r.get("target_id")]
+
+    if not include_seen and rows:
+        seen = _fetch_seen_update_ids(client, [r["id"] for r in rows])
+        rows = [r for r in rows if r["id"] not in seen]
+
+    return rows[:limit]
+
+
+def _fetch_seen_update_ids(client, update_queue_ids: list[str]) -> set[str]:
+    """Which of these UPDATE queue IDs already have an EVOLVE row?
+
+    Scans memory_review_queue for decision='EVOLVE' rows whose
+    evolution_payload->>'update_queue_id' matches any id in the input.
+    The functional index on that key (see schema.sql §5.2-β) makes this
+    lookup O(log n) per id.
+    """
+    if not update_queue_ids:
+        return set()
+    try:
+        resp = (
+            client.table("memory_review_queue")
+            .select("evolution_payload")
+            .eq("decision", "EVOLVE")
+            .not_.is_("evolution_payload", "null")
+            .execute()
+        )
+        rows = resp.data or []
+    except Exception as e:
+        # Dedup is an optimization. Fail open so a transient DB blip
+        # doesn't stop planning — at worst we re-plan an already-evolved
+        # UPDATE, which is wasteful but not incorrect.
+        print(f"! evolution dedup lookup failed ({e}); proceeding without dedup",
+              file=sys.stderr)
+        return set()
+    wanted = set(update_queue_ids)
+    seen: set[str] = set()
+    for row in rows:
+        payload = row.get("evolution_payload") or {}
+        uq_id = payload.get("update_queue_id")
+        if uq_id in wanted:
+            seen.add(uq_id)
+    return seen
 
 
 def fetch_memory(client, memory_id: str) -> dict | None:
@@ -570,6 +626,192 @@ def save_plan_memory(client, plan_md: str, results: list[dict]) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Apply path (Phase 5.2-β)
+# ---------------------------------------------------------------------------
+
+
+def _actionable_proposals(proposals: list[dict]) -> list[dict]:
+    """Filter to mutations only — KEEP and unknown actions are dropped."""
+    return [p for p in proposals if p.get("action") in ACTIONABLE_ACTIONS]
+
+
+def _plan_min_confidence(actionable: list[dict]) -> float:
+    """Min confidence across actionable proposals. 1.0 if list is empty
+    (degenerate case — no mutations means the gate is vacuously passed,
+    but `apply_or_queue` filters that path out upstream)."""
+    if not actionable:
+        return 1.0
+    return min(float(p.get("confidence", 0.0)) for p in actionable)
+
+
+def _build_rpc_plan(result: dict, source_provenance: str) -> dict:
+    """Shape the result row into the jsonb plan apply_evolution_plan consumes.
+
+    Only actionable proposals make it into the payload — KEEP ones are
+    informational and would bloat the RPC snapshot.
+    """
+    actionable = _actionable_proposals(result["proposals"])
+    rpc_proposals = [
+        {
+            "neighbor_id": p["neighbor_id"],
+            "action": p["action"],
+            "new_tags": p.get("new_tags"),
+            "new_description": p.get("new_description"),
+            "confidence": p.get("confidence", 0.0),
+            "reasoning": p.get("reasoning") or "",
+        }
+        for p in actionable
+    ]
+    return {
+        "decision": "EVOLVE",
+        "update_queue_id": result["queue_id"],
+        "candidate_id": result["new_memory"]["id"],
+        "target_id": result["old_memory"]["id"],
+        "source_provenance": source_provenance,
+        "proposals": rpc_proposals,
+    }
+
+
+def apply_plan_to_db(
+    client, result: dict, *, today: str, model: str
+) -> dict:
+    """Call apply_evolution_plan RPC + write auto_applied queue row.
+
+    Transactional inside the RPC: if the queue insert fails, the neighbor
+    mutations roll back with it (same pattern as apply_consolidation_plan
+    after #224).
+    """
+    actionable = _actionable_proposals(result["proposals"])
+    source_provenance = f"skill:evolution:auto_applied:{today}"
+    rpc_plan = _build_rpc_plan(result, source_provenance)
+    applied_at = datetime.now(timezone.utc).isoformat()
+    reasoning_parts = [p.get("reasoning") or "" for p in actionable if p.get("reasoning")]
+    reasoning = " | ".join(reasoning_parts)[:1000]
+    queue_meta = {
+        "decision": "EVOLVE",
+        "status": "auto_applied",
+        "confidence": _plan_min_confidence(actionable),
+        "reasoning": reasoning,
+        "classifier_model": model,
+        "applied_at": applied_at,
+    }
+    resp = client.rpc(
+        "apply_evolution_plan",
+        {"plan": rpc_plan, "queue_meta": queue_meta},
+    ).execute()
+    rpc_out = resp.data or {}
+    queue_id = rpc_out.get("queue_id")
+    if not queue_id:
+        raise RuntimeError(f"apply_evolution_plan returned no queue_id: {rpc_out!r}")
+    return {
+        "update_queue_id": result["queue_id"],
+        "queue_id": queue_id,
+        "applied_count": int(rpc_out.get("applied_count") or 0),
+        "status": "applied",
+    }
+
+
+def queue_for_review(
+    client, result: dict, *, today: str, model: str
+) -> dict:
+    """Route a low-confidence plan to the review queue.
+
+    Mirrors `queue_for_review` in consolidation-merge-plan.py: direct
+    table insert with status=pending, carrying the full evolution_payload
+    snapshot so an owner-review CLI (5.1d-β sibling, out of scope here)
+    can later diff + approve/reject.
+    """
+    actionable = _actionable_proposals(result["proposals"])
+    source_provenance = f"skill:evolution:pending:{today}"
+    rpc_plan = _build_rpc_plan(result, source_provenance)
+    # Build a payload shaped like apply_evolution_plan's audit row but
+    # without the old_* snapshot fields — those are only populated by the
+    # RPC when it actually reads pre-mutation state.
+    evolution_payload = {
+        "update_queue_id": result["queue_id"],
+        "candidate_id": result["new_memory"]["id"],
+        "target_id": result["old_memory"]["id"],
+        "source_provenance": source_provenance,
+        # proposals (not snapshots) until an approve path reads current
+        # state and applies them. Approve path ships separately; for now
+        # an owner reviewer reads this directly.
+        "proposals": rpc_plan["proposals"],
+    }
+    reasoning_parts = [p.get("reasoning") or "" for p in actionable if p.get("reasoning")]
+    reasoning = " | ".join(reasoning_parts)[:1000]
+    row = {
+        "decision": "EVOLVE",
+        "status": "pending",
+        "confidence": _plan_min_confidence(actionable),
+        "reasoning": reasoning,
+        "evolution_payload": evolution_payload,
+        "classifier_model": model,
+        "target_id": result["new_memory"]["id"],
+    }
+    try:
+        resp = client.table("memory_review_queue").insert(row).execute()
+        data = resp.data or []
+        queue_id = data[0]["id"] if data else None
+    except Exception as e:
+        raise RuntimeError(
+            f"Queue insert for UPDATE {result['queue_id']} (EVOLVE) failed: {e}"
+        ) from e
+    if not queue_id:
+        raise RuntimeError(
+            f"Queue insert for UPDATE {result['queue_id']} (EVOLVE) returned no id"
+        )
+    return {
+        "update_queue_id": result["queue_id"],
+        "queue_id": queue_id,
+        "applied_count": 0,
+        "status": "queued",
+    }
+
+
+def apply_or_queue(
+    client, results: list[dict], *, model: str, gate: float
+) -> list[dict]:
+    """Route each result to apply / queue / skip based on confidence gate.
+
+    Returns a list of outcome dicts (one per input result).
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    outcomes: list[dict] = []
+    for r in results:
+        actionable = _actionable_proposals(r["proposals"])
+        if not actionable:
+            outcomes.append({
+                "update_queue_id": r["queue_id"],
+                "status": "skipped_all_keep",
+                "applied_count": 0,
+            })
+            continue
+        min_conf = _plan_min_confidence(actionable)
+        try:
+            if min_conf >= gate:
+                outcome = apply_plan_to_db(client, r, today=today, model=model)
+            else:
+                outcome = queue_for_review(client, r, today=today, model=model)
+        except Exception as e:
+            # Don't let one bad plan abort the batch. Report + continue so
+            # the remaining UPDATEs still get processed.
+            print(
+                f"! apply/queue failed for UPDATE {r['queue_id']}: {e}",
+                file=sys.stderr,
+            )
+            outcomes.append({
+                "update_queue_id": r["queue_id"],
+                "status": "error",
+                "error": str(e),
+                "applied_count": 0,
+            })
+            continue
+        outcome["min_confidence"] = min_conf
+        outcomes.append(outcome)
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -606,7 +848,19 @@ def main() -> int:
     p.add_argument(
         "--include-seen",
         action="store_true",
-        help="Reserved for 5.2-β (EVOLVE queue dedup). 5.2-α has no mutation — flag is a no-op.",
+        help="Re-plan UPDATEs that already have an EVOLVE queue row. Off by default.",
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Phase 5.2-β: persist high-confidence plans via apply_evolution_plan RPC + "
+             "queue low-confidence ones. Off by default — dry-run only.",
+    )
+    p.add_argument(
+        "--confidence-gate",
+        type=float,
+        default=DEFAULT_CONFIDENCE_GATE,
+        help=f"Min per-proposal confidence to auto-apply (default {DEFAULT_CONFIDENCE_GATE}).",
     )
     args = p.parse_args()
 
@@ -676,13 +930,32 @@ def main() -> int:
             }
         )
 
+    apply_outcomes: list[dict] = []
+    if args.apply:
+        apply_outcomes = apply_or_queue(
+            client, results, model=args.model, gate=args.confidence_gate
+        )
+        n_applied = sum(1 for o in apply_outcomes if o["status"] == "applied")
+        n_queued = sum(1 for o in apply_outcomes if o["status"] == "queued")
+        n_skipped = sum(1 for o in apply_outcomes if o["status"] == "skipped_all_keep")
+        n_error = sum(1 for o in apply_outcomes if o["status"] == "error")
+        print(
+            f"Apply: applied={n_applied} queued={n_queued} "
+            f"skipped={n_skipped} errors={n_error} "
+            f"(gate={args.confidence_gate})",
+            file=sys.stderr,
+        )
+
     if args.json:
         out = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "model": args.model,
             "limit": args.limit,
             "since": args.since,
+            "apply": args.apply,
+            "confidence_gate": args.confidence_gate,
             "results": results,
+            "apply_outcomes": apply_outcomes,
         }
         print(json.dumps(out, indent=2, default=str))
     else:

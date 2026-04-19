@@ -404,3 +404,272 @@ class TestRenderMarkdown:
             model="test", limit=10,
         )
         assert "has \\| pipe" in out
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.2-β apply-path helpers
+# ---------------------------------------------------------------------------
+
+
+class TestActionableProposals:
+    def test_keeps_filtered_out(self):
+        proposals = [
+            {"action": "KEEP"},
+            {"action": "UPDATE_TAGS", "new_tags": ["x"]},
+            {"action": "UPDATE_DESC", "new_description": "d"},
+            {"action": "UPDATE_BOTH", "new_tags": ["y"], "new_description": "d2"},
+        ]
+        out = evo._actionable_proposals(proposals)
+        assert [p["action"] for p in out] == ["UPDATE_TAGS", "UPDATE_DESC", "UPDATE_BOTH"]
+
+    def test_unknown_actions_filtered_out(self):
+        proposals = [{"action": "DELETE"}, {"action": "UPDATE_TAGS", "new_tags": ["a"]}]
+        out = evo._actionable_proposals(proposals)
+        assert [p["action"] for p in out] == ["UPDATE_TAGS"]
+
+
+class TestPlanMinConfidence:
+    def test_empty_returns_one(self):
+        assert evo._plan_min_confidence([]) == 1.0
+
+    def test_min_across_proposals(self):
+        proposals = [
+            {"action": "UPDATE_TAGS", "confidence": 0.9},
+            {"action": "UPDATE_DESC", "confidence": 0.4},
+            {"action": "UPDATE_BOTH", "confidence": 0.7},
+        ]
+        assert evo._plan_min_confidence(proposals) == 0.4
+
+    def test_missing_confidence_treated_as_zero(self):
+        proposals = [{"action": "UPDATE_TAGS"}]
+        assert evo._plan_min_confidence(proposals) == 0.0
+
+
+class TestBuildRpcPlan:
+    def _result(self, proposals: list[dict]) -> dict:
+        return {
+            "queue_id": "update-q-1",
+            "applied_at": "2026-04-19T10:00:00+00:00",
+            "old_memory": {"id": "old-id", "name": "old"},
+            "new_memory": {"id": "new-id", "name": "new"},
+            "neighbors": [],
+            "proposals": proposals,
+        }
+
+    def test_excludes_keep_from_payload(self):
+        result = self._result([
+            {"neighbor_id": "n1", "action": "KEEP", "confidence": 0.9},
+            {
+                "neighbor_id": "n2", "action": "UPDATE_TAGS",
+                "new_tags": ["a"], "confidence": 0.9, "reasoning": "stale tag",
+            },
+        ])
+        plan = evo._build_rpc_plan(result, "skill:evolution:test:2026-04-19")
+        assert plan["decision"] == "EVOLVE"
+        assert plan["update_queue_id"] == "update-q-1"
+        assert plan["candidate_id"] == "new-id"
+        assert plan["target_id"] == "old-id"
+        assert plan["source_provenance"] == "skill:evolution:test:2026-04-19"
+        assert len(plan["proposals"]) == 1
+        assert plan["proposals"][0]["neighbor_id"] == "n2"
+        assert plan["proposals"][0]["new_tags"] == ["a"]
+
+    def test_preserves_action_specific_fields(self):
+        result = self._result([
+            {
+                "neighbor_id": "n1", "action": "UPDATE_DESC",
+                "new_tags": None, "new_description": "fresh",
+                "confidence": 0.88, "reasoning": "desc drifted",
+            },
+            {
+                "neighbor_id": "n2", "action": "UPDATE_BOTH",
+                "new_tags": ["x", "y"], "new_description": "desc2",
+                "confidence": 0.92,
+            },
+        ])
+        plan = evo._build_rpc_plan(result, "skill:evolution:test:2026-04-19")
+        by_id = {p["neighbor_id"]: p for p in plan["proposals"]}
+        assert by_id["n1"]["new_description"] == "fresh"
+        assert by_id["n1"]["new_tags"] is None
+        assert by_id["n2"]["new_tags"] == ["x", "y"]
+        assert by_id["n2"]["new_description"] == "desc2"
+
+
+# ---------------------------------------------------------------------------
+# apply_or_queue — routing based on confidence gate
+# ---------------------------------------------------------------------------
+
+
+class _FakeResp:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeRPC:
+    def __init__(self, parent, name, params):
+        self.parent = parent
+        self.name = name
+        self.params = params
+
+    def execute(self):
+        self.parent.rpc_calls.append({"name": self.name, "params": self.params})
+        return _FakeResp(self.parent.rpc_return)
+
+
+class _FakeTableQuery:
+    def __init__(self, parent, table):
+        self.parent = parent
+        self.table_name = table
+        self.op = None
+        self.row = None
+
+    def insert(self, row):
+        self.op = "insert"
+        self.row = row
+        return self
+
+    def execute(self):
+        self.parent.table_calls.append({
+            "table": self.table_name, "op": self.op, "row": self.row,
+        })
+        return _FakeResp([{"id": self.parent.next_queue_id}])
+
+
+class _FakeClient:
+    """Minimal stand-in for the supabase-py client covering .rpc / .table.insert.
+
+    Every call is recorded on the instance so tests can assert on routing.
+    """
+
+    def __init__(self, *, rpc_return=None, next_queue_id: str = "q-fake"):
+        self.rpc_calls: list[dict] = []
+        self.table_calls: list[dict] = []
+        self.rpc_return = rpc_return or {
+            "status": "applied",
+            "applied_count": 2,
+            "queue_id": "applied-q-fake",
+            "decision": "EVOLVE",
+        }
+        self.next_queue_id = next_queue_id
+
+    def rpc(self, name, params):
+        return _FakeRPC(self, name, params)
+
+    def table(self, name):
+        return _FakeTableQuery(self, name)
+
+
+class TestApplyOrQueue:
+    def _result(self, queue_id: str, proposals: list[dict]) -> dict:
+        return {
+            "queue_id": queue_id,
+            "applied_at": "2026-04-19T10:00:00+00:00",
+            "old_memory": {"id": f"old-{queue_id}", "name": "old"},
+            "new_memory": {"id": f"new-{queue_id}", "name": "new"},
+            "neighbors": [],
+            "proposals": proposals,
+        }
+
+    def test_all_keep_skipped(self):
+        client = _FakeClient()
+        results = [self._result("u1", [{
+            "neighbor_id": "n1", "action": "KEEP", "confidence": 0.9,
+        }])]
+        outcomes = evo.apply_or_queue(client, results, model="test", gate=0.85)
+        assert outcomes[0]["status"] == "skipped_all_keep"
+        assert not client.rpc_calls
+        assert not client.table_calls
+
+    def test_high_confidence_routes_to_apply(self):
+        client = _FakeClient()
+        results = [self._result("u1", [{
+            "neighbor_id": "n1", "action": "UPDATE_TAGS",
+            "new_tags": ["fresh"], "confidence": 0.92, "reasoning": "ok",
+        }])]
+        outcomes = evo.apply_or_queue(client, results, model="test", gate=0.85)
+        assert outcomes[0]["status"] == "applied"
+        assert outcomes[0]["queue_id"] == "applied-q-fake"
+        assert len(client.rpc_calls) == 1
+        rpc = client.rpc_calls[0]
+        assert rpc["name"] == "apply_evolution_plan"
+        assert rpc["params"]["plan"]["decision"] == "EVOLVE"
+        assert rpc["params"]["queue_meta"]["status"] == "auto_applied"
+        assert not client.table_calls
+
+    def test_low_confidence_routes_to_queue(self):
+        client = _FakeClient(next_queue_id="queued-q-fake")
+        results = [self._result("u1", [{
+            "neighbor_id": "n1", "action": "UPDATE_TAGS",
+            "new_tags": ["x"], "confidence": 0.5,
+        }])]
+        outcomes = evo.apply_or_queue(client, results, model="test", gate=0.85)
+        assert outcomes[0]["status"] == "queued"
+        assert outcomes[0]["queue_id"] == "queued-q-fake"
+        assert not client.rpc_calls
+        assert len(client.table_calls) == 1
+        call = client.table_calls[0]
+        assert call["table"] == "memory_review_queue"
+        assert call["row"]["decision"] == "EVOLVE"
+        assert call["row"]["status"] == "pending"
+        # Low-conf plan still carries the full payload so a later owner
+        # review can act on it.
+        assert call["row"]["evolution_payload"]["update_queue_id"] == "u1"
+        assert len(call["row"]["evolution_payload"]["proposals"]) == 1
+
+    def test_mixed_confidence_uses_minimum(self):
+        # One proposal at 0.95, another at 0.4 — min=0.4, gate=0.85 → queue.
+        client = _FakeClient()
+        results = [self._result("u1", [
+            {"neighbor_id": "n1", "action": "UPDATE_TAGS",
+             "new_tags": ["a"], "confidence": 0.95},
+            {"neighbor_id": "n2", "action": "UPDATE_DESC",
+             "new_description": "d", "confidence": 0.4},
+        ])]
+        outcomes = evo.apply_or_queue(client, results, model="test", gate=0.85)
+        assert outcomes[0]["status"] == "queued"
+        assert outcomes[0]["min_confidence"] == 0.4
+        assert not client.rpc_calls
+        assert len(client.table_calls) == 1
+
+    def test_gate_exactly_at_min_confidence_applies(self):
+        # Gate is inclusive on the lower bound.
+        client = _FakeClient()
+        results = [self._result("u1", [{
+            "neighbor_id": "n1", "action": "UPDATE_TAGS",
+            "new_tags": ["a"], "confidence": 0.85,
+        }])]
+        outcomes = evo.apply_or_queue(client, results, model="test", gate=0.85)
+        assert outcomes[0]["status"] == "applied"
+
+    def test_batch_error_does_not_abort_remaining(self):
+        # First plan's RPC raises — outcome should be 'error'; second plan
+        # (also RPC-bound) should still proceed.
+        class FlakyClient(_FakeClient):
+            def __init__(self):
+                super().__init__()
+                self.rpc_count = 0
+
+            def rpc(self, name, params):
+                self.rpc_count += 1
+                if self.rpc_count == 1:
+                    class Bomb:
+                        def execute(self_inner):
+                            raise RuntimeError("DB unreachable")
+                    return Bomb()
+                return _FakeRPC(self, name, params)
+
+        client = FlakyClient()
+        results = [
+            self._result("u1", [{
+                "neighbor_id": "n1", "action": "UPDATE_TAGS",
+                "new_tags": ["a"], "confidence": 0.95,
+            }]),
+            self._result("u2", [{
+                "neighbor_id": "n2", "action": "UPDATE_TAGS",
+                "new_tags": ["b"], "confidence": 0.95,
+            }]),
+        ]
+        outcomes = evo.apply_or_queue(client, results, model="test", gate=0.85)
+        assert outcomes[0]["status"] == "error"
+        assert "DB unreachable" in outcomes[0]["error"]
+        assert outcomes[1]["status"] == "applied"
