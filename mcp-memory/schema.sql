@@ -1542,3 +1542,340 @@ begin
     );
 end;
 $$;
+
+
+-- =========================================================================
+-- Phase 5.2-β (memory overhaul, Osasuwu/jarvis#185, #232) — A-MEM neighbor
+-- evolution apply path.
+--
+-- Builds on 5.2-α (#230, #231): the Haiku planner surfaces per-neighbor
+-- tag/description evolution proposals for each recent UPDATE decision.
+-- 5.2-β converts those plans into actual mutations of the neighbor rows,
+-- gated by the same 0.85 confidence threshold used by consolidation.
+-- Rejected/low-confidence plans land in memory_review_queue for later
+-- owner review; high-confidence ones auto-apply with a full rollback
+-- snapshot so any mistake is reversible.
+--
+-- Queue strategy (reuse consolidation pattern):
+--   - Extend memory_review_queue.decision CHECK with 'EVOLVE'. Phase 2
+--     and 5.1b rows keep their decision semantics untouched.
+--   - New column evolution_payload jsonb holds per-neighbor snapshots
+--     (neighbor_id, old_tags, old_description, new_tags, new_description,
+--      action, confidence, reasoning) + parent lineage (update_queue_id,
+--      candidate_id, target_id). consolidation_payload stays NULL.
+--   - status CHECK is unchanged — already includes 'rolled_back' from
+--     5.1b-β.
+--
+-- target_id semantics for EVOLVE: the candidate_id of the spawning UPDATE
+-- (i.e. the memory whose arrival triggered the neighbor refresh). Neighbors
+-- themselves are listed inside evolution_payload.snapshots[].neighbor_id.
+-- =========================================================================
+
+alter table memory_review_queue
+  drop constraint if exists memory_review_queue_decision_check;
+
+alter table memory_review_queue
+  add constraint memory_review_queue_decision_check
+  check (decision in (
+    'ADD', 'UPDATE', 'DELETE', 'NOOP',
+    'MERGE', 'SUPERSEDE_CONSOLIDATION', 'KEEP_DISTINCT',
+    'EVOLVE'
+  ));
+
+alter table memory_review_queue
+  add column if not exists evolution_payload jsonb;
+
+-- Index for "has this UPDATE already been evolved?" dedup in the planner.
+-- The 5.2-α script's `fetch_recent_updates` pre-filter can use this to
+-- skip UPDATEs that already have a queue EVOLVE row (pending or applied).
+create index if not exists idx_review_queue_update_queue_id
+  on memory_review_queue((evolution_payload->>'update_queue_id'))
+  where evolution_payload is not null;
+
+
+-- apply_evolution_plan: atomic per plan.
+--
+-- For each non-KEEP proposal:
+--   1. SELECT current (tags, description, content_updated_at) FOR UPDATE —
+--      this is the snapshot that `rollback_evolution` restores from.
+--   2. UPDATE memories SET tags = new_tags (if present), description =
+--      new_description (if present). The content_updated_at trigger fires
+--      and bumps it to now() — intentional, this IS a content change.
+--
+-- KEEP proposals are filtered by the caller; if any sneak through, the RPC
+-- skips them (they'd be no-ops anyway, but surfacing them in the snapshot
+-- would pollute the rollback payload).
+--
+-- queue_meta (optional, mirrors apply_consolidation_plan): when non-null,
+-- inserts a memory_review_queue row in the same transaction for audit +
+-- rollback. Required for rollback — a mutation with no queue row is
+-- irrecoverable.
+--
+-- Returns jsonb: { status, decision, applied_count, queue_id? }.
+create or replace function apply_evolution_plan(
+    plan jsonb,
+    queue_meta jsonb default null
+)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text := plan->>'decision';
+    v_proposals jsonb := coalesce(plan->'proposals', '[]'::jsonb);
+    v_proposal jsonb;
+    v_snapshots jsonb := '[]'::jsonb;
+    v_applied_count int := 0;
+    v_neighbor_id uuid;
+    v_action text;
+    v_old_tags text[];
+    v_old_desc text;
+    v_old_content_updated_at timestamptz;
+    v_new_tags text[];
+    v_new_desc text;
+    v_queue_id uuid;
+    v_result jsonb;
+    v_evolution_payload jsonb;
+begin
+    if v_decision <> 'EVOLVE' then
+        raise exception 'apply_evolution_plan only handles EVOLVE (got %)', v_decision;
+    end if;
+
+    if coalesce(plan->>'source_provenance', '') = '' then
+        raise exception 'EVOLVE plan missing required source_provenance';
+    end if;
+
+    -- Mutate neighbors + record snapshots in a single pass.
+    for v_proposal in select * from jsonb_array_elements(v_proposals)
+    loop
+        v_action := v_proposal->>'action';
+        if v_action not in ('UPDATE_TAGS', 'UPDATE_DESC', 'UPDATE_BOTH') then
+            -- KEEP or anything unrecognized — skip, don't snapshot.
+            continue;
+        end if;
+
+        v_neighbor_id := (v_proposal->>'neighbor_id')::uuid;
+
+        select tags, description, content_updated_at
+        into v_old_tags, v_old_desc, v_old_content_updated_at
+        from memories
+        where id = v_neighbor_id
+        for update;
+
+        if not found then
+            -- Neighbor vanished between planning and apply. Skip — don't
+            -- fail the whole plan. Log via snapshot with a missing flag
+            -- so owner-review UIs can surface the skip.
+            v_snapshots := v_snapshots || jsonb_build_object(
+                'neighbor_id', v_neighbor_id,
+                'skipped', 'neighbor_missing'
+            );
+            continue;
+        end if;
+
+        v_new_tags := null;
+        v_new_desc := null;
+        if v_action in ('UPDATE_TAGS', 'UPDATE_BOTH') then
+            -- Contract: action committed to a tag change, so the payload
+            -- MUST carry a non-null new_tags array. Empty-array payloads
+            -- pass (explicit "clear tags" is a valid evolution), but
+            -- missing/null would silently wipe the neighbor's tags under
+            -- the old coalesce(..., '[]') behaviour — raise instead so the
+            -- caller surfaces the planner bug.
+            if not (v_proposal ? 'new_tags')
+               or jsonb_typeof(v_proposal->'new_tags') = 'null' then
+                raise exception
+                    'EVOLVE action % requires non-null new_tags for neighbor %',
+                    v_action, v_neighbor_id;
+            end if;
+            v_new_tags := array(
+                select jsonb_array_elements_text(v_proposal->'new_tags')
+            );
+        end if;
+        if v_action in ('UPDATE_DESC', 'UPDATE_BOTH') then
+            if not (v_proposal ? 'new_description')
+               or jsonb_typeof(v_proposal->'new_description') = 'null' then
+                raise exception
+                    'EVOLVE action % requires non-null new_description for neighbor %',
+                    v_action, v_neighbor_id;
+            end if;
+            v_new_desc := v_proposal->>'new_description';
+        end if;
+
+        update memories
+        set tags = coalesce(v_new_tags, tags),
+            description = coalesce(v_new_desc, description)
+        where id = v_neighbor_id;
+
+        v_applied_count := v_applied_count + 1;
+
+        v_snapshots := v_snapshots || jsonb_build_object(
+            'neighbor_id', v_neighbor_id,
+            'action', v_action,
+            -- Store old_tags as a JSON array even when memories.tags was NULL.
+            -- to_jsonb(NULL::text[]) produces JSONB 'null' (not SQL NULL),
+            -- which would later trip jsonb_array_elements_text in rollback.
+            -- Normalize to '[]' at write time.
+            'old_tags', coalesce(to_jsonb(v_old_tags), '[]'::jsonb),
+            'old_description', v_old_desc,
+            'old_content_updated_at', v_old_content_updated_at,
+            'new_tags', to_jsonb(v_new_tags),
+            'new_description', v_new_desc,
+            'confidence', v_proposal->'confidence',
+            'reasoning', v_proposal->>'reasoning'
+        );
+    end loop;
+
+    v_evolution_payload := jsonb_build_object(
+        'update_queue_id', plan->>'update_queue_id',
+        'candidate_id', plan->>'candidate_id',
+        'target_id', plan->>'target_id',
+        'source_provenance', plan->>'source_provenance',
+        'snapshots', v_snapshots
+    );
+
+    v_result := jsonb_build_object(
+        'status', 'applied',
+        'decision', 'EVOLVE',
+        'applied_count', v_applied_count
+    );
+
+    -- Queue audit row, transactional with the memory mutations. Same
+    -- load-bearing-field ownership pattern as apply_consolidation_plan:
+    -- decision and classifier_model must match + be non-blank.
+    if queue_meta is not null then
+        if queue_meta ? 'decision'
+           and queue_meta->>'decision' is not null
+           and queue_meta->>'decision' <> 'EVOLVE' then
+            raise exception
+                'queue_meta decision % does not match plan decision EVOLVE',
+                queue_meta->>'decision';
+        end if;
+
+        if coalesce(nullif(trim(queue_meta->>'classifier_model'), ''), '') = '' then
+            raise exception
+                'queue_meta.classifier_model is required and must be non-blank for audit provenance';
+        end if;
+
+        insert into memory_review_queue (
+            decision,
+            confidence,
+            reasoning,
+            status,
+            evolution_payload,
+            classifier_model,
+            target_id,
+            applied_at
+        )
+        values (
+            'EVOLVE',
+            coalesce((queue_meta->>'confidence')::float, 0.0),
+            left(coalesce(queue_meta->>'reasoning', ''), 1000),
+            coalesce(queue_meta->>'status', 'auto_applied'),
+            v_evolution_payload,
+            trim(queue_meta->>'classifier_model'),
+            nullif(plan->>'candidate_id', '')::uuid,
+            coalesce(
+                nullif(queue_meta->>'applied_at', '')::timestamptz,
+                now()
+            )
+        )
+        returning id into v_queue_id;
+
+        v_result := v_result || jsonb_build_object('queue_id', v_queue_id);
+    end if;
+
+    return v_result;
+end;
+$$;
+
+
+-- rollback_evolution(queue_id): restore neighbors from the snapshot stored
+-- in evolution_payload.snapshots[].
+--
+-- content_updated_at: the update_content_updated_at trigger will fire on
+-- the rollback UPDATE and bump content_updated_at to now(). This IS a
+-- departure from 5.1b-β rollback's byte-identical restoration — the 5.1b-β
+-- path only touches lifecycle columns (superseded_by, valid_to,
+-- expired_at) which aren't tracked by the content trigger, while 5.2
+-- rollback has to touch tags/description which are tracked. Accepted
+-- tradeoff: rollback is rare, content_updated_at is a soft decay signal,
+-- and a rolled-back neighbor WAS recently touched (by the failed evolve).
+--
+-- Status transitions: 'auto_applied'/'approved' → 'rolled_back'.
+create or replace function rollback_evolution(queue_id uuid)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_payload jsonb;
+    v_decision text;
+    v_status text;
+    v_snapshots jsonb;
+    v_snapshot jsonb;
+    v_restored_count int := 0;
+begin
+    select evolution_payload, decision, status
+    into v_payload, v_decision, v_status
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if v_payload is null then
+        raise exception 'Queue entry % missing (or has no evolution_payload)', queue_id;
+    end if;
+
+    if v_decision <> 'EVOLVE' then
+        raise exception 'Entry % is not an evolution row (decision=%)', queue_id, v_decision;
+    end if;
+
+    if v_status not in ('auto_applied', 'approved') then
+        raise exception 'Can only roll back auto_applied/approved entries (status=%)', v_status;
+    end if;
+
+    v_snapshots := coalesce(v_payload->'snapshots', '[]'::jsonb);
+
+    for v_snapshot in select * from jsonb_array_elements(v_snapshots)
+    loop
+        -- Skip snapshots that recorded a missing neighbor at apply time —
+        -- nothing to restore.
+        if v_snapshot ? 'skipped' then
+            continue;
+        end if;
+
+        update memories
+        set tags = array(
+                select jsonb_array_elements_text(
+                    -- Defend against legacy rows where old_tags was stored
+                    -- as JSONB 'null' (pre-fix apply path): jsonb_array_elements_text
+                    -- would raise on a non-array scalar. New rows are already
+                    -- normalized at write time, but this keeps rollback safe
+                    -- for rows inserted by the un-patched apply RPC.
+                    case
+                        when v_snapshot->'old_tags' is null
+                             or jsonb_typeof(v_snapshot->'old_tags') <> 'array'
+                        then '[]'::jsonb
+                        else v_snapshot->'old_tags'
+                    end
+                )
+            ),
+            description = v_snapshot->>'old_description'
+        where id = (v_snapshot->>'neighbor_id')::uuid;
+
+        if found then
+            v_restored_count := v_restored_count + 1;
+        end if;
+    end loop;
+
+    update memory_review_queue
+    set status = 'rolled_back',
+        reviewed_at = now(),
+        reviewed_by = coalesce(reviewed_by, 'rollback_script')
+    where id = queue_id;
+
+    return jsonb_build_object(
+        'status', 'rolled_back',
+        'decision', 'EVOLVE',
+        'restored_count', v_restored_count
+    );
+end;
+$$;
