@@ -269,11 +269,17 @@ def format_memory(m: dict) -> str:
     # Signal-accurate score display. rrf_merge only sets _rrf_score on
     # rows hit by both signals, so single-signal hits fall through to
     # their native field (similarity for semantic, rank for keyword/FTS).
+    # _sort_score is set only on single-signal rows that were type-boosted
+    # — without it, the displayed sim/rank would contradict the actual
+    # ranking (the boost changed the sort key, not the native score).
     rrf = m.get("_rrf_score")
+    sort_score = m.get("_sort_score")
     sim = m.get("similarity")
     rank = m.get("rank")
     if rrf is not None:
         score_str = f" (rrf {rrf:.3f})"
+    elif sort_score is not None:
+        score_str = f" (boost {sort_score:.3f})"
     elif sim is not None:
         score_str = f" (sim {sim:.2f})"
     elif rank is not None:
@@ -312,7 +318,9 @@ def rrf_merge(
     Only rows hit by BOTH signals get `_rrf_score` set — that's the semantic
     meaning of "fusion", and `format_memory` depends on it to pick the right
     display (rrf vs sim vs rank). A row seen once keeps its native score
-    field untouched.
+    field untouched, *except* when the boost fires on a single-signal row:
+    we set `_sort_score` on it so `format_memory` can show the true sort
+    key. Otherwise the displayed sim/rank would contradict the ranking.
     """
     scores: dict[str, float] = {}
     hits: dict[str, int] = {}
@@ -335,6 +343,8 @@ def rrf_merge(
         for rid, row in by_id.items():
             if row.get("type") in boost_types:
                 scores[rid] *= boost_multiplier
+                if hits[rid] == 1:
+                    row["_sort_score"] = scores[rid]
     ranked_ids = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
     out = []
     for rid in ranked_ids:
