@@ -158,6 +158,10 @@ Gates everything else. Without this, no amount of write-side sophistication help
 3. Confidence self-monitor: after each recall, store feeling-of-knowing judgment (did answer sufficiency hit). Feeds entrenchment over time.
 4. Known-unknowns table: propositions the agent knows it *should* know but can't retrieve — surfaced proactively.
 
+#### Operating the weekly consolidation job (Phase 5.1d-α)
+
+The scheduler runs `scripts/consolidation-run.py` every Sunday at 10:00 Astana — registered as `memory-consolidation-weekly` via the native scheduled-tasks MCP (not OS cron). The wrapper subprocess-calls `consolidation-merge-plan.py --apply --json --save-memory`, parses the JSON summary, writes one `consolidation_run` event to Supabase (`source='scheduled_task'`, severity `info` on clean runs / `medium` when ≥3 new pending / `high` on subprocess or parse failure — must be one of `critical/high/medium/low/info` per the `events` CHECK constraint), and prints a JSON recap the task session reads. When `queued_pending >= 3` the task should surface a review prompt (CLI: `memory_review_queue` rows with `decision in (MERGE, SUPERSEDE_CONSOLIDATION)` and `status='pending'`; a dedicated `scripts/consolidation-review.py` CLI lands in Phase 5.1d #226). To disable: `mcp__scheduled-tasks__update_scheduled_task(taskId='memory-consolidation-weekly', enabled=false)` — or reschedule by re-registering with a different cron. Manual smoke-test: `python scripts/consolidation-run.py --dry-run` from the repo root (does not pass `--apply`, still emits an event).
+
 ### Phase 6 — evaluation harness
 
 **Actually belongs at Phase 0.5** — build before Phase 1 so we can measure every subsequent change. Listed last only because it's purely infrastructure:
