@@ -894,7 +894,12 @@ def main() -> int:
                     {
                         "generated_at": datetime.now(timezone.utc).isoformat(),
                         "model": args.model,
+                        "limit": args.limit,
+                        "since": args.since,
+                        "apply": args.apply,
+                        "confidence_gate": args.confidence_gate,
                         "results": [],
+                        "apply_outcomes": [],
                     },
                     indent=2,
                 )
@@ -950,6 +955,7 @@ def main() -> int:
             file=sys.stderr,
         )
 
+    md = render_markdown(results, model=args.model, limit=args.limit)
     if args.json:
         out = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -963,10 +969,9 @@ def main() -> int:
         }
         print(json.dumps(out, indent=2, default=str))
     else:
-        md = render_markdown(results, model=args.model, limit=args.limit)
         print(md)
-        if args.save_memory:
-            save_plan_memory(client, md, results)
+    if args.save_memory:
+        save_plan_memory(client, md, results)
 
     return 0
 
