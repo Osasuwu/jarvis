@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import math
 import os
@@ -34,7 +35,7 @@ import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
 # Pipeline constants — mirrored from mcp-memory/server.py as of Phase 1.
@@ -56,6 +57,29 @@ ACCESS_HALF_LIFE = 14
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 10.0
+
+
+def _load_rewriter() -> Callable[[str], dict | None] | None:
+    """Load `rewrite_prompt` from scripts/memory-recall-hook.py via importlib.
+
+    Hyphen in the hook filename blocks normal imports. We load it as a module
+    named `memory_recall_hook` so the function is callable. Returns None if
+    the file is missing or import fails — caller then skips rewriter mode.
+    """
+    here = Path(__file__).resolve().parent
+    hook_path = here / "memory-recall-hook.py"
+    if not hook_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("memory_recall_hook", hook_path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return getattr(mod, "rewrite_prompt", None)
+    except Exception as e:
+        print(f"WARN: failed to load rewriter from hook: {e}", file=sys.stderr)
+        return None
 
 
 def _load_env() -> None:
@@ -158,11 +182,15 @@ class QueryResult:
     hits_at_10: list[str]
     must_not_violations_at_5: list[str]  # must_not names that appeared in top-5
     passed: bool                         # recall@5 >= 1 AND no must_not violations
+    rewriter_entities: list[str] = field(default_factory=list)
+    rewriter_types: list[str] = field(default_factory=list)
+    rewriter_fired: bool = False         # True when rewriter returned a non-null result
 
 
 @dataclass
 class EvalReport:
     timestamp: str
+    mode: str                            # "server_only" | "with_rewriter"
     corpus_size: int
     total_queries: int
     recall_at_5: float
@@ -171,11 +199,32 @@ class EvalReport:
     must_not_violations: int
     passed: int
     failed: int
+    rewriter_fired_count: int = 0        # queries where rewriter produced output
     results: list[dict] = field(default_factory=list)
 
 
-async def run_query(client, q: dict) -> QueryResult:
+async def run_query(
+    client,
+    q: dict,
+    rewriter: Callable[[str], dict | None] | None = None,
+) -> QueryResult:
     embedding = await _embed_query(q["query"])
+
+    # Phase 3: if a rewriter is supplied, use it to denoise the keyword leg
+    # (entities substitute for the raw prompt) and optionally narrow types.
+    # Matches the hook contract: entities-only → kw query substitution, types
+    # list → Python-side filter on BOTH semantic and keyword rows before RRF.
+    rw_entities: list[str] = []
+    rw_types: list[str] = []
+    rw_fired = False
+    if rewriter is not None:
+        rw = rewriter(q["query"])
+        if rw:
+            rw_fired = True
+            rw_entities = list(rw.get("entities") or [])
+            rw_types = list(rw.get("types") or [])
+
+    keyword_query = " ".join(rw_entities) if rw_entities else q["query"]
 
     sem = client.rpc("match_memories", {
         "query_embedding": embedding,
@@ -188,13 +237,23 @@ async def run_query(client, q: dict) -> QueryResult:
     sem_rows = sem.data or []
 
     kw = client.rpc("keyword_search_memories", {
-        "search_query": q["query"],
+        "search_query": keyword_query,
         "match_limit": 20,
         "filter_project": None,
         "filter_type": None,
         "show_history": False,
     }).execute()
     kw_rows = kw.data or []
+
+    # Type narrowing: only apply when rewriter explicitly returned types.
+    # Unlike the hook (which also excludes user/project to avoid duplicating
+    # session-start context), eval does not apply a default type filter —
+    # the goal here is to isolate the rewriter's Phase-3 contribution, not
+    # model the hook's scope-restriction side effect.
+    if rw_types:
+        allowed = set(rw_types)
+        sem_rows = [r for r in sem_rows if r.get("type") in allowed]
+        kw_rows = [r for r in kw_rows if r.get("type") in allowed]
 
     merged = _rrf_merge(sem_rows, kw_rows, limit=10)
     _apply_temporal_scoring(merged)
@@ -229,13 +288,20 @@ async def run_query(client, q: dict) -> QueryResult:
         hits_at_10=hits_10,
         must_not_violations_at_5=mn_viol,
         passed=passed,
+        rewriter_entities=rw_entities,
+        rewriter_types=rw_types,
+        rewriter_fired=rw_fired,
     )
 
 
-async def run_all(queries: list[dict], client) -> EvalReport:
+async def run_all(
+    queries: list[dict],
+    client,
+    rewriter: Callable[[str], dict | None] | None = None,
+) -> EvalReport:
     results = []
     for q in queries:
-        r = await run_query(client, q)
+        r = await run_query(client, q, rewriter=rewriter)
         results.append(r)
 
     total = len(results)
@@ -244,6 +310,7 @@ async def run_all(queries: list[dict], client) -> EvalReport:
     mrr = sum(1.0 / r.first_hit_rank for r in results if r.first_hit_rank) / total if total else 0.0
     mn_viol = sum(1 for r in results if r.must_not_violations_at_5)
     passed = sum(1 for r in results if r.passed)
+    rw_fired = sum(1 for r in results if r.rewriter_fired)
 
     # corpus size for context
     cs = client.table("memories").select("id", count="exact").is_("deleted_at", "null").limit(1).execute()
@@ -251,6 +318,7 @@ async def run_all(queries: list[dict], client) -> EvalReport:
 
     return EvalReport(
         timestamp=datetime.now(timezone.utc).isoformat(),
+        mode="with_rewriter" if rewriter is not None else "server_only",
         corpus_size=corpus_size,
         total_queries=total,
         recall_at_5=r5,
@@ -259,6 +327,7 @@ async def run_all(queries: list[dict], client) -> EvalReport:
         must_not_violations=mn_viol,
         passed=passed,
         failed=total - passed,
+        rewriter_fired_count=rw_fired,
         results=[asdict(r) for r in results],
     )
 
@@ -273,15 +342,16 @@ def _fmt_pct(x: float) -> str:
 
 def print_report(report: EvalReport, quiet: bool = False) -> None:
     if not quiet:
-        print(f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories\n")
-        print(f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit5':>5}  {'viol':>5}  query")
+        print(f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: {report.mode}\n")
+        print(f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit5':>5}  {'viol':>5}  {'rw':>3}  query")
         print("-" * 100)
         for r in report.results:
             rank_s = str(r["first_hit_rank"]) if r["first_hit_rank"] else "-"
             hit = "Y" if r["hits_at_5"] else " "
             viol = "!" if r["must_not_violations_at_5"] else " "
+            rw = "*" if r.get("rewriter_fired") else " "
             q = r["query"] if len(r["query"]) <= 60 else r["query"][:57] + "..."
-            print(f"{r['id']:<5} {r['kind']:<10} {rank_s:>5}  {hit:>5}  {viol:>5}  {q}")
+            print(f"{r['id']:<5} {r['kind']:<10} {rank_s:>5}  {hit:>5}  {viol:>5}  {rw:>3}  {q}")
 
         # fail details
         fails = [r for r in report.results if not r["passed"]]
@@ -295,13 +365,18 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
                 print(f"    top-5:     {r['top_names'][:5]}")
                 if r["must_not_violations_at_5"]:
                     print(f"    violated:  {r['must_not_violations_at_5']}")
+                if r.get("rewriter_fired"):
+                    print(f"    rewriter:  entities={r.get('rewriter_entities') or []} types={r.get('rewriter_types') or []}")
 
     print("\n=== AGGREGATES ===")
+    print(f"mode               : {report.mode}")
     print(f"recall@5           : {_fmt_pct(report.recall_at_5)}  ({report.passed}/{report.total_queries} queries retrieved at least one expected memory in top-5)")
     print(f"recall@10          : {_fmt_pct(report.recall_at_10)}")
     print(f"MRR                : {report.mrr:.3f}")
     print(f"must_not violations: {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)")
     print(f"passed / failed    : {report.passed} / {report.failed}")
+    if report.mode == "with_rewriter":
+        print(f"rewriter fired     : {report.rewriter_fired_count}/{report.total_queries}")
     print()
 
 
@@ -315,6 +390,11 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
 
     print("=== DELTA vs baseline.json ===")
     print(f"baseline saved : {baseline.get('timestamp', '?')}")
+    base_mode = baseline.get("mode", "server_only")
+    if base_mode != current.mode:
+        print(f"MODE MISMATCH  : current={current.mode}  baseline={base_mode}  — delta mixes pipeline changes with mode change")
+    else:
+        print(f"mode           : {current.mode}")
     print(f"recall@5       : {delta('recall_at_5')}")
     print(f"recall@10      : {delta('recall_at_10')}")
     print(f"MRR            : {delta('mrr')}")
@@ -351,6 +431,12 @@ def main() -> int:
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--queries", default=None,
                     help="Path to queries.yaml (default: tests/memory-eval/queries.yaml)")
+    ap.add_argument("--with-rewriter", action="store_true",
+                    help="Run the hook's Haiku rewriter on each query — entities "
+                         "substitute for the raw prompt in keyword search, and "
+                         "returned types narrow both RPC result sets Python-side. "
+                         "Requires ANTHROPIC_API_KEY; falls back per-query to raw "
+                         "prompt when the rewriter returns None.")
     args = ap.parse_args()
 
     _load_env()
@@ -377,7 +463,19 @@ def main() -> int:
         return 2
     client = create_client(url, key)
 
-    report = asyncio.run(run_all(queries, client))
+    rewriter = None
+    if args.with_rewriter:
+        rewriter = _load_rewriter()
+        if rewriter is None:
+            print("ERROR: --with-rewriter set but rewrite_prompt could not be loaded "
+                  "from scripts/memory-recall-hook.py", file=sys.stderr)
+            return 2
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
+                  "rewriter will return None for every query (degrades to server_only).",
+                  file=sys.stderr)
+
+    report = asyncio.run(run_all(queries, client, rewriter=rewriter))
     print_report(report, quiet=args.quiet)
 
     if args.diff == "baseline":
