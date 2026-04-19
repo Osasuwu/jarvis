@@ -535,16 +535,22 @@ def _queue_insert(
     confidence: float,
     reasoning: str,
     payload: dict,
+    classifier_model: str,
     applied_at: str | None = None,
 ) -> str | None:
-    """Insert one row into memory_review_queue. Returns id or None on error."""
+    """Insert one row into memory_review_queue. Returns id or None on error.
+
+    Used for status in {pending, auto_applied:KEEP_DISTINCT} — paths that
+    don't mutate memories. For auto_applied MERGE/SUPERSEDE the queue insert
+    is done inside `apply_consolidation_plan` (transactional with mutations).
+    """
     row = {
         "decision": decision,
         "confidence": float(confidence),
         "reasoning": (reasoning or "")[:1000],
         "status": status,
         "consolidation_payload": payload,
-        "classifier_model": DEFAULT_MODEL,
+        "classifier_model": classifier_model,
     }
     if target_id:
         row["target_id"] = target_id
@@ -591,19 +597,26 @@ def _log_event(
 
 
 def apply_plan(
-    client, cluster: dict, plan: dict, *, today: str, dry_run_embed: bool = False
+    client,
+    cluster: dict,
+    plan: dict,
+    *,
+    today: str,
+    model: str,
+    dry_run_embed: bool = False,
 ) -> dict:
     """Apply one high-confidence plan. Returns result dict for summary output.
 
-    Order matters: RPC first (atomic member supersede), then embedding
-    backfill, then queue audit row + event. If embedding fails, the
-    canonical is still correct — it just won't be found via semantic
-    recall until a later backfill sweeps nulls (matches server.py's
-    lazy-backfill pattern, memories with NULL embedding).
+    The RPC mutates memories + links AND writes the auto_applied queue row
+    in one transaction — if the queue insert fails, the memory mutations
+    roll back with it (#224). Embedding backfill runs after; if it fails,
+    the canonical is still correct, just not recallable until the next
+    lazy-backfill (matches server.py's NULL-embedding behaviour).
     """
     db_decision = DB_DECISION[plan["decision"]]
     source_provenance = f"skill:consolidation:{plan['decision'].lower()}:{today}"
     payload = build_payload(cluster, plan, source_provenance)
+    applied_at = datetime.now(timezone.utc).isoformat()
 
     rpc_plan = {
         "decision": db_decision,
@@ -618,13 +631,31 @@ def apply_plan(
         "source_provenance": source_provenance,
         "confidence": plan.get("confidence", 0.8),
     }
+    queue_meta = {
+        "decision": db_decision,
+        "status": "auto_applied",
+        "confidence": float(plan.get("confidence", 0.8)),
+        "reasoning": (plan.get("reasoning") or "")[:1000],
+        "classifier_model": model,
+        "consolidation_payload": payload,
+        "applied_at": applied_at,
+        # target_id is set inside the RPC (to the canonical it just computed
+        # or picked) — the caller doesn't know v_new_id for MERGE, and it's
+        # load-bearing for rollback_consolidation.
+    }
 
-    resp = client.rpc("apply_consolidation_plan", {"plan": rpc_plan}).execute()
+    resp = client.rpc(
+        "apply_consolidation_plan",
+        {"plan": rpc_plan, "queue_meta": queue_meta},
+    ).execute()
     rpc_out = resp.data or {}
     canonical_id = rpc_out.get("canonical_id")
     superseded_count = int(rpc_out.get("superseded_count") or 0)
+    queue_id = rpc_out.get("queue_id")
     if not canonical_id:
         raise RuntimeError(f"apply_consolidation_plan returned no canonical_id: {rpc_out!r}")
+    if not queue_id:
+        raise RuntimeError(f"apply_consolidation_plan returned no queue_id: {rpc_out!r}")
 
     embedded = False
     if plan["decision"] == "MERGE" and not dry_run_embed:
@@ -648,18 +679,6 @@ def apply_plan(
             except Exception as e:
                 print(f"! embedding backfill failed for {canonical_id}: {e}", file=sys.stderr)
 
-    applied_at = datetime.now(timezone.utc).isoformat()
-    queue_id = _queue_insert(
-        client,
-        decision=db_decision,
-        status="auto_applied",
-        target_id=canonical_id,
-        confidence=plan.get("confidence", 0.8),
-        reasoning=plan.get("reasoning") or "",
-        payload=payload,
-        applied_at=applied_at,
-    )
-
     _log_event(
         client,
         canonical_id=canonical_id,
@@ -680,7 +699,7 @@ def apply_plan(
     }
 
 
-def queue_for_review(client, cluster: dict, plan: dict, *, today: str) -> dict:
+def queue_for_review(client, cluster: dict, plan: dict, *, today: str, model: str) -> dict:
     """Route a low-confidence MERGE/SUPERSEDE plan to the review queue."""
     db_decision = DB_DECISION[plan["decision"]]
     source_provenance = f"skill:consolidation:{plan['decision'].lower()}:{today}"
@@ -694,6 +713,7 @@ def queue_for_review(client, cluster: dict, plan: dict, *, today: str) -> dict:
         confidence=plan.get("confidence", 0.0),
         reasoning=plan.get("reasoning") or "",
         payload=payload,
+        classifier_model=model,
     )
     return {
         "cluster_id": cluster["cluster_id"],
@@ -703,7 +723,7 @@ def queue_for_review(client, cluster: dict, plan: dict, *, today: str) -> dict:
     }
 
 
-def note_keep_distinct(client, cluster: dict, plan: dict, *, today: str) -> dict:
+def note_keep_distinct(client, cluster: dict, plan: dict, *, today: str, model: str) -> dict:
     """Record KEEP_DISTINCT so the same cluster isn't re-planned next week."""
     source_provenance = f"skill:consolidation:keep_distinct:{today}"
     payload = build_payload(cluster, plan, source_provenance)
@@ -715,6 +735,7 @@ def note_keep_distinct(client, cluster: dict, plan: dict, *, today: str) -> dict
         confidence=plan.get("confidence", 0.0),
         reasoning=plan.get("reasoning") or "",
         payload=payload,
+        classifier_model=model,
         applied_at=datetime.now(timezone.utc).isoformat(),
     )
     return {
@@ -775,12 +796,26 @@ def plan_cluster(cluster: dict, *, model: str, timeout: float) -> dict:
 
 
 def render_markdown(
-    clusters: list[dict], plans: list[dict], min_size: int, threshold: float, model: str
+    clusters: list[dict],
+    plans: list[dict],
+    min_size: int,
+    threshold: float,
+    model: str,
+    *,
+    apply: bool = False,
+    confidence_gate: float = DEFAULT_CONFIDENCE_GATE,
 ) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     by_decision: dict[str, int] = defaultdict(int)
     for p in plans:
         by_decision[p["decision"]] += 1
+
+    mode_line = (
+        f"_Apply mode (confidence gate {confidence_gate:.2f}). "
+        "High-confidence plans auto-applied; rest routed to review queue._"
+        if apply
+        else "_Dry-run only. No mutations. Rerun with `--apply` to persist high-confidence plans._"
+    )
 
     lines = [
         f"# Memory consolidation plan — {now}",
@@ -792,7 +827,7 @@ def render_markdown(
         f"SUPERSEDE={by_decision.get('SUPERSEDE', 0)}, "
         f"KEEP_DISTINCT={by_decision.get('KEEP_DISTINCT', 0)}",
         "",
-        "_Dry-run only. No mutations. Apply path lands in 5.1b-β with confidence gating._",
+        mode_line,
         "",
     ]
 
@@ -850,9 +885,13 @@ def render_markdown(
 
     lines.append("---")
     lines.append("")
-    lines.append(
-        "**Next**: rerun with `--apply` to persist high-confidence plans and route the rest to the review queue."
-    )
+    if apply:
+        lines.append("**Next**: see _Apply summary_ below for per-cluster outcomes.")
+    else:
+        lines.append(
+            "**Next**: rerun with `--apply` to persist high-confidence plans "
+            "and route the rest to the review queue."
+        )
     return "\n".join(lines)
 
 
@@ -1022,7 +1061,17 @@ def main() -> int:
                 )
             )
         else:
-            print(render_markdown([], [], args.min_size, args.threshold, args.model))
+            print(
+                render_markdown(
+                    [],
+                    [],
+                    args.min_size,
+                    args.threshold,
+                    args.model,
+                    apply=bool(args.apply),
+                    confidence_gate=args.confidence_gate,
+                )
+            )
             if skipped_seen:
                 print(f"\n_Skipped {skipped_seen} already-seen cluster(s)._")
         return 0
@@ -1044,16 +1093,16 @@ def main() -> int:
         for cluster, plan in zip(clusters, plans):
             try:
                 if plan["decision"] == "KEEP_DISTINCT":
-                    r = note_keep_distinct(client, cluster, plan, today=today)
+                    r = note_keep_distinct(client, cluster, plan, today=today, model=args.model)
                 elif plan["confidence"] >= args.confidence_gate:
-                    r = apply_plan(client, cluster, plan, today=today)
+                    r = apply_plan(client, cluster, plan, today=today, model=args.model)
                     print(
                         f"  ✓ cluster {cluster['cluster_id']}: APPLIED {plan['decision']} "
                         f"(canonical={r.get('canonical_id')}, superseded={r.get('superseded_count')})",
                         file=sys.stderr,
                     )
                 else:
-                    r = queue_for_review(client, cluster, plan, today=today)
+                    r = queue_for_review(client, cluster, plan, today=today, model=args.model)
                     print(
                         f"  ⋯ cluster {cluster['cluster_id']}: queued {plan['decision']} "
                         f"(confidence {plan['confidence']:.2f} < gate)",
@@ -1085,7 +1134,15 @@ def main() -> int:
         }
         print(json.dumps(out, indent=2, default=str))
     else:
-        md = render_markdown(clusters, plans, args.min_size, args.threshold, args.model)
+        md = render_markdown(
+            clusters,
+            plans,
+            args.min_size,
+            args.threshold,
+            args.model,
+            apply=bool(args.apply),
+            confidence_gate=args.confidence_gate,
+        )
         print(md)
         if args.apply and apply_results:
             print()
