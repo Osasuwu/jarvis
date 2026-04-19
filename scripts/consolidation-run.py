@@ -204,7 +204,7 @@ def main() -> int:
             "stdout_head": (stdout or "")[:500],
         }
         event_id = write_event(
-            severity="error",
+            severity="high",
             title="Consolidation run — stdout parse failed",
             payload=payload,
         )
@@ -225,7 +225,7 @@ def main() -> int:
             "stderr_tail": (stderr or "")[-500:],
         }
         event_id = write_event(
-            severity="error",
+            severity="high",
             title=f"Consolidation run — inner script exited {rc}",
             payload=payload,
         )
@@ -247,7 +247,7 @@ def main() -> int:
 
     pending_new = summary["queued_pending"]
     applied = summary["applied"]
-    severity = "warning" if pending_new >= 3 else "info"
+    severity = "medium" if pending_new >= 3 else "info"
     title_mode = "apply" if summary["applied_mode"] else "dry-run"
     title = (
         f"Consolidation run ({title_mode}) — {applied} applied, "
