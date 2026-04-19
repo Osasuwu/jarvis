@@ -154,6 +154,97 @@ class TestRrfMerge:
 
 
 # ---------------------------------------------------------------------------
+# rrf_merge — type boost behavior (Phase 3 soft-boost replaces hard filter)
+# ---------------------------------------------------------------------------
+
+
+class TestRrfMergeBoost:
+    def test_boost_none_matches_default(self):
+        # boost_types=None must behave identically to the default arg.
+        semantic = [{"id": "a", "type": "feedback"}, {"id": "b", "type": "decision"}]
+        keyword = []
+        out_none = mrh.rrf_merge(semantic, keyword, boost_types=None)
+        out_default = mrh.rrf_merge(semantic, keyword)
+        assert [r["id"] for r in out_none] == [r["id"] for r in out_default]
+
+    def test_empty_boost_set_treated_as_no_boost(self):
+        # Falsy set → boost branch skipped. Verifies `if boost_types:` guard.
+        semantic = [{"id": "a", "type": "feedback"}, {"id": "b", "type": "decision"}]
+        keyword = []
+        out_empty = mrh.rrf_merge(semantic, keyword, boost_types=set())
+        out_none = mrh.rrf_merge(semantic, keyword, boost_types=None)
+        assert [r["id"] for r in out_empty] == [r["id"] for r in out_none]
+
+    def test_boost_reorders_single_hits(self):
+        # `a` at semantic rank 0 (1/60 ≈ 0.01667) beats `b` at rank 1 (1/61 ≈
+        # 0.01639) without boost. Boosting `b`'s type (1.5×) flips the order.
+        semantic = [{"id": "a", "type": "decision"}, {"id": "b", "type": "feedback"}]
+        keyword = []
+        out = mrh.rrf_merge(semantic, keyword, boost_types={"feedback"})
+        assert [r["id"] for r in out] == ["b", "a"]
+
+    def test_boosted_single_hit_below_unboosted_dual_hit(self):
+        # Calibration invariant (see TYPE_BOOST_MULTIPLIER comment):
+        # boosted single-hit (1/60 × 1.5 = 0.025) must stay under unboosted
+        # dual-hit (2/60 = 0.0333). This guards the 1.5 default against
+        # future re-tuning that would break the fusion ordering.
+        semantic = [
+            {"id": "single", "type": "feedback"},
+            {"id": "dual", "type": "decision"},
+        ]
+        keyword = [{"id": "dual", "type": "decision"}]
+        out = mrh.rrf_merge(semantic, keyword, boost_types={"feedback"})
+        assert [r["id"] for r in out] == ["dual", "single"]
+
+    def test_non_matching_types_unchanged(self):
+        # No row has type="feedback" → boost is a no-op.
+        semantic = [{"id": "a", "type": "decision"}, {"id": "b", "type": "reference"}]
+        keyword = []
+        out = mrh.rrf_merge(semantic, keyword, boost_types={"feedback"})
+        assert [r["id"] for r in out] == ["a", "b"]
+
+    def test_sort_score_set_on_boosted_single_hit(self):
+        # _sort_score transparency: single-hit rows that got boosted must
+        # carry the actual sort key, because their native sim/rank is now
+        # out of sync with the display order.
+        semantic = [{"id": "a", "type": "feedback"}]
+        keyword = []
+        out = mrh.rrf_merge(semantic, keyword, boost_types={"feedback"})
+        assert "_sort_score" in out[0]
+        assert abs(out[0]["_sort_score"] - (1.0 / 60 * mrh.TYPE_BOOST_MULTIPLIER)) < 1e-9
+
+    def test_sort_score_absent_on_unboosted_single_hit(self):
+        # Boost active, but row type doesn't match → no _sort_score written.
+        # (Native sim/rank still reflects ranking for that row.)
+        semantic = [{"id": "a", "type": "decision"}]
+        keyword = []
+        out = mrh.rrf_merge(semantic, keyword, boost_types={"feedback"})
+        assert "_sort_score" not in out[0]
+
+    def test_sort_score_absent_on_boosted_dual_hit(self):
+        # Dual-hits use _rrf_score (set after the boost multiply, so the
+        # value already reflects the boost). _sort_score is single-hit-only.
+        semantic = [{"id": "x", "type": "feedback"}]
+        keyword = [{"id": "x", "type": "feedback"}]
+        out = mrh.rrf_merge(semantic, keyword, boost_types={"feedback"})
+        assert "_sort_score" not in out[0]
+        assert "_rrf_score" in out[0]
+
+    def test_custom_multiplier_overrides_default(self):
+        # Multiplier large enough (3×) that boosted single-hit now beats
+        # unboosted dual-hit — verifies the knob actually reaches the math.
+        semantic = [
+            {"id": "single", "type": "feedback"},
+            {"id": "dual", "type": "decision"},
+        ]
+        keyword = [{"id": "dual", "type": "decision"}]
+        out = mrh.rrf_merge(
+            semantic, keyword, boost_types={"feedback"}, boost_multiplier=3.0
+        )
+        assert [r["id"] for r in out] == ["single", "dual"]
+
+
+# ---------------------------------------------------------------------------
 # detect_project — cwd basename matching
 # ---------------------------------------------------------------------------
 
@@ -180,6 +271,22 @@ class TestFormatMemory:
         out = mrh.format_memory(m)
         assert "rrf 0.420" in out
         assert "sim" not in out
+
+    def test_sort_score_displays_boost_over_similarity(self):
+        # Boosted single-hit rows: sim is stale vs. ranking, so _sort_score
+        # must win the display chain (before sim/rank, after _rrf_score).
+        m = {"name": "n", "type": "feedback", "_sort_score": 0.025, "similarity": 0.5}
+        out = mrh.format_memory(m)
+        assert "boost 0.025" in out
+        assert "sim" not in out
+
+    def test_rrf_score_wins_over_sort_score(self):
+        # If both fields are somehow set, _rrf_score wins — that's the
+        # dual-hit case, and its value already folds in any boost.
+        m = {"name": "n", "type": "feedback", "_rrf_score": 0.08, "_sort_score": 0.025}
+        out = mrh.format_memory(m)
+        assert "rrf 0.080" in out
+        assert "boost" not in out
 
     def test_similarity_fallback(self):
         m = {"name": "n", "type": "decision", "similarity": 0.73}

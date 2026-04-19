@@ -43,9 +43,9 @@ from typing import Any, Callable
 # ---------------------------------------------------------------------------
 SIMILARITY_THRESHOLD = 0.25
 RRF_K = 60
-# Must match memory-recall-hook.py::TYPE_BOOST_MULTIPLIER so eval's
-# with-rewriter numbers predict hook behavior. Don't re-tune in one place.
-TYPE_BOOST_MULTIPLIER = 1.5
+# TYPE_BOOST_MULTIPLIER intentionally not duplicated here. When --with-rewriter
+# is enabled, we load scripts/memory-recall-hook.py and read its constant,
+# so re-tuning the boost only needs to happen in one place.
 TEMPORAL_HALF_LIVES = {
     "user": 180,
     "feedback": 90,
@@ -62,12 +62,13 @@ VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 10.0
 
 
-def _load_rewriter() -> Callable[[str], dict | None] | None:
-    """Load `rewrite_prompt` from scripts/memory-recall-hook.py via importlib.
+def _load_hook_module():
+    """Load scripts/memory-recall-hook.py as a module via importlib.
 
-    Hyphen in the hook filename blocks normal imports. We load it as a module
-    named `memory_recall_hook` so the function is callable. Returns None if
-    the file is missing or import fails — caller then skips rewriter mode.
+    Hyphen in the hook filename blocks normal imports. Returning the whole
+    module lets callers pull both `rewrite_prompt` and `TYPE_BOOST_MULTIPLIER`
+    from the same source — eval and hook stay in lockstep when the boost is
+    re-tuned. Returns None if the file is missing or import fails.
     """
     here = Path(__file__).resolve().parent
     hook_path = here / "memory-recall-hook.py"
@@ -79,9 +80,9 @@ def _load_rewriter() -> Callable[[str], dict | None] | None:
             return None
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return getattr(mod, "rewrite_prompt", None)
+        return mod
     except Exception as e:
-        print(f"WARN: failed to load rewriter from hook: {e}", file=sys.stderr)
+        print(f"WARN: failed to load hook module: {e}", file=sys.stderr)
         return None
 
 
@@ -122,7 +123,7 @@ def _rrf_merge(
     limit: int,
     k: int = RRF_K,
     boost_types: set[str] | None = None,
-    boost_multiplier: float = TYPE_BOOST_MULTIPLIER,
+    boost_multiplier: float = 1.0,
 ) -> list[dict]:
     scores: dict[str, float] = {}
     by_id: dict[str, dict] = {}
@@ -221,6 +222,7 @@ async def run_query(
     client,
     q: dict,
     rewriter: Callable[[str], dict | None] | None = None,
+    boost_multiplier: float = 1.0,
 ) -> QueryResult:
     embedding = await _embed_query(q["query"])
 
@@ -263,7 +265,13 @@ async def run_query(
     # type-narrowing regression fix). No default scope filter — eval
     # doesn't model the hook's exclusion of user/project memories.
     boost_types = set(rw_types) if rw_types else None
-    merged = _rrf_merge(sem_rows, kw_rows, limit=10, boost_types=boost_types)
+    merged = _rrf_merge(
+        sem_rows,
+        kw_rows,
+        limit=10,
+        boost_types=boost_types,
+        boost_multiplier=boost_multiplier,
+    )
     _apply_temporal_scoring(merged)
 
     top_names = [r.get("name", "?") for r in merged]
@@ -306,10 +314,13 @@ async def run_all(
     queries: list[dict],
     client,
     rewriter: Callable[[str], dict | None] | None = None,
+    boost_multiplier: float = 1.0,
 ) -> EvalReport:
     results = []
     for q in queries:
-        r = await run_query(client, q, rewriter=rewriter)
+        r = await run_query(
+            client, q, rewriter=rewriter, boost_multiplier=boost_multiplier
+        )
         results.append(r)
 
     total = len(results)
@@ -472,18 +483,28 @@ def main() -> int:
     client = create_client(url, key)
 
     rewriter = None
+    boost_multiplier = 1.0  # no-op when rewriter disabled
     if args.with_rewriter:
-        rewriter = _load_rewriter()
-        if rewriter is None:
-            print("ERROR: --with-rewriter set but rewrite_prompt could not be loaded "
-                  "from scripts/memory-recall-hook.py", file=sys.stderr)
+        hook_mod = _load_hook_module()
+        if hook_mod is None:
+            print("ERROR: --with-rewriter set but scripts/memory-recall-hook.py "
+                  "could not be loaded as a module", file=sys.stderr)
             return 2
+        rewriter = getattr(hook_mod, "rewrite_prompt", None)
+        if rewriter is None:
+            print("ERROR: --with-rewriter set but rewrite_prompt not found in hook "
+                  "module", file=sys.stderr)
+            return 2
+        # Source boost calibration from the hook — single source of truth.
+        boost_multiplier = float(getattr(hook_mod, "TYPE_BOOST_MULTIPLIER", 1.5))
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
                   "rewriter will return None for every query (degrades to server_only).",
                   file=sys.stderr)
 
-    report = asyncio.run(run_all(queries, client, rewriter=rewriter))
+    report = asyncio.run(
+        run_all(queries, client, rewriter=rewriter, boost_multiplier=boost_multiplier)
+    )
     print_report(report, quiet=args.quiet)
 
     if args.diff == "baseline":
