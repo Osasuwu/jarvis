@@ -99,8 +99,13 @@ def run_inner(args) -> tuple[int, str, str, float]:
     return proc.returncode, proc.stdout, proc.stderr, duration
 
 
-def summarize(result: dict) -> dict:
-    """Derive event-payload counts from the inner script's --json output."""
+def summarize(result: dict, *, wrapper_applied: bool) -> dict:
+    """Derive event-payload counts from the inner script's --json output.
+
+    `wrapper_applied` is the wrapper's own view of whether it passed --apply
+    (i.e. `not args.dry_run`). Used as a fallback when the inner JSON omits
+    the `apply` field.
+    """
     outcomes = result.get("apply_outcomes") or []
     by_status: dict[str, int] = defaultdict(int)
     for o in outcomes:
@@ -115,6 +120,9 @@ def summarize(result: dict) -> dict:
             actions[p.get("action", "unknown")] += 1
         neighbor_count += len(r.get("neighbors") or [])
 
+    inner_apply = result.get("apply")
+    applied_mode = bool(inner_apply) if inner_apply is not None else wrapper_applied
+
     return {
         "updates_planned": len(results_list),
         "neighbors_evaluated": neighbor_count,
@@ -125,7 +133,7 @@ def summarize(result: dict) -> dict:
         "actions": dict(actions),
         "confidence_gate": result.get("confidence_gate"),
         "model": result.get("model"),
-        "applied_mode": bool(result.get("apply")),
+        "applied_mode": applied_mode,
     }
 
 
@@ -173,10 +181,22 @@ def write_event(
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--limit", type=int, default=DEFAULT_LIMIT)
-    p.add_argument("--since", type=str, default=None,
-                   help="ISO date floor on UPDATE applied_at (passthrough)")
-    p.add_argument("--confidence-gate", type=float, default=DEFAULT_CONFIDENCE_GATE)
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_LIMIT,
+    )
+    p.add_argument(
+        "--since",
+        type=str,
+        default=None,
+        help="ISO date floor on UPDATE applied_at (passthrough)",
+    )
+    p.add_argument(
+        "--confidence-gate",
+        type=float,
+        default=DEFAULT_CONFIDENCE_GATE,
+    )
     p.add_argument(
         "--dry-run",
         action="store_true",
@@ -221,12 +241,15 @@ def main() -> int:
         )
         return 1
 
+    wrapper_applied = not args.dry_run
     if rc != 0:
         payload = {
             "started_at": started_at,
             "duration_s": round(duration, 2),
             "exit_code": rc,
-            "summary": summarize(inner) if inner else None,
+            "summary": (
+                summarize(inner, wrapper_applied=wrapper_applied) if inner else None
+            ),
             "stderr_tail": (stderr or "")[-500:],
         }
         event_id = write_event(
@@ -242,7 +265,7 @@ def main() -> int:
         )
         return 1
 
-    summary = summarize(inner)
+    summary = summarize(inner, wrapper_applied=wrapper_applied)
     payload = {
         "started_at": started_at,
         "duration_s": round(duration, 2),
