@@ -1,9 +1,13 @@
-"""Memory consolidation — cluster detection report (Phase 5.1a, deterministic).
+"""Memory consolidation — cluster detection report (deterministic).
 
-Calls the `find_consolidation_clusters` RPC, filters out dead memories
-(expired_at / valid_to / superseded_by / deleted_at) post-hoc in Python, and
-prints a human-readable report of similarity clusters that are genuine
-candidates for merge/supersede.
+Calls the `find_consolidation_clusters` RPC and prints a human-readable
+report of similarity clusters that are genuine candidates for merge/supersede.
+
+As of Phase 5.1c the RPC filters dead memories (expired_at, valid_to,
+superseded_by, deleted_at) at the SQL source, so `dead_filtered` in the
+report should be 0 against any current DB. The Python-side live check is
+kept as a cheap defensive guard for older DB revisions and is a no-op in
+normal operation.
 
 No LLM. Default mode is a pure read — safe against prod. The only write
 path is the opt-in `--save-memory` flag, which upserts the markdown report
@@ -184,7 +188,7 @@ def render_markdown(
         "",
         f"- RPC: `find_consolidation_clusters(min_cluster_size={min_size}, sim_threshold={threshold})`",
         f"- Raw RPC rows: {raw_rows}",
-        f"- Dead memories filtered (expired/superseded/deleted): {dead_filtered}",
+        f"- Dead memories filtered post-hoc (defensive, expected 0): {dead_filtered}",
         f"- Live clusters (size >= {min_size}): **{len(clusters)}**",
         f"- Total live memories in clusters: {total_members}",
         "",
