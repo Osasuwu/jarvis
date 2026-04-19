@@ -1,4 +1,4 @@
-"""Memory consolidation — Haiku merge-plan generator (dry-run).
+"""Memory consolidation — Haiku merge-plan generator (dry-run + apply).
 
 Takes the clusters that `scripts/consolidation-report.py` surfaces
 and asks Claude Haiku-4.5 to emit one of:
@@ -9,8 +9,16 @@ and asks Claude Haiku-4.5 to emit one of:
                     the stale ones expired
     KEEP_DISTINCT — same topic but different purposes; leave them alone
 
-**Dry-run only.** No mutations, no --apply flag. Phase 5.1b-β will add
-the apply path with confidence gating + review queue.
+Default mode is dry-run. Pass `--apply` (Phase 5.1b-β) to persist:
+
+  * MERGE / SUPERSEDE, confidence >= gate → apply_consolidation_plan RPC,
+    embedding backfill for MERGE, queue row status=auto_applied, event log.
+  * MERGE / SUPERSEDE, confidence <  gate → queue row status=pending.
+  * KEEP_DISTINCT (any confidence)        → queue row status=auto_applied.
+
+Clusters whose exact member-set already has a queue entry (any status
+except `rolled_back`) are skipped before the Haiku call — prevents
+re-spending tokens on the same cluster every week.
 
 Output: markdown report (default) or JSON. `--save-memory` upserts the
 markdown as `consolidation_plan_YYYY-MM-DD` (`type=project`).
@@ -20,12 +28,14 @@ The Haiku call follows the same pattern as `mcp-memory/classifier.py`
 network/parse failure). No SDK dependency.
 
 Usage:
-    python scripts/consolidation-merge-plan.py                       # markdown
+    python scripts/consolidation-merge-plan.py                       # markdown, dry-run
     python scripts/consolidation-merge-plan.py --json                # machine-readable
     python scripts/consolidation-merge-plan.py --min-size 3 --threshold 0.80
-    python scripts/consolidation-merge-plan.py --save-memory
+    python scripts/consolidation-merge-plan.py --apply --limit 10    # real mutations
+    python scripts/consolidation-merge-plan.py --apply --confidence-gate 0.9
 
-Requires SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_API_KEY. .env auto-loaded.
+Requires SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_API_KEY. VOYAGE_API_KEY
+needed for --apply (canonical embedding). .env auto-loaded.
 """
 
 from __future__ import annotations
@@ -48,6 +58,7 @@ except Exception:
 
 try:
     from dotenv import load_dotenv
+
     here = Path(__file__).resolve().parent
     for c in (here.parent / ".env", here.parent.parent / ".env"):
         if c.exists():
@@ -66,13 +77,29 @@ DEFAULT_MIN_SIZE = 3
 DEFAULT_THRESHOLD = 0.80
 DEFAULT_MODEL = "claude-haiku-4-5"
 DEFAULT_TIMEOUT = 15.0  # per-cluster; clusters are larger than single-write classifier
+DEFAULT_CONFIDENCE_GATE = 0.85  # owner-decided 2026-04-19 (#221)
+DEFAULT_APPLY_LIMIT = 20
 
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 1500  # room for canonical_content on MERGE
 MAX_MEMBER_CONTENT_CHARS = 800  # truncate long memories before sending
 
+VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
+VOYAGE_MODEL = "voyage-3-lite"
+VOYAGE_TIMEOUT = 30.0
+MAX_CANONICAL_TAGS = 15  # trim merged tag UNION — stops tag explosion
+
 VALID_DECISIONS = ("MERGE", "SUPERSEDE", "KEEP_DISTINCT")
+
+# Maps Haiku's output labels to the DB-side CHECK values for
+# memory_review_queue.decision. SUPERSEDE → SUPERSEDE_CONSOLIDATION
+# disambiguates from Phase 2 classifier's single-candidate UPDATE/DELETE.
+DB_DECISION = {
+    "MERGE": "MERGE",
+    "SUPERSEDE": "SUPERSEDE_CONSOLIDATION",
+    "KEEP_DISTINCT": "KEEP_DISTINCT",
+}
 
 
 SYSTEM_PROMPT = """You are a memory-consolidation planner for a personal AI agent's long-term memory store.
@@ -206,13 +233,15 @@ def group_clusters(rpc_rows: list[dict], details_by_id: dict[str, dict]) -> list
     for cid, by_id in by_cluster.items():
         members = sorted(by_id.values(), key=lambda m: m["updated_at"], reverse=True)
         max_sim = max(m["similarity"] for m in members)
-        clusters.append({
-            "cluster_id": cid,
-            "size": len(members),
-            "max_similarity": round(max_sim, 4),
-            "types": sorted({m["type"] for m in members}),
-            "members": members,
-        })
+        clusters.append(
+            {
+                "cluster_id": cid,
+                "size": len(members),
+                "max_similarity": round(max_sim, 4),
+                "types": sorted({m["type"] for m in members}),
+                "members": members,
+            }
+        )
     clusters.sort(key=lambda c: (c["size"], c["max_similarity"]), reverse=True)
     return clusters
 
@@ -289,7 +318,9 @@ def _parse_response(text: str, member_ids: list[str]) -> dict | None:
     if decision == "MERGE":
         name = data.get("canonical_name")
         content = data.get("canonical_content")
-        if not (isinstance(name, str) and name.strip()) or not (isinstance(content, str) and content.strip()):
+        if not (isinstance(name, str) and name.strip()) or not (
+            isinstance(content, str) and content.strip()
+        ):
             return _downgrade(data, "MERGE missing canonical_name or canonical_content")
 
     # Enforce schema invariants — the model's output is advisory; downstream
@@ -321,8 +352,12 @@ def _parse_response(text: str, member_ids: list[str]) -> dict | None:
         "canonical_id": canonical_id,
         "supersede_ids": supersede_ids,
         "canonical_name": (data.get("canonical_name") or None) if decision == "MERGE" else None,
-        "canonical_description": (data.get("canonical_description") or None) if decision == "MERGE" else None,
-        "canonical_content": (data.get("canonical_content") or None) if decision == "MERGE" else None,
+        "canonical_description": (data.get("canonical_description") or None)
+        if decision == "MERGE"
+        else None,
+        "canonical_content": (data.get("canonical_content") or None)
+        if decision == "MERGE"
+        else None,
         "confidence": confidence,
         "reasoning": reasoning,
     }
@@ -357,6 +392,327 @@ def _fallback_keep_distinct(why: str) -> dict:
         "canonical_content": None,
         "confidence": 0.0,
         "reasoning": f"fallback: {why}",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Apply path (5.1b-β): queue routing, RPC call, embedding backfill.
+# ---------------------------------------------------------------------------
+
+
+def member_ids_key(ids: list[str]) -> str:
+    """Deterministic key for a cluster's member-id set.
+
+    Must match the SQL index expression `consolidation_payload->>'member_ids_key'`
+    (schema.sql, Phase 5.1b-β). Sorted + comma-joined keeps it both
+    human-readable in the queue row and cheap to index.
+    """
+    return ",".join(sorted(ids))
+
+
+def fetch_existing_queue_keys(client) -> set[str]:
+    """Return member_ids_key of every queue row we should treat as "seen".
+
+    Excludes `rolled_back` — those are cases where the owner (or rollback
+    script) explicitly wants the cluster reconsidered. Includes `pending`
+    because those are awaiting review and we don't need a duplicate row.
+    """
+    rows = (
+        client.table("memory_review_queue")
+        .select("consolidation_payload, status")
+        .not_.is_("consolidation_payload", "null")
+        .neq("status", "rolled_back")
+        .execute()
+        .data
+    ) or []
+    keys: set[str] = set()
+    for r in rows:
+        payload = r.get("consolidation_payload") or {}
+        k = payload.get("member_ids_key")
+        if isinstance(k, str) and k:
+            keys.add(k)
+    return keys
+
+
+def canonical_tags_union(members: list[dict]) -> list[str]:
+    """UNION of member tags, deterministic order, trimmed.
+
+    Sorted alphabetically so repeated runs produce the same canonical —
+    makes the canonical embedding reproducible if we ever need to recompute.
+    """
+    tags: set[str] = set()
+    for m in members:
+        for t in m.get("tags") or []:
+            if isinstance(t, str) and t.strip():
+                tags.add(t.strip())
+    return sorted(tags)[:MAX_CANONICAL_TAGS]
+
+
+def _canonical_embed_text(name: str, description: str, tags: list[str], content: str) -> str:
+    """Mirror of mcp-memory/server.py:_canonical_embed_text.
+
+    Keeping the canonical form in sync with server.py matters for semantic
+    recall: the canonical memory must be embedded the same way as memories
+    written via the MCP server, otherwise cosine distances drift.
+    """
+    parts = [name or ""]
+    if tags:
+        parts.append("tags: " + ", ".join(tags))
+    if description:
+        parts.append(description)
+    if content:
+        parts.append(content)
+    return "\n".join(p for p in parts if p)
+
+
+def embed_document(text: str, *, timeout: float = VOYAGE_TIMEOUT) -> list[float] | None:
+    """Sync VoyageAI call. Returns None on any failure (caller retries / skips)."""
+    api_key = os.environ.get("VOYAGE_API_KEY")
+    if not api_key or not text:
+        return None
+    try:
+        with httpx.Client(timeout=timeout) as http:
+            resp = http.post(
+                VOYAGE_API_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={"model": VOYAGE_MODEL, "input": [text], "input_type": "document"},
+            )
+            resp.raise_for_status()
+            return resp.json()["data"][0]["embedding"]
+    except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError):
+        return None
+
+
+def _cluster_type(cluster: dict) -> str:
+    """find_consolidation_clusters joins on equal type — clusters are homogeneous."""
+    types = cluster.get("types") or []
+    return types[0] if types else "project"
+
+
+def build_payload(cluster: dict, plan: dict, source_provenance: str) -> dict:
+    """Assemble the jsonb payload stored on every queue entry.
+
+    Downstream consumers (apply RPC, rollback RPC, future review UI) rely
+    on field names here — keep them stable.
+    """
+    members = cluster["members"]
+    member_ids = [m["id"] for m in members]
+    canonical_tags = canonical_tags_union(members) if plan["decision"] == "MERGE" else []
+    return {
+        "cluster_id": cluster["cluster_id"],
+        "member_ids": sorted(member_ids),
+        "member_ids_key": member_ids_key(member_ids),
+        "member_names": [m["name"] for m in members],
+        "supersede_ids": sorted(plan.get("supersede_ids") or []),
+        "canonical_project": "jarvis",
+        "canonical_type": _cluster_type(cluster),
+        "canonical_name": plan.get("canonical_name"),
+        "canonical_description": plan.get("canonical_description"),
+        "canonical_content": plan.get("canonical_content"),
+        "canonical_tags": canonical_tags,
+        "source_provenance": source_provenance,
+        "haiku_reasoning": plan.get("reasoning") or "",
+        "haiku_confidence": plan.get("confidence", 0.0),
+        "planned_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _queue_insert(
+    client,
+    *,
+    decision: str,
+    status: str,
+    target_id: str | None,
+    confidence: float,
+    reasoning: str,
+    payload: dict,
+    applied_at: str | None = None,
+) -> str | None:
+    """Insert one row into memory_review_queue. Returns id or None on error."""
+    row = {
+        "decision": decision,
+        "confidence": float(confidence),
+        "reasoning": (reasoning or "")[:1000],
+        "status": status,
+        "consolidation_payload": payload,
+        "classifier_model": DEFAULT_MODEL,
+    }
+    if target_id:
+        row["target_id"] = target_id
+    if applied_at:
+        row["applied_at"] = applied_at
+    try:
+        resp = client.table("memory_review_queue").insert(row).execute()
+        data = resp.data or []
+        return data[0]["id"] if data else None
+    except Exception as e:  # supabase client raises on HTTP errors
+        print(f"! queue insert failed ({decision}, {status}): {e}", file=sys.stderr)
+        return None
+
+
+def _log_event(
+    client,
+    *,
+    canonical_id: str,
+    decision: str,
+    cluster_id: int,
+    superseded_count: int,
+    queue_id: str | None,
+) -> None:
+    """Append an audit trail row to `events`. Best-effort."""
+    try:
+        client.table("events").insert(
+            {
+                "event_type": "consolidation_applied",
+                "severity": "info",
+                "repo": "Osasuwu/jarvis",
+                "source": "manual",
+                "title": f"Consolidation {decision} applied (cluster {cluster_id})",
+                "payload": {
+                    "decision": decision,
+                    "canonical_id": canonical_id,
+                    "cluster_id": cluster_id,
+                    "superseded_count": superseded_count,
+                    "queue_id": queue_id,
+                },
+            }
+        ).execute()
+    except Exception as e:
+        print(f"! event log failed: {e}", file=sys.stderr)
+
+
+def apply_plan(
+    client, cluster: dict, plan: dict, *, today: str, dry_run_embed: bool = False
+) -> dict:
+    """Apply one high-confidence plan. Returns result dict for summary output.
+
+    Order matters: RPC first (atomic member supersede), then embedding
+    backfill, then queue audit row + event. If embedding fails, the
+    canonical is still correct — it just won't be found via semantic
+    recall until a later backfill sweeps nulls (matches server.py's
+    lazy-backfill pattern, memories with NULL embedding).
+    """
+    db_decision = DB_DECISION[plan["decision"]]
+    source_provenance = f"skill:consolidation:{plan['decision'].lower()}:{today}"
+    payload = build_payload(cluster, plan, source_provenance)
+
+    rpc_plan = {
+        "decision": db_decision,
+        "canonical_id": plan.get("canonical_id"),
+        "supersede_ids": payload["supersede_ids"],
+        "canonical_project": payload["canonical_project"],
+        "canonical_type": payload["canonical_type"],
+        "canonical_name": payload.get("canonical_name"),
+        "canonical_description": payload.get("canonical_description"),
+        "canonical_content": payload.get("canonical_content"),
+        "canonical_tags": payload.get("canonical_tags"),
+        "source_provenance": source_provenance,
+        "confidence": plan.get("confidence", 0.8),
+    }
+
+    resp = client.rpc("apply_consolidation_plan", {"plan": rpc_plan}).execute()
+    rpc_out = resp.data or {}
+    canonical_id = rpc_out.get("canonical_id")
+    superseded_count = int(rpc_out.get("superseded_count") or 0)
+    if not canonical_id:
+        raise RuntimeError(f"apply_consolidation_plan returned no canonical_id: {rpc_out!r}")
+
+    embedded = False
+    if plan["decision"] == "MERGE" and not dry_run_embed:
+        embed_text = _canonical_embed_text(
+            plan.get("canonical_name") or "",
+            plan.get("canonical_description") or "",
+            payload.get("canonical_tags") or [],
+            plan.get("canonical_content") or "",
+        )
+        vec = embed_document(embed_text)
+        if vec is not None:
+            try:
+                client.table("memories").update(
+                    {
+                        "embedding": vec,
+                        "embedding_model": VOYAGE_MODEL,
+                        "embedding_version": "v2",
+                    }
+                ).eq("id", canonical_id).execute()
+                embedded = True
+            except Exception as e:
+                print(f"! embedding backfill failed for {canonical_id}: {e}", file=sys.stderr)
+
+    applied_at = datetime.now(timezone.utc).isoformat()
+    queue_id = _queue_insert(
+        client,
+        decision=db_decision,
+        status="auto_applied",
+        target_id=canonical_id,
+        confidence=plan.get("confidence", 0.8),
+        reasoning=plan.get("reasoning") or "",
+        payload=payload,
+        applied_at=applied_at,
+    )
+
+    _log_event(
+        client,
+        canonical_id=canonical_id,
+        decision=db_decision,
+        cluster_id=cluster["cluster_id"],
+        superseded_count=superseded_count,
+        queue_id=queue_id,
+    )
+
+    return {
+        "cluster_id": cluster["cluster_id"],
+        "decision": db_decision,
+        "canonical_id": canonical_id,
+        "superseded_count": superseded_count,
+        "embedded": embedded,
+        "queue_id": queue_id,
+        "status": "applied",
+    }
+
+
+def queue_for_review(client, cluster: dict, plan: dict, *, today: str) -> dict:
+    """Route a low-confidence MERGE/SUPERSEDE plan to the review queue."""
+    db_decision = DB_DECISION[plan["decision"]]
+    source_provenance = f"skill:consolidation:{plan['decision'].lower()}:{today}"
+    payload = build_payload(cluster, plan, source_provenance)
+    target_id = plan.get("canonical_id") if plan["decision"] == "SUPERSEDE" else None
+    queue_id = _queue_insert(
+        client,
+        decision=db_decision,
+        status="pending",
+        target_id=target_id,
+        confidence=plan.get("confidence", 0.0),
+        reasoning=plan.get("reasoning") or "",
+        payload=payload,
+    )
+    return {
+        "cluster_id": cluster["cluster_id"],
+        "decision": db_decision,
+        "queue_id": queue_id,
+        "status": "queued",
+    }
+
+
+def note_keep_distinct(client, cluster: dict, plan: dict, *, today: str) -> dict:
+    """Record KEEP_DISTINCT so the same cluster isn't re-planned next week."""
+    source_provenance = f"skill:consolidation:keep_distinct:{today}"
+    payload = build_payload(cluster, plan, source_provenance)
+    queue_id = _queue_insert(
+        client,
+        decision="KEEP_DISTINCT",
+        status="auto_applied",
+        target_id=None,
+        confidence=plan.get("confidence", 0.0),
+        reasoning=plan.get("reasoning") or "",
+        payload=payload,
+        applied_at=datetime.now(timezone.utc).isoformat(),
+    )
+    return {
+        "cluster_id": cluster["cluster_id"],
+        "decision": "KEEP_DISTINCT",
+        "queue_id": queue_id,
+        "status": "noted",
     }
 
 
@@ -409,7 +765,9 @@ def plan_cluster(cluster: dict, *, model: str, timeout: float) -> dict:
     return parsed
 
 
-def render_markdown(clusters: list[dict], plans: list[dict], min_size: int, threshold: float, model: str) -> str:
+def render_markdown(
+    clusters: list[dict], plans: list[dict], min_size: int, threshold: float, model: str
+) -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     by_decision: dict[str, int] = defaultdict(int)
     for p in plans:
@@ -483,7 +841,9 @@ def render_markdown(clusters: list[dict], plans: list[dict], min_size: int, thre
 
     lines.append("---")
     lines.append("")
-    lines.append("**Next**: review plans; 5.1b-β will add `--apply` with a confidence threshold (≥ 0.9) and a review queue for the rest.")
+    lines.append(
+        "**Next**: rerun with `--apply` to persist high-confidence plans and route the rest to the review queue."
+    )
     return "\n".join(lines)
 
 
@@ -533,18 +893,57 @@ def save_plan_memory(client, plan_md: str, plans: list[dict]) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    p.add_argument("--min-size", type=int, default=DEFAULT_MIN_SIZE,
-                   help=f"Minimum cluster size (default {DEFAULT_MIN_SIZE})")
-    p.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
-                   help=f"Cosine similarity threshold (default {DEFAULT_THRESHOLD})")
-    p.add_argument("--model", default=DEFAULT_MODEL,
-                   help=f"Anthropic model id (default {DEFAULT_MODEL})")
-    p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT,
-                   help=f"Per-cluster API timeout seconds (default {DEFAULT_TIMEOUT})")
-    p.add_argument("--json", action="store_true",
-                   help="Emit JSON instead of markdown")
-    p.add_argument("--save-memory", action="store_true",
-                   help="Upsert the plan as a Jarvis memory (`consolidation_plan_YYYY-MM-DD`)")
+    p.add_argument(
+        "--min-size",
+        type=int,
+        default=DEFAULT_MIN_SIZE,
+        help=f"Minimum cluster size (default {DEFAULT_MIN_SIZE})",
+    )
+    p.add_argument(
+        "--threshold",
+        type=float,
+        default=DEFAULT_THRESHOLD,
+        help=f"Cosine similarity threshold (default {DEFAULT_THRESHOLD})",
+    )
+    p.add_argument(
+        "--model", default=DEFAULT_MODEL, help=f"Anthropic model id (default {DEFAULT_MODEL})"
+    )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=DEFAULT_TIMEOUT,
+        help=f"Per-cluster API timeout seconds (default {DEFAULT_TIMEOUT})",
+    )
+    p.add_argument("--json", action="store_true", help="Emit JSON instead of markdown")
+    p.add_argument(
+        "--save-memory",
+        action="store_true",
+        help="Upsert the plan as a Jarvis memory (`consolidation_plan_YYYY-MM-DD`)",
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="Persist mutations: high-confidence → apply RPC, "
+        "rest → review queue. Default is dry-run.",
+    )
+    p.add_argument(
+        "--confidence-gate",
+        type=float,
+        default=DEFAULT_CONFIDENCE_GATE,
+        help=f"Minimum confidence for auto-apply (default {DEFAULT_CONFIDENCE_GATE})",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=DEFAULT_APPLY_LIMIT,
+        help=f"Cap clusters processed per run (default {DEFAULT_APPLY_LIMIT})",
+    )
+    p.add_argument(
+        "--include-seen",
+        action="store_true",
+        help="Don't skip clusters already in memory_review_queue. "
+        "Default: skip (prevents re-spending Haiku tokens).",
+    )
     args = p.parse_args()
 
     sb_url = os.environ.get("SUPABASE_URL")
@@ -555,6 +954,12 @@ def main() -> int:
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("ANTHROPIC_API_KEY missing from env", file=sys.stderr)
         return 2
+    if args.apply and not os.environ.get("VOYAGE_API_KEY"):
+        print(
+            "! VOYAGE_API_KEY missing — MERGE canonicals will be created without embeddings "
+            "(recall will miss them until backfilled)",
+            file=sys.stderr,
+        )
 
     client = create_client(sb_url, sb_key)
 
@@ -565,25 +970,95 @@ def main() -> int:
     clusters = group_clusters(rpc_rows, details_by_id)
     clusters = [c for c in clusters if c["size"] >= args.min_size]
 
+    skipped_seen = 0
+    if not args.include_seen and clusters:
+        seen_keys = fetch_existing_queue_keys(client)
+        if seen_keys:
+            before = len(clusters)
+            clusters = [
+                c
+                for c in clusters
+                if member_ids_key([m["id"] for m in c["members"]]) not in seen_keys
+            ]
+            skipped_seen = before - len(clusters)
+            if skipped_seen:
+                print(
+                    f"Skipped {skipped_seen} cluster(s) already in review queue "
+                    f"(use --include-seen to override)",
+                    file=sys.stderr,
+                )
+
+    if args.limit and len(clusters) > args.limit:
+        print(
+            f"Capping at --limit {args.limit} (had {len(clusters)} eligible clusters)",
+            file=sys.stderr,
+        )
+        clusters = clusters[: args.limit]
+
     if not clusters:
         if args.json:
-            print(json.dumps({
-                "generated_at": datetime.now(timezone.utc).isoformat(),
-                "params": {"min_size": args.min_size, "threshold": args.threshold},
-                "model": args.model,
-                "clusters": [],
-                "plans": [],
-            }, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "generated_at": datetime.now(timezone.utc).isoformat(),
+                        "params": {"min_size": args.min_size, "threshold": args.threshold},
+                        "model": args.model,
+                        "clusters": [],
+                        "plans": [],
+                        "apply": bool(args.apply),
+                        "skipped_seen": skipped_seen,
+                    },
+                    indent=2,
+                )
+            )
         else:
             print(render_markdown([], [], args.min_size, args.threshold, args.model))
+            if skipped_seen:
+                print(f"\n_Skipped {skipped_seen} already-seen cluster(s)._")
         return 0
 
     print(f"Planning {len(clusters)} cluster(s) with {args.model}...", file=sys.stderr)
     plans = []
     for i, cluster in enumerate(clusters, 1):
-        print(f"  [{i}/{len(clusters)}] cluster {cluster['cluster_id']} "
-              f"({cluster['size']} members)...", file=sys.stderr)
+        print(
+            f"  [{i}/{len(clusters)}] cluster {cluster['cluster_id']} "
+            f"({cluster['size']} members)...",
+            file=sys.stderr,
+        )
         plans.append(plan_cluster(cluster, model=args.model, timeout=args.timeout))
+
+    apply_results: list[dict] = []
+    if args.apply:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        print(f"Applying plans (confidence gate {args.confidence_gate:.2f})...", file=sys.stderr)
+        for cluster, plan in zip(clusters, plans):
+            try:
+                if plan["decision"] == "KEEP_DISTINCT":
+                    r = note_keep_distinct(client, cluster, plan, today=today)
+                elif plan["confidence"] >= args.confidence_gate:
+                    r = apply_plan(client, cluster, plan, today=today)
+                    print(
+                        f"  ✓ cluster {cluster['cluster_id']}: APPLIED {plan['decision']} "
+                        f"(canonical={r.get('canonical_id')}, superseded={r.get('superseded_count')})",
+                        file=sys.stderr,
+                    )
+                else:
+                    r = queue_for_review(client, cluster, plan, today=today)
+                    print(
+                        f"  ⋯ cluster {cluster['cluster_id']}: queued {plan['decision']} "
+                        f"(confidence {plan['confidence']:.2f} < gate)",
+                        file=sys.stderr,
+                    )
+                apply_results.append(r)
+            except Exception as e:
+                print(f"  ✗ cluster {cluster['cluster_id']}: FAILED — {e}", file=sys.stderr)
+                apply_results.append(
+                    {
+                        "cluster_id": cluster["cluster_id"],
+                        "status": "error",
+                        "error": str(e),
+                    }
+                )
 
     if args.json:
         out = {
@@ -592,11 +1067,28 @@ def main() -> int:
             "model": args.model,
             "clusters": clusters,
             "plans": plans,
+            "apply": bool(args.apply),
+            "confidence_gate": args.confidence_gate,
+            "limit": args.limit,
+            "skipped_seen": skipped_seen,
+            "apply_results": apply_results,
         }
         print(json.dumps(out, indent=2, default=str))
     else:
         md = render_markdown(clusters, plans, args.min_size, args.threshold, args.model)
         print(md)
+        if args.apply and apply_results:
+            print()
+            print("## Apply summary")
+            print()
+            by_status: dict[str, int] = defaultdict(int)
+            for r in apply_results:
+                by_status[r["status"]] += 1
+            for status in ("applied", "queued", "noted", "error"):
+                if by_status.get(status):
+                    print(f"- **{status}**: {by_status[status]}")
+            if skipped_seen:
+                print(f"- **skipped (already in queue)**: {skipped_seen}")
         if args.save_memory:
             save_plan_memory(client, md, plans)
 
