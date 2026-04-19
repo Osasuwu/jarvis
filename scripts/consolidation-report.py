@@ -1,11 +1,13 @@
 """Memory consolidation — cluster detection report (Phase 5.1a, deterministic).
 
 Calls the `find_consolidation_clusters` RPC, filters out dead memories
-(expired_at / superseded_by / deleted_at) post-hoc in Python, and prints a
-human-readable report of similarity clusters that are genuine candidates for
-merge/supersede.
+(expired_at / valid_to / superseded_by / deleted_at) post-hoc in Python, and
+prints a human-readable report of similarity clusters that are genuine
+candidates for merge/supersede.
 
-No LLM. No mutations. Pure read.
+No LLM. Default mode is a pure read — safe against prod. The only write
+path is the opt-in `--save-memory` flag, which upserts the markdown report
+into the `memories` table as a dated `consolidation_report_YYYY-MM-DD` row.
 
 Follow-ups (separate PRs):
     5.1b — Haiku merger emits merge/supersede plan per cluster (dry-run + --apply)
@@ -76,7 +78,7 @@ def fetch_lifecycle_columns(client, memory_ids: list[str]) -> dict[str, dict]:
         client.table("memories")
         .select(
             "id, name, type, description, tags, "
-            "expired_at, superseded_by, deleted_at, "
+            "expired_at, valid_to, superseded_by, deleted_at, "
             "updated_at, content_updated_at"
         )
         .in_("id", memory_ids)
@@ -86,14 +88,38 @@ def fetch_lifecycle_columns(client, memory_ids: list[str]) -> dict[str, dict]:
     return {r["id"]: r for r in rows}
 
 
+def _parse_ts(ts) -> datetime | None:
+    if ts is None:
+        return None
+    if isinstance(ts, datetime):
+        return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+    try:
+        # Postgres returns ISO-8601 with offset; handle the `Z` suffix too.
+        s = str(ts).replace("Z", "+00:00")
+        return datetime.fromisoformat(s)
+    except (TypeError, ValueError):
+        return None
+
+
 def is_live(row: dict) -> bool:
     """Phase 1 default-recall semantics: memory is live iff not expired, not
-    superseded, not soft-deleted. Kept in sync with server.py `_hybrid_recall`."""
-    return (
-        row.get("expired_at") is None
-        and row.get("superseded_by") is None
-        and row.get("deleted_at") is None
-    )
+    past its valid_to, not superseded, not soft-deleted.
+    Kept in sync with server.py `_hybrid_recall` filter:
+        expired_at IS NULL
+        AND (valid_to IS NULL OR valid_to > now())
+        AND superseded_by IS NULL
+    Plus deleted_at (soft-delete).
+    """
+    if row.get("expired_at") is not None:
+        return False
+    if row.get("superseded_by") is not None:
+        return False
+    if row.get("deleted_at") is not None:
+        return False
+    valid_to = _parse_ts(row.get("valid_to"))
+    if valid_to is not None and valid_to <= datetime.now(timezone.utc):
+        return False
+    return True
 
 
 def group_clusters(rpc_rows: list[dict], live_by_id: dict[str, dict]) -> list[dict]:
@@ -205,11 +231,15 @@ def save_report_memory(client, report_md: str, cluster_count: int, member_count:
         f"Consolidation clusters {today}: {cluster_count} live clusters, "
         f"{member_count} memories. Deterministic RPC snapshot (Phase 5.1a)."
     )
+    # Only match a *live* prior row for update; if owner soft-deleted the old
+    # report, treat that as a deliberate tombstone and insert a fresh row
+    # instead of silently reviving it.
     existing = (
         client.table("memories")
         .select("id")
         .eq("project", "jarvis")
         .eq("name", name)
+        .is_("deleted_at", "null")
         .execute()
         .data
     )
