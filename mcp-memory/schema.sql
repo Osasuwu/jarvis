@@ -1675,13 +1675,29 @@ begin
         v_new_tags := null;
         v_new_desc := null;
         if v_action in ('UPDATE_TAGS', 'UPDATE_BOTH') then
+            -- Contract: action committed to a tag change, so the payload
+            -- MUST carry a non-null new_tags array. Empty-array payloads
+            -- pass (explicit "clear tags" is a valid evolution), but
+            -- missing/null would silently wipe the neighbor's tags under
+            -- the old coalesce(..., '[]') behaviour — raise instead so the
+            -- caller surfaces the planner bug.
+            if not (v_proposal ? 'new_tags')
+               or jsonb_typeof(v_proposal->'new_tags') = 'null' then
+                raise exception
+                    'EVOLVE action % requires non-null new_tags for neighbor %',
+                    v_action, v_neighbor_id;
+            end if;
             v_new_tags := array(
-                select jsonb_array_elements_text(
-                    coalesce(v_proposal->'new_tags', '[]'::jsonb)
-                )
+                select jsonb_array_elements_text(v_proposal->'new_tags')
             );
         end if;
         if v_action in ('UPDATE_DESC', 'UPDATE_BOTH') then
+            if not (v_proposal ? 'new_description')
+               or jsonb_typeof(v_proposal->'new_description') = 'null' then
+                raise exception
+                    'EVOLVE action % requires non-null new_description for neighbor %',
+                    v_action, v_neighbor_id;
+            end if;
             v_new_desc := v_proposal->>'new_description';
         end if;
 
@@ -1695,7 +1711,11 @@ begin
         v_snapshots := v_snapshots || jsonb_build_object(
             'neighbor_id', v_neighbor_id,
             'action', v_action,
-            'old_tags', to_jsonb(v_old_tags),
+            -- Store old_tags as a JSON array even when memories.tags was NULL.
+            -- to_jsonb(NULL::text[]) produces JSONB 'null' (not SQL NULL),
+            -- which would later trip jsonb_array_elements_text in rollback.
+            -- Normalize to '[]' at write time.
+            'old_tags', coalesce(to_jsonb(v_old_tags), '[]'::jsonb),
             'old_description', v_old_desc,
             'old_content_updated_at', v_old_content_updated_at,
             'new_tags', to_jsonb(v_new_tags),
@@ -1825,7 +1845,17 @@ begin
         update memories
         set tags = array(
                 select jsonb_array_elements_text(
-                    coalesce(v_snapshot->'old_tags', '[]'::jsonb)
+                    -- Defend against legacy rows where old_tags was stored
+                    -- as JSONB 'null' (pre-fix apply path): jsonb_array_elements_text
+                    -- would raise on a non-array scalar. New rows are already
+                    -- normalized at write time, but this keeps rollback safe
+                    -- for rows inserted by the un-patched apply RPC.
+                    case
+                        when v_snapshot->'old_tags' is null
+                             or jsonb_typeof(v_snapshot->'old_tags') <> 'array'
+                        then '[]'::jsonb
+                        else v_snapshot->'old_tags'
+                    end
                 )
             ),
             description = v_snapshot->>'old_description'

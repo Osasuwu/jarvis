@@ -189,19 +189,20 @@ def fetch_recent_updates(
 def _fetch_seen_update_ids(client, update_queue_ids: list[str]) -> set[str]:
     """Which of these UPDATE queue IDs already have an EVOLVE row?
 
-    Scans memory_review_queue for decision='EVOLVE' rows whose
-    evolution_payload->>'update_queue_id' matches any id in the input.
-    The functional index on that key (see schema.sql §5.2-β) makes this
-    lookup O(log n) per id.
+    Server-side filter on ``evolution_payload->>'update_queue_id' IN (...)``
+    so Postgres uses the functional index ``idx_review_queue_update_queue_id``
+    (schema.sql, Phase 5.2-β) instead of scanning every EVOLVE row.
+    Mirrors the consolidation dedup pattern in ``consolidation-merge-plan.py``.
     """
     if not update_queue_ids:
         return set()
+    quoted = ",".join(f'"{uid}"' for uid in update_queue_ids)
     try:
         resp = (
             client.table("memory_review_queue")
             .select("evolution_payload")
             .eq("decision", "EVOLVE")
-            .not_.is_("evolution_payload", "null")
+            .filter("evolution_payload->>update_queue_id", "in", f"({quoted})")
             .execute()
         )
         rows = resp.data or []
@@ -860,7 +861,10 @@ def main() -> int:
         "--confidence-gate",
         type=float,
         default=DEFAULT_CONFIDENCE_GATE,
-        help=f"Min per-proposal confidence to auto-apply (default {DEFAULT_CONFIDENCE_GATE}).",
+        help=(
+            f"Min plan-level confidence to auto-apply, computed as the "
+            f"MIN across actionable proposals (default {DEFAULT_CONFIDENCE_GATE})."
+        ),
     )
     args = p.parse_args()
 

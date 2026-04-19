@@ -673,3 +673,81 @@ class TestApplyOrQueue:
         assert outcomes[0]["status"] == "error"
         assert "DB unreachable" in outcomes[0]["error"]
         assert outcomes[1]["status"] == "applied"
+
+
+# ---------------------------------------------------------------------------
+# _fetch_seen_update_ids — server-side dedup filter
+# ---------------------------------------------------------------------------
+
+
+class _FakeDedupQuery:
+    """Records the filter chain .select().eq().filter() for assertion."""
+
+    def __init__(self, parent):
+        self.parent = parent
+        self.selects: list[str] = []
+        self.eqs: list[tuple] = []
+        self.filters: list[tuple] = []
+
+    def select(self, cols):
+        self.selects.append(cols)
+        return self
+
+    def eq(self, col, val):
+        self.eqs.append((col, val))
+        return self
+
+    def filter(self, col, op, val):
+        self.filters.append((col, op, val))
+        return self
+
+    def execute(self):
+        if self.parent.raise_on_execute:
+            raise RuntimeError(self.parent.raise_on_execute)
+        self.parent.last_query = self
+        return _FakeResp(self.parent.response_rows)
+
+
+class _FakeDedupClient:
+    def __init__(self, *, response_rows=None, raise_on_execute: str | None = None):
+        self.response_rows = response_rows or []
+        self.raise_on_execute = raise_on_execute
+        self.last_query: _FakeDedupQuery | None = None
+
+    def table(self, _name):
+        return _FakeDedupQuery(self)
+
+
+class TestFetchSeenUpdateIds:
+    def test_empty_input_short_circuits(self):
+        client = _FakeDedupClient()
+        assert evo._fetch_seen_update_ids(client, []) == set()
+        assert client.last_query is None  # no DB call
+
+    def test_server_side_filter_uses_index_expression(self):
+        # Two already-evolved rows out of three candidates.
+        client = _FakeDedupClient(response_rows=[
+            {"evolution_payload": {"update_queue_id": "u1"}},
+            {"evolution_payload": {"update_queue_id": "u3"}},
+        ])
+        seen = evo._fetch_seen_update_ids(client, ["u1", "u2", "u3"])
+        assert seen == {"u1", "u3"}
+        q = client.last_query
+        # decision=EVOLVE eq stays
+        assert ("decision", "EVOLVE") in q.eqs
+        # Critical: filter must target the JSON-path key that the functional
+        # index indexes. Any regression back to client-side filtering would
+        # drop this and scan the full EVOLVE audit set.
+        assert len(q.filters) == 1
+        col, op, val = q.filters[0]
+        assert col == "evolution_payload->>update_queue_id"
+        assert op == "in"
+        assert val.startswith("(") and val.endswith(")")
+        assert '"u1"' in val and '"u2"' in val and '"u3"' in val
+
+    def test_db_error_fails_open(self, capsys):
+        # Dedup is an optimization — a DB blip must not stop planning.
+        client = _FakeDedupClient(raise_on_execute="db down")
+        assert evo._fetch_seen_update_ids(client, ["u1"]) == set()
+        err = capsys.readouterr().err
+        assert "dedup lookup failed" in err
