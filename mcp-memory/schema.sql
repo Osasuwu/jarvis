@@ -228,7 +228,11 @@ create policy "Allow all for anon" on memory_links
 -- Returns clusters for LLM-driven merge (content merging is not pure SQL)
 -- =========================================================================
 
--- Find groups of memories that should be consolidated
+-- Find groups of memories that should be consolidated.
+-- Phase 5.1c: the `live` CTE applies Phase 1 default-recall semantics at the
+-- source so consumers never see stale memories in a cluster. Legacy
+-- `%_archived` types are also excluded defensively (0 rows as of 2026-04-19,
+-- left in place so a stray row from old logic cannot poison consolidation).
 create or replace function find_consolidation_clusters(
   min_cluster_size int default 3,
   sim_threshold float default 0.80
@@ -244,7 +248,17 @@ returns table (
 )
 language sql stable
 as $$
-  with pairs as (
+  with live as (
+    select id, name, type, content, embedding, updated_at
+    from memories
+    where embedding is not null
+      and expired_at is null
+      and superseded_by is null
+      and deleted_at is null
+      and (valid_to is null or valid_to > now())
+      and type not like '%\_archived' escape '\'
+  ),
+  pairs as (
     select
       a.id as id_a, b.id as id_b,
       a.name as name_a, b.name as name_b,
@@ -252,11 +266,9 @@ as $$
       a.content as content_a, b.content as content_b,
       a.updated_at as updated_a, b.updated_at as updated_b,
       1 - (a.embedding <=> b.embedding) as sim
-    from memories a
-    join memories b on a.id < b.id
+    from live a
+    join live b on a.id < b.id
       and a.type = b.type
-      and a.embedding is not null
-      and b.embedding is not null
     where 1 - (a.embedding <=> b.embedding) >= sim_threshold
   ),
   -- Group connected pairs into clusters via the oldest memory as anchor
@@ -290,8 +302,10 @@ as $$
   order by cid, updated_at desc;
 $$;
 
--- Archive superseded memories: mark as archived (soft delete)
--- Keeps data but prevents recall from returning them
+-- Archive superseded memories (Phase 5.1c): set `expired_at` instead of
+-- renaming type. Leaves type intact so type-filtered recall isn't poisoned
+-- (audit gap #6 in docs/design/memory-overhaul.md). Idempotent — skips rows
+-- already expired and doesn't double-prefix the description.
 create or replace function archive_memories(memory_ids uuid[])
 returns int
 language plpgsql volatile
@@ -300,10 +314,13 @@ declare
   archived_count int;
 begin
   update memories
-  set type = type || '_archived',
-      description = '[ARCHIVED — consolidated] ' || coalesce(description, '')
+  set expired_at = coalesce(expired_at, now()),
+      description = case
+        when description like '[ARCHIVED%' then description
+        else '[ARCHIVED — consolidated] ' || coalesce(description, '')
+      end
   where id = any(memory_ids)
-    and type not like '%_archived';
+    and expired_at is null;
   get diagnostics archived_count = row_count;
   return archived_count;
 end;
