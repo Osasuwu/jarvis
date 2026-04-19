@@ -43,6 +43,9 @@ from typing import Any, Callable
 # ---------------------------------------------------------------------------
 SIMILARITY_THRESHOLD = 0.25
 RRF_K = 60
+# Must match memory-recall-hook.py::TYPE_BOOST_MULTIPLIER so eval's
+# with-rewriter numbers predict hook behavior. Don't re-tune in one place.
+TYPE_BOOST_MULTIPLIER = 1.5
 TEMPORAL_HALF_LIVES = {
     "user": 180,
     "feedback": 90,
@@ -113,7 +116,14 @@ async def _embed_query(text: str) -> list[float]:
         return resp.json()["data"][0]["embedding"]
 
 
-def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, k: int = RRF_K) -> list[dict]:
+def _rrf_merge(
+    semantic_rows: list[dict],
+    keyword_rows: list[dict],
+    limit: int,
+    k: int = RRF_K,
+    boost_types: set[str] | None = None,
+    boost_multiplier: float = TYPE_BOOST_MULTIPLIER,
+) -> list[dict]:
     scores: dict[str, float] = {}
     by_id: dict[str, dict] = {}
     for rank, row in enumerate(semantic_rows):
@@ -124,6 +134,10 @@ def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, 
         rid = row.get("id") or row["name"]
         scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
         by_id[rid] = row
+    if boost_types:
+        for rid, row in by_id.items():
+            if row.get("type") in boost_types:
+                scores[rid] *= boost_multiplier
     ranked = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
     result = []
     for rid in ranked[:limit]:
@@ -245,17 +259,11 @@ async def run_query(
     }).execute()
     kw_rows = kw.data or []
 
-    # Type narrowing: only apply when rewriter explicitly returned types.
-    # Unlike the hook (which also excludes user/project to avoid duplicating
-    # session-start context), eval does not apply a default type filter —
-    # the goal here is to isolate the rewriter's Phase-3 contribution, not
-    # model the hook's scope-restriction side effect.
-    if rw_types:
-        allowed = set(rw_types)
-        sem_rows = [r for r in sem_rows if r.get("type") in allowed]
-        kw_rows = [r for r in kw_rows if r.get("type") in allowed]
-
-    merged = _rrf_merge(sem_rows, kw_rows, limit=10)
+    # Rewriter types → soft boost (matches hook behavior after the
+    # type-narrowing regression fix). No default scope filter — eval
+    # doesn't model the hook's exclusion of user/project memories.
+    boost_types = set(rw_types) if rw_types else None
+    merged = _rrf_merge(sem_rows, kw_rows, limit=10, boost_types=boost_types)
     _apply_temporal_scoring(merged)
 
     top_names = [r.get("name", "?") for r in merged]
