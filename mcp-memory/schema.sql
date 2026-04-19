@@ -1037,3 +1037,260 @@ language sql stable as $$
     order by deduped.link_strength desc
     limit 10;
 $$;
+
+
+-- =========================================================================
+-- Phase 5.1b-β (memory overhaul, Osasuwu/jarvis#185, #221) — consolidation
+-- apply path.
+--
+-- Builds on 5.1b-α (#220): the Haiku planner emits per-cluster plans of kind
+-- MERGE / SUPERSEDE / KEEP_DISTINCT. 5.1b-β converts those plans into
+-- actual mutations, gated by confidence (>= 0.85, owner-decided 2026-04-19).
+-- Everything below the gate — and every KEEP_DISTINCT — is recorded in
+-- memory_review_queue so we (a) have an audit trail and (b) don't re-spend
+-- Haiku tokens on the same cluster every week.
+--
+-- Queue strategy (owner-decided: reuse, don't fork):
+--   - Extend memory_review_queue.decision CHECK with MERGE,
+--     SUPERSEDE_CONSOLIDATION, KEEP_DISTINCT. Phase 2 rows keep their ADD/
+--     UPDATE/DELETE/NOOP semantics untouched.
+--   - New column consolidation_payload jsonb holds cluster-level state
+--     (member_ids, canonical_* fields, haiku metadata). Phase 2 rows leave
+--     it NULL; a functional index makes "have I seen this cluster?" checks
+--     cheap for the planner's pre-filter.
+--   - Extend status CHECK with 'rolled_back' so a reverted entry is visibly
+--     distinct from owner-rejected entries (the former means "try again
+--     later", the latter means "never suggest again").
+-- =========================================================================
+
+alter table memory_review_queue
+  drop constraint if exists memory_review_queue_decision_check;
+
+alter table memory_review_queue
+  add constraint memory_review_queue_decision_check
+  check (decision in (
+    'ADD', 'UPDATE', 'DELETE', 'NOOP',
+    'MERGE', 'SUPERSEDE_CONSOLIDATION', 'KEEP_DISTINCT'
+  ));
+
+alter table memory_review_queue
+  drop constraint if exists memory_review_queue_status_check;
+
+alter table memory_review_queue
+  add constraint memory_review_queue_status_check
+  check (status in (
+    'pending', 'approved', 'rejected', 'auto_applied', 'rolled_back'
+  ));
+
+alter table memory_review_queue
+  add column if not exists consolidation_payload jsonb;
+
+-- Functional index on the sorted-member-id key. The planner pre-filter asks
+-- "does any queue row already cover this exact set of members?"; a direct
+-- equality lookup on member_ids_key inside the jsonb is O(log n) with this
+-- index and scales independent of Phase 2 row count.
+create index if not exists idx_review_queue_member_ids_key
+  on memory_review_queue((consolidation_payload->>'member_ids_key'))
+  where consolidation_payload is not null;
+
+
+-- apply_consolidation_plan: atomic per cluster.
+--
+-- MERGE: synthesize a new canonical memory from Haiku's output, mark every
+-- member superseded_by the new id, insert a `consolidates` link per member.
+-- Embedding is populated out-of-band by the caller (Python has VoyageAI);
+-- the write leaves `embedding IS NULL` temporarily — acceptable since the
+-- lifecycle filter on members immediately hides them from recall, and the
+-- caller backfills within a second.
+--
+-- SUPERSEDE_CONSOLIDATION: one existing member wins, all others get
+-- superseded_by = canonical. No new memory, no new embedding needed.
+--
+-- Returns jsonb: { status, decision, canonical_id, superseded_count }.
+create or replace function apply_consolidation_plan(plan jsonb)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text := plan->>'decision';
+    v_canonical_id uuid := nullif(plan->>'canonical_id', '')::uuid;
+    v_supersede_ids uuid[] := array(
+        select (jsonb_array_elements_text(coalesce(plan->'supersede_ids', '[]'::jsonb)))::uuid
+    );
+    v_tags text[] := array(
+        select jsonb_array_elements_text(coalesce(plan->'canonical_tags', '[]'::jsonb))
+    );
+    v_new_id uuid;
+    v_rows int;
+begin
+    if v_decision = 'MERGE' then
+        if coalesce(plan->>'canonical_name', '') = ''
+           or coalesce(plan->>'canonical_content', '') = ''
+           or coalesce(plan->>'canonical_type', '') = ''
+           or coalesce(plan->>'source_provenance', '') = '' then
+            raise exception 'MERGE plan missing required canonical_* / source_provenance fields';
+        end if;
+
+        insert into memories (
+            project, name, type, description, content, tags,
+            source_provenance, confidence
+        )
+        values (
+            nullif(plan->>'canonical_project', ''),
+            plan->>'canonical_name',
+            plan->>'canonical_type',
+            nullif(plan->>'canonical_description', ''),
+            plan->>'canonical_content',
+            v_tags,
+            plan->>'source_provenance',
+            least(coalesce((plan->>'confidence')::float, 0.8), 0.9)
+        )
+        returning id into v_new_id;
+
+        -- Supersede every member. Set lifecycle timestamps unconditionally
+        -- (not coalesce) so rollback (which NULLs them) is symmetric. Members
+        -- come from find_consolidation_clusters, which guarantees they're
+        -- live (expired_at IS NULL, superseded_by IS NULL, deleted_at IS NULL,
+        -- valid_to IS NULL OR future). A future valid_to is overwritten by
+        -- now() — that future lifecycle plan is superseded by the consolidation,
+        -- and rollback restores to NULL rather than trying to reconstruct it
+        -- (documented behaviour; owner can re-set manually if needed).
+        update memories
+        set superseded_by = v_new_id,
+            valid_to = now(),
+            expired_at = now()
+        where id = any(v_supersede_ids);
+        get diagnostics v_rows = row_count;
+
+        -- Insert `consolidates` links (canonical → each member). Rollback
+        -- drops them. ON CONFLICT is a safety net against a retried apply;
+        -- normal flow hits clean (source_id, target_id, link_type) tuples.
+        insert into memory_links (source_id, target_id, link_type, strength)
+        select v_new_id, unnest_id, 'consolidates', 1.0
+        from unnest(v_supersede_ids) as unnest_id
+        on conflict (source_id, target_id, link_type) do nothing;
+
+        return jsonb_build_object(
+            'status', 'applied',
+            'decision', 'MERGE',
+            'canonical_id', v_new_id,
+            'superseded_count', v_rows
+        );
+    elsif v_decision = 'SUPERSEDE_CONSOLIDATION' then
+        if v_canonical_id is null then
+            raise exception 'SUPERSEDE_CONSOLIDATION requires canonical_id';
+        end if;
+
+        -- Same lifecycle semantics as MERGE: unconditional now() for
+        -- round-trip symmetry with rollback.
+        update memories
+        set superseded_by = v_canonical_id,
+            valid_to = now(),
+            expired_at = now()
+        where id = any(v_supersede_ids)
+          and id <> v_canonical_id;
+        get diagnostics v_rows = row_count;
+
+        insert into memory_links (source_id, target_id, link_type, strength)
+        select v_canonical_id, unnest_id, 'supersedes', 1.0
+        from unnest(v_supersede_ids) as unnest_id
+        where unnest_id <> v_canonical_id
+        on conflict (source_id, target_id, link_type) do nothing;
+
+        return jsonb_build_object(
+            'status', 'applied',
+            'decision', 'SUPERSEDE_CONSOLIDATION',
+            'canonical_id', v_canonical_id,
+            'superseded_count', v_rows
+        );
+    else
+        raise exception 'Unsupported decision for apply_consolidation_plan: %', v_decision;
+    end if;
+end;
+$$;
+
+
+-- rollback_consolidation(queue_id): inverse of apply, keyed by the queue
+-- entry so the member-id list is authoritative (not re-derived from links,
+-- which could collide with Phase 2 classifier supersedes).
+--
+-- MERGE rollback:  soft-delete the synthesized canonical, clear members'
+--                  lifecycle cols, remove `consolidates` links.
+-- SUPERSEDE_CONSOLIDATION rollback: leave canonical live, restore the
+--                  losers, remove `supersedes` links created by this apply.
+--
+-- Status transitions: 'auto_applied'/'approved' → 'rolled_back'. Rejecting
+-- an already-applied entry is not supported through this RPC — it would
+-- conflate "owner disapproves future suggestion" with "undo this mutation".
+create or replace function rollback_consolidation(queue_id uuid)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_payload jsonb;
+    v_decision text;
+    v_status text;
+    v_canonical_id uuid;
+    v_supersede_ids uuid[];
+    v_rows int;
+begin
+    select consolidation_payload, decision, status, target_id
+    into v_payload, v_decision, v_status, v_canonical_id
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if v_payload is null then
+        raise exception 'Queue entry % missing (or has no consolidation_payload)', queue_id;
+    end if;
+
+    if v_decision not in ('MERGE', 'SUPERSEDE_CONSOLIDATION') then
+        raise exception 'Entry % is not a consolidation row (decision=%)', queue_id, v_decision;
+    end if;
+
+    if v_status not in ('auto_applied', 'approved') then
+        raise exception 'Can only roll back auto_applied/approved entries (status=%)', v_status;
+    end if;
+
+    if v_canonical_id is null then
+        raise exception 'Entry % has no target_id to roll back', queue_id;
+    end if;
+
+    v_supersede_ids := array(
+        select (jsonb_array_elements_text(coalesce(v_payload->'supersede_ids', '[]'::jsonb)))::uuid
+    );
+
+    update memories
+    set superseded_by = null,
+        valid_to = null,
+        expired_at = null
+    where id = any(v_supersede_ids)
+      and superseded_by = v_canonical_id;
+    get diagnostics v_rows = row_count;
+
+    delete from memory_links
+    where source_id = v_canonical_id
+      and target_id = any(v_supersede_ids)
+      and link_type in ('consolidates', 'supersedes');
+
+    if v_decision = 'MERGE' then
+        update memories
+        set deleted_at = now()
+        where id = v_canonical_id;
+    end if;
+
+    update memory_review_queue
+    set status = 'rolled_back',
+        reviewed_at = now(),
+        reviewed_by = coalesce(reviewed_by, 'rollback_script')
+    where id = queue_id;
+
+    return jsonb_build_object(
+        'status', 'rolled_back',
+        'decision', v_decision,
+        'canonical_id', v_canonical_id,
+        'canonical_soft_deleted', v_decision = 'MERGE',
+        'restored_count', v_rows
+    );
+end;
+$$;

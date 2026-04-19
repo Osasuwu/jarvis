@@ -38,6 +38,9 @@ config/device.json
 # Generated self-review reports (runtime artifacts - keep skill definitions)
 reports/self-review-*.md
 
+# Ad-hoc smoke-test / one-shot script artifacts
+.tmp/
+
 # Legacy Python (may remain locally)
 __pycache__/
 *.py[cod]
