@@ -1106,8 +1106,23 @@ create index if not exists idx_review_queue_member_ids_key
 -- SUPERSEDE_CONSOLIDATION: one existing member wins, all others get
 -- superseded_by = canonical. No new memory, no new embedding needed.
 --
--- Returns jsonb: { status, decision, canonical_id, superseded_count }.
-create or replace function apply_consolidation_plan(plan jsonb)
+-- queue_meta (optional): when non-null, also inserts a memory_review_queue
+-- row in the same transaction. This is the auto_applied audit trail and is
+-- required for rollback — without it the mutation would be irreversible.
+-- Keeping it in-RPC means a queue-insert failure rolls the mutation back
+-- rather than leaving orphaned memory state (#224 fix).
+--
+-- Returns jsonb: { status, decision, canonical_id, superseded_count, queue_id? }.
+--
+-- Signature changed from 1-arg to 2-arg-with-default in #224. Postgres will
+-- keep both variants installed side-by-side unless the old one is explicitly
+-- dropped, and 1-arg callers will continue hitting the pre-#224 body. Mirrors
+-- the `get_linked_memories` migration pattern.
+drop function if exists apply_consolidation_plan(jsonb);
+create or replace function apply_consolidation_plan(
+    plan jsonb,
+    queue_meta jsonb default null
+)
 returns jsonb
 language plpgsql volatile
 as $$
@@ -1122,6 +1137,9 @@ declare
     );
     v_new_id uuid;
     v_rows int;
+    v_queue_id uuid;
+    v_result jsonb;
+    v_queue_target uuid;
 begin
     if v_decision = 'MERGE' then
         if coalesce(plan->>'canonical_name', '') = ''
@@ -1170,12 +1188,13 @@ begin
         from unnest(v_supersede_ids) as unnest_id
         on conflict (source_id, target_id, link_type) do nothing;
 
-        return jsonb_build_object(
+        v_result := jsonb_build_object(
             'status', 'applied',
             'decision', 'MERGE',
             'canonical_id', v_new_id,
             'superseded_count', v_rows
         );
+        v_queue_target := v_new_id;
     elsif v_decision = 'SUPERSEDE_CONSOLIDATION' then
         if v_canonical_id is null then
             raise exception 'SUPERSEDE_CONSOLIDATION requires canonical_id';
@@ -1197,15 +1216,72 @@ begin
         where unnest_id <> v_canonical_id
         on conflict (source_id, target_id, link_type) do nothing;
 
-        return jsonb_build_object(
+        v_result := jsonb_build_object(
             'status', 'applied',
             'decision', 'SUPERSEDE_CONSOLIDATION',
             'canonical_id', v_canonical_id,
             'superseded_count', v_rows
         );
+        v_queue_target := v_canonical_id;
     else
         raise exception 'Unsupported decision for apply_consolidation_plan: %', v_decision;
     end if;
+
+    -- Queue audit row, transactional with the memory mutations. The RPC owns
+    -- the load-bearing fields so a misbuilt caller payload can't corrupt the
+    -- audit trail:
+    --   * decision: always v_decision (validated above). If queue_meta carries
+    --     a different decision, raise — silently overwriting hides a bug.
+    --   * classifier_model: required + non-blank. The audit trail is the only
+    --     place the model attribution survives; a NULL/empty write would lose
+    --     it silently and break provenance tracing.
+    --   * target_id: the canonical the RPC just computed (v_new_id for MERGE,
+    --     v_canonical_id for SUPERSEDE) — rollback_consolidation reads it and
+    --     raises on NULL, so owning the assignment here avoids the caller
+    --     having to echo it back.
+    if queue_meta is not null then
+        if queue_meta ? 'decision'
+           and queue_meta->>'decision' is not null
+           and queue_meta->>'decision' <> v_decision then
+            raise exception
+                'queue_meta decision % does not match plan decision %',
+                queue_meta->>'decision', v_decision;
+        end if;
+
+        if coalesce(nullif(trim(queue_meta->>'classifier_model'), ''), '') = '' then
+            raise exception
+                'queue_meta.classifier_model is required and must be non-blank for audit provenance';
+        end if;
+
+        insert into memory_review_queue (
+            decision,
+            confidence,
+            reasoning,
+            status,
+            consolidation_payload,
+            classifier_model,
+            target_id,
+            applied_at
+        )
+        values (
+            v_decision,
+            coalesce((queue_meta->>'confidence')::float, 0.0),
+            left(coalesce(queue_meta->>'reasoning', ''), 1000),
+            coalesce(queue_meta->>'status', 'auto_applied'),
+            queue_meta->'consolidation_payload',
+            trim(queue_meta->>'classifier_model'),
+            v_queue_target,
+            coalesce(
+                nullif(queue_meta->>'applied_at', '')::timestamptz,
+                now()
+            )
+        )
+        returning id into v_queue_id;
+
+        v_result := v_result || jsonb_build_object('queue_id', v_queue_id);
+    end if;
+
+    return v_result;
 end;
 $$;
 
