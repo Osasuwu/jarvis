@@ -206,6 +206,24 @@ class TestParseResponse:
         assert by_id["a"]["action"] == "KEEP"
         assert by_id["b"]["action"] == "UPDATE_TAGS"
 
+    def test_null_reasoning_becomes_empty_string(self):
+        # Regression: str(None) == "None" was leaking the literal "None" into
+        # markdown/JSON output. Treat JSON null / non-strings as empty.
+        text = (
+            '{"proposals": [{"neighbor_id": "abc-123", "action": "KEEP", '
+            '"confidence": 0.9, "reasoning": null}]}'
+        )
+        r = evo._parse_response(text, {"abc-123"})
+        assert r and r[0]["reasoning"] == ""
+
+    def test_non_string_reasoning_becomes_empty_string(self):
+        text = (
+            '{"proposals": [{"neighbor_id": "abc-123", "action": "KEEP", '
+            '"confidence": 0.9, "reasoning": 42}]}'
+        )
+        r = evo._parse_response(text, {"abc-123"})
+        assert r and r[0]["reasoning"] == ""
+
 
 # ---------------------------------------------------------------------------
 # _fallback_keep — last-resort safe output when the API fails
@@ -227,6 +245,37 @@ class TestFallbackKeep:
 
     def test_empty_input(self):
         assert evo._fallback_keep([], "no-op") == []
+
+
+# ---------------------------------------------------------------------------
+# call_haiku — fallback contract when ANTHROPIC_API_KEY is missing
+# ---------------------------------------------------------------------------
+
+
+class TestCallHaikuFallback:
+    def test_missing_api_key_returns_fallback_keeps(self, monkeypatch):
+        # main() no longer hard-exits when the key is absent; it relies on
+        # call_haiku() collapsing to a safe KEEP-only plan. Pin that contract
+        # so future refactors don't regress it.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        neighbors = [{"id": "n1"}, {"id": "n2"}]
+        out = evo.call_haiku(
+            {"id": "old"}, {"id": "new"}, neighbors,
+            model="test", timeout=1.0,
+        )
+        assert len(out) == 2
+        assert all(p["action"] == "KEEP" for p in out)
+        assert all(p["confidence"] == 0.0 for p in out)
+        assert all("ANTHROPIC_API_KEY missing" in p["reasoning"] for p in out)
+
+    def test_empty_neighbors_without_key_returns_empty(self, monkeypatch):
+        # No neighbors → nothing to plan, regardless of key.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        out = evo.call_haiku(
+            {"id": "old"}, {"id": "new"}, [],
+            model="test", timeout=1.0,
+        )
+        assert out == []
 
 
 # ---------------------------------------------------------------------------
@@ -304,3 +353,54 @@ class TestBuildUserMessage:
         ]
         msg = evo.build_user_message(self._old(), self._new(), neighbors)
         assert "tags: (none)" in msg
+
+
+# ---------------------------------------------------------------------------
+# render_markdown — table formatting edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestRenderMarkdown:
+    def _result(self, reasoning: str) -> dict:
+        return {
+            "queue_id": "queue-abc-123",
+            "applied_at": "2026-04-19T10:00:00+00:00",
+            "old_memory": {"id": "old", "name": "old_mem", "type": "decision", "tags": []},
+            "new_memory": {"id": "new", "name": "new_mem", "type": "decision", "tags": []},
+            "neighbors": [{"id": "n1", "name": "n1_name", "tags": [], "description": ""}],
+            "proposals": [
+                {
+                    "neighbor_id": "n1",
+                    "action": "KEEP",
+                    "new_tags": None,
+                    "new_description": None,
+                    "confidence": 0.9,
+                    "reasoning": reasoning,
+                }
+            ],
+        }
+
+    def test_newlines_in_reasoning_do_not_break_table(self):
+        # Reasoning with \n would split the markdown row across lines and
+        # corrupt the table. Must be flattened to single-line.
+        out = evo.render_markdown(
+            [self._result("line one\nline two\r\nline three")],
+            model="test", limit=10,
+        )
+        # Find the table rows (skip header + separator)
+        body_rows = [
+            ln for ln in out.splitlines()
+            if ln.startswith("| `n1_name`")
+        ]
+        assert len(body_rows) == 1
+        row = body_rows[0]
+        assert "line one line two line three" in row
+        assert "\n" not in row  # splitlines guarantees this, but explicit
+
+    def test_pipe_in_reasoning_still_escaped(self):
+        # Pre-existing guard — don't regress it.
+        out = evo.render_markdown(
+            [self._result("has | pipe")],
+            model="test", limit=10,
+        )
+        assert "has \\| pipe" in out

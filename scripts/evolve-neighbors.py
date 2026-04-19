@@ -318,7 +318,8 @@ def _parse_response(text: str, neighbor_ids: set[str]) -> list[dict] | None:
             confidence = 0.5
         confidence = max(0.0, min(1.0, confidence))
 
-        reasoning = str(p.get("reasoning", "")).strip()[:500]
+        raw_reasoning = p.get("reasoning")
+        reasoning = (raw_reasoning if isinstance(raw_reasoning, str) else "").strip()[:500]
         if action != original_action:
             note = f"downgraded from {original_action} (payload missing)"
             reasoning = f"{note}: {reasoning}" if reasoning else note
@@ -483,7 +484,12 @@ def render_markdown(results: list[dict], *, model: str, limit: int) -> str:
         for p in r["proposals"]:
             n = name_by_id.get(p["neighbor_id"], {})
             name = n.get("name", p["neighbor_id"][:8])
-            reasoning = (p.get("reasoning") or "_(empty)_").replace("|", "\\|")
+            reasoning = (
+                (p.get("reasoning") or "_(empty)_")
+                .replace("\r\n", " ")
+                .replace("\n", " ")
+                .replace("|", "\\|")
+            )
             lines.append(
                 f"| `{name}` | **{p['action']}** | {p['confidence']:.2f} | {reasoning} |"
             )
@@ -609,9 +615,14 @@ def main() -> int:
     if not sb_url or not sb_key:
         print("SUPABASE_URL / SUPABASE_KEY missing from env", file=sys.stderr)
         return 2
+    # ANTHROPIC_API_KEY is NOT a hard requirement: call_haiku() falls back to
+    # a KEEP-only plan when the key is absent, matching the documented fallback
+    # contract. We still warn so a misconfigured run is visible.
     if not os.environ.get("ANTHROPIC_API_KEY"):
-        print("ANTHROPIC_API_KEY missing from env", file=sys.stderr)
-        return 2
+        print(
+            "ANTHROPIC_API_KEY missing — emitting KEEP-only fallback plan",
+            file=sys.stderr,
+        )
 
     client = create_client(sb_url, sb_key)
 
