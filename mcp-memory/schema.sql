@@ -1370,3 +1370,175 @@ begin
     );
 end;
 $$;
+
+
+-- approve_consolidation(queue_id, reviewer): owner-review approval path for
+-- Phase 5.1d-β (#226). Reads the stored consolidation_payload, rebuilds the
+-- plan, calls apply_consolidation_plan in the same transaction (SELECT FOR
+-- UPDATE against concurrent approves), and transitions the queue row to
+-- status=approved. The queue_meta arg is intentionally omitted — we're
+-- updating an existing row, not inserting a new one.
+--
+-- source_provenance on the synthesized canonical is stamped
+-- `cli:review:<date>` so audit traces distinguish CLI-approved merges from
+-- auto_applied ones. canonical embedding is backfilled out-of-band by the
+-- Python caller (VoyageAI); the row is live-hidden until embedding lands
+-- because the member lifecycle filter already masks it from recall.
+--
+-- Race: two concurrent approves of the same row both take FOR UPDATE on the
+-- queue row, serialize, and the second one sees status='approved' and raises.
+create or replace function approve_consolidation(
+    queue_id uuid,
+    reviewer text default 'cli_review'
+)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text;
+    v_status text;
+    v_payload jsonb;
+    v_existing_target uuid;
+    v_plan jsonb;
+    v_applied jsonb;
+    v_canonical_id uuid;
+    v_today text := to_char(now() at time zone 'UTC', 'YYYY-MM-DD');
+begin
+    select decision, status, consolidation_payload, target_id
+    into v_decision, v_status, v_payload, v_existing_target
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if not found then
+        raise exception 'Queue entry % not found', queue_id;
+    end if;
+
+    if v_payload is null then
+        raise exception 'Queue entry % has no consolidation_payload', queue_id;
+    end if;
+
+    if v_status <> 'pending' then
+        raise exception 'Can only approve pending entries (status=%)', v_status;
+    end if;
+
+    if v_decision not in ('MERGE', 'SUPERSEDE_CONSOLIDATION') then
+        raise exception 'Entry % is not a consolidation row (decision=%)', queue_id, v_decision;
+    end if;
+
+    -- Rebuild the plan from the stored payload. source_provenance gets
+    -- overwritten to reflect reviewer provenance (cli:review:<today>) rather
+    -- than the original skill:consolidation:... stamp from the planner.
+    v_plan := jsonb_build_object(
+        'decision', v_decision,
+        'supersede_ids', coalesce(v_payload->'supersede_ids', '[]'::jsonb),
+        'source_provenance', 'cli:review:' || v_today,
+        'confidence', coalesce((v_payload->>'haiku_confidence')::float, 0.85)
+    );
+
+    if v_decision = 'MERGE' then
+        v_plan := v_plan || jsonb_build_object(
+            'canonical_name', v_payload->>'canonical_name',
+            'canonical_type', v_payload->>'canonical_type',
+            'canonical_description', v_payload->>'canonical_description',
+            'canonical_content', v_payload->>'canonical_content',
+            'canonical_project', v_payload->>'canonical_project',
+            'canonical_tags', coalesce(v_payload->'canonical_tags', '[]'::jsonb)
+        );
+    else
+        -- SUPERSEDE_CONSOLIDATION: canonical_id lives in target_id on the
+        -- pending queue row (set by queue_for_review). Fall back to payload
+        -- if the caller didn't populate target_id historically.
+        v_canonical_id := v_existing_target;
+        if v_canonical_id is null then
+            v_canonical_id := nullif(v_payload->>'canonical_id', '')::uuid;
+        end if;
+        if v_canonical_id is null then
+            raise exception 'SUPERSEDE_CONSOLIDATION queue row % has no canonical_id (target_id + payload both null)', queue_id;
+        end if;
+        v_plan := v_plan || jsonb_build_object('canonical_id', v_canonical_id);
+    end if;
+
+    -- Apply. Don't pass queue_meta — we're updating this existing row, not
+    -- creating a new audit entry.
+    v_applied := apply_consolidation_plan(v_plan);
+    v_canonical_id := (v_applied->>'canonical_id')::uuid;
+
+    update memory_review_queue
+    set status = 'approved',
+        reviewed_at = now(),
+        reviewed_by = reviewer,
+        applied_at = now(),
+        target_id = v_canonical_id
+    where id = queue_id;
+
+    return v_applied || jsonb_build_object(
+        'queue_id', queue_id,
+        'approved_by', reviewer
+    );
+end;
+$$;
+
+
+-- reject_consolidation(queue_id, reason, reviewer): mark a pending queue
+-- entry rejected so it won't be replanned (see find_consolidation_clusters
+-- dedup, which excludes 'rolled_back' but INCLUDES 'rejected'). Atomic —
+-- SELECT FOR UPDATE + status validation + UPDATE happen in one transaction.
+-- Two concurrent rejects of the same row serialize; the second sees
+-- status='rejected' and raises.
+--
+-- The reason (when provided) is appended to the reasoning column so the
+-- CLI `--list` view shows why it was rejected, without losing the original
+-- Haiku reasoning.
+create or replace function reject_consolidation(
+    queue_id uuid,
+    reason text default null,
+    reviewer text default 'cli_review'
+)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text;
+    v_status text;
+    v_reasoning text;
+    v_new_reasoning text;
+begin
+    select decision, status, reasoning
+    into v_decision, v_status, v_reasoning
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if not found then
+        raise exception 'Queue entry % not found', queue_id;
+    end if;
+
+    if v_status <> 'pending' then
+        raise exception 'Can only reject pending entries (status=%)', v_status;
+    end if;
+
+    v_new_reasoning := coalesce(v_reasoning, '');
+    if reason is not null and trim(reason) <> '' then
+        v_new_reasoning := left(
+            v_new_reasoning || E'\n-- rejected: ' || trim(reason),
+            1000
+        );
+    end if;
+
+    update memory_review_queue
+    set status = 'rejected',
+        reviewed_at = now(),
+        reviewed_by = reviewer,
+        reasoning = v_new_reasoning
+    where id = queue_id;
+
+    return jsonb_build_object(
+        'status', 'rejected',
+        'decision', v_decision,
+        'queue_id', queue_id,
+        'rejected_by', reviewer,
+        'reason', reason
+    );
+end;
+$$;
