@@ -1,4 +1,4 @@
-"""Memory consolidation — cluster detection report (Phase 5.1a, deterministic).
+"""Memory consolidation — cluster detection report (deterministic).
 
 Calls the `find_consolidation_clusters` RPC and prints a human-readable
 report of similarity clusters that are genuine candidates for merge/supersede.
