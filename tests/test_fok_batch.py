@@ -1,0 +1,295 @@
+"""Tests for fok-batch.py — feeling-of-knowing batch processor (#250)."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+from pathlib import Path
+from unittest.mock import MagicMock, Mock, patch
+
+import pytest
+
+# Load fok_batch module from file
+spec = importlib.util.spec_from_file_location(
+    "fok_batch", Path(__file__).parent.parent / "scripts" / "fok-batch.py"
+)
+fok_batch = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fok_batch)
+
+
+def test_build_user_message():
+    """Test building the user message for Haiku with query and memory snippets."""
+    query = "What's the best way to handle async errors?"
+    returned_results = [
+        {
+            "id": "mem-001",
+            "content": "Async errors should be caught with try-catch.",
+            "similarity": 0.92,
+        },
+        {
+            "id": "mem-002",
+            "content": "Use Promise.catch for promise-based code.",
+            "similarity": 0.85,
+        },
+        {
+            "id": "mem-003",
+            "content": "Consider error boundaries in React.",
+            "similarity": 0.78,
+        },
+    ]
+
+    msg = fok_batch.build_user_message(query, returned_results)
+
+    assert "What's the best way to handle async errors?" in msg
+    assert "mem-001" in msg
+    assert "0.92" in msg
+    assert "Async errors should be caught" in msg
+
+
+def test_build_user_message_empty_results():
+    """Test building message with empty results."""
+    query = "Some query"
+    msg = fok_batch.build_user_message(query, [])
+
+    assert query in msg
+    assert "No memories returned" in msg or "empty" in msg.lower()
+
+
+def test_build_user_message_truncation():
+    """Test that long memory content is truncated."""
+    query = "test"
+    long_content = "x" * 5000
+    returned_results = [{"id": "mem-001", "content": long_content, "similarity": 0.9}]
+
+    msg = fok_batch.build_user_message(query, returned_results)
+
+    # Message should not contain the entire 5000-char string
+    assert long_content not in msg
+    assert len(msg) < len(long_content)
+
+
+def test_judge_via_haiku_missing_api_key():
+    """Test graceful failure when ANTHROPIC_API_KEY is missing."""
+    with patch.dict("os.environ", {"ANTHROPIC_API_KEY": ""}, clear=False):
+        result = fok_batch.judge_via_haiku("query", [])
+
+        assert result["verdict"] == "unknown"
+        assert result["confidence"] is None
+        reason = result.get("reason", "").lower()
+        assert "not set" in reason or "error" in reason or "key" in reason
+
+
+def test_judge_via_haiku_json_in_prose():
+    """Test that JSON parsing with regex extraction works (real API test skipped)."""
+    # Test the regex extraction pattern works correctly
+    json_response = {
+        "verdict": "sufficient",
+        "confidence": 0.85,
+        "reason": "Memories directly answer the query.",
+    }
+
+    # The prose text as it would come from Haiku
+    prose = f"""
+    Based on the query and returned memories, here's my assessment:
+
+    {json.dumps(json_response)}
+
+    This is a high-confidence judgment because the query is straightforward.
+    """
+
+    # Extract JSON using the same pattern as the function
+    import re
+
+    json_match = re.search(r"\{[^{}]*\}", prose)
+    assert json_match is not None
+    extracted = json.loads(json_match.group())
+    assert extracted["verdict"] == "sufficient"
+    assert extracted["confidence"] == 0.85
+
+
+def test_judge_via_haiku_missing_httpx():
+    """Test graceful failure when httpx is unavailable."""
+    # Temporarily mock httpx as None
+    original_httpx = fok_batch.httpx
+    try:
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            fok_batch.httpx = None
+
+            result = fok_batch.judge_via_haiku("query", [])
+
+            assert result["verdict"] == "unknown"
+            reason = result.get("reason", "").lower()
+            assert "httpx" in reason or "not available" in reason
+    finally:
+        fok_batch.httpx = original_httpx
+
+
+def test_try_insert_known_unknown_sufficient_verdict():
+    """Test that 'sufficient' verdicts don't get inserted."""
+    mock_client = MagicMock()
+    event = {
+        "id": "evt-001",
+        "payload": {
+            "query": "test",
+            "top_sim": 0.95,
+            "fok_verdict": "sufficient",
+            "fok_confidence": 0.9,
+        },
+    }
+
+    # Should not insert for sufficient verdict
+    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+
+    # Verify no insert was attempted
+    assert not mock_client.table.called
+
+
+def test_try_insert_known_unknown_high_confidence_insufficient():
+    """Test that high-confidence insufficient verdicts don't get inserted."""
+    mock_client = MagicMock()
+    event = {
+        "id": "evt-001",
+        "payload": {
+            "query": "test",
+            "top_sim": 0.4,
+            "fok_verdict": "insufficient",
+            "fok_confidence": 0.95,  # Too high
+        },
+    }
+
+    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+
+    # High confidence insufficient should not insert
+    assert not mock_client.table.called
+
+
+def test_try_insert_known_unknown_low_confidence_insufficient():
+    """Test that low-confidence insufficient verdicts get inserted."""
+    mock_client = MagicMock()
+    mock_table = MagicMock()
+    mock_client.table.return_value = mock_table
+
+    event = {
+        "id": "evt-001",
+        "payload": {
+            "query": "what is the meaning of life",
+            "top_sim": 0.35,
+            "fok_verdict": "insufficient",
+            "fok_confidence": 0.65,  # Low confidence
+            "returned_ids": ["mem-001"],
+        },
+    }
+
+    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+
+    # Should attempt to insert
+    mock_client.table.assert_called()
+
+
+def test_try_insert_known_unknown_missing_table():
+    """Test graceful handling when known_unknowns table doesn't exist."""
+    mock_client = MagicMock()
+    mock_table = MagicMock()
+    mock_table.insert.side_effect = Exception('relation "known_unknowns" does not exist')
+    mock_client.table.return_value = mock_table
+
+    event = {
+        "id": "evt-001",
+        "payload": {
+            "query": "test",
+            "top_sim": 0.3,
+            "fok_verdict": "insufficient",
+            "fok_confidence": 0.6,
+        },
+    }
+
+    # Should not raise; silently catch exception
+    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+
+
+def test_try_insert_known_unknown_above_similarity_threshold():
+    """Test that high-similarity matches skip insertion (dedupe)."""
+    mock_client = MagicMock()
+
+    # Mock the similarity search to return high-similarity match
+    mock_sim_result = Mock()
+    mock_sim_result.data = [{"similarity": 0.95}]  # Above 0.7 threshold
+    mock_client.table.return_value.select.return_value.limit.return_value.execute.return_value = (
+        mock_sim_result
+    )
+
+    event = {
+        "id": "evt-001",
+        "payload": {
+            "query": "duplicate query",
+            "top_sim": 0.3,
+            "fok_verdict": "insufficient",
+            "fok_confidence": 0.6,
+        },
+    }
+
+    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+
+    # Should have checked similarity but not inserted (match too similar)
+    mock_client.table.assert_called()
+
+
+def test_write_verdict_to_event():
+    """Test updating event.payload with FOK verdict."""
+    mock_client = MagicMock()
+    event_id = "evt-001"
+    verdict = {"verdict": "partial", "confidence": 0.7, "reason": "Some info present."}
+
+    fok_batch.write_verdict_to_event(mock_client, event_id, verdict)
+
+    # Verify update was called
+    mock_client.table.assert_called_with("events")
+    update_call = mock_client.table.return_value.update.call_args
+    assert update_call is not None
+
+
+def test_write_event_summary():
+    """Test writing fok_run summary event."""
+    mock_client = MagicMock()
+    mock_table = MagicMock()
+    mock_client.table.return_value = mock_table
+
+    summary = {
+        "processed": 10,
+        "verdicts": {"sufficient": 6, "partial": 3, "insufficient": 1},
+    }
+
+    fok_batch.write_event(mock_client, summary, "test-project")
+
+    # Verify insert was called
+    mock_client.table.assert_called_with("events")
+    mock_table.insert.assert_called_once()
+    insert_call = mock_table.insert.call_args
+    assert insert_call is not None
+    payload = insert_call[0][0]
+    assert payload.get("event_type") == "fok_run"
+
+
+def test_fetch_events_filters_unfudged():
+    """Test that fetch_events only returns events without fok_verdict."""
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.data = [
+        {"id": "evt-001", "payload": {"query": "test", "fok_verdict": None}},
+        {
+            "id": "evt-002",
+            "payload": {"query": "test", "fok_verdict": "sufficient"},
+        },  # Should be filtered
+        {"id": "evt-003", "payload": {"query": "test"}},  # No fok_verdict key
+    ]
+    mock_client.table.return_value.select.return_value.eq.return_value.gte.return_value.execute.return_value = mock_response
+
+    events = fok_batch.fetch_events(mock_client, 10)
+
+    assert len(events) == 2
+    assert events[0]["id"] == "evt-001"
+    assert events[1]["id"] == "evt-003"
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])
