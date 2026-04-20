@@ -128,19 +128,55 @@ VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 30.0  # seconds
 
+# #242 dual-embedding machinery. PRIMARY drives reads (which RPC is called
+# + what model embeds the query). SECONDARY, if set, enables dual-write so
+# the v2 column fills up in parallel without touching the read path.
+# When SECONDARY is unset, behavior is bit-identical to pre-#242.
+EMBEDDING_MODEL_PRIMARY = os.environ.get("EMBEDDING_MODEL_PRIMARY", VOYAGE_MODEL)
+EMBEDDING_MODEL_SECONDARY = os.environ.get("EMBEDDING_MODEL_SECONDARY") or None
 
-async def _embed(text: str, input_type: str = "document") -> list[float] | None:
+# Model → (column, RPC, version-tag) mapping. Extend here when adding a
+# new supported model. Keep the table read-only at runtime.
+EMBEDDING_MODELS = {
+    "voyage-3-lite": {
+        "embedding_column": "embedding",
+        "model_column": "embedding_model",
+        "version_column": "embedding_version",
+        "rpc": "match_memories",
+        "version_tag": "v2",  # Phase 2a canonical form
+    },
+    "voyage-3": {
+        "embedding_column": "embedding_v2",
+        "model_column": "embedding_model_v2",
+        "version_column": "embedding_version_v2",
+        "rpc": "match_memories_v2",
+        "version_tag": "v2",
+    },
+}
+
+
+def _model_slot(model: str) -> dict:
+    """Look up the column/RPC slot for a model. Falls back to PRIMARY for
+    unknown models so misconfiguration never crashes startup — it just
+    degrades to legacy behavior."""
+    return EMBEDDING_MODELS.get(model) or EMBEDDING_MODELS[VOYAGE_MODEL]
+
+
+async def _embed(
+    text: str, input_type: str = "document", model: str | None = None
+) -> list[float] | None:
     """Call Voyage AI REST API asynchronously. Retries up to 3x on 429."""
     api_key = os.environ.get("VOYAGE_API_KEY")
     if not api_key:
         return None
+    use_model = model or VOYAGE_MODEL
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
                 resp = await client.post(
                     VOYAGE_API_URL,
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json={"model": VOYAGE_MODEL, "input": [text], "input_type": input_type},
+                    json={"model": use_model, "input": [text], "input_type": input_type},
                 )
                 resp.raise_for_status()
                 return resp.json()["data"][0]["embedding"]
@@ -156,18 +192,21 @@ async def _embed(text: str, input_type: str = "document") -> list[float] | None:
     return None
 
 
-async def _embed_batch(texts: list[str], input_type: str = "document") -> list[list[float]] | None:
+async def _embed_batch(
+    texts: list[str], input_type: str = "document", model: str | None = None
+) -> list[list[float]] | None:
     """Embed multiple texts in a single API call (up to 1000 per request)."""
     api_key = os.environ.get("VOYAGE_API_KEY")
     if not api_key or not texts:
         return None
+    use_model = model or VOYAGE_MODEL
     for attempt in range(3):
         try:
             async with httpx.AsyncClient(timeout=EMBED_TIMEOUT) as client:
                 resp = await client.post(
                     VOYAGE_API_URL,
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json={"model": VOYAGE_MODEL, "input": texts, "input_type": input_type},
+                    json={"model": use_model, "input": texts, "input_type": input_type},
                 )
                 resp.raise_for_status()
                 data = sorted(resp.json()["data"], key=lambda x: x["index"])
@@ -184,8 +223,46 @@ async def _embed_batch(texts: list[str], input_type: str = "document") -> list[l
     return None
 
 
+def _embed_upsert_fields(embedding: list[float], model: str) -> dict:
+    """Build the dict of columns to upsert for a (embedding, model) pair.
+    Returns {} if model is unknown (shouldn't happen at write time; silently
+    degrades so we never corrupt rows)."""
+    slot = EMBEDDING_MODELS.get(model)
+    if not slot:
+        return {}
+    return {
+        slot["embedding_column"]: embedding,
+        slot["model_column"]: model,
+        slot["version_column"]: slot["version_tag"],
+    }
+
+
+async def _compute_write_embeddings(text: str) -> dict:
+    """Produce the full write-side embedding payload for one row.
+
+    Always embeds with PRIMARY. If SECONDARY is set AND different from
+    PRIMARY, also embeds with SECONDARY and merges columns. Returns a dict
+    ready to splat into the upsert `data`.
+
+    Failure mode: if PRIMARY embed fails → return {} (skip embedding). If
+    PRIMARY succeeds but SECONDARY fails → write PRIMARY only (single-leg
+    recovery; a future consolidation/backfill can fill the gap).
+    """
+    primary_vec = await _embed(text, model=EMBEDDING_MODEL_PRIMARY)
+    if primary_vec is None:
+        return {}
+    fields = _embed_upsert_fields(primary_vec, EMBEDDING_MODEL_PRIMARY)
+    if EMBEDDING_MODEL_SECONDARY and EMBEDDING_MODEL_SECONDARY != EMBEDDING_MODEL_PRIMARY:
+        secondary_vec = await _embed(text, model=EMBEDDING_MODEL_SECONDARY)
+        if secondary_vec is not None:
+            fields.update(_embed_upsert_fields(secondary_vec, EMBEDDING_MODEL_SECONDARY))
+    return fields
+
+
 async def _embed_query(text: str) -> list[float] | None:
-    return await _embed(text, input_type="query")
+    # #242: read path embeds with PRIMARY so the vector matches whichever
+    # column we're about to query via _hybrid_recall's RPC selection.
+    return await _embed(text, input_type="query", model=EMBEDDING_MODEL_PRIMARY)
 
 
 # ---------------------------------------------------------------------------
@@ -1122,7 +1199,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
     # Name and tags carry high-signal lexical cues that raw content often dilutes
     # (long narrative memories where the key topic is only in the name).
     embed_text = _canonical_embed_text(mem_name, description, tags, content)
-    embedding = await _embed(embed_text)
+    # #242: may populate embedding + embedding_v2 in one shot when SECONDARY set.
+    embed_fields = await _compute_write_embeddings(embed_text)
 
     data = {
         "type": mem_type,
@@ -1134,12 +1212,11 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "source_provenance": source_provenance,  # Phase 2c: always present, validated above
         "deleted_at": None,  # clear soft-delete on store/upsert
     }
+    data.update(embed_fields)
 
-    if embedding is not None:
-        data["embedding"] = embedding
-        data["embedding_model"] = VOYAGE_MODEL
-        data["embedding_version"] = "v2"  # Phase 2a canonical form
-
+    # Preserve the old "derive embedding column presence" cue for the user
+    # message — we care whether PRIMARY landed.
+    embedding = data.get(_model_slot(EMBEDDING_MODEL_PRIMARY)["embedding_column"])
     embed_note = " (with embedding)" if embedding is not None else ""
 
     if project is not None:
@@ -1266,8 +1343,12 @@ async def _hybrid_recall(
         # Fetch double the limit from each source to give RRF good candidates
         fetch_limit = limit * 2
 
-        # Server-side semantic search via pgvector HNSW
-        sem_result = client.rpc("match_memories", {
+        # Server-side semantic search via pgvector HNSW. #242: the RPC name
+        # is selected by PRIMARY model so v1 and v2 columns each use their
+        # own HNSW index. query_embedding's dim was already matched to
+        # PRIMARY by _embed_query.
+        sem_rpc = _model_slot(EMBEDDING_MODEL_PRIMARY)["rpc"]
+        sem_result = client.rpc(sem_rpc, {
             "query_embedding": query_embedding,
             "match_limit": fetch_limit,
             "similarity_threshold": SIMILARITY_THRESHOLD,
@@ -1413,8 +1494,11 @@ async def _backfill_missing_embeddings(client, project) -> None:
     Batches all missing records into a single Voyage AI call.
     """
     try:
+        # #242: backfill the column that matches PRIMARY — if we've cut over
+        # to v2, the "missing embedding" we care about is embedding_v2.
+        primary_col = _model_slot(EMBEDDING_MODEL_PRIMARY)["embedding_column"]
         q = client.table("memories").select("id, name, description, tags, content")
-        q = q.is_("embedding", "null").is_("deleted_at", "null")
+        q = q.is_(primary_col, "null").is_("deleted_at", "null")
         if project is not None:
             q = q.or_(f"project.eq.{project},project.is.null")
         rows = q.execute().data
@@ -1426,16 +1510,17 @@ async def _backfill_missing_embeddings(client, project) -> None:
             _canonical_embed_text(r.get("name", ""), r.get("description", ""), r.get("tags") or [], r["content"])
             for r in rows
         ]
-        embeddings = await _embed_batch(texts)
+        # #242: this path only backfills the column for PRIMARY — the legacy
+        # "missing embedding" cleanup. v2 corpus-wide backfill is a separate
+        # issue per #242 non-goals.
+        embeddings = await _embed_batch(texts, model=EMBEDDING_MODEL_PRIMARY)
         if embeddings is None:
             return
 
         for mem, embedding in zip(rows, embeddings):
-            client.table("memories").update({
-                "embedding": embedding,
-                "embedding_model": VOYAGE_MODEL,
-                "embedding_version": "v2",
-            }).eq("id", mem["id"]).execute()
+            client.table("memories").update(
+                _embed_upsert_fields(embedding, EMBEDDING_MODEL_PRIMARY)
+            ).eq("id", mem["id"]).execute()
     except Exception:
         pass  # fire-and-forget: silently swallow all errors so caller never fails
 

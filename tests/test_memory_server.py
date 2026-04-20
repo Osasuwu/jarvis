@@ -773,7 +773,8 @@ class TestHandleStoreProvenance:
         """Accepted provenance is trimmed — no leading/trailing whitespace
         leaks into the DB row, keeping audit queries clean."""
         # Short-circuit embedding so we don't need Voyage env/network.
-        async def _fake_embed(_text):
+        # Signature accepts **kwargs so #242's model= param doesn't break it.
+        async def _fake_embed(_text, **_kwargs):
             return None
         monkeypatch.setattr(server_module, "_embed", _fake_embed)
 
@@ -795,3 +796,159 @@ class TestHandleStoreProvenance:
         assert upsert_calls, "expected at least one upsert call"
         data_arg = upsert_calls[-1][0][0]
         assert data_arg["source_provenance"] == "skill:test"
+
+
+# ---------------------------------------------------------------------------
+# #242: dual-embedding machinery — column/RPC mapping + dual-write
+# ---------------------------------------------------------------------------
+
+from server import (  # noqa: E402
+    _model_slot,
+    _embed_upsert_fields,
+    _compute_write_embeddings,
+    EMBEDDING_MODELS,
+)
+
+
+class TestModelSlotMapping:
+    """#242: the model → column/RPC table drives both read and write paths.
+
+    If this mapping drifts, writes land in the wrong column and reads
+    query the wrong RPC — a silent data-integrity bug. Lock it down.
+    """
+
+    def test_voyage_3_lite_maps_to_v1_column(self):
+        slot = _model_slot("voyage-3-lite")
+        assert slot["embedding_column"] == "embedding"
+        assert slot["rpc"] == "match_memories"
+
+    def test_voyage_3_maps_to_v2_column(self):
+        slot = _model_slot("voyage-3")
+        assert slot["embedding_column"] == "embedding_v2"
+        assert slot["rpc"] == "match_memories_v2"
+
+    def test_unknown_model_falls_back_to_legacy(self):
+        """Misconfigured EMBEDDING_MODEL_PRIMARY must degrade to legacy,
+        never raise at runtime — writes continue, bug is visible in metadata."""
+        slot = _model_slot("nonexistent-model")
+        assert slot["embedding_column"] == "embedding"
+        assert slot["rpc"] == "match_memories"
+
+    def test_upsert_fields_shape(self):
+        fields = _embed_upsert_fields([0.1, 0.2], "voyage-3-lite")
+        assert fields == {
+            "embedding": [0.1, 0.2],
+            "embedding_model": "voyage-3-lite",
+            "embedding_version": "v2",
+        }
+
+    def test_upsert_fields_v2(self):
+        fields = _embed_upsert_fields([0.3, 0.4], "voyage-3")
+        assert fields == {
+            "embedding_v2": [0.3, 0.4],
+            "embedding_model_v2": "voyage-3",
+            "embedding_version_v2": "v2",
+        }
+
+    def test_upsert_fields_unknown_returns_empty(self):
+        """Unknown model → no fields (no silent corruption of other columns)."""
+        assert _embed_upsert_fields([0.1], "no-such-model") == {}
+
+
+class TestDualEmbedWrite:
+    """#242: when SECONDARY is set, writes compute both embeddings and
+    populate both columns. Unset → identical to pre-#242 (single-write)."""
+
+    @pytest.mark.asyncio
+    async def test_secondary_unset_single_write(self, monkeypatch):
+        """Zero-change default: SECONDARY unset → only PRIMARY columns written."""
+        calls: list[dict] = []
+
+        async def fake_embed(text, input_type="document", model=None):
+            calls.append({"model": model})
+            return [0.1, 0.2, 0.3]
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", None)
+
+        fields = await _compute_write_embeddings("canonical text")
+
+        assert "embedding" in fields
+        assert "embedding_model" in fields
+        assert fields["embedding_model"] == "voyage-3-lite"
+        assert "embedding_v2" not in fields
+        assert len(calls) == 1
+        assert calls[0]["model"] == "voyage-3-lite"
+
+    @pytest.mark.asyncio
+    async def test_secondary_set_dual_write(self, monkeypatch):
+        """SECONDARY=voyage-3 → both columns populated, two embed calls."""
+        calls: list[dict] = []
+
+        async def fake_embed(text, input_type="document", model=None):
+            calls.append({"model": model})
+            # Return dim-shaped distinct vectors so we can assert routing.
+            return [0.1] * 512 if model == "voyage-3-lite" else [0.9] * 1024
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3")
+
+        fields = await _compute_write_embeddings("canonical text")
+
+        assert fields["embedding"] == [0.1] * 512
+        assert fields["embedding_v2"] == [0.9] * 1024
+        assert fields["embedding_model"] == "voyage-3-lite"
+        assert fields["embedding_model_v2"] == "voyage-3"
+        assert {c["model"] for c in calls} == {"voyage-3-lite", "voyage-3"}
+
+    @pytest.mark.asyncio
+    async def test_secondary_failure_single_leg(self, monkeypatch):
+        """PRIMARY succeeds but SECONDARY embed returns None → write PRIMARY
+        only. Missing v2 is recoverable via backfill; corrupt row is not."""
+        async def fake_embed(text, input_type="document", model=None):
+            if model == "voyage-3":
+                return None
+            return [0.1] * 512
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3")
+
+        fields = await _compute_write_embeddings("canonical text")
+        assert fields["embedding"] == [0.1] * 512
+        assert "embedding_v2" not in fields
+
+    @pytest.mark.asyncio
+    async def test_primary_failure_no_write(self, monkeypatch):
+        """PRIMARY embed fails → no embed fields at all. Row still saves
+        with text content, _backfill_missing_embeddings picks it up later."""
+        async def fake_embed(text, input_type="document", model=None):
+            return None
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3")
+
+        fields = await _compute_write_embeddings("canonical text")
+        assert fields == {}
+
+    @pytest.mark.asyncio
+    async def test_secondary_equals_primary_no_duplicate_call(self, monkeypatch):
+        """If SECONDARY accidentally equals PRIMARY, don't waste an API call."""
+        calls: list[dict] = []
+
+        async def fake_embed(text, input_type="document", model=None):
+            calls.append({"model": model})
+            return [0.1] * 512
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3-lite")
+
+        fields = await _compute_write_embeddings("canonical text")
+        assert len(calls) == 1
+        assert "embedding" in fields
+        # Only PRIMARY columns; no redundant duplicate write.
+        assert "embedding_v2" not in fields
