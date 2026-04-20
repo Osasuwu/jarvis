@@ -154,6 +154,39 @@ class TestRecordDecisionInsert:
         assert "boom" in result[0].text
 
 
+def test_handler_defined_before_main_entry():
+    """Regression guard: _handle_record_decision must live ABOVE the
+    `if __name__ == "__main__"` block in server.py.
+
+    When the module runs as main, Python enters `asyncio.run(main())` and
+    blocks — any def after that point never gets bound to the module
+    namespace. Tests don't catch this (they import server as a module,
+    so __main__ never fires), but the dispatcher at runtime hits a
+    NameError. This test parses the source and asserts the line ordering
+    so we never ship the bug again.
+    """
+    server_path = Path(__file__).resolve().parents[1] / "mcp-memory" / "server.py"
+    src = server_path.read_text(encoding="utf-8").splitlines()
+
+    handler_line = next(
+        (i for i, line in enumerate(src, start=1)
+         if line.startswith("async def _handle_record_decision")),
+        None,
+    )
+    main_guard_line = next(
+        (i for i, line in enumerate(src, start=1)
+         if line.startswith('if __name__ == "__main__"')),
+        None,
+    )
+    assert handler_line is not None, "_handle_record_decision def not found in server.py"
+    assert main_guard_line is not None, 'if __name__ == "__main__" not found in server.py'
+    assert handler_line < main_guard_line, (
+        f"_handle_record_decision defined at line {handler_line} is AFTER "
+        f'`if __name__ == "__main__"` at line {main_guard_line} — the def '
+        "will never be bound at runtime. Move it above the main entry."
+    )
+
+
 def test_decision_made_in_schema_check_constraint():
     """Regression guard: schema.sql must include 'decision_made' in episodes.kind CHECK.
 
