@@ -1877,8 +1877,12 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
 
 
 def _cosine_sim(v1: list[float] | None, v2: list[float] | None) -> float:
-    """Cosine similarity between two embedding vectors. Returns 0.0 if either is None."""
+    """Cosine similarity between two embedding vectors. Returns 0.0 if either
+    is None/empty or if lengths differ (dim mismatch would otherwise silently
+    truncate via zip — important during embedding-model migrations)."""
     if v1 is None or v2 is None or len(v1) == 0 or len(v2) == 0:
+        return 0.0
+    if len(v1) != len(v2):
         return 0.0
     dot = sum(a * b for a, b in zip(v1, v2))
     mag1 = math.sqrt(sum(a * a for a in v1))
@@ -1898,15 +1902,23 @@ async def _upsert_known_unknown(
     on query_embedding, increment hit_count instead of inserting.
     Best-effort; never raises.
     """
+    # Schema declares query_embedding vector(512). If PRIMARY model produces
+    # a different dim (e.g. voyage-3 = 1024), store without embedding rather
+    # than letting the insert fail and get swallowed by the best-effort catch.
+    if query_embedding and len(query_embedding) != 512:
+        query_embedding = None
+
     try:
         if not query_embedding:
-            # Fallback: upsert without embedding
-            existing = client.table("known_unknowns").select("id").eq("query", query).eq("status", "open").limit(1).execute()
+            # Fallback: upsert without embedding — select hit_count so the
+            # increment reflects the stored value (not the default).
+            existing = client.table("known_unknowns").select("id, hit_count").eq("query", query).eq("status", "open").limit(1).execute()
             if existing.data:
+                row = existing.data[0]
                 client.table("known_unknowns").update({
-                    "hit_count": existing.data[0].get("hit_count", 1) + 1,
+                    "hit_count": row.get("hit_count", 1) + 1,
                     "last_seen_at": datetime.now(timezone.utc).isoformat(),
-                }).eq("id", existing.data[0]["id"]).execute()
+                }).eq("id", row["id"]).execute()
             else:
                 client.table("known_unknowns").insert({
                     "query": query,
@@ -1917,8 +1929,9 @@ async def _upsert_known_unknown(
                 }).execute()
             return
 
-        # Semantic dedup: fetch open unknowns and check sim > 0.9
-        open_unknowns = client.table("known_unknowns").select("id, query_embedding").eq("status", "open").execute()
+        # Semantic dedup: fetch open unknowns and check sim > 0.9.
+        # Include hit_count in the select so the increment is correct.
+        open_unknowns = client.table("known_unknowns").select("id, query_embedding, hit_count").eq("status", "open").execute()
         for row in open_unknowns.data or []:
             stored_embedding = row.get("query_embedding")
             if stored_embedding and _cosine_sim(query_embedding, stored_embedding) > 0.9:

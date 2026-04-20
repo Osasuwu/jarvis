@@ -1031,18 +1031,36 @@ class TestCosineSim:
     def test_zero_magnitude_vector(self):
         assert _cosine_sim([0.0, 0.0], [1.0, 1.0]) == 0.0
 
+    def test_length_mismatch_returns_zero(self):
+        # Dim mismatch must not silently truncate via zip — returns 0.0.
+        assert _cosine_sim([1.0, 0.0, 0.0], [1.0, 0.0]) == 0.0
+        assert _cosine_sim([1.0] * 512, [1.0] * 1024) == 0.0
+
 
 class TestKnownUnknowns:
     """Unit tests for known_unknowns insertion + dedup + resolution."""
 
     @pytest.mark.asyncio
     async def test_known_unknowns_insert_on_low_sim(self):
-        """When recall finds top_similarity < 0.45, log as known unknown."""
+        """When recall finds top_similarity < 0.45, log as known unknown.
+        No existing row with matching query → insert (not update)."""
         mock_client = MagicMock()
-        # Mock the insert call
-        mock_client.table.return_value.insert.return_value.execute.return_value = MagicMock()
 
-        # Call with low similarity
+        # select().eq().eq().limit().execute() returns no data
+        # (fallback path — no embedding, because 3 dims ≠ 512)
+        mock_select_chain = MagicMock()
+        mock_select_chain.eq.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+
+        mock_insert = MagicMock()
+        mock_update = MagicMock()
+
+        mock_table = MagicMock()
+        mock_table.select.return_value = mock_select_chain
+        mock_table.insert.return_value = mock_insert
+        mock_table.update.return_value = mock_update
+        mock_client.table.return_value = mock_table
+
+        # 3-dim embedding gets coerced to None by dim guard → fallback path
         await _upsert_known_unknown(
             mock_client,
             query="what is the meaning of life",
@@ -1052,48 +1070,41 @@ class TestKnownUnknowns:
             context={"project": "jarvis"},
         )
 
-        # Verify insert was called (not update)
-        mock_client.table.assert_called_with("known_unknowns")
+        # Assert insert was called with correct payload, and update was NOT
+        mock_insert.execute.assert_called_once()
+        insert_payload = mock_table.insert.call_args.args[0]
+        assert insert_payload["query"] == "what is the meaning of life"
+        assert insert_payload["top_similarity"] == 0.3
+        assert insert_payload["top_memory_id"] == "mem-123"
+        assert insert_payload["query_embedding"] is None  # dim-guarded
+        assert not mock_update.execute.called
 
     @pytest.mark.asyncio
     async def test_known_unknowns_dedup_increments_hit_count(self):
-        """If similar query exists (cosine > 0.9), increment hit_count instead of insert."""
+        """If similar query exists (cosine > 0.9), increment hit_count instead of insert.
+        Validates that the select includes hit_count and the update uses the stored value."""
         mock_client = MagicMock()
-        # Existing open unknown with similar embedding
-        existing_embedding = [0.10, 0.20, 0.30]
 
-        # Setup the mock chain for table().select().eq().execute()
-        mock_select = MagicMock()
-        mock_eq = MagicMock()
-        mock_execute = MagicMock()
+        # Use 512-dim embeddings (matches schema vector(512)).
+        # Two nearly identical vectors → cosine ≈ 1.0 > 0.9 → dedup fires.
+        existing_embedding = [0.10] * 512
+        similar_embedding = [0.11] * 512
 
-        mock_execute.execute.return_value = MagicMock(
-            data=[{"id": "uk-1", "query_embedding": existing_embedding, "hit_count": 1}]
+        # Mock the select chain: table().select("id, query_embedding, hit_count").eq().execute()
+        mock_select_return = MagicMock()
+        mock_select_return.eq.return_value.execute.return_value = MagicMock(
+            data=[{"id": "uk-1", "query_embedding": existing_embedding, "hit_count": 5}]
         )
-        mock_eq.execute.return_value = MagicMock(
-            data=[{"id": "uk-1", "query_embedding": existing_embedding, "hit_count": 1}]
-        )
-        mock_select.eq.return_value = mock_eq
 
-        # For the update chain
-        mock_update = MagicMock()
-        mock_update_eq = MagicMock()
-        mock_update_eq.execute.return_value = MagicMock()
-        mock_update.eq.return_value = mock_update_eq
+        mock_update_return = MagicMock()
+        mock_insert_return = MagicMock()
 
-        # Setup table() to return different objects for select vs update
-        def table_side_effect(table_name):
-            if table_name == "known_unknowns":
-                result = MagicMock()
-                result.select.return_value = mock_select
-                result.update.return_value = mock_update
-                return result
-            return MagicMock()
+        mock_table = MagicMock()
+        mock_table.select.return_value = mock_select_return
+        mock_table.update.return_value = mock_update_return
+        mock_table.insert.return_value = mock_insert_return
+        mock_client.table.return_value = mock_table
 
-        mock_client.table.side_effect = table_side_effect
-
-        # Very similar query embedding
-        similar_embedding = [0.11, 0.21, 0.31]
         await _upsert_known_unknown(
             mock_client,
             query="what is the meaning of existence",
@@ -1102,8 +1113,17 @@ class TestKnownUnknowns:
             top_memory_id="mem-456",
         )
 
-        # Verify update was called (not insert)
-        assert mock_update.eq.called
+        # Select must include hit_count so the increment reflects stored value
+        select_cols = mock_table.select.call_args.args[0]
+        assert "hit_count" in select_cols
+
+        # Update was called once with hit_count = 5 + 1 = 6 (not 1 + 1 = 2)
+        mock_table.update.assert_called_once()
+        update_payload = mock_table.update.call_args.args[0]
+        assert update_payload["hit_count"] == 6
+
+        # Insert was NOT called
+        assert not mock_insert_return.execute.called
 
     @pytest.mark.asyncio
     async def test_known_unknowns_resolution_on_store(self):

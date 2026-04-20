@@ -1949,12 +1949,18 @@ $$;
 -- =========================================================================
 -- Known unknowns: retrieval gaps + unsatisfied queries
 -- Phase 5.3 — detect queries that consistently fail to match memories
+--
+-- Embedding dimension matches the PRIMARY embedding model (voyage-3-lite,
+-- 512 dims). If EMBEDDING_MODEL_PRIMARY is switched to voyage-3 (1024
+-- dims), this table needs a parallel column like memories.embedding_v2.
+-- Until then, server-side gap upserts skip the embedding on dim mismatch
+-- rather than crashing silently (see _upsert_known_unknown).
 -- =========================================================================
 
 CREATE TABLE IF NOT EXISTS known_unknowns (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   query text NOT NULL,
-  query_embedding vector(1024),
+  query_embedding vector(512),
   top_similarity float NOT NULL,
   top_memory_id uuid REFERENCES memories(id) ON DELETE SET NULL,
   context jsonb,
@@ -1966,10 +1972,19 @@ CREATE TABLE IF NOT EXISTS known_unknowns (
   status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed'))
 );
 
+-- Index covers the /status ORDER BY (hit_count DESC, last_seen_at DESC)
 CREATE INDEX IF NOT EXISTS idx_known_unknowns_status_hit
-  ON known_unknowns(status, hit_count DESC)
+  ON known_unknowns(status, hit_count DESC, last_seen_at DESC)
   WHERE status = 'open';
 
 CREATE INDEX IF NOT EXISTS idx_known_unknowns_query_embedding_hnsw
   ON known_unknowns USING hnsw (query_embedding vector_cosine_ops)
   WHERE query_embedding IS NOT NULL;
+
+ALTER TABLE known_unknowns ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all for authenticated" ON known_unknowns
+  FOR ALL USING (true) WITH CHECK (true);
+
+CREATE POLICY "Allow all for anon" ON known_unknowns
+  FOR ALL TO anon USING (true) WITH CHECK (true);
