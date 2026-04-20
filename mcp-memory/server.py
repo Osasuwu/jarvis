@@ -1526,7 +1526,7 @@ async def _hybrid_recall(
     limit: int,
     include_links: bool = False,
     show_history: bool = False,
-) -> list[TextContent]:
+) -> tuple[list[dict], list[TextContent]]:
     """Hybrid search: server-side pgvector semantic + pg_trgm keyword, merged via RRF.
 
     Memory 2.0: adds temporal scoring (recency × access frequency) and optional
@@ -1581,12 +1581,22 @@ async def _hybrid_recall(
         _enrich_with_confidence(client, merged)
         _apply_temporal_scoring(merged)
 
-        # Phase 5: gap detection
+        # Phase 5: gap detection — fire-and-forget so we don't add Supabase
+        # round-trips to the recall hot path on low-match queries.
         top_sim = merged[0].get("similarity", 0.0) if merged else 0.0
         top_mem_id = merged[0].get("id") if merged else None
         if not show_history and top_sim < GAP_THRESHOLD:
-            _upsert_known_unknown(
-                client, query_text, query_embedding, top_sim, top_mem_id, project, "recall"
+            asyncio.create_task(
+                asyncio.to_thread(
+                    _upsert_known_unknown,
+                    client,
+                    query_text,
+                    query_embedding,
+                    top_sim,
+                    top_mem_id,
+                    project,
+                    "recall",
+                )
             )
 
         formatted = _format_memories(merged)
@@ -1629,10 +1639,19 @@ async def _hybrid_recall(
 
         # Phase 5 metacognition: emit memory_recall event for FOK batch processing (#250).
         returned_ids = [r.get("id") for r in merged if r.get("id")]
+        # Per-memory similarities (same length + order as returned_ids) so the
+        # FOK judge can show true ranking instead of pinning every memory to
+        # top_sim.
+        returned_similarities = [
+            float(r["similarity"]) if isinstance(r.get("similarity"), (int, float)) else None
+            for r in merged
+            if r.get("id")
+        ]
         top_sim = merged[0].get("similarity", 0.0) if merged else 0.0
         payload = {
             "query": query_text,
             "returned_ids": returned_ids,
+            "returned_similarities": returned_similarities,
             "returned_count": len(merged),
             "top_sim": float(top_sim),
             "threshold": SIMILARITY_THRESHOLD,

@@ -89,11 +89,12 @@ def build_user_message(query: str, returned_results: list[dict]) -> str:
     msg = f"Query: {query}\n\nReturned memories (top {len(returned_results)}):\n\n"
     for i, r in enumerate(returned_results[:5], 1):
         mem_id = r.get("id", "unknown")
-        sim = r.get("similarity", 0.0)
+        sim = r.get("similarity")
         content = r.get("content", "")
         if len(content) > MAX_RETURNED_CONTENT_CHARS:
             content = content[: MAX_RETURNED_CONTENT_CHARS - 3] + "..."
-        msg += f"{i}. [{mem_id}] (similarity: {sim:.2f})\n{content}\n\n"
+        sim_str = f"{sim:.2f}" if isinstance(sim, (int, float)) else "unknown"
+        msg += f"{i}. [{mem_id}] (similarity: {sim_str})\n{content}\n\n"
 
     return msg
 
@@ -179,16 +180,16 @@ def judge_via_haiku(query: str, returned_results: list[dict]) -> dict:
 
 
 def check_known_unknowns_exists(client) -> bool:
-    """Guard: check if known_unknowns table exists via RPC."""
+    """Guard: check if known_unknowns table exists via lightweight select probe.
+
+    Previous impl called client.rpc("query", ...) which doesn't exist in our
+    schema, so it always raised and silently disabled insertion.
+    """
     try:
-        # Try a simple check via PostgreSQL's to_regclass
-        result = client.rpc(
-            "query",
-            {"sql": "select to_regclass('public.known_unknowns') is not null as exists"},
-        ).execute()
-        return result.data and result.data[0].get("exists", False)
+        client.table("known_unknowns").select("id").limit(1).execute()
+        return True
     except Exception:
-        # If RPC fails or table doesn't exist, safely assume it doesn't
+        # Missing relation / 404 / any other access error → assume absent
         return False
 
 
@@ -200,8 +201,13 @@ def try_insert_known_unknown(client, event: dict, project: str) -> None:
     top_sim = payload.get("top_sim", 0.0)
     query = payload.get("query", "")
 
-    # Only insert: verdict=insufficient, confidence < 0.7, top_sim < 0.6
-    if verdict != "insufficient" or (confidence or 1.0) >= 0.7 or top_sim >= 0.6:
+    # Only insert: verdict=insufficient, confidence < 0.7, top_sim < 0.6.
+    # Use explicit None check — (confidence or 1.0) coerces a legitimate 0.0
+    # into 1.0, which would skip the truly-uncertain cases we most want to log.
+    effective_confidence = confidence if confidence is not None else 1.0
+    if verdict != "insufficient" or effective_confidence >= 0.7 or top_sim >= 0.6:
+        return
+    if not query:
         return
 
     # Guard: table must exist
@@ -209,25 +215,37 @@ def try_insert_known_unknown(client, event: dict, project: str) -> None:
         return
 
     try:
-        # Check for semantic dedup: query vs existing unknowns (cosine sim > 0.7)
-        similar = (
+        # Dedupe: exact-query + status='open' key. The previous semantic check
+        # did `.gte("similarity", 0.7).limit(1)` which returned any row with
+        # high sim to *anything*, disabling inserts once the table had any hit.
+        existing = (
             client.table("known_unknowns")
-            .select("similarity")
-            .gte("similarity", 0.7)
+            .select("id,hit_count")
+            .eq("query", query)
+            .eq("status", "open")
             .limit(1)
             .execute()
         )
-        if similar.data:
-            return  # Duplicate found; skip insert
+        if existing.data:
+            row = existing.data[0]
+            client.table("known_unknowns").update(
+                {
+                    "hit_count": (row.get("hit_count") or 1) + 1,
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                }
+            ).eq("id", row["id"]).execute()
+            return
 
-        # Safe to insert
         client.table("known_unknowns").insert(
             {
-                "project": project,
                 "query": query,
-                "reason": payload.get("fok_reason", ""),
-                "event_id": event.get("id"),
-                "source": "fok_batch",
+                "top_similarity": top_sim,
+                "context": {
+                    "project": project,
+                    "reason": payload.get("fok_reason", ""),
+                    "event_id": event.get("id"),
+                    "source": "fok_batch",
+                },
             }
         ).execute()
     except Exception:
@@ -259,14 +277,16 @@ def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
 def write_event(client, summary: dict, project: str) -> None:
     """Emit fok_run summary event."""
     try:
+        payload = dict(summary)
+        payload["project"] = project
         client.table("events").insert(
             {
                 "event_type": "fok_run",
                 "severity": "info",
-                "repo": "Osasuwu/jarvis",
+                "repo": project,
                 "source": "fok_batch",
                 "title": f"FOK batch run: processed {summary.get('processed', 0)}",
-                "payload": summary,
+                "payload": payload,
             }
         ).execute()
     except Exception:
@@ -274,7 +294,12 @@ def write_event(client, summary: dict, project: str) -> None:
 
 
 def fetch_events(client, limit: int) -> list[dict]:
-    """Fetch memory_recall events without fok_verdict from the last 24h."""
+    """Fetch memory_recall events without fok_verdict from the last 24h.
+
+    Applies order + limit server-side so we don't pull the full 24h window
+    into memory as event volume grows. We over-fetch by 3x because the
+    fok_verdict filter can only be applied client-side (payload->>'...').
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
         resp = (
@@ -282,17 +307,19 @@ def fetch_events(client, limit: int) -> list[dict]:
             .select("*")
             .eq("event_type", "memory_recall")
             .gte("created_at", cutoff.isoformat())
+            .order("created_at", desc=False)
+            .limit(max(limit * 3, limit))
             .execute()
         )
         events = resp.data or []
-        # Filter client-side: only those where payload->>'fok_verdict' IS NULL
         unfudged = []
         for e in events:
             payload = e.get("payload") or {}
             if not payload.get("fok_verdict"):
                 unfudged.append(e)
-
-        return unfudged[:limit]
+            if len(unfudged) >= limit:
+                break
+        return unfudged
     except Exception:
         return []
 
@@ -341,23 +368,38 @@ def main():
         query = payload.get("query", "")
         returned_ids = payload.get("returned_ids", [])
         top_sim = payload.get("top_sim", 0.0)
+        # Optional per-memory similarities (Phase 5.1+). Same length/order
+        # as returned_ids when present; else fall back to [top_sim, nan, ...]
+        # so only the top result claims the known similarity.
+        returned_sims = payload.get("returned_similarities") or []
 
-        # Fetch memory contents for context
+        # Fetch memory contents for context; preserve recall ranking order.
         returned_results = []
         if returned_ids:
+            top_ids = returned_ids[:5]
             try:
                 result = (
                     client.table("memories")
                     .select("id,content")
-                    .in_("id", returned_ids[:5])
+                    .in_("id", top_ids)
                     .execute()
                 )
-                for mem in result.data or []:
+                by_id = {str(m.get("id")): m for m in (result.data or [])}
+                for idx, mid in enumerate(top_ids):
+                    mem = by_id.get(str(mid))
+                    if not mem:
+                        continue
+                    if idx < len(returned_sims):
+                        sim = returned_sims[idx]
+                    elif idx == 0:
+                        sim = top_sim
+                    else:
+                        sim = None  # unknown — don't mislead the judge
                     returned_results.append(
                         {
                             "id": mem.get("id"),
                             "content": mem.get("content", ""),
-                            "similarity": top_sim,
+                            "similarity": sim,
                         }
                     )
             except Exception:

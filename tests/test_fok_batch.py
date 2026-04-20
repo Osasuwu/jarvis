@@ -282,13 +282,119 @@ def test_fetch_events_filters_unfudged():
         },  # Should be filtered
         {"id": "evt-003", "payload": {"query": "test"}},  # No fok_verdict key
     ]
-    mock_client.table.return_value.select.return_value.eq.return_value.gte.return_value.execute.return_value = mock_response
+    mock_client.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value = mock_response
 
     events = fok_batch.fetch_events(mock_client, 10)
 
     assert len(events) == 2
     assert events[0]["id"] == "evt-001"
     assert events[1]["id"] == "evt-003"
+
+
+def test_try_insert_zero_confidence_is_not_treated_as_missing():
+    """Regression guard: confidence=0.0 must still qualify for known_unknowns.
+
+    Previous `(confidence or 1.0) >= 0.7` coerced 0.0 to 1.0 and silently
+    skipped the most uncertain verdicts.
+    """
+    client = MagicMock()
+    # known_unknowns exists probe
+    client.table.return_value.select.return_value.limit.return_value.execute.return_value = Mock(
+        data=[]
+    )
+    # dedupe: no existing row
+    client.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = Mock(
+        data=[]
+    )
+    event = {
+        "id": "evt-zero",
+        "payload": {
+            "fok_verdict": "insufficient",
+            "fok_confidence": 0.0,
+            "top_sim": 0.1,
+            "query": "zero-confidence query",
+        },
+    }
+
+    fok_batch.try_insert_known_unknown(client, event, "jarvis")
+
+    insert_calls = [
+        c for c in client.table.return_value.insert.call_args_list if c.args
+    ]
+    assert insert_calls, "insert() should have been called for confidence=0.0"
+    payload = insert_calls[-1].args[0]
+    assert payload["query"] == "zero-confidence query"
+    assert payload["top_similarity"] == 0.1
+
+
+def test_try_insert_dedupes_on_exact_query_and_bumps_hit_count():
+    """Regression guard: the dedup path must key on the *current* query.
+
+    Previous impl did `.gte("similarity", 0.7)` with no query binding, so
+    once any qualifying row existed, every future insert was skipped.
+    """
+    client = MagicMock()
+    # known_unknowns exists
+    client.table.return_value.select.return_value.limit.return_value.execute.return_value = Mock(
+        data=[]
+    )
+    # dedupe: existing row for same query
+    client.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = Mock(
+        data=[{"id": "ku-1", "hit_count": 3}]
+    )
+    update_chain = (
+        client.table.return_value.update.return_value.eq.return_value.execute
+    )
+
+    event = {
+        "id": "evt-dup",
+        "payload": {
+            "fok_verdict": "insufficient",
+            "fok_confidence": 0.2,
+            "top_sim": 0.1,
+            "query": "recurring gap",
+        },
+    }
+    fok_batch.try_insert_known_unknown(client, event, "jarvis")
+
+    update_chain.assert_called()
+    update_payload = client.table.return_value.update.call_args.args[0]
+    assert update_payload["hit_count"] == 4  # 3 + 1
+    assert "last_seen_at" in update_payload
+
+    # No insert should have fired on the dedupe path
+    insert_calls = [
+        c for c in client.table.return_value.insert.call_args_list if c.args
+    ]
+    assert not insert_calls, "insert() must not be called when a dup row exists"
+
+
+def test_write_event_includes_project():
+    """Regression guard: `project` arg must propagate into the emitted event."""
+    client = MagicMock()
+    fok_batch.write_event(client, {"processed": 3}, "Osasuwu/jarvis")
+    insert_call = client.table.return_value.insert.call_args
+    assert insert_call is not None
+    row = insert_call.args[0]
+    assert row["repo"] == "Osasuwu/jarvis"
+    assert row["payload"]["project"] == "Osasuwu/jarvis"
+
+
+def test_check_known_unknowns_exists_uses_table_probe():
+    """Previously used non-existent client.rpc("query", ...); now a table probe."""
+    client = MagicMock()
+    client.table.return_value.select.return_value.limit.return_value.execute.return_value = Mock(
+        data=[]
+    )
+    assert fok_batch.check_known_unknowns_exists(client) is True
+    client.table.assert_called_with("known_unknowns")
+
+    # Missing table → False, not raise
+    client2 = MagicMock()
+    client2.table.return_value.select.return_value.limit.return_value.execute.side_effect = (
+        RuntimeError("relation does not exist")
+    )
+    assert fok_batch.check_known_unknowns_exists(client2) is False
 
 
 if __name__ == "__main__":
