@@ -46,13 +46,30 @@ Sources of ideas:
 - Unacted research findings
 - Missing capabilities observed in recent sessions
 - Opportunities from new Claude Code / MCP features
+- **Known-unknowns** (`known_unknowns` table → repeated recall gaps) — queries Jarvis has been asked but couldn't answer from memory
 - **Poor-calibration types** (`memory_calibration_summary` → types with Brier > 0.25) — systemic over/underconfidence is signal worth investigating
 
-Before ideating, pull calibration gaps as candidate seeds:
+#### Metacognition seeds
+
+Before ideating, pull both metacognition signals as candidate seeds. Run in parallel; both may return empty (skill must still work — just skip the section).
+
+**1. Known-unknowns** — retrieval gaps with highest recurrence:
+```sql
+SELECT query, hit_count, last_seen_at
+FROM known_unknowns
+WHERE status='open'
+ORDER BY hit_count DESC, last_seen_at DESC
+LIMIT 5
+```
+Run via `execute_sql` (works in cloud + local). A query with `hit_count >= 3` is a strong seed: "asked N times, still no answer" → candidate for a research run, a new memory, or a capability gap.
+
+**2. Calibration gaps** — types where confidence diverges from outcome:
 ```
 mcp__memory__memory_calibration_summary(project="jarvis")
 ```
-Types flagged `overconfident` often point at a concrete pattern (e.g. "decision memories relying on unverified research") that can be fixed by a feedback rule, a hook, or a schema tweak.
+Types flagged `overconfident` (Brier > 0.25, avg_predicted > avg_actual) often point at a concrete pattern (e.g. "decision memories relying on unverified research") that can be fixed by a feedback rule, a hook, or a schema tweak.
+
+Render both under a **Ideation seeds (metacognition)** subsection in the output. Each seed becomes a candidate idea scored in the table below alongside health-check findings and friction patterns. If both sources return empty, omit the subsection (don't render empty headings).
 
 If no strong ideas: fall back to health check findings for code improvements.
 
@@ -103,6 +120,17 @@ gh pr create --title "self-improve: <description>" --body "..."
 
 ### Health check
 - <key findings, or "Clean">
+
+### Ideation seeds (metacognition)
+<omit entire subsection if both sources empty>
+
+**Known-unknowns** (top open, by hit_count):
+| Query | Hits | Last seen |
+|-------|------|-----------|
+| ... | N | YYYY-MM-DD |
+
+**Calibration gaps** (Brier > 0.25, n >= 20):
+- `<type>` — Brier X.XX, overconfident/underconfident (avg_pred Y vs avg_actual Z)
 
 ### Ideas (scored)
 | Idea | Impact | Effort | Risk |
