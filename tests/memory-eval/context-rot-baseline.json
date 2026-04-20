@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-04-20T04:27:07.623568+00:00",
-  "corpus_size": 312,
+  "timestamp": "2026-04-20T17:57:10.655417+00:00",
+  "corpus_size": 323,
   "total_queries": 20,
   "plain_recall_at_5": 0.9,
   "context_recall_at_5": 0.65,
@@ -8,9 +8,9 @@
   "plain_recall_at_10": 0.9,
   "context_recall_at_10": 0.7,
   "delta_recall_at_10_pp": -20.000000000000007,
-  "plain_mrr": 0.6391666666666667,
-  "context_mrr": 0.4454166666666667,
-  "delta_mrr": -0.19374999999999998,
+  "plain_mrr": 0.5891666666666666,
+  "context_mrr": 0.4197222222222222,
+  "delta_mrr": -0.1694444444444444,
   "plain_must_not_violations": 0,
   "context_must_not_violations": 0,
   "only_plain_passed": [
@@ -22,12 +22,13 @@
   ],
   "only_context_passed": [],
   "context_budget": {
-    "chars": 6333,
-    "tokens_approx": 1583,
-    "item_count": 11,
+    "chars": 14141,
+    "tokens_approx": 3535,
+    "item_count": 64,
     "user": 2,
     "always_load": 0,
-    "goals": 9
+    "goals": 9,
+    "catalog": 53
   },
   "per_query": [
     {
@@ -84,18 +85,18 @@
       "id": "q03",
       "query": "TDD сначала пишем тест который падает",
       "plain_top_names": [
+        "deficit_first_pipeline_architecture",
         "bug_fix_reproduce_first",
         "sand_direction_top_down",
-        "deficit_first_pipeline_architecture",
-        "university_student_cse8012",
-        "read_code_before_implementing"
+        "__e2e_test_provenance_bad__",
+        "university_student_cse8012"
       ],
       "context_top_names": [
+        "deficit_first_pipeline_architecture",
         "bug_fix_reproduce_first",
         "sand_direction_top_down",
-        "deficit_first_pipeline_architecture",
-        "university_student_cse8012",
-        "read_code_before_implementing"
+        "__e2e_test_provenance_bad__",
+        "university_student_cse8012"
       ],
       "plain_hits_at_5": [
         "bug_fix_reproduce_first"
@@ -103,8 +104,8 @@
       "context_hits_at_5": [
         "bug_fix_reproduce_first"
       ],
-      "plain_first_hit_rank": 1,
-      "context_first_hit_rank": 1,
+      "plain_first_hit_rank": 2,
+      "context_first_hit_rank": 2,
       "plain_must_not_viol": [],
       "context_must_not_viol": [],
       "plain_passed": true,
@@ -115,17 +116,17 @@
       "query": "always commit and push",
       "plain_top_names": [
         "always_commit_and_push",
+        "schema_sql_requires_paired_migration",
         "review_auto_fix_workflow",
         "dedup_hook_live_test_should_block",
-        "owner_profile",
-        "no_hardcoded_context_in_claude_md"
+        "parallel_delegate_worktree_isolation_failed_2026_04_20"
       ],
       "context_top_names": [
         "always_commit_and_push",
         "dedup_hook_live_test_should_block",
         "no_hardcoded_context_in_claude_md",
         "jarvis_public_release_v020",
-        "jarvis_v2_hybrid_agile"
+        "working_state_jarvis"
       ],
       "plain_hits_at_5": [
         "always_commit_and_push"
@@ -145,17 +146,17 @@
       "query": "act as senior engineer not executor",
       "plain_top_names": [
         "be_the_manager",
+        "architecture_final",
         "instructions_overhaul_2026_04_01",
         "milestone_structure_v2",
-        "dnd_dm_role",
-        "architecture_final"
+        "dnd_dm_role"
       ],
       "context_top_names": [
+        "architecture_final",
         "milestone_structure_v2",
         "dnd_dm_role",
-        "architecture_final",
-        "sand_physics_architecture_2026_04_06",
-        "github_schema_restructured"
+        "metacognition_sprint_plan_2026_04_20",
+        "sand_physics_architecture_2026_04_06"
       ],
       "plain_hits_at_5": [
         "be_the_manager"
@@ -179,8 +180,8 @@
         "jarvis_v2_hybrid_agile"
       ],
       "context_top_names": [
-        "jarvis_v2_vision",
         "jarvis_v2_multiagent_architecture",
+        "jarvis_v2_vision",
         "jarvis_v2_multiagent_direction",
         "jarvis_wrapping_direction",
         "jarvis_v2_hybrid_agile"
@@ -238,15 +239,15 @@
         "memory_server_v2_improvements",
         "postgres_function_signature_migration",
         "pg_generated_cols_null_in_before_update",
-        "supabase_custom_mcp_preferred",
-        "phase_2c_provenance_approach"
+        "schema_sql_requires_paired_migration",
+        "supabase_custom_mcp_preferred"
       ],
       "context_top_names": [
         "memory_server_v2_improvements",
         "postgres_function_signature_migration",
         "pg_generated_cols_null_in_before_update",
-        "supabase_custom_mcp_preferred",
-        "phase_2c_provenance_approach"
+        "schema_sql_requires_paired_migration",
+        "supabase_custom_mcp_preferred"
       ],
       "plain_hits_at_5": [
         "memory_server_v2_improvements"
@@ -268,15 +269,15 @@
         "lessons_agent_delegation",
         "delegate_frontend_to_subagents",
         "delegation_parallel_worktree_scope_leak",
-        "prefer_agents_for_parallel_bugs",
-        "agent_delegation_precision"
+        "agent_delegation_precision",
+        "prefer_agents_for_parallel_bugs"
       ],
       "context_top_names": [
         "lessons_agent_delegation",
         "delegate_frontend_to_subagents",
         "delegation_parallel_worktree_scope_leak",
-        "prefer_agents_for_parallel_bugs",
-        "agent_delegation_precision"
+        "agent_delegation_precision",
+        "prefer_agents_for_parallel_bugs"
       ],
       "plain_hits_at_5": [
         "lessons_agent_delegation",
@@ -331,15 +332,15 @@
       "plain_top_names": [
         "verify_agent_findings_against_memory",
         "always_recall_before_action",
-        "memory_roadmap_stealable_ideas_2026_04_20",
         "phase3_rewriter_type_narrowing_regression",
+        "linked_dedup_fix",
         "nightly_research_sql_fallback"
       ],
       "context_top_names": [
         "always_recall_before_action",
         "verify_agent_findings_against_memory",
-        "nightly_research_sql_fallback",
         "linked_dedup_fix",
+        "nightly_research_sql_fallback",
         "check_diagnostics_diversity"
       ],
       "plain_hits_at_5": [
@@ -421,24 +422,24 @@
       "id": "q14",
       "query": "check diagnostics for value diversity",
       "plain_top_names": [
+        "check_pr_scope_fit_at_open_time",
         "check_diagnostics_diversity",
+        "__e2e_test_provenance_bad__",
         "llm_json_invariant_normalization",
-        "pipeline_verification_mandatory",
-        "autonomous_loop_last_run",
-        "bug_analysis_575_576_577"
+        "pipeline_verification_mandatory"
       ],
       "context_top_names": [
+        "check_pr_scope_fit_at_open_time",
+        "__e2e_test_provenance_bad__",
         "llm_json_invariant_normalization",
         "pipeline_verification_mandatory",
-        "autonomous_loop_last_run",
-        "bug_analysis_575_576_577",
-        "event_dispatch_spam_fix"
+        "parallel_delegate_worktree_isolation_failed_2026_04_20"
       ],
       "plain_hits_at_5": [
         "check_diagnostics_diversity"
       ],
       "context_hits_at_5": [],
-      "plain_first_hit_rank": 1,
+      "plain_first_hit_rank": 2,
       "context_first_hit_rank": null,
       "plain_must_not_viol": [],
       "context_must_not_viol": [],
@@ -449,15 +450,15 @@
       "id": "q15",
       "query": "multi-agent frameworks landscape comparison",
       "plain_top_names": [
-        "team_ai_agent_project_initiated",
         "jarvis_v2_multiagent_architecture",
+        "team_ai_agent_project_initiated",
         "jarvis_scalable_agent_system",
         "competitive_landscape_multi_agent_2026",
         "managed_agents_wait_and_see"
       ],
       "context_top_names": [
-        "team_ai_agent_project_initiated",
         "jarvis_v2_multiagent_architecture",
+        "team_ai_agent_project_initiated",
         "jarvis_scalable_agent_system",
         "competitive_landscape_multi_agent_2026",
         "managed_agents_wait_and_see"
@@ -497,7 +498,7 @@
       ],
       "context_hits_at_5": [],
       "plain_first_hit_rank": 1,
-      "context_first_hit_rank": 8,
+      "context_first_hit_rank": 9,
       "plain_must_not_viol": [],
       "context_must_not_viol": [],
       "plain_passed": true,
@@ -507,18 +508,18 @@
       "id": "q17",
       "query": "DnD dungeon master hobby",
       "plain_top_names": [
-        "research_threejs_heightmap_visualization",
         "skill_proliferation_antipattern",
+        "research_threejs_heightmap_visualization",
         "nightly_research_sql_fallback",
         "research_skill_firecrawl_v2",
-        "sculpture_vision_system"
+        "proactive_goal_tracking"
       ],
       "context_top_names": [
-        "research_threejs_heightmap_visualization",
         "skill_proliferation_antipattern",
+        "research_threejs_heightmap_visualization",
         "nightly_research_sql_fallback",
-        "sculpture_vision_system",
-        "research_skill_firecrawl_v2"
+        "research_skill_firecrawl_v2",
+        "proactive_goal_tracking"
       ],
       "plain_hits_at_5": [],
       "context_hits_at_5": [],
@@ -536,8 +537,8 @@
         "jarvis_v2_hybrid_agile",
         "jarvis_v2_vision",
         "no_deterministic_pipelines",
-        "redrobot_agile_full_migration",
-        "goals_system_v1"
+        "goals_system_v1",
+        "redrobot_agile_full_migration"
       ],
       "context_top_names": [
         "redrobot_agile_full_migration",
@@ -591,9 +592,9 @@
       "plain_top_names": [
         "local_scheduled_tasks_only",
         "lesson_cloud_mcp_limitations",
-        "memory_roadmap_stealable_ideas_2026_04_20",
         "supabase_custom_mcp_preferred",
-        "event_driven_perception_v1"
+        "event_driven_perception_v1",
+        "mcp_stack_2026_03_31"
       ],
       "context_top_names": [
         "local_scheduled_tasks_only",

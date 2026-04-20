@@ -660,6 +660,42 @@ def _load_session_context(client) -> tuple[str, dict]:
     except Exception as e:
         print(f"[context-rot] goals query failed: {e}", file=sys.stderr)
 
+    # 4. Memory catalog (Phase 7.1) — lazy-index entries for live, in-scope
+    #    memories. Mirrors scripts/session-context.py:_query_catalog output
+    #    format (one bullet per entry, type/scope label, description truncated
+    #    to 120 chars) so the context-rot baseline reflects the shape/budget
+    #    actually injected at session start. Eval runs project-agnostic so we
+    #    scope to global (project IS NULL) — matches non-project cwd sessions.
+    try:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        r = (
+            client.table("memories")
+            .select("name, description, tags, type, project")
+            .is_("expired_at", "null")
+            .is_("superseded_by", "null")
+            .is_("deleted_at", "null")
+            .is_("project", "null")
+            .or_(f"valid_to.is.null,valid_to.gt.{now_iso}")
+            .order("last_accessed_at", desc=True, nullsfirst=False)
+            .limit(200)
+            .execute()
+        )
+        for m in r.data or []:
+            if m.get("type") == "user":
+                continue
+            tags = m.get("tags") or []
+            if "always_load" in tags:
+                continue
+            # Mirror _fmt_catalog_entry in session-context.py — global scope
+            # here since we filter project IS NULL.
+            desc = (m.get("description") or "").strip()
+            if len(desc) > 120:
+                desc = desc[:117] + "..."
+            parts.append(f"- {m['name']} [{m['type']}/global]: {desc}")
+            counts["catalog"] = counts.get("catalog", 0) + 1
+    except Exception as e:
+        print(f"[context-rot] catalog query failed: {e}", file=sys.stderr)
+
     blob = " ".join(p.strip() for p in parts if p.strip())
     chars = len(blob)
     budget = {
@@ -760,7 +796,8 @@ def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> N
               f"{report.context_budget['item_count']} items "
               f"(user={report.context_budget['user']}, "
               f"always_load={report.context_budget['always_load']}, "
-              f"goals={report.context_budget['goals']})\n")
+              f"goals={report.context_budget['goals']}, "
+              f"catalog={report.context_budget.get('catalog', 0)})\n")
 
         # Per-query table: plain rank → context rank, mark regressions/wins
         print(f"{'id':<5} {'plain':>6}  {'ctx':>6}  drank  result   query")
