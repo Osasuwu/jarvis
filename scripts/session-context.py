@@ -100,6 +100,16 @@ def main():
     if goal_section:
         sections.append(goal_section)
 
+    # 5. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
+    #    live memories (name + type + scope + short description) so Jarvis
+    #    knows what exists and can pull full content on demand via memory_get
+    #    / memory_recall. Replaces the old recency-based feedback/decision
+    #    dumps — those rot recall (see tests/memory-eval/context-rot-baseline.json).
+    section, ids = _query_catalog(client, project)
+    if section:
+        sections.append("## Memory Catalog\n" + section)
+        touched_ids.extend(ids)
+
     # Bump last_accessed_at for every memory we just loaded. Phase 1 drives the
     # access-frequency boost in temporal scoring off this column, so
     # session-start loads should count as access. The content_updated_at /
@@ -165,6 +175,88 @@ def _query_always_load(client):
     except Exception as e:
         print(f"[session-context] always_load query failed: {e}", file=sys.stderr)
     return None, []
+
+
+def _query_catalog(client, project):
+    """Compact one-line catalog of live memories — lazy awareness (Phase 7.1).
+
+    Returns (formatted_text, ids). Sorted by last_accessed_at desc so recently
+    touched entries surface first. Filters to live memories (not expired, not
+    superseded, valid_to in future or null) scoped to current project or
+    global (project IS NULL).
+
+    Excludes entries already rendered in other sections:
+      - type=user (User Profile)
+      - 'always_load' in tags (Always-Load Rules)
+      - name=working_state_<project> (Working State)
+    """
+    try:
+        query = (
+            client.table("memories")
+            .select("id, name, type, project, description, tags, last_accessed_at, valid_to")
+            .is_("expired_at", "null")
+            .is_("superseded_by", "null")
+        )
+        if project:
+            query = query.or_(f"project.eq.{project},project.is.null")
+        else:
+            query = query.is_("project", "null")
+        result = (
+            query.order("last_accessed_at", desc=True, nullsfirst=False)
+            .limit(200)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[session-context] catalog query failed: {e}", file=sys.stderr)
+        return None, []
+
+    if not result.data:
+        return None, []
+
+    working_state_name = f"working_state_{project}" if project else None
+    now_iso = None  # lazy init
+    entries = []
+    ids = []
+    for m in result.data:
+        if m["type"] == "user":
+            continue
+        tags = m.get("tags") or []
+        if "always_load" in tags:
+            continue
+        if working_state_name and m["name"] == working_state_name:
+            continue
+        # valid_to filter — Postgres already excluded rows we don't want, but
+        # the OR clause above is project-level; valid_to still needs a
+        # client-side check since we didn't add it to the server filter.
+        vt = m.get("valid_to")
+        if vt:
+            if now_iso is None:
+                from datetime import datetime, timezone
+                now_iso = datetime.now(timezone.utc).isoformat()
+            if vt <= now_iso:
+                continue
+        entries.append(_fmt_catalog_entry(m, project))
+        if m.get("id"):
+            ids.append(m["id"])
+
+    if not entries:
+        return None, []
+    return "\n".join(entries), ids
+
+
+def _fmt_catalog_entry(m, current_project):
+    """One-line catalog entry: `- <name> [<type>/<scope>]: <description>`."""
+    p = m.get("project")
+    if p is None:
+        scope = f"{m['type']}/global"
+    elif p == current_project:
+        scope = m["type"]
+    else:
+        scope = f"{m['type']}/{p}"
+    desc = (m.get("description") or "").strip()
+    if len(desc) > 120:
+        desc = desc[:117] + "..."
+    return f"- {m['name']} [{scope}]: {desc}"
 
 
 def _touch_accessed(client, ids):

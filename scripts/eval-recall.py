@@ -660,6 +660,37 @@ def _load_session_context(client) -> tuple[str, dict]:
     except Exception as e:
         print(f"[context-rot] goals query failed: {e}", file=sys.stderr)
 
+    # 4. Memory catalog (Phase 7.1) — lazy-index entries (name + description +
+    #    tags) for live, in-scope memories. Mirrors scripts/session-context.py
+    #    :_query_catalog. Eval runs project-agnostic, so we scope to global
+    #    (project IS NULL) only — matches the non-project cwd session case.
+    try:
+        r = (
+            client.table("memories")
+            .select("name, description, tags, type, project")
+            .is_("expired_at", "null")
+            .is_("superseded_by", "null")
+            .is_("project", "null")
+            .order("last_accessed_at", desc=True, nullsfirst=False)
+            .limit(200)
+            .execute()
+        )
+        for m in r.data or []:
+            if m.get("type") == "user":
+                continue
+            tags = m.get("tags") or []
+            if "always_load" in tags:
+                continue
+            pieces = [
+                m.get("name") or "",
+                m.get("description") or "",
+                " ".join(tags),
+            ]
+            parts.append(" ".join(p for p in pieces if p))
+            counts["catalog"] = counts.get("catalog", 0) + 1
+    except Exception as e:
+        print(f"[context-rot] catalog query failed: {e}", file=sys.stderr)
+
     blob = " ".join(p.strip() for p in parts if p.strip())
     chars = len(blob)
     budget = {
@@ -760,7 +791,8 @@ def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> N
               f"{report.context_budget['item_count']} items "
               f"(user={report.context_budget['user']}, "
               f"always_load={report.context_budget['always_load']}, "
-              f"goals={report.context_budget['goals']})\n")
+              f"goals={report.context_budget['goals']}, "
+              f"catalog={report.context_budget.get('catalog', 0)})\n")
 
         # Per-query table: plain rank → context rank, mark regressions/wins
         print(f"{'id':<5} {'plain':>6}  {'ctx':>6}  drank  result   query")
