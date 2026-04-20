@@ -1,5 +1,5 @@
 {
-  "timestamp": "2026-04-20T16:06:16.600389+00:00",
+  "timestamp": "2026-04-20T17:57:10.655417+00:00",
   "corpus_size": 323,
   "total_queries": 20,
   "plain_recall_at_5": 0.9,
@@ -8,9 +8,9 @@
   "plain_recall_at_10": 0.9,
   "context_recall_at_10": 0.7,
   "delta_recall_at_10_pp": -20.000000000000007,
-  "plain_mrr": 0.5808333333333333,
+  "plain_mrr": 0.5891666666666666,
   "context_mrr": 0.4197222222222222,
-  "delta_mrr": -0.1611111111111111,
+  "delta_mrr": -0.1694444444444444,
   "plain_must_not_violations": 0,
   "context_must_not_violations": 0,
   "only_plain_passed": [
@@ -22,13 +22,13 @@
   ],
   "only_context_passed": [],
   "context_budget": {
-    "chars": 15041,
-    "tokens_approx": 3760,
-    "item_count": 65,
+    "chars": 14141,
+    "tokens_approx": 3535,
+    "item_count": 64,
     "user": 2,
     "always_load": 0,
     "goals": 9,
-    "catalog": 54
+    "catalog": 53
   },
   "per_query": [
     {
@@ -423,8 +423,8 @@
       "query": "check diagnostics for value diversity",
       "plain_top_names": [
         "check_pr_scope_fit_at_open_time",
-        "__e2e_test_provenance_bad__",
         "check_diagnostics_diversity",
+        "__e2e_test_provenance_bad__",
         "llm_json_invariant_normalization",
         "pipeline_verification_mandatory"
       ],
@@ -439,7 +439,7 @@
         "check_diagnostics_diversity"
       ],
       "context_hits_at_5": [],
-      "plain_first_hit_rank": 3,
+      "plain_first_hit_rank": 2,
       "context_first_hit_rank": null,
       "plain_must_not_viol": [],
       "context_must_not_viol": [],
@@ -568,14 +568,14 @@
         "jarvis_v2_vision",
         "multiagent_pm_architecture_vision",
         "jarvis_v15_skill_final_plan",
-        "no_jarvis_in_team_docs"
+        "jarvis_public_release_v020"
       ],
       "context_top_names": [
         "jarvis_wrapping_direction",
         "jarvis_v2_vision",
         "multiagent_pm_architecture_vision",
         "jarvis_v15_skill_final_plan",
-        "no_jarvis_in_team_docs"
+        "jarvis_public_release_v020"
       ],
       "plain_hits_at_5": [],
       "context_hits_at_5": [],
@@ -594,7 +594,7 @@
         "lesson_cloud_mcp_limitations",
         "supabase_custom_mcp_preferred",
         "event_driven_perception_v1",
-        "memory_roadmap_stealable_ideas_2026_04_20"
+        "mcp_stack_2026_03_31"
       ],
       "context_top_names": [
         "local_scheduled_tasks_only",

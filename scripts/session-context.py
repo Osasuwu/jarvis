@@ -105,10 +105,13 @@ def main():
     #    knows what exists and can pull full content on demand via memory_get
     #    / memory_recall. Replaces the old recency-based feedback/decision
     #    dumps — those rot recall (see tests/memory-eval/context-rot-baseline.json).
-    section, ids = _query_catalog(client, project)
+    #    NOTE: catalog ids are NOT added to touched_ids. Showing a memory in
+    #    the session-start index is not a read; bumping last_accessed_at here
+    #    would create a feedback loop (catalog is sorted by last_accessed_at)
+    #    and distort temporal scoring for genuine recall/read events.
+    section, _catalog_ids = _query_catalog(client, project)
     if section:
         sections.append("## Memory Catalog\n" + section)
-        touched_ids.extend(ids)
 
     # Bump last_accessed_at for every memory we just loaded. Phase 1 drives the
     # access-frequency boost in temporal scoring off this column, so
@@ -182,20 +185,27 @@ def _query_catalog(client, project):
 
     Returns (formatted_text, ids). Sorted by last_accessed_at desc so recently
     touched entries surface first. Filters to live memories (not expired, not
-    superseded, valid_to in future or null) scoped to current project or
-    global (project IS NULL).
+    superseded, not soft-deleted, valid_to in future or null) scoped to
+    current project or global (project IS NULL).
 
     Excludes entries already rendered in other sections:
       - type=user (User Profile)
       - 'always_load' in tags (Always-Load Rules)
       - name=working_state_<project> (Working State)
+
+    valid_to is filtered client-side with aware-datetime parsing because the
+    project scoping already uses one .or_() clause (PostgREST allows only one
+    `or=` parameter per query).
     """
+    from datetime import datetime, timezone
+    now_utc = datetime.now(timezone.utc)
     try:
         query = (
             client.table("memories")
             .select("id, name, type, project, description, tags, last_accessed_at, valid_to")
             .is_("expired_at", "null")
             .is_("superseded_by", "null")
+            .is_("deleted_at", "null")
         )
         if project:
             query = query.or_(f"project.eq.{project},project.is.null")
@@ -214,7 +224,6 @@ def _query_catalog(client, project):
         return None, []
 
     working_state_name = f"working_state_{project}" if project else None
-    now_iso = None  # lazy init
     entries = []
     ids = []
     for m in result.data:
@@ -225,16 +234,9 @@ def _query_catalog(client, project):
             continue
         if working_state_name and m["name"] == working_state_name:
             continue
-        # valid_to filter — Postgres already excluded rows we don't want, but
-        # the OR clause above is project-level; valid_to still needs a
-        # client-side check since we didn't add it to the server filter.
-        vt = m.get("valid_to")
-        if vt:
-            if now_iso is None:
-                from datetime import datetime, timezone
-                now_iso = datetime.now(timezone.utc).isoformat()
-            if vt <= now_iso:
-                continue
+        vt = _parse_ts(m.get("valid_to"))
+        if vt and vt <= now_utc:
+            continue
         entries.append(_fmt_catalog_entry(m, project))
         if m.get("id"):
             ids.append(m["id"])
@@ -242,6 +244,21 @@ def _query_catalog(client, project):
     if not entries:
         return None, []
     return "\n".join(entries), ids
+
+
+def _parse_ts(val):
+    """Parse Supabase timestamp (ISO str or datetime) to aware UTC datetime, or None."""
+    from datetime import datetime, timezone
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+    if isinstance(val, str):
+        try:
+            return datetime.fromisoformat(val.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
 
 
 def _fmt_catalog_entry(m, current_project):
