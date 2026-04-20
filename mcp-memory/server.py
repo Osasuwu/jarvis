@@ -3151,19 +3151,6 @@ async def _handle_credential_check_expiry(args: dict) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(lines))]
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
-async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
 async def _handle_record_decision(args: dict) -> list[TextContent]:
     """Insert a 'decision_made' episode with structured payload (#252).
 
@@ -3224,3 +3211,17 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
         eid = result.data[0].get("id", "?")
         return [TextContent(type="text", text=f"Decision recorded: episode {eid}")]
     return [TextContent(type="text", text="Failed to record decision.")]
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+
+async def main():
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
