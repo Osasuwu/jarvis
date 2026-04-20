@@ -806,7 +806,6 @@ from server import (  # noqa: E402
     _model_slot,
     _embed_upsert_fields,
     _compute_write_embeddings,
-    EMBEDDING_MODELS,
 )
 
 

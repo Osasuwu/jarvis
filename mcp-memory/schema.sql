@@ -1905,7 +1905,8 @@ alter table memories add column if not exists embedding_version_v2 text;
 -- structure small while SECONDARY is unset (zero rows indexed initially).
 create index if not exists idx_memories_embedding_v2_hnsw
   on memories using hnsw (embedding_v2 vector_cosine_ops)
-  with (m = 16, ef_construction = 64);
+  with (m = 16, ef_construction = 64)
+  where embedding_v2 is not null;
 
 -- Read-path RPC for v2. Mirrors match_memories shape/filters so _hybrid_recall
 -- can swap by name. NO CASE expression in ORDER BY — pgvector HNSW requires
@@ -1933,6 +1934,7 @@ language sql stable as $$
            1 - (m.embedding_v2 <=> query_embedding) as similarity
     from memories m
     where m.embedding_v2 is not null
+      and m.deleted_at is null
       and 1 - (m.embedding_v2 <=> query_embedding) >= similarity_threshold
       and (filter_project is null or m.project = filter_project or m.project is null)
       and (filter_type is null or m.type = filter_type)
