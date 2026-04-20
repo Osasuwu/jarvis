@@ -1286,6 +1286,20 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     client, stored_id, similar_rows, mem_type,
                     candidate=candidate_for_classifier,
                 ))
+
+            # Phase 5: resolve gaps
+            try:
+                open_gaps = client.table("known_unknowns").select("id, query_embedding").eq("status", "open").limit(100).execute()
+                for gap in (open_gaps.data or []):
+                    gap_emb = gap.get("query_embedding")
+                    if gap_emb and embedding and _cosine_sim(embedding, gap_emb) > 0.7:
+                        client.table("known_unknowns").update({
+                            "status": "resolved",
+                            "resolved_at": datetime.now(timezone.utc).isoformat(),
+                            "resolved_by_memory_id": stored_id,
+                        }).eq("id", gap["id"]).execute()
+            except Exception:
+                pass
         except Exception:
             pass  # auto-linking is best-effort, never blocks store
 
@@ -1293,6 +1307,76 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
 
 SIMILARITY_THRESHOLD = 0.25  # minimum cosine similarity to include in results
+
+GAP_THRESHOLD = 0.45  # known-unknowns: log gaps when top_similarity < this
+GAP_DEDUP_SIM = 0.9
+
+
+def _cosine_sim(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _upsert_known_unknown(
+    client, query_text: str, query_embedding: list[float] | None,
+    top_similarity: float, top_memory_id: str | None, project: str | None, skill: str | None
+) -> None:
+    """Upsert gap into known_unknowns table. Best-effort, never breaks recall."""
+    try:
+        if not query_embedding:
+            existing = client.table("known_unknowns").select("id, hit_count").eq("query", query_text).eq("status", "open").limit(1).execute()
+            if existing.data:
+                row = existing.data[0]
+                client.table("known_unknowns").update({
+                    "hit_count": row["hit_count"] + 1,
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                    "top_similarity": top_similarity,
+                    "top_memory_id": top_memory_id,
+                }).eq("id", row["id"]).execute()
+            else:
+                client.table("known_unknowns").insert({
+                    "query": query_text,
+                    "top_similarity": top_similarity,
+                    "top_memory_id": top_memory_id,
+                    "context": json.dumps({"source": "recall", "project": project, "skill": skill}),
+                }).execute()
+            return
+
+        open_gaps = client.table("known_unknowns").select("id, query_embedding, hit_count").eq("status", "open").limit(100).execute()
+        best_match = None
+        best_sim = GAP_DEDUP_SIM
+        for gap in (open_gaps.data or []):
+            gap_emb = gap.get("query_embedding")
+            if gap_emb:
+                sim = _cosine_sim(query_embedding, gap_emb)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_match = gap
+
+        if best_match:
+            client.table("known_unknowns").update({
+                "hit_count": best_match["hit_count"] + 1,
+                "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                "top_similarity": max(top_similarity, best_match.get("top_similarity", 0)),
+                "top_memory_id": top_memory_id,
+            }).eq("id", best_match["id"]).execute()
+        else:
+            client.table("known_unknowns").insert({
+                "query": query_text,
+                "query_embedding": query_embedding,
+                "top_similarity": top_similarity,
+                "top_memory_id": top_memory_id,
+                "context": json.dumps({"source": "recall", "project": project, "skill": skill}),
+            }).execute()
+    except Exception:
+        pass
 
 
 async def _handle_recall(args: dict) -> list[TextContent]:
@@ -1383,6 +1467,12 @@ async def _hybrid_recall(
         # Enrich merged rows before scoring so entrenchment multiplier has data.
         _enrich_with_confidence(client, merged)
         _apply_temporal_scoring(merged)
+
+        # Phase 5: gap detection
+        top_sim = merged[0].get("similarity", 0.0) if merged else 0.0
+        top_mem_id = merged[0].get("id") if merged else None
+        if not show_history and top_sim < GAP_THRESHOLD:
+            _upsert_known_unknown(client, query_text, query_embedding, top_sim, top_mem_id, project, "recall")
 
         formatted = _format_memories(merged)
         search_type = "hybrid+temporal" if keyword_rows else "semantic+temporal"

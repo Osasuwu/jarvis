@@ -1945,3 +1945,37 @@ language sql stable as $$
     order by m.embedding_v2 <=> query_embedding
     limit match_limit;
 $$;
+
+-- =========================================================================
+-- Phase 5 Metacognition: Known Unknowns — detect + log retrieval gaps
+-- Upserted by _hybrid_recall when top_similarity < 0.45
+-- =========================================================================
+
+create table if not exists known_unknowns (
+  id uuid primary key default gen_random_uuid(),
+  query text not null,
+  query_embedding vector(512),
+  top_similarity float not null,
+  top_memory_id uuid references memories(id) on delete set null,
+  context jsonb,
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  hit_count int not null default 1,
+  resolved_at timestamptz,
+  resolved_by_memory_id uuid references memories(id) on delete set null,
+  status text not null default 'open'
+    check (status in ('open', 'resolved', 'dismissed')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_known_unknowns_status 
+  on known_unknowns(status) where status = 'open';
+
+create index if not exists idx_known_unknowns_embedding_hnsw
+  on known_unknowns using hnsw (query_embedding vector_cosine_ops)
+  where query_embedding is not null;
+
+create index if not exists idx_known_unknowns_hit_count_open
+  on known_unknowns(status, hit_count desc, last_seen_at desc)
+  where status = 'open';
