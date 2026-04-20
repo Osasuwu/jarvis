@@ -841,6 +841,23 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="memory_calibration_summary",
+            description=(
+                "Confidence calibration summary: Brier score of predicted vs actual outcomes, "
+                "bucketed by memory type. Reveals systemic over- or under-confidence. "
+                "Used by /reflect and /self-improve (#251)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Optional project filter. null/omitted = global.",
+                    },
+                },
+            },
+        ),
         # ---- Graph tools ----
         Tool(
             name="memory_graph",
@@ -997,6 +1014,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return await _handle_outcome_update(arguments)
         elif name == "outcome_list":
             return _big_result(await _handle_outcome_list(arguments))
+        elif name == "memory_calibration_summary":
+            return _big_result(await _handle_memory_calibration_summary(arguments))
         # Credential registry tools (Pillar 9)
         elif name == "credential_list":
             return _big_result(await _handle_credential_list(arguments))
@@ -2905,6 +2924,76 @@ async def _handle_outcome_list(args: dict) -> list[TextContent]:
             lines.append(f"    Lesson: {o['lessons']}")
         lines.append(f"    {o['created_at'][:10]} | {o['outcome_status']}")
         lines.append("")
+
+    return [TextContent(type="text", text="\n".join(lines))]
+
+
+async def _handle_memory_calibration_summary(args: dict) -> list[TextContent]:
+    """Render the Brier-score calibration summary from the RPC (#251).
+
+    Returns a markdown block with overall Brier, per-type breakdown, and
+    explicit over/under-confidence warnings. Callers ( /reflect,
+    /self-improve ) surface this to the user or use it for ideation.
+    """
+    client = _get_client()
+    project = args.get("project")
+    if project == "global":
+        project = None
+
+    try:
+        result = client.rpc(
+            "memory_calibration_summary", {"p_project": project}
+        ).execute()
+    except Exception as exc:
+        return [TextContent(type="text", text=f"Error calling memory_calibration_summary: {exc}")]
+
+    # RPCs that `returns table` come back as a list — take [0] like the
+    # other RPC handlers in this file.
+    rows = result.data or []
+    if isinstance(rows, list):
+        row = rows[0] if rows else {}
+    elif isinstance(rows, dict):
+        row = rows
+    else:
+        row = {}
+
+    overall = row.get("overall_brier")
+    total = row.get("total_memories", 0)
+    by_type = row.get("by_type") or []
+    warnings = row.get("warnings") or []
+
+    if not total:
+        scope = f" (project={project})" if project else ""
+        return [TextContent(
+            type="text",
+            text=f"No calibration data yet{scope} — need outcomes with memory_id linked.",
+        )]
+
+    lines = [
+        "# Confidence Calibration",
+        "",
+        f"**Overall Brier:** {overall:.3f}  (lower is better; 0.25 ≈ boundary)",
+        f"**Memories scored:** {total}",
+        "",
+        "## By type",
+    ]
+    for t in by_type:
+        flag = ""
+        if t.get("over_confident"):
+            flag = "  **[overconfident]**"
+        elif t.get("under_confident"):
+            flag = "  **[underconfident]**"
+        lines.append(
+            f"- `{t['type']}`: brier={t['brier']:.3f}, "
+            f"predicted={t['avg_predicted']:.2f}, actual={t['avg_actual']:.2f}, "
+            f"n={t['n']}{flag}"
+        )
+
+    if warnings:
+        lines.append("")
+        lines.append("## Warnings")
+        for w in warnings:
+            lines.append(f"- {w}")
 
     return [TextContent(type="text", text="\n".join(lines))]
 

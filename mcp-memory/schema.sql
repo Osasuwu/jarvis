@@ -1988,3 +1988,122 @@ CREATE POLICY "Allow all for authenticated" ON known_unknowns
 
 CREATE POLICY "Allow all for anon" ON known_unknowns
   FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- =========================================================================
+-- Phase 5 Metacognition: Confidence Calibration (#251)
+--
+-- Links task outcomes to the memories that informed them and exposes a
+-- Brier-score summary so /reflect and /self-improve can detect systemic
+-- over- or under-confidence per memory type.
+-- =========================================================================
+
+-- Link column: which memory most informed this outcome's decision.
+-- Nullable — outcomes recorded before calibration work won't have it,
+-- and some outcomes (e.g. pure research tasks) don't trace to a single
+-- memory.
+alter table task_outcomes
+  add column if not exists memory_id uuid references memories(id) on delete set null;
+
+create index if not exists idx_task_outcomes_memory_id
+  on task_outcomes(memory_id) where memory_id is not null;
+
+-- Per-memory calibration view: predicted confidence vs actual outcome rate.
+-- Only includes memories with at least one resolved outcome (success or
+-- failure). Partial/unknown/pending outcomes are excluded — they would
+-- bias the Brier score either way.
+create or replace view memory_calibration as
+select
+  m.id as memory_id,
+  m.type as memory_type,
+  m.name as memory_name,
+  m.project,
+  m.confidence as predicted_confidence,
+  count(o.id) as outcome_count,
+  sum(case when o.outcome_status = 'success' then 1 else 0 end) as success_count,
+  sum(case when o.outcome_status = 'failure' then 1 else 0 end) as failure_count,
+  -- actual_rate in [0, 1]: fraction of (success+failure) outcomes that succeeded
+  (sum(case when o.outcome_status = 'success' then 1.0 else 0.0 end)
+    / nullif(count(o.id), 0))::float as actual_rate,
+  -- Brier contribution per memory: (predicted - actual)^2, bounded [0, 1]
+  (power(
+    coalesce(m.confidence, 0.5)
+    - (sum(case when o.outcome_status = 'success' then 1.0 else 0.0 end)
+       / nullif(count(o.id), 0)),
+    2
+  ))::float as brier
+from memories m
+join task_outcomes o
+  on o.memory_id = m.id
+ and o.outcome_status in ('success', 'failure')
+where m.deleted_at is null
+  and m.superseded_by is null
+group by m.id, m.type, m.name, m.project, m.confidence;
+
+-- Summary RPC: aggregate brier by type and flag over/under-confidence.
+-- Returns a single-row table so Supabase client .data is a list with one
+-- item — caller picks [0] (pattern matches other RPCs in this file).
+--
+-- A type is flagged overconfident when its mean brier > 0.25 AND mean
+-- predicted_confidence > mean actual_rate (warning level bias). Threshold
+-- 0.25 is the midpoint of a Brier score for a miscalibrated binary
+-- classifier; tighter if we need less noise, looser if we need more.
+create or replace function memory_calibration_summary(
+  p_project text default null
+)
+returns table (
+  overall_brier float,
+  total_memories bigint,
+  by_type jsonb,
+  warnings jsonb
+)
+language sql stable
+as $$
+  with scoped as (
+    select *
+    from memory_calibration
+    where p_project is null or project = p_project
+  ),
+  agg_by_type as (
+    select
+      memory_type,
+      count(*)::bigint as n,
+      avg(brier)::float as brier,
+      avg(predicted_confidence)::float as avg_predicted,
+      avg(actual_rate)::float as avg_actual
+    from scoped
+    group by memory_type
+  ),
+  type_rows as (
+    select jsonb_agg(
+      jsonb_build_object(
+        'type', memory_type,
+        'n', n,
+        'brier', brier,
+        'avg_predicted', avg_predicted,
+        'avg_actual', avg_actual,
+        'over_confident', (brier > 0.25 and avg_predicted > avg_actual),
+        'under_confident', (brier > 0.25 and avg_predicted < avg_actual)
+      )
+      order by brier desc
+    ) as data
+    from agg_by_type
+  ),
+  warning_rows as (
+    select jsonb_agg(
+      format(
+        '%s: brier=%s (%s)',
+        memory_type,
+        round(brier::numeric, 3),
+        case when avg_predicted > avg_actual
+             then 'overconfident' else 'underconfident' end
+      )
+    ) as data
+    from agg_by_type
+    where brier > 0.25
+  )
+  select
+    coalesce((select avg(brier) from scoped), 0.0)::float as overall_brier,
+    (select count(*) from scoped)::bigint as total_memories,
+    coalesce((select data from type_rows), '[]'::jsonb) as by_type,
+    coalesce((select data from warning_rows), '[]'::jsonb) as warnings;
+$$;
