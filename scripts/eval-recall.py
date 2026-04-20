@@ -56,6 +56,8 @@ TEMPORAL_HALF_LIVES = {
 DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
+# Phase 1 polish (#240): mirror of server.py — entrenchment multiplier.
+CONFIDENCE_FLOOR = 0.5
 
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
@@ -244,6 +246,24 @@ def _merge_with_links(
     return out
 
 
+def _enrich_with_confidence(client, rows: list[dict]) -> None:
+    """Mirror of server.py helper (#240). match_memories doesn't project
+    confidence; enrich rows before scoring so eval numbers match production.
+    """
+    ids = [r["id"] for r in rows if r.get("id") and "confidence" not in r]
+    if not ids:
+        return
+    try:
+        result = client.table("memories").select("id, confidence").in_("id", ids).execute()
+    except Exception:
+        return
+    conf_map = {r["id"]: r.get("confidence") for r in (result.data or [])}
+    for row in rows:
+        rid = row.get("id")
+        if rid in conf_map and "confidence" not in row:
+            row["confidence"] = conf_map[rid]
+
+
 def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
     now = datetime.now(timezone.utc)
     for row in rows:
@@ -270,7 +290,20 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
 
         recency = math.exp(-0.693 * days_since_update / half_life)
         access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
-        row["_temporal_score"] = rrf * recency * access
+
+        # Entrenchment multiplier (Phase 1 polish #240). NULL → 1.0 no-regression.
+        confidence_raw = row.get("confidence")
+        if confidence_raw is None:
+            conf = 1.0
+        else:
+            try:
+                conf = float(confidence_raw)
+            except (TypeError, ValueError):
+                conf = 1.0
+        conf = max(0.0, min(1.0, conf))
+        entrenchment = CONFIDENCE_FLOOR + (1.0 - CONFIDENCE_FLOOR) * conf
+
+        row["_temporal_score"] = rrf * recency * access * entrenchment
 
     rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
     return rows
@@ -398,6 +431,8 @@ async def run_query(
         # into top-10 has earned its place via the unified _final_score.
         merged = merged[:10]
 
+    # #240: enrich with confidence before scoring (match_memories doesn't project it).
+    _enrich_with_confidence(client, merged)
     _apply_temporal_scoring(merged)
 
     top_names = [r.get("name", "?") for r in merged]
