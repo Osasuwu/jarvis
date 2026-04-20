@@ -110,3 +110,13 @@ Flag: N stale branches (remote gone), M unmerged branches, K stashes.
 ```
 
 Keep concise. Skip empty sections. Owner scans in 30 seconds.
+## Known unknowns
+Top 5 open retrieval gaps (sorted by frequency):
+```
+[N hits] <query> — last seen <date>
+```
+(If none: omit section)
+
+These are queries that scored <0.45 semantic similarity — areas Jarvis consistently fails to answer.
+
+---

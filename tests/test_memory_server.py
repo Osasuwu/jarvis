@@ -108,7 +108,6 @@ from server import (
     _create_auto_links,
     _expand_with_links,
     _handle_store,
-    TEMPORAL_HALF_LIVES,
     SUPERSEDE_SIM_THRESHOLD,
     MAX_AUTO_LINKS,
 )
@@ -994,3 +993,24 @@ class TestDualEmbedWrite:
         assert "embedding" in fields
         # Only PRIMARY columns; no redundant duplicate write.
         assert "embedding_v2" not in fields
+
+
+class TestKnownUnknowns:
+    """Phase 5: known-unknowns gap detection (#249)."""
+
+    def test_cosine_sim_identical(self):
+        """Identical vectors have similarity 1.0."""
+        from server import _cosine_sim
+        assert _cosine_sim([1.0, 0.0], [1.0, 0.0]) == 1.0
+
+    def test_cosine_sim_orthogonal(self):
+        """Orthogonal vectors have similarity 0.0."""
+        from server import _cosine_sim
+        assert _cosine_sim([1.0, 0.0], [0.0, 1.0]) == 0.0
+
+    def test_gap_resolution_threshold(self):
+        """Cosine sim > 0.7 triggers resolution."""
+        from server import _cosine_sim
+        vec1 = [0.9, 0.1] + [0.0] * 510
+        vec2 = [0.95, 0.05] + [0.0] * 510
+        assert _cosine_sim(vec1, vec2) > 0.7

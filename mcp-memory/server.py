@@ -29,7 +29,6 @@ import asyncio
 import json
 import math
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1564,6 +1563,21 @@ async def _touch_memories(client, ids: list[str]) -> None:
     """Fire-and-forget: update last_accessed_at for accessed memories via RPC."""
     try:
         client.rpc("touch_memories", {"memory_ids": ids}).execute()
+    except Exception:
+        pass
+
+
+async def _emit_recall_event(client, payload: dict) -> None:
+    """Fire-and-forget: emit memory_recall event for FOK batch processing (#250)."""
+    try:
+        client.table("events").insert({
+            "event_type": "memory_recall",
+            "severity": "info",
+            "repo": "Osasuwu/jarvis",
+            "source": "mcp_memory",
+            "title": f"Memory recall: {payload.get('query', '')[:60]}",
+            "payload": payload,
+        }).execute()
     except Exception:
         pass
 

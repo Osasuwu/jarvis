@@ -7,35 +7,27 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import pytest
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from risk_radar import (
-    CI_CRITICAL_RATE,
-    CI_HIGH_RATE,
-    CI_MEDIUM_RATE,
     CHANGES_HIGH_COUNT,
     CHANGES_STALE_DAYS,
     SEVERITY_ORDER,
     STAGNATION_DAYS,
     STAGNATION_HIGH,
     RiskAlert,
-    RiskRadarResult,
     _check_ci_instability,
     _check_critical_stagnation,
     _check_overdue_milestones,
     _check_review_backlog,
     _check_security_alerts,
-    _days_ago,
     _load_repos,
     _parse_json,
-    _run_gh,
     _scan_repo,
     _write_report,
 )

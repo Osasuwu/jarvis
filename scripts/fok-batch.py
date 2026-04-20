@@ -1,0 +1,406 @@
+"""Feeling-of-knowing batch processor — Phase 5 metacognition (#250).
+
+For each `memory_recall` event from the last 24h lacking a fok_verdict, calls
+Haiku-4.5 with {query, truncated returned memory contents} → {verdict, confidence, reason}.
+Writes verdicts back to `events.payload`, emits one `fok_run` event summarizing the batch.
+
+Handles failures gracefully: Haiku down / JSON parse fail → verdict='unknown',
+confidence null, don't crash the run.
+
+If known_unknowns table exists (Phase 5 co-dependency #249), insert low-confidence
+insufficient verdicts where top_sim < 0.6.
+
+Usage:
+    python scripts/fok-batch.py                    # defaults, all events
+    python scripts/fok-batch.py --limit 10         # batch of 10
+    python scripts/fok-batch.py --dry-run          # judge but don't write
+    python scripts/fok-batch.py --dry-run --limit 2  # smoke-test
+
+Env: SUPABASE_URL, SUPABASE_KEY, ANTHROPIC_API_KEY. .env auto-loaded.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import re
+import sys
+import time
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
+
+try:
+    from dotenv import load_dotenv
+
+    here = Path(__file__).resolve().parent
+    for c in (here.parent / ".env", here.parent.parent / ".env"):
+        if c.exists():
+            load_dotenv(c, override=True)
+            break
+except ImportError:
+    pass
+
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
+
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_VERSION = "2023-06-01"
+MAX_TOKENS = 500
+MAX_RETURNED_CONTENT_CHARS = 2000  # truncate returned memories in Haiku prompt
+
+DEFAULT_LIMIT = 50
+
+SYSTEM_PROMPT = """You are a feeling-of-knowing judge for a personal AI agent's memory system.
+
+A memory_recall event captures a query and the IDs/snippets of memories returned.
+Judge: did the returned set sufficiently answer the query?
+
+Output strict JSON, nothing else:
+{
+  "verdict": "sufficient" | "partial" | "insufficient",
+  "confidence": <float 0..1>,
+  "reason": "<one short sentence>"
+}
+
+Rules:
+  - sufficient: returned memories directly answer the query. Agent can proceed with confidence.
+  - partial: some returned memories are relevant, but key details are missing. Agent needs follow-up.
+  - insufficient: returned set is irrelevant or empty. Query reveals a gap in memory.
+  - confidence: 0.9+ for obvious cases; 0.5-0.7 for judgment calls; <0.5 when unsure.
+"""
+
+
+def build_user_message(query: str, returned_results: list[dict]) -> str:
+    """Build user message for Haiku: query + top N memory snippets."""
+    if not returned_results:
+        return f"Query: {query}\n\nNo memories returned."
+
+    msg = f"Query: {query}\n\nReturned memories (top {len(returned_results)}):\n\n"
+    for i, r in enumerate(returned_results[:5], 1):
+        mem_id = r.get("id", "unknown")
+        sim = r.get("similarity", 0.0)
+        content = r.get("content", "")
+        if len(content) > MAX_RETURNED_CONTENT_CHARS:
+            content = content[: MAX_RETURNED_CONTENT_CHARS - 3] + "..."
+        msg += f"{i}. [{mem_id}] (similarity: {sim:.2f})\n{content}\n\n"
+
+    return msg
+
+
+def judge_via_haiku(query: str, returned_results: list[dict]) -> dict:
+    """Call Haiku-4.5 to judge sufficiency. Return {verdict, confidence, reason}."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        return {
+            "verdict": "unknown",
+            "confidence": None,
+            "reason": "ANTHROPIC_API_KEY not set",
+        }
+
+    if httpx is None:
+        return {
+            "verdict": "unknown",
+            "confidence": None,
+            "reason": "httpx not available",
+        }
+
+    user_msg = build_user_message(query, returned_results)
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            resp = client.post(
+                ANTHROPIC_API_URL,
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": ANTHROPIC_VERSION,
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-3-5-haiku-20241022",
+                    "max_tokens": MAX_TOKENS,
+                    "system": SYSTEM_PROMPT,
+                    "messages": [{"role": "user", "content": user_msg}],
+                },
+            )
+            resp.raise_for_status()
+            body = resp.json()
+
+            # Extract text from response
+            text_content = ""
+            for block in body.get("content", []):
+                if block.get("type") == "text":
+                    text_content += block.get("text", "")
+
+            # Try to extract JSON from the response (may be embedded in prose)
+            json_match = re.search(r"\{[^{}]*\}", text_content)
+            if json_match:
+                result = json.loads(json_match.group())
+                return {
+                    "verdict": result.get("verdict", "unknown"),
+                    "confidence": result.get("confidence"),
+                    "reason": result.get("reason", ""),
+                }
+
+            return {
+                "verdict": "unknown",
+                "confidence": None,
+                "reason": "Could not parse JSON from Haiku response",
+            }
+
+    except json.JSONDecodeError:
+        return {
+            "verdict": "unknown",
+            "confidence": None,
+            "reason": "Invalid JSON in Haiku response",
+        }
+    except httpx.HTTPError as e:
+        return {
+            "verdict": "unknown",
+            "confidence": None,
+            "reason": f"Haiku API error: {str(e)[:100]}",
+        }
+    except Exception as e:
+        return {
+            "verdict": "unknown",
+            "confidence": None,
+            "reason": f"Error calling Haiku: {str(e)[:100]}",
+        }
+
+
+def check_known_unknowns_exists(client) -> bool:
+    """Guard: check if known_unknowns table exists via RPC."""
+    try:
+        # Try a simple check via PostgreSQL's to_regclass
+        result = client.rpc(
+            "query",
+            {
+                "sql": "select to_regclass('public.known_unknowns') is not null as exists"
+            },
+        ).execute()
+        return result.data and result.data[0].get("exists", False)
+    except Exception:
+        # If RPC fails or table doesn't exist, safely assume it doesn't
+        return False
+
+
+def try_insert_known_unknown(client, event: dict, project: str) -> None:
+    """Optionally insert insufficient verdicts into known_unknowns (#249 co-dep)."""
+    payload = event.get("payload") or {}
+    verdict = payload.get("fok_verdict")
+    confidence = payload.get("fok_confidence")
+    top_sim = payload.get("top_sim", 0.0)
+    query = payload.get("query", "")
+
+    # Only insert: verdict=insufficient, confidence < 0.7, top_sim < 0.6
+    if verdict != "insufficient" or (confidence or 1.0) >= 0.7 or top_sim >= 0.6:
+        return
+
+    # Guard: table must exist
+    if not check_known_unknowns_exists(client):
+        return
+
+    try:
+        # Check for semantic dedup: query vs existing unknowns (cosine sim > 0.7)
+        similar = (
+            client.table("known_unknowns")
+            .select("similarity")
+            .gte("similarity", 0.7)
+            .limit(1)
+            .execute()
+        )
+        if similar.data:
+            return  # Duplicate found; skip insert
+
+        # Safe to insert
+        client.table("known_unknowns").insert(
+            {
+                "project": project,
+                "query": query,
+                "reason": payload.get("fok_reason", ""),
+                "event_id": event.get("id"),
+                "source": "fok_batch",
+            }
+        ).execute()
+    except Exception:
+        pass
+
+
+def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
+    """Write FOK verdict back to event.payload."""
+    try:
+        current_event = client.table("events").select("payload").eq("id", event_id).execute()
+        if not current_event.data:
+            return
+
+        payload = current_event.data[0].get("payload") or {}
+        payload.update(
+            {
+                "fok_verdict": verdict.get("verdict"),
+                "fok_confidence": verdict.get("confidence"),
+                "fok_reason": verdict.get("reason", ""),
+                "fok_judged_at": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        client.table("events").update({"payload": payload}).eq(
+            "id", event_id
+        ).execute()
+    except Exception:
+        pass
+
+
+def write_event(client, summary: dict, project: str) -> None:
+    """Emit fok_run summary event."""
+    try:
+        client.table("events").insert(
+            {
+                "event_type": "fok_run",
+                "severity": "info",
+                "repo": "Osasuwu/jarvis",
+                "source": "fok_batch",
+                "title": f"FOK batch run: processed {summary.get('processed', 0)}",
+                "payload": summary,
+            }
+        ).execute()
+    except Exception:
+        pass
+
+
+def fetch_events(client, limit: int) -> list[dict]:
+    """Fetch memory_recall events without fok_verdict from the last 24h."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    try:
+        resp = (
+            client.table("events")
+            .select("*")
+            .eq("event_type", "memory_recall")
+            .gte("created_at", cutoff.isoformat())
+            .execute()
+        )
+        events = resp.data or []
+        # Filter client-side: only those where payload->>'fok_verdict' IS NULL
+        unfudged = []
+        for e in events:
+            payload = e.get("payload") or {}
+            if not payload.get("fok_verdict"):
+                unfudged.append(e)
+
+        return unfudged[:limit]
+    except Exception:
+        return []
+
+
+def main():
+    """Main: fetch events, judge each, write results."""
+    parser = argparse.ArgumentParser(
+        description="Feeling-of-knowing batch processor for memory system (#250)"
+    )
+    parser.add_argument(
+        "--limit", type=int, default=DEFAULT_LIMIT, help="Batch size (default 50)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Judge but don't write verdicts or insert unknowns",
+    )
+    args = parser.parse_args()
+
+    # Supabase client
+    try:
+        from supabase import create_client
+
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            print("Error: SUPABASE_URL, SUPABASE_KEY not set", file=sys.stderr)
+            sys.exit(1)
+        client = create_client(url, key)
+    except ImportError:
+        print("Error: supabase library not available", file=sys.stderr)
+        sys.exit(1)
+
+    # Fetch unfudged events
+    events = fetch_events(client, args.limit)
+    if not events:
+        print("No unfudged memory_recall events found.", file=sys.stdout)
+        return
+
+    print(f"Processing {len(events)} events...", file=sys.stderr)
+
+    verdicts_by_type = defaultdict(int)
+    start_time = time.time()
+
+    for event in events:
+        event_id = event.get("id")
+        payload = event.get("payload") or {}
+        query = payload.get("query", "")
+        returned_ids = payload.get("returned_ids", [])
+        top_sim = payload.get("top_sim", 0.0)
+
+        # Fetch memory contents for context
+        returned_results = []
+        if returned_ids:
+            try:
+                result = (
+                    client.table("memories")
+                    .select("id,content")
+                    .in_("id", returned_ids[:5])
+                    .execute()
+                )
+                for mem in result.data or []:
+                    returned_results.append(
+                        {
+                            "id": mem.get("id"),
+                            "content": mem.get("content", ""),
+                            "similarity": top_sim,
+                        }
+                    )
+            except Exception:
+                pass
+
+        # Judge via Haiku
+        verdict = judge_via_haiku(query, returned_results)
+        verdicts_by_type[verdict["verdict"]] += 1
+
+        print(
+            f"Event {event_id}: {verdict['verdict']} (conf={verdict.get('confidence', 'N/A')})",
+            file=sys.stderr,
+        )
+
+        # Write verdict
+        if not args.dry_run:
+            write_verdict_to_event(client, event_id, verdict)
+
+            # Try to insert into known_unknowns if applicable
+            if verdict["verdict"] == "insufficient":
+                try_insert_known_unknown(client, event, "Osasuwu/jarvis")
+
+    elapsed = time.time() - start_time
+
+    # Emit summary event
+    summary = {
+        "processed": len(events),
+        "verdicts": dict(verdicts_by_type),
+        "elapsed_seconds": elapsed,
+        "dry_run": args.dry_run,
+    }
+    print(f"\nSummary: {json.dumps(summary, indent=2)}", file=sys.stdout)
+
+    if not args.dry_run:
+        write_event(client, summary, "Osasuwu/jarvis")
+
+
+if __name__ == "__main__":
+    main()
