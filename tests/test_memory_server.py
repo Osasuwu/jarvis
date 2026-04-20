@@ -251,6 +251,42 @@ class TestTemporalScoring:
         scores = [r["_temporal_score"] for r in result]
         assert scores == sorted(scores, reverse=True)
 
+    def test_confidence_multiplier(self):
+        """Confidence gates ranking: score * (0.5 + 0.5 * confidence)."""
+        # Use exact same timestamp to ensure only confidence differs
+        now = datetime.now(timezone.utc)
+        updated = (now - timedelta(days=5)).isoformat()
+        high_conf = {
+            "type": "decision",
+            "updated_at": updated,
+            "last_accessed_at": None,
+            "_rrf_score": 0.5,
+            "confidence": 1.0,
+        }
+        low_conf = {
+            "type": "decision",
+            "updated_at": updated,
+            "last_accessed_at": None,
+            "_rrf_score": 0.5,
+            "confidence": 0.5,
+        }
+        result = _apply_temporal_scoring([low_conf, high_conf])
+        # Result is sorted descending: high_conf should be first (higher score)
+        assert result[0]["confidence"] == 1.0
+        assert result[1]["confidence"] == 0.5
+        # Expected score ratio: high=score*1.0, low=score*0.75 → ratio 1.0/0.75≈1.333
+        ratio = result[0]["_temporal_score"] / result[1]["_temporal_score"]
+        assert abs(ratio - (1.0 / 0.75)) < 1e-2
+
+    def test_confidence_null_defaults_to_1(self):
+        """NULL confidence → 1.0 (legacy memories don't regress)."""
+        no_conf = self._make_row(days_ago=5, rrf=0.5)
+        # no_conf doesn't set "confidence", so it's None
+        assert no_conf.get("confidence") is None
+        result = _apply_temporal_scoring([no_conf])
+        # Score should NOT be gated by confidence multiplier
+        assert result[0]["_temporal_score"] > 0
+
 
 # ---------------------------------------------------------------------------
 # _format_memories

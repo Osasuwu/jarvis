@@ -231,6 +231,7 @@ TEMPORAL_HALF_LIVES = {
 DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
+CONFIDENCE_FLOOR = 0.5  # Multiplier floor: score * (floor + (1-floor) * confidence)
 LINK_SIM_THRESHOLD = 0.60
 # Phase 2b: classifier replaces the bare similarity gate. We still keep a
 # threshold, but it now decides *when to ask the classifier*, not whether to
@@ -1728,7 +1729,14 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
         # Access frequency boost (1..1+ACCESS_BOOST_MAX)
         access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
 
-        row["_temporal_score"] = rrf * recency * access
+        # Confidence multiplier: NULL treated as 1.0, else floor + (1-floor) * confidence
+        confidence = row.get("confidence")
+        if confidence is None:
+            confidence_mult = 1.0
+        else:
+            confidence_mult = CONFIDENCE_FLOOR + (1.0 - CONFIDENCE_FLOOR) * confidence
+
+        row["_temporal_score"] = rrf * recency * access * confidence_mult
 
     rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
     return rows
