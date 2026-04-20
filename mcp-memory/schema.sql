@@ -1879,3 +1879,69 @@ begin
     );
 end;
 $$;
+
+
+-- =========================================================================
+-- #242: dual-embedding read-path for voyage model migration readiness
+--
+-- Adds a second, independently-indexed embedding column so we can dual-write
+-- today (zero risk) and cut over later without a hot-rebuild. Keeping the
+-- two columns + two indexes lets each RPC use its own HNSW index — no CASE
+-- in ORDER BY (which silently drops to seq-scan and killed PR #245).
+--
+-- Dimensions: current voyage-3-lite is 512, voyage-3 is 1024. v2 is sized
+-- for the next model we'd migrate to. If we ever bump to a different model
+-- family (e.g. BGE-Large = 1024, OpenAI text-embedding-3-large = 3072),
+-- add a further column / RPC rather than resizing.
+--
+-- No data migration here. Backfill is a separate issue.
+-- =========================================================================
+
+alter table memories add column if not exists embedding_v2 vector(1024);
+alter table memories add column if not exists embedding_model_v2 text;
+alter table memories add column if not exists embedding_version_v2 text;
+
+-- Partial HNSW index — only rows with populated v2 get indexed. Keeps the
+-- structure small while SECONDARY is unset (zero rows indexed initially).
+create index if not exists idx_memories_embedding_v2_hnsw
+  on memories using hnsw (embedding_v2 vector_cosine_ops)
+  with (m = 16, ef_construction = 64)
+  where embedding_v2 is not null;
+
+-- Read-path RPC for v2. Mirrors match_memories shape/filters so _hybrid_recall
+-- can swap by name. NO CASE expression in ORDER BY — pgvector HNSW requires
+-- a direct column reference to use the index.
+drop function if exists match_memories_v2(vector, int, float, text, text, boolean);
+create or replace function match_memories_v2(
+    query_embedding vector,
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    similarity float
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           1 - (m.embedding_v2 <=> query_embedding) as similarity
+    from memories m
+    where m.embedding_v2 is not null
+      and m.deleted_at is null
+      and 1 - (m.embedding_v2 <=> query_embedding) >= similarity_threshold
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by m.embedding_v2 <=> query_embedding
+    limit match_limit;
+$$;

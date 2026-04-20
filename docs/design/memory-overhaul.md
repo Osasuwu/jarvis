@@ -69,7 +69,7 @@ Items flagged by **both** research streams — strongest evidence, should be in 
 ## 3. Signals only one side flagged — still worth catching
 
 **Production-only:**
-- **Embedding model migration hazard.** Voyage-3-lite → next model = whole corpus becomes incomparable. Store `embedding_model` + `embedding_version`, support dual columns during migration. (Our single biggest unnoticed production risk.)
+- **Embedding model migration hazard.** Voyage-3-lite → next model = whole corpus becomes incomparable. Store `embedding_model` + `embedding_version`, support dual columns during migration. (Our single biggest unnoticed production risk.) **Status (#242):** foundation shipped — `embedding_v2` column + `match_memories_v2` RPC, `EMBEDDING_MODEL_PRIMARY`/`SECONDARY` env vars drive dual-write + read-path selection. Zero behavior change while SECONDARY unset. Corpus backfill + episode_extractor dual-write are separate follow-ups.
 - **Collections vs Profiles split.** Some memories should be overwrite-single-row (`owner_preferences`, `device_config`); others append (`decisions`). Without the distinction, you fight supersession bugs forever on the overwrite ones. One column: `single_instance BOOLEAN`.
 - **Task-aware recall = query rewriting.** Cheap LLM call turns `{user_prompt, recent_turns}` into `{intent, entities, type_filter, tag_filter, timeframe}` *before* vector search. Don't embed the raw prompt — biggest quality win on relevance.
 - **A-MEM memory evolution (second step).** New memory arrives → LLM also rewrites context/tags of linked neighbors. We have auto-linking; we don't have the in-place rewrite. Without it: linked graph of frozen interpretations.
