@@ -48,6 +48,12 @@ gh api repos/<R>/dependabot/alerts --jq '[.[] | select(.state=="open")]' 2>/dev/
 credential_check_expiry(days_ahead=14)
 ```
 If results returned, include in output. If no credentials expiring — silent (no noise).
+**Known unknowns** (memory/recall gaps — once, not per repo):
+```sql
+SELECT query, hit_count, last_seen_at FROM known_unknowns WHERE status='open' ORDER BY hit_count DESC, last_seen_at DESC LIMIT 5
+```
+Execute via `execute_sql` MCP. Cloud sessions won't have local memory client. Include in alerts if results returned.
+
 
 ## Step 3 — Analyze
 

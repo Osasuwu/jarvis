@@ -1945,3 +1945,31 @@ language sql stable as $$
     order by m.embedding_v2 <=> query_embedding
     limit match_limit;
 $$;
+
+-- =========================================================================
+-- Known unknowns: retrieval gaps + unsatisfied queries
+-- Phase 5.3 — detect queries that consistently fail to match memories
+-- =========================================================================
+
+CREATE TABLE IF NOT EXISTS known_unknowns (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  query text NOT NULL,
+  query_embedding vector(1024),
+  top_similarity float NOT NULL,
+  top_memory_id uuid REFERENCES memories(id) ON DELETE SET NULL,
+  context jsonb,
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  hit_count int NOT NULL DEFAULT 1,
+  resolved_at timestamptz,
+  resolved_by_memory_id uuid REFERENCES memories(id) ON DELETE SET NULL,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_known_unknowns_status_hit
+  ON known_unknowns(status, hit_count DESC)
+  WHERE status = 'open';
+
+CREATE INDEX IF NOT EXISTS idx_known_unknowns_query_embedding_hnsw
+  ON known_unknowns USING hnsw (query_embedding vector_cosine_ops)
+  WHERE query_embedding IS NOT NULL;
