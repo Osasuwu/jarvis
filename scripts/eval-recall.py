@@ -35,7 +35,7 @@ import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 # ---------------------------------------------------------------------------
 # Pipeline constants — mirrored from mcp-memory/server.py as of Phase 1.
@@ -56,6 +56,7 @@ TEMPORAL_HALF_LIVES = {
 DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
+CONFIDENCE_FLOOR = 0.5  # Multiplier floor: score * (floor + (1-floor) * confidence)
 
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
@@ -197,6 +198,95 @@ def _score_linked_rows(
     return out
 
 
+async def _load_session_context(client) -> tuple[list[dict], int]:
+    """Load session-start context like session-context.py does.
+
+    Returns (context_items, total_char_count) where context_items is a list
+    of dicts with 'id', 'name', 'type', 'project', 'description', 'content'.
+    Char count includes formatted markdown output for budget estimation.
+    """
+    items: list[dict] = []
+    char_count = 0
+
+    # 1. User memories (top 2)
+    try:
+        result = (
+            client.table("memories")
+            .select("id, name, type, project, description, content, tags, updated_at")
+            .eq("type", "user")
+            .order("updated_at", desc=True)
+            .limit(2)
+            .execute()
+        )
+        if result.data:
+            items.extend(result.data)
+            for m in result.data:
+                char_count += (
+                    len(m.get("name", ""))
+                    + len(m.get("description", ""))
+                    + len(m.get("content", ""))
+                )
+    except Exception:
+        pass
+
+    # 2. Always-load memories (evergreen rules)
+    try:
+        result = (
+            client.table("memories")
+            .select("id, name, type, project, description, content, tags, updated_at")
+            .contains("tags", ["always_load"])
+            .order("updated_at", desc=True)
+            .execute()
+        )
+        if result.data:
+            items.extend(result.data)
+            for m in result.data:
+                char_count += (
+                    len(m.get("name", ""))
+                    + len(m.get("description", ""))
+                    + len(m.get("content", ""))
+                )
+    except Exception:
+        pass
+
+    # 3. Working state (if available; we don't know project in eval, skip)
+    # Not critical for measurement
+
+    # 4. Active goals
+    try:
+        result = (
+            client.table("goals")
+            .select("*")
+            .eq("status", "active")
+            .order("priority")
+            .order("deadline", desc=False, nullsfirst=False)
+            .execute()
+        )
+        if result.data:
+            for g in result.data:
+                items.append(
+                    {
+                        "id": g.get("id"),
+                        "name": g.get("title", ""),
+                        "type": "goal",
+                        "project": g.get("project"),
+                        "description": g.get("slug"),
+                        "content": g.get("why", ""),
+                    }
+                )
+                char_count += len(g.get("title", "")) + len(g.get("why", ""))
+    except Exception:
+        pass
+
+    # Count items by type
+    item_counts: dict[str, int] = {}
+    for item in items:
+        item_type = item.get("type", "unknown")
+        item_counts[item_type] = item_counts.get(item_type, 0) + 1
+
+    return items, char_count, item_counts
+
+
 def _expand_links(client, top_rows: list[dict]) -> list[dict]:
     seed_ids = [r["id"] for r in top_rows[:LINK_EXPAND_TOP_K] if r.get("id")]
     if not seed_ids:
@@ -212,9 +302,7 @@ def _expand_links(client, top_rows: list[dict]) -> list[dict]:
     return _score_linked_rows(top_rows, linked_rows)
 
 
-def _merge_with_links(
-    ranked_rows: list[dict], linked_rows: list[dict]
-) -> list[dict]:
+def _merge_with_links(ranked_rows: list[dict], linked_rows: list[dict]) -> list[dict]:
     if not linked_rows:
         return ranked_rows
     by_id: dict[str, dict] = {}
@@ -245,6 +333,7 @@ def _merge_with_links(
 
 
 def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
+    """Mirror of mcp-memory/server.py _apply_temporal_scoring with confidence multiplier."""
     now = datetime.now(timezone.utc)
     for row in rows:
         rrf = row.get("_rrf_score", 0.01)
@@ -270,7 +359,16 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
 
         recency = math.exp(-0.693 * days_since_update / half_life)
         access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
-        row["_temporal_score"] = rrf * recency * access
+
+        # Confidence multiplier: (CONFIDENCE_FLOOR + (1-CONFIDENCE_FLOOR) * confidence)
+        # NULL confidence → 1.0 (legacy memories don't regress)
+        confidence = row.get("confidence")
+        if confidence is None:
+            confidence_mult = 1.0
+        else:
+            confidence_mult = CONFIDENCE_FLOOR + (1.0 - CONFIDENCE_FLOOR) * confidence
+
+        row["_temporal_score"] = rrf * recency * access * confidence_mult
 
     rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
     return rows
@@ -280,6 +378,7 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
 # Eval core
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class QueryResult:
     id: str
@@ -287,22 +386,28 @@ class QueryResult:
     kind: str
     expected: list[str]
     must_not: list[str]
-    top_names: list[str]                 # top-10 names in order
-    first_hit_rank: int | None           # 1-indexed, None if no expected hit in top-10
-    hits_at_5: list[str]                 # expected names that appeared in top-5
+    top_names: list[str]  # top-10 names in order
+    first_hit_rank: int | None  # 1-indexed, None if no expected hit in top-10
+    hits_at_5: list[str]  # expected names that appeared in top-5
     hits_at_10: list[str]
     must_not_violations_at_5: list[str]  # must_not names that appeared in top-5
-    passed: bool                         # recall@5 >= 1 AND no must_not violations
+    passed: bool  # recall@5 >= 1 AND no must_not violations
     rewriter_entities: list[str] = field(default_factory=list)
     rewriter_types: list[str] = field(default_factory=list)
-    rewriter_fired: bool = False         # True when rewriter returned a non-null result
-    links_added: int = 0                 # new rows added via 1-hop BFS
+    rewriter_fired: bool = False  # True when rewriter returned a non-null result
+    links_added: int = 0  # new rows added via 1-hop BFS
+    # Context rot measurement (--with-session-context mode)
+    context_delta_at_5: float = (
+        0.0  # plain recall@5 - (with context) recall@5, in percentage points
+    )
+    context_top_names: list[str] = field(default_factory=list)  # top-10 names with context injected
+    context_hits_at_5: list[str] = field(default_factory=list)  # hits with context
 
 
 @dataclass
 class EvalReport:
     timestamp: str
-    mode: str                            # e.g. "server_only", "with_rewriter+links"
+    mode: str  # e.g. "server_only", "with_rewriter+links"
     corpus_size: int
     total_queries: int
     recall_at_5: float
@@ -311,9 +416,14 @@ class EvalReport:
     must_not_violations: int
     passed: int
     failed: int
-    rewriter_fired_count: int = 0        # queries where rewriter produced output
-    links_added_total: int = 0           # total new rows pulled in via link expansion
+    rewriter_fired_count: int = 0  # queries where rewriter produced output
+    links_added_total: int = 0  # total new rows pulled in via link expansion
     results: list[dict] = field(default_factory=list)
+    # Context rot measurement (--with-session-context mode)
+    context_aggregate_delta: float = 0.0  # mean context_delta_at_5 across all queries, in pp
+    context_budget_chars: int = 0  # total characters in injected context
+    context_budget_tokens: int = 0  # estimated tokens (chars/4)
+    context_budget_items: dict = field(default_factory=dict)  # item counts by type
 
 
 def _build_mode_string(with_rewriter: bool, with_links: bool) -> str:
@@ -331,6 +441,7 @@ async def run_query(
     rewriter: Callable[[str], dict | None] | None = None,
     boost_multiplier: float = 1.0,
     with_links: bool = False,
+    context_items: list[dict] | None = None,
 ) -> QueryResult:
     embedding = await _embed_query(q["query"])
 
@@ -350,23 +461,29 @@ async def run_query(
 
     keyword_query = " ".join(rw_entities) if rw_entities else q["query"]
 
-    sem = client.rpc("match_memories", {
-        "query_embedding": embedding,
-        "match_limit": 20,
-        "similarity_threshold": SIMILARITY_THRESHOLD,
-        "filter_project": None,
-        "filter_type": None,
-        "show_history": False,
-    }).execute()
+    sem = client.rpc(
+        "match_memories",
+        {
+            "query_embedding": embedding,
+            "match_limit": 20,
+            "similarity_threshold": SIMILARITY_THRESHOLD,
+            "filter_project": None,
+            "filter_type": None,
+            "show_history": False,
+        },
+    ).execute()
     sem_rows = sem.data or []
 
-    kw = client.rpc("keyword_search_memories", {
-        "search_query": keyword_query,
-        "match_limit": 20,
-        "filter_project": None,
-        "filter_type": None,
-        "show_history": False,
-    }).execute()
+    kw = client.rpc(
+        "keyword_search_memories",
+        {
+            "search_query": keyword_query,
+            "match_limit": 20,
+            "filter_project": None,
+            "filter_type": None,
+            "show_history": False,
+        },
+    ).execute()
     kw_rows = kw.data or []
 
     # Rewriter types → soft boost (matches hook behavior after the
@@ -391,9 +508,7 @@ async def run_query(
         if linked:
             before_ids = {r.get("id") for r in merged}
             merged = _merge_with_links(merged, linked)
-            links_added = sum(
-                1 for r in merged if r.get("id") and r.get("id") not in before_ids
-            )
+            links_added = sum(1 for r in merged if r.get("id") and r.get("id") not in before_ids)
         # Trim back to top-10 for metrics; any linked row that made it
         # into top-10 has earned its place via the unified _final_score.
         merged = merged[:10]
@@ -418,6 +533,49 @@ async def run_query(
 
     passed = bool(hits_5) and not mn_viol
 
+    # Context rot measurement: if context_items provided, run recall again
+    # with context injected into keyword search (simulates hook adding noise)
+    context_delta = 0.0
+    context_top_names: list[str] = []
+    context_hits_5: list[str] = []
+    if context_items:
+        # Inject context into keyword search: append context item names to query
+        context_names = " ".join(item.get("name", "") for item in context_items if item.get("name"))
+        context_keyword_query = f"{keyword_query} {context_names}".strip()
+        # Re-run keyword search with injected context
+        kw_ctx = client.rpc(
+            "keyword_search_memories",
+            {
+                "search_query": context_keyword_query,
+                "match_limit": 20,
+                "filter_project": None,
+                "filter_type": None,
+                "show_history": False,
+            },
+        ).execute()
+        kw_ctx_rows = kw_ctx.data or []
+        # Re-merge with context-augmented keyword rows
+        merged_ctx = _rrf_merge(
+            sem_rows,
+            kw_ctx_rows,
+            limit=merge_limit,
+            boost_types=boost_types,
+            boost_multiplier=boost_multiplier,
+        )
+        if with_links:
+            linked_ctx = _expand_links(client, merged_ctx)
+            if linked_ctx:
+                merged_ctx = _merge_with_links(merged_ctx, linked_ctx)
+            merged_ctx = merged_ctx[:10]
+        _apply_temporal_scoring(merged_ctx)
+        context_top_names = [r.get("name", "?") for r in merged_ctx]
+        context_top5 = context_top_names[:5]
+        context_hits_5 = [n for n in context_top5 if n in expected]
+        # Compute delta: plain recall@5 vs with_context recall@5
+        plain_recall_5 = 1.0 if hits_5 else 0.0
+        context_recall_5 = 1.0 if context_hits_5 else 0.0
+        context_delta = (plain_recall_5 - context_recall_5) * 100.0  # in percentage points
+
     return QueryResult(
         id=q["id"],
         query=q["query"],
@@ -434,6 +592,9 @@ async def run_query(
         rewriter_types=rw_types,
         rewriter_fired=rw_fired,
         links_added=links_added,
+        context_delta_at_5=context_delta,
+        context_top_names=context_top_names,
+        context_hits_at_5=context_hits_5,
     )
 
 
@@ -443,6 +604,7 @@ async def run_all(
     rewriter: Callable[[str], dict | None] | None = None,
     boost_multiplier: float = 1.0,
     with_links: bool = False,
+    context_items: list[dict] | None = None,
 ) -> EvalReport:
     results = []
     for q in queries:
@@ -452,6 +614,7 @@ async def run_all(
             rewriter=rewriter,
             boost_multiplier=boost_multiplier,
             with_links=with_links,
+            context_items=context_items,
         )
         results.append(r)
 
@@ -465,8 +628,30 @@ async def run_all(
     links_added_total = sum(r.links_added for r in results)
 
     # corpus size for context
-    cs = client.table("memories").select("id", count="exact").is_("deleted_at", "null").limit(1).execute()
+    cs = (
+        client.table("memories")
+        .select("id", count="exact")
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
     corpus_size = cs.count or 0
+
+    # Context rot aggregates
+    context_agg_delta = 0.0
+    context_budget_chars = 0
+    context_budget_items: dict[str, int] = {}
+    if context_items:
+        context_agg_delta = sum(r.context_delta_at_5 for r in results) / total if total else 0.0
+        context_budget_chars = sum(
+            len(item.get("name", ""))
+            + len(item.get("description", ""))
+            + len(item.get("content", ""))
+            for item in context_items
+        )
+        for item in context_items:
+            item_type = item.get("type", "unknown")
+            context_budget_items[item_type] = context_budget_items.get(item_type, 0) + 1
 
     return EvalReport(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -482,6 +667,10 @@ async def run_all(
         rewriter_fired_count=rw_fired,
         links_added_total=links_added_total,
         results=[asdict(r) for r in results],
+        context_aggregate_delta=context_agg_delta,
+        context_budget_chars=context_budget_chars,
+        context_budget_tokens=max(1, context_budget_chars // 4),  # estimate: chars/4
+        context_budget_items=context_budget_items,
     )
 
 
@@ -489,13 +678,16 @@ async def run_all(
 # Formatting / CLI
 # ---------------------------------------------------------------------------
 
+
 def _fmt_pct(x: float) -> str:
-    return f"{x*100:5.1f}%"
+    return f"{x * 100:5.1f}%"
 
 
 def print_report(report: EvalReport, quiet: bool = False) -> None:
     if not quiet:
-        print(f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: {report.mode}\n")
+        print(
+            f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: {report.mode}\n"
+        )
         print(f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit5':>5}  {'viol':>5}  {'rw':>3}  query")
         print("-" * 100)
         for r in report.results:
@@ -519,19 +711,42 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
                 if r["must_not_violations_at_5"]:
                     print(f"    violated:  {r['must_not_violations_at_5']}")
                 if r.get("rewriter_fired"):
-                    print(f"    rewriter:  entities={r.get('rewriter_entities') or []} types={r.get('rewriter_types') or []}")
+                    print(
+                        f"    rewriter:  entities={r.get('rewriter_entities') or []} types={r.get('rewriter_types') or []}"
+                    )
 
     print("\n=== AGGREGATES ===")
     print(f"mode               : {report.mode}")
-    print(f"recall@5           : {_fmt_pct(report.recall_at_5)}  ({report.passed}/{report.total_queries} queries retrieved at least one expected memory in top-5)")
+    print(
+        f"recall@5           : {_fmt_pct(report.recall_at_5)}  ({report.passed}/{report.total_queries} queries retrieved at least one expected memory in top-5)"
+    )
     print(f"recall@10          : {_fmt_pct(report.recall_at_10)}")
     print(f"MRR                : {report.mrr:.3f}")
-    print(f"must_not violations: {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)")
+    print(
+        f"must_not violations: {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)"
+    )
     print(f"passed / failed    : {report.passed} / {report.failed}")
     if "with_rewriter" in report.mode:
         print(f"rewriter fired     : {report.rewriter_fired_count}/{report.total_queries}")
     if "links" in report.mode:
         print(f"links added (sum)  : {report.links_added_total}  (rows added via 1-hop BFS)")
+    # Context rot metrics
+    if report.context_budget_chars > 0:
+        print("\nCONTEXT ROT MEASUREMENT")
+        print(
+            f"aggregate delta    : {report.context_aggregate_delta:+.2f} pp  (plain recall@5 - with_context recall@5)"
+        )
+        if report.context_aggregate_delta < -5.0:
+            interpretation = "context ROT CONFIRMED (negative impact)"
+        elif report.context_aggregate_delta > 5.0:
+            interpretation = "context HELPS (positive impact)"
+        else:
+            interpretation = "context roughly NEUTRAL"
+        print(f"  interpretation   : {interpretation}")
+        print(
+            f"context budget     : {report.context_budget_tokens} tokens (~{report.context_budget_chars} chars)"
+        )
+        print(f"context items      : {report.context_budget_items}")
     print()
 
 
@@ -547,13 +762,17 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
     print(f"baseline saved : {baseline.get('timestamp', '?')}")
     base_mode = baseline.get("mode", "server_only")
     if base_mode != current.mode:
-        print(f"MODE MISMATCH  : current={current.mode}  baseline={base_mode}  — delta mixes pipeline changes with mode change")
+        print(
+            f"MODE MISMATCH  : current={current.mode}  baseline={base_mode}  — delta mixes pipeline changes with mode change"
+        )
     else:
         print(f"mode           : {current.mode}")
     print(f"recall@5       : {delta('recall_at_5')}")
     print(f"recall@10      : {delta('recall_at_10')}")
     print(f"MRR            : {delta('mrr')}")
-    print(f"must_not viol  : {current.must_not_violations}  (baseline {baseline.get('must_not_violations', '?')})")
+    print(
+        f"must_not viol  : {current.must_not_violations}  (baseline {baseline.get('must_not_violations', '?')})"
+    )
     print()
 
     # per-query regression
@@ -579,34 +798,70 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--save-baseline", action="store_true",
-                    help="Overwrite tests/memory-eval/baseline.json with this run's results")
-    ap.add_argument("--diff", choices=["baseline"],
-                    help="Print delta vs baseline.json")
+    ap.add_argument(
+        "--save-baseline",
+        action="store_true",
+        help="Overwrite tests/memory-eval/baseline.json with this run's results",
+    )
+    ap.add_argument("--diff", choices=["baseline"], help="Print delta vs baseline.json")
     ap.add_argument("--quiet", action="store_true")
-    ap.add_argument("--queries", default=None,
-                    help="Path to queries.yaml (default: tests/memory-eval/queries.yaml)")
-    ap.add_argument("--with-rewriter", action="store_true",
-                    help="Run the hook's Haiku rewriter on each query — entities "
-                         "substitute for the raw prompt in keyword search, and "
-                         "returned types narrow both RPC result sets Python-side. "
-                         "Requires ANTHROPIC_API_KEY; falls back per-query to raw "
-                         "prompt when the rewriter returns None.")
-    ap.add_argument("--with-links", action="store_true",
-                    help="Expand top-5 RRF rows with a 1-hop BFS on memory_links — "
-                         "closes coverage gaps where the expected memory is one "
-                         "edge away from a retrieved row. Uses get_linked_memories "
-                         "RPC with a decayed RRF score (decay=0.5); fails soft if "
-                         "the RPC is unavailable.")
+    ap.add_argument(
+        "--queries",
+        default=None,
+        help="Path to queries.yaml (default: tests/memory-eval/queries.yaml)",
+    )
+    ap.add_argument(
+        "--with-rewriter",
+        action="store_true",
+        help="Run the hook's Haiku rewriter on each query — entities "
+        "substitute for the raw prompt in keyword search, and "
+        "returned types narrow both RPC result sets Python-side. "
+        "Requires ANTHROPIC_API_KEY; falls back per-query to raw "
+        "prompt when the rewriter returns None.",
+    )
+    ap.add_argument(
+        "--with-links",
+        action="store_true",
+        help="Expand top-5 RRF rows with a 1-hop BFS on memory_links — "
+        "closes coverage gaps where the expected memory is one "
+        "edge away from a retrieved row. Uses get_linked_memories "
+        "RPC with a decayed RRF score (decay=0.5); fails soft if "
+        "the RPC is unavailable.",
+    )
+    ap.add_argument(
+        "--with-session-context",
+        action="store_true",
+        help="Measure context rot: run each query twice (plain + with session-start "
+        "context injected). Reports per-query delta (plain recall@5 - with_context "
+        "recall@5) and aggregate delta. Positive = context helps; negative = "
+        "context rot confirmed.",
+    )
+    ap.add_argument(
+        "--context-warn-threshold",
+        type=float,
+        default=-5.0,
+        help="Warn if aggregate context delta falls below this pp (default: -5.0). "
+        "Set to None for advisory-only on first run.",
+    )
+    ap.add_argument(
+        "--context-fail-threshold",
+        type=float,
+        default=None,
+        help="Exit with code 1 if aggregate context delta falls below this pp. "
+        "Default None (advisory-only). Set to -10.0 for CI gating after baseline.",
+    )
     args = ap.parse_args()
 
     _load_env()
 
     repo = Path(__file__).resolve().parent.parent
-    queries_path = Path(args.queries) if args.queries else repo / "tests" / "memory-eval" / "queries.yaml"
+    queries_path = (
+        Path(args.queries) if args.queries else repo / "tests" / "memory-eval" / "queries.yaml"
+    )
     baseline_path = repo / "tests" / "memory-eval" / "baseline.json"
 
     import yaml
+
     with queries_path.open("r", encoding="utf-8") as f:
         doc = yaml.safe_load(f)
     queries = doc["queries"]
@@ -629,24 +884,51 @@ def main() -> int:
     if args.with_rewriter:
         hook_mod = _load_hook_module()
         if hook_mod is None:
-            print("ERROR: --with-rewriter set but scripts/memory-recall-hook.py "
-                  "could not be loaded as a module", file=sys.stderr)
+            print(
+                "ERROR: --with-rewriter set but scripts/memory-recall-hook.py "
+                "could not be loaded as a module",
+                file=sys.stderr,
+            )
             return 2
         rewriter = getattr(hook_mod, "rewrite_prompt", None)
         if rewriter is None:
-            print("ERROR: --with-rewriter set but rewrite_prompt not found in hook "
-                  "module", file=sys.stderr)
+            print(
+                "ERROR: --with-rewriter set but rewrite_prompt not found in hook module",
+                file=sys.stderr,
+            )
             return 2
         # Source boost calibration from the hook — single source of truth.
         boost_multiplier = float(getattr(hook_mod, "TYPE_BOOST_MULTIPLIER", 1.5))
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            print("WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
-                  "rewriter will return None for every query (degrades to server_only).",
-                  file=sys.stderr)
+            print(
+                "WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
+                "rewriter will return None for every query (degrades to server_only).",
+                file=sys.stderr,
+            )
+
+    # Load session-start context if requested
+    context_items: list[dict] | None = None
+    if args.with_session_context:
+        try:
+            context_items, char_count, item_counts = asyncio.run(_load_session_context(client))
+            print(
+                f"[context-rot] Loaded {len(context_items)} context items, "
+                f"~{char_count} chars, {item_counts}",
+                file=sys.stderr,
+            )
+        except Exception as e:
+            print(f"WARN: --with-session-context set but context load failed: {e}", file=sys.stderr)
+            context_items = None
 
     report = asyncio.run(
-        run_all(queries, client, rewriter=rewriter,
-                boost_multiplier=boost_multiplier, with_links=args.with_links)
+        run_all(
+            queries,
+            client,
+            rewriter=rewriter,
+            boost_multiplier=boost_multiplier,
+            with_links=args.with_links,
+            context_items=context_items,
+        )
     )
     print_report(report, quiet=args.quiet)
 
@@ -664,8 +946,24 @@ def main() -> int:
             json.dump(asdict(report), f, indent=2, ensure_ascii=False)
         print(f"Baseline saved to {baseline_path}")
 
+    # Context rot thresholding
+    exit_code = 0 if report.failed == 0 else 1
+    if args.with_session_context and report.context_budget_chars > 0:
+        agg_delta = report.context_aggregate_delta
+        if args.context_warn_threshold is not None and agg_delta < args.context_warn_threshold:
+            print(
+                f"\nWARN: context aggregate delta {agg_delta:.2f}pp < warn threshold {args.context_warn_threshold}pp",
+                file=sys.stderr,
+            )
+        if args.context_fail_threshold is not None and agg_delta < args.context_fail_threshold:
+            print(
+                f"\nFAIL: context aggregate delta {agg_delta:.2f}pp < fail threshold {args.context_fail_threshold}pp",
+                file=sys.stderr,
+            )
+            exit_code = 1
+
     # exit code: 0 if all queries passed, 1 otherwise — CI-friendly
-    return 0 if report.failed == 0 else 1
+    return exit_code
 
 
 if __name__ == "__main__":

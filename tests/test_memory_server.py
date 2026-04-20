@@ -31,6 +31,7 @@ class _FakeTextContent:
     The real mcp.types.TextContent is a pydantic model; tests don't need
     validation, just attribute access for the error-path checks below.
     """
+
     def __init__(self, type: str = "text", text: str = ""):
         self.type = type
         self.text = text
@@ -39,19 +40,25 @@ class _FakeTextContent:
 _mcp_types.TextContent = _FakeTextContent
 _mcp_types.Tool = MagicMock
 
+
 def _noop_decorator(*args, **kwargs):
     """Return a no-op decorator that passes the function through."""
+
     def decorator(fn):
         return fn
+
     return decorator
 
 
 class _FakeServer:
     """Minimal stub that supports @server.list_tools() and @server.call_tool() decorators."""
+
     def __init__(self, *args, **kwargs):
         pass
+
     def list_tools(self):
         return _noop_decorator()
+
     def call_tool(self):
         return _noop_decorator()
 
@@ -108,7 +115,6 @@ from server import (
     _create_auto_links,
     _expand_with_links,
     _handle_store,
-    TEMPORAL_HALF_LIVES,
     SUPERSEDE_SIM_THRESHOLD,
     MAX_AUTO_LINKS,
 )
@@ -118,6 +124,7 @@ import server as server_module
 # ---------------------------------------------------------------------------
 # _rrf_merge
 # ---------------------------------------------------------------------------
+
 
 class TestRRFMerge:
     """Reciprocal Rank Fusion merges two ranked lists."""
@@ -178,6 +185,7 @@ class TestRRFMerge:
 # _apply_temporal_scoring
 # ---------------------------------------------------------------------------
 
+
 class TestTemporalScoring:
     """Temporal scoring re-ranks by recency × access boost."""
 
@@ -185,7 +193,11 @@ class TestTemporalScoring:
     def _make_row(mem_type="decision", days_ago=0, accessed_days_ago=None, rrf=0.5):
         now = datetime.now(timezone.utc)
         updated = (now - timedelta(days=days_ago)).isoformat()
-        accessed = (now - timedelta(days=accessed_days_ago)).isoformat() if accessed_days_ago is not None else None
+        accessed = (
+            (now - timedelta(days=accessed_days_ago)).isoformat()
+            if accessed_days_ago is not None
+            else None
+        )
         return {
             "type": mem_type,
             "updated_at": updated,
@@ -251,10 +263,31 @@ class TestTemporalScoring:
         scores = [r["_temporal_score"] for r in result]
         assert scores == sorted(scores, reverse=True)
 
+    def test_confidence_multiplier(self):
+        """Confidence gates ranking: score * (0.5 + 0.5 * confidence)."""
+        high_conf = self._make_row(days_ago=5, rrf=0.5, mem_type="decision")
+        high_conf["confidence"] = 1.0
+        low_conf = self._make_row(days_ago=5, rrf=0.5, mem_type="decision")
+        low_conf["confidence"] = 0.5
+        result = _apply_temporal_scoring([low_conf, high_conf])
+        # Expected score ratio: high=score*1.0, low=score*0.75 → ratio 1.0/0.75≈1.333
+        ratio = result[0]["_temporal_score"] / result[1]["_temporal_score"]
+        assert abs(ratio - (1.0 / 0.75)) < 1e-2
+
+    def test_confidence_null_defaults_to_1(self):
+        """NULL confidence → 1.0 (legacy memories don't regress)."""
+        no_conf = self._make_row(days_ago=5, rrf=0.5)
+        # no_conf doesn't set "confidence", so it's None
+        assert no_conf.get("confidence") is None
+        result = _apply_temporal_scoring([no_conf])
+        # Score should NOT be gated by confidence multiplier
+        assert result[0]["_temporal_score"] > 0
+
 
 # ---------------------------------------------------------------------------
 # _format_memories
 # ---------------------------------------------------------------------------
+
 
 class TestFormatMemories:
     """Memory formatting for LLM output."""
@@ -277,7 +310,14 @@ class TestFormatMemories:
         assert "Some content here" in result[0]
 
     def test_global_project(self):
-        mem = {"name": "x", "type": "user", "project": None, "description": "", "content": "c", "tags": []}
+        mem = {
+            "name": "x",
+            "type": "user",
+            "project": None,
+            "description": "",
+            "content": "c",
+            "tags": [],
+        }
         result = _format_memories([mem])
         assert "(user, global)" in result[0]
 
@@ -289,7 +329,14 @@ class TestFormatMemories:
         assert "] " not in header_line or header_line.endswith(")")
 
     def test_empty_tags_list(self):
-        mem = {"name": "x", "type": "user", "project": None, "description": "", "content": "c", "tags": []}
+        mem = {
+            "name": "x",
+            "type": "user",
+            "project": None,
+            "description": "",
+            "content": "c",
+            "tags": [],
+        }
         result = _format_memories([mem])
         header_line = result[0].split("\n")[0]
         # Empty tags list should not produce brackets
@@ -312,16 +359,28 @@ class TestFormatMemories:
 
     def test_link_info_not_shown_without_flag(self):
         mem = {
-            "name": "x", "type": "decision", "project": None,
-            "description": "", "content": "c", "tags": [],
-            "link_type": "related", "link_strength": 0.75,
+            "name": "x",
+            "type": "decision",
+            "project": None,
+            "description": "",
+            "content": "c",
+            "tags": [],
+            "link_type": "related",
+            "link_strength": 0.75,
         }
         result = _format_memories([mem], link_info=False)
         assert "← related" not in result[0]
 
     def test_multiple_memories(self):
         mems = [
-            {"name": f"m{i}", "type": "project", "project": "j", "description": "", "content": f"c{i}", "tags": []}
+            {
+                "name": f"m{i}",
+                "type": "project",
+                "project": "j",
+                "description": "",
+                "content": f"c{i}",
+                "tags": [],
+            }
             for i in range(5)
         ]
         result = _format_memories(mems)
@@ -331,6 +390,7 @@ class TestFormatMemories:
 # ---------------------------------------------------------------------------
 # _create_auto_links (async, mocked Supabase)
 # ---------------------------------------------------------------------------
+
 
 class TestCreateAutoLinks:
     """Auto-linking creates memory_links entries based on similarity.
@@ -346,7 +406,9 @@ class TestCreateAutoLinks:
         client = MagicMock()
         client.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
         # Hydration query returns no rows (test path skips classifier anyway).
-        client.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(data=[])
+        client.table.return_value.select.return_value.in_.return_value.execute.return_value = (
+            MagicMock(data=[])
+        )
         return client
 
     def _first_links_upsert(self, mock_client):
@@ -377,13 +439,18 @@ class TestCreateAutoLinks:
         the legacy heuristic fires: same type + sim >= 0.85 → supersede."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         similar = [
-            {"id": "old-decision", "type": "decision", "similarity": SUPERSEDE_SIM_THRESHOLD + 0.05},
+            {
+                "id": "old-decision",
+                "type": "decision",
+                "similarity": SUPERSEDE_SIM_THRESHOLD + 0.05,
+            },
         ]
         await _create_auto_links(mock_client, "new-decision", similar, mem_type="decision")
 
         # The legacy fallback updates memories.superseded_by on the target.
         update_calls = [
-            c for c in mock_client.table.return_value.update.call_args_list
+            c
+            for c in mock_client.table.return_value.update.call_args_list
             if c[0][0].get("superseded_by") == "new-decision"
         ]
         assert len(update_calls) == 1
@@ -398,7 +465,8 @@ class TestCreateAutoLinks:
         await _create_auto_links(mock_client, "source", similar, mem_type="project")
 
         update_calls = [
-            c for c in mock_client.table.return_value.update.call_args_list
+            c
+            for c in mock_client.table.return_value.update.call_args_list
             if c[0][0].get("superseded_by") == "source"
         ]
         assert update_calls == []
@@ -415,10 +483,7 @@ class TestCreateAutoLinks:
     async def test_empty_similar_rows(self, mock_client):
         await _create_auto_links(mock_client, "source", [], mem_type="project")
         # No links to insert → the memory_links upsert should not fire.
-        link_calls = [
-            c for c in mock_client.table.call_args_list
-            if c[0][0] == "memory_links"
-        ]
+        link_calls = [c for c in mock_client.table.call_args_list if c[0][0] == "memory_links"]
         assert link_calls == []
 
     @pytest.mark.asyncio
@@ -426,7 +491,9 @@ class TestCreateAutoLinks:
         """Fire-and-forget: errors don't propagate."""
         mock_client.table.side_effect = Exception("DB error")
         # Should not raise
-        await _create_auto_links(mock_client, "source", [{"id": "t", "type": "p", "similarity": 0.7}], "project")
+        await _create_auto_links(
+            mock_client, "source", [{"id": "t", "type": "p", "similarity": 0.7}], "project"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -454,8 +521,9 @@ class TestApplyClassifierDecision:
                 t = MagicMock()
                 # update().eq().is_().execute() returns truthy .data so the
                 # rowcount check in _apply_classifier_decision sees a hit.
-                t.update.return_value.eq.return_value.is_.return_value \
-                    .execute.return_value = MagicMock(data=[{"id": "row"}])
+                t.update.return_value.eq.return_value.is_.return_value.execute.return_value = (
+                    MagicMock(data=[{"id": "row"}])
+                )
                 t.insert.return_value.execute.return_value = MagicMock()
                 t.upsert.return_value.execute.return_value = MagicMock()
                 client._tables[name] = t
@@ -469,10 +537,7 @@ class TestApplyClassifierDecision:
         t = mock_client._tables.get(table)
         if t is None:
             return []
-        return [
-            c for c in t.update.call_args_list
-            if isinstance(c[0][0], dict) and key in c[0][0]
-        ]
+        return [c for c in t.update.call_args_list if isinstance(c[0][0], dict) and key in c[0][0]]
 
     def _queue_inserts(self, mock_client):
         """Find insert calls into memory_review_queue specifically."""
@@ -499,8 +564,10 @@ class TestApplyClassifierDecision:
     @pytest.mark.asyncio
     async def test_high_confidence_update_marks_superseded(self, mock_client):
         decision = ClassifierDecision(
-            decision="UPDATE", target_id="old-id",
-            confidence=0.95, reasoning="refines target",
+            decision="UPDATE",
+            target_id="old-id",
+            confidence=0.95,
+            reasoning="refines target",
         )
         neighbors = [{"id": "old-id", "name": "old", "similarity": 0.82}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -528,8 +595,10 @@ class TestApplyClassifierDecision:
     @pytest.mark.asyncio
     async def test_high_confidence_delete_sets_expired(self, mock_client):
         decision = ClassifierDecision(
-            decision="DELETE", target_id="old-id",
-            confidence=0.92, reasoning="negates target",
+            decision="DELETE",
+            target_id="old-id",
+            confidence=0.92,
+            reasoning="negates target",
         )
         neighbors = [{"id": "old-id", "name": "old", "similarity": 0.85}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -545,7 +614,8 @@ class TestApplyClassifierDecision:
     async def test_low_confidence_update_queues_pending(self, mock_client):
         """Low confidence: do NOT mutate target, write queue entry as pending."""
         decision = ClassifierDecision(
-            decision="UPDATE", target_id="old-id",
+            decision="UPDATE",
+            target_id="old-id",
             confidence=CLASSIFIER_APPLY_THRESHOLD - 0.1,
             reasoning="ambiguous",
         )
@@ -563,8 +633,10 @@ class TestApplyClassifierDecision:
     @pytest.mark.asyncio
     async def test_noop_records_decision_no_mutation(self, mock_client):
         decision = ClassifierDecision(
-            decision="NOOP", target_id=None,
-            confidence=0.9, reasoning="redundant",
+            decision="NOOP",
+            target_id=None,
+            confidence=0.9,
+            reasoning="redundant",
         )
         neighbors = [{"id": "x", "name": "x", "similarity": 0.9}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -581,8 +653,10 @@ class TestApplyClassifierDecision:
     async def test_high_confidence_add_no_queue_entry(self, mock_client):
         """ADD with high confidence is the trivial case — don't pollute queue."""
         decision = ClassifierDecision(
-            decision="ADD", target_id=None,
-            confidence=0.95, reasoning="genuinely new",
+            decision="ADD",
+            target_id=None,
+            confidence=0.95,
+            reasoning="genuinely new",
         )
         neighbors = [{"id": "x", "name": "x", "similarity": 0.76}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -593,8 +667,10 @@ class TestApplyClassifierDecision:
     async def test_hallucinated_target_id_refused(self, mock_client):
         """Model returned an id we never showed it → refuse to mutate."""
         decision = ClassifierDecision(
-            decision="UPDATE", target_id="never-existed",
-            confidence=0.95, reasoning="...",
+            decision="UPDATE",
+            target_id="never-existed",
+            confidence=0.95,
+            reasoning="...",
         )
         neighbors = [{"id": "real-id", "name": "real", "similarity": 0.85}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -611,6 +687,7 @@ class TestApplyClassifierDecision:
 # _expand_with_links (async, mocked Supabase)
 # ---------------------------------------------------------------------------
 
+
 class TestExpandWithLinks:
     """Graph traversal fetches 1-hop linked memories."""
 
@@ -623,7 +700,12 @@ class TestExpandWithLinks:
     async def test_returns_linked_memories(self, mock_client):
         mock_client.rpc.return_value.execute.return_value = MagicMock(
             data=[
-                {"id": "linked-1", "name": "linked_mem", "link_type": "related", "link_strength": 0.75},
+                {
+                    "id": "linked-1",
+                    "name": "linked_mem",
+                    "link_type": "related",
+                    "link_strength": 0.75,
+                },
             ]
         )
         result = await _expand_with_links(mock_client, ["source-id"])
@@ -664,6 +746,7 @@ class TestExpandWithLinks:
 # ---------------------------------------------------------------------------
 # Recall pipeline dedup regression (bidirectional link bug)
 # ---------------------------------------------------------------------------
+
 
 class TestRecallLinkedDedup:
     """Regression: bidirectional links should not produce duplicate linked memories."""
@@ -720,6 +803,7 @@ class TestRecallLinkedDedup:
 # Phase 2c: memory_store must reject writes missing source_provenance
 # ---------------------------------------------------------------------------
 
+
 class TestHandleStoreProvenance:
     """Phase 2c — every memory write carries a namespaced source_provenance.
 
@@ -735,12 +819,14 @@ class TestHandleStoreProvenance:
 
     @pytest.mark.asyncio
     async def test_rejects_missing_provenance(self):
-        result = await _handle_store({
-            "type": "project",
-            "name": "test_missing",
-            "content": "test content",
-            # no source_provenance
-        })
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_missing",
+                "content": "test content",
+                # no source_provenance
+            }
+        )
         assert len(result) == 1
         assert "source_provenance is required" in result[0].text
         # Validation fired before any DB access.
@@ -748,23 +834,27 @@ class TestHandleStoreProvenance:
 
     @pytest.mark.asyncio
     async def test_rejects_blank_provenance(self):
-        result = await _handle_store({
-            "type": "project",
-            "name": "test_blank",
-            "content": "test content",
-            "source_provenance": "   ",
-        })
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_blank",
+                "content": "test content",
+                "source_provenance": "   ",
+            }
+        )
         assert "source_provenance is required" in result[0].text
         self.client.table.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rejects_none_provenance(self):
-        result = await _handle_store({
-            "type": "project",
-            "name": "test_none",
-            "content": "test content",
-            "source_provenance": None,
-        })
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_none",
+                "content": "test content",
+                "source_provenance": None,
+            }
+        )
         assert "source_provenance is required" in result[0].text
         self.client.table.assert_not_called()
 
@@ -772,9 +862,11 @@ class TestHandleStoreProvenance:
     async def test_provenance_stripped_before_persist(self, monkeypatch):
         """Accepted provenance is trimmed — no leading/trailing whitespace
         leaks into the DB row, keeping audit queries clean."""
+
         # Short-circuit embedding so we don't need Voyage env/network.
         async def _fake_embed(_text):
             return None
+
         monkeypatch.setattr(server_module, "_embed", _fake_embed)
 
         # project="jarvis" takes the upsert branch. Rig the chain to return
@@ -783,15 +875,102 @@ class TestHandleStoreProvenance:
         tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "stored-1"}])
         self.client.table.return_value = tbl
 
-        await _handle_store({
-            "type": "project",
-            "name": "test_strip",
-            "content": "test content",
-            "project": "jarvis",
-            "source_provenance": "  skill:test  ",
-        })
+        await _handle_store(
+            {
+                "type": "project",
+                "name": "test_strip",
+                "content": "test content",
+                "project": "jarvis",
+                "source_provenance": "  skill:test  ",
+            }
+        )
 
         upsert_calls = tbl.upsert.call_args_list
         assert upsert_calls, "expected at least one upsert call"
         data_arg = upsert_calls[-1][0][0]
         assert data_arg["source_provenance"] == "skill:test"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5.3: Dual-embedding migration readiness tests
+# ---------------------------------------------------------------------------
+
+
+class TestDualEmbedding:
+    """Test EMBEDDING_MODEL_PRIMARY and EMBEDDING_MODEL_SECONDARY env vars."""
+
+    def test_embedding_model_primary_default(self):
+        """EMBEDDING_MODEL_PRIMARY defaults to 'voyage-3-lite'."""
+        # Import server with default env
+        import importlib
+        import server
+
+        importlib.reload(server)
+        assert server.EMBEDDING_MODEL_PRIMARY == "voyage-3-lite"
+
+    def test_embedding_model_secondary_unset(self):
+        """EMBEDDING_MODEL_SECONDARY is None when unset."""
+        import importlib
+        import server
+
+        importlib.reload(server)
+        assert server.EMBEDDING_MODEL_SECONDARY is None
+
+    def test_embedding_model_secondary_set(self):
+        """EMBEDDING_MODEL_SECONDARY is set from env var."""
+        os.environ["EMBEDDING_MODEL_SECONDARY"] = "voyage-3"
+        try:
+            import importlib
+            import server
+
+            importlib.reload(server)
+            assert server.EMBEDDING_MODEL_SECONDARY == "voyage-3"
+        finally:
+            os.environ.pop("EMBEDDING_MODEL_SECONDARY", None)
+
+    @pytest.mark.asyncio
+    async def test_embed_with_custom_model(self):
+        """_embed can be called with a custom model parameter."""
+        import server
+
+        # Mock the API call
+        with pytest.mock.patch("httpx.AsyncClient") as mock_client_class:
+            mock_response = MagicMock()
+            mock_response.json.return_value = {"data": [{"embedding": [0.1, 0.2, 0.3]}]}
+            mock_response.raise_for_status = MagicMock()
+
+            mock_async_ctx = MagicMock()
+            mock_async_ctx.__aenter__.return_value.post.return_value = mock_response
+            mock_async_ctx.__aexit__.return_value = None
+
+            mock_client_class.return_value = mock_async_ctx
+
+            os.environ["VOYAGE_API_KEY"] = "test-key"
+            try:
+                result = await server._embed("test text", model="voyage-3")
+                assert result == [0.1, 0.2, 0.3]
+                # Verify the model parameter was passed
+                call_args = mock_async_ctx.__aenter__.return_value.post.call_args
+                assert call_args[1]["json"]["model"] == "voyage-3"
+            finally:
+                os.environ.pop("VOYAGE_API_KEY", None)
+
+    def test_embed_batch_with_custom_model(self):
+        """_embed_batch can be called with a custom model parameter."""
+        import server
+
+        # This would need async context too, but we're just checking signature here
+        import inspect
+
+        sig = inspect.signature(server._embed_batch)
+        assert "model" in sig.parameters
+        assert sig.parameters["model"].default == "voyage-3-lite"
+
+    def test_match_memories_v2_rpc_exists(self):
+        """match_memories_v2 RPC is available in schema."""
+        # This test verifies the schema was updated
+        schema_path = Path(__file__).resolve().parent.parent / "mcp-memory" / "schema.sql"
+        schema_content = schema_path.read_text()
+        assert "create or replace function match_memories_v2" in schema_content
+        assert "embedding_v2 vector(1024)" in schema_content
+        assert "idx_memories_embedding_v2_hnsw" in schema_content

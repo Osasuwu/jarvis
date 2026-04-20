@@ -29,7 +29,6 @@ import asyncio
 import json
 import math
 import os
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -107,15 +106,19 @@ def _get_client():
 # ---------------------------------------------------------------------------
 
 
-def _audit_log(client, tool_name: str, action: str, target: str | None = None, details: dict | None = None):
+def _audit_log(
+    client, tool_name: str, action: str, target: str | None = None, details: dict | None = None
+):
     """Fire-and-forget audit log entry. Never fails the caller."""
     try:
-        client.table("audit_log").insert({
-            "tool_name": tool_name,
-            "action": action,
-            "target": target,
-            "details": details or {},
-        }).execute()
+        client.table("audit_log").insert(
+            {
+                "tool_name": tool_name,
+                "action": action,
+                "target": target,
+                "details": details or {},
+            }
+        ).execute()
     except Exception:
         pass  # audit is best-effort — never block operations
 
@@ -148,7 +151,7 @@ async def _embed(text: str, input_type: str = "document") -> list[float] | None:
             raise
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 and attempt < 2:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
                 continue
             return None
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
@@ -176,7 +179,7 @@ async def _embed_batch(texts: list[str], input_type: str = "document") -> list[l
             raise
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 429 and attempt < 2:
-                await asyncio.sleep(2 ** attempt)
+                await asyncio.sleep(2**attempt)
                 continue
             return None
         except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
@@ -203,6 +206,7 @@ SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 # -- Canonical embed form (Phase 2a) ---------------------------------------
 
+
 def _canonical_embed_text(name: str, description: str, tags: list[str], content: str) -> str:
     """Build the text used for embedding. Structured so name/tags get weight.
 
@@ -225,20 +229,26 @@ def _canonical_embed_text(name: str, description: str, tags: list[str], content:
 
 # -- Memory 2.0: temporal scoring + auto-linking ----------------------------
 TEMPORAL_HALF_LIVES = {
-    "project": 7, "reference": 30, "decision": 60,
-    "feedback": 90, "user": 180,
+    "project": 7,
+    "reference": 30,
+    "decision": 60,
+    "feedback": 90,
+    "user": 180,
 }
 DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
+CONFIDENCE_FLOOR = 0.5  # Multiplier floor: score * (floor + (1-floor) * confidence)
 LINK_SIM_THRESHOLD = 0.60
 # Phase 2b: classifier replaces the bare similarity gate. We still keep a
 # threshold, but it now decides *when to ask the classifier*, not whether to
 # fire supersession. The classifier's decision (with confidence) determines
 # the actual ADD/UPDATE/DELETE/NOOP outcome.
-SUPERSEDE_SIM_THRESHOLD = 0.85       # legacy heuristic — kept for fallback when classifier unavailable
-CLASSIFIER_TRIGGER_SIM = 0.70        # invoke classifier above this similarity (voyage-3-lite paraphrases sit ~0.73)
-CLASSIFIER_APPLY_THRESHOLD = 0.70    # auto-apply UPDATE/DELETE above this confidence; else queue
+SUPERSEDE_SIM_THRESHOLD = 0.85  # legacy heuristic — kept for fallback when classifier unavailable
+CLASSIFIER_TRIGGER_SIM = (
+    0.70  # invoke classifier above this similarity (voyage-3-lite paraphrases sit ~0.73)
+)
+CLASSIFIER_APPLY_THRESHOLD = 0.70  # auto-apply UPDATE/DELETE above this confidence; else queue
 CONSOLIDATION_SIM_THRESHOLD = 0.80
 CONSOLIDATION_COUNT = 3
 MAX_AUTO_LINKS = 5
@@ -246,6 +256,7 @@ MAX_CLASSIFIER_NEIGHBORS = 5
 
 
 # -- Tool definitions -------------------------------------------------------
+
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
@@ -312,7 +323,10 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "Known risks",
                     },
-                    "owner_focus": {"type": "string", "description": "What the owner is working on"},
+                    "owner_focus": {
+                        "type": "string",
+                        "description": "What the owner is working on",
+                    },
                     "jarvis_focus": {"type": "string", "description": "What Jarvis should handle"},
                     "parent_id": {
                         "type": ["string", "null"],
@@ -802,8 +816,14 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "service": {"type": "string", "description": "Service name (e.g. 'Supabase', 'GitHub')"},
-                    "env_var": {"type": "string", "description": "Env variable NAME, not value (e.g. 'SUPABASE_KEY')"},
+                    "service": {
+                        "type": "string",
+                        "description": "Service name (e.g. 'Supabase', 'GitHub')",
+                    },
+                    "env_var": {
+                        "type": "string",
+                        "description": "Env variable NAME, not value (e.g. 'SUPABASE_KEY')",
+                    },
                     "stored_in": {
                         "type": "string",
                         "description": "Where the value lives (e.g. '.env', 'GitHub Actions', 'system env')",
@@ -917,9 +937,23 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
 # -- Goal handlers ----------------------------------------------------------
 
 GOAL_FIELDS = (
-    "slug", "title", "project", "direction", "priority", "status",
-    "why", "success_criteria", "deadline", "progress", "progress_pct",
-    "risks", "owner_focus", "jarvis_focus", "parent_id", "outcome", "lessons",
+    "slug",
+    "title",
+    "project",
+    "direction",
+    "priority",
+    "status",
+    "why",
+    "success_criteria",
+    "deadline",
+    "progress",
+    "progress_pct",
+    "risks",
+    "owner_focus",
+    "jarvis_focus",
+    "parent_id",
+    "outcome",
+    "lessons",
 )
 
 
@@ -942,6 +976,7 @@ def _format_goal(g: dict) -> str:
         criteria = g["success_criteria"]
         if isinstance(criteria, str):
             import json as _json
+
             try:
                 criteria = _json.loads(criteria)
             except (ValueError, TypeError):
@@ -955,6 +990,7 @@ def _format_goal(g: dict) -> str:
         progress = g["progress"]
         if isinstance(progress, str):
             import json as _json
+
             try:
                 progress = _json.loads(progress)
             except (ValueError, TypeError):
@@ -970,6 +1006,7 @@ def _format_goal(g: dict) -> str:
         risks = g["risks"]
         if isinstance(risks, str):
             import json as _json
+
             try:
                 risks = _json.loads(risks)
             except (ValueError, TypeError):
@@ -1037,10 +1074,12 @@ async def _handle_goal_list(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text="No goals found.")]
 
     formatted = [_format_goal(g) for g in result.data]
-    return [TextContent(
-        type="text",
-        text=f"# Goals ({len(result.data)})\n\n" + "\n\n---\n\n".join(formatted),
-    )]
+    return [
+        TextContent(
+            type="text",
+            text=f"# Goals ({len(result.data)})\n\n" + "\n\n---\n\n".join(formatted),
+        )
+    ]
 
 
 async def _handle_goal_get(args: dict) -> list[TextContent]:
@@ -1089,6 +1128,7 @@ async def _handle_goal_update(args: dict) -> list[TextContent]:
 
 # -- Memory handlers --------------------------------------------------------
 
+
 async def _handle_store(args: dict) -> list[TextContent]:
     client = _get_client()
 
@@ -1103,20 +1143,27 @@ async def _handle_store(args: dict) -> list[TextContent]:
     source_provenance = args.get("source_provenance")
 
     if mem_type not in VALID_TYPES:
-        return [TextContent(type="text", text=f"Invalid type: {mem_type}. Must be one of {VALID_TYPES}")]
+        return [
+            TextContent(type="text", text=f"Invalid type: {mem_type}. Must be one of {VALID_TYPES}")
+        ]
 
     # Phase 2c: provenance required. Reject at the MCP boundary so callers get
     # a readable error instead of a NOT NULL violation from Postgres. Strip
     # whitespace so an accidental " " doesn't pass the guard.
     source_provenance = (source_provenance or "").strip()
     if not source_provenance:
-        return [TextContent(type="text", text=(
-            "Error: source_provenance is required (Phase 2c). "
-            "Use a namespaced source like 'session:<id>', 'skill:<name>', "
-            "'hook:<name>', 'user:explicit', or 'episode:<id>'. This is the "
-            "JTMS attribution for this memory — without it, future revisions "
-            "can't be traced."
-        ))]
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    "Error: source_provenance is required (Phase 2c). "
+                    "Use a namespaced source like 'session:<id>', 'skill:<name>', "
+                    "'hook:<name>', 'user:explicit', or 'episode:<id>'. This is the "
+                    "JTMS attribution for this memory — without it, future revisions "
+                    "can't be traced."
+                ),
+            )
+        ]
 
     # Phase 2a: canonical-form embedding — include name + tags + description + content.
     # Name and tags carry high-signal lexical cues that raw content often dilutes
@@ -1165,24 +1212,28 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
     msg = f"Memory '{mem_name}' {action} ({proj_label}){embed_note}"
 
-    _audit_log(client, "memory_store", action, mem_name, {"project": project or "global", "type": mem_type})
+    _audit_log(
+        client, "memory_store", action, mem_name, {"project": project or "global", "type": mem_type}
+    )
 
     # -- Memory 2.0: auto-linking + consolidation hints --
     if embedding is not None and stored_id:
         try:
-            similar = client.rpc("find_similar_memories", {
-                "query_embedding": embedding,
-                "exclude_id": stored_id,
-                "match_limit": MAX_AUTO_LINKS + 5,
-                "similarity_threshold": LINK_SIM_THRESHOLD,
-                "filter_type": None,
-            }).execute()
+            similar = client.rpc(
+                "find_similar_memories",
+                {
+                    "query_embedding": embedding,
+                    "exclude_id": stored_id,
+                    "match_limit": MAX_AUTO_LINKS + 5,
+                    "similarity_threshold": LINK_SIM_THRESHOLD,
+                    "filter_type": None,
+                },
+            ).execute()
             similar_rows = similar.data or []
 
             # Consolidation hint: 3+ memories above 0.80 similarity
             consolidation_candidates = [
-                r for r in similar_rows
-                if r.get("similarity", 0) >= CONSOLIDATION_SIM_THRESHOLD
+                r for r in similar_rows if r.get("similarity", 0) >= CONSOLIDATION_SIM_THRESHOLD
             ]
             if len(consolidation_candidates) >= CONSOLIDATION_COUNT:
                 names = [r["name"] for r in consolidation_candidates[:5]]
@@ -1200,10 +1251,15 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     "content": content,
                     "tags": tags,
                 }
-                asyncio.create_task(_create_auto_links(
-                    client, stored_id, similar_rows, mem_type,
-                    candidate=candidate_for_classifier,
-                ))
+                asyncio.create_task(
+                    _create_auto_links(
+                        client,
+                        stored_id,
+                        similar_rows,
+                        mem_type,
+                        candidate=candidate_for_classifier,
+                    )
+                )
         except Exception:
             pass  # auto-linking is best-effort, never blocks store
 
@@ -1231,7 +1287,14 @@ async def _handle_recall(args: dict) -> list[TextContent]:
         query_embedding = await _embed_query(query_text)
         if query_embedding is not None:
             rows, results = await _hybrid_recall(
-                client, query_embedding, query_text, project, mem_type, limit, include_links, show_history
+                client,
+                query_embedding,
+                query_text,
+                project,
+                mem_type,
+                limit,
+                include_links,
+                show_history,
             )
             # Track reads (fire-and-forget)
             ids = [r["id"] for r in rows if r.get("id")]
@@ -1250,8 +1313,13 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
 
 async def _hybrid_recall(
-    client, query_embedding: list[float], query_text: str,
-    project, mem_type, limit: int, include_links: bool = False,
+    client,
+    query_embedding: list[float],
+    query_text: str,
+    project,
+    mem_type,
+    limit: int,
+    include_links: bool = False,
     show_history: bool = False,
 ) -> list[TextContent]:
     """Hybrid search: server-side pgvector semantic + pg_trgm keyword, merged via RRF.
@@ -1267,24 +1335,30 @@ async def _hybrid_recall(
         fetch_limit = limit * 2
 
         # Server-side semantic search via pgvector HNSW
-        sem_result = client.rpc("match_memories", {
-            "query_embedding": query_embedding,
-            "match_limit": fetch_limit,
-            "similarity_threshold": SIMILARITY_THRESHOLD,
-            "filter_project": project,
-            "filter_type": mem_type,
-            "show_history": show_history,
-        }).execute()
+        sem_result = client.rpc(
+            "match_memories",
+            {
+                "query_embedding": query_embedding,
+                "match_limit": fetch_limit,
+                "similarity_threshold": SIMILARITY_THRESHOLD,
+                "filter_project": project,
+                "filter_type": mem_type,
+                "show_history": show_history,
+            },
+        ).execute()
         semantic_rows = sem_result.data or []
 
         # Server-side keyword search via pg_trgm
-        kw_result = client.rpc("keyword_search_memories", {
-            "search_query": query_text,
-            "match_limit": fetch_limit,
-            "filter_project": project,
-            "filter_type": mem_type,
-            "show_history": show_history,
-        }).execute()
+        kw_result = client.rpc(
+            "keyword_search_memories",
+            {
+                "search_query": query_text,
+                "match_limit": fetch_limit,
+                "filter_project": project,
+                "filter_type": mem_type,
+                "show_history": show_history,
+            },
+        ).execute()
         keyword_rows = kw_result.data or []
 
         # Reciprocal Rank Fusion (k=60) + temporal scoring
@@ -1297,7 +1371,9 @@ async def _hybrid_recall(
 
         formatted = _format_memories(merged)
         search_type = "hybrid+temporal" if keyword_rows else "semantic+temporal"
-        text = f"Found {len(merged)} memories ({search_type} search):\n\n" + "\n---\n".join(formatted)
+        text = f"Found {len(merged)} memories ({search_type} search):\n\n" + "\n---\n".join(
+            formatted
+        )
 
         # Optional: expand with 1-hop linked memories
         if include_links:
@@ -1316,7 +1392,10 @@ async def _hybrid_recall(
                             unique_linked.append(r)
                     if unique_linked:
                         link_formatted = _format_memories(unique_linked, link_info=True)
-                        text += f"\n\n### Linked memories ({len(unique_linked)}):\n\n" + "\n---\n".join(link_formatted)
+                        text += (
+                            f"\n\n### Linked memories ({len(unique_linked)}):\n\n"
+                            + "\n---\n".join(link_formatted)
+                        )
 
         return merged, [TextContent(type="text", text=text)]
 
@@ -1327,7 +1406,9 @@ async def _hybrid_recall(
         return [], await _keyword_recall(client, query_text, project, mem_type, limit)
 
 
-def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, k: int = 60) -> list[dict]:
+def _rrf_merge(
+    semantic_rows: list[dict], keyword_rows: list[dict], limit: int, k: int = 60
+) -> list[dict]:
     """Reciprocal Rank Fusion: combine two ranked lists into one.
 
     Score = sum(1 / (k + rank)) for each list the item appears in.
@@ -1355,9 +1436,15 @@ def _rrf_merge(semantic_rows: list[dict], keyword_rows: list[dict], limit: int, 
     return result
 
 
-async def _keyword_recall(client, query_text: str, project, mem_type, limit: int) -> list[TextContent]:
+async def _keyword_recall(
+    client, query_text: str, project, mem_type, limit: int
+) -> list[TextContent]:
     """ILIKE keyword search (fallback when semantic unavailable)."""
-    q = client.table("memories").select("name, type, project, description, content, tags, updated_at").is_("deleted_at", "null")
+    q = (
+        client.table("memories")
+        .select("name, type, project, description, content, tags, updated_at")
+        .is_("deleted_at", "null")
+    )
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1367,8 +1454,7 @@ async def _keyword_recall(client, query_text: str, project, mem_type, limit: int
     if query_text:
         terms = query_text.split()
         clauses = ",".join(
-            f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%"
-            for t in terms
+            f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%" for t in terms
         )
         q = q.or_(clauses)
 
@@ -1378,7 +1464,13 @@ async def _keyword_recall(client, query_text: str, project, mem_type, limit: int
         return [TextContent(type="text", text="No memories found.")]
 
     formatted = _format_memories(result.data)
-    return [TextContent(type="text", text=f"Found {len(result.data)} memories (keyword search):\n\n" + "\n---\n".join(formatted))]
+    return [
+        TextContent(
+            type="text",
+            text=f"Found {len(result.data)} memories (keyword search):\n\n"
+            + "\n---\n".join(formatted),
+        )
+    ]
 
 
 async def _touch_memories(client, ids: list[str]) -> None:
@@ -1423,7 +1515,9 @@ async def _backfill_missing_embeddings(client, project) -> None:
 
         # Phase 2a: canonical form (name + tags + description + content)
         texts = [
-            _canonical_embed_text(r.get("name", ""), r.get("description", ""), r.get("tags") or [], r["content"])
+            _canonical_embed_text(
+                r.get("name", ""), r.get("description", ""), r.get("tags") or [], r["content"]
+            )
             for r in rows
         ]
         embeddings = await _embed_batch(texts)
@@ -1431,11 +1525,13 @@ async def _backfill_missing_embeddings(client, project) -> None:
             return
 
         for mem, embedding in zip(rows, embeddings):
-            client.table("memories").update({
-                "embedding": embedding,
-                "embedding_model": VOYAGE_MODEL,
-                "embedding_version": "v2",
-            }).eq("id", mem["id"]).execute()
+            client.table("memories").update(
+                {
+                    "embedding": embedding,
+                    "embedding_model": VOYAGE_MODEL,
+                    "embedding_version": "v2",
+                }
+            ).eq("id", mem["id"]).execute()
     except Exception:
         pass  # fire-and-forget: silently swallow all errors so caller never fails
 
@@ -1467,12 +1563,14 @@ async def _create_auto_links(
         # --- (1) base links: everything is `related` until a classifier upgrade ---
         links = []
         for row in similar_rows[:MAX_AUTO_LINKS]:
-            links.append({
-                "source_id": stored_id,
-                "target_id": row["id"],
-                "link_type": "related",
-                "strength": round(row.get("similarity", 0), 3),
-            })
+            links.append(
+                {
+                    "source_id": stored_id,
+                    "target_id": row["id"],
+                    "link_type": "related",
+                    "strength": round(row.get("similarity", 0), 3),
+                }
+            )
         if links:
             client.table("memory_links").upsert(
                 links, on_conflict="source_id,target_id,link_type"
@@ -1481,7 +1579,8 @@ async def _create_auto_links(
         # --- (2) classifier or fallback heuristic ---
         # Pick the high-similarity slice we'd consider for supersession.
         candidates_for_classifier = [
-            r for r in similar_rows[:MAX_CLASSIFIER_NEIGHBORS]
+            r
+            for r in similar_rows[:MAX_CLASSIFIER_NEIGHBORS]
             if r.get("similarity", 0) >= CLASSIFIER_TRIGGER_SIM
         ]
         if not candidates_for_classifier:
@@ -1498,14 +1597,10 @@ async def _create_auto_links(
                 decision = None
 
         if decision is not None:
-            await _apply_classifier_decision(
-                client, stored_id, decision, candidates_for_classifier
-            )
+            await _apply_classifier_decision(client, stored_id, decision, candidates_for_classifier)
         else:
             # Legacy heuristic fallback: same-type + sim >= 0.85 → supersede.
-            await _apply_legacy_supersede(
-                client, stored_id, candidates_for_classifier, mem_type
-            )
+            await _apply_legacy_supersede(client, stored_id, candidates_for_classifier, mem_type)
     except Exception:
         pass
 
@@ -1517,10 +1612,12 @@ async def _hydrate_neighbors(client, rows: list[dict]) -> list[dict]:
     if not ids:
         return rows
     try:
-        full = client.table("memories") \
-            .select("id, name, type, description, content, tags") \
-            .in_("id", ids) \
+        full = (
+            client.table("memories")
+            .select("id, name, type, description, content, tags")
+            .in_("id", ids)
             .execute()
+        )
         full_by_id = {row["id"]: row for row in (full.data or [])}
     except Exception:
         return rows
@@ -1528,15 +1625,17 @@ async def _hydrate_neighbors(client, rows: list[dict]) -> list[dict]:
     hydrated = []
     for r in rows:
         extra = full_by_id.get(r.get("id"), {})
-        hydrated.append({
-            "id": r.get("id"),
-            "name": r.get("name") or extra.get("name", ""),
-            "type": r.get("type") or extra.get("type", ""),
-            "similarity": r.get("similarity", 0),
-            "description": extra.get("description", ""),
-            "content": extra.get("content", ""),
-            "tags": extra.get("tags", []) or [],
-        })
+        hydrated.append(
+            {
+                "id": r.get("id"),
+                "name": r.get("name") or extra.get("name", ""),
+                "type": r.get("type") or extra.get("type", ""),
+                "similarity": r.get("similarity", 0),
+                "description": extra.get("description", ""),
+                "content": extra.get("content", ""),
+                "tags": extra.get("tags", []) or [],
+            }
+        )
     return hydrated
 
 
@@ -1577,10 +1676,13 @@ async def _apply_classifier_decision(
         # else — a real race we want to flag for review, not silently overwrite.
         mutated = False
         try:
-            res = client.table("memories").update({"superseded_by": stored_id}) \
-                .eq("id", target_id) \
-                .is_("superseded_by", "null") \
+            res = (
+                client.table("memories")
+                .update({"superseded_by": stored_id})
+                .eq("id", target_id)
+                .is_("superseded_by", "null")
                 .execute()
+            )
             mutated = bool(getattr(res, "data", None))
         except Exception:
             mutated = False
@@ -1588,12 +1690,15 @@ async def _apply_classifier_decision(
             # Upgrade the auto-created `related` link to `supersedes` so the
             # graph reflects the supersession (matches legacy fallback behavior).
             try:
-                client.table("memory_links").upsert({
-                    "source_id": stored_id,
-                    "target_id": target_id,
-                    "link_type": "supersedes",
-                    "strength": 1.0,
-                }, on_conflict="source_id,target_id,link_type").execute()
+                client.table("memory_links").upsert(
+                    {
+                        "source_id": stored_id,
+                        "target_id": target_id,
+                        "link_type": "supersedes",
+                        "strength": 1.0,
+                    },
+                    on_conflict="source_id,target_id,link_type",
+                ).execute()
             except Exception:
                 pass  # link upgrade is cosmetic; don't roll back the supersession
             queue_status = "auto_applied"
@@ -1604,9 +1709,17 @@ async def _apply_classifier_decision(
     elif apply_now and target_id and decision.decision == "DELETE":
         mutated = False
         try:
-            res = client.table("memories").update({
-                "expired_at": datetime.now(timezone.utc).isoformat(),
-            }).eq("id", target_id).is_("expired_at", "null").execute()
+            res = (
+                client.table("memories")
+                .update(
+                    {
+                        "expired_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+                .eq("id", target_id)
+                .is_("expired_at", "null")
+                .execute()
+            )
             mutated = bool(getattr(res, "data", None))
         except Exception:
             mutated = False
@@ -1628,21 +1741,26 @@ async def _apply_classifier_decision(
 
     # Record the decision (always — auditability).
     try:
-        client.table("memory_review_queue").insert({
-            "candidate_id": stored_id,
-            "decision": decision.decision,
-            "target_id": target_id,
-            "confidence": round(decision.confidence, 3),
-            "reasoning": decision.reasoning,
-            "classifier_model": CLASSIFIER_MODEL,
-            "neighbors_seen": [
-                {"id": n.get("id"), "name": n.get("name"),
-                 "similarity": round(n.get("similarity", 0), 3)}
-                for n in neighbors
-            ],
-            "status": queue_status,
-            "applied_at": applied_at,
-        }).execute()
+        client.table("memory_review_queue").insert(
+            {
+                "candidate_id": stored_id,
+                "decision": decision.decision,
+                "target_id": target_id,
+                "confidence": round(decision.confidence, 3),
+                "reasoning": decision.reasoning,
+                "classifier_model": CLASSIFIER_MODEL,
+                "neighbors_seen": [
+                    {
+                        "id": n.get("id"),
+                        "name": n.get("name"),
+                        "similarity": round(n.get("similarity", 0), 3),
+                    }
+                    for n in neighbors
+                ],
+                "status": queue_status,
+                "applied_at": applied_at,
+            }
+        ).execute()
     except Exception:
         pass
 
@@ -1654,7 +1772,8 @@ async def _apply_legacy_supersede(
     pre-Phase-2b: same-type + similarity >= SUPERSEDE_SIM_THRESHOLD →
     mark target.superseded_by = stored_id."""
     supersede_target_ids = [
-        r["id"] for r in similar_rows
+        r["id"]
+        for r in similar_rows
         if r.get("type") == mem_type
         and r.get("similarity", 0) >= SUPERSEDE_SIM_THRESHOLD
         and r.get("id")
@@ -1662,24 +1781,28 @@ async def _apply_legacy_supersede(
     if not supersede_target_ids:
         return
     try:
-        client.table("memories").update({"superseded_by": stored_id}) \
-            .in_("id", supersede_target_ids) \
-            .is_("superseded_by", "null") \
-            .execute()
+        client.table("memories").update({"superseded_by": stored_id}).in_(
+            "id", supersede_target_ids
+        ).is_("superseded_by", "null").execute()
         # Also upgrade the link type from `related` to `supersedes`.
         for tid in supersede_target_ids:
-            client.table("memory_links").upsert({
-                "source_id": stored_id,
-                "target_id": tid,
-                "link_type": "supersedes",
-                "strength": 1.0,
-            }, on_conflict="source_id,target_id,link_type").execute()
+            client.table("memory_links").upsert(
+                {
+                    "source_id": stored_id,
+                    "target_id": tid,
+                    "link_type": "supersedes",
+                    "strength": 1.0,
+                },
+                on_conflict="source_id,target_id,link_type",
+            ).execute()
     except Exception:
         pass
 
 
 async def _expand_with_links(
-    client, memory_ids: list[str], show_history: bool = False,
+    client,
+    memory_ids: list[str],
+    show_history: bool = False,
 ) -> list[dict]:
     """Fetch 1-hop linked memories via graph traversal RPC.
 
@@ -1687,18 +1810,25 @@ async def _expand_with_links(
     lifecycle filter so history views don't drop linked neighbors.
     """
     try:
-        result = client.rpc("get_linked_memories", {
-            "memory_ids": memory_ids,
-            "link_types": None,
-            "show_history": show_history,
-        }).execute()
+        result = client.rpc(
+            "get_linked_memories",
+            {
+                "memory_ids": memory_ids,
+                "link_types": None,
+                "show_history": show_history,
+            },
+        ).execute()
         return result.data or []
     except Exception:
         return []
 
 
 def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
-    """Re-rank rows by combining RRF score with temporal decay and access frequency."""
+    """Re-rank rows by combining RRF score with temporal decay, access frequency, and confidence.
+
+    Phase 1 polish: confidence multiplier (0.5 + 0.5 * confidence) gates high-uncertainty
+    memories from ranking above lower-confidence ones. NULL confidence → 1.0 (legacy memories).
+    """
     now = datetime.now(timezone.utc)
     for row in rows:
         rrf = row.get("_rrf_score", 0.01)
@@ -1728,7 +1858,15 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
         # Access frequency boost (1..1+ACCESS_BOOST_MAX)
         access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
 
-        row["_temporal_score"] = rrf * recency * access
+        # Confidence multiplier: (CONFIDENCE_FLOOR + (1-CONFIDENCE_FLOOR) * confidence)
+        # NULL confidence → 1.0 (legacy memories don't regress)
+        confidence = row.get("confidence")
+        if confidence is None:
+            confidence_mult = 1.0
+        else:
+            confidence_mult = CONFIDENCE_FLOOR + (1.0 - CONFIDENCE_FLOOR) * confidence
+
+        row["_temporal_score"] = rrf * recency * access * confidence_mult
 
     rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
     return rows
@@ -1751,20 +1889,26 @@ async def _handle_get(args: dict) -> list[TextContent]:
     result = q.limit(1).execute()
 
     if not result.data:
-        return [TextContent(type="text", text=f"Memory '{mem_name}' not found (project={project or 'global'}).")]
+        return [
+            TextContent(
+                type="text", text=f"Memory '{mem_name}' not found (project={project or 'global'})."
+            )
+        ]
 
     mem = result.data[0]
     tags_str = f"\nTags: {', '.join(mem.get('tags', []))}" if mem.get("tags") else ""
-    return [TextContent(
-        type="text",
-        text=(
-            f"## {mem['name']}\n"
-            f"Type: {mem['type']} | Project: {mem.get('project') or 'global'}{tags_str}\n"
-            f"Created: {mem.get('created_at')} | Updated: {mem.get('updated_at')}\n"
-            f"Description: {mem.get('description', '')}\n\n"
-            f"{mem['content']}"
-        ),
-    )]
+    return [
+        TextContent(
+            type="text",
+            text=(
+                f"## {mem['name']}\n"
+                f"Type: {mem['type']} | Project: {mem.get('project') or 'global'}{tags_str}\n"
+                f"Created: {mem.get('created_at')} | Updated: {mem.get('updated_at')}\n"
+                f"Description: {mem.get('description', '')}\n\n"
+                f"{mem['content']}"
+            ),
+        )
+    ]
 
 
 async def _handle_list(args: dict) -> list[TextContent]:
@@ -1775,7 +1919,11 @@ async def _handle_list(args: dict) -> list[TextContent]:
         project = None
     mem_type = args.get("type")
 
-    q = client.table("memories").select("name, type, project, description, updated_at").is_("deleted_at", "null")
+    q = (
+        client.table("memories")
+        .select("name, type, project, description, updated_at")
+        .is_("deleted_at", "null")
+    )
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1797,7 +1945,11 @@ async def _handle_list(args: dict) -> list[TextContent]:
         desc = f" — {mem['description']}" if mem.get("description") else ""
         lines.append(f"- **{mem['name']}** ({proj}){desc}")
 
-    return [TextContent(type="text", text=f"## All Memories ({len(result.data)} total)\n" + "\n".join(lines))]
+    return [
+        TextContent(
+            type="text", text=f"## All Memories ({len(result.data)} total)\n" + "\n".join(lines)
+        )
+    ]
 
 
 async def _handle_delete(args: dict) -> list[TextContent]:
@@ -1808,7 +1960,12 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     if project == "global":
         project = None  # normalize "global" → NULL, same as in _handle_store
 
-    q = client.table("memories").update({"deleted_at": datetime.now(timezone.utc).isoformat()}).eq("name", mem_name).is_("deleted_at", "null")
+    q = (
+        client.table("memories")
+        .update({"deleted_at": datetime.now(timezone.utc).isoformat()})
+        .eq("name", mem_name)
+        .is_("deleted_at", "null")
+    )
     if project is not None:
         q = q.eq("project", project)
     else:
@@ -1817,8 +1974,15 @@ async def _handle_delete(args: dict) -> list[TextContent]:
     result = q.execute()
 
     if result.data:
-        _audit_log(client, "memory_delete", "soft_delete", mem_name, {"project": project or "global"})
-        return [TextContent(type="text", text=f"Soft-deleted memory '{mem_name}' (project={project or 'global'}). Recoverable for 30 days via memory_restore.")]
+        _audit_log(
+            client, "memory_delete", "soft_delete", mem_name, {"project": project or "global"}
+        )
+        return [
+            TextContent(
+                type="text",
+                text=f"Soft-deleted memory '{mem_name}' (project={project or 'global'}). Recoverable for 30 days via memory_restore.",
+            )
+        ]
     return [TextContent(type="text", text=f"Memory '{mem_name}' not found.")]
 
 
@@ -1830,7 +1994,12 @@ async def _handle_restore(args: dict) -> list[TextContent]:
     if project == "global":
         project = None
 
-    q = client.table("memories").update({"deleted_at": None}).eq("name", mem_name).not_.is_("deleted_at", "null")
+    q = (
+        client.table("memories")
+        .update({"deleted_at": None})
+        .eq("name", mem_name)
+        .not_.is_("deleted_at", "null")
+    )
     if project is not None:
         q = q.eq("project", project)
     else:
@@ -1840,7 +2009,11 @@ async def _handle_restore(args: dict) -> list[TextContent]:
 
     if result.data:
         _audit_log(client, "memory_restore", "restore", mem_name, {"project": project or "global"})
-        return [TextContent(type="text", text=f"Restored memory '{mem_name}' (project={project or 'global'}).")]
+        return [
+            TextContent(
+                type="text", text=f"Restored memory '{mem_name}' (project={project or 'global'})."
+            )
+        ]
     return [TextContent(type="text", text=f"No soft-deleted memory '{mem_name}' found.")]
 
 
@@ -1874,7 +2047,11 @@ async def _graph_overview(client) -> list[TextContent]:
     total = len(link_data)
 
     if total == 0:
-        return [TextContent(type="text", text="No memory links found. Store more memories to build the graph.")]
+        return [
+            TextContent(
+                type="text", text="No memory links found. Store more memories to build the graph."
+            )
+        ]
 
     type_stats: dict[str, list[float]] = {}
     for row in link_data:
@@ -1886,7 +2063,9 @@ async def _graph_overview(client) -> list[TextContent]:
     lines.append("|------|-------|-------------|-----|-----|")
     for lt, strengths in sorted(type_stats.items()):
         avg = sum(strengths) / len(strengths)
-        lines.append(f"| {lt} | {len(strengths)} | {avg:.3f} | {min(strengths):.3f} | {max(strengths):.3f} |")
+        lines.append(
+            f"| {lt} | {len(strengths)} | {avg:.3f} | {min(strengths):.3f} | {max(strengths):.3f} |"
+        )
 
     # 2. Top connected memories
     links_src = client.table("memory_links").select("source_id").execute()
@@ -1902,7 +2081,13 @@ async def _graph_overview(client) -> list[TextContent]:
     top_ids = sorted(counts.keys(), key=lambda k: counts[k], reverse=True)[:10]
     if top_ids:
         # Fetch names for top IDs
-        names_result = client.table("memories").select("id, name, type, project").in_("id", top_ids).is_("deleted_at", "null").execute()
+        names_result = (
+            client.table("memories")
+            .select("id, name, type, project")
+            .in_("id", top_ids)
+            .is_("deleted_at", "null")
+            .execute()
+        )
         id_to_mem = {r["id"]: r for r in (names_result.data or [])}
 
         lines.append(f"\n### Top Connected ({len(top_ids)})\n")
@@ -1916,13 +2101,27 @@ async def _graph_overview(client) -> list[TextContent]:
             lines.append(f"| {name} | {mtype} | {proj} | {counts[mid]} |")
 
     # 3. Orphans (have embedding, no links)
-    total_with_emb = client.table("memories").select("id", count="exact").not_.is_("embedding", "null").is_("deleted_at", "null").execute()
+    total_with_emb = (
+        client.table("memories")
+        .select("id", count="exact")
+        .not_.is_("embedding", "null")
+        .is_("deleted_at", "null")
+        .execute()
+    )
     total_emb_count = total_with_emb.count or 0
     linked_ids = set(counts.keys())
-    all_emb = client.table("memories").select("id, name, type, project").not_.is_("embedding", "null").is_("deleted_at", "null").execute()
+    all_emb = (
+        client.table("memories")
+        .select("id, name, type, project")
+        .not_.is_("embedding", "null")
+        .is_("deleted_at", "null")
+        .execute()
+    )
     orphans = [r for r in (all_emb.data or []) if r["id"] not in linked_ids]
 
-    lines.append(f"\n### Orphans ({len(orphans)} of {total_emb_count} embedded memories have no links)\n")
+    lines.append(
+        f"\n### Orphans ({len(orphans)} of {total_emb_count} embedded memories have no links)\n"
+    )
     if orphans:
         for o in orphans[:15]:
             proj = o.get("project") or "global"
@@ -1936,7 +2135,13 @@ async def _graph_overview(client) -> list[TextContent]:
 async def _graph_links(client, name: str) -> list[TextContent]:
     """All connections for a specific memory."""
     # Find memory by name
-    mem_result = client.table("memories").select("id, name, type, project").eq("name", name).is_("deleted_at", "null").execute()
+    mem_result = (
+        client.table("memories")
+        .select("id, name, type, project")
+        .eq("name", name)
+        .is_("deleted_at", "null")
+        .execute()
+    )
     if not mem_result.data:
         return [TextContent(type="text", text=f"Memory '{name}' not found.")]
 
@@ -1970,7 +2175,13 @@ async def _graph_links(client, name: str) -> list[TextContent]:
     all_ids = [r["target_id"] for r in out_links] + [r["source_id"] for r in in_links]
     id_to_name = {}
     if all_ids:
-        names = client.table("memories").select("id, name, type, project").in_("id", all_ids).is_("deleted_at", "null").execute()
+        names = (
+            client.table("memories")
+            .select("id, name, type, project")
+            .in_("id", all_ids)
+            .is_("deleted_at", "null")
+            .execute()
+        )
         id_to_name = {r["id"]: r for r in (names.data or [])}
 
     # Format outgoing
@@ -2048,7 +2259,13 @@ async def _graph_clusters(client) -> list[TextContent]:
     all_ids = list(set().union(*clusters)) if clusters else []
     id_to_mem = {}
     if all_ids:
-        mems = client.table("memories").select("id, name, type, project").in_("id", all_ids).is_("deleted_at", "null").execute()
+        mems = (
+            client.table("memories")
+            .select("id, name, type, project")
+            .in_("id", all_ids)
+            .is_("deleted_at", "null")
+            .execute()
+        )
         id_to_mem = {r["id"]: r for r in (mems.data or [])}
 
     lines = [f"## Memory Clusters ({len(clusters)} clusters, strength >= 0.7)\n"]
@@ -2079,6 +2296,7 @@ async def _graph_clusters(client) -> list[TextContent]:
 
 # -- Event handlers ---------------------------------------------------------
 
+
 async def _handle_events_list(args: dict) -> list[TextContent]:
     client = _get_client()
 
@@ -2104,7 +2322,9 @@ async def _handle_events_list(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text="No events found.")]
 
     # Sort by severity (critical first), then by time
-    events = sorted(result.data, key=lambda e: (SEVERITY_ORDER.get(e["severity"], 4), e["created_at"]))
+    events = sorted(
+        result.data, key=lambda e: (SEVERITY_ORDER.get(e["severity"], 4), e["created_at"])
+    )
 
     lines = [f"# Events ({len(events)})\n"]
     for ev in events:
@@ -2142,16 +2362,25 @@ async def _handle_events_mark_processed(args: dict) -> list[TextContent]:
 
     updated = 0
     for eid in event_ids:
-        result = client.table("events").update({
-            "processed": True,
-            "processed_at": now,
-            "processed_by": processed_by,
-            "action_taken": action_taken,
-        }).eq("id", eid).execute()
+        result = (
+            client.table("events")
+            .update(
+                {
+                    "processed": True,
+                    "processed_at": now,
+                    "processed_by": processed_by,
+                    "action_taken": action_taken,
+                }
+            )
+            .eq("id", eid)
+            .execute()
+        )
         if result.data:
             updated += 1
 
-    return [TextContent(type="text", text=f"Marked {updated}/{len(event_ids)} events as processed.")]
+    return [
+        TextContent(type="text", text=f"Marked {updated}/{len(event_ids)} events as processed.")
+    ]
 
 
 # -- Outcome tracking handlers (Pillar 3) ------------------------------------
@@ -2168,8 +2397,15 @@ async def _handle_outcome_record(args: dict) -> list[TextContent]:
     }
     # Optional fields
     for key in (
-        "outcome_summary", "goal_slug", "project", "issue_url", "pr_url",
-        "tests_passed", "pr_merged", "quality_score", "lessons",
+        "outcome_summary",
+        "goal_slug",
+        "project",
+        "issue_url",
+        "pr_url",
+        "tests_passed",
+        "pr_merged",
+        "quality_score",
+        "lessons",
     ):
         if key in args and args[key] is not None:
             row[key] = args[key]
@@ -2190,8 +2426,13 @@ async def _handle_outcome_update(args: dict) -> list[TextContent]:
 
     updates: dict = {}
     for key in (
-        "outcome_status", "outcome_summary", "pr_merged", "tests_passed",
-        "quality_score", "lessons", "pattern_tags",
+        "outcome_status",
+        "outcome_summary",
+        "pr_merged",
+        "tests_passed",
+        "quality_score",
+        "lessons",
+        "pattern_tags",
     ):
         if key in args and args[key] is not None:
             updates[key] = args[key]
@@ -2219,9 +2460,11 @@ async def _handle_outcome_list(args: dict) -> list[TextContent]:
 
     query = (
         client.table("task_outcomes")
-        .select("id, task_type, task_description, outcome_status, outcome_summary, "
-                "goal_slug, project, pr_url, tests_passed, pr_merged, quality_score, "
-                "lessons, pattern_tags, created_at, verified_at")
+        .select(
+            "id, task_type, task_description, outcome_status, outcome_summary, "
+            "goal_slug, project, pr_url, tests_passed, pr_merged, quality_score, "
+            "lessons, pattern_tags, created_at, verified_at"
+        )
         .order("created_at", desc=True)
         .limit(limit)
     )
@@ -2242,12 +2485,14 @@ async def _handle_outcome_list(args: dict) -> list[TextContent]:
 
     lines = [f"# Task Outcomes ({len(result.data)})\n"]
     for o in result.data:
-        status_icon = {"success": "+", "partial": "~", "failure": "-", "pending": "?", "unknown": "."}.get(
-            o["outcome_status"], "?"
-        )
-        lines.append(
-            f"[{status_icon}] {o['task_type']}: {o['task_description']}"
-        )
+        status_icon = {
+            "success": "+",
+            "partial": "~",
+            "failure": "-",
+            "pending": "?",
+            "unknown": ".",
+        }.get(o["outcome_status"], "?")
+        lines.append(f"[{status_icon}] {o['task_type']}: {o['task_description']}")
         if o.get("outcome_summary"):
             lines.append(f"    {o['outcome_summary']}")
         if o.get("goal_slug"):
@@ -2268,7 +2513,9 @@ async def _handle_credential_list(args: dict) -> list[TextContent]:
     client = _get_client()
     query = (
         client.table("credential_registry")
-        .select("service, env_var, stored_in, scope, expires_at, last_rotated_at, rotation_notes, notes")
+        .select(
+            "service, env_var, stored_in, scope, expires_at, last_rotated_at, rotation_notes, notes"
+        )
         .order("service")
     )
     if args.get("scope"):
@@ -2281,7 +2528,9 @@ async def _handle_credential_list(args: dict) -> list[TextContent]:
     lines = [f"# Credential Registry ({len(result.data)} entries)\n"]
     for c in result.data:
         expiry = f" | Expires: {c['expires_at'][:10]}" if c.get("expires_at") else ""
-        rotated = f" | Last rotated: {c['last_rotated_at'][:10]}" if c.get("last_rotated_at") else ""
+        rotated = (
+            f" | Last rotated: {c['last_rotated_at'][:10]}" if c.get("last_rotated_at") else ""
+        )
         lines.append(f"**{c['service']}** — `{c['env_var']}`")
         lines.append(f"  Stored in: {c['stored_in']} | Scope: {c['scope']}{expiry}{rotated}")
         if c.get("rotation_notes"):
@@ -2307,13 +2556,13 @@ async def _handle_credential_add(args: dict) -> list[TextContent]:
         if args.get(key):
             row[key] = args[key]
 
-    result = (
-        client.table("credential_registry")
-        .upsert(row, on_conflict="env_var")
-        .execute()
-    )
+    result = client.table("credential_registry").upsert(row, on_conflict="env_var").execute()
     if result.data:
-        return [TextContent(type="text", text=f"Credential registered: {args['service']} ({args['env_var']})")]
+        return [
+            TextContent(
+                type="text", text=f"Credential registered: {args['service']} ({args['env_var']})"
+            )
+        ]
     return [TextContent(type="text", text="Failed to register credential.")]
 
 
@@ -2324,6 +2573,7 @@ async def _handle_credential_check_expiry(args: dict) -> list[TextContent]:
 
     # Calculate the cutoff date
     from datetime import timedelta
+
     cutoff = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
     result = (
@@ -2352,6 +2602,7 @@ async def _handle_credential_check_expiry(args: dict) -> list[TextContent]:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 async def main():
     async with stdio_server() as (read_stream, write_stream):
