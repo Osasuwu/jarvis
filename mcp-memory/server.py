@@ -858,6 +858,63 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="record_decision",
+            description=(
+                "Record a decision made by the agent as a 'decision_made' episode. "
+                "Captures decision text, rationale, memory/outcome IDs that informed it, "
+                "predicted confidence (0.0-1.0), alternatives, and reversibility. "
+                "Feeds the reasoning-trace for later /reflect analysis (#252)."
+            ),
+            inputSchema={
+                "type": "object",
+                "required": ["decision", "rationale", "reversibility"],
+                "properties": {
+                    "decision": {
+                        "type": "string",
+                        "description": "Short statement of what was decided.",
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "One-paragraph why — the basis for the choice.",
+                    },
+                    "memories_used": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Memory IDs that informed this decision (from recall).",
+                    },
+                    "outcomes_referenced": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "task_outcomes IDs that informed this decision.",
+                    },
+                    "confidence": {
+                        "type": "number",
+                        "minimum": 0.0,
+                        "maximum": 1.0,
+                        "description": "Predicted confidence the decision is correct (0.0-1.0).",
+                    },
+                    "alternatives_considered": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Options rejected and briefly why.",
+                    },
+                    "reversibility": {
+                        "type": "string",
+                        "enum": ["reversible", "hard", "irreversible"],
+                        "description": "How easily this decision can be undone.",
+                    },
+                    "actor": {
+                        "type": ["string", "null"],
+                        "description": "Source of the decision (e.g. 'skill:delegate', 'session:<id>'). Defaults to 'skill:unknown'.",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Optional project scope for the decision payload.",
+                    },
+                },
+            },
+        ),
         # ---- Graph tools ----
         Tool(
             name="memory_graph",
@@ -1010,6 +1067,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
         # Outcome tracking tools (Pillar 3)
         elif name == "outcome_record":
             return await _handle_outcome_record(arguments)
+        elif name == "record_decision":
+            return await _handle_record_decision(arguments)
         elif name == "outcome_update":
             return await _handle_outcome_update(arguments)
         elif name == "outcome_list":
@@ -3104,3 +3163,64 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+async def _handle_record_decision(args: dict) -> list[TextContent]:
+    """Insert a 'decision_made' episode with structured payload (#252).
+
+    The episode is the agent's reasoning trace: what was decided, why,
+    which memories/outcomes informed it, predicted confidence, and
+    reversibility. /reflect reads these back via the episodes table to
+    analyze whether the basis was sound when outcomes come in.
+    """
+    decision = (args.get("decision") or "").strip()
+    rationale = (args.get("rationale") or "").strip()
+    reversibility = args.get("reversibility")
+
+    if not decision:
+        return [TextContent(type="text", text="Error: decision is required")]
+    if not rationale:
+        return [TextContent(type="text", text="Error: rationale is required")]
+    if reversibility not in ("reversible", "hard", "irreversible"):
+        return [TextContent(
+            type="text",
+            text="Error: reversibility must be one of reversible|hard|irreversible",
+        )]
+
+    confidence = args.get("confidence")
+    if confidence is not None:
+        try:
+            confidence = float(confidence)
+        except (TypeError, ValueError):
+            return [TextContent(type="text", text="Error: confidence must be a number")]
+        if not (0.0 <= confidence <= 1.0):
+            return [TextContent(type="text", text="Error: confidence must be in [0.0, 1.0]")]
+
+    actor = args.get("actor") or "skill:unknown"
+
+    payload = {
+        "decision": decision,
+        "rationale": rationale,
+        "memories_used": args.get("memories_used") or [],
+        "outcomes_referenced": args.get("outcomes_referenced") or [],
+        "alternatives_considered": args.get("alternatives_considered") or [],
+        "reversibility": reversibility,
+    }
+    if confidence is not None:
+        payload["confidence"] = confidence
+    if args.get("project"):
+        payload["project"] = args["project"]
+
+    client = _get_client()
+    try:
+        result = client.table("episodes").insert({
+            "actor": actor,
+            "kind": "decision_made",
+            "payload": payload,
+        }).execute()
+    except Exception as exc:
+        return [TextContent(type="text", text=f"Error recording decision: {exc}")]
+
+    if result.data:
+        eid = result.data[0].get("id", "?")
+        return [TextContent(type="text", text=f"Decision recorded: episode {eid}")]
+    return [TextContent(type="text", text="Failed to record decision.")]

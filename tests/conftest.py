@@ -2,7 +2,9 @@
 
 server.py imports `mcp`, `supabase`, `httpx`, and `dotenv` at module
 level. Stubbing them here lets all tests in this directory import
-`server` without installing the full MCP SDK.
+`server` without installing the full MCP SDK — historically each test
+file duplicated this setup, which drifted and broke when new server
+helpers needed testing (see #254 rework).
 """
 
 from __future__ import annotations

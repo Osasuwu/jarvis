@@ -861,7 +861,7 @@ create table if not exists episodes (
 
   -- Shape of the payload. Extractor may prompt differently per kind.
   kind text not null
-    check (kind in ('tool_call', 'decision', 'user_message', 'assistant_message', 'observation')),
+    check (kind in ('tool_call', 'decision', 'user_message', 'assistant_message', 'observation', 'decision_made')),
 
   -- Arbitrary structured content. Schema is intentionally loose — episodes
   -- are raw material, not normalized facts.
