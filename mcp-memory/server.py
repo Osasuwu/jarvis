@@ -1289,6 +1289,10 @@ async def _handle_store(args: dict) -> list[TextContent]:
         except Exception:
             pass  # auto-linking is best-effort, never blocks store
 
+        # Resolve known unknowns: if stored memory matches any open unknown > 0.7 similarity,
+        # mark as resolved (fire-and-forget, best-effort)
+        asyncio.create_task(_resolve_known_unknowns(client, embedding, stored_id))
+
     return [TextContent(type="text", text=msg)]
 
 
@@ -1387,6 +1391,16 @@ async def _hybrid_recall(
         formatted = _format_memories(merged)
         search_type = "hybrid+temporal" if keyword_rows else "semantic+temporal"
         text = f"Found {len(merged)} memories ({search_type} search):\n\n" + "\n---\n".join(formatted)
+
+        # Track known unknowns: if top similarity < 0.45, log as a potential gap
+        # (best-effort, non-blocking)
+        if not show_history and merged:
+            top_sim = merged[0].get("similarity", 0.0)
+            if top_sim < 0.45:
+                top_mem_id = merged[0].get("id")
+                asyncio.create_task(_upsert_known_unknown(
+                    client, query_text, query_embedding, top_sim, top_mem_id, context={"project": project}
+                ))
 
         # Optional: expand with 1-hop linked memories
         if include_links:
@@ -1860,6 +1874,104 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
 
     rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
     return rows
+
+
+def _cosine_sim(v1: list[float] | None, v2: list[float] | None) -> float:
+    """Cosine similarity between two embedding vectors. Returns 0.0 if either
+    is None/empty or if lengths differ (dim mismatch would otherwise silently
+    truncate via zip — important during embedding-model migrations)."""
+    if v1 is None or v2 is None or len(v1) == 0 or len(v2) == 0:
+        return 0.0
+    if len(v1) != len(v2):
+        return 0.0
+    dot = sum(a * b for a, b in zip(v1, v2))
+    mag1 = math.sqrt(sum(a * a for a in v1))
+    mag2 = math.sqrt(sum(b * b for b in v2))
+    if mag1 == 0 or mag2 == 0:
+        return 0.0
+    return dot / (mag1 * mag2)
+
+
+async def _upsert_known_unknown(
+    client, query: str, query_embedding: list[float] | None,
+    top_similarity: float, top_memory_id: str | None, context: dict | None = None
+) -> None:
+    """Insert or update a known unknown, with semantic dedup.
+
+    Semantic dedup: if an open known_unknown exists with cosine sim > 0.9
+    on query_embedding, increment hit_count instead of inserting.
+    Best-effort; never raises.
+    """
+    # Schema declares query_embedding vector(512). If PRIMARY model produces
+    # a different dim (e.g. voyage-3 = 1024), store without embedding rather
+    # than letting the insert fail and get swallowed by the best-effort catch.
+    if query_embedding and len(query_embedding) != 512:
+        query_embedding = None
+
+    try:
+        if not query_embedding:
+            # Fallback: upsert without embedding — select hit_count so the
+            # increment reflects the stored value (not the default).
+            existing = client.table("known_unknowns").select("id, hit_count").eq("query", query).eq("status", "open").limit(1).execute()
+            if existing.data:
+                row = existing.data[0]
+                client.table("known_unknowns").update({
+                    "hit_count": row.get("hit_count", 1) + 1,
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", row["id"]).execute()
+            else:
+                client.table("known_unknowns").insert({
+                    "query": query,
+                    "query_embedding": None,
+                    "top_similarity": top_similarity,
+                    "top_memory_id": top_memory_id,
+                    "context": context,
+                }).execute()
+            return
+
+        # Semantic dedup: fetch open unknowns and check sim > 0.9.
+        # Include hit_count in the select so the increment is correct.
+        open_unknowns = client.table("known_unknowns").select("id, query_embedding, hit_count").eq("status", "open").execute()
+        for row in open_unknowns.data or []:
+            stored_embedding = row.get("query_embedding")
+            if stored_embedding and _cosine_sim(query_embedding, stored_embedding) > 0.9:
+                # Semantic match: increment hit_count
+                client.table("known_unknowns").update({
+                    "hit_count": row.get("hit_count", 1) + 1,
+                    "last_seen_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", row["id"]).execute()
+                return
+
+        # No match: insert new row
+        client.table("known_unknowns").insert({
+            "query": query,
+            "query_embedding": query_embedding,
+            "top_similarity": top_similarity,
+            "top_memory_id": top_memory_id,
+            "context": context,
+        }).execute()
+    except Exception:
+        pass  # best-effort, never block recall on failure
+
+
+async def _resolve_known_unknowns(client, memory_embedding: list[float], memory_id: str) -> None:
+    """Scan open known_unknowns; mark as resolved if cosine(new_embedding, query_embedding) > 0.7.
+
+    Best-effort; never raises.
+    """
+    try:
+        open_unknowns = client.table("known_unknowns").select("id, query_embedding").eq("status", "open").execute()
+        now = datetime.now(timezone.utc).isoformat()
+        for row in open_unknowns.data or []:
+            stored_embedding = row.get("query_embedding")
+            if stored_embedding and _cosine_sim(memory_embedding, stored_embedding) > 0.7:
+                client.table("known_unknowns").update({
+                    "status": "resolved",
+                    "resolved_at": now,
+                    "resolved_by_memory_id": memory_id,
+                }).eq("id", row["id"]).execute()
+    except Exception:
+        pass  # best-effort, never block store on failure
 
 
 async def _handle_get(args: dict) -> list[TextContent]:
