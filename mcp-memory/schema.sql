@@ -1879,3 +1879,83 @@ begin
     );
 end;
 $$;
+
+-- =========================================================================
+-- Phase 5.3: Dual-embedding read-path for voyage model migration readiness
+-- =========================================================================
+
+-- Support for secondary embedding model (e.g., voyage-3 migration)
+-- New column: embedding_v2 vector(1024) — nullable, lazy-indexed
+alter table memories add column if not exists embedding_v2 vector(1024);
+
+-- Partial HNSW index on embedding_v2 — only index rows with values
+-- This avoids index overhead when embedding_v2 is sparse
+create index if not exists idx_memories_embedding_v2_hnsw
+  on memories using hnsw (embedding_v2 vector_cosine_ops)
+  where embedding_v2 is not null
+  with (m = 16, ef_construction = 64);
+
+-- Dual-embedding read-path RPC for model-aware similarity search
+-- Queries the appropriate embedding column based on model_filter
+-- Used during embedding model migrations to support mixed-model corpus
+-- Mirrors match_memories API: same lifecycle filtering, show_history support
+drop function if exists match_memories_v2(vector, text, int, float, text, text, boolean);
+create or replace function match_memories_v2(
+    query_embedding vector,
+    model_filter text default 'voyage-3-lite',
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    similarity float, embedding_model text
+)
+language sql stable as $$
+    -- If model_filter suggests voyage-3 (secondary), query embedding_v2 if available
+    -- Otherwise fall back to the original embedding column (voyage-3-lite primary)
+    select
+        m.id, m.name, m.type, m.project,
+        m.description, m.content, m.tags,
+        m.updated_at, m.content_updated_at, m.last_accessed_at,
+        case
+            when model_filter in ('voyage-3', 'voyage-3-large') and m.embedding_v2 is not null
+            then 1 - (m.embedding_v2 <=> query_embedding)
+            else 1 - (m.embedding <=> query_embedding)
+        end as similarity,
+        case
+            when model_filter in ('voyage-3', 'voyage-3-large') and m.embedding_v2 is not null
+            then model_filter
+            else m.embedding_model
+        end as embedding_model
+    from memories m
+    where
+        case
+            when model_filter in ('voyage-3', 'voyage-3-large') and m.embedding_v2 is not null
+            then m.embedding_v2 is not null
+            else m.embedding is not null
+        end
+        and case
+            when model_filter in ('voyage-3', 'voyage-3-large') and m.embedding_v2 is not null
+            then 1 - (m.embedding_v2 <=> query_embedding) >= similarity_threshold
+            else 1 - (m.embedding <=> query_embedding) >= similarity_threshold
+        end
+        and (filter_project is null or m.project = filter_project or m.project is null)
+        and (filter_type is null or m.type = filter_type)
+        and (show_history
+             or (m.expired_at is null
+                 and m.superseded_by is null
+                 and (m.valid_to is null or m.valid_to > now())))
+    order by
+        case
+            when model_filter in ('voyage-3', 'voyage-3-large') and m.embedding_v2 is not null
+            then m.embedding_v2 <=> query_embedding
+            else m.embedding <=> query_embedding
+        end
+    limit match_limit;
+$$;

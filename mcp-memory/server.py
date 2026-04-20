@@ -128,9 +128,15 @@ VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 30.0  # seconds
 
+# Phase 5.3: Dual-embedding migration readiness
+EMBEDDING_MODEL_PRIMARY = os.getenv("EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+EMBEDDING_MODEL_SECONDARY = os.getenv("EMBEDDING_MODEL_SECONDARY")  # None if unset
 
-async def _embed(text: str, input_type: str = "document") -> list[float] | None:
+
+async def _embed(text: str, input_type: str = "document", model: str | None = None) -> list[float] | None:
     """Call Voyage AI REST API asynchronously. Retries up to 3x on 429."""
+    if model is None:
+        model = VOYAGE_MODEL
     api_key = os.environ.get("VOYAGE_API_KEY")
     if not api_key:
         return None
@@ -140,7 +146,7 @@ async def _embed(text: str, input_type: str = "document") -> list[float] | None:
                 resp = await client.post(
                     VOYAGE_API_URL,
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json={"model": VOYAGE_MODEL, "input": [text], "input_type": input_type},
+                    json={"model": model, "input": [text], "input_type": input_type},
                 )
                 resp.raise_for_status()
                 return resp.json()["data"][0]["embedding"]
@@ -156,8 +162,10 @@ async def _embed(text: str, input_type: str = "document") -> list[float] | None:
     return None
 
 
-async def _embed_batch(texts: list[str], input_type: str = "document") -> list[list[float]] | None:
+async def _embed_batch(texts: list[str], input_type: str = "document", model: str | None = None) -> list[list[float]] | None:
     """Embed multiple texts in a single API call (up to 1000 per request)."""
+    if model is None:
+        model = VOYAGE_MODEL
     api_key = os.environ.get("VOYAGE_API_KEY")
     if not api_key or not texts:
         return None
@@ -167,7 +175,7 @@ async def _embed_batch(texts: list[str], input_type: str = "document") -> list[l
                 resp = await client.post(
                     VOYAGE_API_URL,
                     headers={"Authorization": f"Bearer {api_key}"},
-                    json={"model": VOYAGE_MODEL, "input": texts, "input_type": input_type},
+                    json={"model": model, "input": texts, "input_type": input_type},
                 )
                 resp.raise_for_status()
                 data = sorted(resp.json()["data"], key=lambda x: x["index"])
@@ -1122,7 +1130,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
     # Name and tags carry high-signal lexical cues that raw content often dilutes
     # (long narrative memories where the key topic is only in the name).
     embed_text = _canonical_embed_text(mem_name, description, tags, content)
-    embedding = await _embed(embed_text)
+    embedding = await _embed(embed_text, model=EMBEDDING_MODEL_PRIMARY)
 
     data = {
         "type": mem_type,
@@ -1137,8 +1145,14 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
     if embedding is not None:
         data["embedding"] = embedding
-        data["embedding_model"] = VOYAGE_MODEL
+        data["embedding_model"] = EMBEDDING_MODEL_PRIMARY
         data["embedding_version"] = "v2"  # Phase 2a canonical form
+
+        # Phase 5.3: Dual-write for embedding model migration readiness
+        if EMBEDDING_MODEL_SECONDARY:
+            embedding_v2 = await _embed(embed_text, model=EMBEDDING_MODEL_SECONDARY)
+            if embedding_v2 is not None:
+                data["embedding_v2"] = embedding_v2
 
     embed_note = " (with embedding)" if embedding is not None else ""
 
@@ -1267,14 +1281,26 @@ async def _hybrid_recall(
         fetch_limit = limit * 2
 
         # Server-side semantic search via pgvector HNSW
-        sem_result = client.rpc("match_memories", {
-            "query_embedding": query_embedding,
-            "match_limit": fetch_limit,
-            "similarity_threshold": SIMILARITY_THRESHOLD,
-            "filter_project": project,
-            "filter_type": mem_type,
-            "show_history": show_history,
-        }).execute()
+        # Phase 5.3: Use match_memories_v2 if secondary model is active or primary is non-default
+        if EMBEDDING_MODEL_SECONDARY or EMBEDDING_MODEL_PRIMARY != "voyage-3-lite":
+            sem_result = client.rpc("match_memories_v2", {
+                "query_embedding": query_embedding,
+                "model_filter": EMBEDDING_MODEL_PRIMARY,
+                "match_limit": fetch_limit,
+                "similarity_threshold": SIMILARITY_THRESHOLD,
+                "filter_project": project,
+                "filter_type": mem_type,
+                "show_history": show_history,
+            }).execute()
+        else:
+            sem_result = client.rpc("match_memories", {
+                "query_embedding": query_embedding,
+                "match_limit": fetch_limit,
+                "similarity_threshold": SIMILARITY_THRESHOLD,
+                "filter_project": project,
+                "filter_type": mem_type,
+                "show_history": show_history,
+            }).execute()
         semantic_rows = sem_result.data or []
 
         # Server-side keyword search via pg_trgm

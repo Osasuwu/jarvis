@@ -89,6 +89,10 @@ VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 30.0
 
+# Phase 5.3: Dual-embedding migration readiness
+EMBEDDING_MODEL_PRIMARY = os.getenv("EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+EMBEDDING_MODEL_SECONDARY = os.getenv("EMBEDDING_MODEL_SECONDARY")  # None if unset
+
 VALID_MEM_TYPES = ("user", "project", "decision", "feedback", "reference")
 
 DEFAULT_BATCH_SIZE = 20
@@ -165,7 +169,9 @@ def get_client():
 # ---------------------------------------------------------------------------
 
 
-async def _embed(text: str) -> list[float] | None:
+async def _embed(text: str, model: str | None = None) -> list[float] | None:
+    if model is None:
+        model = VOYAGE_MODEL
     api_key = os.environ.get("VOYAGE_API_KEY")
     if not api_key or not text:
         return None
@@ -174,7 +180,7 @@ async def _embed(text: str) -> list[float] | None:
             resp = await client.post(
                 VOYAGE_API_URL,
                 headers={"Authorization": f"Bearer {api_key}"},
-                json={"model": VOYAGE_MODEL, "input": [text], "input_type": "document"},
+                json={"model": model, "input": [text], "input_type": "document"},
             )
             resp.raise_for_status()
             return resp.json()["data"][0]["embedding"]
@@ -478,6 +484,7 @@ def _insert_candidate(
     candidate: Candidate,
     embedding: list[float] | None,
     source_provenance: str,
+    embedding_v2: list[float] | None = None,
 ) -> str | None:
     """Upsert-by-(project, name) for project-scoped, manual upsert for global.
     Mirrors server.py's _handle_store logic just enough to get the row in.
@@ -496,8 +503,12 @@ def _insert_candidate(
     }
     if embedding is not None:
         data["embedding"] = embedding
-        data["embedding_model"] = VOYAGE_MODEL
+        data["embedding_model"] = EMBEDDING_MODEL_PRIMARY
         data["embedding_version"] = "v2"
+
+    # Phase 5.3: Dual-write for embedding model migration readiness
+    if embedding_v2 is not None:
+        data["embedding_v2"] = embedding_v2
 
     try:
         existing = (
@@ -569,7 +580,7 @@ async def process_candidate(
     embed_text = _canonical_embed_text(
         candidate.name, candidate.description, candidate.tags, candidate.content
     )
-    embedding = await _embed(embed_text)
+    embedding = await _embed(embed_text, model=EMBEDDING_MODEL_PRIMARY)
 
     # Neighbor lookup + classifier (optional, best-effort).
     classifier_decision = None
@@ -597,7 +608,12 @@ async def process_candidate(
     if dry_run:
         return ("inserted", None)
 
-    stored_id = _insert_candidate(client, candidate, embedding, source_provenance)
+    # Phase 5.3: Compute embedding_v2 if secondary model is set
+    embedding_v2 = None
+    if EMBEDDING_MODEL_SECONDARY and embedding is not None:
+        embedding_v2 = await _embed(embed_text, model=EMBEDDING_MODEL_SECONDARY)
+
+    stored_id = _insert_candidate(client, candidate, embedding, source_provenance, embedding_v2)
     if not stored_id:
         return ("failed", None)
 
