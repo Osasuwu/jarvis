@@ -1,0 +1,620 @@
+{
+  "timestamp": "2026-04-20T04:27:07.623568+00:00",
+  "corpus_size": 312,
+  "total_queries": 20,
+  "plain_recall_at_5": 0.9,
+  "context_recall_at_5": 0.65,
+  "delta_recall_at_5_pp": -25.0,
+  "plain_recall_at_10": 0.9,
+  "context_recall_at_10": 0.7,
+  "delta_recall_at_10_pp": -20.000000000000007,
+  "plain_mrr": 0.6391666666666667,
+  "context_mrr": 0.4454166666666667,
+  "delta_mrr": -0.19374999999999998,
+  "plain_must_not_violations": 0,
+  "context_must_not_violations": 0,
+  "only_plain_passed": [
+    "q01",
+    "q02",
+    "q05",
+    "q14",
+    "q16"
+  ],
+  "only_context_passed": [],
+  "context_budget": {
+    "chars": 6333,
+    "tokens_approx": 1583,
+    "item_count": 11,
+    "user": 2,
+    "always_load": 0,
+    "goals": 9
+  },
+  "per_query": [
+    {
+      "id": "q01",
+      "query": "VoyageAI rate limits tier paid",
+      "plain_top_names": [
+        "phase3_rewriter_type_narrowing_regression",
+        "goals_system_first_real_goals",
+        "feedback_voyage"
+      ],
+      "context_top_names": [
+        "goals_system_first_real_goals"
+      ],
+      "plain_hits_at_5": [
+        "feedback_voyage"
+      ],
+      "context_hits_at_5": [],
+      "plain_first_hit_rank": 3,
+      "context_first_hit_rank": null,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": false
+    },
+    {
+      "id": "q02",
+      "query": "Claude Max subscription tokens",
+      "plain_top_names": [
+        "jarvis_event_driven_architecture",
+        "scheduled_tasks_subscription_not_api",
+        "team_agent_v2_plan_complete",
+        "claudemd_consolidation_2026_04_08",
+        "claude_max_upgrade"
+      ],
+      "context_top_names": [
+        "team_agent_v2_plan_complete",
+        "scheduled_tasks_subscription_not_api",
+        "jarvis_event_driven_architecture",
+        "claudemd_consolidation_2026_04_08",
+        "like_spotify_tech_profile"
+      ],
+      "plain_hits_at_5": [
+        "claude_max_upgrade"
+      ],
+      "context_hits_at_5": [],
+      "plain_first_hit_rank": 5,
+      "context_first_hit_rank": null,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": false
+    },
+    {
+      "id": "q03",
+      "query": "TDD сначала пишем тест который падает",
+      "plain_top_names": [
+        "bug_fix_reproduce_first",
+        "sand_direction_top_down",
+        "deficit_first_pipeline_architecture",
+        "university_student_cse8012",
+        "read_code_before_implementing"
+      ],
+      "context_top_names": [
+        "bug_fix_reproduce_first",
+        "sand_direction_top_down",
+        "deficit_first_pipeline_architecture",
+        "university_student_cse8012",
+        "read_code_before_implementing"
+      ],
+      "plain_hits_at_5": [
+        "bug_fix_reproduce_first"
+      ],
+      "context_hits_at_5": [
+        "bug_fix_reproduce_first"
+      ],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 1,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q04",
+      "query": "always commit and push",
+      "plain_top_names": [
+        "always_commit_and_push",
+        "review_auto_fix_workflow",
+        "dedup_hook_live_test_should_block",
+        "owner_profile",
+        "no_hardcoded_context_in_claude_md"
+      ],
+      "context_top_names": [
+        "always_commit_and_push",
+        "dedup_hook_live_test_should_block",
+        "no_hardcoded_context_in_claude_md",
+        "jarvis_public_release_v020",
+        "jarvis_v2_hybrid_agile"
+      ],
+      "plain_hits_at_5": [
+        "always_commit_and_push"
+      ],
+      "context_hits_at_5": [
+        "always_commit_and_push"
+      ],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 1,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q05",
+      "query": "act as senior engineer not executor",
+      "plain_top_names": [
+        "be_the_manager",
+        "instructions_overhaul_2026_04_01",
+        "milestone_structure_v2",
+        "dnd_dm_role",
+        "architecture_final"
+      ],
+      "context_top_names": [
+        "milestone_structure_v2",
+        "dnd_dm_role",
+        "architecture_final",
+        "sand_physics_architecture_2026_04_06",
+        "github_schema_restructured"
+      ],
+      "plain_hits_at_5": [
+        "be_the_manager"
+      ],
+      "context_hits_at_5": [],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": null,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": false
+    },
+    {
+      "id": "q06",
+      "query": "Jarvis architecture direction v2",
+      "plain_top_names": [
+        "jarvis_v2_multiagent_architecture",
+        "jarvis_v2_multiagent_direction",
+        "jarvis_v2_vision",
+        "jarvis_wrapping_direction",
+        "jarvis_v2_hybrid_agile"
+      ],
+      "context_top_names": [
+        "jarvis_v2_vision",
+        "jarvis_v2_multiagent_architecture",
+        "jarvis_v2_multiagent_direction",
+        "jarvis_wrapping_direction",
+        "jarvis_v2_hybrid_agile"
+      ],
+      "plain_hits_at_5": [
+        "jarvis_v2_multiagent_direction",
+        "jarvis_wrapping_direction"
+      ],
+      "context_hits_at_5": [
+        "jarvis_v2_multiagent_direction",
+        "jarvis_wrapping_direction"
+      ],
+      "plain_first_hit_rank": 2,
+      "context_first_hit_rank": 3,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q07",
+      "query": "autonomous loop design",
+      "plain_top_names": [
+        "no_deterministic_pipelines",
+        "autonomous_loop_hygiene_sweep_v1",
+        "local_scheduled_tasks_only",
+        "jarvis_v15_skill_restructure",
+        "autonomous_loop_v1_architecture"
+      ],
+      "context_top_names": [
+        "autonomous_fixing_mode",
+        "no_deterministic_pipelines",
+        "autonomous_long_sessions",
+        "pm_autonomy_redrobot",
+        "autonomous_loop_hygiene_sweep_v1"
+      ],
+      "plain_hits_at_5": [
+        "autonomous_loop_hygiene_sweep_v1",
+        "autonomous_loop_v1_architecture"
+      ],
+      "context_hits_at_5": [
+        "autonomous_loop_hygiene_sweep_v1"
+      ],
+      "plain_first_hit_rank": 2,
+      "context_first_hit_rank": 5,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q08",
+      "query": "memory server improvements pgvector",
+      "plain_top_names": [
+        "memory_server_v2_improvements",
+        "postgres_function_signature_migration",
+        "pg_generated_cols_null_in_before_update",
+        "supabase_custom_mcp_preferred",
+        "phase_2c_provenance_approach"
+      ],
+      "context_top_names": [
+        "memory_server_v2_improvements",
+        "postgres_function_signature_migration",
+        "pg_generated_cols_null_in_before_update",
+        "supabase_custom_mcp_preferred",
+        "phase_2c_provenance_approach"
+      ],
+      "plain_hits_at_5": [
+        "memory_server_v2_improvements"
+      ],
+      "context_hits_at_5": [
+        "memory_server_v2_improvements"
+      ],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 1,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q09",
+      "query": "delegating to subagents best practices",
+      "plain_top_names": [
+        "lessons_agent_delegation",
+        "delegate_frontend_to_subagents",
+        "delegation_parallel_worktree_scope_leak",
+        "prefer_agents_for_parallel_bugs",
+        "agent_delegation_precision"
+      ],
+      "context_top_names": [
+        "lessons_agent_delegation",
+        "delegate_frontend_to_subagents",
+        "delegation_parallel_worktree_scope_leak",
+        "prefer_agents_for_parallel_bugs",
+        "agent_delegation_precision"
+      ],
+      "plain_hits_at_5": [
+        "lessons_agent_delegation",
+        "delegate_frontend_to_subagents",
+        "agent_delegation_precision"
+      ],
+      "context_hits_at_5": [
+        "lessons_agent_delegation",
+        "delegate_frontend_to_subagents",
+        "agent_delegation_precision"
+      ],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 1,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q10",
+      "query": "Claude Code native capabilities MCP hooks skills",
+      "plain_top_names": [
+        "owner_prefers_mcp_over_skills",
+        "checkpoint_skill_architecture",
+        "mcp_stack_2026_03_31",
+        "claude_code_capabilities",
+        "jarvis_wrapping_direction"
+      ],
+      "context_top_names": [
+        "owner_prefers_mcp_over_skills",
+        "checkpoint_skill_architecture",
+        "mcp_stack_2026_03_31",
+        "claude_code_capabilities",
+        "jarvis_wrapping_direction"
+      ],
+      "plain_hits_at_5": [
+        "claude_code_capabilities"
+      ],
+      "context_hits_at_5": [
+        "claude_code_capabilities"
+      ],
+      "plain_first_hit_rank": 4,
+      "context_first_hit_rank": 4,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q11",
+      "query": "recall memory before acting",
+      "plain_top_names": [
+        "verify_agent_findings_against_memory",
+        "always_recall_before_action",
+        "memory_roadmap_stealable_ideas_2026_04_20",
+        "phase3_rewriter_type_narrowing_regression",
+        "nightly_research_sql_fallback"
+      ],
+      "context_top_names": [
+        "always_recall_before_action",
+        "verify_agent_findings_against_memory",
+        "nightly_research_sql_fallback",
+        "linked_dedup_fix",
+        "check_diagnostics_diversity"
+      ],
+      "plain_hits_at_5": [
+        "always_recall_before_action"
+      ],
+      "context_hits_at_5": [
+        "always_recall_before_action"
+      ],
+      "plain_first_hit_rank": 2,
+      "context_first_hit_rank": 1,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q12",
+      "query": "не галлюцинируй скриншоты",
+      "plain_top_names": [
+        "sprint_sizing_feedback",
+        "hygiene_sweep_proposals_redrobot_2026_04_17",
+        "pillar_is_not_one_task",
+        "dont_hallucinate_screenshots",
+        "sand_direction_top_down"
+      ],
+      "context_top_names": [
+        "sprint_sizing_feedback",
+        "hygiene_sweep_proposals_redrobot_2026_04_17",
+        "pillar_is_not_one_task",
+        "dont_hallucinate_screenshots",
+        "sand_direction_top_down"
+      ],
+      "plain_hits_at_5": [
+        "dont_hallucinate_screenshots"
+      ],
+      "context_hits_at_5": [
+        "dont_hallucinate_screenshots"
+      ],
+      "plain_first_hit_rank": 4,
+      "context_first_hit_rank": 4,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q13",
+      "query": "autonomous mode keep going don't stop",
+      "plain_top_names": [
+        "autonomous_fixing_mode",
+        "autonomous_long_sessions",
+        "move_curve_caution",
+        "pm_autonomy_redrobot",
+        "nn_optimization_roadmap"
+      ],
+      "context_top_names": [
+        "autonomous_fixing_mode",
+        "autonomous_long_sessions",
+        "move_curve_caution",
+        "pm_autonomy_redrobot",
+        "nn_optimization_roadmap"
+      ],
+      "plain_hits_at_5": [
+        "autonomous_fixing_mode",
+        "autonomous_long_sessions"
+      ],
+      "context_hits_at_5": [
+        "autonomous_fixing_mode",
+        "autonomous_long_sessions"
+      ],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 1,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q14",
+      "query": "check diagnostics for value diversity",
+      "plain_top_names": [
+        "check_diagnostics_diversity",
+        "llm_json_invariant_normalization",
+        "pipeline_verification_mandatory",
+        "autonomous_loop_last_run",
+        "bug_analysis_575_576_577"
+      ],
+      "context_top_names": [
+        "llm_json_invariant_normalization",
+        "pipeline_verification_mandatory",
+        "autonomous_loop_last_run",
+        "bug_analysis_575_576_577",
+        "event_dispatch_spam_fix"
+      ],
+      "plain_hits_at_5": [
+        "check_diagnostics_diversity"
+      ],
+      "context_hits_at_5": [],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": null,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": false
+    },
+    {
+      "id": "q15",
+      "query": "multi-agent frameworks landscape comparison",
+      "plain_top_names": [
+        "team_ai_agent_project_initiated",
+        "jarvis_v2_multiagent_architecture",
+        "jarvis_scalable_agent_system",
+        "competitive_landscape_multi_agent_2026",
+        "managed_agents_wait_and_see"
+      ],
+      "context_top_names": [
+        "team_ai_agent_project_initiated",
+        "jarvis_v2_multiagent_architecture",
+        "jarvis_scalable_agent_system",
+        "competitive_landscape_multi_agent_2026",
+        "managed_agents_wait_and_see"
+      ],
+      "plain_hits_at_5": [
+        "competitive_landscape_multi_agent_2026"
+      ],
+      "context_hits_at_5": [
+        "competitive_landscape_multi_agent_2026"
+      ],
+      "plain_first_hit_rank": 4,
+      "context_first_hit_rank": 4,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q16",
+      "query": "Telegram Claude integration channels",
+      "plain_top_names": [
+        "claude_code_channels",
+        "telegram_mcp_integration",
+        "lessons_cloud_infrastructure",
+        "lesson_cloud_mcp_limitations",
+        "nightly_research_setup"
+      ],
+      "context_top_names": [
+        "telegram_mcp_integration",
+        "lessons_cloud_infrastructure",
+        "lesson_cloud_mcp_limitations",
+        "nightly_research_setup",
+        "workshop_server_setup_paused_team_decision"
+      ],
+      "plain_hits_at_5": [
+        "claude_code_channels"
+      ],
+      "context_hits_at_5": [],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 8,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": false
+    },
+    {
+      "id": "q17",
+      "query": "DnD dungeon master hobby",
+      "plain_top_names": [
+        "research_threejs_heightmap_visualization",
+        "skill_proliferation_antipattern",
+        "nightly_research_sql_fallback",
+        "research_skill_firecrawl_v2",
+        "sculpture_vision_system"
+      ],
+      "context_top_names": [
+        "research_threejs_heightmap_visualization",
+        "skill_proliferation_antipattern",
+        "nightly_research_sql_fallback",
+        "sculpture_vision_system",
+        "research_skill_firecrawl_v2"
+      ],
+      "plain_hits_at_5": [],
+      "context_hits_at_5": [],
+      "plain_first_hit_rank": null,
+      "context_first_hit_rank": null,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": false,
+      "context_passed": false
+    },
+    {
+      "id": "q18",
+      "query": "planning process Jarvis agile or goals",
+      "plain_top_names": [
+        "jarvis_v2_hybrid_agile",
+        "jarvis_v2_vision",
+        "no_deterministic_pipelines",
+        "redrobot_agile_full_migration",
+        "goals_system_v1"
+      ],
+      "context_top_names": [
+        "redrobot_agile_full_migration",
+        "jarvis_v2_hybrid_agile",
+        "no_deterministic_pipelines",
+        "jarvis_v2_vision",
+        "jarvis_v2_multiagent_direction"
+      ],
+      "plain_hits_at_5": [
+        "jarvis_v2_hybrid_agile"
+      ],
+      "context_hits_at_5": [
+        "jarvis_v2_hybrid_agile"
+      ],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 2,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    },
+    {
+      "id": "q19",
+      "query": "как Jarvis планирует работу сейчас",
+      "plain_top_names": [
+        "jarvis_wrapping_direction",
+        "jarvis_v2_vision",
+        "multiagent_pm_architecture_vision",
+        "jarvis_v15_skill_final_plan",
+        "jarvis_public_release_v020"
+      ],
+      "context_top_names": [
+        "jarvis_wrapping_direction",
+        "jarvis_v2_vision",
+        "multiagent_pm_architecture_vision",
+        "jarvis_v15_skill_final_plan",
+        "jarvis_public_release_v020"
+      ],
+      "plain_hits_at_5": [],
+      "context_hits_at_5": [],
+      "plain_first_hit_rank": null,
+      "context_first_hit_rank": null,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": false,
+      "context_passed": false
+    },
+    {
+      "id": "q20",
+      "query": "cloud scheduled tasks remote MCP",
+      "plain_top_names": [
+        "local_scheduled_tasks_only",
+        "lesson_cloud_mcp_limitations",
+        "memory_roadmap_stealable_ideas_2026_04_20",
+        "supabase_custom_mcp_preferred",
+        "event_driven_perception_v1"
+      ],
+      "context_top_names": [
+        "local_scheduled_tasks_only",
+        "supabase_custom_mcp_preferred",
+        "event_driven_perception_v1",
+        "mcp_stack_2026_03_31",
+        "multiagent_pm_architecture_vision"
+      ],
+      "plain_hits_at_5": [
+        "local_scheduled_tasks_only",
+        "lesson_cloud_mcp_limitations"
+      ],
+      "context_hits_at_5": [
+        "local_scheduled_tasks_only"
+      ],
+      "plain_first_hit_rank": 1,
+      "context_first_hit_rank": 1,
+      "plain_must_not_viol": [],
+      "context_must_not_viol": [],
+      "plain_passed": true,
+      "context_passed": true
+    }
+  ]
+}
