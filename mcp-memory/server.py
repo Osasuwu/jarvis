@@ -231,6 +231,11 @@ TEMPORAL_HALF_LIVES = {
 DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
+# Phase 1 polish (#240): entrenchment multiplier (ACT-R / Gärdenfors). Folds
+# memories.confidence into temporal score so low-confidence rows rank lower
+# without a hard cutoff. final *= FLOOR + (1 - FLOOR) * confidence.
+# NULL confidence → treated as 1.0 (no regression for legacy rows).
+CONFIDENCE_FLOOR = 0.5
 LINK_SIM_THRESHOLD = 0.60
 # Phase 2b: classifier replaces the bare similarity gate. We still keep a
 # threshold, but it now decides *when to ask the classifier*, not whether to
@@ -1293,6 +1298,9 @@ async def _hybrid_recall(
         if not merged:
             return [], await _keyword_recall(client, query_text, project, mem_type, limit)
 
+        # Phase 1 polish (#240): match_memories RPC doesn't project confidence.
+        # Enrich merged rows before scoring so entrenchment multiplier has data.
+        _enrich_with_confidence(client, merged)
         _apply_temporal_scoring(merged)
 
         formatted = _format_memories(merged)
@@ -1697,6 +1705,27 @@ async def _expand_with_links(
         return []
 
 
+def _enrich_with_confidence(client, rows: list[dict]) -> None:
+    """Backfill `confidence` on rows that came from match_memories (which doesn't
+    project it). Batched SELECT keeps this cheap. Best-effort: on error we leave
+    rows untouched and scoring falls back to the NULL→1.0 branch.
+
+    Phase 1 polish (#240).
+    """
+    ids = [r["id"] for r in rows if r.get("id") and "confidence" not in r]
+    if not ids:
+        return
+    try:
+        result = client.table("memories").select("id, confidence").in_("id", ids).execute()
+    except Exception:
+        return
+    conf_map = {r["id"]: r.get("confidence") for r in (result.data or [])}
+    for row in rows:
+        rid = row.get("id")
+        if rid in conf_map and "confidence" not in row:
+            row["confidence"] = conf_map[rid]
+
+
 def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
     """Re-rank rows by combining RRF score with temporal decay and access frequency."""
     now = datetime.now(timezone.utc)
@@ -1728,7 +1757,21 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
         # Access frequency boost (1..1+ACCESS_BOOST_MAX)
         access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
 
-        row["_temporal_score"] = rrf * recency * access
+        # Entrenchment multiplier (Phase 1 polish #240). NULL confidence treated
+        # as 1.0 so legacy rows don't regress; FLOOR ensures confidence=0 only
+        # halves the score rather than zeroing it.
+        confidence_raw = row.get("confidence")
+        if confidence_raw is None:
+            conf = 1.0
+        else:
+            try:
+                conf = float(confidence_raw)
+            except (TypeError, ValueError):
+                conf = 1.0
+        conf = max(0.0, min(1.0, conf))
+        entrenchment = CONFIDENCE_FLOOR + (1.0 - CONFIDENCE_FLOOR) * conf
+
+        row["_temporal_score"] = rrf * recency * access * entrenchment
 
     rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
     return rows

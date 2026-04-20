@@ -251,6 +251,49 @@ class TestTemporalScoring:
         scores = [r["_temporal_score"] for r in result]
         assert scores == sorted(scores, reverse=True)
 
+    # -- #240: confidence entrenchment multiplier ---------------------------
+
+    def test_confidence_high_outranks_low(self):
+        """Higher-confidence row ranks above lower-confidence at equal age/RRF."""
+        high = self._make_row(days_ago=5, rrf=0.5)
+        high["id"] = "high"
+        high["confidence"] = 1.0
+        low = self._make_row(days_ago=5, rrf=0.5)
+        low["id"] = "low"
+        low["confidence"] = 0.5
+        result = _apply_temporal_scoring([low, high])
+        assert result[0]["id"] == "high"
+        # score(conf=1.0) / score(conf=0.5) = 1.0 / 0.75 exactly.
+        ratio = result[0]["_temporal_score"] / result[1]["_temporal_score"]
+        assert abs(ratio - (1.0 / 0.75)) < 1e-9
+
+    def test_confidence_null_treated_as_1(self):
+        """Legacy rows (no confidence) score same as confidence=1.0 (no regression)."""
+        null_row = self._make_row(days_ago=5, rrf=0.5)
+        null_row["id"] = "null"
+        full_row = self._make_row(days_ago=5, rrf=0.5)
+        full_row["id"] = "full"
+        full_row["confidence"] = 1.0
+        result = _apply_temporal_scoring([null_row, full_row])
+        s_null = next(r["_temporal_score"] for r in result if r["id"] == "null")
+        s_full = next(r["_temporal_score"] for r in result if r["id"] == "full")
+        assert abs(s_null - s_full) < 1e-9
+
+    def test_confidence_zero_gets_floor(self):
+        """confidence=0 → score = CONFIDENCE_FLOOR * score(confidence=1.0) (soft floor)."""
+        from server import CONFIDENCE_FLOOR
+
+        zero = self._make_row(days_ago=5, rrf=0.5)
+        zero["id"] = "zero"
+        zero["confidence"] = 0.0
+        full = self._make_row(days_ago=5, rrf=0.5)
+        full["id"] = "full"
+        full["confidence"] = 1.0
+        result = _apply_temporal_scoring([zero, full])
+        s_zero = next(r["_temporal_score"] for r in result if r["id"] == "zero")
+        s_full = next(r["_temporal_score"] for r in result if r["id"] == "full")
+        assert abs(s_zero / s_full - CONFIDENCE_FLOOR) < 1e-9
+
 
 # ---------------------------------------------------------------------------
 # _format_memories
