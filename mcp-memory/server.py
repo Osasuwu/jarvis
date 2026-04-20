@@ -1665,7 +1665,9 @@ async def _hybrid_recall(
         merged = _rrf_merge(semantic_rows, keyword_rows, limit)
 
         if not merged:
-            return [], await _keyword_recall(client, query_text, project, mem_type, limit)
+            return [], await _keyword_recall(
+                client, query_text, project, mem_type, limit, brief
+            )
 
         # Phase 1 polish (#240): match_memories RPC doesn't project confidence.
         # Enrich merged rows before scoring so entrenchment multiplier has data.
@@ -1762,7 +1764,9 @@ async def _hybrid_recall(
         raise
     except Exception:
         # RPC not available (e.g. migration not applied) — fall back to keyword
-        return [], await _keyword_recall(client, query_text, project, mem_type, limit)
+        return [], await _keyword_recall(
+            client, query_text, project, mem_type, limit, brief
+        )
 
 
 def _rrf_merge(
@@ -1798,12 +1802,18 @@ def _rrf_merge(
 async def _keyword_recall(
     client, query_text: str, project, mem_type, limit: int, brief: bool = False
 ) -> list[TextContent]:
-    """ILIKE keyword search (fallback when semantic unavailable)."""
-    q = (
-        client.table("memories")
-        .select("name, type, project, description, content, tags, updated_at")
-        .is_("deleted_at", "null")
+    """ILIKE keyword search (fallback when semantic unavailable).
+
+    In brief mode we skip the `content` column — it's never rendered and
+    would bloat the fallback payload, which is hit precisely when the fast
+    path failed and we're already on a slower code path.
+    """
+    cols = (
+        "name, type, project, description, tags, updated_at"
+        if brief
+        else "name, type, project, description, content, tags, updated_at"
     )
+    q = client.table("memories").select(cols).is_("deleted_at", "null")
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1882,17 +1892,27 @@ def _format_memories(
                 link_str += f" ({mem['link_strength']:.2f})"
         proj = mem.get("project") or "global"
         if brief:
-            # Score provenance: rrf > similarity > rank. Only one field is set
-            # on any given row (see _rrf_merge / _keyword_recall).
+            # `_temporal_score` (set by _apply_temporal_scoring) is the actual
+            # sort key after rrf × recency × access × entrenchment. Show it
+            # first so the displayed value matches the displayed order.
+            # Retrieval provenance (rrf/sim/rank) follows as secondary signal
+            # — useful for debugging why a row surfaced at all.
+            temporal = mem.get("_temporal_score")
             rrf = mem.get("_rrf_score")
             sim = mem.get("similarity")
             rank = mem.get("rank")
+            base_parts = []
             if rrf is not None:
-                score_str = f" (rrf {rrf:.3f})"
+                base_parts.append(f"rrf {rrf:.3f}")
             elif isinstance(sim, (int, float)):
-                score_str = f" (sim {sim:.2f})"
+                base_parts.append(f"sim {sim:.2f}")
             elif isinstance(rank, (int, float)):
-                score_str = f" (rank {rank:.2f})"
+                base_parts.append(f"rank {rank:.2f}")
+            if isinstance(temporal, (int, float)):
+                lead = f"score {temporal:.3f}"
+                score_str = f" ({lead}; {base_parts[0]})" if base_parts else f" ({lead})"
+            elif base_parts:
+                score_str = f" ({base_parts[0]})"
             else:
                 score_str = ""
             desc = (mem.get("description") or "").strip()

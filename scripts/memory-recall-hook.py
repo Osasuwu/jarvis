@@ -320,11 +320,13 @@ def _score_str(m: dict) -> str:
 def format_memory_brief(m: dict) -> str:
     """One-line preview for bulk auto-injection (Phase 7.2).
 
-    Format: `- name [type/project] [tags] (score): description`. Matches the
-    session-start catalog layout (scripts/session-context.py::_fmt_catalog_entry)
-    but adds the per-query score so the agent can distinguish hybrid-ranked
-    hits from the recency-sorted inventory. No content body — agent pulls
-    via memory_get on anything that looks worth reading.
+    Format: `- name [type/project] [tags] (score): description`. Similar in
+    spirit to the session-start catalog layout
+    (scripts/session-context.py::_fmt_catalog_entry) — this hook block adds
+    the per-query score so the agent can distinguish hybrid-ranked hits
+    from the recency-sorted inventory, and always emits an explicit
+    `type/project` scope (the catalog omits project for the current one).
+    No content body — agent pulls via memory_get on anything worth reading.
     """
     tags = m.get("tags") or []
     tags_str = f" [{', '.join(tags)}]" if tags else ""
