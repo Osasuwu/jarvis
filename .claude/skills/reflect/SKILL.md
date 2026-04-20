@@ -73,6 +73,21 @@ For each resolved decision, upsert with appended `## Outcome`:
 - **What actually happened:** <one sentence>
 ```
 
+## Step 5.5 — Calibration check (#251)
+
+After outcomes are verified, check memory calibration:
+
+```
+mcp__memory__memory_calibration_summary(project="jarvis")
+```
+
+Renders per-type Brier score (mean squared error of `confidence - actual_outcome`). For each type with `n >= 20`, flag:
+- `brier > 0.25` AND `avg_predicted > avg_actual` → **overconfident** (confidence in these memories exceeds their track record)
+- `brier > 0.25` AND `avg_predicted < avg_actual` → **underconfident**
+- `n < 20` → warning (insufficient data, skip calibration-based action)
+
+Surface flagged types in Step 9 output under "Calibration". Poor-calibration types become ideation seeds for `/self-improve` — the root cause is usually a specific pattern (e.g. "my `decision` memories in jarvis are overconfident when they rely on research memories without owner confirmation").
+
 ## Step 6 — Extract lessons + patterns
 
 For each resolved decision and outcome, ask: *what's the generalizable lesson?*
@@ -144,4 +159,7 @@ memory_store(
 
 ### Stale Project Memories (N)
 - <name> (last updated <date>)
+
+### Calibration (flagged types only)
+- **<type>**: Brier <score>, n=<n>, <overconfident|underconfident> (avg_predicted=<p> vs avg_actual=<a>)
 ```

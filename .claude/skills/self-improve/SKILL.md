@@ -46,6 +46,13 @@ Sources of ideas:
 - Unacted research findings
 - Missing capabilities observed in recent sessions
 - Opportunities from new Claude Code / MCP features
+- **Poor-calibration types** (`memory_calibration_summary` → types with Brier > 0.25) — systemic over/underconfidence is signal worth investigating
+
+Before ideating, pull calibration gaps as candidate seeds:
+```
+mcp__memory__memory_calibration_summary(project="jarvis")
+```
+Types flagged `overconfident` often point at a concrete pattern (e.g. "decision memories relying on unverified research") that can be fixed by a feedback rule, a hook, or a schema tweak.
 
 If no strong ideas: fall back to health check findings for code improvements.
 
