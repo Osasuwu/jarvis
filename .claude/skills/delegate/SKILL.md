@@ -59,6 +59,24 @@ git checkout master && git pull
 git checkout -b feat/<N>-<slug>
 ```
 
+### 3.5. Record decision (reasoning trace, #252)
+
+After claim, before implementation — emit a `decision_made` episode so `/reflect` can later attribute outcomes to reasoning (missing memory / wrong memory / wrong reasoning):
+
+```
+mcp__memory__record_decision(
+  decision="implement <issue title> (#<N>)",
+  rationale="<one paragraph: why this issue matters now, what approach is planned, what non-obvious choices were made at claim time>",
+  memories_used=[<ids from step 0 recall>],
+  outcomes_referenced=[],
+  confidence=<0.0-1.0>,
+  alternatives_considered=["<rejected options — e.g. 'defer to next sprint', 'merge with adjacent issue'>"],
+  reversibility="reversible"
+)
+```
+
+Always emit for issue delegation — outcome attribution needs the basis. For non-issue decisions, emit only when `reversibility ∈ {hard, irreversible}` OR `confidence < 0.7`.
+
 ### 4. Implement
 
 **Prefer implementing directly** over spawning subagents:

@@ -63,7 +63,7 @@ Classify: `merged` → accepted, `closed` → rejected, `open` → skip.
 Ask the user:
 > "Decision: **<name>** — <summary>. How did it turn out? (worked / didn't work / ongoing / skip)"
 
-## Step 5 — Update decision memory
+## Step 5 — Update decision memory + load basis
 
 For each resolved decision, upsert with appended `## Outcome`:
 ```markdown
@@ -71,7 +71,24 @@ For each resolved decision, upsert with appended `## Outcome`:
 - **Result:** merged / rejected / worked / failed
 - **Date:** YYYY-MM-DD
 - **What actually happened:** <one sentence>
+- **Decision basis:** <rationale + memories_used from matching decision_made episode, if found>
 ```
+
+**Load decision basis (#252):** before writing the outcome, query for a `decision_made` episode within ±24h of the decision's `created_at`:
+
+```sql
+SELECT id, payload FROM episodes
+WHERE kind = 'decision_made'
+  AND created_at BETWEEN (<decision_created_at> - interval '24 hours')
+                     AND (<decision_created_at> + interval '24 hours')
+ORDER BY abs(extract(epoch FROM created_at - <decision_created_at>)) ASC
+LIMIT 1;
+```
+
+If found, include `payload.rationale` and `payload.memories_used` in the outcome block. When the outcome is a failure, classify using the basis:
+- Memories listed in `memories_used` were wrong → supersede them
+- `memories_used` was empty AND top-similarity was low at decision time → known-unknown (auto-tracked via #249)
+- Basis looks sound but execution failed → not a memory problem, flag as reasoning or execution failure
 
 ## Step 5.5 — Calibration check (#251)
 
