@@ -59,9 +59,12 @@ outcome_update(
   outcome_status="<new_status>",
   pr_merged=<true/false>,
   tests_passed=<true/false>,
+  memory_id="<primary informing memory id>",   # enrich if still unset — see rule
   lessons="<brief result if any>"
 )
 ```
+
+**Enrich `memory_id` if the outcome row has it NULL**: look up the linked `decision_made` episode (same issue/PR) and pass `memory_id = payload.memories_used[0]`. Rule — primary informing memory = first entry (dominant basis). If the outcome already has `memory_id`, leave it alone; `/verify` is not where you rewrite attribution. If no decision episode references this issue, omit — the backfill script (`scripts/backfill-outcome-memories.py`) can handle historical rows in bulk.
 
 `verified_at` is set automatically when status changes from pending.
 

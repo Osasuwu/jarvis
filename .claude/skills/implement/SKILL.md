@@ -156,11 +156,14 @@ outcome_record(
   project: "<repo name>",
   issue_url: "<issue URL>",
   pr_url: "<PR URL if created>",
+  memory_id: "<primary informing memory id>",   # see rule below
   tests_passed: true/false,
   lessons: "<anything non-obvious learned>",
   pattern_tags: ["delegation", "inline", "<area>"]
 )
 ```
+
+**Rule — primary informing memory**: pass `memory_id = memories_used[0]` from the `record_decision` call at §3.5 (first element is the dominant basis). If `memories_used` was empty, omit `memory_id`. Never pass multiple — the FK is a single UUID and `memory_calibration` joins on one memory per outcome; richer attribution belongs at the view layer, not the row.
 
 **Always record**, even on failure — failed outcomes are the most valuable for learning.
 
