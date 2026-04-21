@@ -66,6 +66,14 @@ This gives the post-compact Claude immediate access to the structured
 artefacts the LLM-summary smoothed over. Purely additive — the existing
 working-state re-injection keeps working.
 
+Settings.json caveat: the existing SessionStart hook was a single
+`&&`-chained shell command (`device-info && cat SOUL && session-context`).
+Claude Code pipes hook-input JSON to each subprocess's stdin, but in a
+shell chain only the first process in the pipeline reliably receives
+that stdin — subsequent commands see EOF. Phase 2 splits the `hooks`
+array into two entries (prelude + `session-context.py`) so each gets
+hook-input stdin from Claude Code directly. Output order is preserved.
+
 ### Phase 3 — /end reads from Supabase (issue #280)
 
 Rework `.claude/skills/end/SKILL.md` so the primary source of truth for
