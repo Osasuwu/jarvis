@@ -162,7 +162,8 @@ Ten skills. Use them — don't reinvent with raw tools.
 
 | Situation | Skill | Trigger |
 |-----------|-------|---------|
-| Implement a GitHub issue | **/delegate** | Owner says "реализуй", "implement", "#42" — or Jarvis decides to implement. **Always** use /delegate, never raw Agent for issue work |
+| Implement a single GitHub issue inline | **/implement** | Owner says "реализуй #42", "сделай #42", "implement #X" — Jarvis does it in the current session |
+| Dispatch multiple issues to parallel subagents | **/delegate** | Owner says "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй …". Jarvis spawns coding subagents, reviews each diff, decides merge. Jarvis's judgment on subagent fitness overrides the owner's "параллельно" — keep context-heavy tasks inline |
 | Verify task outcomes | **/verify** | "проверь результаты", "verify outcomes", or scheduled after delegations. Checks PR merge, tests, updates outcome records |
 | Review decisions + learn | **/reflect** | "что сработало", "reflect", "уроки". Reviews decisions, checks outcomes, extracts lessons, updates hypotheses |
 | End of session | **/end** | Owner says "end", "закончим", "конец сессии". Full: behavioral reflection + decisions + commit (~5 min) |
@@ -174,7 +175,8 @@ Ten skills. Use them — don't reinvent with raw tools.
 | Sprint report + release | **/sprint-report** | End of sprint in redrobot. "отчёт по спринту", "sprint report", "релиз спринта". Generates release notes + draft report for Sergazy |
 
 **Rules:**
-- GitHub issue implementation → /delegate. No exceptions. Raw Agent loses PR structure, issue linking, verification
+- GitHub issue implementation → /implement (single) or /delegate (multiple, parallel subagents). No exceptions. Raw Agent loses PR structure, issue linking, verification
+- Single task → always /implement. Multiple tasks → /delegate **with Jarvis's own judgment on what to delegate vs keep inline** (see /delegate skill "When to" section). Owner explicitly trusts Jarvis to make this call — don't delegate a task to a subagent if it will struggle (needs session context, cross-cutting reasoning, safety review)
 - If unsure whether a skill fits → use it. The overhead of an unnecessary skill call is near zero; the cost of skipping is lost structure
 - Skills can be scheduled: /research and /self-improve are designed for autonomous runs
 

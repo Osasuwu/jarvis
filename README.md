@@ -65,7 +65,7 @@ Supabase DB
 | Component | Description |
 |-----------|-------------|
 | **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI) + keyword fallback |
-| **7 skills** | `/status`, `/delegate`, `/research`, `/self-improve`, `/goals`, `/end`, `/end-quick` |
+| **8 skills** | `/status`, `/implement`, `/delegate`, `/research`, `/self-improve`, `/goals`, `/end`, `/end-quick` |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
 | **Delegation pipeline** | Issue -> branch -> coding agent -> PR, with verification |
@@ -76,7 +76,8 @@ Supabase DB
 | Skill | Trigger | What it does |
 |-------|---------|-------------|
 | `/status` | Session start, "what's happening" | Project dashboard: git, PRs, issues, CI, risks, goals |
-| `/delegate` | "implement #42", "delegate" | Full issue-to-PR pipeline via coding subagent |
+| `/implement` | "реализуй #42", "implement #X" | Issue → branch → inline implementation → PR (main session does the work) |
+| `/delegate` | "делегируй #X #Y", "раскидай на агентов" | Multiple issues → parallel coding subagents, orchestrator reviews each diff + decides merge |
 | `/research` | "research X", "compare A vs B" | Web research with source validation |
 | `/self-improve` | "improve yourself" | Gap analysis -> ideation -> research -> implementation |
 | `/goals` | "goals", "priorities" | View, set, update strategic goals in Supabase |
