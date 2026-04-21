@@ -5,6 +5,7 @@ Covers Memory 2.0 core: temporal scoring, RRF merge, formatting, auto-linking.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -1069,7 +1070,12 @@ class TestDualEmbedWrite:
 # Known unknowns — retrieval gaps + unsatisfied queries (#249)
 # =========================================================================
 
-from server import _cosine_sim, _upsert_known_unknown, _resolve_known_unknowns
+from server import (
+    _cosine_sim,
+    _parse_pgvector,
+    _upsert_known_unknown,
+    _resolve_known_unknowns,
+)
 
 
 class TestCosineSim:
@@ -1104,6 +1110,49 @@ class TestCosineSim:
         # Dim mismatch must not silently truncate via zip — returns 0.0.
         assert _cosine_sim([1.0, 0.0, 0.0], [1.0, 0.0]) == 0.0
         assert _cosine_sim([1.0] * 512, [1.0] * 1024) == 0.0
+
+
+class TestParsePgvector:
+    """supabase-py returns pgvector columns as JSON strings, not lists.
+
+    Regression guard for the known-unknowns dedup/resolution bug where raw
+    string embeddings hit the `_cosine_sim` length-mismatch guard and
+    silently scored 0.
+    """
+
+    def test_list_passes_through(self):
+        v = [0.1, 0.2, 0.3]
+        assert _parse_pgvector(v) is v
+
+    def test_none_returns_none(self):
+        assert _parse_pgvector(None) is None
+
+    def test_json_string_parses_to_list(self):
+        parsed = _parse_pgvector("[0.1, 0.2, 0.3]")
+        assert parsed == [0.1, 0.2, 0.3]
+
+    def test_malformed_string_returns_none(self):
+        assert _parse_pgvector("not-json") is None
+        assert _parse_pgvector("[0.1, 0.2,") is None
+
+    def test_non_list_json_returns_none(self):
+        # A valid JSON number or object is not a vector — reject.
+        assert _parse_pgvector("42") is None
+        assert _parse_pgvector('{"x": 1}') is None
+
+    def test_unsupported_type_returns_none(self):
+        assert _parse_pgvector(42) is None  # type: ignore[arg-type]
+
+    def test_string_embedding_yields_nonzero_similarity(self):
+        """Core regression: feed a JSON-string embedding through the parser,
+        then _cosine_sim against an identical list must score ~1.0. Before
+        the fix, len("[0.1,...]") != len([0.1,...]) → guard returned 0.0."""
+        vec = [0.1] * 512
+        stored_as_string = json.dumps(vec)  # what supabase-py actually returns
+        parsed = _parse_pgvector(stored_as_string)
+        assert parsed is not None
+        assert len(parsed) == 512
+        assert _cosine_sim(vec, parsed) == pytest.approx(1.0)
 
 
 class TestKnownUnknowns:

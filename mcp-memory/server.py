@@ -1440,7 +1440,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     .execute()
                 )
                 for gap in open_gaps.data or []:
-                    gap_emb = gap.get("query_embedding")
+                    gap_emb = _parse_pgvector(gap.get("query_embedding"))
                     if gap_emb and embedding and _cosine_sim(embedding, gap_emb) > 0.7:
                         client.table("known_unknowns").update(
                             {
@@ -1465,6 +1465,27 @@ SIMILARITY_THRESHOLD = 0.25  # minimum cosine similarity to include in results
 
 GAP_THRESHOLD = 0.45  # known-unknowns: log gaps when top_similarity < this
 GAP_DEDUP_SIM = 0.9
+
+
+def _parse_pgvector(v: list[float] | str | None) -> list[float] | None:
+    """Normalize a pgvector value returned by supabase-py.
+
+    PostgREST returns vector columns as JSON-encoded strings
+    (e.g. ``"[0.1,0.2,...]"``), not Python lists. Callers that pass the raw
+    value into `_cosine_sim` hit the len-mismatch guard and silently score 0.
+    Return a float list, or None if the value is missing / unparseable.
+    """
+    if v is None:
+        return None
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, list) else None
+    return None
 
 
 def _cosine_sim(a: list[float], b: list[float]) -> float:
@@ -1532,7 +1553,7 @@ def _upsert_known_unknown(
         best_match = None
         best_sim = GAP_DEDUP_SIM
         for gap in open_gaps.data or []:
-            gap_emb = gap.get("query_embedding")
+            gap_emb = _parse_pgvector(gap.get("query_embedding"))
             if gap_emb:
                 sim = _cosine_sim(query_embedding, gap_emb)
                 if sim > best_sim:
@@ -2384,7 +2405,7 @@ async def _upsert_known_unknown(
         # Include hit_count in the select so the increment is correct.
         open_unknowns = client.table("known_unknowns").select("id, query_embedding, hit_count").eq("status", "open").execute()
         for row in open_unknowns.data or []:
-            stored_embedding = row.get("query_embedding")
+            stored_embedding = _parse_pgvector(row.get("query_embedding"))
             if stored_embedding and _cosine_sim(query_embedding, stored_embedding) > 0.9:
                 # Semantic match: increment hit_count
                 client.table("known_unknowns").update({
@@ -2414,7 +2435,7 @@ async def _resolve_known_unknowns(client, memory_embedding: list[float], memory_
         open_unknowns = client.table("known_unknowns").select("id, query_embedding").eq("status", "open").execute()
         now = datetime.now(timezone.utc).isoformat()
         for row in open_unknowns.data or []:
-            stored_embedding = row.get("query_embedding")
+            stored_embedding = _parse_pgvector(row.get("query_embedding"))
             if stored_embedding and _cosine_sim(memory_embedding, stored_embedding) > 0.7:
                 client.table("known_unknowns").update({
                     "status": "resolved",
