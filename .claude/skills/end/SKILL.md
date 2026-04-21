@@ -7,9 +7,24 @@ description: "Full session close: behavioral reflection, decision log, memory sa
 
 Closes the session with quality reflection. For quick exit, use `/end-quick`.
 
+**Mindset — survives compaction:** *Supabase is the session journal. The conversation is working memory.* The post-compact conversation is a lossy summary; the journal (pre-compact snapshot + real-time `record_decision` entries) is the authoritative record. `/end` consolidates the journal into learnings. Don't rely on scanning the conversation alone — anything older than the last summary may already be gone from your window.
+
+## Step 0 — Load the session journal (non-negotiable)
+
+Before reflecting or scanning, pull everything durable from Supabase:
+
+1. **Pre-compact snapshot** — `memory_recall(query="pre-compact session snapshot", project="jarvis", type="project", limit=5, brief=true)`. Results are live memories sorted by relevance + recency. Pick the entry whose name starts with `session_snapshot_` and whose tags include `session-snapshot` (ignore any with `test` in the name). Then `memory_get` on that name to load the full content.
+   - If no snapshot found → this session never compacted. Fine, skip. Conversation alone is enough.
+   - If the freshest snapshot looks like a *different* session's work (content references work unrelated to what you remember from the current context) → flag in Step 7 output and fall back to conversation only.
+   - Multiple compacts in one session share a single snapshot (same session_id, upserted on each compaction); the one you pick is the latest state.
+2. **Real-time decisions** — `memory_recall(query="decisions today <date>", project="jarvis", type="decision", limit=20, brief=true)` where `<date>` is today's ISO date. These should already be in place via `record_decision` calls made during the session. Step 2 will verify completeness.
+3. **Recent episodes (optional)** — if you need finer-grained provenance, `events_list` surfaces `tool_call`, `decision`, and `observation` episodes the extractor captured.
+
+Carry the snapshot + decisions into Steps 1-2 as the primary source. The conversation (post-compact) is only a hint overlay for anything that happened *after* the snapshot was written.
+
 ## Step 1 — Behavioral reflection
 
-Review your own behavior this session against feedback memories (already in context from session start):
+Review your own behavior this session against feedback memories (already in context from session start). Reflect against **snapshot + conversation union**, not conversation alone — the snapshot preserves what the LLM summary smoothed over:
 
 1. **Rule violations**: did you break any known rules? (e.g., skipped memory load, assumed instead of verified, added unrequested features, was sycophantic)
 2. **Missed context**: did you ignore goals, forget cross-project impact, miss something obvious?
@@ -22,11 +37,14 @@ If nothing notable — skip. Don't fabricate observations.
 
 ## Step 2 — Decision & knowledge scan
 
-Review the conversation for unsaved items:
-- **Decisions** made (architecture, approach, rejection of alternatives) → `decision` memory
-- **User preferences** or profile updates → `user` memory
-- **Project state** changes → `project` memory
-- **Feedback** given by owner → `feedback` memory
+Reconcile pre-existing records with anything surfaced in reflection:
+
+- **Decisions** made this session should already live in Supabase via `record_decision` (fires in real time). Go through the snapshot + conversation and check: every decision you can identify → is it in the list from Step 0?
+  - If yes → do nothing. Don't re-save.
+  - If no → save it now via `record_decision` (or `memory_store` type=decision) **and flag in Step 7 output**: "Decision X was not recorded in real time — consider why". Real-time capture is the goal; post-hoc saves are a regression.
+- **User preferences** or profile updates → `user` memory (upsert existing, don't duplicate).
+- **Project state** changes → `project` memory.
+- **Feedback** given by owner → `feedback` memory.
 
 Upsert existing memories, don't create duplicates. Check name before creating new.
 
@@ -49,7 +67,7 @@ Save `working_state_jarvis` (type=project) to Supabase. Always. Content:
 - Open items: unfinished work, things to fix, deferred tasks
 - Key context for next session (blockers, decisions pending review)
 
-This is the handoff to the next session. If open items exist in Step 5 output, they MUST be in this memory too — output is ephemeral, memory persists.
+This is the handoff to the next session. If open items exist in Step 7 output, they MUST be in this memory too — output is ephemeral, memory persists.
 
 Only exception: truly empty session (user asked one question and left).
 
@@ -103,6 +121,11 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 ```
 ## Session closed — YYYY-MM-DD
 
+### Journal source
+- Snapshot: <session_snapshot_... name + "fresh" | "stale" | "none">
+- Decisions loaded: N
+- Post-hoc decision saves: N  (0 is ideal — every decision should have been recorded in real time)
+
 ### Reflection
 - <1-3 behavioral observations, or "Clean session — no issues">
 
@@ -113,7 +136,7 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 - <hash + message, or "No commit — <reason>">
 
 ### What was done
-- <bullets>
+- <bullets — draw from snapshot where applicable, not just post-compact conversation>
 
 ### Open items
 - <unfinished work, deferred tasks, things for next session>

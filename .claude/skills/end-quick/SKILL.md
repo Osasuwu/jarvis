@@ -7,6 +7,8 @@ description: "Quick session close: checkpoint + commit only. ~30 sec. Use when o
 
 Fast exit. No reflection, no memory scan. For full close, use `/end`.
 
+**Note — compaction-safe:** end-quick skips the session-journal scan on purpose. The PreCompact hook (`scripts/pre-compact-backup.py`) already persists a pre-compact snapshot to Supabase under `session_snapshot_<session_id>` on every compaction, and `record_decision` writes decisions in real time. That's enough durable handoff. Run `/end` instead if you want reflection + decision reconciliation.
+
 ## Step 1 — Working state
 
 If there is meaningful unfinished work:
