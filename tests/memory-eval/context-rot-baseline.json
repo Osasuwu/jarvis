@@ -1,6 +1,6 @@
 {
-  "timestamp": "2026-04-20T17:57:10.655417+00:00",
-  "corpus_size": 323,
+  "timestamp": "2026-04-21T05:00:27.341062+00:00",
+  "corpus_size": 327,
   "total_queries": 20,
   "plain_recall_at_5": 0.9,
   "context_recall_at_5": 0.65,
@@ -8,9 +8,9 @@
   "plain_recall_at_10": 0.9,
   "context_recall_at_10": 0.7,
   "delta_recall_at_10_pp": -20.000000000000007,
-  "plain_mrr": 0.5891666666666666,
-  "context_mrr": 0.4197222222222222,
-  "delta_mrr": -0.1694444444444444,
+  "plain_mrr": 0.6158333333333333,
+  "context_mrr": 0.42138888888888887,
+  "delta_mrr": -0.19444444444444448,
   "plain_must_not_violations": 0,
   "context_must_not_violations": 0,
   "only_plain_passed": [
@@ -22,8 +22,8 @@
   ],
   "only_context_passed": [],
   "context_budget": {
-    "chars": 14141,
-    "tokens_approx": 3535,
+    "chars": 12913,
+    "tokens_approx": 3228,
     "item_count": 64,
     "user": 2,
     "always_load": 0,
@@ -126,7 +126,7 @@
         "dedup_hook_live_test_should_block",
         "no_hardcoded_context_in_claude_md",
         "jarvis_public_release_v020",
-        "working_state_jarvis"
+        "phase_7_release_v041_not_v050"
       ],
       "plain_hits_at_5": [
         "always_commit_and_push"
@@ -146,8 +146,8 @@
       "query": "act as senior engineer not executor",
       "plain_top_names": [
         "be_the_manager",
-        "architecture_final",
         "instructions_overhaul_2026_04_01",
+        "architecture_final",
         "milestone_structure_v2",
         "dnd_dm_role"
       ],
@@ -269,15 +269,15 @@
         "lessons_agent_delegation",
         "delegate_frontend_to_subagents",
         "delegation_parallel_worktree_scope_leak",
-        "agent_delegation_precision",
-        "prefer_agents_for_parallel_bugs"
+        "prefer_agents_for_parallel_bugs",
+        "agent_delegation_precision"
       ],
       "context_top_names": [
         "lessons_agent_delegation",
         "delegate_frontend_to_subagents",
         "delegation_parallel_worktree_scope_leak",
-        "agent_delegation_precision",
-        "prefer_agents_for_parallel_bugs"
+        "prefer_agents_for_parallel_bugs",
+        "agent_delegation_precision"
       ],
       "plain_hits_at_5": [
         "lessons_agent_delegation",
@@ -361,16 +361,16 @@
       "query": "не галлюцинируй скриншоты",
       "plain_top_names": [
         "sprint_sizing_feedback",
-        "hygiene_sweep_proposals_redrobot_2026_04_17",
         "pillar_is_not_one_task",
         "dont_hallucinate_screenshots",
+        "hygiene_sweep_proposals_redrobot_2026_04_17",
         "sand_direction_top_down"
       ],
       "context_top_names": [
         "sprint_sizing_feedback",
-        "hygiene_sweep_proposals_redrobot_2026_04_17",
         "pillar_is_not_one_task",
         "dont_hallucinate_screenshots",
+        "hygiene_sweep_proposals_redrobot_2026_04_17",
         "sand_direction_top_down"
       ],
       "plain_hits_at_5": [
@@ -379,8 +379,8 @@
       "context_hits_at_5": [
         "dont_hallucinate_screenshots"
       ],
-      "plain_first_hit_rank": 4,
-      "context_first_hit_rank": 4,
+      "plain_first_hit_rank": 3,
+      "context_first_hit_rank": 3,
       "plain_must_not_viol": [],
       "context_must_not_viol": [],
       "plain_passed": true,
@@ -422,8 +422,8 @@
       "id": "q14",
       "query": "check diagnostics for value diversity",
       "plain_top_names": [
-        "check_pr_scope_fit_at_open_time",
         "check_diagnostics_diversity",
+        "check_pr_scope_fit_at_open_time",
         "__e2e_test_provenance_bad__",
         "llm_json_invariant_normalization",
         "pipeline_verification_mandatory"
@@ -439,7 +439,7 @@
         "check_diagnostics_diversity"
       ],
       "context_hits_at_5": [],
-      "plain_first_hit_rank": 2,
+      "plain_first_hit_rank": 1,
       "context_first_hit_rank": null,
       "plain_must_not_viol": [],
       "context_must_not_viol": [],
@@ -453,15 +453,15 @@
         "jarvis_v2_multiagent_architecture",
         "team_ai_agent_project_initiated",
         "jarvis_scalable_agent_system",
-        "competitive_landscape_multi_agent_2026",
-        "managed_agents_wait_and_see"
+        "managed_agents_wait_and_see",
+        "competitive_landscape_multi_agent_2026"
       ],
       "context_top_names": [
         "jarvis_v2_multiagent_architecture",
         "team_ai_agent_project_initiated",
         "jarvis_scalable_agent_system",
-        "competitive_landscape_multi_agent_2026",
-        "managed_agents_wait_and_see"
+        "managed_agents_wait_and_see",
+        "competitive_landscape_multi_agent_2026"
       ],
       "plain_hits_at_5": [
         "competitive_landscape_multi_agent_2026"
@@ -469,8 +469,8 @@
       "context_hits_at_5": [
         "competitive_landscape_multi_agent_2026"
       ],
-      "plain_first_hit_rank": 4,
-      "context_first_hit_rank": 4,
+      "plain_first_hit_rank": 5,
+      "context_first_hit_rank": 5,
       "plain_must_not_viol": [],
       "context_must_not_viol": [],
       "plain_passed": true,
@@ -537,8 +537,8 @@
         "jarvis_v2_hybrid_agile",
         "jarvis_v2_vision",
         "no_deterministic_pipelines",
-        "goals_system_v1",
-        "redrobot_agile_full_migration"
+        "redrobot_agile_full_migration",
+        "goals_system_v1"
       ],
       "context_top_names": [
         "redrobot_agile_full_migration",
@@ -568,14 +568,14 @@
         "jarvis_v2_vision",
         "multiagent_pm_architecture_vision",
         "jarvis_v15_skill_final_plan",
-        "jarvis_public_release_v020"
+        "no_jarvis_in_team_docs"
       ],
       "context_top_names": [
         "jarvis_wrapping_direction",
         "jarvis_v2_vision",
         "multiagent_pm_architecture_vision",
         "jarvis_v15_skill_final_plan",
-        "jarvis_public_release_v020"
+        "no_jarvis_in_team_docs"
       ],
       "plain_hits_at_5": [],
       "context_hits_at_5": [],
