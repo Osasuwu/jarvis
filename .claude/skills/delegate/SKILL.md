@@ -173,6 +173,8 @@ One `outcome_record` per issue (delegated or inline). Distinguish:
 - Subagent: `pattern_tags: ["delegation", "subagent", "<area>"]`
 - Inline: `pattern_tags: ["delegation", "inline", "<area>"]`
 
+**Also pass `memory_id`** — the primary informing memory id from the per-task `record_decision` episode. Rule: `memory_id = memories_used[0]` (first = dominant basis). For batch-level inline work, use the inline task's own decision_made memories_used; for subagent work, the subagent's record_decision episode is the source. If `memories_used` was empty at decision time, omit `memory_id`.
+
 In `lessons`, note anything non-obvious: subagent misread the issue, scope drift, worktree contamination, etc. These make future delegation decisions smarter.
 
 ### 9. Post-merge cleanup
