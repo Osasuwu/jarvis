@@ -618,3 +618,202 @@ class TestExpandLinks:
         assert len(client.rpc_calls) == 1
         call_params = client.rpc_calls[0][1]
         assert call_params["memory_ids"] == [f"s{i}" for i in range(mrh.LINK_EXPAND_TOP_K)]
+
+
+# ---------------------------------------------------------------------------
+# _parse_embedding — supabase-py returns vector(N) columns as JSON strings
+# ---------------------------------------------------------------------------
+
+
+class TestParseEmbedding:
+    def test_list_passthrough(self):
+        assert mrh._parse_embedding([0.1, 0.2, 0.3]) == [0.1, 0.2, 0.3]
+
+    def test_empty_list_passthrough(self):
+        # Zero-length list flows through; cosine_sim will treat as miss.
+        assert mrh._parse_embedding([]) == []
+
+    def test_json_string_parsed_to_list(self):
+        assert mrh._parse_embedding("[0.1, 0.2, 0.3]") == [0.1, 0.2, 0.3]
+
+    def test_negative_values_in_string(self):
+        # pgvector serializes negatives without quoting — must survive json.loads.
+        assert mrh._parse_embedding("[-0.1,-0.2,0.3]") == [-0.1, -0.2, 0.3]
+
+    def test_none_returns_none(self):
+        assert mrh._parse_embedding(None) is None
+
+    def test_malformed_string_returns_none(self):
+        # Not valid JSON → None, not a crash.
+        assert mrh._parse_embedding("not a vector") is None
+
+    def test_non_list_json_returns_none(self):
+        # `{"a":1}` parses but isn't a list of floats — reject.
+        assert mrh._parse_embedding('{"a": 1}') is None
+
+    def test_unexpected_type_returns_none(self):
+        # Numbers, dicts, tuples etc. aren't pgvector payloads — None.
+        assert mrh._parse_embedding(42) is None
+        assert mrh._parse_embedding({"foo": "bar"}) is None
+
+
+# ---------------------------------------------------------------------------
+# _cosine_sim — local dup of server.py's math; same contract
+# ---------------------------------------------------------------------------
+
+
+class TestCosineSim:
+    def test_identical_vectors_similarity_one(self):
+        v = [1.0, 0.0, 0.0]
+        assert abs(mrh._cosine_sim(v, v) - 1.0) < 1e-9
+
+    def test_orthogonal_similarity_zero(self):
+        assert abs(mrh._cosine_sim([1.0, 0.0], [0.0, 1.0])) < 1e-9
+
+    def test_opposite_vectors_similarity_minus_one(self):
+        assert abs(mrh._cosine_sim([1.0, 0.0], [-1.0, 0.0]) - (-1.0)) < 1e-9
+
+    def test_dim_mismatch_returns_zero(self):
+        # Critical guard: silent truncation via zip would return a meaningless
+        # score, and dim mismatches are exactly what pre-parsed pgvector
+        # strings looked like (str vs list of floats).
+        assert mrh._cosine_sim([1.0, 0.0, 0.0], [1.0, 0.0]) == 0.0
+
+    def test_empty_inputs_return_zero(self):
+        assert mrh._cosine_sim([], [1.0]) == 0.0
+        assert mrh._cosine_sim([1.0], []) == 0.0
+        assert mrh._cosine_sim([], []) == 0.0
+
+    def test_none_inputs_return_zero(self):
+        assert mrh._cosine_sim(None, [1.0]) == 0.0
+        assert mrh._cosine_sim([1.0], None) == 0.0
+
+    def test_zero_norm_returns_zero(self):
+        # Zero-vector has undefined cosine; guard returns 0 rather than NaN.
+        assert mrh._cosine_sim([0.0, 0.0], [1.0, 0.0]) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# check_known_unknown_gate — Phase 7.3 per-prompt widen signal
+# ---------------------------------------------------------------------------
+
+
+class _TableStub:
+    """Supabase table/select-chain stand-in for check_known_unknown_gate tests.
+
+    Supports the `.table().select().eq().not_.is_().limit().execute()` chain
+    used by the gate. `data` is the rows returned; `raise_exc` bubbles through
+    any method to exercise the fail-soft path.
+    """
+    def __init__(self, *, data=None, raise_exc=None):
+        self._data = data or []
+        self._raise = raise_exc
+        self.calls: list[tuple[str, tuple]] = []
+        # `.not_` is an accessor on the query builder, not a method, so
+        # expose it as an attribute that chains back to self.
+        self.not_ = self
+
+    def table(self, name):
+        self.calls.append(("table", (name,)))
+        return self
+
+    def select(self, *cols):
+        self.calls.append(("select", cols))
+        return self
+
+    def eq(self, col, val):
+        self.calls.append(("eq", (col, val)))
+        return self
+
+    def is_(self, col, val):
+        self.calls.append(("is_", (col, val)))
+        return self
+
+    def limit(self, n):
+        self.calls.append(("limit", (n,)))
+        return self
+
+    def execute(self):
+        if self._raise:
+            raise self._raise
+        return types.SimpleNamespace(data=self._data)
+
+
+class TestCheckKnownUnknownGate:
+    def test_empty_embedding_returns_false_without_db_call(self):
+        # Short-circuit: no prompt embedding (Voyage failed) → no point
+        # scanning the table. Don't hit the DB for a guaranteed miss.
+        client = _TableStub(data=[{"query_embedding": "[1,0,0]"}])
+        assert mrh.check_known_unknown_gate(client, None) is False
+        assert client.calls == []
+
+        client2 = _TableStub()
+        assert mrh.check_known_unknown_gate(client2, []) is False
+        assert client2.calls == []
+
+    def test_no_open_unknowns_returns_false(self):
+        client = _TableStub(data=[])
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
+
+    def test_below_threshold_returns_false(self):
+        # cosine([1,0,0], [0.5, 0.866, 0]) = 0.5 — well below 0.85.
+        client = _TableStub(data=[
+            {"query_embedding": "[0.5, 0.866, 0.0]"}
+        ])
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
+
+    def test_at_threshold_triggers(self):
+        # Stored vector exactly at the threshold — must trigger (>=, not >).
+        # Cosine of identical unit vectors is 1.0 >= 0.85.
+        client = _TableStub(data=[
+            {"query_embedding": "[1.0, 0.0, 0.0]"}
+        ])
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is True
+
+    def test_above_threshold_triggers(self):
+        # Small perturbation: cosine ≈ 0.995 — widen.
+        client = _TableStub(data=[
+            {"query_embedding": "[0.99, 0.1, 0.0]"}
+        ])
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is True
+
+    def test_scans_until_hit(self):
+        # First row misses (cosine 0), second row triggers. Confirms we
+        # don't bail on the first miss.
+        client = _TableStub(data=[
+            {"query_embedding": "[0.0, 1.0, 0.0]"},  # orthogonal: miss
+            {"query_embedding": "[1.0, 0.0, 0.0]"},  # identical: hit
+        ])
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is True
+
+    def test_null_embedding_rows_skipped(self):
+        # Rows without an embedding (stored as None) don't count even
+        # though the query filters them out — defensive against schema
+        # changes or partial rows.
+        client = _TableStub(data=[
+            {"query_embedding": None},
+            {"query_embedding": "[1.0, 0.0, 0.0]"},
+        ])
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is True
+
+    def test_malformed_embedding_skipped(self):
+        # A row whose stored embedding can't be parsed is treated as a miss,
+        # not a crash — the hook must never raise.
+        client = _TableStub(data=[
+            {"query_embedding": "not a vector"},
+        ])
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
+
+    def test_db_exception_returns_false(self):
+        # Fail-soft: any Supabase error falls back to default (brief) path.
+        client = _TableStub(raise_exc=RuntimeError("connection lost"))
+        assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
+
+    def test_query_filters_open_and_nonnull(self):
+        # Sanity: verify we scoped the query correctly so the SCAN_LIMIT cap
+        # is meaningful. Without `status=open` we'd pull resolved gaps too.
+        client = _TableStub(data=[])
+        mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0])
+        # eq(status, open) and limit(SCAN_LIMIT) must both appear.
+        assert ("eq", ("status", "open")) in client.calls
+        assert ("limit", (mrh.KNOWN_UNKNOWN_SCAN_LIMIT,)) in client.calls

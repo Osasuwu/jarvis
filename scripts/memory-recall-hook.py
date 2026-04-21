@@ -27,6 +27,13 @@ reading, instead of every UserPromptSubmit paying ~40KB of full
 content. Legacy full mode still available via BRIEF_MODE=False for
 debugging.
 
+Phase 7.3: per-prompt gate on `known_unknowns`. Before emitting, we
+cosine-compare the prompt embedding against open known_unknowns (topics
+where recall has been historically weak). A match above threshold
+widens this invocation back to full-content + CHAR_BUDGET_FULL — the
+signal says "brief isn't enough for this one". Default brief path is
+untouched on a miss.
+
 Touches accessed memories via RPC so the ACT-R access-frequency boost
 applies. Semantic failure falls back to keyword-only search (still using
 rewriter-extracted entities when available); rewriter failure falls back
@@ -81,6 +88,21 @@ CHAR_BUDGET_FULL = 40_000    # ~10K tokens, ~5% of 200K window (legacy path)
 CHAR_BUDGET_BRIEF = 12_000   # ~3K tokens — ~60 brief entries at ~200 chars each
 CHAR_BUDGET = CHAR_BUDGET_BRIEF if BRIEF_MODE else CHAR_BUDGET_FULL
 FETCH_LIMIT = 50             # pull wide per signal, cap by budget in Python
+
+# Phase 7.3: known-unknowns as per-prompt gate. When the current prompt is
+# semantically close to an open known_unknown (a query that previously hit
+# a recall gap), switch OFF brief mode for this invocation — the topic has
+# historically needed more context than names + descriptions. Fail-soft: any
+# DB error returns False and the default brief path runs.
+#
+# Threshold 0.85 picks "same topic, possibly different phrasing" — calibrated
+# against the 0.9 used for known_unknowns semantic dedup in server.py so a
+# prompt that would DEDUP to an existing gap also triggers widening, but a
+# prompt that's only loosely related doesn't. SCAN_LIMIT caps the client-side
+# cosine sweep; open unknowns are bounded by Haiku's recall-gap rate and
+# rarely exceed a few hundred, so 200 is a safe cap.
+KNOWN_UNKNOWN_GATE_THRESHOLD = 0.85
+KNOWN_UNKNOWN_SCAN_LIMIT = 200
 # Types loaded per-prompt. Excluded:
 #   'user'    — loaded at session start (scripts/session-context.py top-2)
 #   'project' — dominated by working_state_* which is session-specific and
@@ -288,6 +310,80 @@ def detect_project(cwd: str) -> str | None:
     except Exception:
         return None
     return name if name in KNOWN_PROJECTS else None
+
+
+def _parse_embedding(v) -> list[float] | None:
+    """Parse a pgvector column as returned by supabase-py.
+
+    PostgREST serializes `vector(N)` as a JSON-array string like "[0.1,0.2,...]"
+    rather than a native list — silently zipping that with a real list of
+    floats (the fail mode in server.py's _cosine_sim callers) produces 0.0
+    similarity instead of an error. Parse to list[float] up front so cosine
+    math sees matching shapes.
+
+    Returns None for anything unparseable; callers treat None as "no vector"
+    and fall through to a miss.
+    """
+    if v is None:
+        return None
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str):
+        try:
+            parsed = json.loads(v)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if isinstance(parsed, list):
+            return parsed
+    return None
+
+
+def _cosine_sim(a: list[float] | None, b: list[float] | None) -> float:
+    """Cosine similarity. Returns 0.0 on any dim mismatch or missing input.
+
+    Same math as mcp-memory/server.py::_cosine_sim. Duplicated here so the
+    hook doesn't import from the MCP server (no Python package structure in
+    place yet — Phase 4+ consolidation task).
+    """
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    if na == 0 or nb == 0:
+        return 0.0
+    return dot / (na * nb)
+
+
+def check_known_unknown_gate(client, query_embedding: list[float] | None) -> bool:
+    """Phase 7.3 gate: has this prompt's topic been a recall gap before?
+
+    Scans open known_unknowns and returns True on the first row whose stored
+    query_embedding has cosine sim >= KNOWN_UNKNOWN_GATE_THRESHOLD with the
+    current prompt's embedding. Caller uses the result to switch OFF brief
+    mode and widen the char budget for this invocation.
+
+    Fail-soft — returns False on any DB/parse error so the default (brief)
+    path still runs. Never raises.
+    """
+    if not query_embedding:
+        return False
+    try:
+        result = (
+            client.table("known_unknowns")
+            .select("query_embedding")
+            .eq("status", "open")
+            .not_.is_("query_embedding", "null")
+            .limit(KNOWN_UNKNOWN_SCAN_LIMIT)
+            .execute()
+        )
+    except Exception:
+        return False
+    for row in result.data or []:
+        stored = _parse_embedding(row.get("query_embedding"))
+        if stored and _cosine_sim(query_embedding, stored) >= KNOWN_UNKNOWN_GATE_THRESHOLD:
+            return True
+    return False
 
 
 def _score_str(m: dict) -> str:
@@ -592,6 +688,17 @@ def main():
     except Exception:
         silent_exit()
 
+    # Phase 7.3: is this prompt a repeat of a topic we've had weak recall on?
+    # If yes, widen — disable brief mode for this invocation and raise the
+    # char budget to the legacy full-content limit so the agent gets bodies,
+    # not just names. Gate is best-effort; any DB error falls back to False.
+    widened = (
+        BRIEF_MODE
+        and check_known_unknown_gate(client, query_embedding)
+    )
+    brief_mode = BRIEF_MODE and not widened
+    char_budget = CHAR_BUDGET_BRIEF if brief_mode else CHAR_BUDGET_FULL
+
     semantic_rows: list[dict] = []
     if query_embedding is not None:
         try:
@@ -660,11 +767,13 @@ def main():
             bits.append(f"boost: {', '.join(sorted(boost_types))}")
         if bits:
             rewriter_note = f" — rewriter: {'; '.join(bits)}"
-    mode_tag = ", brief" if BRIEF_MODE else ""
+    mode_tag = ", brief" if brief_mode else ""
+    if widened:
+        mode_tag += ", widened: known-unknown match"
     hint = (
         "\n\n(Brief mode — names + descriptions only. "
         "Use memory_get(name=...) to fetch full content for any hit worth reading.)"
-        if BRIEF_MODE
+        if brief_mode
         else ""
     )
     header = (
@@ -677,12 +786,12 @@ def main():
 
     # Full mode separates bodies with `---`; brief mode is one line per entry,
     # so a single newline is enough and keeps the injected block compact.
-    separator = "\n" if BRIEF_MODE else "\n\n---\n\n"
-    formatter = format_memory_brief if BRIEF_MODE else format_memory
+    separator = "\n" if brief_mode else "\n\n---\n\n"
+    formatter = format_memory_brief if brief_mode else format_memory
 
     for row in rows:
         block = formatter(row) + separator
-        if total + len(block) > CHAR_BUDGET:
+        if total + len(block) > char_budget:
             break
         parts.append(block)
         total += len(block)
