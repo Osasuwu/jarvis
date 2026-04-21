@@ -1,5 +1,19 @@
 {
   "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
+        ]
+      },
+      {
+        "matcher": "manual",
+        "hooks": [
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup",
