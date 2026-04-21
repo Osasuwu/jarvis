@@ -584,6 +584,16 @@ async def list_tools() -> list[Tool]:
                         ),
                         "default": False,
                     },
+                    "brief": {
+                        "type": "boolean",
+                        "description": (
+                            "When true, omit full content — return only name, "
+                            "type, project, tags, description, and score. Use to "
+                            "preview what's relevant before committing prompt "
+                            "budget; call memory_get for full content on hits."
+                        ),
+                        "default": False,
+                    },
                 },
             },
         ),
@@ -1564,6 +1574,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
     include_links = args.get("include_links", False)
     show_history = args.get("show_history", False)
+    brief = args.get("brief", False)
 
     # Hybrid search: combine semantic + keyword results via RRF + temporal scoring
     if query_text:
@@ -1578,6 +1589,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
                 limit,
                 include_links,
                 show_history,
+                brief,
             )
             # Track reads (fire-and-forget)
             ids = [r["id"] for r in rows if r.get("id")]
@@ -1586,7 +1598,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
             return results
 
     # Fallback: keyword-only search
-    results = await _keyword_recall(client, query_text, project, mem_type, limit)
+    results = await _keyword_recall(client, query_text, project, mem_type, limit, brief)
 
     # Lazily backfill embeddings for records missing them (fire-and-forget)
     if os.environ.get("VOYAGE_API_KEY"):
@@ -1604,6 +1616,7 @@ async def _hybrid_recall(
     limit: int,
     include_links: bool = False,
     show_history: bool = False,
+    brief: bool = False,
 ) -> tuple[list[dict], list[TextContent]]:
     """Hybrid search: server-side pgvector semantic + pg_trgm keyword, merged via RRF.
 
@@ -1652,7 +1665,9 @@ async def _hybrid_recall(
         merged = _rrf_merge(semantic_rows, keyword_rows, limit)
 
         if not merged:
-            return [], await _keyword_recall(client, query_text, project, mem_type, limit)
+            return [], await _keyword_recall(
+                client, query_text, project, mem_type, limit, brief
+            )
 
         # Phase 1 polish (#240): match_memories RPC doesn't project confidence.
         # Enrich merged rows before scoring so entrenchment multiplier has data.
@@ -1677,10 +1692,12 @@ async def _hybrid_recall(
                 )
             )
 
-        formatted = _format_memories(merged)
+        formatted = _format_memories(merged, brief=brief)
         search_type = "hybrid+temporal" if keyword_rows else "semantic+temporal"
-        text = f"Found {len(merged)} memories ({search_type} search):\n\n" + "\n---\n".join(
-            formatted
+        mode_tag = ", brief" if brief else ""
+        text = (
+            f"Found {len(merged)} memories ({search_type} search{mode_tag}):\n\n"
+            + ("\n".join(formatted) if brief else "\n---\n".join(formatted))
         )
 
         # Track known unknowns: if top similarity < 0.45, log as a potential gap
@@ -1709,10 +1726,12 @@ async def _hybrid_recall(
                             seen_linked.add(rid)
                             unique_linked.append(r)
                     if unique_linked:
-                        link_formatted = _format_memories(unique_linked, link_info=True)
+                        link_formatted = _format_memories(
+                            unique_linked, link_info=True, brief=brief
+                        )
                         text += (
                             f"\n\n### Linked memories ({len(unique_linked)}):\n\n"
-                            + "\n---\n".join(link_formatted)
+                            + ("\n".join(link_formatted) if brief else "\n---\n".join(link_formatted))
                         )
 
         # Phase 5 metacognition: emit memory_recall event for FOK batch processing (#250).
@@ -1745,7 +1764,9 @@ async def _hybrid_recall(
         raise
     except Exception:
         # RPC not available (e.g. migration not applied) — fall back to keyword
-        return [], await _keyword_recall(client, query_text, project, mem_type, limit)
+        return [], await _keyword_recall(
+            client, query_text, project, mem_type, limit, brief
+        )
 
 
 def _rrf_merge(
@@ -1779,14 +1800,20 @@ def _rrf_merge(
 
 
 async def _keyword_recall(
-    client, query_text: str, project, mem_type, limit: int
+    client, query_text: str, project, mem_type, limit: int, brief: bool = False
 ) -> list[TextContent]:
-    """ILIKE keyword search (fallback when semantic unavailable)."""
-    q = (
-        client.table("memories")
-        .select("name, type, project, description, content, tags, updated_at")
-        .is_("deleted_at", "null")
+    """ILIKE keyword search (fallback when semantic unavailable).
+
+    In brief mode we skip the `content` column — it's never rendered and
+    would bloat the fallback payload, which is hit precisely when the fast
+    path failed and we're already on a slower code path.
+    """
+    cols = (
+        "name, type, project, description, tags, updated_at"
+        if brief
+        else "name, type, project, description, content, tags, updated_at"
     )
+    q = client.table("memories").select(cols).is_("deleted_at", "null")
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")
@@ -1805,12 +1832,13 @@ async def _keyword_recall(
     if not result.data:
         return [TextContent(type="text", text="No memories found.")]
 
-    formatted = _format_memories(result.data)
+    formatted = _format_memories(result.data, brief=brief)
+    mode_tag = ", brief" if brief else ""
     return [
         TextContent(
             type="text",
-            text=f"Found {len(result.data)} memories (keyword search):\n\n"
-            + "\n---\n".join(formatted),
+            text=f"Found {len(result.data)} memories (keyword search{mode_tag}):\n\n"
+            + ("\n".join(formatted) if brief else "\n---\n".join(formatted)),
         )
     ]
 
@@ -1840,7 +1868,20 @@ async def _emit_recall_event(client, payload: dict) -> None:
         pass
 
 
-def _format_memories(memories: list[dict], link_info: bool = False) -> list[str]:
+def _format_memories(
+    memories: list[dict], link_info: bool = False, brief: bool = False
+) -> list[str]:
+    """Format memory rows for display.
+
+    brief=False (default): full markdown block with header + description +
+    updated_at + content. Suited to a Jarvis-driven targeted recall where the
+    whole memory needs to land in the prompt.
+
+    brief=True: single-line `- name [type/project] (score): description`.
+    Suited to bulk/auto injection (UserPromptSubmit hook) where the agent
+    should preview what's relevant and pull full content via memory_get on
+    hits it actually wants. Content-free, so it can't rot long answers.
+    """
     formatted = []
     for mem in memories:
         tags_str = f" [{', '.join(mem.get('tags', []))}]" if mem.get("tags") else ""
@@ -1849,12 +1890,42 @@ def _format_memories(memories: list[dict], link_info: bool = False) -> list[str]
             link_str = f" ← {mem['link_type']}"
             if mem.get("link_strength"):
                 link_str += f" ({mem['link_strength']:.2f})"
-        formatted.append(
-            f"## {mem['name']} ({mem['type']}, {mem.get('project') or 'global'}){tags_str}{link_str}\n"
-            f"*{mem.get('description', '')}*\n"
-            f"Updated: {mem.get('updated_at', '?')}\n\n"
-            f"{mem['content']}\n"
-        )
+        proj = mem.get("project") or "global"
+        if brief:
+            # `_temporal_score` (set by _apply_temporal_scoring) is the actual
+            # sort key after rrf × recency × access × entrenchment. Show it
+            # first so the displayed value matches the displayed order.
+            # Retrieval provenance (rrf/sim/rank) follows as secondary signal
+            # — useful for debugging why a row surfaced at all.
+            temporal = mem.get("_temporal_score")
+            rrf = mem.get("_rrf_score")
+            sim = mem.get("similarity")
+            rank = mem.get("rank")
+            base_parts = []
+            if rrf is not None:
+                base_parts.append(f"rrf {rrf:.3f}")
+            elif isinstance(sim, (int, float)):
+                base_parts.append(f"sim {sim:.2f}")
+            elif isinstance(rank, (int, float)):
+                base_parts.append(f"rank {rank:.2f}")
+            if isinstance(temporal, (int, float)):
+                lead = f"score {temporal:.3f}"
+                score_str = f" ({lead}; {base_parts[0]})" if base_parts else f" ({lead})"
+            elif base_parts:
+                score_str = f" ({base_parts[0]})"
+            else:
+                score_str = ""
+            desc = (mem.get("description") or "").strip()
+            formatted.append(
+                f"- {mem['name']} [{mem['type']}/{proj}]{tags_str}{score_str}{link_str}: {desc}"
+            )
+        else:
+            formatted.append(
+                f"## {mem['name']} ({mem['type']}, {proj}){tags_str}{link_str}\n"
+                f"*{mem.get('description', '')}*\n"
+                f"Updated: {mem.get('updated_at', '?')}\n\n"
+                f"{mem['content']}\n"
+            )
     return formatted
 
 

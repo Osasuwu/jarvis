@@ -370,6 +370,75 @@ class TestFormatMemories:
         result = _format_memories(mems)
         assert len(result) == 5
 
+    # Brief mode — Phase 7.2. One-line rows so bulk/auto-injection sites
+    # don't pay full-content budget.
+
+    def test_brief_basic_layout(self):
+        mem = {
+            "name": "foo",
+            "type": "feedback",
+            "project": "jarvis",
+            "tags": ["a", "b"],
+            "description": "hello world",
+            "similarity": 0.42,
+            "content": "MUST_NOT_APPEAR",
+        }
+        result = _format_memories([mem], brief=True)
+        assert result == ["- foo [feedback/jarvis] [a, b] (sim 0.42): hello world"]
+        assert "MUST_NOT_APPEAR" not in result[0]
+
+    def test_brief_global_scope(self):
+        mem = {"name": "g", "type": "user", "project": None, "description": "d"}
+        result = _format_memories([mem], brief=True)
+        assert result[0] == "- g [user/global]: d"
+
+    def test_brief_temporal_score_leads_when_present(self):
+        # `_temporal_score` is what drives actual ordering after
+        # _apply_temporal_scoring. It must appear first so the shown score
+        # matches the displayed rank; the retrieval signal (rrf/sim) trails
+        # as provenance.
+        mem = {
+            "name": "t",
+            "type": "decision",
+            "project": "jarvis",
+            "description": "x",
+            "_temporal_score": 0.0456,
+            "_rrf_score": 0.0333,
+        }
+        result = _format_memories([mem], brief=True)
+        assert "(score 0.046; rrf 0.033)" in result[0]
+
+    def test_brief_rrf_wins_over_similarity(self):
+        mem = {
+            "name": "r", "type": "decision", "description": "x",
+            "_rrf_score": 0.05, "similarity": 0.9,
+        }
+        result = _format_memories([mem], brief=True)
+        assert "rrf 0.050" in result[0]
+        assert "sim" not in result[0]
+
+    def test_brief_link_info(self):
+        mem = {
+            "name": "l", "type": "decision", "project": "jarvis",
+            "description": "d", "similarity": 0.5,
+            "link_type": "related", "link_strength": 0.75,
+        }
+        result = _format_memories([mem], link_info=True, brief=True)
+        assert "← related (0.75)" in result[0]
+        assert result[0].startswith("- l [decision/jarvis]")
+
+    def test_brief_no_score_fields(self):
+        mem = {"name": "n", "type": "reference", "project": None, "description": "d"}
+        result = _format_memories([mem], brief=True)
+        assert result[0] == "- n [reference/global]: d"
+
+    def test_brief_empty_description(self):
+        # Migration-target memories carry empty descriptions — brief still
+        # surfaces the name (no crash, trailing `: ` is intentional).
+        mem = {"name": "bare", "type": "decision", "project": "jarvis"}
+        result = _format_memories([mem], brief=True)
+        assert result[0] == "- bare [decision/jarvis]: "
+
 
 # ---------------------------------------------------------------------------
 # _create_auto_links (async, mocked Supabase)

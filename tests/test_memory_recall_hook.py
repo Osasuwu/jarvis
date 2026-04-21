@@ -333,6 +333,85 @@ class TestFormatMemory:
 
 
 # ---------------------------------------------------------------------------
+# format_memory_brief — one-line bulk-injection layout (Phase 7.2)
+# ---------------------------------------------------------------------------
+
+
+class TestFormatMemoryBrief:
+    def test_basic_shape(self):
+        m = {
+            "name": "memory_foo",
+            "type": "feedback",
+            "project": "jarvis",
+            "description": "short description",
+            "similarity": 0.42,
+            "content": "NEVER_RENDERED",
+        }
+        out = mrh.format_memory_brief(m)
+        assert out == "- memory_foo [feedback/jarvis] (sim 0.42): short description"
+
+    def test_global_scope_and_tags(self):
+        m = {
+            "name": "g",
+            "type": "decision",
+            "project": None,
+            "tags": ["a", "b"],
+            "description": "d",
+            "_rrf_score": 0.033,
+        }
+        out = mrh.format_memory_brief(m)
+        assert out == "- g [decision/global] [a, b] (rrf 0.033): d"
+
+    def test_score_precedence_rrf_over_similarity(self):
+        # Same precedence as format_memory — _rrf_score wins so dual-signal
+        # hits never display a stale similarity.
+        m = {"name": "n", "type": "decision", "_rrf_score": 0.42, "similarity": 0.8, "description": "x"}
+        out = mrh.format_memory_brief(m)
+        assert "rrf 0.420" in out
+        assert "sim" not in out
+
+    def test_link_score_surfaces(self):
+        m = {
+            "name": "n", "type": "decision", "_link_score": 0.006,
+            "description": "via-link",
+        }
+        out = mrh.format_memory_brief(m)
+        assert "link 0.006" in out
+
+    def test_missing_description_renders_empty_suffix(self):
+        # Migration-target memories have empty descriptions — brief still
+        # emits them (they carry a name worth seeing), just with nothing
+        # after the colon. Asserted so future polish (e.g. strip trailing
+        # `: `) is a conscious choice, not accidental.
+        m = {"name": "bare", "type": "decision", "project": "jarvis", "similarity": 0.5}
+        out = mrh.format_memory_brief(m)
+        assert out == "- bare [decision/jarvis] (sim 0.50): "
+
+    def test_no_score_fields(self):
+        m = {"name": "n", "type": "reference", "description": "d"}
+        out = mrh.format_memory_brief(m)
+        assert out == "- n [reference/global]: d"
+
+
+# ---------------------------------------------------------------------------
+# main()-level branching for BRIEF_MODE — we don't exec main(), just assert
+# the constants expose the two budgets and that BRIEF_MODE is on by default
+# ---------------------------------------------------------------------------
+
+
+class TestBriefModeConstants:
+    def test_brief_mode_on_by_default(self):
+        assert mrh.BRIEF_MODE is True
+
+    def test_brief_budget_smaller_than_full(self):
+        assert mrh.CHAR_BUDGET_BRIEF < mrh.CHAR_BUDGET_FULL
+        # And CHAR_BUDGET reflects the active mode.
+        expected = mrh.CHAR_BUDGET_BRIEF if mrh.BRIEF_MODE else mrh.CHAR_BUDGET_FULL
+        assert mrh.CHAR_BUDGET == expected
+
+
+
+# ---------------------------------------------------------------------------
 # _score_linked_rows — pure scorer for 1-hop BFS neighbors
 # ---------------------------------------------------------------------------
 

@@ -16,9 +16,16 @@ technical identifiers) — the kind of tokens that match memories by
 keyword but not semantically.
 
 Types ∈ {feedback, decision, reference}. Scope: current project (cwd
-basename) + global. Capped at ~40K chars (~10K tokens, ~5% of 200K
-context). `user` + `project` are already loaded at session start by
-scripts/session-context.py and excluded here to avoid duplication.
+basename) + global. `user` + `project` are already loaded at session
+start by scripts/session-context.py and excluded here to avoid
+duplication.
+
+Phase 7.2: by default emits **brief** entries (one line per hit —
+name + type/project + tags + score + description). The agent previews
+what's relevant and calls memory_get(name=...) on anything worth
+reading, instead of every UserPromptSubmit paying ~40KB of full
+content. Legacy full mode still available via BRIEF_MODE=False for
+debugging.
 
 Touches accessed memories via RPC so the ACT-R access-frequency boost
 applies. Semantic failure falls back to keyword-only search (still using
@@ -65,7 +72,14 @@ SIMILARITY_THRESHOLD = 0.30  # calibrated 2026-04-17: real user prompts hit 0.35
 # top-similarity on voyage-3-lite/512 with conversational queries. 0.30 catches
 # clearly-relevant matches without firing on unrelated memories (which sit <0.25).
 # server.py default SIMILARITY_THRESHOLD is also 0.25 for the same reason.
-CHAR_BUDGET = 40_000         # ~10K tokens, ~5% of 200K window
+# Phase 7.2 default: brief-mode one-line entries instead of full content. Jarvis
+# sees the inventory relevant to the prompt and fetches content via memory_get
+# on hits it actually wants. Reduces per-turn rot since we no longer dump
+# 5-10 full bodies into every UserPromptSubmit.
+BRIEF_MODE = True
+CHAR_BUDGET_FULL = 40_000    # ~10K tokens, ~5% of 200K window (legacy path)
+CHAR_BUDGET_BRIEF = 12_000   # ~3K tokens — ~60 brief entries at ~200 chars each
+CHAR_BUDGET = CHAR_BUDGET_BRIEF if BRIEF_MODE else CHAR_BUDGET_FULL
 FETCH_LIMIT = 50             # pull wide per signal, cap by budget in Python
 # Types loaded per-prompt. Excluded:
 #   'user'    — loaded at session start (scripts/session-context.py top-2)
@@ -276,38 +290,58 @@ def detect_project(cwd: str) -> str | None:
     return name if name in KNOWN_PROJECTS else None
 
 
-def format_memory(m: dict) -> str:
-    tags = m.get("tags") or []
-    tags_str = f" [{', '.join(tags)}]" if tags else ""
-    # Signal-accurate score display. rrf_merge only sets _rrf_score on
-    # rows hit by both signals, so single-signal hits fall through to
-    # their native field (similarity for semantic, rank for keyword/FTS).
-    # _sort_score is set only on single-signal rows that were type-boosted
-    # — without it, the displayed sim/rank would contradict the actual
-    # ranking (the boost changed the sort key, not the native score).
-    # _link_score is set on rows pulled in by 1-hop BFS that weren't in
-    # the direct RRF result — surfaces link provenance to the reader.
+def _score_str(m: dict) -> str:
+    """Render the ranking signal visible to the reader.
+
+    Shared between `format_memory` (full) and `format_memory_brief`. The
+    priority mirrors rrf_merge's field invariants: _rrf_score is set only on
+    dual-signal rows; _sort_score only on boosted single-signal rows;
+    _link_score only on rows pulled in by 1-hop BFS. Falling through to
+    native similarity/rank keeps the displayed score truthful.
+    """
     rrf = m.get("_rrf_score")
     sort_score = m.get("_sort_score")
     link_score = m.get(LINK_SCORE_FIELD)
     sim = m.get("similarity")
     rank = m.get("rank")
     if rrf is not None:
-        score_str = f" (rrf {rrf:.3f})"
-    elif sort_score is not None:
-        score_str = f" (boost {sort_score:.3f})"
-    elif link_score is not None:
-        score_str = f" (link {link_score:.3f})"
-    elif sim is not None:
-        score_str = f" (sim {sim:.2f})"
-    elif rank is not None:
-        score_str = f" (rank {rank:.2f})"
-    else:
-        score_str = ""
+        return f" (rrf {rrf:.3f})"
+    if sort_score is not None:
+        return f" (boost {sort_score:.3f})"
+    if link_score is not None:
+        return f" (link {link_score:.3f})"
+    if sim is not None:
+        return f" (sim {sim:.2f})"
+    if rank is not None:
+        return f" (rank {rank:.2f})"
+    return ""
+
+
+def format_memory_brief(m: dict) -> str:
+    """One-line preview for bulk auto-injection (Phase 7.2).
+
+    Format: `- name [type/project] [tags] (score): description`. Similar in
+    spirit to the session-start catalog layout
+    (scripts/session-context.py::_fmt_catalog_entry) — this hook block adds
+    the per-query score so the agent can distinguish hybrid-ranked hits
+    from the recency-sorted inventory, and always emits an explicit
+    `type/project` scope (the catalog omits project for the current one).
+    No content body — agent pulls via memory_get on anything worth reading.
+    """
+    tags = m.get("tags") or []
+    tags_str = f" [{', '.join(tags)}]" if tags else ""
+    proj = m.get("project") or "global"
+    desc = (m.get("description") or "").strip()
+    return f"- {m['name']} [{m['type']}/{proj}]{tags_str}{_score_str(m)}: {desc}"
+
+
+def format_memory(m: dict) -> str:
+    tags = m.get("tags") or []
+    tags_str = f" [{', '.join(tags)}]" if tags else ""
     proj = m.get("project") or "global"
     desc = m.get("description") or ""
     content = m.get("content") or ""
-    header = f"## {m['name']} ({m['type']}, {proj}){tags_str}{score_str}"
+    header = f"## {m['name']} ({m['type']}, {proj}){tags_str}{_score_str(m)}"
     body = f"*{desc}*\n\n{content}" if desc else content
     return f"{header}\n{body}"
 
@@ -626,13 +660,28 @@ def main():
             bits.append(f"boost: {', '.join(sorted(boost_types))}")
         if bits:
             rewriter_note = f" — rewriter: {'; '.join(bits)}"
-    header = f"# Memories on topic{scope}\n\nHybrid recall ({signal}){rewriter_note}:\n\n"
+    mode_tag = ", brief" if BRIEF_MODE else ""
+    hint = (
+        "\n\n(Brief mode — names + descriptions only. "
+        "Use memory_get(name=...) to fetch full content for any hit worth reading.)"
+        if BRIEF_MODE
+        else ""
+    )
+    header = (
+        f"# Memories on topic{scope}\n\n"
+        f"Hybrid recall ({signal}{mode_tag}){rewriter_note}:{hint}\n\n"
+    )
     parts = [header]
     total = len(header)
     included_ids = []
 
+    # Full mode separates bodies with `---`; brief mode is one line per entry,
+    # so a single newline is enough and keeps the injected block compact.
+    separator = "\n" if BRIEF_MODE else "\n\n---\n\n"
+    formatter = format_memory_brief if BRIEF_MODE else format_memory
+
     for row in rows:
-        block = format_memory(row) + "\n\n---\n\n"
+        block = formatter(row) + separator
         if total + len(block) > CHAR_BUDGET:
             break
         parts.append(block)
@@ -644,8 +693,8 @@ def main():
         silent_exit()
 
     # Trim trailing separator
-    if parts[-1].endswith("---\n\n"):
-        parts[-1] = parts[-1][: -len("---\n\n")]
+    if parts[-1].endswith(separator):
+        parts[-1] = parts[-1][: -len(separator)]
 
     # Touch accessed memories (fire-and-forget; failures ignored)
     try:
