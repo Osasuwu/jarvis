@@ -783,6 +783,14 @@ async def list_tools() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "Pattern tags for learning.",
                     },
+                    "memory_id": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "UUID of the primary memory that informed this outcome. "
+                            "Links the outcome into memory_calibration so confidence "
+                            "and lessons can be attributed back to the reasoning basis."
+                        ),
+                    },
                 },
                 "required": ["task_type", "task_description", "outcome_status"],
             },
@@ -813,6 +821,14 @@ async def list_tools() -> list[Tool]:
                     "verified_at": {
                         "type": "string",
                         "description": "ISO timestamp. Defaults to now() if omitted when status changes.",
+                    },
+                    "memory_id": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "UUID of the primary memory that informed this outcome. "
+                            "Pass during verification to retro-link outcomes whose "
+                            "basis became clear only after the decision played out."
+                        ),
                     },
                 },
                 "required": ["id"],
@@ -3014,6 +3030,7 @@ async def _handle_outcome_record(args: dict) -> list[TextContent]:
         "pr_merged",
         "quality_score",
         "lessons",
+        "memory_id",
     ):
         if key in args and args[key] is not None:
             row[key] = args[key]
@@ -3041,6 +3058,7 @@ async def _handle_outcome_update(args: dict) -> list[TextContent]:
         "quality_score",
         "lessons",
         "pattern_tags",
+        "memory_id",
     ):
         if key in args and args[key] is not None:
             updates[key] = args[key]
