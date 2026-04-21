@@ -5,6 +5,15 @@ Output is injected into Claude's context automatically by the hook.
 
 Usage (in hook):  python scripts/session-context.py
 Self-bootstraps into venv — works from any Python.
+
+Compact resume recovery (Phase 2, #279):
+When the SessionStart hook fires with source=compact, this script also
+loads the pre-compact snapshot written by `scripts/pre-compact-backup.py`
+(Supabase `session_snapshot_<session_id>` or local
+`.claude/session-snapshots/<session_id>.md`) and prepends it under
+`## Pre-Compact Recovery`. Snapshots older than
+PRE_COMPACT_FRESHNESS_MINUTES are ignored — they belong to a prior run
+that happened to reuse the same session_id.
 """
 
 import json
@@ -43,6 +52,11 @@ if sys.stderr.encoding != "utf-8":
 
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
+# Pre-compact snapshots older than this are treated as stale. They most
+# likely belong to a different run that happened to reuse the same
+# session_id — Claude Code does reuse ids across `--resume` invocations.
+PRE_COMPACT_FRESHNESS_MINUTES = 30
+
 
 def _detect_project():
     """Return current project name if cwd basename matches a known project, else None."""
@@ -53,11 +67,131 @@ def _detect_project():
     return name if name in KNOWN_PROJECTS else None
 
 
+def _read_hook_input() -> dict:
+    """Parse SessionStart hook input from stdin.
+
+    Claude Code pipes a JSON object with session_id, transcript_path, cwd,
+    hook_event_name, and a source/matcher field when the hook fires. When
+    this script runs standalone (no pipe), stdin is a TTY and we return
+    an empty dict so the rest of main() proceeds unchanged.
+    """
+    if sys.stdin.isatty():
+        return {}
+    try:
+        raw = sys.stdin.read()
+    except Exception:
+        return {}
+    if not raw or not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _is_compact_resume(hook: dict) -> bool:
+    """True when this SessionStart invocation is Claude Code resuming post-compact.
+
+    Claude Code surfaces the matcher under different keys depending on the
+    hook event (`source` for SessionStart, `matcher` for PreCompact). We
+    check both and a few synonyms to avoid version-coupling.
+    """
+    event = (hook.get("hook_event_name") or "").strip()
+    if event and event != "SessionStart":
+        return False
+    # `source` is the documented SessionStart field; `matcher` is what the
+    # Jarvis hooks.settings block uses; guard against future renames.
+    candidates = (
+        hook.get("source"),
+        hook.get("matcher"),
+        hook.get("trigger"),
+    )
+    return any(str(c).lower() == "compact" for c in candidates if c)
+
+
+def _load_snapshot_from_supabase(client, session_id: str):
+    """Return snapshot content if `session_snapshot_<session_id>` is fresh, else None."""
+    from datetime import datetime, timedelta, timezone
+    name = f"session_snapshot_{session_id}"
+    try:
+        result = (
+            client.table("memories")
+            .select("content, updated_at")
+            .eq("name", name)
+            .is_("deleted_at", "null")
+            .limit(1)
+            .execute()
+        )
+    except Exception as e:
+        print(f"[session-context] snapshot query failed: {e}", file=sys.stderr)
+        return None
+    if not result.data:
+        return None
+    row = result.data[0]
+    ts = _parse_ts(row.get("updated_at"))
+    if ts is not None:
+        age = datetime.now(timezone.utc) - ts
+        if age > timedelta(minutes=PRE_COMPACT_FRESHNESS_MINUTES):
+            return None
+    content = row.get("content")
+    return content if content else None
+
+
+def _load_snapshot_from_local(session_id: str):
+    """Return snapshot content from `.claude/session-snapshots/<session_id>.md` if fresh."""
+    from datetime import datetime, timedelta, timezone
+    path = _root / ".claude" / "session-snapshots" / f"{session_id}.md"
+    if not path.exists():
+        return None
+    try:
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+    except Exception:
+        mtime = None
+    if mtime is not None:
+        age = datetime.now(timezone.utc) - mtime
+        if age > timedelta(minutes=PRE_COMPACT_FRESHNESS_MINUTES):
+            return None
+    try:
+        return path.read_text(encoding="utf-8") or None
+    except Exception as e:
+        print(f"[session-context] local snapshot read failed: {e}", file=sys.stderr)
+        return None
+
+
+def _format_recovery_section(snapshot: str) -> str:
+    return (
+        "## Pre-Compact Recovery\n"
+        "Compaction happened earlier in this session — pre-compact snapshot "
+        "below. Treat this as authoritative history for anything older than "
+        "the summary above.\n\n"
+        f"{snapshot}"
+    )
+
+
 def main():
+    hook_input = _read_hook_input()
+    compact_resume = _is_compact_resume(hook_input)
+    session_id = (
+        hook_input.get("session_id")
+        or hook_input.get("sessionId")
+        or ""
+    )
+
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
         print("[session-context] SUPABASE_URL/KEY not set", file=sys.stderr)
+        # Still try local fallback on compact resume — a disconnected dev
+        # shouldn't lose pre-compact context entirely.
+        if compact_resume and session_id:
+            snap = _load_snapshot_from_local(session_id)
+            if snap:
+                print("=" * 60)
+                print("MEMORY CONTEXT (auto-loaded — do NOT re-fetch with MCP tools)")
+                print("=" * 60)
+                print(_format_recovery_section(snap))
+                print("=" * 60)
         return
 
     try:
@@ -69,6 +203,16 @@ def main():
     project = _detect_project()
     sections = []
     touched_ids: list[str] = []
+
+    # 0. Pre-Compact Recovery — prepended before everything else on compact
+    #    resume. Supabase first, local fallback second. Freshness guarded to
+    #    avoid cross-run pollution when Claude Code reuses session_ids.
+    if compact_resume and session_id:
+        snapshot = _load_snapshot_from_supabase(client, session_id)
+        if not snapshot:
+            snapshot = _load_snapshot_from_local(session_id)
+        if snapshot:
+            sections.append(_format_recovery_section(snapshot))
 
     # 1. User memories — who is the owner (always)
     section, ids = _query_memories(client, mem_type="user", limit=2)
