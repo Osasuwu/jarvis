@@ -1832,20 +1832,24 @@ async def _keyword_recall(
     Lifecycle filters mirror the show_history=false branch of
     match_memories / keyword_search_memories: exclude soft-deleted,
     expired, superseded, and past-valid_to rows (#284).
+
+    valid_to is filtered client-side (not via .or_()) because PostgREST
+    accepts only one `or=` parameter per query, and this path already uses
+    .or_() for project scoping and for the keyword ILIKE clauses — adding
+    a third would silently overwrite one of them. Same pattern as
+    scripts/session-context.py _load_recent_recall_results.
     """
     cols = (
-        "name, type, project, description, tags, updated_at"
+        "name, type, project, description, tags, updated_at, valid_to"
         if brief
-        else "name, type, project, description, content, tags, updated_at"
+        else "name, type, project, description, content, tags, updated_at, valid_to"
     )
-    now_iso = datetime.now(timezone.utc).isoformat()
     q = (
         client.table("memories")
         .select(cols)
         .is_("deleted_at", "null")
         .is_("expired_at", "null")
         .is_("superseded_by", "null")
-        .or_(f"valid_to.is.null,valid_to.gt.{now_iso}")
     )
 
     if project is not None:
@@ -1860,17 +1864,35 @@ async def _keyword_recall(
         )
         q = q.or_(clauses)
 
-    result = q.limit(limit).order("updated_at", desc=True).execute()
+    # Fetch extra rows so the client-side valid_to filter still leaves `limit`
+    # live rows in the worst case. 2x is a simple heuristic; tombstoned
+    # valid_to rows are rare in practice.
+    result = q.limit(limit * 2).order("updated_at", desc=True).execute()
 
-    if not result.data:
+    now_utc = datetime.now(timezone.utc)
+    live: list[dict] = []
+    for row in result.data or []:
+        vt = row.get("valid_to")
+        if vt is not None:
+            try:
+                vt_dt = datetime.fromisoformat(vt.replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                vt_dt = None
+            if vt_dt is not None and vt_dt <= now_utc:
+                continue
+        live.append(row)
+        if len(live) >= limit:
+            break
+
+    if not live:
         return [TextContent(type="text", text="No memories found.")]
 
-    formatted = _format_memories(result.data, brief=brief)
+    formatted = _format_memories(live, brief=brief)
     mode_tag = ", brief" if brief else ""
     return [
         TextContent(
             type="text",
-            text=f"Found {len(result.data)} memories (keyword search{mode_tag}):\n\n"
+            text=f"Found {len(live)} memories (keyword search{mode_tag}):\n\n"
             + ("\n".join(formatted) if brief else "\n---\n".join(formatted)),
         )
     ]

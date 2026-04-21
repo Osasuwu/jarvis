@@ -1309,8 +1309,9 @@ class TestRecallLifecycleFilters:
     @pytest.mark.asyncio
     async def test_keyword_recall_applies_all_lifecycle_filters(self):
         """_keyword_recall (fallback path) must filter deleted_at, expired_at,
-        superseded_by, and past-valid_to — matching the show_history=false
-        branch of match_memories / keyword_search_memories."""
+        and superseded_by server-side — matching the show_history=false
+        branch of match_memories / keyword_search_memories. valid_to is
+        filtered client-side (see test_keyword_recall_filters_past_valid_to)."""
         from server import _keyword_recall
 
         query = self._fluent_query()
@@ -1324,18 +1325,27 @@ class TestRecallLifecycleFilters:
         assert ("expired_at", "null") in is_args
         assert ("superseded_by", "null") in is_args
 
+        # valid_to must NOT appear in .or_() — PostgREST allows only one
+        # `or=` per query, and this function already uses .or_() for project
+        # scoping and for the keyword ILIKE clauses. Putting valid_to in
+        # another .or_() would silently overwrite one of the existing filters.
         or_filters = [call.args[0] for call in query.or_.call_args_list]
-        # valid_to: null OR valid_to > now() — stored as a single PostgREST
-        # or_() expression containing both clauses.
-        assert any(
-            "valid_to.is.null" in f and "valid_to.gt." in f
-            for f in or_filters
-        ), f"expected valid_to filter in or_ calls, got {or_filters}"
+        assert not any("valid_to" in f for f in or_filters), (
+            f"valid_to must not be pushed into .or_() (PostgREST one-or rule); "
+            f"got or_ calls: {or_filters}"
+        )
+
+        # valid_to must be selected so the client can filter it after fetch.
+        select_args = [call.args[0] for call in query.select.call_args_list]
+        assert any("valid_to" in s for s in select_args), (
+            f"valid_to must be in SELECT for client-side filtering; "
+            f"got select calls: {select_args}"
+        )
 
     @pytest.mark.asyncio
     async def test_keyword_recall_brief_mode_also_filters(self):
         """brief=True takes a different select-columns branch — make sure
-        the filter block still runs."""
+        the filter block still runs and valid_to is still selected."""
         from server import _keyword_recall
 
         query = self._fluent_query()
@@ -1350,6 +1360,75 @@ class TestRecallLifecycleFilters:
         assert ("deleted_at", "null") in is_args
         assert ("expired_at", "null") in is_args
         assert ("superseded_by", "null") in is_args
+
+        select_args = [call.args[0] for call in query.select.call_args_list]
+        assert any("valid_to" in s for s in select_args)
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_filters_past_valid_to(self):
+        """Rows whose valid_to is in the past are tombstoned and must be
+        excluded from default recall. Rows with valid_to=None or valid_to
+        in the future are live."""
+        from datetime import datetime, timedelta, timezone
+
+        from server import _keyword_recall
+
+        now = datetime.now(timezone.utc)
+        past = (now - timedelta(days=1)).isoformat()
+        future = (now + timedelta(days=30)).isoformat()
+
+        rows = [
+            {"name": "live_null_vt", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": now.isoformat(),
+             "valid_to": None},
+            {"name": "live_future_vt", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": now.isoformat(),
+             "valid_to": future},
+            {"name": "tombstoned_past_vt", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": now.isoformat(),
+             "valid_to": past},
+        ]
+
+        query = self._fluent_query()
+        query.execute.return_value = MagicMock(data=rows)
+        client = MagicMock()
+        client.table.return_value = query
+
+        result = await _keyword_recall(
+            client, "anything", project="jarvis", mem_type=None, limit=10, brief=True
+        )
+
+        text = result[0].text
+        assert "live_null_vt" in text
+        assert "live_future_vt" in text
+        assert "tombstoned_past_vt" not in text
+        assert "Found 2 memories" in text
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_all_rows_tombstoned_returns_empty(self):
+        """If every row returned by the DB has a past valid_to, the client-side
+        filter should yield zero live rows and the function should return the
+        empty-result message — not the 'Found N' line with N=0."""
+        from datetime import datetime, timedelta, timezone
+
+        from server import _keyword_recall
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        rows = [
+            {"name": "dead1", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": past,
+             "valid_to": past},
+        ]
+
+        query = self._fluent_query()
+        query.execute.return_value = MagicMock(data=rows)
+        client = MagicMock()
+        client.table.return_value = query
+
+        result = await _keyword_recall(
+            client, "anything", project="jarvis", mem_type=None, limit=10
+        )
+        assert result[0].text == "No memories found."
 
     @pytest.mark.asyncio
     async def test_hybrid_recall_defaults_show_history_false(self, monkeypatch):
