@@ -74,7 +74,7 @@ Generate candidates:
 
 **Write-action permissions (enforced here):**
 - Repos under `Osasuwu/*` → all Low/Medium actions execute normally.
-- Repos under any other owner (e.g. `SergazyNarynov/redrobot`) → **flag-only**: record the finding in memory (`type=project, name=hygiene_sweep_proposals_<repo>_<date>`) and surface it in the output, but never execute the action. Owner acts manually or flips the repo to an owned org.
+- Repos under any other owner (e.g. `SergazyNarynov/redrobot`) → **flag-only**: record the finding in memory (`type=project, name=hygiene_sweep_proposals_<repo>_<date>, source_provenance="skill:autonomous-loop"`) and surface it in the output, but never execute the action. Owner acts manually or flips the repo to an owned org.
 
 **Dedup per-finding:** before closing a milestone / creating a retroactive one, check `outcome_list(task_type='autonomous', pattern_tags=['hygiene'])` for matching description from last 3 days. Skip if same finding already actioned.
 
@@ -129,12 +129,12 @@ Execute each independently:
 - Create GitHub issue: `gh issue create --repo <R> --title "..." --body "..."`
   - **Epics** (`--label epic`) MUST use the `.github/ISSUE_TEMPLATE/epic.yml` structure: body requires `### Children` heading with `- [ ]` checkbox items, else `Issue Checks` CI fails. No `Parent: #NNN` — epics use milestones, not parent links.
   - **Tasks/bugs**: link parent via GitHub sub-issue relationship or `Parent: #NNN` at top of body.
-- Memory operations: `memory_store(...)`, `goal_update(...)`
+- Memory operations: `memory_store(..., source_provenance="skill:autonomous-loop")`, `goal_update(...)`
 - Tag or label work: `gh issue edit`, `gh pr edit`
 - Triage events: `events_mark_processed(...)`
-- Memory consolidation: run `find_consolidation_clusters()` via `execute_sql`, for each cluster: read all memories, merge content into one authoritative memory via `memory_store`, archive originals via `archive_memories(ids)`
+- Memory consolidation: run `find_consolidation_clusters()` via `execute_sql`, for each cluster: read all memories, merge content into one authoritative memory via `memory_store(..., source_provenance="skill:autonomous-loop")`, archive originals via `archive_memories(ids)`
 - **Hygiene: close orphan milestone** (only on `Osasuwu/*` repos): `gh api repos/<R>/milestones/<N> -X PATCH -F state=closed` — for each milestone with `state=open && open_issues==0`.
-- **Hygiene: flag epic missing Children heading**: record proposal via `memory_store(type="project", name="hygiene_epic_<N>_needs_children", ...)`. Don't auto-rewrite bodies.
+- **Hygiene: flag epic missing Children heading**: record proposal via `memory_store(type="project", name="hygiene_epic_<N>_needs_children", ..., source_provenance="skill:autonomous-loop")`. Don't auto-rewrite bodies.
 
 ### Medium-risk (at most 1)
 Execute after Low-risk batch completes:
@@ -146,7 +146,7 @@ Execute after Low-risk batch completes:
 
 ### High-risk (proposals only)
 Never execute — save to memory:
-- Record: `memory_store(type="project", name="autonomous_proposals", ...)`
+- Record: `memory_store(type="project", name="autonomous_proposals", ..., source_provenance="skill:autonomous-loop")`
 - Output proposal text to user
 
 ## Step 7 — Record Outcomes
