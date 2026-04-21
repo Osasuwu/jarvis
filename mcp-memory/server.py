@@ -1828,13 +1828,25 @@ async def _keyword_recall(
     In brief mode we skip the `content` column — it's never rendered and
     would bloat the fallback payload, which is hit precisely when the fast
     path failed and we're already on a slower code path.
+
+    Lifecycle filters mirror the show_history=false branch of
+    match_memories / keyword_search_memories: exclude soft-deleted,
+    expired, superseded, and past-valid_to rows (#284).
     """
     cols = (
         "name, type, project, description, tags, updated_at"
         if brief
         else "name, type, project, description, content, tags, updated_at"
     )
-    q = client.table("memories").select(cols).is_("deleted_at", "null")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    q = (
+        client.table("memories")
+        .select(cols)
+        .is_("deleted_at", "null")
+        .is_("expired_at", "null")
+        .is_("superseded_by", "null")
+        .or_(f"valid_to.is.null,valid_to.gt.{now_iso}")
+    )
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")

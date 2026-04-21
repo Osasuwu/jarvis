@@ -2107,3 +2107,149 @@ as $$
     coalesce((select data from type_rows), '[]'::jsonb) as by_type,
     coalesce((select data from warning_rows), '[]'::jsonb) as warnings;
 $$;
+
+
+-- =========================================================================
+-- Recall soft-delete filter fix (Osasuwu/jarvis#284)
+--
+-- Problem: match_memories, keyword_search_memories, and get_linked_memories
+-- filter expired_at / superseded_by / valid_to on the show_history=false
+-- path but forget deleted_at, so memory_recall surfaces soft-deleted rows
+-- that memory_get / memory_list / match_memories_v2 correctly hide. Align
+-- every recall-path RPC with the rest of the API: deleted_at IS NULL is
+-- always required when show_history=false.
+--
+-- CREATE OR REPLACE redefines each function in-place; no data migration
+-- needed.
+-- =========================================================================
+
+drop function if exists match_memories(vector, int, float, text, text, boolean);
+create or replace function match_memories(
+    query_embedding vector,
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    similarity float
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           1 - (m.embedding <=> query_embedding) as similarity
+    from memories m
+    where m.embedding is not null
+      and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.deleted_at is null
+               and m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by m.embedding <=> query_embedding
+    limit match_limit;
+$$;
+
+drop function if exists keyword_search_memories(text, int, text, text, boolean);
+create or replace function keyword_search_memories(
+    search_query text,
+    match_limit int default 10,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    rank real
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           ts_rank(m.fts, websearch_to_tsquery('english', search_query)) as rank
+    from memories m
+    where m.fts @@ websearch_to_tsquery('english', search_query)
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.deleted_at is null
+               and m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by rank desc
+    limit match_limit;
+$$;
+
+drop function if exists get_linked_memories(uuid[], text[], boolean);
+create or replace function get_linked_memories(
+    memory_ids uuid[],
+    link_types text[] default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    link_type text, link_strength float, linked_from uuid
+)
+language sql stable as $$
+    select * from (
+        select distinct on (sub.id)
+            sub.id, sub.name, sub.type, sub.project, sub.description,
+            sub.content, sub.tags,
+            sub.updated_at, sub.content_updated_at, sub.last_accessed_at,
+            sub.link_type, sub.link_strength, sub.linked_from
+        from (
+            -- Outgoing edges: source ∈ memory_ids, target resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.source_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.target_id
+                     else find_chain_head(l.target_id) end,
+                l.target_id)
+            where l.source_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.deleted_at is null
+                       and m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+            union all
+            -- Incoming edges: target ∈ memory_ids, source resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.target_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.source_id
+                     else find_chain_head(l.source_id) end,
+                l.source_id)
+            where l.target_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.deleted_at is null
+                       and m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+        ) sub
+        order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
+    ) deduped
+    order by deduped.link_strength desc
+    limit 10;
+$$;

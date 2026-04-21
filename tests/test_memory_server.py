@@ -1281,3 +1281,137 @@ class TestKnownUnknowns:
 
         # Verify update was called with status='resolved'
         assert mock_update.eq.called
+
+
+# ---------------------------------------------------------------------------
+# #284: memory_recall must exclude soft-deleted + superseded + expired rows
+# ---------------------------------------------------------------------------
+
+class TestRecallLifecycleFilters:
+    """Regression (Osasuwu/jarvis#284): memory_recall surfaced soft-deleted
+    rows even when show_history=false, because the SQL RPCs and the Python
+    keyword-only fallback forgot parts of the lifecycle filter. Lock the
+    contract at both layers: the RPC params we send, and the query-builder
+    filters we apply.
+    """
+
+    @staticmethod
+    def _fluent_query():
+        """MagicMock that returns itself from every builder method — lets
+        us assert on .is_ / .or_ / .eq / .limit calls without wiring up the
+        chain manually."""
+        q = MagicMock()
+        for method in ("select", "is_", "or_", "eq", "limit", "order", "filter"):
+            getattr(q, method).return_value = q
+        q.execute.return_value = MagicMock(data=[])
+        return q
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_applies_all_lifecycle_filters(self):
+        """_keyword_recall (fallback path) must filter deleted_at, expired_at,
+        superseded_by, and past-valid_to — matching the show_history=false
+        branch of match_memories / keyword_search_memories."""
+        from server import _keyword_recall
+
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(client, "anything", project="jarvis", mem_type=None, limit=10)
+
+        is_args = [tuple(call.args) for call in query.is_.call_args_list]
+        assert ("deleted_at", "null") in is_args
+        assert ("expired_at", "null") in is_args
+        assert ("superseded_by", "null") in is_args
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        # valid_to: null OR valid_to > now() — stored as a single PostgREST
+        # or_() expression containing both clauses.
+        assert any(
+            "valid_to.is.null" in f and "valid_to.gt." in f
+            for f in or_filters
+        ), f"expected valid_to filter in or_ calls, got {or_filters}"
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_brief_mode_also_filters(self):
+        """brief=True takes a different select-columns branch — make sure
+        the filter block still runs."""
+        from server import _keyword_recall
+
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(
+            client, "anything", project=None, mem_type=None, limit=5, brief=True
+        )
+
+        is_args = [tuple(call.args) for call in query.is_.call_args_list]
+        assert ("deleted_at", "null") in is_args
+        assert ("expired_at", "null") in is_args
+        assert ("superseded_by", "null") in is_args
+
+    @pytest.mark.asyncio
+    async def test_hybrid_recall_defaults_show_history_false(self, monkeypatch):
+        """_hybrid_recall must pass show_history=False to both the semantic
+        and keyword RPCs on the default path — that flag is what the SQL
+        lifecycle filter keys off of (post-#284 fix)."""
+        from server import _hybrid_recall
+
+        client = MagicMock()
+        # Both RPC calls return no data so the function takes the fallback
+        # branch; we only care about what args we sent to the RPCs.
+        client.rpc.return_value.execute.return_value = MagicMock(data=[])
+
+        # Stub the fallback so it doesn't re-hit client and muddy assertions.
+        async def _noop_fallback(*_args, **_kwargs):
+            return []
+        monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
+
+        await _hybrid_recall(
+            client,
+            query_embedding=[0.0] * 512,
+            query_text="anything",
+            project="jarvis",
+            mem_type=None,
+            limit=5,
+        )
+
+        # Both RPCs invoked with show_history=False.
+        rpc_calls = client.rpc.call_args_list
+        assert len(rpc_calls) == 2
+        for call in rpc_calls:
+            rpc_name, rpc_args = call.args[0], call.args[1]
+            assert rpc_args.get("show_history") is False, (
+                f"{rpc_name} called without show_history=False: {rpc_args}"
+            )
+        rpc_names = {call.args[0] for call in rpc_calls}
+        assert "keyword_search_memories" in rpc_names
+        # Semantic RPC is model-dependent (match_memories or match_memories_v2).
+        assert any(name.startswith("match_memories") for name in rpc_names)
+
+    @pytest.mark.asyncio
+    async def test_hybrid_recall_propagates_show_history_true(self, monkeypatch):
+        """When caller opts in to show_history=True, both RPCs must see it —
+        otherwise audit/debug queries can't inspect tombstones."""
+        from server import _hybrid_recall
+
+        client = MagicMock()
+        client.rpc.return_value.execute.return_value = MagicMock(data=[])
+
+        async def _noop_fallback(*_args, **_kwargs):
+            return []
+        monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
+
+        await _hybrid_recall(
+            client,
+            query_embedding=[0.0] * 512,
+            query_text="anything",
+            project=None,
+            mem_type=None,
+            limit=5,
+            show_history=True,
+        )
+
+        for call in client.rpc.call_args_list:
+            assert call.args[1].get("show_history") is True
