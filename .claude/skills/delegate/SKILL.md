@@ -1,213 +1,203 @@
 ---
 name: delegate
-description: This skill should be used when the user wants to implement a GitHub issue autonomously, delegate coding work to an agent, or asks to "реализуй", "сделай", "implement", "delegate", or references a specific issue number for implementation (e.g. "#42", "issue 55"). Do NOT trigger for issue viewing, triaging, or discussing — only for actual implementation requests.
-version: 2.1.0
+description: This skill should be used when the owner asks Jarvis to dispatch one or more GitHub issues to coding subagents (typically multiple issues in parallel), or says "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z". Also used by autonomous-loop to hand off a single subagent-scoped job (e.g. CI debug). For a single issue the main session will do itself, use /implement instead. Jarvis's own judgment on task complexity OVERRIDES blind delegation — if a task is unfit for a subagent (needs session context, cross-cutting reasoning, safety review), keep it inline even if owner said "раскидай".
+version: 1.0.0
 ---
 
 # Delegate Skill
 
-Autonomously implement one or more GitHub issues.
+Dispatch **multiple** GitHub issues to coding subagents running in parallel.
 
-## Usage
+The main session stays as orchestrator: it reviews each subagent's diff, resolves scope drift, and decides merges. **Subagents NEVER merge.** They push the PR and stop.
 
-Invoke when user says "реализуй #42", "delegate issue 55", "implement #X", etc.
-Supports multiple issues: "реализуй #42 #43" batches related work.
-Target repo: determined from context (CWD, recent conversation, user mention). If ambiguous, ask. Read `config/repos.conf` for the full list of tracked repos.
+## When to /delegate vs /implement
+
+**Prefer /implement (inline, current session):**
+- Single issue
+- Task touches safety-critical zones (`driver/`, `planning/`, `mujoco/`)
+- Task needs cross-cutting awareness (spans multiple projects, shared infra)
+- Issue description alone isn't enough — requires the current session's reasoning trail or just-loaded memory context
+
+**Prefer /delegate (subagent dispatch):**
+- Multiple independent issues (any order works)
+- Each issue description is self-contained — a fresh coding session could act on it without Jarvis's context
+- Tasks touch disjoint files / areas
+
+**Mixed batch — split the work:**
+- Keep context-heavy or safety-critical issues for yourself (inline via /implement flow)
+- Delegate the rest to subagents
+- Report the split reasoning briefly to the owner
+
+**Jarvis judgment overrides the owner's "параллельно":** The owner has explicitly delegated this call to Jarvis (memory: this decision). If a task looks deceptively complex or a subagent will struggle (needs memory context, cross-file reasoning, recent-decisions awareness), keep it inline even if asked to delegate. Don't silently downgrade — tell the owner "keeping #X inline because <reason>".
 
 ## Pipeline
 
 ### 0. Load context from memory (parallel)
 
-Before anything else, recall relevant memories:
+Same as /implement §0:
 - `memory_recall(query="delegation", limit=3)` — past delegation rules and feedback
-- `memory_recall(query=<issue topic>, limit=3)` — decisions about this area
+- `memory_recall(query=<batch topic>, limit=3)` — decisions about this area
 - `memory_recall(type="feedback", project="global", limit=3)` — behavioral rules
 
-Apply recalled context to all subsequent steps. Skip if memories are empty.
+### 1. Classify each issue: delegatable or inline
 
-### 1. Pre-flight checks (parallel work protocol)
+For each issue in the batch:
 
-Before claiming ANY issue, run 5 checks:
-1. `assignees` — someone already assigned?
-2. `status:in-progress` label?
-3. Comments with "Claimed by"?
-4. `gh pr list` — existing PR for this issue?
-5. `git branch -r | grep feat/<N>-` — existing branch?
+1. Run pre-flight (5 checks — same as /implement §1).
+2. Classify:
+   - **Delegatable** → fresh subagent can handle it from the issue body alone
+   - **Inline** → needs session context / safety review / cross-cutting peripheral vision
 
-If ANY check positive → issue is taken, skip it.
+Produce a short split plan for the owner before acting. Example:
 
-### 2. Fetch & analyze
+> Batch: #604, #613, #617.
+> - #604 (uncertainty map) → **delegate** — self-contained, single module.
+> - #613 (swept path) → **inline** — safety-adjacent, `planning/`.
+> - #617 (docs tweak) → **delegate** — trivial.
 
-```bash
-gh issue view <N> --repo <owner/repo> --json number,title,body,labels,milestone
-```
+### 2. Claim all issues
 
-Read the issue body carefully. Check parent issue/epic for context.
-Identify: files to change, acceptance criteria, safety implications.
-
-**Safety-critical zones** (`driver/`, `planning/`, `mujoco/`):
-- Post analysis + plan as comment
-- Wait for owner approval before implementing
-- Do NOT delegate to agents
-
-### 3. Claim & branch
+Claim *everything* in the batch up front (label `status:in-progress` + comment), even the ones staying inline. Prevents race with other Jarvis instances or owner forgetting to route.
 
 ```bash
-gh issue edit <N> --add-label "status:in-progress"
-gh issue comment <N> --body "Claimed by Jarvis. Branch: feat/<N>-<slug>"
-git checkout master && git pull
-git checkout -b feat/<N>-<slug>
+for N in <N1> <N2> ...; do
+  gh issue edit $N --add-label "status:in-progress"
+  gh issue comment $N --body "Claimed by Jarvis. Branch: feat/$N-<slug>"
+done
 ```
 
-### 3.5. Record decision (reasoning trace, #252)
+### 3. Record decision
 
-After claim, before implementation — emit a `decision_made` episode so `/reflect` can later attribute outcomes to reasoning (missing memory / wrong memory / wrong reasoning):
+Emit one `record_decision` covering the batch — which went to subagents, which stayed inline, why.
 
 ```
 mcp__memory__record_decision(
-  decision="implement <issue title> (#<N>)",
-  rationale="<one paragraph: why this issue matters now, what approach is planned, what non-obvious choices were made at claim time>",
-  memories_used=[<ids from step 0 recall>],
-  outcomes_referenced=[],
+  decision="delegate batch #<N1> #<N2> ... (split <inline>/<delegated>)",
+  rationale="<why this split — subagent fitness, session-context dependency, safety zones>",
+  memories_used=[<ids>],
   confidence=<0.0-1.0>,
-  alternatives_considered=["<rejected options — e.g. 'defer to next sprint', 'merge with adjacent issue'>"],
+  alternatives_considered=["all inline", "all delegated", "sequential"],
   reversibility="reversible"
 )
 ```
 
-Always emit for issue delegation — outcome attribution needs the basis. For non-issue decisions, emit only when `reversibility ∈ {hard, irreversible}` OR `confidence < 0.7`.
+### 4. Dispatch subagents
 
-### 4. Implement
-
-**Prefer implementing directly** over spawning subagents:
-- Direct implementation is faster and avoids agent coordination overhead
-- Use Agent tool only for truly parallel independent tasks
-
-**Protected files — DO NOT modify (see `docs/security/agent-boundaries.md`):**
-`.mcp.json`, `config/SOUL.md`, `CLAUDE.md`, `mcp-memory/server.py`, `.claude/settings.json`, `.gitleaks.toml`, `.pre-commit-config.yaml`
-If a change to a protected file is needed, document it in the PR description and leave it for the owner.
-
-**For each change:**
-- Read existing code first (Read tool)
-- Check patterns in the codebase (Grep/Glob)
-- Edit existing files, don't create new ones unless needed
-- Run lint: `ruff check --fix && ruff format` (Python), `npx tsc --noEmit` (TS)
-- Run relevant tests: `pytest tests/test_<module>.py -x -q`
-- Build frontend: `npm run build`
-
-### 5. Commit & PR
-
-```bash
-git add <specific files>
-git commit -m "<type>(<scope>): <description> (#N)"
-git push -u origin feat/<N>-<slug>
-```
-
-**PR body must be rich and informative** — this is the primary context for reviewers (human and Copilot). Use this template:
-
-```markdown
-## Summary
-<what changed, 2-3 sentences — the "what">
-
-## Why
-<problem being solved, link to issue — the "why">
-Closes #<N>
-
-## Decisions & Alternatives
-- **Chose X because Y** (alternative Z was rejected because...)
-- Trade-offs: <what we gained, what we gave up>
-- <any non-obvious choices that a reviewer would question>
-
-## Risk Assessment
-- **LOW**: <cosmetic, imports, naming — safe to auto-apply>
-- **MEDIUM**: <refactors, new helpers — review recommended>
-- **HIGH**: <logic changes, safety-adjacent — must review manually>
-- **CRITICAL**: <data loss risk, security, breaking API — block merge until reviewed>
-
-## Testing
-- <commands run: pytest, ruff, tsc, npm run build>
-- <what was verified: specific scenarios, edge cases>
-
-## Files Changed
-- `file.py` — <why this file, what changed>
-```
-
-Create PR:
-```bash
-gh pr create --title "<type>(<scope>): <description>" --body "$(cat <<'EOF'
-<filled template above>
-EOF
-)"
-```
-
-**Why this matters**: Copilot and human reviewers see reasoning inline, not just diff. HIGH/CRITICAL risks are flagged before review starts. No back-and-forth asking "why did you do X?"
-
-### 6. Record outcome
-
-After PR creation (or failure at any step), record the outcome for Pillar 3 tracking:
+For each delegatable issue, spawn a coding subagent:
 
 ```
-outcome_record(
-  task_type: "delegation",
-  task_description: "<issue title> (#N)",
-  outcome_status: "success" | "partial" | "failure",
-  outcome_summary: "<what happened — PR created, tests passed/failed, etc.>",
-  goal_slug: "<related goal if known>",
-  project: "<repo name>",
-  issue_url: "<issue URL>",
-  pr_url: "<PR URL if created>",
-  tests_passed: true/false,
-  lessons: "<anything non-obvious learned>",
-  pattern_tags: ["delegation", "<area>"]
+Agent(
+  subagent_type="coding",
+  isolation="worktree",  # REQUIRED — each agent in its own worktree
+  description="Implement #<N>: <title>",
+  prompt="<self-contained prompt — see template below>",
+  run_in_background=true,  # parallel execution
 )
 ```
 
-**Always record**, even on failure — failed outcomes are the most valuable for learning.
+**Subagent prompt template** (self-contained — subagent does NOT share main-session memory):
 
-### 7. Batch optimization
+```
+Implement GitHub issue #<N> in repo <owner/repo>.
 
-When implementing multiple related issues:
-- Group into one branch if they touch the same files
-- Separate branches for independent changes (can be merged independently)
-- Address Copilot review comments promptly
+Title: <title>
+Body: <full issue body>
+Acceptance criteria: <enumerated from issue>
+Files likely to change: <list>
 
-### 8. Post-merge cleanup
+Branch name: feat/<N>-<slug>   (MUST use exactly this — branch-name race mitigation)
+Target repo CWD: <absolute path to worktree>
 
-After a PR is merged (or when returning to a previously merged branch):
-```bash
-git checkout master && git pull
-git branch -d feat/<N>-<slug>
+Follow the /implement skill pipeline (loaded in your session). Specifically:
+- §4 Implement — read existing code first, check if already done, lint, test
+- §5 Commit & PR — use the rich PR body template, include "Closes #<N>"
+- §6 Record outcome — always record, pattern_tags=["delegation", "subagent", "<area>"]
+
+HARD RULES for you (subagent):
+- Do NOT merge the PR. Open it, push it, record outcome, stop.
+- Do NOT modify protected files (.mcp.json, CLAUDE.md, etc — see docs/security/agent-boundaries.md)
+- Do NOT send messages as the owner
+- If you hit a blocker you can't resolve, record a "partial" outcome with a clear note about what's missing
+
+Report back: PR URL + 2-line summary of what you did.
 ```
 
-This prevents stale branch accumulation. If the branch has unmerged work, `-d` will refuse — that's correct, don't force it.
+### 4a. Worktree-isolation caveat
 
-## Safety rules
-- Check `git status` before branching — abort if dirty
-- Never force-push, never merge PRs without review
-- If change fails tests or breaks build, fix before pushing
-- Safety-critical code: analyze and comment, don't implement without approval
-- When spawning Agent for parallel work, use `isolation: "worktree"` to prevent git conflicts
+Lesson 2026-04-20 (memory `parallel_delegate_worktree_isolation_failed_2026_04_20`): `isolation: "worktree"` does NOT fully isolate 4+ concurrent agents. Observed failures:
+- Branch-name races (two agents picked the same branch)
+- Cross-worktree file contamination (writes from agent A showed up in agent B's worktree)
 
-## Diff review (before marking done)
+**Mitigations:**
+- Branch names are explicit, per-issue, and unique (`feat/<N>-<slug>`) — encode in the prompt
+- Cap parallelism: **2-3 agents concurrently** is the safe band; 5+ is a red flag
+- Self-review each subagent's diff **in its own worktree** (not just the main repo) before deciding merge
+- If you see contamination, abort and re-dispatch sequentially
 
-Before creating the PR, review your own changes:
+### 5. Implement inline tasks (parallel with the subagents)
+
+While subagents run, use the /implement pipeline for anything you kept for yourself. The two streams are independent.
+
+### 6. Review each subagent's diff
+
+When a subagent reports done, review in its worktree:
+
 ```bash
+cd <worktree-path>
 git diff main...HEAD --stat
 git diff main...HEAD
 ```
 
-Check for:
-- Files that shouldn't have been modified (especially protected files)
-- Debug code, console.log, print statements left behind
-- Unrelated changes that crept in
-- Secrets or credentials in any form
+Check:
+- **Scope fit**: file list matches issue scope? Unrelated files → revert
+- **Protected files** untouched?
+- **Tests added + passing?** Run them in the worktree to confirm.
+- **PR body** rich? (matches /implement §5 template)
+- **Debug code / secrets** leaked?
+- **Symmetric patterns**: did the subagent only fix the one instance, or apply to siblings too?
 
-If the diff looks wrong, fix it before pushing.
+If issues found:
+- Push a fix yourself (faster than re-prompting for small stuff)
+- Or use `SendMessage` to the agent with specific revision instructions
+
+### 7. Decide merge (orchestrator only)
+
+Per each PR (subagent's or your own):
+- Tests green + Copilot clean + LOW/MEDIUM risk → **merge** (see /implement §7.5)
+- HIGH/CRITICAL or safety-critical → wait for owner
+- CI infra-blocked (billing, not failing tests) → merge if local tests pass + Copilot clean
+
+### 8. Record outcomes
+
+One `outcome_record` per issue (delegated or inline). Distinguish:
+- Subagent: `pattern_tags: ["delegation", "subagent", "<area>"]`
+- Inline: `pattern_tags: ["delegation", "inline", "<area>"]`
+
+In `lessons`, note anything non-obvious: subagent misread the issue, scope drift, worktree contamination, etc. These make future delegation decisions smarter.
+
+### 9. Post-merge cleanup
+
+For each merged PR:
+```bash
+git checkout master && git pull
+git branch -d feat/<N>-<slug>
+# if this was a subagent job:
+git worktree remove <worktree-path>
+```
+
+Stale worktrees and branches accumulate fast with multi-issue batches. Clean up at the end.
+
+## Safety rules
+- All /implement safety rules apply
+- **Subagents must NEVER**: merge PRs, force-push, modify protected files, send messages as owner
+- Orchestrator reviews **every** subagent diff before merge
+- Parallelism > 3 concurrent → red flag; prefer sequential or smaller batches
+- If owner says "параллельно все" but one task is unfit → keep it inline and tell the owner why
 
 ## Recovery playbook
 
-See `docs/security/recovery-playbook.md` for how to handle:
-- Agent broke a file → revert from main
-- Agent corrupted memory → `memory_restore`
-- Agent created bad PR → close + delete branch
-- Agent committed to wrong branch → cherry-pick + reset
+See `docs/security/recovery-playbook.md`. Subagent-specific:
+- Subagent edited wrong files → revert in its worktree, re-prompt with stricter scope
+- Subagent broke its worktree → `git worktree remove --force <path>` + reclaim branch in fresh worktree
+- Two subagents raced on same file → abort both, re-dispatch sequentially
+- Subagent silently merged → revert merge on `master` immediately, open incident note, add to agent-boundaries.md
