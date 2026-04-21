@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-agent"
-version = "0.2.0"
+version = "0.4.1"
 description = "Jarvis — universal personal AI agent built on Claude Code + MCP"
 readme = "README.md"
 requires-python = ">=3.11"
