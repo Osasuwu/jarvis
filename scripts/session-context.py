@@ -18,6 +18,7 @@ that happened to reuse the same session_id.
 
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -110,16 +111,49 @@ def _is_compact_resume(hook: dict) -> bool:
     return any(str(c).lower() == "compact" for c in candidates if c)
 
 
-def _load_snapshot_from_supabase(client, session_id: str):
-    """Return snapshot content if `session_snapshot_<session_id>` is fresh, else None."""
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _safe_session_id(session_id) -> str | None:
+    """Return session_id if it matches the allowlist, else None.
+
+    session_id arrives over stdin from Claude Code. Before using it to
+    build a filesystem path or a Supabase `name` we constrain it to an
+    allowlist (alphanum + `_-`) so a malformed/hostile value can't escape
+    the snapshots directory or collide with unrelated memory rows.
+    """
+    if not isinstance(session_id, str):
+        return None
+    sid = session_id.strip()
+    if not sid or not _SESSION_ID_RE.match(sid):
+        return None
+    return sid
+
+
+def _load_snapshot_from_supabase(client, session_id: str, project: str | None = None):
+    """Return snapshot content if `session_snapshot_<session_id>` is fresh, else None.
+
+    Phase 1 upserts snapshots on `(project, name)` — two projects can share
+    a `session_id` and keep separate rows. When `project` is known, filter
+    on it to avoid picking up a sibling row. `.order(..., desc=True)` keeps
+    selection deterministic even when the filter leaves multiple rows.
+    """
     from datetime import datetime, timedelta, timezone
-    name = f"session_snapshot_{session_id}"
+    sid = _safe_session_id(session_id)
+    if not sid:
+        return None
+    name = f"session_snapshot_{sid}"
     try:
-        result = (
+        query = (
             client.table("memories")
             .select("content, updated_at")
             .eq("name", name)
             .is_("deleted_at", "null")
+        )
+        if project:
+            query = query.eq("project", project)
+        result = (
+            query.order("updated_at", desc=True)
             .limit(1)
             .execute()
         )
@@ -141,7 +175,10 @@ def _load_snapshot_from_supabase(client, session_id: str):
 def _load_snapshot_from_local(session_id: str):
     """Return snapshot content from `.claude/session-snapshots/<session_id>.md` if fresh."""
     from datetime import datetime, timedelta, timezone
-    path = _root / ".claude" / "session-snapshots" / f"{session_id}.md"
+    sid = _safe_session_id(session_id)
+    if not sid:
+        return None
+    path = _root / ".claude" / "session-snapshots" / f"{sid}.md"
     if not path.exists():
         return None
     try:
@@ -208,7 +245,7 @@ def main():
     #    resume. Supabase first, local fallback second. Freshness guarded to
     #    avoid cross-run pollution when Claude Code reuses session_ids.
     if compact_resume and session_id:
-        snapshot = _load_snapshot_from_supabase(client, session_id)
+        snapshot = _load_snapshot_from_supabase(client, session_id, project)
         if not snapshot:
             snapshot = _load_snapshot_from_local(session_id)
         if snapshot:

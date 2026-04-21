@@ -190,24 +190,33 @@ def test_load_snapshot_from_local_empty_file(monkeypatch, tmp_path):
 # _load_snapshot_from_supabase
 # ---------------------------------------------------------------------------
 class _FakeTable:
-    def __init__(self, rows):
+    def __init__(self, rows, call_log=None):
         self._rows = rows
-        self._filters = []
+        self._call_log = call_log if call_log is not None else []
 
     # Chain methods — just record calls, return self.
-    def select(self, *_a, **_kw):
+    def select(self, *a, **kw):
+        self._call_log.append(("select", a, kw))
         return self
 
-    def eq(self, *_a, **_kw):
+    def eq(self, *a, **kw):
+        self._call_log.append(("eq", a, kw))
         return self
 
-    def is_(self, *_a, **_kw):
+    def is_(self, *a, **kw):
+        self._call_log.append(("is_", a, kw))
         return self
 
-    def limit(self, *_a, **_kw):
+    def order(self, *a, **kw):
+        self._call_log.append(("order", a, kw))
+        return self
+
+    def limit(self, *a, **kw):
+        self._call_log.append(("limit", a, kw))
         return self
 
     def execute(self):
+        self._call_log.append(("execute", (), {}))
         result = types.SimpleNamespace(data=list(self._rows))
         return result
 
@@ -215,9 +224,10 @@ class _FakeTable:
 class _FakeClient:
     def __init__(self, rows):
         self._rows = rows
+        self.call_log = []
 
     def table(self, _name):
-        return _FakeTable(self._rows)
+        return _FakeTable(self._rows, self.call_log)
 
 
 def test_load_snapshot_from_supabase_fresh_row():
@@ -254,6 +264,103 @@ def test_load_snapshot_from_supabase_no_updated_at_is_kept():
     # (upsert always sets updated_at), but guards against schema drift.
     client = _FakeClient([{"content": "# no ts"}])
     assert sc._load_snapshot_from_supabase(client, "sid") == "# no ts"
+
+
+def test_load_snapshot_from_supabase_with_project_filters_and_orders():
+    # Copilot review fix: with project known, ensure we apply eq(project=...)
+    # and order by updated_at desc before limit.
+    now = datetime.now(timezone.utc).isoformat()
+    client = _FakeClient([{"content": "# snap", "updated_at": now}])
+    assert sc._load_snapshot_from_supabase(client, "sid", "jarvis") == "# snap"
+
+    ops = client.call_log
+    # name filter is there …
+    assert ("eq", ("name", "session_snapshot_sid"), {}) in ops
+    # deleted_at is_null is there …
+    assert ("is_", ("deleted_at", "null"), {}) in ops
+    # project filter is applied when supplied …
+    assert ("eq", ("project", "jarvis"), {}) in ops
+    # order is applied before limit
+    order_idx = next(i for i, op in enumerate(ops) if op[0] == "order")
+    limit_idx = next(i for i, op in enumerate(ops) if op[0] == "limit")
+    assert order_idx < limit_idx
+    order_op = ops[order_idx]
+    assert order_op[1][0] == "updated_at"
+    assert order_op[2].get("desc") is True
+
+
+def test_load_snapshot_from_supabase_without_project_skips_project_filter():
+    now = datetime.now(timezone.utc).isoformat()
+    client = _FakeClient([{"content": "# snap", "updated_at": now}])
+    assert sc._load_snapshot_from_supabase(client, "sid") == "# snap"
+
+    ops = client.call_log
+    # Only the name eq, no project eq.
+    eq_calls = [op for op in ops if op[0] == "eq"]
+    assert ("eq", ("name", "session_snapshot_sid"), {}) in eq_calls
+    assert all(op[1][:1] != ("project",) for op in eq_calls)
+
+
+def test_load_snapshot_from_supabase_rejects_bad_session_id():
+    # Copilot review fix: session_id goes into the Supabase `name` — sanitize
+    # before use so a hostile value can't widen the query.
+    client = _FakeClient([{"content": "anything", "updated_at": datetime.now(timezone.utc).isoformat()}])
+    assert sc._load_snapshot_from_supabase(client, "../escape") is None
+    # Supabase must not be queried at all for a rejected id.
+    assert client.call_log == []
+
+
+# ---------------------------------------------------------------------------
+# _safe_session_id — path-traversal / injection guard
+# ---------------------------------------------------------------------------
+def test_safe_session_id_accepts_typical_uuid():
+    assert sc._safe_session_id("d47e5fb3-4609-4af1-a271-88a29004c7b3") == "d47e5fb3-4609-4af1-a271-88a29004c7b3"
+
+
+def test_safe_session_id_accepts_alnum_and_underscore():
+    assert sc._safe_session_id("abc_123-XYZ") == "abc_123-XYZ"
+
+
+def test_safe_session_id_trims_surrounding_whitespace():
+    assert sc._safe_session_id("  sid  ") == "sid"
+
+
+def test_safe_session_id_rejects_path_traversal():
+    assert sc._safe_session_id("../../etc/passwd") is None
+
+
+def test_safe_session_id_rejects_path_separators():
+    assert sc._safe_session_id("a/b") is None
+    assert sc._safe_session_id("a\\b") is None
+
+
+def test_safe_session_id_rejects_empty_and_non_str():
+    assert sc._safe_session_id("") is None
+    assert sc._safe_session_id("   ") is None
+    assert sc._safe_session_id(None) is None
+    assert sc._safe_session_id(123) is None
+
+
+def test_safe_session_id_rejects_overlong():
+    # Over 128 chars — keep the allowlist tight.
+    assert sc._safe_session_id("a" * 129) is None
+
+
+def test_safe_session_id_rejects_special_chars():
+    assert sc._safe_session_id("a b") is None
+    assert sc._safe_session_id("a;b") is None
+    assert sc._safe_session_id("a$b") is None
+
+
+# Path-traversal must also be rejected by the local loader, not only the
+# sanitizer — this is the end-to-end guarantee.
+def test_load_snapshot_from_local_rejects_path_traversal(monkeypatch, tmp_path):
+    monkeypatch.setattr(sc, "_root", tmp_path)
+    # Seed a file *outside* the snapshots directory that an attacker might
+    # try to reach with `../` — confirm we refuse to read it.
+    outside = tmp_path / "secrets.md"
+    outside.write_text("# sensitive", encoding="utf-8")
+    assert sc._load_snapshot_from_local("../secrets") is None
 
 
 # ---------------------------------------------------------------------------
