@@ -1494,3 +1494,105 @@ class TestRecallLifecycleFilters:
 
         for call in client.rpc.call_args_list:
             assert call.args[1].get("show_history") is True
+
+
+# ---------------------------------------------------------------------------
+# #286: outcome_record / outcome_update must accept and persist memory_id
+# ---------------------------------------------------------------------------
+
+class TestOutcomeMemoryId:
+    """Osasuwu/jarvis#286: task_outcomes.memory_id is the FK that drives the
+    memory_calibration view. The DB column + FK + view already exist; these
+    tests pin the MCP tool layer so future refactors can't drop memory_id
+    from the insert/update payloads and silently re-empty calibration."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_client(self, monkeypatch):
+        self.client = MagicMock()
+        # Chain: client.table(...).insert(...).execute() → data=[{"id": "..."}]
+        self.tbl = MagicMock()
+        self.client.table.return_value = self.tbl
+        self.tbl.insert.return_value.execute.return_value = MagicMock(
+            data=[{"id": "outcome-uuid"}]
+        )
+        # For update: client.table(...).update(...).eq(...).execute() → data=[...]
+        self.tbl.update.return_value.eq.return_value.execute.return_value = MagicMock(
+            data=[{"id": "outcome-uuid"}]
+        )
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+    @pytest.mark.asyncio
+    async def test_outcome_record_persists_memory_id(self):
+        from server import _handle_outcome_record
+
+        await _handle_outcome_record({
+            "task_type": "delegation",
+            "task_description": "test",
+            "outcome_status": "success",
+            "memory_id": "11111111-1111-1111-1111-111111111111",
+        })
+
+        insert_payload = self.tbl.insert.call_args[0][0]
+        assert insert_payload["memory_id"] == "11111111-1111-1111-1111-111111111111"
+
+    @pytest.mark.asyncio
+    async def test_outcome_record_omits_memory_id_when_absent(self):
+        """Backwards-compat: callers that don't pass memory_id still work,
+        and the key is not written as NULL (keeps existing rows' shape)."""
+        from server import _handle_outcome_record
+
+        await _handle_outcome_record({
+            "task_type": "delegation",
+            "task_description": "test",
+            "outcome_status": "success",
+        })
+
+        insert_payload = self.tbl.insert.call_args[0][0]
+        assert "memory_id" not in insert_payload
+
+    @pytest.mark.asyncio
+    async def test_outcome_record_ignores_none_memory_id(self):
+        """Explicit None is treated the same as missing — matches the
+        pattern used for every other optional field in _handle_outcome_record."""
+        from server import _handle_outcome_record
+
+        await _handle_outcome_record({
+            "task_type": "delegation",
+            "task_description": "test",
+            "outcome_status": "success",
+            "memory_id": None,
+        })
+
+        insert_payload = self.tbl.insert.call_args[0][0]
+        assert "memory_id" not in insert_payload
+
+    @pytest.mark.asyncio
+    async def test_outcome_update_persists_memory_id(self):
+        from server import _handle_outcome_update
+
+        await _handle_outcome_update({
+            "id": "outcome-uuid",
+            "memory_id": "22222222-2222-2222-2222-222222222222",
+        })
+
+        update_payload = self.tbl.update.call_args[0][0]
+        assert update_payload["memory_id"] == "22222222-2222-2222-2222-222222222222"
+
+    @pytest.mark.asyncio
+    async def test_outcome_update_retrolinks_without_status_change(self):
+        """memory_id alone is a valid update — no outcome_status flip required.
+        Covers the backfill flow: /verify already marked the row, we just now
+        discovered which memory informed it."""
+        from server import _handle_outcome_update
+
+        result = await _handle_outcome_update({
+            "id": "outcome-uuid",
+            "memory_id": "33333333-3333-3333-3333-333333333333",
+        })
+
+        update_payload = self.tbl.update.call_args[0][0]
+        assert update_payload == {"memory_id": "33333333-3333-3333-3333-333333333333"}
+        # verified_at only auto-sets when outcome_status changes off pending —
+        # memory_id-only update must not touch it.
+        assert "verified_at" not in update_payload
+        assert "updated" in result[0].text
