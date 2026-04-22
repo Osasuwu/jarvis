@@ -29,7 +29,10 @@ from pathlib import Path
 _root = Path(__file__).resolve().parent.parent
 _venv_py = _root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
-if _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
+# Guard: only re-exec when run as script. When imported (e.g. by tests via
+# importlib with a non-"__main__" module name), skip the re-exec so the
+# module's top-level sys.exit doesn't kill pytest collection.
+if __name__ == "__main__" and _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
     sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve())]))
 
 # ---------------------------------------------------------------------------
