@@ -11,5 +11,7 @@ __all__ = [
     "event_monitor",
     "github_client",
     "ollama_client",
+    "safety",
+    "scheduler",
     "supabase_client",
 ]
