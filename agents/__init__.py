@@ -14,4 +14,5 @@ __all__ = [
     "safety",
     "scheduler",
     "supabase_client",
+    "usage_probe",
 ]
