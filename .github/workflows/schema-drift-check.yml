@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
     paths:
-      - 'supabase/schema.sql'
+      - 'mcp-memory/schema.sql'
       - 'supabase/migrations/**'
 
 jobs:
@@ -24,12 +24,12 @@ jobs:
             });
 
             const schemaChanged = files.some(f =>
-              f.filename === 'supabase/schema.sql' &&
+              f.filename === 'mcp-memory/schema.sql' &&
               (f.status === 'modified' || f.status === 'added' || f.status === 'changed')
             );
 
             if (!schemaChanged) {
-              core.info('supabase/schema.sql unchanged — skipping drift check.');
+              core.info('mcp-memory/schema.sql unchanged — skipping drift check.');
               return;
             }
 
@@ -40,7 +40,7 @@ jobs:
 
             if (!migrationAdded) {
               core.setFailed(
-                'supabase/schema.sql changed without a paired migration file.\n' +
+                'mcp-memory/schema.sql changed without a paired migration file.\n' +
                 'schema.sql is aspirational documentation — it does not execute against the live DB.\n' +
                 'Apply the change via `mcp supabase apply_migration` and commit the new\n' +
                 'supabase/migrations/<timestamp>_<name>.sql file in the same PR.\n' +
