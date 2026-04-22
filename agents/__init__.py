@@ -8,6 +8,7 @@ See docs/agents/ for setup and operational notes.
 
 __all__ = [
     "config",
+    "dispatcher",
     "escalation",
     "event_monitor",
     "github_client",
