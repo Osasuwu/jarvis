@@ -254,8 +254,10 @@ def main():
         if snapshot:
             sections.append(_format_recovery_section(snapshot))
 
-    # 1. User memories — who is the owner (always)
-    section, ids = _query_memories(client, mem_type="user", limit=2)
+    # 1. User memories — who is the owner (always). Compact one-line format:
+    #    full bodies rot the context; names + descriptions are enough to
+    #    remind Jarvis what exists. Full content via memory_get on demand.
+    section, ids = _query_memories(client, mem_type="user", limit=2, compact=True)
     if section:
         sections.append("## User Profile\n" + section)
         touched_ids.extend(ids)
@@ -263,7 +265,8 @@ def main():
     # 2. Always-load memories — evergreen rules not tied to any single project.
     #    Everything else (feedback/decisions) is loaded task-aware via
     #    UserPromptSubmit hook (scripts/memory-recall-hook.py).
-    section, ids = _query_always_load(client)
+    #    Compact one-line format for the same reason as user profile.
+    section, ids = _query_always_load(client, compact=True)
     if section:
         sections.append("## Always-Load Rules\n" + section)
         touched_ids.extend(ids)
@@ -323,10 +326,13 @@ def main():
 _MEMORY_COLS = "id, name, type, project, description, content, tags, updated_at"
 
 
-def _query_memories(client, *, mem_type, limit, extra_filter=None):
+def _query_memories(client, *, mem_type, limit, extra_filter=None, compact=False):
     """Query memories table with type filter.
 
     Returns (formatted_text, ids) — ids are used to bump last_accessed_at.
+    When compact=True, renders one line per memory (name + description)
+    instead of full content. Use compact for always-loaded reminders, full
+    for anything Jarvis actually needs to read verbatim (working state).
     """
     try:
         q = client.table("memories").select(_MEMORY_COLS).eq("type", mem_type)
@@ -334,7 +340,9 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None):
             q = extra_filter(q)
         result = q.order("updated_at", desc=True).limit(limit).execute()
         if result.data:
-            text = "\n---\n".join(_fmt_memory(m) for m in result.data)
+            fmt = _fmt_memory_compact if compact else _fmt_memory
+            sep = "\n" if compact else "\n---\n"
+            text = sep.join(fmt(m) for m in result.data)
             ids = [m["id"] for m in result.data if m.get("id")]
             return text, ids
     except Exception as e:
@@ -342,7 +350,7 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None):
     return None, []
 
 
-def _query_always_load(client):
+def _query_always_load(client, *, compact=False):
     """Query memories tagged 'always_load' (evergreen, cross-project rules).
 
     Returns (formatted_text, ids).
@@ -356,7 +364,9 @@ def _query_always_load(client):
             .execute()
         )
         if result.data:
-            text = "\n---\n".join(_fmt_memory(m) for m in result.data)
+            fmt = _fmt_memory_compact if compact else _fmt_memory
+            sep = "\n" if compact else "\n---\n"
+            text = sep.join(fmt(m) for m in result.data)
             ids = [m["id"] for m in result.data if m.get("id")]
             return text, ids
     except Exception as e:
@@ -397,7 +407,7 @@ def _query_catalog(client, project):
             query = query.is_("project", "null")
         result = (
             query.order("last_accessed_at", desc=True, nullsfirst=False)
-            .limit(200)
+            .limit(50)
             .execute()
         )
     except Exception as e:
@@ -485,6 +495,14 @@ def _fmt_memory(m):
     )
 
 
+def _fmt_memory_compact(m):
+    """One-line compact: `- <name>: <description>`. Full via memory_get."""
+    desc = (m.get("description") or "").strip()
+    if len(desc) > 140:
+        desc = desc[:137] + "..."
+    return f"- {m['name']}: {desc}"
+
+
 # ---------------------------------------------------------------------------
 # Goal queries
 # ---------------------------------------------------------------------------
@@ -503,49 +521,31 @@ def _query_goals(client):
         if not result.data:
             return None
         goals = [_fmt_goal(g) for g in result.data]
-        return f"## Active Goals ({len(result.data)})\n" + "\n---\n".join(goals)
+        return f"## Active Goals ({len(result.data)})\n" + "\n".join(goals)
     except Exception as e:
         print(f"[session-context] goals query failed: {e}", file=sys.stderr)
         return None
 
 
 def _fmt_goal(g):
-    deadline = f" | Deadline: {g['deadline']}" if g.get("deadline") else ""
-    direction = f" | Direction: {g['direction']}" if g.get("direction") else ""
-    parent = f" | Sub-goal of: {g['parent_id']}" if g.get("parent_id") else ""
+    """One-line compact goal: title, slug, priority, progress, deadline.
 
-    lines = [
-        f"### {g['title']}",
-        f"`{g['slug']}` | {g.get('project') or 'cross-project'} "
-        f"| {g['priority']} | {g['status']}{deadline}{direction}{parent}",
-    ]
-
-    if g.get("why"):
-        lines.append(f"\n**Why:** {g['why']}")
-
-    # Progress
-    pct = g.get("progress_pct", 0)
-    progress = _parse_json_field(g.get("progress"))
-    if progress:
-        remaining = [p for p in progress if not p.get("done")]
-        done_count = len(progress) - len(remaining)
-        lines.append(f"\n**Progress ({pct}%):** {done_count}/{len(progress)} done")
-        if remaining:
-            lines.append("**Remaining:**")
-            for p in remaining:
-                lines.append(f"- [ ] {p.get('item', p)}")
-
-    # Risks
-    risks = _parse_json_field(g.get("risks"))
-    if risks:
-        lines.append("\n**Risks:** " + "; ".join(risks))
-
-    if g.get("owner_focus"):
-        lines.append(f"\n**Owner focus:** {g['owner_focus']}")
-    if g.get("jarvis_focus"):
-        lines.append(f"**Jarvis focus:** {g['jarvis_focus']}")
-
-    return "\n".join(lines)
+    Full body (why/progress items/risks/focuses) is available via goal_get
+    on demand — same principle as compact memory rendering. Keeping this
+    in always-loaded context means 9+ goals used to burn ~3KB; now ~300B.
+    """
+    scope = g.get("project") or "cross-project"
+    pct = g.get("progress_pct")
+    pct_str = f"{pct}%" if isinstance(pct, (int, float)) else "—"
+    deadline = f", due {g['deadline']}" if g.get("deadline") else ""
+    desc = (g.get("why") or "").strip().splitlines()[0] if g.get("why") else ""
+    if len(desc) > 100:
+        desc = desc[:97] + "..."
+    tail = f" — {desc}" if desc else ""
+    return (
+        f"- [{g['priority']}] {g['title']} "
+        f"(`{g['slug']}` | {scope} | {pct_str}{deadline}){tail}"
+    )
 
 
 def _parse_json_field(val):
