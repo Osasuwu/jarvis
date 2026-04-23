@@ -82,8 +82,7 @@ Always emit for issue implementation — outcome attribution needs the basis. Fo
 
 ### 4. Implement
 
-**Protected files — policy depends on who is editing** (see `docs/security/agent-boundaries.md`):
-`.mcp.json`, `config/SOUL.md`, `CLAUDE.md`, `mcp-memory/server.py`, `.claude/settings.json`, `.gitleaks.toml`, `.pre-commit-config.yaml`
+**Protected files — policy depends on who is editing.** The canonical list (repo-level + user-level `~/.claude/*`) lives in [`docs/security/agent-boundaries.md`](../../../docs/security/agent-boundaries.md). Don't duplicate it here — check that file before editing.
 
 - **Subagent dispatch (`/delegate`)** — never edits protected files. If the task requires it, escalate to inline `/implement`.
 - **Inline `/implement` with explicit owner approval in-session** — MAY edit protected files. Document the change prominently in the PR body (mark the file `[PROTECTED]` in the §Files Changed list + rationale) so the owner sees it before merge.

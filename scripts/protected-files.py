@@ -2,12 +2,20 @@
 
 Checks Edit/Write tool inputs for file paths that match the protected list.
 Exits 2 to block if a protected file is targeted.
+
+Covers two surfaces (kept in sync with ``docs/security/agent-boundaries.md``):
+- Repo-level files under the jarvis working copy (source of truth).
+- User-level files under ``~/.claude/`` installed by ``scripts/install/installer.py``.
+  Editing those affects every Claude Code session on the device, so they get
+  the same protection as the jarvis-repo source.
 """
 
 import json
+import os
 import sys
+from pathlib import Path
 
-# Files that require owner review — agents must not modify these.
+# Repo-level files that require owner review — agents must not modify these.
 PROTECTED_FILES = {
     ".mcp.json",
     "config/SOUL.md",
@@ -17,6 +25,21 @@ PROTECTED_FILES = {
     ".gitleaks.toml",
     ".pre-commit-config.yaml",
 }
+
+# User-level paths (relative to ``~/.claude/``) that require owner review.
+# Expansion target matches installer.py — respects JARVIS_CLAUDE_HOME override.
+_USER_LEVEL_PROTECTED_FILES = {
+    "settings.json",
+    "SOUL.md",
+    ".mcp.json",
+}
+
+
+def _user_claude_home() -> str:
+    """Return the user-level Claude home directory as a forward-slash string."""
+    override = os.environ.get("JARVIS_CLAUDE_HOME")
+    home = Path(override).expanduser() if override else (Path.home() / ".claude")
+    return home.as_posix().rstrip("/")
 
 
 def normalize_path(path: str) -> str:
@@ -34,10 +57,36 @@ def normalize_path(path: str) -> str:
     return path
 
 
+def _is_user_level_protected(normalized: str) -> bool:
+    """True if `normalized` points at a user-level protected file under ``~/.claude/``.
+
+    Anchored to the resolved user home (or ``$JARVIS_CLAUDE_HOME``) so paths
+    like ``some-other-project/.claude/settings.json`` don't false-positive.
+
+    On Windows, the filesystem is case-insensitive so prefix matching is too
+    (e.g. ``c:/users/petrk/.claude/...`` must still match regardless of drive
+    letter / user dir casing); ``os.path.normcase`` handles this. POSIX is
+    left case-sensitive by the same call.
+    """
+    claude_home = _user_claude_home()
+    prefix = os.path.normcase(claude_home + "/")
+    candidate = os.path.normcase(normalized)
+    if not candidate.startswith(prefix):
+        return False
+    rel = normalized[len(prefix):]  # slice the original so case of `rel` is preserved
+    if rel in _USER_LEVEL_PROTECTED_FILES:
+        return True
+    # skills/<name>/SKILL.md — any user-level skill definition.
+    parts = rel.split("/")
+    return len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md"
+
+
 def is_protected(file_path: str) -> bool:
-    """Check if a file path matches any protected file."""
+    """Check if a file path matches any protected file (repo-level or user-level)."""
     normalized = normalize_path(file_path)
-    return normalized in PROTECTED_FILES
+    if normalized in PROTECTED_FILES:
+        return True
+    return _is_user_level_protected(normalized)
 
 
 def block(file_path: str):
