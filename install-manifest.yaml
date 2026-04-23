@@ -53,14 +53,18 @@ groups:
         template: true
 
   - id: skills
-    description: "Core skills (M2 #337)"
-    enabled: false
+    description: "Core skills (M2 #337) — universal, not project-specific"
+    enabled: true
     directories:
-      - source: ".claude/skills"
+      # Source of truth for user-level skills lives in a separate directory so
+      # M5 tombstone can cleanly delete jarvis/.claude/skills/* without touching
+      # project-scoped skills that stay behind (e.g. /sprint-report).
+      - source: ".claude-userlevel/skills"
         dest: "skills"
         template: false
-        # Whitelist — only the skills listed here move to user-level. Niche
-        # or project-specific skills stay in <project>/.claude/skills/.
+        # Whitelist kept explicit so an accidentally-added file (e.g. a README
+        # scratch note under .claude-userlevel/skills/) doesn't leak into
+        # every user's ~/.claude/. Update when adding/removing a core skill.
         include:
           - "autonomous-loop"
           - "delegate"
@@ -72,7 +76,6 @@ groups:
           - "research"
           - "self-improve"
           - "setup-tasks"
-          - "sprint-report"
           - "status"
           - "verify"
 
