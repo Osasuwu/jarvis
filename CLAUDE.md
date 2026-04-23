@@ -26,12 +26,12 @@ Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memo
 
 Before marking any task complete:
 1. **Integration**: does it work in context? Backend → check frontend. API → check consumers. Config → check all 3 devices (different paths/usernames).
-2. **Side effects**: grep callers, run tests. What else uses what you changed?
+2. **Side effects**: what else uses what you changed?
 3. **Memory**: non-obvious learning or improvement idea → `memory_store` (with `source_provenance`).
 4. **Tooling**: manual step that should be automated → propose or record.
 5. **Tests**: end-to-end, not just in isolation.
 
-Before any significant action (delegate, research, architecture decision) → `memory_recall(query=<relevant topic>)`. Past decisions and rejected approaches live in memory — don't contradict them.
+Recall + sibling-grep before implementing come from always_load (`always_recall_before_action`, `feedback_symmetric_fixes`). Don't duplicate here.
 
 ## Project-specific rules
 
@@ -86,14 +86,9 @@ Rules:
 
 ## Autonomous work
 
-Owner often leaves Jarvis to work alone:
+Owner often leaves Jarvis to work alone. Core loop comes from always_load (`quality_over_speed`, `always_recall_before_action`, `verify_before_assuming_implemented`, `autonomous_long_sessions`) + SOUL §Goal awareness.
 
-1. **Don't interpret — understand.** Re-read the issue and discussions. Unclear → do less but correctly.
-2. **Acceptance criteria before code, not after.**
-3. **Tests verify requirements, not implementation.**
-4. **Transform tasks into verifiable goals**: "Fix bug" → write test that reproduces it → make it pass. "Add validation" → tests for invalid inputs → make them pass. "Refactor X" → tests pass before and after.
-5. **Stuck → research, don't hack.** Web search, Context7, docs.
-6. **Check against the goal at every step** — don't drift.
+Project-specific addition — **transform tasks into verifiable goals**: "Fix bug" → write failing test → make it pass. "Add validation" → tests for invalid inputs → make them pass. "Refactor X" → tests pass before and after.
 
 ## Development process
 
