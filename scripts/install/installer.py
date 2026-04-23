@@ -36,7 +36,7 @@ DEFAULT_MANIFEST = "install-manifest.yaml"
 class Action:
     """One planned filesystem action."""
 
-    kind: str  # "copy_file" | "copy_dir" | "write_version" | "set_env"
+    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "write_version" | "set_env"
     source: str | None
     dest: str
     template: bool = False
@@ -204,9 +204,12 @@ def build_plan(
         for entry in group.get("files") or []:
             src = repo_root / entry["source"]
             dest = target_root / entry["dest"]
+            # `merge: true` → deep-merge JSON instead of plain overwrite.
+            # Preserves user keys not owned by jarvis (M3 #338).
+            kind = "merge_json" if entry.get("merge") else "copy_file"
             actions.append(
                 Action(
-                    kind="copy_file",
+                    kind=kind,
                     source=str(src),
                     dest=str(dest),
                     template=bool(entry.get("template")),
@@ -249,7 +252,9 @@ def build_plan(
         )
 
     # Backup only when target_root already exists AND we have destructive actions.
-    has_writes = any(a.kind in {"copy_file", "copy_dir"} for a in actions)
+    has_writes = any(
+        a.kind in {"copy_file", "copy_dir", "merge_json"} for a in actions
+    )
     backup_path: Path | None = None
     if target_root.exists() and has_writes:
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -305,6 +310,89 @@ def _copy_file(
         shutil.copy2(src, dest)
 
 
+# Keys inside `settings.json.hooks` and `.mcp.json.mcpServers` are treated
+# as "wholesale-replace on conflict": when the source declares a hook event
+# or MCP server, it overwrites the target's entry for that key and leaves
+# every other key alone. Per-child-dict replace is the only strategy that
+# stays idempotent (re-apply never duplicates) while still letting users
+# keep custom entries under events/servers jarvis doesn't own.
+_JARVIS_OWNED_REPLACE_PARENTS = ("hooks", "mcpServers")
+
+
+def _deep_merge_jarvis_json(existing: Any, source: Any) -> Any:
+    """Merge `source` onto `existing` using jarvis-aware semantics.
+
+    - For dict parents named in `_JARVIS_OWNED_REPLACE_PARENTS`
+      (top-level `hooks`, `mcpServers`): each child key in `source`
+      wholesale replaces the same key in `existing`; children in
+      `existing` not mentioned by `source` are preserved.
+    - For other dicts: recurse.
+    - For non-dicts at the leaf: `source` wins.
+
+    Not a general-purpose deep-merge — tuned for the two files M3 ships.
+    """
+    if not isinstance(existing, dict) or not isinstance(source, dict):
+        return source
+    out = dict(existing)
+    for key, src_val in source.items():
+        if (
+            key in _JARVIS_OWNED_REPLACE_PARENTS
+            and isinstance(src_val, dict)
+            and isinstance(out.get(key), dict)
+        ):
+            merged_child = dict(out[key])
+            for child_key, child_val in src_val.items():
+                merged_child[child_key] = child_val
+            out[key] = merged_child
+        elif isinstance(src_val, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge_jarvis_json(out[key], src_val)
+        else:
+            out[key] = src_val
+    return out
+
+
+def _merge_json_file(
+    src: Path,
+    dest: Path,
+    template: bool,
+    repo_root: Path,
+    claude_home: Path,
+) -> None:
+    """Write `src` to `dest`, deep-merging with any existing dest JSON.
+
+    If dest exists and parses as JSON, merge (user keys jarvis doesn't own
+    are preserved). If dest is absent or unparseable, fall through to a
+    plain write — identical to `_copy_file` in that case.
+    """
+    if template:
+        new_bytes = template_content(src, repo_root, claude_home)
+    else:
+        new_bytes = src.read_bytes()
+    try:
+        new_data = json.loads(new_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        # Not JSON — fall back to plain write. Shouldn't happen for
+        # manifest entries flagged `merge: true`, but safe by default.
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(new_bytes)
+        return
+
+    merged: Any = new_data
+    if dest.exists():
+        try:
+            existing = json.loads(dest.read_text(encoding="utf-8"))
+            merged = _deep_merge_jarvis_json(existing, new_data)
+        except (OSError, json.JSONDecodeError):
+            # Unparseable existing → treat as absent (backup already captured it).
+            merged = new_data
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        json.dumps(merged, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _set_env(name: str, value: str, platform: str) -> None:
     if platform == "windows":
         subprocess.run(["setx", name, value], check=False, capture_output=True)
@@ -340,6 +428,14 @@ def apply_plan(
     for action in plan.actions:
         if action.kind == "copy_file":
             _copy_file(
+                Path(action.source),
+                Path(action.dest),
+                action.template,
+                plan.repo_root,
+                plan.target_root,
+            )
+        elif action.kind == "merge_json":
+            _merge_json_file(
                 Path(action.source),
                 Path(action.dest),
                 action.template,
@@ -469,6 +565,11 @@ def format_plan(plan: Plan) -> str:
             if a.kind == "copy_file":
                 lines.append(
                     f"  copy_file  [{a.group:>14}] {a.source} -> {a.dest}"
+                    + ("  (template)" if a.template else "")
+                )
+            elif a.kind == "merge_json":
+                lines.append(
+                    f"  merge_json [{a.group:>14}] {a.source} -> {a.dest}"
                     + ("  (template)" if a.template else "")
                 )
             elif a.kind == "copy_dir":
