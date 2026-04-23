@@ -117,6 +117,7 @@ HARD RULES for you (subagent):
 - Do NOT merge the PR. Open it, push it, record outcome, stop.
 - Do NOT modify protected files (.mcp.json, CLAUDE.md, etc — see docs/security/agent-boundaries.md)
 - Do NOT send messages as the owner
+- Do NOT change values, defaults, or constants that are not explicitly named as targets in the issue body. Centralization / refactoring tasks are structural only — IK seeds, default timeouts, magic numbers, tuple constants must be preserved exactly unless the issue says to change them. If the issue is unclear, preserve the value and flag in the PR body.
 - If you hit a blocker you can't resolve, record a "partial" outcome with a clear note about what's missing
 
 Report back: PR URL + 2-line summary of what you did.
@@ -124,14 +125,15 @@ Report back: PR URL + 2-line summary of what you did.
 
 ### 4a. Worktree-isolation caveat
 
-Lesson 2026-04-20 (memory `parallel_delegate_worktree_isolation_failed_2026_04_20`): `isolation: "worktree"` does NOT fully isolate 4+ concurrent agents. Observed failures:
+**`isolation: "worktree"` is advisory only, not guaranteed.** Documented failures: #295, #640 v1, #640 v2, and 2026-04-20 parallel-delegate contamination (memory `parallel_delegate_worktree_isolation_failed_2026_04_20`). Observed modes:
 - Branch-name races (two agents picked the same branch)
 - Cross-worktree file contamination (writes from agent A showed up in agent B's worktree)
+- Worktree not created at all — agent worked in the main repo directly
 
 **Mitigations:**
 - Branch names are explicit, per-issue, and unique (`feat/<N>-<slug>`) — encode in the prompt
 - Cap parallelism: **2-3 agents concurrently** is the safe band; 5+ is a red flag
-- Self-review each subagent's diff **in its own worktree** (not just the main repo) before deciding merge
+- **Review the diff in the main repo tree as the authoritative check** — `cd <main repo> && git fetch && git diff origin/master...origin/feat/<N>-<slug>`. Treat the agent's worktree as a staging area, not a trusted sandbox.
 - If you see contamination, abort and re-dispatch sequentially
 
 ### 5. Implement inline tasks (parallel with the subagents)
@@ -140,25 +142,32 @@ While subagents run, use the /implement pipeline for anything you kept for yours
 
 ### 6. Review each subagent's diff
 
-When a subagent reports done, review in its worktree:
+When a subagent reports done, review **in the main repo tree, not the agent's worktree** (§4a — worktree isolation is advisory):
 
 ```bash
-cd <worktree-path>
-git diff main...HEAD --stat
-git diff main...HEAD
+cd <main repo>
+git fetch origin
+git diff origin/master...origin/feat/<N>-<slug> --stat
+git diff origin/master...origin/feat/<N>-<slug>
 ```
 
-Check:
+Run the following checks in order — do NOT short-circuit:
+
 - **Scope fit**: file list matches issue scope? Unrelated files → revert
 - **Protected files** untouched?
-- **Tests added + passing?** Run them in the worktree to confirm.
+- **Value-change audit**: grep the diff for numeric literals, default parameter values, seed arrays, tuple constants, timeouts, thresholds. For each value that changed, confirm the change is explicitly mandated by the issue body. Silent replacements are scope drift and must be reverted.
+  - Lesson #648: subagent silently replaced IK seeds `[0,-30,30,0,-60,0]` with `ready_position` — same shape, different semantics (optimizer convergence inputs, not motion targets). Silent behavior change the subagent didn't flag.
+- **Interaction audit**: for every non-trivial edit, trace data flow outward — what callers depend on the pre-existing behavior? what fallbacks or post-processors run after the changed code? Ask "does this still compose correctly?" not just "does the code do what it says?"
+  - Lesson #649 v2: after 6-DOF IK fires for in-place rotation, the pre-existing J6-pin fallback would clobber J6 back to its previous value, silently undoing the rotation. The subagent's diff was locally correct but interacted incorrectly with existing code.
+- **Tests added + passing?** Run them from the main repo on the branch (`git checkout feat/<N>-<slug> && pytest ...`).
 - **PR body** rich? (matches /implement §5 template)
 - **Debug code / secrets** leaked?
-- **Symmetric patterns**: did the subagent only fix the one instance, or apply to siblings too?
+- **Symmetric patterns**: did the subagent fix only the one instance, or apply to siblings too?
 
 If issues found:
 - Push a fix yourself (faster than re-prompting for small stuff)
 - Or use `SendMessage` to the agent with specific revision instructions
+- If the diff contains ANY silent value change or broken interaction → revert those hunks before merge decision, even if the rest is fine
 
 ### 7. Decide merge (orchestrator only)
 
