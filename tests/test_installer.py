@@ -303,21 +303,40 @@ def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
     assert (plan.target_root / "settings.json").exists()
 
 
-def test_real_manifest_all_groups_disabled_yields_minimal_plan(fake_repo: Path) -> None:
-    """The real repo manifest ships with all groups disabled for M1.
-    Plan must still produce a version marker + env var so the installer
-    is meaningful even before M2-M4 enable the groups.
+def test_real_manifest_m2_enables_only_skills_group() -> None:
+    """Real manifest shape after M2 (#337): skills group flipped on, others
+    still disabled pending M3/M4. Guards against accidental early flips.
     """
     real = Path(__file__).resolve().parents[1] / "install-manifest.yaml"
-    if not real.exists():
-        pytest.skip("no real manifest")
+    assert real.exists(), "install-manifest.yaml must ship in-tree"
     m = installer.load_manifest(real)
-    # Re-point target to a tmp dir to avoid touching user home.
-    target = fake_repo.parent / "sandbox-claude"
-    plan = installer.build_plan(m, fake_repo, target_root_override=str(target))
-    kinds = [a.kind for a in plan.actions]
-    assert "write_version" in kinds
-    assert "set_env" in kinds
-    # No copies while all groups disabled.
-    assert "copy_file" not in kinds
-    assert "copy_dir" not in kinds
+
+    by_id = {g["id"]: g for g in m["groups"]}
+    assert by_id["skills"]["enabled"] is True
+    assert by_id["skills"]["directories"][0]["source"] == ".claude-userlevel/skills"
+    # Whitelist must exclude sprint-report (project-scoped per #337 spec).
+    include = by_id["skills"]["directories"][0]["include"]
+    assert "sprint-report" not in include
+    assert "implement" in include and "delegate" in include
+
+    for gid in ("soul", "hooks_settings", "mcp_config"):
+        assert by_id[gid]["enabled"] is False, (
+            f"{gid} flipped ahead of its milestone — should stay off until M3/M4"
+        )
+
+
+def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
+    """Source-of-truth directory must exist with every whitelisted skill."""
+    repo_root = Path(__file__).resolve().parents[1]
+    src = repo_root / ".claude-userlevel" / "skills"
+    assert src.is_dir(), f"{src} must exist — M2 source of truth"
+
+    m = installer.load_manifest(repo_root / "install-manifest.yaml")
+    include = next(
+        d["include"]
+        for g in m["groups"] if g["id"] == "skills"
+        for d in g["directories"]
+    )
+    for name in include:
+        skill_md = src / name / "SKILL.md"
+        assert skill_md.exists(), f"whitelisted skill missing: {skill_md}"
