@@ -1,26 +1,25 @@
 # `.claude-userlevel/` — source of truth for user-level Jarvis
 
 This directory mirrors what ships to `~/.claude/` via
-`scripts/install/installer.py`. Keep it separate from `.claude/` so M5 (#340)
-can tombstone the project-scoped copy cleanly without deleting
-project-specific skills that legitimately stay under
-`jarvis/.claude/skills/` (e.g. `/sprint-report`).
+`scripts/install/installer.py`. It is the single source of truth for
+user-level Jarvis — the project-scoped `jarvis/.claude/` directory only
+keeps project-specific bits now (see [`.claude/README.md`](../.claude/README.md)).
 
 ## Layout
 
 ```
 .claude-userlevel/
-├── settings.json    # Hooks (M3 #338) — deep-merged with user's existing
-├── .mcp.json        # MCP servers (M3 #338) — deep-merged with user's existing
+├── settings.json    # Hooks — deep-merged with user's existing (M3 #338)
+├── .mcp.json        # MCP servers — deep-merged with user's existing (M3 #338)
 └── skills/          # Core universal skills (M2 #337)
     ├── implement/
     ├── delegate/
     └── ...
 ```
 
-Later milestones will add:
-
-- `SOUL.md` (M4 #339)
+`SOUL.md` is not in this tree — its canonical location is
+[`config/SOUL.md`](../config/SOUL.md); the installer copies it to
+`~/.claude/SOUL.md` (M4 #339).
 
 ## M3: how `settings.json` / `.mcp.json` land at `~/.claude/`
 
@@ -51,16 +50,12 @@ half-finished skill into this tree doesn't auto-leak into every user's
 `~/.claude/`. Add new core skills to the `skills.include` list in
 `install-manifest.yaml` at the same time you add the directory here.
 
-## Keeping in sync with `.claude/skills/`
+## Editing core skills
 
-Until M5, the same skill exists in two places (DRY violation accepted
-for the no-op window). Pick one as canonical on each edit:
-
-- **Core skill change** → edit `.claude-userlevel/skills/<name>/` and
-  also update the duplicate in `.claude/skills/<name>/` so project-CWD
-  Claude Code keeps working. Simplest rule: edit both in one commit.
-- After M5 merges, `.claude/skills/<core>/` is deleted and the
-  userlevel copy becomes the only copy.
+Edit `.claude-userlevel/skills/<name>/SKILL.md` and re-run
+`install.ps1 -Apply` (or `install.sh --apply`) to propagate the change to
+`~/.claude/skills/<name>/`. That's the only copy Claude Code loads — the
+project-scoped `jarvis/.claude/skills/<core>/` was removed in M5 (#340).
 
 ## Path portability — status after M3
 
