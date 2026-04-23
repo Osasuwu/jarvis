@@ -30,8 +30,13 @@ groups:
 
   - id: soul
     description: "SOUL.md — personality/behavioral rules (M4 #339)"
-    enabled: false
+    enabled: true
     files:
+      # Canonical source stays at jarvis/config/SOUL.md (git-versioned,
+      # PR-reviewed). Installer copies to ~/.claude/SOUL.md so the
+      # user-level SessionStart hook reads it regardless of CWD.
+      # Edit flow: edit jarvis/config/SOUL.md -> PR review -> merge ->
+      # `git pull && install.ps1` on each device propagates.
       - source: "config/SOUL.md"
         dest: "SOUL.md"
         template: false

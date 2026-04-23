@@ -303,10 +303,9 @@ def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
     assert (plan.target_root / "settings.json").exists()
 
 
-def test_real_manifest_m3_enables_skills_hooks_mcp_but_not_soul() -> None:
-    """Real manifest shape after M3 (#338): skills + hooks_settings +
-    mcp_config flipped on; soul still disabled (pending M4 #339).
-    Guards against accidental early flip of SOUL.
+def test_real_manifest_m4_all_groups_enabled() -> None:
+    """Real manifest shape after M4 (#339): all 4 groups enabled.
+    soul joins skills + hooks_settings + mcp_config.
     """
     real = Path(__file__).resolve().parents[1] / "install-manifest.yaml"
     assert real.exists(), "install-manifest.yaml must ship in-tree"
@@ -319,8 +318,6 @@ def test_real_manifest_m3_enables_skills_hooks_mcp_but_not_soul() -> None:
     assert "sprint-report" not in include
     assert "implement" in include and "delegate" in include
 
-    # M3: hooks + mcp enabled, both pointing at .claude-userlevel/ sources
-    # and marked merge:true so user keys survive.
     assert by_id["hooks_settings"]["enabled"] is True
     settings_entry = by_id["hooks_settings"]["files"][0]
     assert settings_entry["source"] == ".claude-userlevel/settings.json"
@@ -333,10 +330,39 @@ def test_real_manifest_m3_enables_skills_hooks_mcp_but_not_soul() -> None:
     assert mcp_entry["merge"] is True
     assert mcp_entry["template"] is True
 
-    # SOUL stays off until M4.
-    assert by_id["soul"]["enabled"] is False, (
-        "soul flipped ahead of M4 — must stay off until #339"
-    )
+    # M4: soul flipped on. Source stays at config/SOUL.md (canonical git-tracked).
+    # Dest SOUL.md lands at ~/.claude/SOUL.md via plain copy (no template, no merge).
+    assert by_id["soul"]["enabled"] is True
+    soul_entry = by_id["soul"]["files"][0]
+    assert soul_entry["source"] == "config/SOUL.md"
+    assert soul_entry["dest"] == "SOUL.md"
+    assert soul_entry.get("template", False) is False
+    assert soul_entry.get("merge", False) is False
+
+
+def test_userlevel_settings_points_soul_at_user_level(fake_repo: Path) -> None:
+    """M4 (#339) acceptance: rendered SessionStart command reads SOUL from
+    {{CLAUDE_USER_HOME}}/SOUL.md (so it works in any CWD, not tied to
+    JARVIS_HOME — user-level install becomes the source of SOUL at runtime)."""
+    repo_root = Path(__file__).resolve().parents[1]
+    settings_src = repo_root / ".claude-userlevel" / "settings.json"
+    claude_home = Path("/opt/fakehome/.claude")
+    rendered = installer.template_content(
+        settings_src, repo_root, claude_home
+    ).decode("utf-8")
+    data = json.loads(rendered)
+    # Every SessionStart cat must reference the user-level SOUL, not
+    # <JARVIS_HOME>/config/SOUL.md.
+    for entry in data["hooks"]["SessionStart"]:
+        for hook in entry["hooks"]:
+            cmd = hook["command"]
+            if "SOUL.md" in cmd:
+                assert f"{claude_home.as_posix()}/SOUL.md" in cmd, (
+                    f"SessionStart SOUL path not rewritten to user level: {cmd}"
+                )
+                assert "config/SOUL.md" not in cmd, (
+                    f"leftover relative config/SOUL.md reference: {cmd}"
+                )
 
 
 def test_userlevel_source_files_exist() -> None:
@@ -618,27 +644,28 @@ def test_merge_action_kind_in_plan(manifest: Path, fake_repo: Path) -> None:
 
 
 def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None:
-    """The real .claude-userlevel/ templates must get scripts/ -> abs rewritten."""
+    """The real .claude-userlevel/ templates must get scripts/ -> abs rewritten.
+
+    Post-M4 (#339): settings.json no longer has a `config/SOUL.md`
+    reference — SOUL is read from `{{CLAUDE_USER_HOME}}/SOUL.md`.
+    """
     repo_root = Path(__file__).resolve().parents[1]
     settings_src = repo_root / ".claude-userlevel" / "settings.json"
     mcp_src = repo_root / ".claude-userlevel" / ".mcp.json"
 
     settings_rendered = installer.template_content(
-        settings_src, repo_root, Path("/tmp/ignore")
+        settings_src, repo_root, Path("/opt/fake/.claude")
     ).decode("utf-8")
     mcp_rendered = installer.template_content(
-        mcp_src, repo_root, Path("/tmp/ignore")
+        mcp_src, repo_root, Path("/opt/fake/.claude")
     ).decode("utf-8")
 
     repo_posix = repo_root.as_posix()
     # Every `scripts/` reference in the rendered output is absolute-rooted.
     assert "python scripts/" not in settings_rendered
     assert f"{repo_posix}/scripts/" in settings_rendered
-    assert f"{repo_posix}/config/" in settings_rendered
     # mcp: args use relative paths that should rewrite too.
-    assert "scripts/run-memory-server.py" not in json.dumps(
-        json.loads(mcp_rendered)["mcpServers"]["memory"]["args"]
-    ) or f"{repo_posix}/scripts/run-memory-server.py" in mcp_rendered
+    assert f"{repo_posix}/scripts/run-memory-server.py" in mcp_rendered
 
 
 def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
