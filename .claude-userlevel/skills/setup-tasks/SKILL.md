@@ -26,12 +26,12 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 
 | Task ID | Cron | Prompt |
 |---------|------|--------|
-| nightly-research | `17 7 * * *` | Read `.claude/skills/research/SKILL.md` and run in `--mode=autonomous` |
-| morning-brief | `43 7 * * *` | Read and run `.claude/skills/status/SKILL.md` |
+| nightly-research | `17 7 * * *` | Run `/research` in `--mode=autonomous` |
+| morning-brief | `43 7 * * *` | Run `/status` |
 | risk-radar | `7 9,14,19 * * *` | Quick risk scan: check CI status, stale issues, security alerts across repos in `config/repos.conf` |
-| autonomous-loop | `3 9 * * *` | Read and run `.claude/skills/autonomous-loop/SKILL.md` |
+| autonomous-loop | `3 9 * * *` | Run `/autonomous-loop` |
 | intel | `12 10 * * 1` | Weekly tech intelligence: search for new Claude Code features, MCP servers, AI agent patterns. Save findings to memory. |
-| verify | `47 16 * * 5` | Read and run `.claude/skills/verify/SKILL.md` — verify pending outcomes, detect patterns, save lessons. |
+| verify | `47 16 * * 5` | Run `/verify` — verify pending outcomes, detect patterns, save lessons. |
 
 ## Notes
 
