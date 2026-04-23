@@ -564,11 +564,18 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[bool, l
         # posix=False on Windows keeps backslashes intact.
         argv = shlex.split(cmd, posix=(os.name != "nt"))
         try:
+            # Force UTF-8 for subprocess I/O — text=True alone defaults to
+            # locale.getpreferredencoding(False), which on Russian Windows is
+            # cp1251 and can't decode the em-dashes / Cyrillic that session
+            # scripts emit. errors="replace" keeps the reader threads alive
+            # even if a rogue script ever emits garbage bytes (#352).
             result = subprocess.run(
                 argv,
                 cwd=repo_root,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=30,
             )
         except (OSError, subprocess.TimeoutExpired) as exc:

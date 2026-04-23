@@ -288,6 +288,24 @@ def test_health_check_failed_command_reports_failure(fake_repo: Path) -> None:
     assert any("FAIL" in line for line in logs)
 
 
+def test_health_check_handles_utf8_output(fake_repo: Path) -> None:
+    """Regression for #352: on non-UTF-8 Windows locales (e.g. cp1251),
+    text=True without explicit encoding crashes the reader thread when a
+    health-check script emits em-dashes / Cyrillic. The parent call now
+    forces encoding='utf-8', errors='replace' — asserting the guarantee
+    here locks that in regardless of the host's locale."""
+    payload = 'import sys; sys.stdout.buffer.write("before \u2014 после\n".encode("utf-8"))'
+    m = {
+        "health_check": {
+            "enabled": True,
+            "commands": [f'python -c "{payload}"'],
+        }
+    }
+    ok, logs = installer.run_health_check(m, fake_repo)
+    assert ok is True, logs
+    assert any("OK" in line for line in logs)
+
+
 def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     for g in data["groups"]:
