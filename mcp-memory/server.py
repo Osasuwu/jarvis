@@ -1856,9 +1856,9 @@ async def _keyword_recall(
     scripts/session-context.py _load_recent_recall_results.
     """
     cols = (
-        "name, type, project, description, tags, updated_at, valid_to"
+        "id, name, type, project, description, tags, updated_at, valid_to"
         if brief
-        else "name, type, project, description, content, tags, updated_at, valid_to"
+        else "id, name, type, project, description, content, tags, updated_at, valid_to"
     )
     q = (
         client.table("memories")
@@ -1988,11 +1988,11 @@ def _format_memories(
                 score_str = ""
             desc = (mem.get("description") or "").strip()
             formatted.append(
-                f"- {mem['name']} [{mem['type']}/{proj}]{tags_str}{score_str}{link_str}: {desc}"
+                f"- {mem['name']} [{mem['type']}/{proj}]{tags_str}{score_str}{link_str}: {desc} — id={mem.get('id', '?')}"
             )
         else:
             formatted.append(
-                f"## {mem['name']} ({mem['type']}, {proj}){tags_str}{link_str}\n"
+                f"## {mem['name']} ({mem['type']}, {proj}){tags_str}{link_str} — id=`{mem.get('id', '?')}`\n"
                 f"*{mem.get('description', '')}*\n"
                 f"Updated: {mem.get('updated_at', '?')}\n\n"
                 f"{mem['content']}\n"
