@@ -88,9 +88,14 @@ SIMILARITY_THRESHOLD = 0.30  # calibrated 2026-04-17: real user prompts hit 0.35
 # 5-10 full bodies into every UserPromptSubmit.
 BRIEF_MODE = True
 CHAR_BUDGET_FULL = 40_000    # ~10K tokens, ~5% of 200K window (legacy path)
-CHAR_BUDGET_BRIEF = 12_000   # ~3K tokens — ~60 brief entries at ~200 chars each
+CHAR_BUDGET_BRIEF = 12_000   # ~3K tokens ceiling — rarely hit after MAX_BRIEF_ENTRIES cap
 CHAR_BUDGET = CHAR_BUDGET_BRIEF if BRIEF_MODE else CHAR_BUDGET_FULL
 FETCH_LIMIT = 50             # pull wide per signal, cap by budget in Python
+# Cap brief-mode injection at top-N direct hits. Earlier default was char-budget
+# only, which let 30-40 entries through every prompt (~4-5KB) — mostly tail
+# noise the agent never reads. Top-7 preserves the relevance head; deeper hits
+# stay reachable via memory_recall on demand.
+MAX_BRIEF_ENTRIES = 7
 
 # Phase 7.3: known-unknowns as per-prompt gate. When the current prompt is
 # semantically close to an open known_unknown (a query that previously hit
@@ -795,6 +800,8 @@ def main():
     for row in rows:
         block = formatter(row) + separator
         if total + len(block) > char_budget:
+            break
+        if brief_mode and len(included_ids) >= MAX_BRIEF_ENTRIES:
             break
         parts.append(block)
         total += len(block)
