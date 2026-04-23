@@ -325,6 +325,117 @@ def test_real_manifest_m2_enables_only_skills_group() -> None:
         )
 
 
+# ---------- #344: tightening before M3 ----------
+
+
+def test_path_rewrite_preserves_urls() -> None:
+    """Regex must NOT rewrite `scripts/` / `config/` tokens that are part of
+    a URL or a compound identifier. Was `\\b(scripts|config)/` — too greedy.
+    """
+    data = {
+        "docs": "https://example.com/scripts/foo",
+        "nested": {"ref": "https://cdn.example.com/config/v2/x.yaml"},
+        "compound": "my-scripts/foo",
+        "list": ["https://gh.io/scripts/a", "scripts/keep"],
+    }
+    out = installer._transform_json_paths(data, "/abs/repo")
+    assert out["docs"] == "https://example.com/scripts/foo"
+    assert out["nested"]["ref"] == "https://cdn.example.com/config/v2/x.yaml"
+    assert out["compound"] == "my-scripts/foo"
+    # The one real path still gets rewritten.
+    assert out["list"][0] == "https://gh.io/scripts/a"
+    assert out["list"][1] == "/abs/repo/scripts/keep"
+
+
+def test_path_rewrite_handles_embedded_command_paths() -> None:
+    """Command strings with multiple relative paths (whitespace-separated)
+    must have all path tokens rewritten."""
+    cmd = "python scripts/a.py && cat config/SOUL.md && python scripts/b.py"
+    out = installer._transform_json_paths(cmd, "/abs/repo")
+    assert "/abs/repo/scripts/a.py" in out
+    assert "/abs/repo/config/SOUL.md" in out
+    assert "/abs/repo/scripts/b.py" in out
+    assert " scripts/" not in out
+    assert " config/" not in out
+
+
+def test_fresh_install_rollback_on_apply_failure(
+    manifest: Path, fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh-state apply failure must leave target_root removed, not half-written.
+
+    Without the fix, a failure mid-apply leaves a stub directory that
+    detect_state reads as outdated next time, masking the original error.
+    """
+    m = installer.load_manifest(manifest)
+    plan = installer.build_plan(m, fake_repo)
+    assert plan.state == "fresh"
+    assert plan.backup_path is None
+
+    # Make apply create the target dir (simulating partial write) then fail.
+    real_copy_file = installer._copy_file
+    call_count = {"n": 0}
+
+    def flaky_copy_file(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            real_copy_file(*args, **kwargs)
+            return
+        raise RuntimeError("simulated apply failure")
+
+    monkeypatch.setattr(installer, "_copy_file", flaky_copy_file)
+
+    with pytest.raises(RuntimeError, match="simulated apply failure"):
+        installer.apply_plan(plan, m, run_env=None)
+
+    # Sanity: target_root exists and has partial content.
+    assert plan.target_root.exists()
+    assert any(plan.target_root.iterdir())
+
+    # Now invoke the rollback helper directly (what main() does in the except).
+    installer._rollback_failed_apply(plan)
+    assert not plan.target_root.exists(), (
+        "fresh install failure must remove target_root entirely"
+    )
+
+
+def test_health_check_uses_shlex_for_argv_parsing(
+    fake_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """cmd.split() broke on paths with spaces; shlex handles quoted args."""
+    seen: list[list[str]] = []
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+        stdout = ""
+
+    def fake_run(argv, **kwargs):
+        seen.append(list(argv))
+        return FakeResult()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+
+    m = {
+        "health_check": {
+            "enabled": True,
+            "commands": [
+                'python "/tmp/path with spaces/script.py" --flag value',
+            ],
+        }
+    }
+    ok, _logs = installer.run_health_check(m, fake_repo)
+    assert ok is True
+    assert len(seen) == 1
+    argv = seen[0]
+    # Whether posix or windows flavor of shlex, the quoted path must stay
+    # as ONE argv element (not split on spaces).
+    assert any("path with spaces" in tok for tok in argv), (
+        f"quoted path split by whitespace: argv={argv}"
+    )
+    assert argv[0] == "python"
+
+
 def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
     """Source-of-truth directory must exist with every whitelisted skill."""
     repo_root = Path(__file__).resolve().parents[1]

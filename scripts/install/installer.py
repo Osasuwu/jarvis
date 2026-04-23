@@ -16,6 +16,7 @@ import datetime as dt
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -114,7 +115,11 @@ def detect_state(target_root: Path, current_sha: str) -> tuple[str, str | None]:
 # ---------- template substitution ----------
 
 
-_POSIX_PATH_PATTERN = re.compile(r"\b(scripts|config)/")
+# Match `scripts/` or `config/` only at a token boundary — start of string or
+# preceded by whitespace. Protects URLs (`https://.../scripts/x`) and compound
+# names (`my-scripts/x`) from being rewritten, while still catching embedded
+# commands like `python scripts/foo.py && cat config/SOUL.md`.
+_POSIX_PATH_PATTERN = re.compile(r"(?<!\S)(scripts|config)/")
 
 
 def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
@@ -396,15 +401,38 @@ def rollback(target_root: Path, backup_path: Path) -> None:
     shutil.copytree(backup_path, target_root)
 
 
+def _rollback_failed_apply(plan: Plan) -> None:
+    """Restore target_root to pre-apply state after a failed apply.
+
+    - outdated/current path → restore from backup (backup_path is set).
+    - fresh path → backup_path is None (nothing to restore from), so rmtree
+      the half-written target so the next run starts clean. Without this,
+      a failed fresh install leaves a stub that `detect_state` reads as
+      outdated, masking the real failure.
+    """
+    if plan.backup_path and plan.backup_path.exists():
+        print(f"rolling back from {plan.backup_path}", file=sys.stderr)
+        rollback(plan.target_root, plan.backup_path)
+        return
+    if plan.state == "fresh" and plan.target_root.exists():
+        print(
+            f"fresh install failed — removing {plan.target_root}", file=sys.stderr
+        )
+        shutil.rmtree(plan.target_root, ignore_errors=True)
+
+
 def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[bool, list[str]]:
     hc = manifest.get("health_check") or {}
     if not hc.get("enabled"):
         return True, []
     logs: list[str] = []
     for cmd in hc.get("commands") or []:
+        # Use shlex so paths with spaces survive — `cmd.split()` breaks them.
+        # posix=False on Windows keeps backslashes intact.
+        argv = shlex.split(cmd, posix=(os.name != "nt"))
         try:
             result = subprocess.run(
-                cmd.split(),
+                argv,
                 cwd=repo_root,
                 capture_output=True,
                 text=True,
@@ -518,9 +546,7 @@ def main(argv: list[str] | None = None) -> int:
         apply_plan(plan, manifest, run_env=env_runner)
     except Exception as exc:  # noqa: BLE001
         print(f"\napply failed: {exc}", file=sys.stderr)
-        if plan.backup_path and plan.backup_path.exists():
-            print(f"rolling back from {plan.backup_path}", file=sys.stderr)
-            rollback(plan.target_root, plan.backup_path)
+        _rollback_failed_apply(plan)
         return 2
 
     if not args.skip_health_check:
@@ -529,9 +555,7 @@ def main(argv: list[str] | None = None) -> int:
             print(line)
         if not ok:
             print("\nhealth check failed", file=sys.stderr)
-            if plan.backup_path and plan.backup_path.exists():
-                print(f"rolling back from {plan.backup_path}", file=sys.stderr)
-                rollback(plan.target_root, plan.backup_path)
+            _rollback_failed_apply(plan)
             return 3
 
     backup_cfg = manifest.get("backup") or {}
