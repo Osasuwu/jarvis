@@ -111,6 +111,21 @@ def test_blocks_user_level_skill_backslashes(fake_claude_home):
     assert is_protected(winpath)
 
 
+def test_blocks_user_level_mcp_backslashes(fake_claude_home):
+    # Symmetry with SKILL.md — ensure the full user-level surface handles backslashes.
+    winpath = fake_claude_home.replace("/", "\\") + "\\.mcp.json"
+    assert is_protected(winpath)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only: NTFS is case-insensitive")
+def test_blocks_user_level_case_insensitive_on_windows(fake_claude_home):
+    # On Windows the FS is case-insensitive, so the guard must be too —
+    # otherwise an agent could bypass by lower-casing the drive letter or
+    # the ``Users\\<name>`` path segment.
+    mixed = fake_claude_home.lower() + "/settings.json"
+    assert is_protected(mixed)
+
+
 # ── User-level: look-alike paths allowed ────────────────────────────
 
 def test_allows_other_project_claude_settings(fake_claude_home, tmp_path):

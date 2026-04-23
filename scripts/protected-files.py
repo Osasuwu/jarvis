@@ -62,12 +62,18 @@ def _is_user_level_protected(normalized: str) -> bool:
 
     Anchored to the resolved user home (or ``$JARVIS_CLAUDE_HOME``) so paths
     like ``some-other-project/.claude/settings.json`` don't false-positive.
+
+    On Windows, the filesystem is case-insensitive so prefix matching is too
+    (e.g. ``c:/users/petrk/.claude/...`` must still match regardless of drive
+    letter / user dir casing); ``os.path.normcase`` handles this. POSIX is
+    left case-sensitive by the same call.
     """
     claude_home = _user_claude_home()
-    prefix = claude_home + "/"
-    if not normalized.startswith(prefix):
+    prefix = os.path.normcase(claude_home + "/")
+    candidate = os.path.normcase(normalized)
+    if not candidate.startswith(prefix):
         return False
-    rel = normalized[len(prefix):]
+    rel = normalized[len(prefix):]  # slice the original so case of `rel` is preserved
     if rel in _USER_LEVEL_PROTECTED_FILES:
         return True
     # skills/<name>/SKILL.md — any user-level skill definition.
