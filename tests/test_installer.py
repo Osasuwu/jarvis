@@ -726,4 +726,34 @@ def test_backup_tolerates_vanished_file(
     assert (plan2.backup_path / "SOUL.md").exists()
     assert not (plan2.backup_path / "debug" / "latest").exists()  # the vanishing one
     stderr = capsys.readouterr().err
-    assert "vanished" in stderr and "latest" in stderr
+    assert "unreadable" in stderr and "latest" in stderr
+
+
+def test_backup_tolerates_locked_file(
+    manifest: Path, fake_repo: Path, monkeypatch, capsys
+) -> None:
+    """Windows log rotation can hold a PermissionError on the file being appended to.
+    Same tolerance applies (#350 review nit)."""
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    (plan1.target_root / "debug").mkdir(exist_ok=True)
+    (plan1.target_root / "debug" / "locked.log").write_text("x\n", encoding="utf-8")
+
+    real_copy2 = installer.shutil.copy2
+
+    def locked_copy2(src, dst, *, follow_symlinks=True):
+        if str(src).endswith("locked.log"):
+            raise PermissionError(13, "file is locked by another process", str(src))
+        return real_copy2(src, dst, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(installer.shutil, "copy2", locked_copy2)
+
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan2, m, run_env=None)
+
+    assert plan2.backup_path.exists()
+    assert not (plan2.backup_path / "debug" / "locked.log").exists()
+    assert "locked.log" in capsys.readouterr().err
