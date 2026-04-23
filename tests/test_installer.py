@@ -288,6 +288,29 @@ def test_health_check_failed_command_reports_failure(fake_repo: Path) -> None:
     assert any("FAIL" in line for line in logs)
 
 
+def test_health_check_handles_utf8_output_on_non_utf8_locale(
+    fake_repo: Path, monkeypatch
+) -> None:
+    """Regression for #352: on Russian Windows, text=True defaults to cp1251
+    and crashes the reader thread when scripts emit em-dashes / Cyrillic.
+    We force encoding='utf-8', errors='replace'. Simulate by pinning
+    PYTHONIOENCODING to a narrow codec that can't encode non-ASCII, and
+    assert the health check completes without raising."""
+    # Script writes em-dash (—) + Cyrillic to stdout, then exits 0.
+    payload = 'import sys; sys.stdout.buffer.write("before \u2014 после\n".encode("utf-8"))'
+    m = {
+        "health_check": {
+            "enabled": True,
+            "commands": [f'python -c "{payload}"'],
+        }
+    }
+    # PYTHONIOENCODING only affects child I/O; parent encoding is what we test.
+    # The fix lives in the parent's subprocess.run call — force-utf8 there.
+    ok, logs = installer.run_health_check(m, fake_repo)
+    assert ok is True, logs
+    assert any("OK" in line for line in logs)
+
+
 def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     for g in data["groups"]:
