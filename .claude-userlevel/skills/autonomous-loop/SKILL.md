@@ -103,7 +103,7 @@ Classify each candidate by risk (see Step 5), then select:
 3. **High-risk** candidates → save as proposals only, never batch
 
 Selection filters (apply to all):
-- Not a protected file (`mcp-memory/server.py`, `SOUL.md`, `CLAUDE.md`, `.mcp.json`)
+- Not a protected file — see [`docs/security/agent-boundaries.md`](../../../docs/security/agent-boundaries.md) (covers repo-level + user-level `~/.claude/*`)
 - Not already actioned (check memory)
 
 **No candidates pass?** Skip gracefully — don't invent work.
@@ -183,7 +183,7 @@ If any action advances a goal → `goal_update(slug=..., progress=[...])` — ap
 ## Safety Rules
 
 **Never:**
-- Touch protected files: `.mcp.json`, `SOUL.md`, `CLAUDE.md`, `mcp-memory/server.py`
+- Touch protected files — authoritative list in [`docs/security/agent-boundaries.md`](../../../docs/security/agent-boundaries.md) (both repo-level and user-level `~/.claude/*` are covered)
 - Create more than 1 PR per run (even in a batch)
 - Execute more than 5 Low-risk + 1 Medium-risk per run
 - Execute High-risk actions without explicit proposal
