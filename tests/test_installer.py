@@ -683,3 +683,77 @@ def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
     for name in include:
         skill_md = src / name / "SKILL.md"
         assert skill_md.exists(), f"whitelisted skill missing: {skill_md}"
+
+
+# ── #350: backup tolerates files that vanish mid-copy ────────────────
+
+
+def test_backup_tolerates_vanished_file(
+    manifest: Path, fake_repo: Path, monkeypatch, capsys
+) -> None:
+    """Claude Code rotates files in ~/.claude/debug/ while the installer runs.
+    shutil.copytree would abend the whole install with shutil.Error; we patch
+    _copy_tolerant onto shutil.copy2 so the backup completes and the install
+    proceeds, logging the skipped entry to stderr."""
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    # Create an extra debug entry that will "vanish" during the next backup.
+    debug_dir = plan1.target_root / "debug"
+    debug_dir.mkdir(exist_ok=True)
+    vanishing = debug_dir / "latest"
+    vanishing.write_text("ephemeral\n", encoding="utf-8")
+
+    real_copy2 = installer.shutil.copy2
+
+    def flaky_copy2(src, dst, *, follow_symlinks=True):
+        if str(src).endswith("latest"):
+            raise FileNotFoundError(2, "simulated mid-copy vanish", str(src))
+        return real_copy2(src, dst, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(installer.shutil, "copy2", flaky_copy2)
+
+    # Trigger outdated re-apply → exercises the backup path.
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    assert plan2.state == "outdated"
+
+    # Must NOT raise. Backup completes; skipped entry is logged to stderr.
+    installer.apply_plan(plan2, m, run_env=None)
+
+    assert plan2.backup_path.exists()
+    assert (plan2.backup_path / "SOUL.md").exists()
+    assert not (plan2.backup_path / "debug" / "latest").exists()  # the vanishing one
+    stderr = capsys.readouterr().err
+    assert "unreadable" in stderr and "latest" in stderr
+
+
+def test_backup_tolerates_locked_file(
+    manifest: Path, fake_repo: Path, monkeypatch, capsys
+) -> None:
+    """Windows log rotation can hold a PermissionError on the file being appended to.
+    Same tolerance applies (#350 review nit)."""
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    (plan1.target_root / "debug").mkdir(exist_ok=True)
+    (plan1.target_root / "debug" / "locked.log").write_text("x\n", encoding="utf-8")
+
+    real_copy2 = installer.shutil.copy2
+
+    def locked_copy2(src, dst, *, follow_symlinks=True):
+        if str(src).endswith("locked.log"):
+            raise PermissionError(13, "file is locked by another process", str(src))
+        return real_copy2(src, dst, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(installer.shutil, "copy2", locked_copy2)
+
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan2, m, run_env=None)
+
+    assert plan2.backup_path.exists()
+    assert not (plan2.backup_path / "debug" / "locked.log").exists()
+    assert "locked.log" in capsys.readouterr().err

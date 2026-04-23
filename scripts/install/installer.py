@@ -413,6 +413,43 @@ def _platform() -> str:
     return "windows" if os.name == "nt" else "posix"
 
 
+def _copy_tolerant(src: str, dst: str, *, follow_symlinks: bool = True) -> str | None:
+    """shutil.copy2 that tolerates entries which vanish or lock mid-copy.
+
+    Claude Code actively rotates files under ``~/.claude/debug/`` while the
+    installer runs. ``shutil.copytree`` defaults to aggregate-then-raise on
+    such races, aborting the whole backup (#350). These artefacts aren't
+    user data — skip with a stderr note and continue instead of failing
+    the install.
+
+    Tolerated errors:
+    - ``FileNotFoundError`` — entry disappeared between scandir and copy
+    - ``PermissionError`` — entry is held open with an exclusive lock
+      (common on Windows while a log file is being rotated / appended to)
+    """
+    try:
+        return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+    except (FileNotFoundError, PermissionError) as e:
+        print(f"backup: skipped unreadable entry {src} ({e})", file=sys.stderr)
+        return None
+
+
+def _backup_target_root(target_root: Path, backup_path: Path) -> None:
+    """Copy ``target_root`` to ``backup_path`` tolerating mid-copy disappearance/locks.
+
+    ``symlinks=True`` preserves symlinks as symlinks rather than dereferencing;
+    combined with ``ignore_dangling_symlinks=True`` this future-proofs against
+    broken junctions inside the target tree (Claude Code can create them).
+    """
+    shutil.copytree(
+        target_root,
+        backup_path,
+        copy_function=_copy_tolerant,
+        symlinks=True,
+        ignore_dangling_symlinks=True,
+    )
+
+
 def apply_plan(
     plan: Plan,
     manifest: dict[str, Any],
@@ -421,7 +458,7 @@ def apply_plan(
     if plan.state == "current":
         return
     if plan.backup_path is not None:
-        shutil.copytree(plan.target_root, plan.backup_path)
+        _backup_target_root(plan.target_root, plan.backup_path)
 
     plan.target_root.mkdir(parents=True, exist_ok=True)
 
