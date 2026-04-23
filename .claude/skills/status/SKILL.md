@@ -82,11 +82,14 @@ Flag: N stale branches (remote gone), M unmerged branches, K stashes.
 - Deadline within 3 days → urgent flag
 - P0 goal with no related activity → neglect flag
 
-**Milestone hygiene** (from `gh api .../milestones?state=open`):
+**Milestone hygiene** (from `gh api .../milestones?state=open` + closed milestones when goals reference them):
 - `open_issues == 0 && state == "open"` → **orphan milestone** (work done, milestone never closed). Flag with proposal to close.
 - Issue labeled `epic` with "Sprint" in title but `milestone == null` → **orphan sprint** (sprint running without milestone tracking). Flag with proposal to create+attach milestone.
 - Milestone `due_on` within 3 days and `open_issues > 0` → **sprint deadline risk**.
-- Treat these as actionable items, not just reports — suggest the fix command inline.
+- **Goal-vs-milestone divergence** (new): for each active goal from session context, find any linked milestone — linkage via `goal.slug` appearing in milestone title/description, or milestone title referenced in `goal.notes`. Then:
+  - `goal.progress >= 100` OR `goal.state == completed`, but linked milestone has `state == "open" && open_issues > 0` → flag **"goal done but milestone still open"**: name the goal, milestone, and open-issue count; propose either (a) close open issues first, then close milestone, or (b) reopen the goal if the remaining issues are still real work. Example from M15 Facehugger Foundation (2026-04-21): goal notes said Sprint 15 complete 2026-04-18, GitHub showed #620-#623 still open.
+  - Linked milestone has `state == "closed"`, but `goal.progress < 100 && goal.state != completed` → flag **"stale goal — linked milestone already closed"**: review whether remaining goal work is real or just un-updated progress notes.
+- Treat all of the above as actionable items, not just reports — suggest the fix command inline.
 
 ## Step 4 — Output
 
