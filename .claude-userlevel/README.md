@@ -62,10 +62,16 @@ for the no-op window). Pick one as canonical on each edit:
 - After M5 merges, `.claude/skills/<core>/` is deleted and the
   userlevel copy becomes the only copy.
 
-## Path portability audit (follow-up)
+## Path portability — status after M3
 
-Skill bodies currently reference `scripts/` and `config/` as
-project-CWD-relative paths. Once user-level Jarvis runs from non-jarvis
-CWDs (post-M3), these need `$JARVIS_HOME/scripts/...` rewrites. Tracked
-as a follow-up — non-blocking for M2 because until M3 flips, skills
-still execute inside jarvis CWD where relative paths resolve.
+Hook command strings in `settings.json` and MCP server entries in `.mcp.json`
+are **rewritten at install time** by `_transform_json_paths` (relative
+`scripts/`/`config/` → absolute `<JARVIS_HOME>/scripts/...`). All jarvis
+hook + MCP bootstrap scripts resolve their own root via
+`Path(__file__).resolve().parent.parent`, so they work under any CWD.
+
+**Skill body** references to `scripts/` and `config/` are still
+project-CWD-relative prose (no shell invocation), and skills currently
+execute in whatever CWD Claude Code was launched from. If a skill starts
+shelling out with a CWD-relative path in future, prefer `$JARVIS_HOME`
+or absolute paths over CWD-relative.
