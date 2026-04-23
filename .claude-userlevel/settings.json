@@ -20,7 +20,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/device-info.py && echo '' && cat config/SOUL.md && echo ''"
+            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
           },
           {
             "type": "command",
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/device-info.py && echo '' && cat config/SOUL.md && echo ''"
+            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
           },
           {
             "type": "command",
