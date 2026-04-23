@@ -64,7 +64,9 @@ outcome_update(
 )
 ```
 
-**Enrich `memory_id` if the outcome row has it NULL**: look up the linked `decision_made` episode (same issue/PR) and pass `memory_id = payload.memories_used[0]`. Rule — primary informing memory = first entry (dominant basis). If the outcome already has `memory_id`, leave it alone; `/verify` is not where you rewrite attribution. If no decision episode references this issue, omit — the backfill script (`scripts/backfill-outcome-memories.py`) can handle historical rows in bulk.
+**Enrich `memory_id` if the outcome row has it NULL**: look up the linked `decision_made` episode (same issue/PR) and pass `memory_id = payload.memories_used[0]`. Rule — primary informing memory = first entry (dominant basis). If the outcome already has `memory_id`, leave it alone; `/verify` is not where you rewrite attribution.
+
+**Only backfill when `memories_used[0]` is a UUID** (matches `^[0-9a-f]{8}-`). Historical episodes store memory NAMES, not UUIDs — passing a name here creates a broken FK. If the first entry is a name, omit `memory_id` and leave the row for `scripts/backfill-outcome-memories.py`, which handles name→id resolution in bulk. If no decision episode references this issue, also omit.
 
 `verified_at` is set automatically when status changes from pending.
 

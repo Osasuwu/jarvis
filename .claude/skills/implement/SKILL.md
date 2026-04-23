@@ -89,6 +89,8 @@ Always emit for issue implementation — outcome attribution needs the basis. Fo
 - **Inline `/implement` with explicit owner approval in-session** — MAY edit protected files. Document the change prominently in the PR body (mark the file `[PROTECTED]` in the §Files Changed list + rationale) so the owner sees it before merge.
 - **Inline `/implement` without explicit approval** — document the needed change in the PR body and leave the file untouched for the owner.
 
+**Secrets rule supersedes** (SOUL.md): `.env`, `.env.local`, and any file with raw secret values are NEVER edited and NEVER read — even with owner approval. Use `.env.example` for metadata only. If a task needs a secret-bearing file edited, owner does it themselves.
+
 #### 4a. Already-done audit (mandatory gate)
 
 Before writing any code, enumerate acceptance-criteria symbols from the issue body and grep each:
@@ -256,8 +258,7 @@ If the diff looks wrong, fix it before pushing.
 
 ## Recovery playbook
 
-See `docs/security/recovery-playbook.md` for how to handle:
-- Broke a file → revert from master
-- Corrupted memory → `memory_restore`
-- Created bad PR → close + delete branch
-- Committed to wrong branch → cherry-pick + reset
+- Broke a file → revert from main (`git checkout origin/main -- <path>`)
+- Corrupted memory → `memory_restore(name=..., project=...)`
+- Created bad PR → `gh pr close <N> --delete-branch`
+- Committed to wrong branch → cherry-pick onto correct branch, then `git reset --hard origin/<wrong-branch>` on the wrong one
