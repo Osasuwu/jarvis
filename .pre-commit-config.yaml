@@ -8,3 +8,15 @@ repos:
         language: system
         pass_filenames: false
         stages: [pre-commit]
+
+  # Commit-message hook — commit should reference a GitHub issue (#NNN)
+  # so `git log` stays navigable. Escape hatch: include [no-issue] in the
+  # message. Install: `pre-commit install --hook-type commit-msg`.
+  - repo: local
+    hooks:
+      - id: commit-msg-issue-ref
+        name: Commit message references an issue (#NNN) or [no-issue]
+        language: pygrep
+        entry: '(#\d+|\[no-issue\]|^Merge |^Revert |^fixup!|^squash!)'
+        args: [--negate]
+        stages: [commit-msg]
