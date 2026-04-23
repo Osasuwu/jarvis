@@ -38,19 +38,25 @@ groups:
 
   - id: hooks_settings
     description: "settings.json — hooks pointing at JARVIS_HOME scripts (M3 #338)"
-    enabled: false
+    enabled: true
     files:
-      - source: ".claude/settings.json"
+      # Source of truth under .claude-userlevel/ (same pattern as skills M2).
+      # template: rewrites `scripts/...` → `{{JARVIS_HOME}}/scripts/...` at apply time.
+      # merge: deep-merge onto existing ~/.claude/settings.json per jarvis-owned
+      #        `hooks.<Event>` keys; other events stay put (see README).
+      - source: ".claude-userlevel/settings.json"
         dest: "settings.json"
-        template: true  # rewrites `scripts/...` → `{{JARVIS_HOME}}/scripts/...`
+        template: true
+        merge: true
 
   - id: mcp_config
     description: ".mcp.json — MCP server config with absolute paths (M3 #338)"
-    enabled: false
+    enabled: true
     files:
-      - source: ".mcp.json"
+      - source: ".claude-userlevel/.mcp.json"
         dest: ".mcp.json"
         template: true
+        merge: true  # preserve user-added mcpServers entries on re-apply
 
   - id: skills
     description: "Core skills (M2 #337) — universal, not project-specific"

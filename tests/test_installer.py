@@ -303,9 +303,10 @@ def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
     assert (plan.target_root / "settings.json").exists()
 
 
-def test_real_manifest_m2_enables_only_skills_group() -> None:
-    """Real manifest shape after M2 (#337): skills group flipped on, others
-    still disabled pending M3/M4. Guards against accidental early flips.
+def test_real_manifest_m3_enables_skills_hooks_mcp_but_not_soul() -> None:
+    """Real manifest shape after M3 (#338): skills + hooks_settings +
+    mcp_config flipped on; soul still disabled (pending M4 #339).
+    Guards against accidental early flip of SOUL.
     """
     real = Path(__file__).resolve().parents[1] / "install-manifest.yaml"
     assert real.exists(), "install-manifest.yaml must ship in-tree"
@@ -314,15 +315,35 @@ def test_real_manifest_m2_enables_only_skills_group() -> None:
     by_id = {g["id"]: g for g in m["groups"]}
     assert by_id["skills"]["enabled"] is True
     assert by_id["skills"]["directories"][0]["source"] == ".claude-userlevel/skills"
-    # Whitelist must exclude sprint-report (project-scoped per #337 spec).
     include = by_id["skills"]["directories"][0]["include"]
     assert "sprint-report" not in include
     assert "implement" in include and "delegate" in include
 
-    for gid in ("soul", "hooks_settings", "mcp_config"):
-        assert by_id[gid]["enabled"] is False, (
-            f"{gid} flipped ahead of its milestone — should stay off until M3/M4"
-        )
+    # M3: hooks + mcp enabled, both pointing at .claude-userlevel/ sources
+    # and marked merge:true so user keys survive.
+    assert by_id["hooks_settings"]["enabled"] is True
+    settings_entry = by_id["hooks_settings"]["files"][0]
+    assert settings_entry["source"] == ".claude-userlevel/settings.json"
+    assert settings_entry["merge"] is True
+    assert settings_entry["template"] is True
+
+    assert by_id["mcp_config"]["enabled"] is True
+    mcp_entry = by_id["mcp_config"]["files"][0]
+    assert mcp_entry["source"] == ".claude-userlevel/.mcp.json"
+    assert mcp_entry["merge"] is True
+    assert mcp_entry["template"] is True
+
+    # SOUL stays off until M4.
+    assert by_id["soul"]["enabled"] is False, (
+        "soul flipped ahead of M4 — must stay off until #339"
+    )
+
+
+def test_userlevel_source_files_exist() -> None:
+    """Source-of-truth files for M3 must ship in-tree."""
+    repo_root = Path(__file__).resolve().parents[1]
+    assert (repo_root / ".claude-userlevel" / "settings.json").exists()
+    assert (repo_root / ".claude-userlevel" / ".mcp.json").exists()
 
 
 # ---------- #344: tightening before M3 ----------
@@ -434,6 +455,190 @@ def test_health_check_uses_shlex_for_argv_parsing(
         f"quoted path split by whitespace: argv={argv}"
     )
     assert argv[0] == "python"
+
+
+# ---------- #338 (M3): settings.json + .mcp.json deep-merge ----------
+
+
+def test_deep_merge_preserves_user_hook_events(tmp_path: Path) -> None:
+    """User events jarvis doesn't own (e.g. Stop) must survive merge."""
+    existing = {
+        "hooks": {
+            "SessionStart": [{"matcher": "startup", "hooks": [
+                {"type": "command", "command": "user-custom-session.sh"}
+            ]}],
+            "Stop": [{"hooks": [{"type": "command", "command": "user-cleanup.sh"}]}],
+        },
+        "theme": "dark",  # top-level user key
+    }
+    source = {
+        "hooks": {
+            "SessionStart": [{"matcher": "startup", "hooks": [
+                {"type": "command", "command": "python /abs/jarvis/scripts/session-context.py"}
+            ]}],
+            "PreCompact": [{"hooks": [{"type": "command", "command": "python /abs/jarvis/scripts/pre-compact-backup.py"}]}],
+        }
+    }
+    merged = installer._deep_merge_jarvis_json(existing, source)
+
+    # Jarvis replaces SessionStart wholesale — user's custom SessionStart entry is gone.
+    ss = merged["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+    assert "session-context.py" in ss
+    assert "user-custom-session.sh" not in ss
+
+    # Jarvis adds PreCompact (it didn't exist before).
+    assert "PreCompact" in merged["hooks"]
+    assert "pre-compact-backup.py" in merged["hooks"]["PreCompact"][0]["hooks"][0]["command"]
+
+    # Stop (user-owned event jarvis doesn't touch) is preserved.
+    assert merged["hooks"]["Stop"][0]["hooks"][0]["command"] == "user-cleanup.sh"
+
+    # Top-level non-hooks user key preserved.
+    assert merged["theme"] == "dark"
+
+
+def test_deep_merge_preserves_user_mcp_servers(tmp_path: Path) -> None:
+    """User-added mcpServers entries must survive; jarvis-owned ones replaced."""
+    existing = {
+        "mcpServers": {
+            "memory": {"command": "old-memory", "args": ["obsolete"]},
+            "user-custom": {"command": "npx", "args": ["user-server"]},
+        }
+    }
+    source = {
+        "mcpServers": {
+            "memory": {"command": "python", "args": ["/abs/jarvis/scripts/run-memory-server.py"]},
+            "context7": {"command": "npx", "args": ["-y", "@upstash/context7-mcp@latest"]},
+        }
+    }
+    merged = installer._deep_merge_jarvis_json(existing, source)
+
+    assert merged["mcpServers"]["memory"]["command"] == "python"
+    assert "run-memory-server.py" in merged["mcpServers"]["memory"]["args"][0]
+    assert merged["mcpServers"]["context7"]["args"][0] == "-y"
+    # User-added server preserved.
+    assert merged["mcpServers"]["user-custom"]["command"] == "npx"
+    assert merged["mcpServers"]["user-custom"]["args"] == ["user-server"]
+
+
+def test_merge_json_file_fresh_write_when_dest_missing(tmp_path: Path) -> None:
+    """No existing target → write source as-is (still templated)."""
+    src = tmp_path / "src.json"
+    src.write_text(json.dumps({"hooks": {"SessionStart": [{"command": "x"}]}}),
+                   encoding="utf-8")
+    dest = tmp_path / "out" / "settings.json"
+    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path,
+                               claude_home=tmp_path)
+    assert dest.exists()
+    loaded = json.loads(dest.read_text(encoding="utf-8"))
+    assert loaded["hooks"]["SessionStart"][0]["command"] == "x"
+
+
+def test_merge_json_file_merges_onto_existing(tmp_path: Path) -> None:
+    """Existing dest → deep-merge (user keys preserved)."""
+    dest = tmp_path / "settings.json"
+    dest.write_text(json.dumps({"hooks": {"Stop": [{"c": "user"}]}, "theme": "dark"}),
+                    encoding="utf-8")
+    src = tmp_path / "src.json"
+    src.write_text(json.dumps({"hooks": {"SessionStart": [{"c": "jarvis"}]}}),
+                   encoding="utf-8")
+
+    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path,
+                               claude_home=tmp_path)
+    merged = json.loads(dest.read_text(encoding="utf-8"))
+    assert merged["hooks"]["Stop"][0]["c"] == "user"  # survived
+    assert merged["hooks"]["SessionStart"][0]["c"] == "jarvis"  # added
+    assert merged["theme"] == "dark"  # survived
+
+
+def test_merge_json_file_corrupt_existing_falls_back_to_source(tmp_path: Path) -> None:
+    """Unparseable existing dest → treat as absent and write source fresh."""
+    dest = tmp_path / "settings.json"
+    dest.write_text("{not valid json", encoding="utf-8")
+    src = tmp_path / "src.json"
+    src.write_text(json.dumps({"hooks": {"SessionStart": [{"c": "new"}]}}),
+                   encoding="utf-8")
+
+    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path,
+                               claude_home=tmp_path)
+    merged = json.loads(dest.read_text(encoding="utf-8"))
+    assert merged["hooks"]["SessionStart"][0]["c"] == "new"
+
+
+def test_merge_json_preserves_user_mcp_on_reapply(
+    manifest: Path, fake_repo: Path
+) -> None:
+    """Full flow: apply once, user adds a custom mcpServer, re-apply,
+    jarvis-owned server updates while custom server survives.
+    Idempotency for jarvis keys: re-apply doesn't duplicate."""
+    # Manifest mcp_config uses copy_file by default in fixture; switch to merge.
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    for g in data["groups"]:
+        if g["id"] == "mcp_config":
+            g["files"][0]["merge"] = True
+    manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    # User manually adds a custom server.
+    mcp_path = plan1.target_root / ".mcp.json"
+    existing = json.loads(mcp_path.read_text(encoding="utf-8"))
+    existing["mcpServers"]["user-obsidian"] = {"command": "npx", "args": ["user-mcp"]}
+    mcp_path.write_text(json.dumps(existing), encoding="utf-8")
+
+    # Bump SHA so build_plan considers us outdated.
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan2, m, run_env=None)
+
+    final = json.loads(mcp_path.read_text(encoding="utf-8"))
+    # User-added server preserved across re-apply.
+    assert final["mcpServers"]["user-obsidian"]["command"] == "npx"
+    # Jarvis-owned server present.
+    assert "memory" in final["mcpServers"]
+    assert "run-memory-server.py" in final["mcpServers"]["memory"]["args"][0]
+    # No duplicates — idempotency check.
+    assert len(final["mcpServers"]) == 2
+
+
+def test_merge_action_kind_in_plan(manifest: Path, fake_repo: Path) -> None:
+    """Entries flagged `merge: true` produce merge_json actions, not copy_file."""
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    for g in data["groups"]:
+        if g["id"] == "hooks_settings":
+            g["files"][0]["merge"] = True
+    manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+    m = installer.load_manifest(manifest)
+    plan = installer.build_plan(m, fake_repo)
+    kinds = {a.group: a.kind for a in plan.actions if a.group}
+    assert kinds.get("hooks_settings") == "merge_json"
+    assert kinds.get("mcp_config") == "copy_file"  # not flagged, stays copy
+
+
+def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None:
+    """The real .claude-userlevel/ templates must get scripts/ -> abs rewritten."""
+    repo_root = Path(__file__).resolve().parents[1]
+    settings_src = repo_root / ".claude-userlevel" / "settings.json"
+    mcp_src = repo_root / ".claude-userlevel" / ".mcp.json"
+
+    settings_rendered = installer.template_content(
+        settings_src, repo_root, Path("/tmp/ignore")
+    ).decode("utf-8")
+    mcp_rendered = installer.template_content(
+        mcp_src, repo_root, Path("/tmp/ignore")
+    ).decode("utf-8")
+
+    repo_posix = repo_root.as_posix()
+    # Every `scripts/` reference in the rendered output is absolute-rooted.
+    assert "python scripts/" not in settings_rendered
+    assert f"{repo_posix}/scripts/" in settings_rendered
+    assert f"{repo_posix}/config/" in settings_rendered
+    # mcp: args use relative paths that should rewrite too.
+    assert "scripts/run-memory-server.py" not in json.dumps(
+        json.loads(mcp_rendered)["mcpServers"]["memory"]["args"]
+    ) or f"{repo_posix}/scripts/run-memory-server.py" in mcp_rendered
 
 
 def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
