@@ -82,18 +82,53 @@ Always emit for issue implementation — outcome attribution needs the basis. Fo
 
 ### 4. Implement
 
-**Protected files — DO NOT modify (see `docs/security/agent-boundaries.md`):**
+**Protected files — policy depends on who is editing** (see `docs/security/agent-boundaries.md`):
 `.mcp.json`, `config/SOUL.md`, `CLAUDE.md`, `mcp-memory/server.py`, `.claude/settings.json`, `.gitleaks.toml`, `.pre-commit-config.yaml`
-If a change to a protected file is needed, document it in the PR description and leave it for the owner.
 
-**For each change:**
+- **Subagent dispatch (`/delegate`)** — never edits protected files. If the task requires it, escalate to inline `/implement`.
+- **Inline `/implement` with explicit owner approval in-session** — MAY edit protected files. Document the change prominently in the PR body (mark the file `[PROTECTED]` in the §Files Changed list + rationale) so the owner sees it before merge.
+- **Inline `/implement` without explicit approval** — document the needed change in the PR body and leave the file untouched for the owner.
+
+#### 4a. Already-done audit (mandatory gate)
+
+Before writing any code, enumerate acceptance-criteria symbols from the issue body and grep each:
+- `rg -n "<symbol>"` for functions, classes, flags, constants, test names — scoped to likely files
+- Read the hits — confirm the existing code actually satisfies the criteria, including test coverage
+
+Three outcomes:
+- **All present + tests cover them** → STOP. Comment on the issue with `file:line` evidence, close as `not-planned` referencing the implementing PR/commit, record `success` outcome with `lessons` noting pre-existing implementation. No branch, no PR.
+- **Partial** → proceed, but narrow scope to what is actually missing. Note the partial starting state in the PR body Summary.
+- **None** → proceed with full scope.
+
+Why this is a gate, not a suggestion: recurring pattern (#237 closed as dup of #209; #656 partial — only tie-breaker missing; tool-width Z absent for a month under shared assumption it existed; multi-run batch where 2 of 6 issues were already done). 30-second grep pays for itself every time.
+
+#### 4b. For each change
+
 - Read existing code first (Read tool)
-- **Check if already done** — grep for symbols/strings from the acceptance criteria. Lesson: in one batch, 2 of 6 issues turned out to be pre-implemented; don't re-do what's done.
 - Check patterns in the codebase (Grep/Glob)
 - Edit existing files, don't create new ones unless needed
 - Run lint: `ruff check --fix && ruff format` (Python), `npx tsc --noEmit` (TS)
 - Run relevant tests: `pytest tests/test_<module>.py -x -q`
 - Build frontend: `npm run build`
+
+#### 4c. E2E smoke before claiming done (I/O-heavy / schema-touching work)
+
+Unit tests systematically miss integration bugs on:
+- File I/O — Windows CRLF inflating byte budgets, path separators, encoding (#281)
+- Network/DB I/O — composite unique constraints, PostgREST quirks (#281, #284)
+- DB schema changes — migration + live row verification (#288)
+- Hook registration — SessionStart, PreCompact, etc. (#281 settings.json)
+- Subprocess invocation — APScheduler pickling, env propagation (#304, #298)
+- Import-target scripts with venv re-exec guards (#313)
+
+Rule: if the change touches any of the above, run one real-input smoke **before** marking the outcome `success`:
+- File I/O — operate on a real file (not a synthetic fixture) and byte-compare output
+- DB writes — run the write against live Supabase and verify the row shape
+- Schema — apply the migration to a branch DB and run the affected smoke
+- Hooks — trigger the hook event manually and confirm the side effect
+- Subprocess/scheduler — run in a separate shell long enough to confirm restart / pickle behavior
+
+If unit tests green but smoke fails → outcome is `partial`, and the `lessons` field must describe the gap so a future session knows what the unit tests did not catch.
 
 ### 5. Commit & PR
 
