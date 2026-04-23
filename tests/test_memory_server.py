@@ -385,13 +385,13 @@ class TestFormatMemories:
             "content": "MUST_NOT_APPEAR",
         }
         result = _format_memories([mem], brief=True)
-        assert result == ["- foo [feedback/jarvis] [a, b] (sim 0.42): hello world"]
+        assert result == ["- foo [feedback/jarvis] [a, b] (sim 0.42): hello world — id=?"]
         assert "MUST_NOT_APPEAR" not in result[0]
 
     def test_brief_global_scope(self):
         mem = {"name": "g", "type": "user", "project": None, "description": "d"}
         result = _format_memories([mem], brief=True)
-        assert result[0] == "- g [user/global]: d"
+        assert result[0] == "- g [user/global]: d — id=?"
 
     def test_brief_temporal_score_leads_when_present(self):
         # `_temporal_score` is what drives actual ordering after
@@ -431,14 +431,14 @@ class TestFormatMemories:
     def test_brief_no_score_fields(self):
         mem = {"name": "n", "type": "reference", "project": None, "description": "d"}
         result = _format_memories([mem], brief=True)
-        assert result[0] == "- n [reference/global]: d"
+        assert result[0] == "- n [reference/global]: d — id=?"
 
     def test_brief_empty_description(self):
         # Migration-target memories carry empty descriptions — brief still
         # surfaces the name (no crash, trailing `: ` is intentional).
         mem = {"name": "bare", "type": "decision", "project": "jarvis"}
         result = _format_memories([mem], brief=True)
-        assert result[0] == "- bare [decision/jarvis]: "
+        assert result[0] == "- bare [decision/jarvis]:  — id=?"
 
 
 # ---------------------------------------------------------------------------
