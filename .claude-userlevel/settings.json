@@ -58,6 +58,10 @@
           {
             "type": "command",
             "command": "python scripts/secret-scanner.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       },
@@ -71,6 +75,10 @@
           {
             "type": "command",
             "command": "python scripts/memory-dedup-check.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       },
@@ -80,6 +88,28 @@
           {
             "type": "command",
             "command": "python scripts/protected-files.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__memory__record_decision",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       }
