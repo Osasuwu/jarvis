@@ -21,9 +21,9 @@ cases:
     note: "Check that changes were made on a feature branch and PR created, not pushed directly to main"
 
   - id: skill_files_only
-    description: "Primary changes should be in .claude/skills/ or docs/"
+    description: "Primary changes should be in .claude-userlevel/skills/, .claude/skills/ (project-scoped), or docs/"
     check_type: manual
-    note: "Check that most files changed are in .claude/skills/, docs/, evals/, or config/ directories"
+    note: "Check that most files changed are in .claude-userlevel/skills/, .claude/skills/, docs/, evals/, or config/ directories"
 
   - id: saves_decision_memory
     description: "Records what was changed and why in Supabase"

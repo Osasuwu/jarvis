@@ -76,7 +76,7 @@ hook-input stdin from Claude Code directly. Output order is preserved.
 
 ### Phase 3 — /end reads from Supabase (issue #280)
 
-Rework `.claude/skills/end/SKILL.md` so the primary source of truth for
+Rework `.claude-userlevel/skills/end/SKILL.md` (installs to `~/.claude/skills/end/`) so the primary source of truth for
 decisions, behavioural notes, and action log is Supabase (via
 `session_snapshot_*` and `record_decision` episodes), **not** the live
 conversation. The conversation is a hint; Supabase is authoritative.

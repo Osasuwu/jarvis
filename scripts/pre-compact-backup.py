@@ -18,7 +18,7 @@ Hook input (stdin, JSON):
 
 Related:
 - `scripts/session-context.py` — reads snapshots on resume (Phase 2, #279)
-- `.claude/skills/end/SKILL.md` — consumes snapshot as primary source (Phase 3, #280)
+- `.claude-userlevel/skills/end/SKILL.md` (installed to `~/.claude/skills/end/`) — consumes snapshot as primary source (Phase 3, #280)
 """
 
 import json

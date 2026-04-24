@@ -39,16 +39,13 @@ You (any device)
   |
   |-- Claude Code CLI / Desktop / Web
   |     |
-  |     |-- .claude/skills/     7 custom slash commands
-  |     |-- .claude/agents/     subagent definitions
-  |     |-- config/SOUL.md      personality (auto-loaded)
-  |     |-- CLAUDE.md           rules + autonomy config
+  |     |-- ~/.claude/skills/      12 universal slash commands (user-level, CWD-agnostic)
+  |     |-- ~/.claude/SOUL.md      personality (auto-loaded)
+  |     |-- ~/.claude/settings.json    hooks (SessionStart, PreToolUse, ...)
+  |     |-- ~/.claude/.mcp.json    MCP servers (memory, github, context7, ...)
   |     |
-  |     |-- MCP Servers:
-  |     |     memory    --> Supabase (cross-device)
-  |     |     github    --> GitHub Copilot MCP
-  |     |     context7  --> library docs
-  |     |     firecrawl --> web research
+  |     |-- jarvis/CLAUDE.md       project rules + autonomy config
+  |     |-- jarvis/.claude/        project-scoped extras (e.g. /sprint-report)
   |     |
   |-- Telegram (via Claude Code Channels, optional)
 
@@ -57,6 +54,10 @@ Supabase DB
   |-- goals       (strategic context)
   |-- events      (CI, alerts, deployments)
 ```
+
+User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
+`install.ps1` / `install.sh` (idempotent, backup-first). See
+`scripts/install/installer.py`.
 
 **Design principle:** Claude Code native first. The only custom Python is `mcp-memory/server.py` -- everything else uses skills, hooks, and subagents.
 
