@@ -194,7 +194,7 @@ class StaticBudgetProbe:
                 .eq("agent_id", DISPATCHER_AGENT_ID)
                 .eq("action", DISPATCH_ACTION)
                 .eq("outcome", "success")
-                .gte("created_at", window_start.isoformat())
+                .gte("timestamp", window_start.isoformat())
                 .execute()
             )
             return int(getattr(resp, "count", 0) or 0)
