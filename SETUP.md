@@ -75,8 +75,8 @@ Skills are designed to work in both environments:
 - Local: `memory_store`/`memory_recall` via custom MCP
 - Cloud: `execute_sql` via Supabase connector, `gh` CLI for GitHub
 
-Task prompts should reference the skill file:
+Task prompts should invoke skills via slash command — resolves against whichever Claude Code home (`~/.claude/` after federation) is loaded:
 ```
-Read and follow .claude/skills/nightly-research/SKILL.md
+Run /research in --mode=autonomous
 ```
-This way updating the skill in the repo automatically updates the task.
+This way updating the skill in the repo (via `.claude-userlevel/skills/<name>/` → re-apply the installer) automatically updates task behaviour.

@@ -187,13 +187,13 @@ Scheduled tasks are local (per-device). Three approaches:
 
 | File | Purpose |
 |------|---------|
-| `.claude/skills/autonomous-loop/SKILL.md` | Orchestrator skill (manual + scheduled) |
-| `.claude/skills/setup-tasks/SKILL.md` | Bootstrap tasks on new device |
+| `.claude-userlevel/skills/autonomous-loop/SKILL.md` | Orchestrator skill (manual + scheduled); ships to `~/.claude/skills/autonomous-loop/` |
+| `.claude-userlevel/skills/setup-tasks/SKILL.md` | Bootstrap tasks on new device |
 | `.github/workflows/event-dispatch.yml` | GitHub Action → Supabase events |
 | `mcp-memory/schema.sql` | Events table schema |
 | `mcp-memory/server.py` | events_list + events_mark_processed tools |
 | `~/.claude/scheduled-tasks/*/SKILL.md` | 6 scheduled task wrappers |
-| `.claude/skills/morning-brief/SKILL.md` | Enhanced with goal monitoring |
+| `.claude-userlevel/skills/status/SKILL.md` | Morning-brief behaviour consolidated here (with goal monitoring) |
 
 ## Evolution
 
