@@ -1,7 +1,7 @@
 ---
 name: autonomous-loop
 description: "Autonomous orchestrator: perceive events, evaluate against goals, decide and act within safety bounds. Runs daily via scheduled task or manual invocation."
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Autonomous Loop Orchestrator
@@ -77,6 +77,81 @@ Generate candidates:
 - Repos under any other owner (e.g. `SergazyNarynov/redrobot`) → **flag-only**: record the finding in memory (`type=project, name=hygiene_sweep_proposals_<repo>_<date>, source_provenance="skill:autonomous-loop"`) and surface it in the output, but never execute the action. Owner acts manually or flips the repo to an owned org.
 
 **Dedup per-finding:** before closing a milestone / creating a retroactive one, check `outcome_list(task_type='autonomous', pattern_tags=['hygiene'])` for matching description from last 3 days. Skip if same finding already actioned.
+
+### Step 2b — Escalate stale flag-only findings (#327)
+
+After writing (or skipping, per dedup) today's `hygiene_sweep_proposals_<repo>_<date>` memory, count consecutive prior flags for the same repo to detect ignored findings. This closes the loop for foreign-owner repos where Jarvis can't take the action itself.
+
+**Count** — via `execute_sql`:
+
+```sql
+SELECT name, created_at
+FROM memories
+WHERE name LIKE 'hygiene_sweep_proposals_<repo>_%'
+  AND archived = false
+  AND created_at >= now() - interval '10 days'
+ORDER BY created_at ASC;
+```
+
+`N = row count`, `first_flagged_at = min(created_at)`, `days_unaddressed = date(today) - date(first_flagged_at)`.
+
+**Escalation rungs:**
+
+| Rung | Threshold | Action |
+|----|----|----|
+| 1 | N ≥ 1 | Memory exists (handled above) |
+| 2 | N ≥ 2 or days_unaddressed ≥ 1 | `/status` surfaces `STALE FLAG` badge (handled by `/status` skill reading these memories — nothing to do here) |
+| 3 | N ≥ 3 | Emit one `events` row with `severity=high` so `telegram-notify-hook.py` picks it up this run |
+| 4 | N ≥ 5 | Create a jarvis-side tracking issue so the stale state is visible on GitHub |
+
+**Dedup before emitting (rung 3):** skip if an unprocessed `events` row with `event_type='hygiene_stale'` and `repo=<R>` already exists.
+
+```sql
+SELECT id FROM events
+WHERE event_type = 'hygiene_stale'
+  AND repo = '<R>'
+  AND processed = false
+ORDER BY created_at DESC LIMIT 1;
+```
+
+If none, insert:
+
+```sql
+INSERT INTO events (event_type, severity, repo, source, title, payload)
+VALUES (
+  'hygiene_stale',
+  'high',
+  '<R>',
+  'skill:autonomous-loop',
+  'Flag ignored <N>d: <repo> hygiene findings unaddressed',
+  jsonb_build_object(
+    'days_flagged', <N>,
+    'first_flagged_at', '<first_flagged_at ISO>',
+    'memory_names', <array of hygiene_sweep_proposals_* names>,
+    'detail', '<brief: top finding from latest memory>',
+    'url', 'https://github.com/<R>'
+  )
+);
+```
+
+**Dedup before creating jarvis issue (rung 4):**
+
+```bash
+gh issue list --repo Osasuwu/jarvis --state open --search "in:title stale flag <repo>" --json number --limit 1
+```
+
+If empty → create:
+
+```bash
+gh issue create --repo Osasuwu/jarvis \
+  --title "Stale flag: <repo> findings unaddressed <N>d" \
+  --label "process,autonomous-loop" \
+  --body "Autonomous-loop has flagged findings for \`<R>\` on <N> consecutive days without owner action. Memories: <list>. First flagged: <date>. Jarvis cannot open issues in \`<R>\` (flag-only repo), so tracking here for visibility. Close this when the upstream finding is resolved."
+```
+
+Record the issue URL in the event payload (`payload.jarvis_tracking_issue = <url>`) via an update to the event row.
+
+**Ordering:** run Step 2b for every repo in `config/repos.conf` after Step 2a. Emitting an event here creates work the Low-risk batch will count (counts toward the 5-max limit).
 
 ## Step 3 — Score Each Candidate
 
@@ -179,6 +254,20 @@ memory_store(
 ```
 
 If any action advances a goal → `goal_update(slug=..., progress=[...])` — append `{item: "<5-word summary> (YYYY-MM-DD)", done: true}` to existing progress array.
+
+## Step 7.5 — Drain high-severity events to Telegram (#327)
+
+Any `severity=high` events emitted this run (including Step 2b escalations) need to reach the owner outside of `/status`. Run the notifier as the final durable side effect:
+
+```bash
+python scripts/telegram-notify-hook.py --min-severity high
+```
+
+- Reads unprocessed `events` at or above the threshold, sends one message each, marks them processed.
+- Requires `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOW_USER_ID` in env. If either is missing, the script exits 1 — log the failure in the output but don't abort the run.
+- The script is idempotent via `processed=true`, so running it multiple times in one day is safe (it drains only what's pending).
+
+Skip silently if the script doesn't exist (older checkouts) — don't make this a hard blocker.
 
 ## Safety Rules
 
