@@ -257,17 +257,20 @@ def test_install_signal_handlers_is_safe_on_current_platform(memory_handle) -> N
 
 
 def test_main_cli_exposes_flags(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The CLI should accept --interval, --jitter, --once without error,
-    and forward them to ``run``. We don't actually start the scheduler.
+    """The CLI should accept --interval, --jitter, --once, --dry-run without
+    error, and forward them to ``run``. We don't actually start the scheduler.
     """
     from agents import scheduler
 
     called: dict[str, object] = {}
 
-    def fake_run(interval: int, jitter: int, *, once: bool = False) -> int:
+    def fake_run(
+        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False
+    ) -> int:
         called["interval"] = interval
         called["jitter"] = jitter
         called["once"] = once
+        called["dry_run"] = dry_run
         return 0
 
     monkeypatch.setattr(scheduler, "run", fake_run)
@@ -275,7 +278,7 @@ def test_main_cli_exposes_flags(monkeypatch: pytest.MonkeyPatch) -> None:
 
     rc = scheduler.main()
     assert rc == 0
-    assert called == {"interval": 42, "jitter": 3, "once": False}
+    assert called == {"interval": 42, "jitter": 3, "once": False, "dry_run": False}
 
 
 def test_main_cli_once_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -283,8 +286,11 @@ def test_main_cli_once_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     captured: dict[str, object] = {}
 
-    def fake_run(interval: int, jitter: int, *, once: bool = False) -> int:
+    def fake_run(
+        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False
+    ) -> int:
         captured["once"] = once
+        captured["dry_run"] = dry_run
         return 0
 
     monkeypatch.setattr(scheduler, "run", fake_run)
@@ -292,3 +298,85 @@ def test_main_cli_once_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert scheduler.main() == 0
     assert captured["once"] is True
+    assert captured["dry_run"] is False
+
+
+def test_main_cli_dry_run_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    from agents import scheduler
+
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False
+    ) -> int:
+        captured["dry_run"] = dry_run
+        return 0
+
+    monkeypatch.setattr(scheduler, "run", fake_run)
+    monkeypatch.setattr("sys.argv", ["agents.scheduler", "--once", "--dry-run"])
+
+    assert scheduler.main() == 0
+    assert captured["dry_run"] is True
+
+
+def test_run_wires_dispatcher_and_not_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``scheduler.run`` must register the dispatcher, not the placeholder.
+
+    Regression guard for the CLI wiring gap that was caught on 2026-04-24
+    during the first live prod smoke: ``python -m agents.scheduler`` was
+    still ticking ``_placeholder_tick`` because nobody swapped the target
+    after the dispatcher (S2-3) landed.
+    """
+    from agents import dispatcher, scheduler
+
+    captured: dict[str, object] = {}
+
+    class _FakeHandle:
+        class _FakeScheduler:
+            def start(self) -> None:
+                captured["started"] = True
+
+            def get_jobs(self) -> list:
+                return []
+
+            def shutdown(self, wait: bool = True) -> None:
+                captured["shut_down"] = True
+
+        scheduler = _FakeScheduler()
+        jobstore_alias = "default"
+
+    def fake_build_scheduler(_url: str) -> _FakeHandle:
+        return _FakeHandle()
+
+    def fake_dispatcher_register(
+        handle, *, dry_run: bool = False, interval_seconds: int = 60, jitter_seconds=None
+    ):
+        captured["register_target"] = "dispatcher"
+        captured["dry_run"] = dry_run
+        captured["interval_seconds"] = interval_seconds
+        captured["jitter_seconds"] = jitter_seconds
+
+    def fake_register_agent(*_args, **_kwargs):  # noqa: ANN002
+        # If this is called during run(), something registered the placeholder
+        # (or some other direct agent) instead of going through dispatcher.register.
+        captured["register_target"] = "placeholder-or-direct"
+
+    class _FakeConfig:
+        postgres_url = "postgresql://unused"
+
+    monkeypatch.setattr(scheduler, "build_scheduler", fake_build_scheduler)
+    monkeypatch.setattr(scheduler, "register_agent", fake_register_agent)
+    monkeypatch.setattr(scheduler, "load_config", lambda: _FakeConfig())
+    monkeypatch.setattr(dispatcher, "register", fake_dispatcher_register)
+    monkeypatch.setattr(scheduler, "_install_signal_handlers", lambda _h: None)
+
+    rc = scheduler.run(interval_seconds=30, jitter_seconds=5, once=True, dry_run=True)
+    assert rc == 0
+    assert captured["register_target"] == "dispatcher"
+    assert captured["dry_run"] is True
+    assert captured["interval_seconds"] == 30
+    assert captured["jitter_seconds"] == 5
+    assert captured.get("started") is True
+    assert captured.get("shut_down") is True

@@ -22,11 +22,12 @@ Usage::
     )
     handle.scheduler.start()
 
-CLI (placeholder tick for smoke-testing before S2-3 lands)::
+CLI (runs the task-dispatcher on a persistent schedule)::
 
     python -m agents.scheduler                 # tick every 60s + 10s jitter
     python -m agents.scheduler --interval 30   # override interval
     python -m agents.scheduler --once          # fire one tick and exit
+    python -m agents.scheduler --once --dry-run  # graph only, no 'claude -p'
 
 Restart semantics: each agent's job is identified by ``agent_id`` and
 registered with ``replace_existing=True`` / ``max_instances=1`` /
@@ -190,18 +191,23 @@ def run(
     jitter_seconds: int,
     *,
     once: bool = False,
+    dry_run: bool = False,
 ) -> int:
-    """CLI entry-point: start scheduler, register placeholder, block.
+    """CLI entry-point: start scheduler, register the dispatcher, block.
 
     ``--once`` forces one immediate run of every registered agent and exits.
     Useful for smoke tests that don't want to wait a full interval.
+
+    ``--dry-run`` makes the dispatcher tick traverse the full graph without
+    spawning ``claude -p``; audit rows are still written.
     """
+    from agents import dispatcher
+
     cfg = load_config()
     handle = build_scheduler(cfg.postgres_url)
-    register_agent(
+    dispatcher.register(
         handle,
-        agent_id="scheduler-placeholder",
-        fn=_placeholder_tick,
+        dry_run=dry_run,
         interval_seconds=interval_seconds,
         jitter_seconds=jitter_seconds,
     )
@@ -255,8 +261,13 @@ def main() -> int:
         action="store_true",
         help="Run registered jobs once and exit (useful for smoke tests).",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Dispatcher traverses full graph but does not spawn 'claude -p'.",
+    )
     args = parser.parse_args()
-    return run(args.interval, args.jitter, once=args.once)
+    return run(args.interval, args.jitter, once=args.once, dry_run=args.dry_run)
 
 
 if __name__ == "__main__":
