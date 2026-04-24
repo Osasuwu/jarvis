@@ -22,6 +22,25 @@ Before reflecting or scanning, pull everything durable from Supabase:
 
 Carry the snapshot + decisions into Steps 1-2 as the primary source. The conversation (post-compact) is only a hint overlay for anything that happened *after* the snapshot was written.
 
+## Step 0.5 — Recall audit (#333)
+
+Scan the current session's jsonl for decision points without preceding recall. This is a *process* check on top of Step 0's artifact load — did the agent actually look at memory at the moments that mattered?
+
+```bash
+python scripts/recall-audit.py "$CLAUDE_PROJECT_DIR/<session-id>.jsonl" --format md
+```
+
+The session jsonl lives at `~/.claude/projects/<cwd-slug>/<session-id>.jsonl` — the current session is the newest file in that directory. The script emits empty output when there are zero flags (most sessions), so only surface it in Step 7 when non-empty.
+
+Three detectors fire:
+1. **`empty_memories_used`** — a `record_decision` call with no memory IDs. Hard signal of a recall gap OR a broken attribution path; either way, worth looking at.
+2. **`decision_text_no_recall`** — decision language ("I decided to X / going with Y / chose Z") in an assistant message with NO `memory_recall` or `memory_get` in the preceding ~15 tool uses. Soft signal — sometimes the decision was already informed by always_load rules, so false-positives happen. User confirms.
+3. **`store_no_recall`** — a `feedback` or `decision` memory_store call without a preceding recall. Duplicate-creation risk.
+
+**Threshold**: 3+ flagged events in one session → in Step 7 output, explicitly prompt "User: was this a real recall gap, or known false positives? If real → save a feedback memory so next session avoids it." Don't auto-save.
+
+If the audit fails (script error, jsonl missing) → skip silently. The audit is informational, not blocking.
+
 ## Step 1 — Behavioral reflection
 
 Review your own behavior this session against feedback memories (already in context from session start). Reflect against **snapshot + conversation union**, not conversation alone — the snapshot preserves what the LLM summary smoothed over:
@@ -125,6 +144,10 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 - Snapshot: <session_snapshot_... name + "fresh" | "stale" | "none">
 - Decisions loaded: N
 - Post-hoc decision saves: N  (0 is ideal — every decision should have been recorded in real time)
+
+### Recall audit (Step 0.5)
+- <paste markdown from recall-audit.py, or "No gaps detected">
+- <if 3+ flags: "User: confirm whether these are real gaps. If real, save a feedback memory.">
 
 ### Reflection
 - <1-3 behavioral observations, or "Clean session — no issues">
