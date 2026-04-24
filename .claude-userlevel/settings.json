@@ -73,6 +73,15 @@
             "command": "python scripts/memory-dedup-check.py"
           }
         ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/protected-files.py"
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [
