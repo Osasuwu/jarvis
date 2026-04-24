@@ -90,6 +90,25 @@ If found, include `payload.rationale` and `payload.memories_used` in the outcome
 - `memories_used` was empty AND top-similarity was low at decision time → known-unknown (auto-tracked via #249)
 - Basis looks sound but execution failed → not a memory problem, flag as reasoning or execution failure
 
+## Step 5.25 — Recall audit aggregate (#333)
+
+Roll the per-session recall audit across the last ~20 sessions to surface cross-session patterns (one session's gap is noise; a persistent trend is a fixable process leak):
+
+```bash
+python scripts/recall-audit.py --project jarvis --limit 20 --aggregate
+```
+
+Output is a single JSON dict with `sessions`, `record_decision_calls`, `flags_total`, `flags_by_kind`, and `empty_memories_used_pct`.
+
+Interpretation rules:
+
+- `empty_memories_used_pct >= 30%` over 20 sessions → **process leak**, not noise. Save a `feedback` memory naming the pattern (e.g. "record_decision calls drop memories_used when args are passed via <tool invocation style>"). Reference the audit output in the memory content.
+- `flags_by_kind.decision_text_no_recall > 10` over 20 sessions → recall-before-deciding habit is not stable. Consider: is this a rule we already have? If yes, why is it being missed? If no, propose one.
+- `flags_by_kind.store_no_recall > 5` → dedup-before-store is failing. Check if `memory-dedup-check.py` hook is firing (it should gate `memory_store`). If it is and the signal still shows up, maybe the hook's dedup threshold is too strict.
+- All three under threshold → report "recall hygiene healthy" in Step 9 and skip to the next step.
+
+If the aggregate script fails for any reason → skip silently, note in Step 9 output.
+
 ## Step 5.5 — Calibration check (#251)
 
 After outcomes are verified, check memory calibration:
@@ -179,4 +198,8 @@ memory_store(
 
 ### Calibration (flagged types only)
 - **<type>**: Brier <score>, n=<n>, <overconfident|underconfident> (avg_predicted=<p> vs avg_actual=<a>)
+
+### Recall audit aggregate (last 20 sessions)
+- sessions=N, decisions=M, flags=<breakdown>
+- <"healthy" | specific leak pattern + proposed fix>
 ```
