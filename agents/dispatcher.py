@@ -476,23 +476,35 @@ def _scheduled_tick() -> None:
         logger.exception("[dispatcher] tick failed: %s", exc)
 
 
-def register(handle: Any, *, dry_run: bool = False, interval_seconds: int = 60) -> Any:
+def register(
+    handle: Any,
+    *,
+    dry_run: bool = False,
+    interval_seconds: int = 60,
+    jitter_seconds: int | None = None,
+) -> Any:
     """Register the dispatcher as an APScheduler job on ``handle``.
 
     ``dry_run`` is persisted via an env var so :func:`_scheduled_tick`
     picks it up at fire time — APScheduler's jobstore pickles the job
     target, and a closure carrying ``dry_run`` would bloat the persisted
     row and couple the stored job to this process's Python instance.
+
+    ``jitter_seconds=None`` means "use scheduler default"; pass an int to
+    override when multiple devices run the same agent and need to avoid
+    lockstep DB contention.
     """
     from agents.scheduler import register_agent
 
     os.environ["TASK_DISPATCHER_DRY_RUN"] = "1" if dry_run else "0"
-    return register_agent(
-        handle,
-        agent_id=AGENT_ID,
-        fn=_scheduled_tick,
-        interval_seconds=interval_seconds,
-    )
+    kwargs: dict[str, Any] = {
+        "agent_id": AGENT_ID,
+        "fn": _scheduled_tick,
+        "interval_seconds": interval_seconds,
+    }
+    if jitter_seconds is not None:
+        kwargs["jitter_seconds"] = jitter_seconds
+    return register_agent(handle, **kwargs)
 
 
 def main() -> int:
