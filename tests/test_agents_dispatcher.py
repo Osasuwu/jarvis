@@ -392,6 +392,16 @@ def test_full_flow_dispatches_healthy_row(monkeypatch: pytest.MonkeyPatch) -> No
     call = popen.calls[0]
     assert call["argv"][0:2] == ["claude", "-p"]
 
+    # Permission flags present — without these, headless Claude hangs
+    # on approval prompts (#372). acceptEdits + narrow allowedTools,
+    # not bypassPermissions (which defeats Sprint 2 safety layering).
+    argv = call["argv"]
+    assert "--permission-mode" in argv
+    assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
+    assert "--allowedTools" in argv
+    assert "Bash(git:*)" in argv, "expected narrow Bash allowlist"
+    assert "--dangerously-skip-permissions" not in argv
+
     # Row flipped to dispatched.
     updates = [c for c in client.calls if c[0] == "update" and c[1] == "task_queue"]
     assert len(updates) == 1

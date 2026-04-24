@@ -70,6 +70,26 @@ _SENSITIVE_ENV_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# Permission spec for the spawned ``claude -p`` session (#372). Without
+# these flags, headless Claude hangs waiting for approval that no operator
+# can give. Design: ``acceptEdits`` auto-approves Write/Edit (matches
+# dispatcher's primary shape — "make the change"), plus a narrow allowlist
+# of read-only and safely-namespaced tools that ``acceptEdits`` does not
+# cover. Widen this list only with a design note; do NOT switch to
+# ``bypassPermissions`` — that defeats the Sprint 2 safety layering.
+_SPAWN_PERMISSION_MODE = "acceptEdits"
+_SPAWN_ALLOWED_TOOLS = (
+    "Read",
+    "Glob",
+    "Grep",
+    "TodoWrite",
+    "Bash(git:*)",
+    "Bash(gh:*)",
+    "Bash(pytest:*)",
+    "Bash(npm:*)",
+    "Bash(python:*)",
+)
+
 # How many recent dispatches to scan for pattern-repeat detection. Large
 # enough that a run of 3 same-goal tasks plus the pending one is visible;
 # small enough that the Supabase query stays cheap on every tick.
@@ -284,8 +304,17 @@ def dispatch_node(
 
     try:
         env = _sanitize_env()
+        argv = [
+            "claude",
+            "-p",
+            goal,
+            "--permission-mode",
+            _SPAWN_PERMISSION_MODE,
+            "--allowedTools",
+            *_SPAWN_ALLOWED_TOOLS,
+        ]
         spawn(
-            ["claude", "-p", goal],
+            argv,
             env=env,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
