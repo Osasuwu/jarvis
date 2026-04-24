@@ -66,6 +66,8 @@ outcome_update(
 
 **Enrich `memory_id` if the outcome row has it NULL**: look up the linked `decision_made` episode (same issue/PR) and pass `memory_id = payload.memories_used[0]`. Rule — primary informing memory = first entry (dominant basis). If the outcome already has `memory_id`, leave it alone; `/verify` is not where you rewrite attribution. If no decision episode references this issue, omit — the backfill script (`scripts/backfill-outcome-memories.py`) can handle historical rows in bulk.
 
+**Empty `memories_used` is valid** (per #334 expanded triggers: policy/schema/tag/config decisions may genuinely have no memory basis). If the matching decision episode exists but its `memories_used` list is empty, skip the enrichment — do NOT error, do NOT guess. Outcome stays `memory_id = NULL`; this is the correct representation for a decision that wasn't informed by prior memory.
+
 `verified_at` is set automatically when status changes from pending.
 
 ## Step 4 — Detect patterns
