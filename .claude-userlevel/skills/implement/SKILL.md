@@ -62,7 +62,7 @@ git checkout master && git pull
 git checkout -b feat/<N>-<slug>
 ```
 
-### 3.5. Record decision (reasoning trace, #252)
+### 3.5. Record decision (reasoning trace, #252, #334)
 
 After claim, before implementation — emit a `decision_made` episode so `/reflect` can later attribute outcomes to reasoning (missing memory / wrong memory / wrong reasoning):
 
@@ -78,7 +78,20 @@ mcp__memory__record_decision(
 )
 ```
 
-Always emit for issue implementation — outcome attribution needs the basis. For non-issue decisions, emit only when `reversibility ∈ {hard, irreversible}` OR `confidence < 0.7`.
+**Trigger list — emit `record_decision` when ANY of the following hold** (canonical rule; mirrored in global `record_decision_when_what` feedback memory):
+
+1. **Issue implementation** — always, even if reversible. Outcome attribution needs the basis.
+2. **`reversibility ∈ {hard, irreversible}`** — e.g. destructive DB ops, force-pushed history, published API changes.
+3. **`confidence < 0.7`** — uncertain calls deserve a recorded rationale so `/reflect` can classify the outcome as reasoning-failure vs execution-failure.
+4. **Policy / schema / tag / config change** — tagging memories `always_load`, editing protected files, adding/removing skills, changing hook config, schema migrations, installer manifest edits. These are *reversible* but affect the system's behavior across future sessions.
+5. **Architectural direction picked** — a resolved "chose X over Y" after discussion, even if reversible. The rationale matters more than the bit that's set; `/reflect` can only learn if the picked direction is captured at pick time.
+
+Rules of thumb:
+- "I just made a call that will outlive this session" → emit.
+- "I just clarified my own thinking on an approach" → don't emit (no persisted effect).
+- When unsure, emit. The cost is one tool call; the cost of missing a decision is a blind spot for `/reflect`.
+
+Pass `memories_used = [<uuids from step 0 recall>]` whenever recall surfaced something. Empty list is valid only when nothing in memory informed the decision — which itself is rare and should be noted in the rationale.
 
 ### 4. Implement
 
