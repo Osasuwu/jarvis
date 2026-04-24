@@ -1,7 +1,7 @@
 ---
 name: status
 description: "Project dashboard: git state, PRs, issues, CI health, risks, stale/blocked work, goal alerts. Absorbs morning-brief, risk-radar, triage. Use at session start or when needing cross-project awareness."
-version: 2.1.0
+version: 2.2.0
 ---
 
 # Status Dashboard
@@ -54,6 +54,18 @@ SELECT query, hit_count, last_seen_at FROM known_unknowns WHERE status='open' OR
 ```
 Execute via `execute_sql` MCP. Cloud sessions won't have local memory client. Include in alerts if results returned.
 
+**Stale flag-only findings** (once, not per repo — #327 escalation rung 2):
+```sql
+SELECT name, created_at, updated_at, content
+FROM memories
+WHERE name LIKE 'hygiene_sweep_proposals_%'
+  AND archived = false
+  AND created_at < now() - interval '1 day'
+ORDER BY created_at ASC
+LIMIT 10;
+```
+These are flag-only findings autonomous-loop recorded against foreign-owner repos (e.g. redrobot). Each day without owner action compounds — the `/status` prompt is the daily nudge. Compute `days_unaddressed = today - date(created_at)` per memory and group by repo (name format `hygiene_sweep_proposals_<repo>_<date>`).
+
 
 ## Step 3 — Analyze
 
@@ -93,10 +105,21 @@ Flag: N stale branches (remote gone), M unmerged branches, K stashes.
 
 ## Step 4 — Output
 
+**STALE FLAG section goes at the top of Alerts** — these compound daily and the owner needs to see them first. Group by repo; show oldest first so the most-ignored rises to the top:
+
+```
+[STALE FLAG] <repo> — <N>d unaddressed (<M> consecutive flags)
+  first flagged: YYYY-MM-DD | latest memory: hygiene_sweep_proposals_<repo>_<date>
+  top finding: <brief from content>
+```
+
+Omit the section if no stale flag-only findings were returned.
+
 ```markdown
 # Status — YYYY-MM-DD
 
 ## Alerts
+- [STALE FLAG] <repo> — <N>d unaddressed (<memory>) — see hygiene findings
 - <P0 deadline, neglect warnings, or "Goals on track">
 - <Credential expiry warnings, if any>
 
