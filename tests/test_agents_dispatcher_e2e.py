@@ -227,7 +227,10 @@ def test_happy_path_dispatches_and_audits(
     details = entry.get("details") or {}
     assert details.get("tier") == 0  # Tier.AUTO
     idem = details.get("idempotency_key")
-    assert idem and len(idem) == 64, f"idempotency_key not a sha256 hex: {idem!r}"
+    assert idem == seeded["idempotency_key"], (
+        f"dispatcher must reuse row's idempotency_key (contract at "
+        f"dispatcher.py:261-264); got {idem!r} vs seeded {seeded['idempotency_key']!r}"
+    )
 
 
 # ---------------------------------------------------------------------------
