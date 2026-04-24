@@ -95,6 +95,16 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 - Branches from `main`. One issue per PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
 - Check GitHub Copilot auto-review before merging.
 
+### Path-filtered CI guards require a meta-test (#326)
+
+Any workflow under `.github/workflows/` with a `paths:` filter that blocks PRs must ship with a co-located fixture test in `tests/ci/test_<name>_guard.py`. Convention: `.github/workflows/X-guard.yml` ⇒ `tests/ci/test_X_guard.py`.
+
+The test covers two dimensions:
+- **Config** — assert the workflow's `paths:` filter references the canonical file(s). If the canonical path changes, red CI forces the workflow to move with it. This is the exact class of bug that produced #289/#310/#311 (guard watched `supabase/schema.sql`, canonical was `mcp-memory/schema.sql` — guard silently passed for a sprint).
+- **Logic** — reimplement the guard's decision rule in Python, assert it blocks/allows the scenarios it claims to. `schema-drift-check` is the proof-of-concept; new path-filtered guards follow the same pattern.
+
+The meta-test suite runs via `.github/workflows/ci-meta.yml` on every PR (not itself path-filtered — that would be self-undermining).
+
 ### Sprint vs pillar hygiene
 
 **Pillars** live in memory, never close — multi-sprint capability areas. Don't treat a pillar as done after one sprint (memory: `pillar_is_not_one_task`).
