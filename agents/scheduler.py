@@ -24,10 +24,12 @@ Usage::
 
 CLI (runs the task-dispatcher on a persistent schedule)::
 
-    python -m agents.scheduler                 # tick every 60s + 10s jitter
-    python -m agents.scheduler --interval 30   # override interval
-    python -m agents.scheduler --once          # fire one tick and exit
-    python -m agents.scheduler --once --dry-run  # graph only, no 'claude -p'
+    python -m agents.scheduler                              # tick every 60s + 10s jitter
+    python -m agents.scheduler --interval 30                # override interval
+    python -m agents.scheduler --once                       # fire one tick and exit
+    python -m agents.scheduler --once --dry-run             # graph only, no 'claude -p'
+    python -m agents.scheduler --interval 60 --jitter 5     # production CLI
+    python -m agents.scheduler --interval 60 --placeholder  # (dev) + canary tick
 
 Restart semantics: each agent's job is identified by ``agent_id`` and
 registered with ``replace_existing=True`` / ``max_instances=1`` /
@@ -153,13 +155,14 @@ def register_agent(
     )
 
 
-def _placeholder_tick() -> None:
-    """Proof-of-life tick used until a real agent (S2-3 dispatcher) registers.
+def _pickle_canary_tick() -> None:
+    """Proof-of-life tick for testing jobstore pickle round-trips.
 
     Lives at module scope (not a closure) so APScheduler's jobstore can
-    pickle the job reference and restore it across restarts.
+    pickle the job reference and restore it across restarts. Used by
+    ``--placeholder`` dev flag to verify the persistence contract.
     """
-    logger.info("[scheduler] placeholder tick at %s", int(time.time()))
+    logger.info("[scheduler] canary tick at %s", int(time.time()))
 
 
 def _install_signal_handlers(handle: SchedulerHandle) -> None:
@@ -192,6 +195,7 @@ def run(
     *,
     once: bool = False,
     dry_run: bool = False,
+    placeholder: bool = False,
 ) -> int:
     """CLI entry-point: start scheduler, register the dispatcher, block.
 
@@ -200,6 +204,9 @@ def run(
 
     ``--dry-run`` makes the dispatcher tick traverse the full graph without
     spawning ``claude -p``; audit rows are still written.
+
+    ``--placeholder`` dev flag registers the canary tick alongside the
+    dispatcher (useful for testing the jobstore pickle contract).
     """
     from agents import dispatcher
 
@@ -211,8 +218,25 @@ def run(
         interval_seconds=interval_seconds,
         jitter_seconds=jitter_seconds,
     )
+    if placeholder:
+        register_agent(
+            handle,
+            agent_id="scheduler-canary",
+            fn=_pickle_canary_tick,
+            interval_seconds=interval_seconds,
+            jitter_seconds=jitter_seconds,
+        )
     _install_signal_handlers(handle)
     handle.scheduler.start()
+
+    # Startup reaper: delete orphan jobstore rows from agent_ids that
+    # no longer exist in code. This guards against rename/removal drift.
+    registered_ids = {job.id for job in handle.scheduler.get_jobs()}
+    jobstore = handle.scheduler._lookup_jobstore(handle.jobstore_alias)
+    for job in jobstore.get_all_jobs():
+        if job.id not in registered_ids:
+            logger.info("[scheduler] reaping orphan job id=%s", job.id)
+            jobstore.remove_job(job.id)
 
     if once:
         # Wake every registered job immediately, drain, exit.
@@ -266,8 +290,19 @@ def main() -> int:
         action="store_true",
         help="Dispatcher traverses full graph but does not spawn 'claude -p'.",
     )
+    parser.add_argument(
+        "--placeholder",
+        action="store_true",
+        help="(Dev only) Register the canary tick alongside the dispatcher.",
+    )
     args = parser.parse_args()
-    return run(args.interval, args.jitter, once=args.once, dry_run=args.dry_run)
+    return run(
+        args.interval,
+        args.jitter,
+        once=args.once,
+        dry_run=args.dry_run,
+        placeholder=args.placeholder,
+    )
 
 
 if __name__ == "__main__":
