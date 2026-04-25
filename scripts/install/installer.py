@@ -6,6 +6,10 @@ Epic #335 M1 (#336). Handles three device states:
   current   — .jarvis-version matches current SHA → no-op
 
 Default mode is dry-run. Destructive writes require explicit --apply.
+
+NOTE: .mcp.json is round-tripped through json.loads/json.dumps during installation
+and therefore JSONC comments and key ordering are not preserved. Future authors who
+add comments to .mcp.json should expect them to be stripped on install.
 """
 
 from __future__ import annotations
@@ -395,7 +399,13 @@ def _merge_json_file(
 
 def _set_env(name: str, value: str, platform: str) -> None:
     if platform == "windows":
-        subprocess.run(["setx", name, value], check=False, capture_output=True)
+        result = subprocess.run(["setx", name, value], check=False, capture_output=True)
+        if result.returncode != 0:
+            stderr_msg = result.stderr.decode(errors='replace').strip()
+            print(
+                f"setx {name} failed (rc={result.returncode}): {stderr_msg}",
+                file=sys.stderr
+            )
     else:
         rc_files = [Path.home() / ".bashrc", Path.home() / ".zshrc"]
         line = f'export {name}="{value}"\n'
@@ -498,11 +508,20 @@ def apply_plan(
 
 
 def _include_for(manifest: dict[str, Any], group_id: str, source: str) -> list[str] | None:
+    """Return include filter for a directory group if source matches.
+
+    Uses normalized path equality (via as_posix()) rather than substring matching
+    to avoid false positives when source prefixes overlap. E.g., if two groups have
+    sources "scripts" and "scripts/install", substring matching would incorrectly
+    match "scripts/install/foo" against both groups.
+    """
+    source_normalized = Path(source).as_posix()
     for group in manifest.get("groups") or []:
         if group.get("id") != group_id:
             continue
         for entry in group.get("directories") or []:
-            if str(Path(entry["source"])) in source:
+            entry_normalized = Path(entry["source"]).as_posix()
+            if entry_normalized == source_normalized:
                 return entry.get("include")
     return None
 
