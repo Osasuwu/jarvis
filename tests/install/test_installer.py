@@ -285,3 +285,260 @@ class TestJsonRoundtripCaveat:
             assert b"// comment" in result
         finally:
             json_file.unlink()
+
+
+class TestSkipEnvCLI:
+    """Tests for --skip-env CLI path (#415)."""
+
+    def test_skip_env_prevents_set_env_call(self):
+        """Test that --skip-env CLI flag prevents env var writes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            target_root = base / "target"
+            target_root.mkdir()
+            repo_root = Path(__file__).parent.parent.parent / "scripts" / "install"
+
+            # Create minimal manifest
+            manifest_path = base / "manifest.yaml"
+            manifest_path.write_text(
+                "version: 1\n"
+                "target_root: {}\n"
+                "env_vars:\n"
+                "  - name: TEST_VAR\n"
+                "    value: test_value\n".format(target_root)
+            )
+
+            # Mock _set_env to track calls
+            with mock.patch.object(installer, "_set_env") as mock_set_env:
+                rc = installer.main([
+                    "--manifest", str(manifest_path),
+                    "--apply",
+                    "--skip-env",
+                    "--skip-health-check",
+                ])
+
+            # Verify _set_env was NOT called due to --skip-env
+            mock_set_env.assert_not_called()
+            assert rc == 0
+
+    def test_without_skip_env_calls_set_env(self):
+        """Test that without --skip-env, env vars are set."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            target_root = base / "target"
+            target_root.mkdir()
+
+            # Create minimal manifest
+            manifest_path = base / "manifest.yaml"
+            manifest_path.write_text(
+                "version: 1\n"
+                "target_root: {}\n"
+                "env_vars:\n"
+                "  - name: TEST_VAR\n"
+                "    value: test_value\n".format(target_root)
+            )
+
+            # Mock _set_env to track calls
+            with mock.patch.object(installer, "_set_env") as mock_set_env:
+                rc = installer.main([
+                    "--manifest", str(manifest_path),
+                    "--apply",
+                    "--skip-health-check",
+                ])
+
+            # Verify _set_env WAS called (without --skip-env)
+            mock_set_env.assert_called_once()
+            assert rc == 0
+
+
+class TestMissingGitBinary:
+    """Tests for missing git binary error handling (#415)."""
+
+    def test_missing_git_raises_file_not_found(self):
+        """Test that missing git binary raises FileNotFoundError cleanly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            repo_root = base / "repo"
+            repo_root.mkdir()
+
+            # Monkeypatch subprocess.run to raise FileNotFoundError on git
+            original_run = subprocess.run
+
+            def mock_run(*args, **kwargs):
+                if args and args[0] and args[0][0] == "git":
+                    raise FileNotFoundError("git not found")
+                return original_run(*args, **kwargs)
+
+            with mock.patch("subprocess.run", side_effect=mock_run):
+                with pytest.raises(FileNotFoundError, match="git not found"):
+                    installer.current_git_sha(repo_root)
+
+    def test_run_git_missing_binary_clean_failure(self):
+        """Test that _run_git raises FileNotFoundError (not subprocess error)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo_root = Path(tmpdir)
+
+            with mock.patch("subprocess.run") as mock_run:
+                mock_run.side_effect = FileNotFoundError("git: not found")
+
+                with pytest.raises(FileNotFoundError):
+                    installer._run_git(repo_root, "rev-parse", "HEAD")
+
+
+class TestEmptyGroupsList:
+    """Tests for empty groups list handling (#415)."""
+
+    def test_empty_groups_list_silent_no_op(self):
+        """Test that empty groups list completes silently without actions."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            target_root = base / "target"
+            repo_root = Path(__file__).parent.parent.parent / "scripts" / "install"
+
+            manifest = {
+                "version": 1,
+                "target_root": str(target_root),
+                "groups": [],  # Empty groups
+            }
+
+            # Mock git to avoid filesystem dependency
+            with mock.patch.object(installer, "current_git_sha", return_value="abc123"):
+                plan = installer.build_plan(manifest, repo_root)
+
+            # Empty groups → only write_version action
+            assert plan.state != "current"
+            # Filter out write_version (non-destructive)
+            file_actions = [
+                a for a in plan.actions
+                if a.kind in {"copy_file", "copy_dir", "merge_json"}
+            ]
+            assert len(file_actions) == 0
+
+    def test_empty_groups_apply_completes(self):
+        """Test that apply_plan with empty groups completes without error."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            target_root = base / "target"
+            repo_root = Path(__file__).parent.parent.parent / "scripts" / "install"
+            target_root.mkdir()
+
+            manifest = {
+                "version": 1,
+                "target_root": str(target_root),
+                "groups": [],
+            }
+
+            with mock.patch.object(installer, "current_git_sha", return_value="abc123"):
+                plan = installer.build_plan(manifest, repo_root)
+
+            # apply_plan should complete without raising
+            with mock.patch.object(installer, "_set_env"):
+                installer.apply_plan(plan, manifest)
+
+            # Verify version marker was written
+            version_file = target_root / ".jarvis-version"
+            assert version_file.exists()
+
+
+class TestUnicodePathHandling:
+    """Tests for unicode paths in manifest entries (#415)."""
+
+    def test_unicode_source_path_copy_dir(self):
+        """Test that unicode paths in source work correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            # Create source with unicode name
+            src_dir = base / "тест_source"
+            src_dir.mkdir()
+            (src_dir / "file.py").write_text("test content")
+
+            dest_dir = base / "dest"
+            dest_dir.mkdir()
+
+            # _copy_dir should handle unicode path
+            installer._copy_dir(
+                src_dir,
+                dest_dir,
+                include=None,
+                template=False,
+                repo_root=base,
+                claude_home=base,
+            )
+
+            # Verify file was copied
+            assert (dest_dir / "file.py").exists()
+            assert (dest_dir / "file.py").read_text() == "test content"
+
+    def test_unicode_dest_path_copy_file(self):
+        """Test that unicode destination paths work correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            # Create source file
+            src_file = base / "source.py"
+            src_file.write_text("test content")
+
+            # Destination with unicode in path
+            dest_dir = base / "café_dest"
+            dest_dir.mkdir()
+            dest_file = dest_dir / "file.py"
+
+            # _copy_file should handle unicode path
+            installer._copy_file(
+                src_file,
+                dest_file,
+                template=False,
+                repo_root=base,
+                claude_home=base,
+            )
+
+            # Verify file was copied
+            assert dest_file.exists()
+            assert dest_file.read_text() == "test content"
+
+    def test_include_for_unicode_source(self):
+        """Test that _include_for works with unicode paths."""
+        manifest = {
+            "groups": [
+                {
+                    "id": "unicode_group",
+                    "directories": [
+                        {
+                            "source": "тест/скрипты",
+                            "include": ["file1.py", "file2.py"]
+                        }
+                    ]
+                }
+            ]
+        }
+
+        result = installer._include_for(manifest, "unicode_group", "тест/скрипты")
+        assert result == ["file1.py", "file2.py"]
+
+
+class TestManifestFileExistsHardAssert:
+    """Tests for hard-assert that manifest file exists (#415)."""
+
+    def test_manifest_file_must_exist(self):
+        """Test that missing manifest file raises assertion error."""
+        nonexistent = Path("/tmp/nonexistent_manifest_xyz.yaml")
+        # Ensure it doesn't exist
+        if nonexistent.exists():
+            nonexistent.unlink()
+
+        # load_manifest should raise when file doesn't exist
+        with pytest.raises((FileNotFoundError, OSError)):
+            installer.load_manifest(nonexistent)
+
+    def test_main_with_missing_manifest_fails(self):
+        """Test that main() with missing manifest fails early."""
+        nonexistent_manifest = Path(tempfile.gettempdir()) / "nonexistent_manifest_abc.yaml"
+        if nonexistent_manifest.exists():
+            nonexistent_manifest.unlink()
+
+        # main() should fail when manifest is missing
+        # load_manifest raises FileNotFoundError, which propagates from main()
+        with pytest.raises(FileNotFoundError):
+            installer.main([
+                "--manifest", str(nonexistent_manifest),
+                "--apply",
+            ])
