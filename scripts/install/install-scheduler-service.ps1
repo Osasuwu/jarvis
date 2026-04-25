@@ -4,7 +4,10 @@
 
 param(
     [Parameter(HelpMessage = "Skip NSSM check (for automated environments)")]
-    [switch]$SkipNssmCheck = $false
+    [switch]$SkipNssmCheck = $false,
+
+    [Parameter(HelpMessage = "Validate resolution end-to-end without calling nssm install/set")]
+    [switch]$DryRun = $false
 )
 
 # Colors for output
@@ -73,15 +76,28 @@ if (-not $repoPath) {
 if (-not $pythonPath) {
     $pythonPath = $env:JARVIS_PYTHON
     if (-not $pythonPath) {
-        $pythonPath = "python"  # Rely on PATH
-        Write-Status "JARVIS_PYTHON not set, using 'python' from PATH" $InfoColor
+        $pythonPath = "python"  # Rely on PATH initially
+        Write-Status "JARVIS_PYTHON not set, will resolve 'python' from PATH" $InfoColor
     }
 }
 
 # Resolve to absolute path
 $repoPath = Resolve-Path $repoPath -ErrorAction Stop | Select-Object -ExpandProperty Path
 Write-Status "Repository path: $repoPath" $InfoColor
-Write-Status "Python interpreter: $pythonPath" $InfoColor
+
+# Resolve pythonPath to absolute if it's not already
+if (-not (Split-Path $pythonPath -IsAbsolute)) {
+    try {
+        $pythonPath = (Get-Command $pythonPath -ErrorAction Stop).Source
+        Write-Status "Python interpreter resolved to: $pythonPath" $SuccessColor
+    }
+    catch {
+        Exit-Script 1 "Cannot resolve Python: '$pythonPath' not found in PATH. Set JARVIS_PYTHON to absolute path."
+    }
+}
+else {
+    Write-Status "Python interpreter: $pythonPath" $InfoColor
+}
 
 # Verify repo structure
 if (-not (Test-Path (Join-Path $repoPath "agents"))) {
@@ -91,20 +107,63 @@ if (-not (Test-Path (Join-Path $repoPath "agents"))) {
 # Check NSSM is installed
 Write-Status "Checking for NSSM..." $InfoColor
 $nssmPath = $null
-try {
-    $nssmPath = (Get-Command nssm -ErrorAction Stop).Source
-    Write-Status "NSSM found at: $nssmPath" $SuccessColor
-}
-catch {
-    if (-not $SkipNssmCheck) {
-        Write-Error-Message "NSSM is not installed or not in PATH"
-        Write-Host "`nTo install NSSM:"
-        Write-Host "  Option 1 (winget): winget install NSSM.NSSM"
-        Write-Host "  Option 2 (download): https://nssm.cc/download"
-        Exit-Script 1
+
+# First, honor JARVIS_NSSM_PATH env var if set
+if ($env:JARVIS_NSSM_PATH) {
+    if (Test-Path $env:JARVIS_NSSM_PATH) {
+        $nssmPath = $env:JARVIS_NSSM_PATH
+        Write-Status "NSSM found via JARVIS_NSSM_PATH: $nssmPath" $SuccessColor
     }
     else {
-        Write-Status "Skipping NSSM check (--SkipNssmCheck set)" $WarningColor
+        Exit-Script 1 "JARVIS_NSSM_PATH is set but file not found: $env:JARVIS_NSSM_PATH"
+    }
+}
+
+# Try Get-Command next
+if (-not $nssmPath) {
+    try {
+        $nssmPath = (Get-Command nssm -ErrorAction Stop).Source
+        Write-Status "NSSM found in PATH: $nssmPath" $SuccessColor
+    }
+    catch {
+        # Get-Command failed; try auto-discovery in winget package directory
+        Write-Status "NSSM not in PATH; searching winget package directory..." $WarningColor
+        $nssmPath = $null
+
+        $wingetNssmGlob = Join-Path (Join-Path $env:LOCALAPPDATA "Microsoft") "WinGet"
+        $wingetNssmGlob = Join-Path $wingetNssmGlob "Packages"
+        $wingetNssmGlob = Join-Path $wingetNssmGlob "NSSM.NSSM_*"
+
+        # Search for both win64 and win32
+        $candidates = @(
+            @("win64", "nssm.exe"),
+            @("win32", "nssm.exe")
+        )
+
+        foreach ($subpath in $candidates) {
+            $searchPattern = Join-Path (Join-Path $wingetNssmGlob "nssm-*") $subpath[0]
+            $found = Get-ChildItem -Path $searchPattern -Name $subpath[1] -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+                $nssmPath = Join-Path $searchPattern $subpath[1]
+                Write-Status "NSSM auto-discovered in winget: $nssmPath" $SuccessColor
+                break
+            }
+        }
+
+        if (-not $nssmPath) {
+            if (-not $SkipNssmCheck) {
+                Write-Error-Message "NSSM is not installed or not in PATH"
+                Write-Host "`nTo install NSSM:"
+                Write-Host "  Option 1 (winget): winget install NSSM.NSSM"
+                Write-Host "  Option 2 (download): https://nssm.cc/download"
+                Write-Host "`nTo override NSSM path:"
+                Write-Host "  `$env:JARVIS_NSSM_PATH = 'C:\path\to\nssm.exe'"
+                Exit-Script 1
+            }
+            else {
+                Write-Status "Skipping NSSM check (--SkipNssmCheck set)" $WarningColor
+            }
+        }
     }
 }
 
@@ -140,8 +199,16 @@ Write-Status "Checking for existing service..." $InfoColor
 $serviceExists = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($serviceExists) {
     Write-Status "Service '$ServiceName' already exists. Stopping and updating..." $WarningColor
-    nssm stop $ServiceName 2>&1 | Out-Null
-    Start-Sleep -Seconds 2
+    if (-not $DryRun) {
+        & $nssmPath stop $ServiceName
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error-Message "Failed to stop service (exit code $LASTEXITCODE)"
+        }
+        Start-Sleep -Seconds 2
+    }
+    else {
+        Write-Status "[DRY-RUN] Would call: & $nssmPath stop $ServiceName" $WarningColor
+    }
 }
 else {
     Write-Status "Creating new service..." $InfoColor
@@ -150,42 +217,65 @@ else {
 # Install/update service with NSSM
 Write-Status "Installing service via NSSM..." $InfoColor
 
-try {
-    # Install or update
-    nssm install $ServiceName "$pythonPath" "-m agents.scheduler" 2>&1 | Out-Null
+# Helper function to invoke nssm with error checking
+function Invoke-Nssm {
+    param([string[]]$Arguments)
 
-    # Set working directory
-    nssm set $ServiceName AppDirectory "$repoPath" 2>&1 | Out-Null
+    if ($DryRun) {
+        Write-Status "[DRY-RUN] Would call: & $nssmPath $($Arguments -join ' ')" $WarningColor
+        return
+    }
 
-    # Set log files
-    nssm set $ServiceName AppStdout "$StdoutLog" 2>&1 | Out-Null
-    nssm set $ServiceName AppStderr "$StderrLog" 2>&1 | Out-Null
+    $output = & $nssmPath @Arguments 2>&1
+    Write-Host $output
 
-    # Set startup type to Automatic
-    nssm set $ServiceName Start SERVICE_AUTO_START 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Exit-Script $LASTEXITCODE "nssm command failed (exit code $LASTEXITCODE): $($Arguments -join ' ')"
+    }
+}
 
-    # Configure restart on failure
-    nssm set $ServiceName AppExit Default Restart 2>&1 | Out-Null
-    nssm set $ServiceName AppRestartDelay 5000 2>&1 | Out-Null
+# Install or update
+Write-Status "Configuring service..." $InfoColor
+Invoke-Nssm "install", $ServiceName, "$pythonPath", "-m agents.scheduler"
 
-    # Set service description
-    nssm set $ServiceName Description "$ServiceDescription" 2>&1 | Out-Null
-    nssm set $ServiceName DisplayName "$ServiceDisplayName" 2>&1 | Out-Null
+# Set working directory
+Invoke-Nssm "set", $ServiceName, "AppDirectory", "$repoPath"
 
+# Set log files
+Invoke-Nssm "set", $ServiceName, "AppStdout", "$StdoutLog"
+Invoke-Nssm "set", $ServiceName, "AppStderr", "$StderrLog"
+
+# Set startup type to Automatic
+Invoke-Nssm "set", $ServiceName, "Start", "SERVICE_AUTO_START"
+
+# Configure restart on failure
+Invoke-Nssm "set", $ServiceName, "AppExit", "Default", "Restart"
+Invoke-Nssm "set", $ServiceName, "AppRestartDelay", "5000"
+
+# Set service description
+Invoke-Nssm "set", $ServiceName, "Description", "$ServiceDescription"
+Invoke-Nssm "set", $ServiceName, "DisplayName", "$ServiceDisplayName"
+
+if ($DryRun) {
+    Write-Status "`n[DRY-RUN] All validations passed. Actual service installation would proceed." $SuccessColor
+}
+else {
     Write-Status "Service configured successfully" $SuccessColor
 }
-catch {
-    Exit-Script 1 "Failed to configure service: $_"
+
+# Display service status (only in actual run, not dry-run)
+if (-not $DryRun) {
+    Write-Status "`nFinal service configuration:" $InfoColor
+    Get-Service -Name $ServiceName | Format-List DisplayName, Name, Status, StartType
+
+    Write-Status "`nService installation complete!" $SuccessColor
+    Write-Host "`nTo start the service:"
+    Write-Host "  Start-Service -Name '$ServiceName'"
+    Write-Host "`nTo view logs:"
+    Write-Host "  Get-Content '$StdoutLog' -Tail 50 -Wait"
+    Write-Host "`nTo uninstall:"
+    Write-Host "  & '$PSScriptRoot\uninstall-scheduler-service.ps1'"
 }
-
-# Display service status
-Write-Status "`nFinal service configuration:" $InfoColor
-& Get-Service -Name $ServiceName | Format-List DisplayName, Name, Status, StartType
-
-Write-Status "`nService installation complete!" $SuccessColor
-Write-Host "`nTo start the service:"
-Write-Host "  Start-Service -Name '$ServiceName'"
-Write-Host "`nTo view logs:"
-Write-Host "  Get-Content '$StdoutLog' -Tail 50 -Wait"
-Write-Host "`nTo uninstall:"
-Write-Host "  & '$PSScriptRoot\uninstall-scheduler-service.ps1'"
+else {
+    Write-Status "`n[DRY-RUN] Script completed. All validations passed." $SuccessColor
+}
