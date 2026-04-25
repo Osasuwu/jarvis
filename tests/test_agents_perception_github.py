@@ -500,5 +500,15 @@ def test_fetch_ready_issues_one_query_per_tier(monkeypatch: pytest.MonkeyPatch) 
     assert numbers == [1, 2, 3]
 
 
+def test_idempotency_key_is_sha256_hex() -> None:
+    """Per perception.md, idempotency_key is sha256 → 64-char lowercase hex."""
+    import re
+
+    key = perception_github._idempotency_key("Osasuwu/jarvis", 1, ["tier:1-auto"])
+
+    assert len(key) == 64
+    assert re.fullmatch(r"[0-9a-f]{64}", key) is not None
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
