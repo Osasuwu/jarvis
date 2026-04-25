@@ -415,37 +415,64 @@ class TestRecordDecisionResolution:
 
 
 def test_handler_defined_before_main_entry():
-    """Regression guard: _handle_record_decision must live ABOVE the
-    `if __name__ == "__main__"` block in server.py.
+    """Regression guard: `_handle_record_decision` must be bound to the
+    server module's namespace BEFORE `if __name__ == "__main__"` triggers.
 
     When the module runs as main, Python enters `asyncio.run(main())` and
-    blocks — any def after that point never gets bound to the module
-    namespace. Tests don't catch this (they import server as a module,
-    so __main__ never fires), but the dispatcher at runtime hits a
-    NameError. This test parses the source and asserts the line ordering
-    so we never ship the bug again.
-    """
-    server_path = Path(__file__).resolve().parents[1] / "mcp-memory" / "server.py"
-    src = server_path.read_text(encoding="utf-8").splitlines()
+    blocks — any def or import after that point never gets bound. Tests
+    don't catch this (they import server as a module, so __main__ never
+    fires), but the dispatcher at runtime hits a NameError.
 
-    handler_line = next(
+    Pre-#360: the def itself lived in server.py and the assertion was on
+    its line ordering. Post-#360: the def lives in `handlers/decision.py`
+    and is brought into server's namespace via `from handlers.decision
+    import _handle_record_decision`. The invariant — that binding happens
+    before the main guard — is still meaningful, just shifted to the
+    import line.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    server_path = repo_root / "mcp-memory" / "server.py"
+    decision_path = repo_root / "mcp-memory" / "handlers" / "decision.py"
+    server_src = server_path.read_text(encoding="utf-8").splitlines()
+    decision_src = decision_path.read_text(encoding="utf-8")
+
+    # The def must exist somewhere — handlers/decision.py is the post-#360 home.
+    assert "async def _handle_record_decision" in decision_src, (
+        "_handle_record_decision def not found in handlers/decision.py"
+    )
+
+    # In server.py, the import binding `_handle_record_decision` must come
+    # before `if __name__ == "__main__"` — same regression class as pre-#360,
+    # just measured at the binding site (import) rather than the def site.
+    # Match any line that names the handler before the main guard. Multiline
+    # imports put `_handle_record_decision` on its own line inside parentheses,
+    # which won't start with `from`/`import` itself — but it's still part of
+    # the bind statement.
+    binding_line = next(
         (
             i
-            for i, line in enumerate(src, start=1)
-            if line.startswith("async def _handle_record_decision")
+            for i, line in enumerate(server_src, start=1)
+            if "_handle_record_decision" in line
         ),
         None,
     )
     main_guard_line = next(
-        (i for i, line in enumerate(src, start=1) if line.startswith('if __name__ == "__main__"')),
+        (
+            i
+            for i, line in enumerate(server_src, start=1)
+            if line.startswith('if __name__ == "__main__"')
+        ),
         None,
     )
-    assert handler_line is not None, "_handle_record_decision def not found in server.py"
+    assert binding_line is not None, (
+        "no `from ... import _handle_record_decision` line found in server.py — "
+        "the dispatcher will hit NameError at runtime"
+    )
     assert main_guard_line is not None, 'if __name__ == "__main__" not found in server.py'
-    assert handler_line < main_guard_line, (
-        f"_handle_record_decision defined at line {handler_line} is AFTER "
-        f'`if __name__ == "__main__"` at line {main_guard_line} — the def '
-        "will never be bound at runtime. Move it above the main entry."
+    assert binding_line < main_guard_line, (
+        f"_handle_record_decision bound at line {binding_line} is AFTER "
+        f'`if __name__ == "__main__"` at line {main_guard_line} — the binding '
+        "will never run when the module starts as __main__."
     )
 
 
