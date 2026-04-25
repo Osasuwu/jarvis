@@ -267,3 +267,81 @@ def test_install_scheduler_supports_dryrun():
     assert "[DRY-RUN]" in content or "DRY-RUN" in content, (
         "Script should indicate DryRun mode in output (prefix with [DRY-RUN])"
     )
+
+
+def test_install_scheduler_service_account_param():
+    """Assert install script exposes -ServiceAccount and -ServicePassword parameters.
+
+    Regression test for issue #410: workshop deploy needed a one-command path
+    to grant SeServiceLogonRight to a non-default service account.
+    """
+    script_path = Path(__file__).parent.parent.parent / "scripts" / "install" / "install-scheduler-service.ps1"
+    content = script_path.read_text(encoding="utf-8")
+
+    # -ServiceAccount must be declared as a string parameter
+    assert "[string]$ServiceAccount" in content, (
+        "Script should expose -ServiceAccount as a [string] parameter"
+    )
+
+    # -ServicePassword must be a SecureString — never plain string
+    assert "[System.Security.SecureString]$ServicePassword" in content, (
+        "Script should expose -ServicePassword as [System.Security.SecureString] "
+        "(never plain string — passwords must not appear in shell history)"
+    )
+
+    # Service account block must be conditional — LocalSystem default is unchanged
+    assert "if ($ServiceAccount)" in content, (
+        "ServiceAccount logic must be gated on $ServiceAccount being set; "
+        "LocalSystem default flow must remain unchanged"
+    )
+
+
+def test_install_scheduler_grants_seservicelogon_right():
+    """Assert install script grants SeServiceLogonRight via secedit when -ServiceAccount is set.
+
+    Regression test for issue #410: workshop incident — sc.exe and NSSM cannot
+    grant the right; without it Windows returns 1326 even on correct password.
+    """
+    script_path = Path(__file__).parent.parent.parent / "scripts" / "install" / "install-scheduler-service.ps1"
+    content = script_path.read_text(encoding="utf-8")
+
+    # Function must exist
+    assert "function Grant-SeServiceLogonRight" in content, (
+        "Script should define Grant-SeServiceLogonRight function"
+    )
+
+    # Must use secedit (the issue body proposes secedit OR LSA P/Invoke; secedit is simpler)
+    assert "secedit /export" in content and "secedit /configure" in content, (
+        "Grant function should use 'secedit /export' + 'secedit /configure' "
+        "to round-trip the USER_RIGHTS area"
+    )
+
+    # Must reference the right by name
+    assert "SeServiceLogonRight" in content, (
+        "Script should reference SeServiceLogonRight by name"
+    )
+
+    # Must resolve account to SID before patching the policy
+    assert "NTAccount" in content and "SecurityIdentifier" in content, (
+        "Grant function should resolve the account name to a SID via NTAccount.Translate"
+    )
+
+    # Must be invoked from the ServiceAccount block, not unconditionally
+    # (find the if-block and assert the call is inside it)
+    sa_block_start = content.find("if ($ServiceAccount)")
+    assert sa_block_start != -1, "Expected 'if ($ServiceAccount)' guard"
+    sa_block_end = content.find("\n}\n", sa_block_start)
+    sa_block = content[sa_block_start:sa_block_end] if sa_block_end != -1 else ""
+    assert "Grant-SeServiceLogonRight" in sa_block, (
+        "Grant call must be inside the 'if ($ServiceAccount)' block, not unconditional"
+    )
+
+    # Idempotency: must detect existing grant before re-applying
+    assert "alreadyGranted" in content, (
+        "Grant function should detect existing right and no-op (avoid mutating policy each run)"
+    )
+
+    # DryRun extends to secedit operations
+    assert "[DRY-RUN] Would call: secedit" in content, (
+        "DryRun mode should print the secedit operations it would perform"
+    )

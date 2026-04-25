@@ -7,7 +7,18 @@ param(
     [switch]$SkipNssmCheck = $false,
 
     [Parameter(HelpMessage = "Validate resolution end-to-end without calling nssm install/set")]
-    [switch]$DryRun = $false
+    [switch]$DryRun = $false,
+
+    # Workshop incident 2026-04-25 (memory workshop_scheduler_logon_failure_real_cause):
+    # sc.exe config and NSSM cannot grant SeServiceLogonRight, so a correct password
+    # yields error 1326 when the account lacks the right. services.msc UI auto-grants
+    # on password re-entry; this script does the same explicitly via secedit.
+    # Format: '.\username' for local accounts, 'DOMAIN\username' for domain.
+    [Parameter(HelpMessage = "Run service as this user account; grants SeServiceLogonRight. Pair with -ServicePassword to also set NSSM ObjectName.")]
+    [string]$ServiceAccount = "",
+
+    [Parameter(HelpMessage = "Password for ServiceAccount (SecureString). Omit to set password manually after install.")]
+    [System.Security.SecureString]$ServicePassword
 )
 
 # Colors for output
@@ -33,6 +44,99 @@ function Exit-Script {
     param([int]$ExitCode = 1, [string]$Message = "")
     if ($Message) { Write-Error-Message $Message }
     exit $ExitCode
+}
+
+function Grant-SeServiceLogonRight {
+    # Idempotent grant of "Log on as a service" via secedit. See issue #410 +
+    # memory workshop_scheduler_logon_failure_real_cause.
+    param(
+        [Parameter(Mandatory = $true)][string]$Account,
+        [switch]$DryRun
+    )
+
+    $sid = $null
+    try {
+        $ntAccount = New-Object System.Security.Principal.NTAccount($Account)
+        $sid = $ntAccount.Translate([System.Security.Principal.SecurityIdentifier]).Value
+    }
+    catch {
+        Exit-Script 1 "Cannot resolve account '$Account' to SID. Verify spelling and (for local accounts) the '.\' prefix."
+    }
+
+    Write-Status "Account $Account resolved to SID $sid" $InfoColor
+
+    $tempInf = [System.IO.Path]::GetTempFileName() + ".inf"
+    $tempSdb = [System.IO.Path]::GetTempFileName() + ".sdb"
+
+    if ($DryRun) {
+        Write-Status "[DRY-RUN] Would call: secedit /export /cfg $tempInf /areas USER_RIGHTS" $WarningColor
+        Write-Status "[DRY-RUN] Would patch SeServiceLogonRight to include *$sid (no-op if already present)" $WarningColor
+        Write-Status "[DRY-RUN] Would call: secedit /configure /db $tempSdb /cfg $tempInf /areas USER_RIGHTS" $WarningColor
+        return
+    }
+
+    & secedit /export /cfg $tempInf /areas USER_RIGHTS | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Remove-Item $tempInf -ErrorAction SilentlyContinue
+        Exit-Script $LASTEXITCODE "secedit /export failed (exit $LASTEXITCODE). Script must run elevated."
+    }
+
+    $content = Get-Content $tempInf -Encoding Unicode
+    $newContent = New-Object System.Collections.Generic.List[string]
+    $rightFound = $false
+    $alreadyGranted = $false
+
+    foreach ($line in $content) {
+        if ($line -match '^\s*SeServiceLogonRight\s*=\s*(.+)$') {
+            $rightFound = $true
+            $accounts = $Matches[1].Trim()
+            if ($accounts -match [regex]::Escape("*$sid")) {
+                $alreadyGranted = $true
+                $newContent.Add($line) | Out-Null
+            }
+            else {
+                $newContent.Add("SeServiceLogonRight = $accounts,*$sid") | Out-Null
+            }
+        }
+        else {
+            $newContent.Add($line) | Out-Null
+        }
+    }
+
+    if (-not $rightFound) {
+        $insertIdx = -1
+        for ($i = 0; $i -lt $newContent.Count; $i++) {
+            if ($newContent[$i] -match '^\[Privilege Rights\]') {
+                $insertIdx = $i + 1
+                break
+            }
+        }
+        if ($insertIdx -gt 0) {
+            $newContent.Insert($insertIdx, "SeServiceLogonRight = *$sid")
+        }
+        else {
+            $newContent.Add("[Privilege Rights]") | Out-Null
+            $newContent.Add("SeServiceLogonRight = *$sid") | Out-Null
+        }
+    }
+
+    if ($alreadyGranted) {
+        Write-Status "SeServiceLogonRight already granted to $Account; no change needed" $SuccessColor
+        Remove-Item $tempInf -ErrorAction SilentlyContinue
+        return
+    }
+
+    Set-Content -Path $tempInf -Value $newContent -Encoding Unicode
+
+    & secedit /configure /db $tempSdb /cfg $tempInf /areas USER_RIGHTS | Out-Null
+    $configureExit = $LASTEXITCODE
+    Remove-Item $tempInf, $tempSdb -ErrorAction SilentlyContinue
+
+    if ($configureExit -ne 0) {
+        Exit-Script $configureExit "secedit /configure failed (exit $configureExit); grant not applied."
+    }
+
+    Write-Status "SeServiceLogonRight granted to $Account" $SuccessColor
 }
 
 # Resolve repository path and Python interpreter
@@ -255,6 +359,30 @@ Invoke-Nssm "set", $ServiceName, "AppRestartDelay", "5000"
 # Set service description
 Invoke-Nssm "set", $ServiceName, "Description", "$ServiceDescription"
 Invoke-Nssm "set", $ServiceName, "DisplayName", "$ServiceDisplayName"
+
+# Service account configuration (issue #410)
+if ($ServiceAccount) {
+    Write-Status "`nConfiguring service account: $ServiceAccount" $InfoColor
+    Grant-SeServiceLogonRight -Account $ServiceAccount -DryRun:$DryRun
+
+    if ($ServicePassword) {
+        $plainPassword = [System.Net.NetworkCredential]::new("", $ServicePassword).Password
+        if ($DryRun) {
+            Write-Status "[DRY-RUN] Would call: & $nssmPath set $ServiceName ObjectName $ServiceAccount <password>" $WarningColor
+        }
+        else {
+            Invoke-Nssm "set", $ServiceName, "ObjectName", $ServiceAccount, $plainPassword
+            Write-Status "NSSM ObjectName set to $ServiceAccount" $SuccessColor
+        }
+        # Scrub plaintext from this scope; GC will reclaim later.
+        $plainPassword = $null
+    }
+    else {
+        Write-Status "ServicePassword not supplied. Set the password manually before starting:" $WarningColor
+        Write-Host "  sc.exe config $ServiceName obj=`"$ServiceAccount`" password=<password>"
+        Write-Host "  OR services.msc -> $ServiceName -> Properties -> Log On -> Set password"
+    }
+}
 
 if ($DryRun) {
     Write-Status "`n[DRY-RUN] All validations passed. Actual service installation would proceed." $SuccessColor
