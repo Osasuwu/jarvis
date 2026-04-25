@@ -345,7 +345,7 @@ def test_real_manifest_m4_all_groups_enabled() -> None:
     assert by_id["mcp_config"]["enabled"] is True
     mcp_entry = by_id["mcp_config"]["files"][0]
     assert mcp_entry["source"] == ".claude-userlevel/.mcp.json"
-    assert mcp_entry["merge"] is True
+    assert mcp_entry["install_as"] == "user_mcp_registrations"
     assert mcp_entry["template"] is True
 
     # M4: soul flipped on. Source stays at config/SOUL.md (canonical git-tracked).
@@ -848,3 +848,178 @@ def test_quarantine_dest_avoids_clobbering_existing_bak(tmp_path: Path) -> None:
     dest = installer._quarantine_dest(legacy)
     assert dest != existing_bak
     assert dest.name.startswith(".mcp.json.bak.pre-jarvis-migration-")
+
+
+# ---------- user-scope MCP registration ----------
+
+
+def _user_mcp_manifest(fake_repo: Path, target_root: Path) -> Path:
+    """Manifest variant that registers MCPs via `claude mcp add` instead of copying."""
+    data = {
+        "version": 1,
+        "target_root": str(target_root),
+        "version_marker": ".jarvis-version",
+        "groups": [
+            {
+                "id": "mcp_config",
+                "enabled": True,
+                "files": [
+                    {
+                        "source": ".mcp.json",
+                        "install_as": "user_mcp_registrations",
+                        "template": True,
+                    }
+                ],
+            },
+        ],
+        "env_vars": [],
+        "health_check": {"enabled": False},
+        "backup": {"prefix": ".claude.backup-", "retain": 3},
+    }
+    path = fake_repo / "install-manifest-user-mcp.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+def test_plan_user_mcp_registrations_emits_action_per_server(
+    fake_repo: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "claude_home"
+    manifest_path = _user_mcp_manifest(fake_repo, target)
+    m = installer.load_manifest(manifest_path)
+    plan = installer.build_plan(m, fake_repo)
+
+    regs = [a for a in plan.actions if a.kind == "register_mcp_user"]
+    assert len(regs) == 1
+    payload = json.loads(regs[0].note)
+    assert payload["name"] == "memory"
+    assert payload["spec"]["command"] == "python"
+    # Path templating applied — relative `scripts/...` rewritten to absolute.
+    assert payload["spec"]["args"][0].startswith(fake_repo.as_posix() + "/scripts/")
+
+
+def test_plan_user_mcp_registrations_quarantines_stale_target_file(
+    fake_repo: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "claude_home"
+    target.mkdir()
+    stale = target / ".mcp.json"
+    stale.write_text("{}", encoding="utf-8")
+
+    manifest_path = _user_mcp_manifest(fake_repo, target)
+    m = installer.load_manifest(manifest_path)
+    plan = installer.build_plan(m, fake_repo)
+
+    quarantine = [a for a in plan.actions if a.kind == "quarantine_file"]
+    assert any(Path(a.source).resolve() == stale.resolve() for a in quarantine)
+
+
+def test_apply_register_mcp_user_calls_injected_runner(
+    fake_repo: Path, tmp_path: Path
+) -> None:
+    target = tmp_path / "claude_home"
+    manifest_path = _user_mcp_manifest(fake_repo, target)
+    m = installer.load_manifest(manifest_path)
+    plan = installer.build_plan(m, fake_repo)
+
+    calls: list[tuple[str, dict]] = []
+
+    def fake_register(name: str, spec: dict) -> None:
+        calls.append((name, spec))
+
+    installer.apply_plan(plan, m, run_env=None, register_mcp=fake_register)
+
+    assert calls and calls[0][0] == "memory"
+    assert calls[0][1]["command"] == "python"
+
+
+def test_register_mcp_user_stdio_command_shape(monkeypatch) -> None:
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(list(cmd))
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    installer._register_mcp_user(
+        "memory",
+        {"command": "python", "args": ["/abs/run.py"], "env": {"K": "V"}},
+    )
+
+    # First call: idempotent remove. Second: add with -e then `--` then command.
+    assert captured[0][:5] == ["claude", "mcp", "remove", "-s", "user"]
+    add = captured[1]
+    assert add[:5] == ["claude", "mcp", "add", "-s", "user"]
+    assert "-e" in add and "K=V" in add
+    assert "--" in add
+    dd = add.index("--")
+    assert add[dd + 1 :] == ["python", "/abs/run.py"]
+
+
+def test_register_mcp_user_http_command_shape(monkeypatch) -> None:
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(list(cmd))
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    installer._register_mcp_user(
+        "remote",
+        {
+            "type": "http",
+            "url": "https://example.com/mcp",
+            "headers": {"Authorization": "Bearer xxx"},
+        },
+    )
+
+    add = captured[1]
+    assert "--transport" in add and "http" in add
+    assert "-H" in add and "Authorization: Bearer xxx" in add
+    assert add[-2:] == ["remote", "https://example.com/mcp"]
+
+
+def test_register_mcp_user_raises_on_add_failure(monkeypatch) -> None:
+    seq = iter([0, 1])  # remove succeeds, add fails
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = next(seq)
+            stdout = ""
+            stderr = "boom"
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="claude mcp add failed"):
+        installer._register_mcp_user("x", {"command": "y", "args": []})
+
+
+def test_unknown_install_as_raises(fake_repo: Path, tmp_path: Path) -> None:
+    target = tmp_path / "claude_home"
+    bad = {
+        "version": 1,
+        "target_root": str(target),
+        "version_marker": ".jarvis-version",
+        "groups": [
+            {
+                "id": "mcp_config",
+                "enabled": True,
+                "files": [
+                    {"source": ".mcp.json", "install_as": "bogus", "template": True}
+                ],
+            }
+        ],
+    }
+    path = fake_repo / "bad-manifest.yaml"
+    path.write_text(yaml.safe_dump(bad), encoding="utf-8")
+    m = installer.load_manifest(path)
+    with pytest.raises(ValueError, match="unknown install_as"):
+        installer.build_plan(m, fake_repo)

@@ -36,7 +36,7 @@ DEFAULT_MANIFEST = "install-manifest.yaml"
 class Action:
     """One planned filesystem action."""
 
-    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "write_version" | "set_env"
+    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "register_mcp_user" | "write_version" | "set_env"
     source: str | None
     dest: str
     template: bool = False
@@ -194,6 +194,86 @@ def _quarantine_dest(path: Path) -> Path:
     return path.with_name(f"{path.name}.bak.pre-jarvis-migration-{stamp}")
 
 
+def _plan_mcp_user_registrations(
+    source: Path,
+    repo_root: Path,
+    target_root: Path,
+) -> list[Action]:
+    """Generate a `register_mcp_user` action per server in `source` (.mcp.json).
+
+    Claude Code does NOT read `~/.claude/.mcp.json` as user-scope MCP config —
+    only project-scope (CWD walk) and the `mcpServers` block inside
+    `~/.claude.json` (managed by `claude mcp add -s user`). Earlier installer
+    revisions dropped the file under `target_root` where Claude Code never
+    looked. This helper reads that file and plans `claude mcp add -s user`
+    invocations that actually register servers in user scope.
+
+    Path templating (`scripts/...` → `<repo_root>/scripts/...`) and
+    `{{JARVIS_HOME}}` substitution are applied before serialising each spec
+    into the action note, so apply-time runs see absolute paths.
+
+    Also schedules a quarantine of any pre-existing `target_root/.mcp.json`
+    left over from the dead file-drop strategy.
+    """
+    rendered = template_content(source, repo_root, target_root).decode("utf-8")
+    data = json.loads(rendered)
+    actions: list[Action] = []
+    for name, spec in (data.get("mcpServers") or {}).items():
+        payload = json.dumps({"name": name, "spec": spec}, ensure_ascii=False)
+        actions.append(
+            Action(
+                kind="register_mcp_user",
+                source=str(source),
+                dest=name,
+                template=False,
+                group="mcp_config",
+                note=payload,
+            )
+        )
+    stale = target_root / ".mcp.json"
+    if stale.is_file():
+        actions.append(
+            Action(
+                kind="quarantine_file",
+                source=str(stale),
+                dest=str(_quarantine_dest(stale)),
+                group="mcp_config",
+                note="superseded by user-scope MCP registrations",
+            )
+        )
+    return actions
+
+
+def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
+    """Run `claude mcp add -s user` for one server, removing any prior entry first.
+
+    Idempotent: a stale entry is removed (errors swallowed — it may not exist)
+    before the add. Subprocess args are passed as a list so values containing
+    spaces or shell metacharacters survive intact.
+    """
+    subprocess.run(
+        ["claude", "mcp", "remove", "-s", "user", name],
+        check=False,
+        capture_output=True,
+    )
+    cmd: list[str] = ["claude", "mcp", "add", "-s", "user"]
+    transport = spec.get("type")
+    if transport in {"http", "sse"}:
+        cmd += ["--transport", transport]
+        for hk, hv in (spec.get("headers") or {}).items():
+            cmd += ["-H", f"{hk}: {hv}"]
+        cmd += [name, spec["url"]]
+    else:
+        for ek, ev in (spec.get("env") or {}).items():
+            cmd += ["-e", f"{ek}={ev}"]
+        cmd += [name, "--", spec["command"], *spec.get("args", [])]
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"claude mcp add failed for {name!r}: {result.stderr.strip() or result.stdout.strip()}"
+        )
+
+
 def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> str:
     return (
         text.replace("{{JARVIS_HOME}}", repo_root.as_posix())
@@ -260,6 +340,16 @@ def build_plan(
         gid = group.get("id", "?")
         for entry in group.get("files") or []:
             src = repo_root / entry["source"]
+            install_as = entry.get("install_as")
+            if install_as == "user_mcp_registrations":
+                actions.extend(
+                    _plan_mcp_user_registrations(src, repo_root, target_root)
+                )
+                continue
+            if install_as is not None:
+                raise ValueError(
+                    f"manifest group {gid!r}: unknown install_as {install_as!r}"
+                )
             dest = target_root / entry["dest"]
             # `merge: true` → deep-merge JSON instead of plain overwrite.
             # Preserves user keys not owned by jarvis (M3 #338).
@@ -522,6 +612,7 @@ def apply_plan(
     plan: Plan,
     manifest: dict[str, Any],
     run_env: Callable[[str, str, str], None] | None = _set_env,
+    register_mcp: Callable[[str, dict[str, Any]], None] | None = _register_mcp_user,
 ) -> None:
     if plan.state == "current":
         return
@@ -564,6 +655,10 @@ def apply_plan(
             if src.exists():
                 src.rename(dst)
                 print(f"quarantined legacy {src} -> {dst}", file=sys.stderr)
+        elif action.kind == "register_mcp_user":
+            if register_mcp is not None:
+                payload = json.loads(action.note)
+                register_mcp(payload["name"], payload["spec"])
         elif action.kind == "write_version":
             Path(action.dest).write_text(action.note + "\n", encoding="utf-8")
         elif action.kind == "set_env":
@@ -699,6 +794,10 @@ def format_plan(plan: Plan) -> str:
                 lines.append(
                     f"  quarantine [{a.group:>14}] {a.source} -> {a.dest}"
                     + (f"  ({a.note})" if a.note else "")
+                )
+            elif a.kind == "register_mcp_user":
+                lines.append(
+                    f"  mcp_user   [{a.group:>14}] claude mcp add -s user {a.dest}"
                 )
             elif a.kind == "write_version":
                 lines.append(f"  write_ver  -> {a.dest}  sha={a.note[:12]}")
