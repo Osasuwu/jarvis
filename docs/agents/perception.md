@@ -92,6 +92,13 @@ comment on the source issue with the PR link. (Implementation note for
 #388: hook on `task_queue` UPDATE where status=done and approved_by
 prefix=`github:issue:`.)
 
+Caveat: as of Sprint 4, the dispatcher is fire-and-forget — it sets
+`dispatched_at` and never flips status to `done` itself ([dispatcher.md
+"Fire-and-forget semantics"](dispatcher.md)). The done-watcher in #388
+will idle until a result-collection path lands (future sprint) or until
+the owner flips status manually via `/verify`. Implementers: write the
+watcher, but expect zero firings until that upstream change.
+
 Open in flight: what happens if labels change post-ingest — re-tier the
 existing row, or freeze at ingest-time? **Decision: freeze at ingest.**
 Re-tier introduces a race where the dispatcher reads tier:1 but the row
@@ -206,8 +213,19 @@ Every perception module MUST:
 
 1. Compute the key before the INSERT (deterministic from source payload
    alone — no timestamps, no random salt).
-2. Use `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING`. A retry
-   sees zero rows affected and exits the tick clean.
+2. Use the supabase-py upsert idiom — never raw insert that lets the
+   unique-constraint violation propagate as an exception:
+   ```python
+   client.table("task_queue").upsert(
+       row,
+       on_conflict="idempotency_key",
+       ignore_duplicates=True,
+   ).execute()
+   ```
+   PostgREST translates this to `INSERT ... ON CONFLICT
+   (idempotency_key) DO NOTHING` server-side; a retry sees zero rows
+   affected and exits the tick clean. (Precedent in-repo:
+   `scripts/pre-compact-backup.py` uses the same pattern for memories.)
 3. Log the key prefix on every tick (first 12 chars) so the morning
    check can grep for re-enqueue patterns.
 
@@ -229,9 +247,9 @@ gate_strictness = f(source, source_tier, executor_model)
 ```
 
 This is not a binary "on/off" — it's a parameterisation of the existing
-`safety.gate()` rules. The gate today reads `(tool_name, action, target,
-area, scope_hash)`. Sprint 4 does not extend this signature. What changes
-is *which actions* a perception-spawned dispatch is allowed to attempt:
+`safety.gate()` rules. Sprint 4 does not extend the gate's call
+signature ([`safety.py`](../../agents/safety.py)). What changes is
+*which actions* a perception-spawned dispatch is allowed to attempt:
 
 | Axis | Effect on strictness | Example |
 |------|---------------------|---------|
@@ -243,7 +261,7 @@ What this means concretely for Sprint 4 implementation:
 
 - **#388 (GitHub ingest)**: no gate changes. `tier:1-auto` rows go through the existing gate. The label is the human nod; the gate is the technical guardrail.
 - **#389 (self-perception)**: every row is tier:3 → `auto_dispatch=false` → never reaches dispatch path → gate not invoked. Owner triggers the actual fix manually.
-- **Future sources**: extend `safety._RULES` with source-aware classifications. Don't touch `gate()` signature.
+- **Future sources**: extend the `_TIER0_*` / `_TIER2_*` constants in `agents/safety.py` with source-aware classifications (or add a new `_TIER0_PERCEPTION_*` set). Don't touch the `gate()` signature.
 
 ### Why source tier ≠ skip-gate
 
