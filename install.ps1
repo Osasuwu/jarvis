@@ -3,7 +3,7 @@
 #
 # Examples:
 #   .\install.ps1                      # dry-run plan
-#   .\install.ps1 -Apply               # perform install
+#   .\install.ps1 -Apply               # perform install  (NOT --apply)
 #   .\install.ps1 -Rollback <path>     # restore from backup
 #
 # Epic #335 / M1 #336.
@@ -19,6 +19,16 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# Guard: detect GNU-style double-dash args (e.g. --apply) which PowerShell won't
+# bind correctly and will silently mis-route to $Target as a positional string.
+foreach ($a in @($Apply, $Target, $Manifest, $Rollback)) {
+    if ($a -is [string] -and $a -match '^--') {
+        Write-Error "PowerShell uses single-dash params. Replace '$a' with '-$($a.TrimStart('-'))'. Example: -Apply instead of --apply"
+        exit 1
+    }
+}
+
 $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 $pyArgs = @("$repoRoot\scripts\install\installer.py")
