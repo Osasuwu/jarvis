@@ -76,6 +76,80 @@ handler raises `ValueError` (the OS doesn't have a Unix-style term
 signal). `_install_signal_handlers` swallows that — Ctrl-C still
 triggers `KeyboardInterrupt` in `run()`.
 
+## Production deploy (NSSM)
+
+On Windows, use NSSM (Non-Sucking Service Manager) to run the scheduler as
+a persistent Windows service. This is the production recommended approach
+for issue #368.
+
+### Prerequisites
+
+- Windows 10+ (tested on Windows 11)
+- NSSM installed (download from https://nssm.cc/download or `winget install NSSM.NSSM`)
+- `config/device.json` populated with `repos_path` on each target machine, or
+  environment variables `JARVIS_REPO_PATH` and `JARVIS_PYTHON` set
+
+### One-command install
+
+```powershell
+# From the repo root:
+.\scripts\install\install-scheduler-service.ps1
+
+# Or with explicit paths:
+$env:JARVIS_REPO_PATH = "C:\path\to\jarvis"
+$env:JARVIS_PYTHON = "C:\path\to\python.exe"
+.\scripts\install\install-scheduler-service.ps1
+```
+
+The script is idempotent — run it again to update service parameters without
+downtime.
+
+### After install
+
+The service is installed as `jarvis-scheduler`, set to `Automatic` startup.
+Start it manually with:
+
+```powershell
+Start-Service -Name jarvis-scheduler
+```
+
+Or restart Windows to auto-start.
+
+### View logs
+
+Logs are written to `<repo>/logs/scheduler/stdout.log` and `stderr.log`:
+
+```powershell
+# Live tail (like `tail -f`):
+Get-Content "C:\path\to\jarvis\logs\scheduler\stdout.log" -Tail 50 -Wait
+
+# Or in PowerShell ISE / VS Code with automatic refresh:
+Start-Process notepad++ "C:\path\to\jarvis\logs\scheduler\stdout.log"
+```
+
+Check `audit_log` table in Supabase for dispatcher tick outcomes.
+
+### Uninstall
+
+```powershell
+.\scripts\install\uninstall-scheduler-service.ps1
+```
+
+Or manually:
+
+```powershell
+Stop-Service -Name jarvis-scheduler
+nssm remove jarvis-scheduler confirm
+```
+
+### Service restart behavior
+
+- On successful completion: service loops back to sleep for `--interval` seconds
+- On exception during tick: service logs the error, drains, and restarts
+  (configurable via NSSM `AppExit` / `AppRestartDelay`)
+- On signal (Windows service stop): signal handler calls `scheduler.shutdown(wait=True)`,
+  allowing in-flight ticks to complete gracefully
+
 ## Manual smoke test — restart recovery
 
 The kill-mid-tick/restart path needs two shells and a live Postgres.
