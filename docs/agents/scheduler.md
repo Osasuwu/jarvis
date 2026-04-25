@@ -119,6 +119,29 @@ Start-Service -Name jarvis-scheduler
 
 Or restart Windows to auto-start.
 
+### Resolving the `claude` binary under LocalSystem (issue #385)
+
+The dispatcher spawns `claude -p` for each tier-1 auto-dispatch row. NSSM
+runs the service as `LocalSystem`, whose PATH is sparse — `shutil.which`
+fails and every tick records `failure:FileNotFoundError` in `audit_log`.
+
+`agents.dispatcher._resolve_claude_binary` resolves the executable in this
+order: explicit override arg → `JARVIS_CLAUDE_BIN` env var → `shutil.which` →
+documented Windows install paths (`%LOCALAPPDATA%\Programs\claude\`,
+`%USERPROFILE%\.local\bin\`, `%APPDATA%\npm\`). Set the env var on the
+service if your install lives elsewhere or if you want a hard pin:
+
+```powershell
+# Locate claude on this device, then attach to the service:
+$claudeBin = (Get-Command claude).Source
+nssm set jarvis-scheduler AppEnvironmentExtra "JARVIS_CLAUDE_BIN=$claudeBin"
+Restart-Service jarvis-scheduler
+```
+
+Verify with `python -m scripts.observability.morning_check` after a few
+ticks — `task-dispatcher` should report `success` outcomes, not
+`failure:FileNotFoundError`.
+
 ### View logs
 
 Logs are written to `<repo>/logs/scheduler/stdout.log` and `stderr.log`:

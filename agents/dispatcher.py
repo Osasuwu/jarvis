@@ -40,6 +40,7 @@ import argparse
 import hashlib
 import logging
 import os
+import shutil
 import subprocess
 from datetime import UTC, datetime
 from typing import Any, TypedDict
@@ -134,6 +135,78 @@ class DispatcherState(TypedDict):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+# Documented Windows install locations to probe when neither override, env
+# var, nor PATH lookup yields a binary. Templates expand against ``os.environ``
+# so absent vars (e.g. running under a service account) are skipped silently.
+# Order matters: official installer first, then common alt locations seen in
+# the wild (`.local/bin/claude.exe`, npm shim, pipx).
+_CLAUDE_DEFAULT_WINDOWS_PATHS: tuple[str, ...] = (
+    r"{LOCALAPPDATA}\Programs\claude\claude.exe",
+    r"{USERPROFILE}\.local\bin\claude.exe",
+    r"{APPDATA}\npm\claude.exe",
+)
+
+
+def _resolve_claude_binary(override: str | None = None) -> str:
+    """Resolve the absolute path to the ``claude`` executable.
+
+    Resolution chain — earlier sources win and are validated against the
+    filesystem before being returned:
+
+    1. ``override`` argument — for tests and programmatic callers that need
+       to inject a known path. None / empty string skips this layer.
+    2. ``JARVIS_CLAUDE_BIN`` env var — operator override for unattended
+       contexts (NSSM service, cron, CI) where PATH is sparse. Set via
+       ``nssm set jarvis-scheduler AppEnvironmentExtra JARVIS_CLAUDE_BIN=...``.
+    3. :func:`shutil.which` — works in interactive shells where ``claude``
+       is on the user PATH but breaks under ``LocalSystem`` (issue #385,
+       7× ``failure:FileNotFoundError`` over 24 h before this fix).
+    4. Documented Windows install paths — covers official and common alt
+       installs without forcing the operator to set an env var on every box.
+
+    Raises :class:`FileNotFoundError` when nothing resolves to an existing
+    file, with a message that lists each step that was tried so operators
+    can see at a glance which override slot to fill.
+    """
+    if override:
+        if os.path.exists(override):
+            return override
+        raise FileNotFoundError(
+            f"claude binary override does not exist: {override!r}"
+        )
+
+    env_path = os.environ.get("JARVIS_CLAUDE_BIN")
+    if env_path:
+        if os.path.exists(env_path):
+            return env_path
+        raise FileNotFoundError(
+            f"JARVIS_CLAUDE_BIN points to a missing file: {env_path!r}"
+        )
+
+    found = shutil.which("claude")
+    if found:
+        return found
+
+    if os.name == "nt":
+        for tmpl in _CLAUDE_DEFAULT_WINDOWS_PATHS:
+            try:
+                candidate = tmpl.format(**os.environ)
+            except KeyError:
+                continue
+            if os.path.exists(candidate):
+                return candidate
+
+    tried = ["override arg", "JARVIS_CLAUDE_BIN", "shutil.which('claude')"]
+    if os.name == "nt":
+        tried.append(f"Windows defaults {_CLAUDE_DEFAULT_WINDOWS_PATHS}")
+    raise FileNotFoundError(
+        "claude binary not found. Tried: "
+        + ", ".join(tried)
+        + ". Set JARVIS_CLAUDE_BIN to the absolute path; under NSSM, "
+        "'nssm set jarvis-scheduler AppEnvironmentExtra JARVIS_CLAUDE_BIN=...'."
+    )
 
 
 def _sanitize_env(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -318,7 +391,7 @@ def dispatch_node(
     try:
         env = _sanitize_env()
         argv = [
-            "claude",
+            _resolve_claude_binary(),
             "-p",
             goal,
             "--permission-mode",
