@@ -281,6 +281,155 @@ def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
                 f"Destructive pattern '{pattern}' found in allowlist entry '{tool}'"
 
 
+# ---------------------------------------------------------------------------
+# _resolve_claude_binary — issue #385
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_claude_binary_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+    """Explicit override beats env var, PATH lookup, and Windows defaults."""
+    import shutil as _shutil
+
+    from agents import dispatcher
+
+    real = tmp_path / "real-claude.exe"
+    real.write_text("")
+    fake_env = tmp_path / "env-claude.exe"
+    fake_env.write_text("")
+
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake_env))
+    monkeypatch.setattr(_shutil, "which", lambda _name: "/never/used")
+
+    assert dispatcher._resolve_claude_binary(override=str(real)) == str(real)
+
+
+def test_resolve_claude_binary_override_must_exist(tmp_path: Any) -> None:
+    """A non-existent override surfaces immediately, not at spawn time."""
+    from agents import dispatcher
+
+    missing = tmp_path / "does-not-exist.exe"
+    with pytest.raises(FileNotFoundError, match="override does not exist"):
+        dispatcher._resolve_claude_binary(override=str(missing))
+
+
+def test_resolve_claude_binary_env_var_wins_over_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """``JARVIS_CLAUDE_BIN`` is the operator-controlled override for NSSM/cron."""
+    import shutil as _shutil
+
+    from agents import dispatcher
+
+    fake = tmp_path / "claude.exe"
+    fake.write_text("")
+
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+    monkeypatch.setattr(_shutil, "which", lambda _name: "/should/not/win")
+
+    assert dispatcher._resolve_claude_binary() == str(fake)
+
+
+def test_resolve_claude_binary_env_var_must_exist(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A misconfigured ``JARVIS_CLAUDE_BIN`` raises rather than silently falling through."""
+    from agents import dispatcher
+
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", "/no/such/file")
+    with pytest.raises(FileNotFoundError, match="JARVIS_CLAUDE_BIN"):
+        dispatcher._resolve_claude_binary()
+
+
+def test_resolve_claude_binary_falls_through_to_shutil_which(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Without override or env, PATH lookup wins."""
+    import shutil as _shutil
+
+    from agents import dispatcher
+
+    fake = tmp_path / "from-which.exe"
+    fake.write_text("")
+
+    monkeypatch.delenv("JARVIS_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(
+        _shutil, "which", lambda name: str(fake) if name == "claude" else None
+    )
+
+    assert dispatcher._resolve_claude_binary() == str(fake)
+
+
+def test_resolve_claude_binary_falls_back_to_windows_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Last resort: documented Windows install location.
+
+    Skipped on non-Windows because the module-level path templates only
+    expand under ``os.name == 'nt'``.
+    """
+    import shutil as _shutil
+
+    from agents import dispatcher
+
+    if os.name != "nt":
+        pytest.skip("Windows-default fallback only fires when os.name == 'nt'")
+
+    fake = tmp_path / "Programs" / "claude" / "claude.exe"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+
+    monkeypatch.delenv("JARVIS_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(_shutil, "which", lambda _name: None)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+    assert dispatcher._resolve_claude_binary() == str(fake)
+
+
+def test_resolve_claude_binary_raises_with_actionable_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Final failure must name JARVIS_CLAUDE_BIN so operators can see the fix."""
+    import shutil as _shutil
+
+    from agents import dispatcher
+
+    monkeypatch.delenv("JARVIS_CLAUDE_BIN", raising=False)
+    monkeypatch.setattr(_shutil, "which", lambda _name: None)
+    # Point Windows defaults at an empty directory so none resolve.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "nope"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "nope"))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "nope"))
+
+    with pytest.raises(FileNotFoundError, match="JARVIS_CLAUDE_BIN"):
+        dispatcher._resolve_claude_binary()
+
+
+def test_dispatch_argv_uses_resolved_binary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """End-to-end: spawn receives an absolute path, not the bare string ``claude``."""
+    from agents import dispatcher, usage_probe
+
+    fake = tmp_path / "resolved-claude.exe"
+    fake.write_text("")
+
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+    monkeypatch.setattr(usage_probe, "read_usage", _healthy_reading)
+    monkeypatch.setattr(dispatcher.usage_probe, "read_usage", _healthy_reading)
+
+    client = _StubClient()
+    client.seed("task_queue", [_queue_row(id="resolve-test")])
+    popen = _CapturedPopen()
+
+    app = _compile_graph(client, popen)
+    result = app.invoke({"dry_run": False, "row": None, "outcome": "", "reason": ""})
+
+    assert result["outcome"] == "dispatched"
+    assert len(popen.calls) == 1
+    argv = popen.calls[0]["argv"]
+    assert argv[0] == str(fake), (
+        "dispatcher must spawn the resolved binary path, not the bare 'claude' string"
+    )
+
+
 def test_sensitive_env_keys_cover_known_variants() -> None:
     """Env-sanitization must strip every historical Anthropic env name."""
     from agents.dispatcher import _SENSITIVE_ENV_KEYS
@@ -409,9 +558,17 @@ def test_graph_builds_with_expected_nodes() -> None:
     assert {"poll_queue", "evaluate", "escalate", "dispatch"} <= set(graph.nodes)
 
 
-def test_full_flow_dispatches_healthy_row(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_full_flow_dispatches_healthy_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     """Happy path: healthy budget, fresh approval, no drift → subprocess spawned + row dispatched."""
     from agents import dispatcher, usage_probe
+
+    # Pin claude binary so this test stays deterministic regardless of host PATH
+    # (issue #385 — argv[0] is now the resolved absolute path, not the bare name).
+    fake_claude = tmp_path / "claude.exe"
+    fake_claude.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake_claude))
 
     monkeypatch.setattr(usage_probe, "read_usage", _healthy_reading)
     # Dispatcher imports usage_probe at module load; monkeypatch the
@@ -429,10 +586,11 @@ def test_full_flow_dispatches_healthy_row(monkeypatch: pytest.MonkeyPatch) -> No
     assert result["outcome"] == "dispatched"
     assert result["reason"].startswith("idem=")
 
-    # Subprocess was invoked with claude -p <goal>.
+    # Subprocess was invoked with <resolved-claude-path> -p <goal>.
     assert len(popen.calls) == 1
     call = popen.calls[0]
-    assert call["argv"][0:2] == ["claude", "-p"]
+    assert call["argv"][0] == str(fake_claude)
+    assert call["argv"][1] == "-p"
 
     # Permission flags present — without these, headless Claude hangs
     # on approval prompts (#372). acceptEdits + narrow allowedTools,
@@ -540,10 +698,15 @@ def test_stale_approval_escalates(monkeypatch: pytest.MonkeyPatch) -> None:
     assert popen.calls == []
 
 
-def test_dispatch_passes_sanitized_env_to_subprocess(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_dispatch_passes_sanitized_env_to_subprocess(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     """Integration-level leak test: ANTHROPIC_API_KEY in parent must NOT reach child env."""
     from agents import dispatcher, usage_probe
 
+    fake_claude = tmp_path / "claude.exe"
+    fake_claude.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake_claude))
     monkeypatch.setenv("ANTHROPIC_API_KEY", "leak-sentinel-xyz")
     monkeypatch.setenv("CLAUDE_API_KEY", "leak-sentinel-claude")
     monkeypatch.setenv("PATH_FROM_PARENT", "keep-me")
@@ -565,10 +728,19 @@ def test_dispatch_passes_sanitized_env_to_subprocess(monkeypatch: pytest.MonkeyP
     assert env.get("PATH_FROM_PARENT") == "keep-me", "non-sensitive env must survive"
 
 
-def test_dispatch_failure_audits_and_returns_failed(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Popen raising (e.g. claude not on PATH) must audit failure, not crash the tick."""
+def test_dispatch_failure_audits_and_returns_failed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    """Popen raising must audit failure, not crash the tick.
+
+    Pin ``JARVIS_CLAUDE_BIN`` so resolution succeeds and the failure path under
+    test is the spawn itself, not the resolver (issue #385).
+    """
     from agents import dispatcher, usage_probe
 
+    fake_claude = tmp_path / "claude.exe"
+    fake_claude.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake_claude))
     monkeypatch.setattr(usage_probe, "read_usage", _healthy_reading)
     monkeypatch.setattr(dispatcher.usage_probe, "read_usage", _healthy_reading)
 
