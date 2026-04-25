@@ -2335,3 +2335,20 @@ create policy "Allow all for authenticated" on task_queue
 
 create policy "Allow all for anon" on task_queue
   for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- #417 (Phase 3 recall ranking): drop broken IVFFLAT index on memories.embedding.
+--
+-- An IVFFLAT index existed on `memories.embedding` (lists=10) without ever
+-- being declared in this file (created ad-hoc, pre-tracking). With ~390
+-- live rows split across 10 lists and the default `ivfflat.probes = 1`,
+-- queries returned at most ~39 candidates regardless of the SQL LIMIT —
+-- silently capping recall and producing the q11/q15 misses in eval-recall.
+-- A dedicated HNSW index (idx_memories_embedding_hnsw, defined elsewhere
+-- with vector_cosine_ops) is sufficient at this corpus size; the planner
+-- now falls back to seq-scan + top-N heapsort which gives exact recall in
+-- ~80ms on 400 rows. Revisit when the corpus crosses ~5-10k rows and seq
+-- scan becomes the bottleneck.
+-- =========================================================================
+drop index if exists public.memories_embedding_idx;

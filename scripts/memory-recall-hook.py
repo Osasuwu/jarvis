@@ -79,6 +79,23 @@ from supabase import create_client
 # Config
 # ---------------------------------------------------------------------------
 SIMILARITY_THRESHOLD = 0.30  # calibrated 2026-04-17: real user prompts hit 0.35-0.50
+
+# #417: mirror of mcp-memory/handlers/memory.py — operational artifacts
+# like session snapshots are recovery-only, never recall candidates.
+EXCLUDE_TAGS_FROM_RECALL = frozenset({"session-snapshot"})
+
+
+def _filter_excluded_tags(rows: list[dict]) -> list[dict]:
+    """Drop rows whose tags overlap EXCLUDE_TAGS_FROM_RECALL. See #417."""
+    if not rows or not EXCLUDE_TAGS_FROM_RECALL:
+        return rows
+    out = []
+    for row in rows:
+        tags = row.get("tags") or []
+        if isinstance(tags, list) and any(t in EXCLUDE_TAGS_FROM_RECALL for t in tags):
+            continue
+        out.append(row)
+    return out
 # top-similarity on voyage-3-lite/512 with conversational queries. 0.30 catches
 # clearly-relevant matches without firing on unrelated memories (which sit <0.25).
 # server.py default SIMILARITY_THRESHOLD is also 0.25 for the same reason.
@@ -732,6 +749,13 @@ def main():
         keyword_rows = kw.data or []
     except Exception:
         keyword_rows = []
+
+    # #417: drop session-snapshot etc. before any other filtering — they're
+    # operational artifacts, not knowledge. Same filter lives in
+    # mcp-memory/handlers/memory.py and scripts/eval-recall.py so all three
+    # paths predict the same recall behavior.
+    semantic_rows = _filter_excluded_tags(semantic_rows)
+    keyword_rows = _filter_excluded_tags(keyword_rows)
 
     # Level 1 scope: always restrict to types the hook is responsible for.
     # user/project memories are loaded by scripts/session-context.py at

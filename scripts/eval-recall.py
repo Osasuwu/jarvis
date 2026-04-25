@@ -43,6 +43,23 @@ from typing import Any, Callable
 # ---------------------------------------------------------------------------
 SIMILARITY_THRESHOLD = 0.25
 RRF_K = 60
+# #417: mirror of handlers/memory.py — exclude operational artifacts
+# (session snapshots etc.) from recall so they don't drown out real
+# content. Eval has to apply the same filter to predict production.
+EXCLUDE_TAGS_FROM_RECALL = frozenset({"session-snapshot"})
+
+
+def _filter_excluded_tags(rows: list[dict]) -> list[dict]:
+    """Drop rows whose tags overlap EXCLUDE_TAGS_FROM_RECALL. See #417."""
+    if not rows or not EXCLUDE_TAGS_FROM_RECALL:
+        return rows
+    out = []
+    for row in rows:
+        tags = row.get("tags") or []
+        if isinstance(tags, list) and any(t in EXCLUDE_TAGS_FROM_RECALL for t in tags):
+            continue
+        out.append(row)
+    return out
 # TYPE_BOOST_MULTIPLIER intentionally not duplicated here. When --with-rewriter
 # is enabled, we load scripts/memory-recall-hook.py and read its constant,
 # so re-tuning the boost only needs to happen in one place.
@@ -446,7 +463,7 @@ async def run_query(
         "filter_type": None,
         "show_history": False,
     }).execute()
-    sem_rows = sem.data or []
+    sem_rows = _filter_excluded_tags(sem.data or [])
 
     kw = client.rpc("keyword_search_memories", {
         "search_query": keyword_query,
@@ -455,7 +472,7 @@ async def run_query(
         "filter_type": None,
         "show_history": False,
     }).execute()
-    kw_rows = kw.data or []
+    kw_rows = _filter_excluded_tags(kw.data or [])
 
     # Rewriter types → soft boost (matches hook behavior after the
     # type-narrowing regression fix). No default scope filter — eval
