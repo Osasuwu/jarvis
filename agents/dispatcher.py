@@ -70,13 +70,19 @@ _SENSITIVE_ENV_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# Permission spec for the spawned ``claude -p`` session (#372). Without
+# Permission spec for the spawned ``claude -p`` session (#372, #378). Without
 # these flags, headless Claude hangs waiting for approval that no operator
 # can give. Design: ``acceptEdits`` auto-approves Write/Edit (matches
 # dispatcher's primary shape — "make the change"), plus a narrow allowlist
 # of read-only and safely-namespaced tools that ``acceptEdits`` does not
 # cover. Widen this list only with a design note; do NOT switch to
 # ``bypassPermissions`` — that defeats the Sprint 2 safety layering.
+#
+# Security rationale (#378):
+# - Dropped: Bash(python:*) — arbitrary code escape hatch. If a task needs
+#   to run a script, agent can invoke Edit + commit; CI tests for us.
+# - Replaced: Bash(gh:*) with scoped read/create verbs only. Removed:
+#   destructive verbs (merge --admin, repo delete, api DELETE).
 _SPAWN_PERMISSION_MODE = "acceptEdits"
 _SPAWN_ALLOWED_TOOLS = (
     "Read",
@@ -84,10 +90,17 @@ _SPAWN_ALLOWED_TOOLS = (
     "Grep",
     "TodoWrite",
     "Bash(git:*)",
-    "Bash(gh:*)",
+    "Bash(gh pr view:*)",
+    "Bash(gh pr create:*)",
+    "Bash(gh pr list:*)",
+    "Bash(gh issue view:*)",
+    "Bash(gh issue create:*)",
+    "Bash(gh issue list:*)",
+    "Bash(gh issue comment:*)",
+    "Bash(gh api repos/*/issues:*)",
+    "Bash(gh api repos/*/pulls:*)",
     "Bash(pytest:*)",
     "Bash(npm:*)",
-    "Bash(python:*)",
 )
 
 # How many recent dispatches to scan for pattern-repeat detection. Large
