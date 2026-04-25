@@ -201,6 +201,8 @@ from handlers.memory import (  # noqa: E402, F401
     GAP_DEDUP_SIM,
     GAP_THRESHOLD,
     SIMILARITY_THRESHOLD,
+    EXCLUDE_TAGS_FROM_RECALL,
+    _filter_excluded_tags,
 )
 from handlers.events import (  # noqa: E402, F401
     _handle_events_list,

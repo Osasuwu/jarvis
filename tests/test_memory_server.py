@@ -1497,6 +1497,99 @@ class TestRecallLifecycleFilters:
 
 
 # ---------------------------------------------------------------------------
+# #417: session-snapshot tag filter — recall must drop operational artifacts
+# ---------------------------------------------------------------------------
+
+class TestExcludedTagsFilter:
+    """Osasuwu/jarvis#417: session_snapshot_* memories (auto-created by the
+    PreCompact hook) carry mixed transcript content that semantically matches
+    a wide range of queries — they were drowning out real content in recall
+    (q19 top-5 was 5/5 snapshot rows). They're meant to be fetched by name
+    via memory_get during /end recovery, never to compete in normal recall.
+
+    Lock the filter at both layers: the helper itself, and the keyword-recall
+    integration so a future refactor can't silently re-introduce the noise.
+    """
+
+    def test_filter_drops_session_snapshot(self):
+        from server import _filter_excluded_tags
+
+        rows = [
+            {"name": "real_content", "tags": ["pillar-4"]},
+            {"name": "session_snapshot_abc", "tags": ["session-snapshot", "auto"]},
+            {"name": "real_decision", "tags": ["decision", "memory"]},
+        ]
+        out = _filter_excluded_tags(rows)
+        assert [r["name"] for r in out] == ["real_content", "real_decision"]
+
+    def test_filter_preserves_input_order(self):
+        from server import _filter_excluded_tags
+
+        rows = [
+            {"name": "a", "tags": []},
+            {"name": "snap", "tags": ["session-snapshot"]},
+            {"name": "b", "tags": ["x"]},
+            {"name": "c", "tags": None},
+        ]
+        out = _filter_excluded_tags(rows)
+        assert [r["name"] for r in out] == ["a", "b", "c"]
+
+    def test_filter_handles_empty_and_missing_tags(self):
+        from server import _filter_excluded_tags
+
+        # Missing tags key, None tags, empty tags — none should match the
+        # exclude set, all should pass through.
+        rows = [
+            {"name": "no_key"},
+            {"name": "none_tags", "tags": None},
+            {"name": "empty_tags", "tags": []},
+        ]
+        out = _filter_excluded_tags(rows)
+        assert [r["name"] for r in out] == ["no_key", "none_tags", "empty_tags"]
+
+    def test_filter_no_op_on_empty_input(self):
+        from server import _filter_excluded_tags
+
+        assert _filter_excluded_tags([]) == []
+        assert _filter_excluded_tags(None) is None or _filter_excluded_tags(None) == []
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_excludes_session_snapshots(self):
+        """_keyword_recall must drop session-snapshot rows from the candidate
+        pool before the valid_to client-side filter — otherwise the live
+        budget burns on operational artifacts."""
+        from server import _keyword_recall
+
+        rows = [
+            {"name": "snap1", "type": "project", "project": "jarvis",
+             "description": "d", "content": "c", "tags": ["session-snapshot", "auto"],
+             "updated_at": "2026-04-25T00:00:00+00:00", "valid_to": None},
+            {"name": "real_mem", "type": "decision", "project": "jarvis",
+             "description": "d", "content": "c", "tags": ["pillar-4"],
+             "updated_at": "2026-04-25T00:00:00+00:00", "valid_to": None},
+            {"name": "snap2", "type": "project", "project": "jarvis",
+             "description": "d", "content": "c", "tags": ["session-snapshot"],
+             "updated_at": "2026-04-25T00:00:00+00:00", "valid_to": None},
+        ]
+
+        query = MagicMock()
+        for method in ("select", "is_", "or_", "eq", "limit", "order"):
+            getattr(query, method).return_value = query
+        query.execute.return_value = MagicMock(data=rows)
+        client = MagicMock()
+        client.table.return_value = query
+
+        result = await _keyword_recall(
+            client, "anything", project="jarvis", mem_type=None, limit=10
+        )
+        # Result is a TextContent list — assert real_mem is named, snaps aren't.
+        text = result[0].text if result else ""
+        assert "real_mem" in text
+        assert "snap1" not in text
+        assert "snap2" not in text
+
+
+# ---------------------------------------------------------------------------
 # #286: outcome_record / outcome_update must accept and persist memory_id
 # ---------------------------------------------------------------------------
 

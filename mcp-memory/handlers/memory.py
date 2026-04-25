@@ -44,6 +44,28 @@ from embeddings import _canonical_embed_text, _model_slot, _embed_upsert_fields 
 
 VALID_TYPES = ("user", "project", "decision", "feedback", "reference")
 
+
+# #417: operational artifacts like session snapshots carry mixed transcript
+# content that semantically matches a wide range of queries. They're meant
+# to be fetched by name via memory_get during /end recovery, never to
+# compete in normal recall. Filtering at the Python layer keeps the schema
+# and RPCs untouched while measurably lifting recall@5.
+EXCLUDE_TAGS_FROM_RECALL = frozenset({"session-snapshot"})
+
+
+def _filter_excluded_tags(rows):
+    """Drop rows whose tags overlap EXCLUDE_TAGS_FROM_RECALL. See #417."""
+    if not rows or not EXCLUDE_TAGS_FROM_RECALL:
+        return rows
+    out = []
+    for row in rows:
+        tags = row.get("tags") or []
+        if isinstance(tags, list) and any(t in EXCLUDE_TAGS_FROM_RECALL for t in tags):
+            continue
+        out.append(row)
+    return out
+
+
 TEMPORAL_HALF_LIVES = {
     "project": 7,
     "reference": 30,
@@ -315,7 +337,9 @@ async def _hybrid_recall(
                 "show_history": show_history,
             },
         ).execute()
-        semantic_rows = sem_result.data or []
+        # #417: filter operational artifacts (session snapshots) at the
+        # Python layer so they never compete in semantic recall.
+        semantic_rows = _filter_excluded_tags(sem_result.data or [])
 
         # Server-side keyword search via pg_trgm
         kw_result = client.rpc(
@@ -328,7 +352,7 @@ async def _hybrid_recall(
                 "show_history": show_history,
             },
         ).execute()
-        keyword_rows = kw_result.data or []
+        keyword_rows = _filter_excluded_tags(kw_result.data or [])
 
         # Reciprocal Rank Fusion (k=60) + temporal scoring
         merged = _rrf_merge(semantic_rows, keyword_rows, limit)
@@ -520,9 +544,13 @@ async def _keyword_recall(
     # valid_to rows are rare in practice.
     result = q.limit(limit * 2).order("updated_at", desc=True).execute()
 
+    # #417: drop session-snapshot etc. before valid_to filter so the
+    # `live` budget isn't burned on operational artifacts.
+    candidate_rows = _filter_excluded_tags(result.data or [])
+
     now_utc = datetime.now(timezone.utc)
     live: list[dict] = []
-    for row in result.data or []:
+    for row in candidate_rows:
         vt = row.get("valid_to")
         if vt is not None:
             try:
