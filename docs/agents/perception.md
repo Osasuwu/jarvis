@@ -297,8 +297,77 @@ When writing `agents/perception_<source>.py`, hit every one:
 End-to-end smoke iterations of #390. Each row is one autonomous run:
 issue → perception tick → task_queue → dispatcher → claude -p → PR.
 
-### Iteration 1
+All three runs were dispatched on workshop PC (`VividFormsPC4Workshop`) on
+2026-04-25. The dispatcher path was the same; the body of each issue
+differed deliberately to exercise three task shapes (doc append / test
+add / docstring edit).
 
-- Source issue: #399
-- Outcome: PR opened by autonomous dispatcher
-- Timestamps and PR link filled in by orchestrator post-merge
+### Iteration 1 — doc append
+
+| t | UTC | Event |
+|---|-----|-------|
+| t0 | 10:17:20 | Issue #399 created (`tier:1-auto` + `status:ready`) |
+| t1 | 10:17:24 | `perception_github.poll_tick()` → row inserted (`auto_dispatch=true`, key `b5ca4064…`) |
+| t2 | 12:28:09 | Dispatcher tick → audit `dispatch:success`, row → `dispatched`, `claude -p` spawned |
+| t3 | 12:29:00 | Branch `smoke/390-iter-1-seed-trace-section` pushed; PR #400 opened |
+| t4 | 12:29:30 | Orchestrator merged PR #400; row → `done` |
+
+Notes:
+- A first dispatch attempt at 10:18:31 ran on the NSSM service (which
+  starts as `LocalSystem`). The spawned `claude -p` exited silently —
+  `LocalSystem` cannot read the Claude Max session credentials in
+  `%USERPROFILE%\.claude\.credentials.json`. The row was reset to
+  `pending` and re-dispatched from a user-context shell (the t2/t3 row
+  above). Pipeline up to t2 was identical in both attempts; only the
+  spawned subprocess differed in auth context.
+- `auto_dispatch` was honoured per perception.md mapping (`tier:1-auto`
+  → `true`).
+
+### Iteration 2 — test add
+
+| t | UTC | Event |
+|---|-----|-------|
+| t0 | 12:33:09 | Issue #401 created |
+| t1 | 12:33:14 | Perception tick → row inserted (key `ea5def04…`) |
+| t2_v1 | 12:33:19 | Dispatcher tick → audit `dispatch:success`, `claude -p` spawned — but no follow-up activity (flake) |
+| reset | 12:40:41 | Row reset to `pending`, redispatched |
+| t2_v2 | 12:40:47 | Second dispatch → spawn |
+| t3 | 12:41:57 | PR #402 opened |
+| t4 | 12:42:00 | Orchestrator merged PR #402; row → `done` |
+
+### Iteration 3 — docstring edit
+
+| t | UTC | Event |
+|---|-----|-------|
+| t0 | 12:43:25 | Issue #403 created |
+| t1 | 12:43:30 | Perception tick → row inserted (key `6d76819e…`) |
+| t2_v1 | 12:43:36 | Dispatcher tick → spawn → no follow-up activity (flake) |
+| reset | 13:12:22 | Row reset, redispatched |
+| t2_v2 | 13:12:25 | Second dispatch → spawn |
+| t3 | 13:14:10 | PR #404 opened |
+| t4 | 13:14:30 | Orchestrator merged PR #404; row → `done` |
+
+### Findings
+
+- **Producer → FSM → consumer pipeline works end-to-end.** Issue label
+  → `task_queue` row → dispatcher pick-up → `claude -p` spawn → branch
+  → PR — every transition observable in `audit_log` and `task_queue`.
+- **Service-account auth gap.** NSSM service runs as `LocalSystem`,
+  which has no access to the user profile where `claude` stores Max
+  session creds. Spawned `claude -p` exits silently
+  (`stdout`/`stderr` are `DEVNULL` per dispatcher fire-and-forget).
+  Workaround for now: dispatch from a user-context shell. Long-term
+  fix: change service `ObjectName` to `.\PC4_v` (requires logon-as-
+  service right) or migrate to Task Scheduler with "run only when user
+  is logged on". Tracked separately.
+- **Back-to-back spawn flake.** Both iter-2 and iter-3 first attempts
+  produced no `claude.exe` process and no follow-up activity even
+  though `Popen` returned success. Retry of the same row ~5 minutes
+  later succeeded both times. Hypothesis: a brief lock or session
+  conflict in `~/.claude/` after a previous spawn completes.
+  Tracked separately.
+- **Done-watcher remains idle.** Per perception.md caveat, the
+  dispatcher is fire-and-forget and never sets `status=done`. The
+  orchestrator manually flipped each row to `done` after merging the
+  resulting PR. No `notify_completed_issues` firings yet, as
+  designed.
