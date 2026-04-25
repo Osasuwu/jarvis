@@ -187,28 +187,43 @@ def _fetch_ready_issues(repo: str) -> list[dict[str, Any]]:
 
     Raises subprocess.CalledProcessError if gh fails.
     """
-    cmd = [
-        "gh",
-        "issue",
-        "list",
-        "--repo",
-        repo,
-        "--label",
-        "status:ready",
-        "--label",
-        "tier:1-auto,tier:2-review,tier:3-human",
-        "--json",
-        "number,title,body,labels",
-        "--limit",
-        "100",
-    ]
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return json.loads(result.stdout) if result.stdout.strip() else []
+    # gh issue list --label A --label B is logical AND, not OR. Comma-separated
+    # values inside a single --label flag are NOT recognised as OR — gh treats
+    # them as a single literal label string and matches nothing. Probed in CI:
+    # `gh issue list --label "x,y"` consistently returns []. To get OR over the
+    # tier set, query each tier separately and dedup by issue number.
+    seen: dict[int, dict[str, Any]] = {}
+    for tier in _TIER_AUTO_DISPATCH:
+        cmd = [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--label",
+            "status:ready",
+            "--label",
+            tier,
+            "--json",
+            "number,title,body,labels",
+            "--limit",
+            "100",
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if not result.stdout.strip():
+            continue
+        for issue in json.loads(result.stdout):
+            number = issue.get("number")
+            if number is None or number in seen:
+                continue
+            seen[number] = issue
+
+    return list(seen.values())
 
 
 def poll_tick(client: Client | None = None) -> None:

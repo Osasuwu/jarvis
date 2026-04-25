@@ -452,5 +452,53 @@ def test_approved_by_format() -> None:
     assert row["approved_by"] == "github:issue:Osasuwu/jarvis#388"
 
 
+def test_fetch_ready_issues_one_query_per_tier(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`_fetch_ready_issues` MUST issue one gh call per tier and dedup by number.
+
+    Regression guard: the original implementation packed all three tier labels
+    into a single comma-separated --label arg. gh interprets that as a literal
+    label string, not OR, and matches nothing. Probed live and got [] for
+    `--label "x,y"` even when both labels matched real issues. Fix is to
+    fan out per tier and merge.
+    """
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs: Any) -> Any:
+        calls.append(cmd)
+        # Return a distinct issue per tier so we can verify dedup later.
+        tier_idx = {"tier:1-auto": 1, "tier:2-review": 2, "tier:3-human": 3}
+        tier_label = cmd[cmd.index("--label", cmd.index("status:ready") + 1) + 1]
+        n = tier_idx[tier_label]
+        # Issue #100 also returns from tier:2-review to verify dedup.
+        payload = [{"number": n, "title": f"t{n}", "body": "", "labels": [{"name": tier_label}]}]
+        if tier_label == "tier:2-review":
+            payload.append({"number": 1, "title": "dup", "body": "", "labels": [{"name": tier_label}]})
+
+        class _Result:
+            stdout = __import__("json").dumps(payload)
+
+        return _Result()
+
+    monkeypatch.setattr(perception_github.subprocess, "run", _fake_run)
+
+    issues = perception_github._fetch_ready_issues("Osasuwu/jarvis")
+
+    # One call per tier.
+    assert len(calls) == 3
+    # Every call carries status:ready and exactly one tier label, never comma-joined.
+    seen_tiers = set()
+    for cmd in calls:
+        assert "status:ready" in cmd
+        for arg in cmd:
+            if arg.startswith("tier:"):
+                assert "," not in arg, f"comma-joined tier arg leaked: {arg}"
+                seen_tiers.add(arg)
+    assert seen_tiers == {"tier:1-auto", "tier:2-review", "tier:3-human"}
+
+    # Dedup by issue number — issue #1 appeared in both tier:1-auto and tier:2-review.
+    numbers = sorted(i["number"] for i in issues)
+    assert numbers == [1, 2, 3]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
