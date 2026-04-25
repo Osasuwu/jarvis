@@ -1,0 +1,128 @@
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "matcher": "auto",
+        "hooks": [
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
+        ]
+      },
+      {
+        "matcher": "manual",
+        "hooks": [
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/session-context.py"
+          }
+        ]
+      },
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/session-context.py"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__github__(issue_write|create_pull_request|update_pull_request|add_issue_comment|add_reply_to_pull_request_comment|add_comment_to_pending_review|create_or_update_file|push_files|pull_request_review_write|sub_issue_write)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/secret-scanner.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/secret-scanner.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__memory__memory_store",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/secret-scanner.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/memory-dedup-check.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/protected-files.py"
+          },
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__memory__record_decision",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/pretooluse-recall-hook.py"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/memory-recall-hook.py"
+          }
+        ]
+      }
+    ]
+  }
+}

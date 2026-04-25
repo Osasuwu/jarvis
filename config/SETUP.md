@@ -184,5 +184,7 @@ Then open the project in Claude Code and run `/triage`.
 | MCP config | `.mcp.json` (repo root) |
 | Memory server | `mcp-memory/server.py` |
 | Memory schema | `mcp-memory/schema.sql` |
-| Claude Code global config | `~/.claude/settings.json` (device-local) |
-| Skills | `.claude/skills/` |
+| Claude Code global config | `~/.claude/settings.json` (seeded from `.claude-userlevel/settings.json` by installer) |
+| Universal skills (source) | `.claude-userlevel/skills/` (installs to `~/.claude/skills/`) |
+| Project-scoped skills | `.claude/skills/` (jarvis-only — currently just `/sprint-report`) |
+| Installer | `scripts/install/installer.py`, entry points `install.ps1` / `install.sh` |

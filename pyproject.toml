@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-agent"
-version = "0.2.0"
+version = "0.4.1"
 description = "Jarvis — universal personal AI agent built on Claude Code + MCP"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -47,6 +47,11 @@ agents = [
   # but agents/github_client.py depends on it unconditionally — declare it
   # explicitly so the contract doesn't depend on a transitive.
   "httpx>=0.27",
+  # Pillar 7 Sprint 2: scheduler primitive (agents/scheduler.py, #300).
+  # APScheduler's SQLAlchemyJobStore needs SQLAlchemy; pin ranges that
+  # work with psycopg v3 (already pulled in above).
+  "apscheduler>=3.10",
+  "sqlalchemy>=2.0",
 ]
 # All runtime components
 full = [

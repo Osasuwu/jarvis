@@ -1,0 +1,112 @@
+# Jarvis install manifest — declarative source of truth for user-level install.
+#
+# Consumed by scripts/install/installer.py via install.ps1 / install.sh.
+# Describes what gets copied from this repo into ~/.claude/ (or $JARVIS_HOME_TARGET),
+# whether the content is templated (path substitution), and which env vars to set.
+#
+# Epic #335 — Pillar 7 Phase 0: Federation foundation.
+# M1 (#336) lands the manifest + installer. M2-M4 flip individual groups from
+# `enabled: false` to `enabled: true` as each migration step ships.
+
+version: 1
+
+# Placeholders substituted in templated files.
+# {{JARVIS_HOME}} → absolute path to the jarvis repo root (install-time).
+# {{CLAUDE_USER_HOME}} → absolute path to ~/.claude/ (install-time).
+placeholders:
+  JARVIS_HOME: "{repo_root}"
+  CLAUDE_USER_HOME: "{claude_user_home}"
+
+# Destination root for user-level install. Absolute path, expanded at runtime
+# (~/, $HOME, %USERPROFILE%). Override via --target or JARVIS_CLAUDE_HOME env.
+target_root: "~/.claude"
+
+# Version marker written to target_root/.jarvis-version (git SHA at install time).
+version_marker: ".jarvis-version"
+
+# Groups — each one independently enablable. Until each M-step ships, the
+# corresponding group stays disabled so the installer is a no-op for it.
+groups:
+
+  - id: soul
+    description: "SOUL.md — personality/behavioral rules (M4 #339)"
+    enabled: true
+    files:
+      # Canonical source stays at jarvis/config/SOUL.md (git-versioned,
+      # PR-reviewed). Installer copies to ~/.claude/SOUL.md so the
+      # user-level SessionStart hook reads it regardless of CWD.
+      # Edit flow: edit jarvis/config/SOUL.md -> PR review -> merge ->
+      # `git pull && install.ps1` on each device propagates.
+      - source: "config/SOUL.md"
+        dest: "SOUL.md"
+        template: false
+
+  - id: hooks_settings
+    description: "settings.json — hooks pointing at JARVIS_HOME scripts (M3 #338)"
+    enabled: true
+    files:
+      # Source of truth under .claude-userlevel/ (same pattern as skills M2).
+      # template: rewrites `scripts/...` → `{{JARVIS_HOME}}/scripts/...` at apply time.
+      # merge: deep-merge onto existing ~/.claude/settings.json per jarvis-owned
+      #        `hooks.<Event>` keys; other events stay put (see README).
+      - source: ".claude-userlevel/settings.json"
+        dest: "settings.json"
+        template: true
+        merge: true
+
+  - id: mcp_config
+    description: ".mcp.json — MCP server config with absolute paths (M3 #338)"
+    enabled: true
+    files:
+      - source: ".claude-userlevel/.mcp.json"
+        dest: ".mcp.json"
+        template: true
+        merge: true  # preserve user-added mcpServers entries on re-apply
+
+  - id: skills
+    description: "Core skills (M2 #337) — universal, not project-specific"
+    enabled: true
+    directories:
+      # Source of truth for user-level skills lives in a separate directory so
+      # M5 tombstone can cleanly delete jarvis/.claude/skills/* without touching
+      # project-scoped skills that stay behind (e.g. /sprint-report).
+      - source: ".claude-userlevel/skills"
+        dest: "skills"
+        template: false
+        # Whitelist kept explicit so an accidentally-added file (e.g. a README
+        # scratch note under .claude-userlevel/skills/) doesn't leak into
+        # every user's ~/.claude/. Update when adding/removing a core skill.
+        include:
+          - "autonomous-loop"
+          - "delegate"
+          - "end"
+          - "end-quick"
+          - "goals"
+          - "implement"
+          - "reflect"
+          - "research"
+          - "self-improve"
+          - "setup-tasks"
+          - "status"
+          - "verify"
+
+# Env vars — set on install (idempotent: skipped if already matches).
+env_vars:
+  - name: "JARVIS_HOME"
+    value: "{repo_root}"
+    platforms: ["windows", "posix"]
+
+# Health check — after apply, run this command (dry-run of SessionStart hook).
+# Non-zero exit → auto-rollback from the most recent backup.
+health_check:
+  enabled: true
+  # Resolved relative to JARVIS_HOME. Empty list = skip.
+  commands:
+    - "python scripts/device-info.py"
+    - "python scripts/session-context.py --smoke"  # --smoke flag = dry load, no Supabase writes
+
+# Backup — timestamped directory created before any destructive write.
+backup:
+  prefix: ".claude.backup-"
+  # Keep last N backups, prune older.
+  retain: 5

@@ -39,16 +39,13 @@ You (any device)
   |
   |-- Claude Code CLI / Desktop / Web
   |     |
-  |     |-- .claude/skills/     7 custom slash commands
-  |     |-- .claude/agents/     subagent definitions
-  |     |-- config/SOUL.md      personality (auto-loaded)
-  |     |-- CLAUDE.md           rules + autonomy config
+  |     |-- ~/.claude/skills/      12 universal slash commands (user-level, CWD-agnostic)
+  |     |-- ~/.claude/SOUL.md      personality (auto-loaded)
+  |     |-- ~/.claude/settings.json    hooks (SessionStart, PreToolUse, ...)
+  |     |-- ~/.claude/.mcp.json    MCP servers (memory, github, context7, ...)
   |     |
-  |     |-- MCP Servers:
-  |     |     memory    --> Supabase (cross-device)
-  |     |     github    --> GitHub Copilot MCP
-  |     |     context7  --> library docs
-  |     |     firecrawl --> web research
+  |     |-- jarvis/CLAUDE.md       project rules + autonomy config
+  |     |-- jarvis/.claude/        project-scoped extras (e.g. /sprint-report)
   |     |
   |-- Telegram (via Claude Code Channels, optional)
 
@@ -58,6 +55,10 @@ Supabase DB
   |-- events      (CI, alerts, deployments)
 ```
 
+User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
+`install.ps1` / `install.sh` (idempotent, backup-first). See
+`scripts/install/installer.py`.
+
 **Design principle:** Claude Code native first. The only custom Python is `mcp-memory/server.py` -- everything else uses skills, hooks, and subagents.
 
 ## What's Working
@@ -65,7 +66,7 @@ Supabase DB
 | Component | Description |
 |-----------|-------------|
 | **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI) + keyword fallback |
-| **7 skills** | `/status`, `/delegate`, `/research`, `/self-improve`, `/goals`, `/end`, `/end-quick` |
+| **8 skills** | `/status`, `/implement`, `/delegate`, `/research`, `/self-improve`, `/goals`, `/end`, `/end-quick` |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
 | **Delegation pipeline** | Issue -> branch -> coding agent -> PR, with verification |
@@ -76,7 +77,8 @@ Supabase DB
 | Skill | Trigger | What it does |
 |-------|---------|-------------|
 | `/status` | Session start, "what's happening" | Project dashboard: git, PRs, issues, CI, risks, goals |
-| `/delegate` | "implement #42", "delegate" | Full issue-to-PR pipeline via coding subagent |
+| `/implement` | "реализуй #42", "implement #X" | Issue → branch → inline implementation → PR (main session does the work) |
+| `/delegate` | "делегируй #X #Y", "раскидай на агентов" | Multiple issues → parallel coding subagents, orchestrator reviews each diff + decides merge |
 | `/research` | "research X", "compare A vs B" | Web research with source validation |
 | `/self-improve` | "improve yourself" | Gap analysis -> ideation -> research -> implementation |
 | `/goals` | "goals", "priorities" | View, set, update strategic goals in Supabase |

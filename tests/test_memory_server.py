@@ -5,6 +5,7 @@ Covers Memory 2.0 core: temporal scoring, RRF merge, formatting, auto-linking.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import types
@@ -251,6 +252,49 @@ class TestTemporalScoring:
         scores = [r["_temporal_score"] for r in result]
         assert scores == sorted(scores, reverse=True)
 
+    # -- #240: confidence entrenchment multiplier ---------------------------
+
+    def test_confidence_high_outranks_low(self):
+        """Higher-confidence row ranks above lower-confidence at equal age/RRF."""
+        high = self._make_row(days_ago=5, rrf=0.5)
+        high["id"] = "high"
+        high["confidence"] = 1.0
+        low = self._make_row(days_ago=5, rrf=0.5)
+        low["id"] = "low"
+        low["confidence"] = 0.5
+        result = _apply_temporal_scoring([low, high])
+        assert result[0]["id"] == "high"
+        # score(conf=1.0) / score(conf=0.5) = 1.0 / 0.75 exactly.
+        ratio = result[0]["_temporal_score"] / result[1]["_temporal_score"]
+        assert abs(ratio - (1.0 / 0.75)) < 1e-9
+
+    def test_confidence_null_treated_as_1(self):
+        """Legacy rows (no confidence) score same as confidence=1.0 (no regression)."""
+        null_row = self._make_row(days_ago=5, rrf=0.5)
+        null_row["id"] = "null"
+        full_row = self._make_row(days_ago=5, rrf=0.5)
+        full_row["id"] = "full"
+        full_row["confidence"] = 1.0
+        result = _apply_temporal_scoring([null_row, full_row])
+        s_null = next(r["_temporal_score"] for r in result if r["id"] == "null")
+        s_full = next(r["_temporal_score"] for r in result if r["id"] == "full")
+        assert abs(s_null - s_full) < 1e-9
+
+    def test_confidence_zero_gets_floor(self):
+        """confidence=0 → score = CONFIDENCE_FLOOR * score(confidence=1.0) (soft floor)."""
+        from server import CONFIDENCE_FLOOR
+
+        zero = self._make_row(days_ago=5, rrf=0.5)
+        zero["id"] = "zero"
+        zero["confidence"] = 0.0
+        full = self._make_row(days_ago=5, rrf=0.5)
+        full["id"] = "full"
+        full["confidence"] = 1.0
+        result = _apply_temporal_scoring([zero, full])
+        s_zero = next(r["_temporal_score"] for r in result if r["id"] == "zero")
+        s_full = next(r["_temporal_score"] for r in result if r["id"] == "full")
+        assert abs(s_zero / s_full - CONFIDENCE_FLOOR) < 1e-9
+
 
 # ---------------------------------------------------------------------------
 # _format_memories
@@ -326,6 +370,75 @@ class TestFormatMemories:
         ]
         result = _format_memories(mems)
         assert len(result) == 5
+
+    # Brief mode — Phase 7.2. One-line rows so bulk/auto-injection sites
+    # don't pay full-content budget.
+
+    def test_brief_basic_layout(self):
+        mem = {
+            "name": "foo",
+            "type": "feedback",
+            "project": "jarvis",
+            "tags": ["a", "b"],
+            "description": "hello world",
+            "similarity": 0.42,
+            "content": "MUST_NOT_APPEAR",
+        }
+        result = _format_memories([mem], brief=True)
+        assert result == ["- foo [feedback/jarvis] [a, b] (sim 0.42): hello world — id=?"]
+        assert "MUST_NOT_APPEAR" not in result[0]
+
+    def test_brief_global_scope(self):
+        mem = {"name": "g", "type": "user", "project": None, "description": "d"}
+        result = _format_memories([mem], brief=True)
+        assert result[0] == "- g [user/global]: d — id=?"
+
+    def test_brief_temporal_score_leads_when_present(self):
+        # `_temporal_score` is what drives actual ordering after
+        # _apply_temporal_scoring. It must appear first so the shown score
+        # matches the displayed rank; the retrieval signal (rrf/sim) trails
+        # as provenance.
+        mem = {
+            "name": "t",
+            "type": "decision",
+            "project": "jarvis",
+            "description": "x",
+            "_temporal_score": 0.0456,
+            "_rrf_score": 0.0333,
+        }
+        result = _format_memories([mem], brief=True)
+        assert "(score 0.046; rrf 0.033)" in result[0]
+
+    def test_brief_rrf_wins_over_similarity(self):
+        mem = {
+            "name": "r", "type": "decision", "description": "x",
+            "_rrf_score": 0.05, "similarity": 0.9,
+        }
+        result = _format_memories([mem], brief=True)
+        assert "rrf 0.050" in result[0]
+        assert "sim" not in result[0]
+
+    def test_brief_link_info(self):
+        mem = {
+            "name": "l", "type": "decision", "project": "jarvis",
+            "description": "d", "similarity": 0.5,
+            "link_type": "related", "link_strength": 0.75,
+        }
+        result = _format_memories([mem], link_info=True, brief=True)
+        assert "← related (0.75)" in result[0]
+        assert result[0].startswith("- l [decision/jarvis]")
+
+    def test_brief_no_score_fields(self):
+        mem = {"name": "n", "type": "reference", "project": None, "description": "d"}
+        result = _format_memories([mem], brief=True)
+        assert result[0] == "- n [reference/global]: d — id=?"
+
+    def test_brief_empty_description(self):
+        # Migration-target memories carry empty descriptions — brief still
+        # surfaces the name (no crash, trailing `: ` is intentional).
+        mem = {"name": "bare", "type": "decision", "project": "jarvis"}
+        result = _format_memories([mem], brief=True)
+        assert result[0] == "- bare [decision/jarvis]:  — id=?"
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +761,16 @@ class TestExpandWithLinks:
         await _expand_with_links(mock_client, ["id-1", "id-2"])
         mock_client.rpc.assert_called_once_with(
             "get_linked_memories",
-            {"memory_ids": ["id-1", "id-2"], "link_types": None},
+            {"memory_ids": ["id-1", "id-2"], "link_types": None, "show_history": False},
+        )
+
+    @pytest.mark.asyncio
+    async def test_passes_show_history_to_rpc(self, mock_client):
+        mock_client.rpc.return_value.execute.return_value = MagicMock(data=[])
+        await _expand_with_links(mock_client, ["id-1"], show_history=True)
+        mock_client.rpc.assert_called_once_with(
+            "get_linked_memories",
+            {"memory_ids": ["id-1"], "link_types": None, "show_history": True},
         )
 
 
@@ -764,7 +886,8 @@ class TestHandleStoreProvenance:
         """Accepted provenance is trimmed — no leading/trailing whitespace
         leaks into the DB row, keeping audit queries clean."""
         # Short-circuit embedding so we don't need Voyage env/network.
-        async def _fake_embed(_text):
+        # Signature accepts **kwargs so #242's model= param doesn't break it.
+        async def _fake_embed(_text, **_kwargs):
             return None
         monkeypatch.setattr(server_module, "_embed", _fake_embed)
 
@@ -786,3 +909,690 @@ class TestHandleStoreProvenance:
         assert upsert_calls, "expected at least one upsert call"
         data_arg = upsert_calls[-1][0][0]
         assert data_arg["source_provenance"] == "skill:test"
+
+
+# ---------------------------------------------------------------------------
+# #242: dual-embedding machinery — column/RPC mapping + dual-write
+# ---------------------------------------------------------------------------
+
+from server import (  # noqa: E402
+    _model_slot,
+    _embed_upsert_fields,
+    _compute_write_embeddings,
+)
+
+
+class TestModelSlotMapping:
+    """#242: the model → column/RPC table drives both read and write paths.
+
+    If this mapping drifts, writes land in the wrong column and reads
+    query the wrong RPC — a silent data-integrity bug. Lock it down.
+    """
+
+    def test_voyage_3_lite_maps_to_v1_column(self):
+        slot = _model_slot("voyage-3-lite")
+        assert slot["embedding_column"] == "embedding"
+        assert slot["rpc"] == "match_memories"
+
+    def test_voyage_3_maps_to_v2_column(self):
+        slot = _model_slot("voyage-3")
+        assert slot["embedding_column"] == "embedding_v2"
+        assert slot["rpc"] == "match_memories_v2"
+
+    def test_unknown_model_falls_back_to_legacy(self):
+        """Misconfigured EMBEDDING_MODEL_PRIMARY must degrade to legacy,
+        never raise at runtime — writes continue, bug is visible in metadata."""
+        slot = _model_slot("nonexistent-model")
+        assert slot["embedding_column"] == "embedding"
+        assert slot["rpc"] == "match_memories"
+
+    def test_upsert_fields_shape(self):
+        fields = _embed_upsert_fields([0.1, 0.2], "voyage-3-lite")
+        assert fields == {
+            "embedding": [0.1, 0.2],
+            "embedding_model": "voyage-3-lite",
+            "embedding_version": "v2",
+        }
+
+    def test_upsert_fields_v2(self):
+        fields = _embed_upsert_fields([0.3, 0.4], "voyage-3")
+        assert fields == {
+            "embedding_v2": [0.3, 0.4],
+            "embedding_model_v2": "voyage-3",
+            "embedding_version_v2": "v2",
+        }
+
+    def test_upsert_fields_unknown_returns_empty(self):
+        """Unknown model → no fields (no silent corruption of other columns)."""
+        assert _embed_upsert_fields([0.1], "no-such-model") == {}
+
+
+class TestDualEmbedWrite:
+    """#242: when SECONDARY is set, writes compute both embeddings and
+    populate both columns. Unset → identical to pre-#242 (single-write)."""
+
+    @pytest.mark.asyncio
+    async def test_secondary_unset_single_write(self, monkeypatch):
+        """Zero-change default: SECONDARY unset → only PRIMARY columns written."""
+        calls: list[dict] = []
+
+        async def fake_embed(text, input_type="document", model=None):
+            calls.append({"model": model})
+            return [0.1, 0.2, 0.3]
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", None)
+
+        fields = await _compute_write_embeddings("canonical text")
+
+        assert "embedding" in fields
+        assert "embedding_model" in fields
+        assert fields["embedding_model"] == "voyage-3-lite"
+        assert "embedding_v2" not in fields
+        assert len(calls) == 1
+        assert calls[0]["model"] == "voyage-3-lite"
+
+    @pytest.mark.asyncio
+    async def test_secondary_set_dual_write(self, monkeypatch):
+        """SECONDARY=voyage-3 → both columns populated, two embed calls."""
+        calls: list[dict] = []
+
+        async def fake_embed(text, input_type="document", model=None):
+            calls.append({"model": model})
+            # Return dim-shaped distinct vectors so we can assert routing.
+            return [0.1] * 512 if model == "voyage-3-lite" else [0.9] * 1024
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3")
+
+        fields = await _compute_write_embeddings("canonical text")
+
+        assert fields["embedding"] == [0.1] * 512
+        assert fields["embedding_v2"] == [0.9] * 1024
+        assert fields["embedding_model"] == "voyage-3-lite"
+        assert fields["embedding_model_v2"] == "voyage-3"
+        assert {c["model"] for c in calls} == {"voyage-3-lite", "voyage-3"}
+
+    @pytest.mark.asyncio
+    async def test_secondary_failure_single_leg(self, monkeypatch):
+        """PRIMARY succeeds but SECONDARY embed returns None → write PRIMARY
+        only. Missing v2 is recoverable via backfill; corrupt row is not."""
+        async def fake_embed(text, input_type="document", model=None):
+            if model == "voyage-3":
+                return None
+            return [0.1] * 512
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3")
+
+        fields = await _compute_write_embeddings("canonical text")
+        assert fields["embedding"] == [0.1] * 512
+        assert "embedding_v2" not in fields
+
+    @pytest.mark.asyncio
+    async def test_primary_failure_no_write(self, monkeypatch):
+        """PRIMARY embed fails → no embed fields at all. Row still saves
+        with text content, _backfill_missing_embeddings picks it up later."""
+        async def fake_embed(text, input_type="document", model=None):
+            return None
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3")
+
+        fields = await _compute_write_embeddings("canonical text")
+        assert fields == {}
+
+    @pytest.mark.asyncio
+    async def test_secondary_equals_primary_no_duplicate_call(self, monkeypatch):
+        """If SECONDARY accidentally equals PRIMARY, don't waste an API call."""
+        calls: list[dict] = []
+
+        async def fake_embed(text, input_type="document", model=None):
+            calls.append({"model": model})
+            return [0.1] * 512
+
+        monkeypatch.setattr(server_module, "_embed", fake_embed)
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_PRIMARY", "voyage-3-lite")
+        monkeypatch.setattr(server_module, "EMBEDDING_MODEL_SECONDARY", "voyage-3-lite")
+
+        fields = await _compute_write_embeddings("canonical text")
+        assert len(calls) == 1
+        assert "embedding" in fields
+        # Only PRIMARY columns; no redundant duplicate write.
+        assert "embedding_v2" not in fields
+
+
+# =========================================================================
+# Known unknowns — retrieval gaps + unsatisfied queries (#249)
+# =========================================================================
+
+from server import (
+    _cosine_sim,
+    _parse_pgvector,
+    _upsert_known_unknown,
+    _resolve_known_unknowns,
+)
+
+
+class TestCosineSim:
+    """Unit tests for cosine similarity function."""
+
+    def test_empty_vectors(self):
+        assert _cosine_sim([], []) == 0.0
+
+    def test_none_vectors(self):
+        assert _cosine_sim(None, [1.0, 0.0]) == 0.0
+        assert _cosine_sim([1.0, 0.0], None) == 0.0
+        assert _cosine_sim(None, None) == 0.0
+
+    def test_identical_unit_vectors(self):
+        v = [1.0, 0.0]
+        assert _cosine_sim(v, v) == pytest.approx(1.0)
+
+    def test_orthogonal_vectors(self):
+        assert _cosine_sim([1.0, 0.0], [0.0, 1.0]) == pytest.approx(0.0)
+
+    def test_opposite_vectors(self):
+        assert _cosine_sim([1.0, 0.0], [-1.0, 0.0]) == pytest.approx(-1.0)
+
+    def test_scaled_same_direction(self):
+        # Cosine sim is invariant to magnitude
+        assert _cosine_sim([1.0, 1.0], [2.0, 2.0]) == pytest.approx(1.0)
+
+    def test_zero_magnitude_vector(self):
+        assert _cosine_sim([0.0, 0.0], [1.0, 1.0]) == 0.0
+
+    def test_length_mismatch_returns_zero(self):
+        # Dim mismatch must not silently truncate via zip — returns 0.0.
+        assert _cosine_sim([1.0, 0.0, 0.0], [1.0, 0.0]) == 0.0
+        assert _cosine_sim([1.0] * 512, [1.0] * 1024) == 0.0
+
+
+class TestParsePgvector:
+    """supabase-py returns pgvector columns as JSON strings, not lists.
+
+    Regression guard for the known-unknowns dedup/resolution bug where raw
+    string embeddings hit the `_cosine_sim` length-mismatch guard and
+    silently scored 0.
+    """
+
+    def test_list_passes_through(self):
+        v = [0.1, 0.2, 0.3]
+        assert _parse_pgvector(v) is v
+
+    def test_none_returns_none(self):
+        assert _parse_pgvector(None) is None
+
+    def test_json_string_parses_to_list(self):
+        parsed = _parse_pgvector("[0.1, 0.2, 0.3]")
+        assert parsed == [0.1, 0.2, 0.3]
+
+    def test_malformed_string_returns_none(self):
+        assert _parse_pgvector("not-json") is None
+        assert _parse_pgvector("[0.1, 0.2,") is None
+
+    def test_non_list_json_returns_none(self):
+        # A valid JSON number or object is not a vector — reject.
+        assert _parse_pgvector("42") is None
+        assert _parse_pgvector('{"x": 1}') is None
+
+    def test_unsupported_type_returns_none(self):
+        assert _parse_pgvector(42) is None  # type: ignore[arg-type]
+
+    def test_string_embedding_yields_nonzero_similarity(self):
+        """Core regression: feed a JSON-string embedding through the parser,
+        then _cosine_sim against an identical list must score ~1.0. Before
+        the fix, len("[0.1,...]") != len([0.1,...]) → guard returned 0.0."""
+        vec = [0.1] * 512
+        stored_as_string = json.dumps(vec)  # what supabase-py actually returns
+        parsed = _parse_pgvector(stored_as_string)
+        assert parsed is not None
+        assert len(parsed) == 512
+        assert _cosine_sim(vec, parsed) == pytest.approx(1.0)
+
+
+class TestKnownUnknowns:
+    """Unit tests for known_unknowns insertion + dedup + resolution."""
+
+    @pytest.mark.asyncio
+    async def test_known_unknowns_insert_on_low_sim(self):
+        """When recall finds top_similarity < 0.45, log as known unknown.
+        No existing row with matching query → insert (not update)."""
+        mock_client = MagicMock()
+
+        # select().eq().eq().limit().execute() returns no data
+        # (fallback path — no embedding, because 3 dims ≠ 512)
+        mock_select_chain = MagicMock()
+        mock_select_chain.eq.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+
+        mock_insert = MagicMock()
+        mock_update = MagicMock()
+
+        mock_table = MagicMock()
+        mock_table.select.return_value = mock_select_chain
+        mock_table.insert.return_value = mock_insert
+        mock_table.update.return_value = mock_update
+        mock_client.table.return_value = mock_table
+
+        # 3-dim embedding gets coerced to None by dim guard → fallback path
+        await _upsert_known_unknown(
+            mock_client,
+            query="what is the meaning of life",
+            query_embedding=[0.1, 0.2, 0.3],
+            top_similarity=0.3,
+            top_memory_id="mem-123",
+            context={"project": "jarvis"},
+        )
+
+        # Assert insert was called with correct payload, and update was NOT
+        mock_insert.execute.assert_called_once()
+        insert_payload = mock_table.insert.call_args.args[0]
+        assert insert_payload["query"] == "what is the meaning of life"
+        assert insert_payload["top_similarity"] == 0.3
+        assert insert_payload["top_memory_id"] == "mem-123"
+        assert insert_payload["query_embedding"] is None  # dim-guarded
+        assert not mock_update.execute.called
+
+    @pytest.mark.asyncio
+    async def test_known_unknowns_dedup_increments_hit_count(self):
+        """If similar query exists (cosine > 0.9), increment hit_count instead of insert.
+        Validates that the select includes hit_count and the update uses the stored value."""
+        mock_client = MagicMock()
+
+        # Use 512-dim embeddings (matches schema vector(512)).
+        # Two nearly identical vectors → cosine ≈ 1.0 > 0.9 → dedup fires.
+        existing_embedding = [0.10] * 512
+        similar_embedding = [0.11] * 512
+
+        # Mock the select chain: table().select("id, query_embedding, hit_count").eq().execute()
+        mock_select_return = MagicMock()
+        mock_select_return.eq.return_value.execute.return_value = MagicMock(
+            data=[{"id": "uk-1", "query_embedding": existing_embedding, "hit_count": 5}]
+        )
+
+        mock_update_return = MagicMock()
+        mock_insert_return = MagicMock()
+
+        mock_table = MagicMock()
+        mock_table.select.return_value = mock_select_return
+        mock_table.update.return_value = mock_update_return
+        mock_table.insert.return_value = mock_insert_return
+        mock_client.table.return_value = mock_table
+
+        await _upsert_known_unknown(
+            mock_client,
+            query="what is the meaning of existence",
+            query_embedding=similar_embedding,
+            top_similarity=0.35,
+            top_memory_id="mem-456",
+        )
+
+        # Select must include hit_count so the increment reflects stored value
+        select_cols = mock_table.select.call_args.args[0]
+        assert "hit_count" in select_cols
+
+        # Update was called once with hit_count = 5 + 1 = 6 (not 1 + 1 = 2)
+        mock_table.update.assert_called_once()
+        update_payload = mock_table.update.call_args.args[0]
+        assert update_payload["hit_count"] == 6
+
+        # Insert was NOT called
+        assert not mock_insert_return.execute.called
+
+    @pytest.mark.asyncio
+    async def test_known_unknowns_resolution_on_store(self):
+        """When a memory is stored, resolve open unknowns with cosine > 0.7."""
+        mock_client = MagicMock()
+        # Existing open unknown
+        unknown_embedding = [0.5, 0.5, 0.0]
+
+        # Setup the mock chain for table().select().eq().execute()
+        mock_select = MagicMock()
+        mock_eq = MagicMock()
+        mock_eq.execute.return_value = MagicMock(
+            data=[{"id": "uk-2", "query_embedding": unknown_embedding}]
+        )
+        mock_select.eq.return_value = mock_eq
+
+        # For the update chain
+        mock_update = MagicMock()
+        mock_update_eq = MagicMock()
+        mock_update_eq.execute.return_value = MagicMock()
+        mock_update.eq.return_value = mock_update_eq
+
+        # Setup table() to return different objects for select vs update
+        def table_side_effect(table_name):
+            if table_name == "known_unknowns":
+                result = MagicMock()
+                result.select.return_value = mock_select
+                result.update.return_value = mock_update
+                return result
+            return MagicMock()
+
+        mock_client.table.side_effect = table_side_effect
+
+        # New memory with matching embedding
+        memory_embedding = [0.6, 0.55, 0.1]
+        await _resolve_known_unknowns(mock_client, memory_embedding, "mem-789")
+
+        # Verify update was called with status='resolved'
+        assert mock_update.eq.called
+
+
+# ---------------------------------------------------------------------------
+# #284: memory_recall must exclude soft-deleted + superseded + expired rows
+# ---------------------------------------------------------------------------
+
+class TestRecallLifecycleFilters:
+    """Regression (Osasuwu/jarvis#284): memory_recall surfaced soft-deleted
+    rows even when show_history=false, because the SQL RPCs and the Python
+    keyword-only fallback forgot parts of the lifecycle filter. Lock the
+    contract at both layers: the RPC params we send, and the query-builder
+    filters we apply.
+    """
+
+    @staticmethod
+    def _fluent_query():
+        """MagicMock that returns itself from every builder method — lets
+        us assert on .is_ / .or_ / .eq / .limit calls without wiring up the
+        chain manually."""
+        q = MagicMock()
+        for method in ("select", "is_", "or_", "eq", "limit", "order", "filter"):
+            getattr(q, method).return_value = q
+        q.execute.return_value = MagicMock(data=[])
+        return q
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_applies_all_lifecycle_filters(self):
+        """_keyword_recall (fallback path) must filter deleted_at, expired_at,
+        and superseded_by server-side — matching the show_history=false
+        branch of match_memories / keyword_search_memories. valid_to is
+        filtered client-side (see test_keyword_recall_filters_past_valid_to)."""
+        from server import _keyword_recall
+
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(client, "anything", project="jarvis", mem_type=None, limit=10)
+
+        is_args = [tuple(call.args) for call in query.is_.call_args_list]
+        assert ("deleted_at", "null") in is_args
+        assert ("expired_at", "null") in is_args
+        assert ("superseded_by", "null") in is_args
+
+        # valid_to must NOT appear in .or_() — PostgREST allows only one
+        # `or=` per query, and this function already uses .or_() for project
+        # scoping and for the keyword ILIKE clauses. Putting valid_to in
+        # another .or_() would silently overwrite one of the existing filters.
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        assert not any("valid_to" in f for f in or_filters), (
+            f"valid_to must not be pushed into .or_() (PostgREST one-or rule); "
+            f"got or_ calls: {or_filters}"
+        )
+
+        # valid_to must be selected so the client can filter it after fetch.
+        select_args = [call.args[0] for call in query.select.call_args_list]
+        assert any("valid_to" in s for s in select_args), (
+            f"valid_to must be in SELECT for client-side filtering; "
+            f"got select calls: {select_args}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_brief_mode_also_filters(self):
+        """brief=True takes a different select-columns branch — make sure
+        the filter block still runs and valid_to is still selected."""
+        from server import _keyword_recall
+
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(
+            client, "anything", project=None, mem_type=None, limit=5, brief=True
+        )
+
+        is_args = [tuple(call.args) for call in query.is_.call_args_list]
+        assert ("deleted_at", "null") in is_args
+        assert ("expired_at", "null") in is_args
+        assert ("superseded_by", "null") in is_args
+
+        select_args = [call.args[0] for call in query.select.call_args_list]
+        assert any("valid_to" in s for s in select_args)
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_filters_past_valid_to(self):
+        """Rows whose valid_to is in the past are tombstoned and must be
+        excluded from default recall. Rows with valid_to=None or valid_to
+        in the future are live."""
+        from datetime import datetime, timedelta, timezone
+
+        from server import _keyword_recall
+
+        now = datetime.now(timezone.utc)
+        past = (now - timedelta(days=1)).isoformat()
+        future = (now + timedelta(days=30)).isoformat()
+
+        rows = [
+            {"name": "live_null_vt", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": now.isoformat(),
+             "valid_to": None},
+            {"name": "live_future_vt", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": now.isoformat(),
+             "valid_to": future},
+            {"name": "tombstoned_past_vt", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": now.isoformat(),
+             "valid_to": past},
+        ]
+
+        query = self._fluent_query()
+        query.execute.return_value = MagicMock(data=rows)
+        client = MagicMock()
+        client.table.return_value = query
+
+        result = await _keyword_recall(
+            client, "anything", project="jarvis", mem_type=None, limit=10, brief=True
+        )
+
+        text = result[0].text
+        assert "live_null_vt" in text
+        assert "live_future_vt" in text
+        assert "tombstoned_past_vt" not in text
+        assert "Found 2 memories" in text
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_all_rows_tombstoned_returns_empty(self):
+        """If every row returned by the DB has a past valid_to, the client-side
+        filter should yield zero live rows and the function should return the
+        empty-result message — not the 'Found N' line with N=0."""
+        from datetime import datetime, timedelta, timezone
+
+        from server import _keyword_recall
+
+        past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        rows = [
+            {"name": "dead1", "type": "project", "project": "jarvis",
+             "description": "d", "tags": [], "updated_at": past,
+             "valid_to": past},
+        ]
+
+        query = self._fluent_query()
+        query.execute.return_value = MagicMock(data=rows)
+        client = MagicMock()
+        client.table.return_value = query
+
+        result = await _keyword_recall(
+            client, "anything", project="jarvis", mem_type=None, limit=10
+        )
+        assert result[0].text == "No memories found."
+
+    @pytest.mark.asyncio
+    async def test_hybrid_recall_defaults_show_history_false(self, monkeypatch):
+        """_hybrid_recall must pass show_history=False to both the semantic
+        and keyword RPCs on the default path — that flag is what the SQL
+        lifecycle filter keys off of (post-#284 fix)."""
+        from server import _hybrid_recall
+
+        client = MagicMock()
+        # Both RPC calls return no data so the function takes the fallback
+        # branch; we only care about what args we sent to the RPCs.
+        client.rpc.return_value.execute.return_value = MagicMock(data=[])
+
+        # Stub the fallback so it doesn't re-hit client and muddy assertions.
+        async def _noop_fallback(*_args, **_kwargs):
+            return []
+        monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
+
+        await _hybrid_recall(
+            client,
+            query_embedding=[0.0] * 512,
+            query_text="anything",
+            project="jarvis",
+            mem_type=None,
+            limit=5,
+        )
+
+        # Both RPCs invoked with show_history=False.
+        rpc_calls = client.rpc.call_args_list
+        assert len(rpc_calls) == 2
+        for call in rpc_calls:
+            rpc_name, rpc_args = call.args[0], call.args[1]
+            assert rpc_args.get("show_history") is False, (
+                f"{rpc_name} called without show_history=False: {rpc_args}"
+            )
+        rpc_names = {call.args[0] for call in rpc_calls}
+        assert "keyword_search_memories" in rpc_names
+        # Semantic RPC is model-dependent (match_memories or match_memories_v2).
+        assert any(name.startswith("match_memories") for name in rpc_names)
+
+    @pytest.mark.asyncio
+    async def test_hybrid_recall_propagates_show_history_true(self, monkeypatch):
+        """When caller opts in to show_history=True, both RPCs must see it —
+        otherwise audit/debug queries can't inspect tombstones."""
+        from server import _hybrid_recall
+
+        client = MagicMock()
+        client.rpc.return_value.execute.return_value = MagicMock(data=[])
+
+        async def _noop_fallback(*_args, **_kwargs):
+            return []
+        monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
+
+        await _hybrid_recall(
+            client,
+            query_embedding=[0.0] * 512,
+            query_text="anything",
+            project=None,
+            mem_type=None,
+            limit=5,
+            show_history=True,
+        )
+
+        for call in client.rpc.call_args_list:
+            assert call.args[1].get("show_history") is True
+
+
+# ---------------------------------------------------------------------------
+# #286: outcome_record / outcome_update must accept and persist memory_id
+# ---------------------------------------------------------------------------
+
+class TestOutcomeMemoryId:
+    """Osasuwu/jarvis#286: task_outcomes.memory_id is the FK that drives the
+    memory_calibration view. The DB column + FK + view already exist; these
+    tests pin the MCP tool layer so future refactors can't drop memory_id
+    from the insert/update payloads and silently re-empty calibration."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_client(self, monkeypatch):
+        self.client = MagicMock()
+        # Chain: client.table(...).insert(...).execute() → data=[{"id": "..."}]
+        self.tbl = MagicMock()
+        self.client.table.return_value = self.tbl
+        self.tbl.insert.return_value.execute.return_value = MagicMock(
+            data=[{"id": "outcome-uuid"}]
+        )
+        # For update: client.table(...).update(...).eq(...).execute() → data=[...]
+        self.tbl.update.return_value.eq.return_value.execute.return_value = MagicMock(
+            data=[{"id": "outcome-uuid"}]
+        )
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+    @pytest.mark.asyncio
+    async def test_outcome_record_persists_memory_id(self):
+        from server import _handle_outcome_record
+
+        await _handle_outcome_record({
+            "task_type": "delegation",
+            "task_description": "test",
+            "outcome_status": "success",
+            "memory_id": "11111111-1111-1111-1111-111111111111",
+        })
+
+        insert_payload = self.tbl.insert.call_args[0][0]
+        assert insert_payload["memory_id"] == "11111111-1111-1111-1111-111111111111"
+
+    @pytest.mark.asyncio
+    async def test_outcome_record_omits_memory_id_when_absent(self):
+        """Backwards-compat: callers that don't pass memory_id still work,
+        and the key is not written as NULL (keeps existing rows' shape)."""
+        from server import _handle_outcome_record
+
+        await _handle_outcome_record({
+            "task_type": "delegation",
+            "task_description": "test",
+            "outcome_status": "success",
+        })
+
+        insert_payload = self.tbl.insert.call_args[0][0]
+        assert "memory_id" not in insert_payload
+
+    @pytest.mark.asyncio
+    async def test_outcome_record_ignores_none_memory_id(self):
+        """Explicit None is treated the same as missing — matches the
+        pattern used for every other optional field in _handle_outcome_record."""
+        from server import _handle_outcome_record
+
+        await _handle_outcome_record({
+            "task_type": "delegation",
+            "task_description": "test",
+            "outcome_status": "success",
+            "memory_id": None,
+        })
+
+        insert_payload = self.tbl.insert.call_args[0][0]
+        assert "memory_id" not in insert_payload
+
+    @pytest.mark.asyncio
+    async def test_outcome_update_persists_memory_id(self):
+        from server import _handle_outcome_update
+
+        await _handle_outcome_update({
+            "id": "outcome-uuid",
+            "memory_id": "22222222-2222-2222-2222-222222222222",
+        })
+
+        update_payload = self.tbl.update.call_args[0][0]
+        assert update_payload["memory_id"] == "22222222-2222-2222-2222-222222222222"
+
+    @pytest.mark.asyncio
+    async def test_outcome_update_retrolinks_without_status_change(self):
+        """memory_id alone is a valid update — no outcome_status flip required.
+        Covers the backfill flow: /verify already marked the row, we just now
+        discovered which memory informed it."""
+        from server import _handle_outcome_update
+
+        result = await _handle_outcome_update({
+            "id": "outcome-uuid",
+            "memory_id": "33333333-3333-3333-3333-333333333333",
+        })
+
+        update_payload = self.tbl.update.call_args[0][0]
+        assert update_payload == {"memory_id": "33333333-3333-3333-3333-333333333333"}
+        # verified_at only auto-sets when outcome_status changes off pending —
+        # memory_id-only update must not touch it.
+        assert "verified_at" not in update_payload
+        assert "updated" in result[0].text

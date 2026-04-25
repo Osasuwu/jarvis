@@ -44,6 +44,13 @@ alter table memories add column if not exists fts tsvector
 
 create index if not exists idx_memories_fts on memories using gin(fts);
 
+-- Generated project scope key for tiebreakers / grouping on a non-null text.
+-- Applied in production via an out-of-band migration; re-declared here so
+-- schema.sql matches the live DB. Must stay in update_updated_at's strip
+-- list (GENERATED ALWAYS STORED cols appear NULL in BEFORE UPDATE NEW).
+alter table memories add column if not exists project_key text
+  generated always as (coalesce(project, '')) stored;
+
 -- Auto-update updated_at on changes
 create or replace function update_updated_at()
 returns trigger as $$
@@ -221,7 +228,11 @@ create policy "Allow all for anon" on memory_links
 -- Returns clusters for LLM-driven merge (content merging is not pure SQL)
 -- =========================================================================
 
--- Find groups of memories that should be consolidated
+-- Find groups of memories that should be consolidated.
+-- Phase 5.1c: the `live` CTE applies Phase 1 default-recall semantics at the
+-- source so consumers never see stale memories in a cluster. Legacy
+-- `%_archived` types are also excluded defensively (0 rows as of 2026-04-19,
+-- left in place so a stray row from old logic cannot poison consolidation).
 create or replace function find_consolidation_clusters(
   min_cluster_size int default 3,
   sim_threshold float default 0.80
@@ -237,7 +248,17 @@ returns table (
 )
 language sql stable
 as $$
-  with pairs as (
+  with live as (
+    select id, name, type, content, embedding, updated_at
+    from memories
+    where embedding is not null
+      and expired_at is null
+      and superseded_by is null
+      and deleted_at is null
+      and (valid_to is null or valid_to > now())
+      and type not like '%\_archived' escape '\'
+  ),
+  pairs as (
     select
       a.id as id_a, b.id as id_b,
       a.name as name_a, b.name as name_b,
@@ -245,11 +266,9 @@ as $$
       a.content as content_a, b.content as content_b,
       a.updated_at as updated_a, b.updated_at as updated_b,
       1 - (a.embedding <=> b.embedding) as sim
-    from memories a
-    join memories b on a.id < b.id
+    from live a
+    join live b on a.id < b.id
       and a.type = b.type
-      and a.embedding is not null
-      and b.embedding is not null
     where 1 - (a.embedding <=> b.embedding) >= sim_threshold
   ),
   -- Group connected pairs into clusters via the oldest memory as anchor
@@ -283,8 +302,10 @@ as $$
   order by cid, updated_at desc;
 $$;
 
--- Archive superseded memories: mark as archived (soft delete)
--- Keeps data but prevents recall from returning them
+-- Archive superseded memories (Phase 5.1c): set `expired_at` instead of
+-- renaming type. Leaves type intact so type-filtered recall isn't poisoned
+-- (audit gap #6 in docs/design/memory-overhaul.md). Idempotent — skips rows
+-- already expired and doesn't double-prefix the description.
 create or replace function archive_memories(memory_ids uuid[])
 returns int
 language plpgsql volatile
@@ -293,10 +314,13 @@ declare
   archived_count int;
 begin
   update memories
-  set type = type || '_archived',
-      description = '[ARCHIVED — consolidated] ' || coalesce(description, '')
+  set expired_at = coalesce(expired_at, now()),
+      description = case
+        when description like '[ARCHIVED%' then description
+        else '[ARCHIVED — consolidated] ' || coalesce(description, '')
+      end
   where id = any(memory_ids)
-    and type not like '%_archived';
+    and expired_at is null;
   get diagnostics archived_count = row_count;
   return archived_count;
 end;
@@ -837,7 +861,7 @@ create table if not exists episodes (
 
   -- Shape of the payload. Extractor may prompt differently per kind.
   kind text not null
-    check (kind in ('tool_call', 'decision', 'user_message', 'assistant_message', 'observation')),
+    check (kind in ('tool_call', 'decision', 'user_message', 'assistant_message', 'observation', 'decision_made')),
 
   -- Arbitrary structured content. Schema is intentionally loose — episodes
   -- are raw material, not normalized facts.
@@ -868,4 +892,1446 @@ create policy "Allow all for authenticated" on episodes
   for all using (true) with check (true);
 
 create policy "Allow all for anon" on episodes
+  for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- Phase 1 cont'd (memory overhaul, Osasuwu/jarvis#185) — supersedes-chain
+-- collapse in link expansion.
+--
+-- Problem: match_memories and keyword_search_memories already filter out
+-- superseded rows on the default path (show_history=false). But
+-- get_linked_memories walks memory_links directly, which still points at
+-- the older versions of a chain. So recall with include_links=true can
+-- surface a memory whose current head was deliberately hidden by the
+-- lifecycle filter — re-introducing the bug Phase 1 was meant to fix.
+--
+-- Fix:
+--   1. find_chain_head(uuid, int) — recursive CTE walking superseded_by
+--      to the terminal node. Returns the input id if it's already a head,
+--      or the deepest reachable descendant (capped at max_depth to guard
+--      against cycles from manual edits).
+--   2. get_linked_memories replaced to (a) resolve the neighbor id through
+--      find_chain_head before joining memories, (b) apply the same
+--      lifecycle filter the other recall RPCs use (show_history param),
+--      and (c) return content_updated_at + last_accessed_at so the caller
+--      can temporally rescore linked memories consistently with primaries.
+-- =========================================================================
+
+-- Touch-safe update_updated_at: don't bump updated_at when the only column
+-- changed is last_accessed_at (i.e. touch_memories RPC on recall). The
+-- schema-level comment under Phase 0 already flagged this ("last_accessed_at
+-- set by touch_memories only") but the generic trigger was rippling every
+-- touch into updated_at, making session-start reads look like edits.
+--
+-- Why this matters: the fallback _keyword_recall orders by updated_at, and
+-- session-context.py selects user memories by updated_at — neither should
+-- be perturbed by the access-frequency touch.
+--
+-- Implementation: cheap short-circuit first — if last_accessed_at isn't
+-- changing, this is a normal edit and updated_at must bump. Only on
+-- touch-shaped UPDATEs do we pay for a JSONB diff of old vs new. This keeps
+-- the hot path (regular writes) free of to_jsonb cost on the full row
+-- (content can be kilobytes).
+--
+-- The JSONB diff strips last_accessed_at + updated_at (touch cols) and the
+-- generated cols (fts, project_key), which appear NULL in NEW under BEFORE
+-- UPDATE while OLD has the stored value (PostgreSQL quirk for GENERATED
+-- ALWAYS STORED), so including them would always register as a diff. If
+-- new generated columns are added, list them here too.
+create or replace function update_updated_at()
+returns trigger as $$
+begin
+  if new.last_accessed_at is distinct from old.last_accessed_at
+     and (to_jsonb(new) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key')
+           = (to_jsonb(old) - 'last_accessed_at' - 'updated_at' - 'fts' - 'project_key') then
+    return new;
+  end if;
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+
+create or replace function find_chain_head(mid uuid, max_depth int default 20)
+returns uuid
+language sql stable as $$
+    with recursive chain as (
+        select m.id, m.superseded_by, 0 as depth
+        from memories m
+        where m.id = mid
+        union all
+        select m.id, m.superseded_by, c.depth + 1
+        from chain c
+        join memories m on m.id = c.superseded_by
+        where c.superseded_by is not null
+          and c.depth < max_depth
+    )
+    -- Terminal node: either superseded_by IS NULL (a true head) or we hit
+    -- max_depth (chain too long or cyclic — return deepest we saw).
+    select id from chain order by depth desc limit 1;
+$$;
+
+drop function if exists get_linked_memories(uuid[], text[]);
+drop function if exists get_linked_memories(uuid[], text[], boolean);
+create or replace function get_linked_memories(
+    memory_ids uuid[],
+    link_types text[] default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    link_type text, link_strength float, linked_from uuid
+)
+language sql stable as $$
+    select * from (
+        -- DISTINCT ON collapses multiple edges between the same pair of
+        -- memories — keep the strongest one after chain resolution. Two
+        -- different originals may resolve to the same head, so we dedup
+        -- on the resolved id rather than the raw link target.
+        select distinct on (sub.id)
+            sub.id, sub.name, sub.type, sub.project, sub.description,
+            sub.content, sub.tags,
+            sub.updated_at, sub.content_updated_at, sub.last_accessed_at,
+            sub.link_type, sub.link_strength, sub.linked_from
+        from (
+            -- Outgoing edges: source ∈ memory_ids, target resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.source_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.target_id
+                     else find_chain_head(l.target_id) end,
+                l.target_id)
+            where l.source_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+            union all
+            -- Incoming edges: target ∈ memory_ids, source resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.target_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.source_id
+                     else find_chain_head(l.source_id) end,
+                l.source_id)
+            where l.target_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+        ) sub
+        order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
+    ) deduped
+    order by deduped.link_strength desc
+    limit 10;
+$$;
+
+
+-- =========================================================================
+-- Phase 5.1b-β (memory overhaul, Osasuwu/jarvis#185, #221) — consolidation
+-- apply path.
+--
+-- Builds on 5.1b-α (#220): the Haiku planner emits per-cluster plans of kind
+-- MERGE / SUPERSEDE / KEEP_DISTINCT. 5.1b-β converts those plans into
+-- actual mutations, gated by confidence (>= 0.85, owner-decided 2026-04-19).
+-- Everything below the gate — and every KEEP_DISTINCT — is recorded in
+-- memory_review_queue so we (a) have an audit trail and (b) don't re-spend
+-- Haiku tokens on the same cluster every week.
+--
+-- Queue strategy (owner-decided: reuse, don't fork):
+--   - Extend memory_review_queue.decision CHECK with MERGE,
+--     SUPERSEDE_CONSOLIDATION, KEEP_DISTINCT. Phase 2 rows keep their ADD/
+--     UPDATE/DELETE/NOOP semantics untouched.
+--   - New column consolidation_payload jsonb holds cluster-level state
+--     (member_ids, canonical_* fields, haiku metadata). Phase 2 rows leave
+--     it NULL; a functional index makes "have I seen this cluster?" checks
+--     cheap for the planner's pre-filter.
+--   - Extend status CHECK with 'rolled_back' so a reverted entry is visibly
+--     distinct from owner-rejected entries (the former means "try again
+--     later", the latter means "never suggest again").
+-- =========================================================================
+
+alter table memory_review_queue
+  drop constraint if exists memory_review_queue_decision_check;
+
+alter table memory_review_queue
+  add constraint memory_review_queue_decision_check
+  check (decision in (
+    'ADD', 'UPDATE', 'DELETE', 'NOOP',
+    'MERGE', 'SUPERSEDE_CONSOLIDATION', 'KEEP_DISTINCT'
+  ));
+
+alter table memory_review_queue
+  drop constraint if exists memory_review_queue_status_check;
+
+alter table memory_review_queue
+  add constraint memory_review_queue_status_check
+  check (status in (
+    'pending', 'approved', 'rejected', 'auto_applied', 'rolled_back'
+  ));
+
+alter table memory_review_queue
+  add column if not exists consolidation_payload jsonb;
+
+-- Functional index on the sorted-member-id key. The planner pre-filter asks
+-- "does any queue row already cover this exact set of members?"; a direct
+-- equality lookup on member_ids_key inside the jsonb is O(log n) with this
+-- index and scales independent of Phase 2 row count.
+create index if not exists idx_review_queue_member_ids_key
+  on memory_review_queue((consolidation_payload->>'member_ids_key'))
+  where consolidation_payload is not null;
+
+
+-- apply_consolidation_plan: atomic per cluster.
+--
+-- MERGE: synthesize a new canonical memory from Haiku's output, mark every
+-- member superseded_by the new id, insert a `consolidates` link per member.
+-- Embedding is populated out-of-band by the caller (Python has VoyageAI);
+-- the write leaves `embedding IS NULL` temporarily — acceptable since the
+-- lifecycle filter on members immediately hides them from recall, and the
+-- caller backfills within a second.
+--
+-- SUPERSEDE_CONSOLIDATION: one existing member wins, all others get
+-- superseded_by = canonical. No new memory, no new embedding needed.
+--
+-- queue_meta (optional): when non-null, also inserts a memory_review_queue
+-- row in the same transaction. This is the auto_applied audit trail and is
+-- required for rollback — without it the mutation would be irreversible.
+-- Keeping it in-RPC means a queue-insert failure rolls the mutation back
+-- rather than leaving orphaned memory state (#224 fix).
+--
+-- Returns jsonb: { status, decision, canonical_id, superseded_count, queue_id? }.
+--
+-- Signature changed from 1-arg to 2-arg-with-default in #224. Postgres will
+-- keep both variants installed side-by-side unless the old one is explicitly
+-- dropped, and 1-arg callers will continue hitting the pre-#224 body. Mirrors
+-- the `get_linked_memories` migration pattern.
+drop function if exists apply_consolidation_plan(jsonb);
+create or replace function apply_consolidation_plan(
+    plan jsonb,
+    queue_meta jsonb default null
+)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text := plan->>'decision';
+    v_canonical_id uuid := nullif(plan->>'canonical_id', '')::uuid;
+    v_supersede_ids uuid[] := array(
+        select (jsonb_array_elements_text(coalesce(plan->'supersede_ids', '[]'::jsonb)))::uuid
+    );
+    v_tags text[] := array(
+        select jsonb_array_elements_text(coalesce(plan->'canonical_tags', '[]'::jsonb))
+    );
+    v_new_id uuid;
+    v_rows int;
+    v_queue_id uuid;
+    v_result jsonb;
+    v_queue_target uuid;
+begin
+    if v_decision = 'MERGE' then
+        if coalesce(plan->>'canonical_name', '') = ''
+           or coalesce(plan->>'canonical_content', '') = ''
+           or coalesce(plan->>'canonical_type', '') = ''
+           or coalesce(plan->>'source_provenance', '') = '' then
+            raise exception 'MERGE plan missing required canonical_* / source_provenance fields';
+        end if;
+
+        insert into memories (
+            project, name, type, description, content, tags,
+            source_provenance, confidence
+        )
+        values (
+            nullif(plan->>'canonical_project', ''),
+            plan->>'canonical_name',
+            plan->>'canonical_type',
+            nullif(plan->>'canonical_description', ''),
+            plan->>'canonical_content',
+            v_tags,
+            plan->>'source_provenance',
+            least(coalesce((plan->>'confidence')::float, 0.8), 0.9)
+        )
+        returning id into v_new_id;
+
+        -- Supersede every member. Set lifecycle timestamps unconditionally
+        -- (not coalesce) so rollback (which NULLs them) is symmetric. Members
+        -- come from find_consolidation_clusters, which guarantees they're
+        -- live (expired_at IS NULL, superseded_by IS NULL, deleted_at IS NULL,
+        -- valid_to IS NULL OR future). A future valid_to is overwritten by
+        -- now() — that future lifecycle plan is superseded by the consolidation,
+        -- and rollback restores to NULL rather than trying to reconstruct it
+        -- (documented behaviour; owner can re-set manually if needed).
+        update memories
+        set superseded_by = v_new_id,
+            valid_to = now(),
+            expired_at = now()
+        where id = any(v_supersede_ids);
+        get diagnostics v_rows = row_count;
+
+        -- Insert `consolidates` links (canonical → each member). Rollback
+        -- drops them. ON CONFLICT is a safety net against a retried apply;
+        -- normal flow hits clean (source_id, target_id, link_type) tuples.
+        insert into memory_links (source_id, target_id, link_type, strength)
+        select v_new_id, unnest_id, 'consolidates', 1.0
+        from unnest(v_supersede_ids) as unnest_id
+        on conflict (source_id, target_id, link_type) do nothing;
+
+        v_result := jsonb_build_object(
+            'status', 'applied',
+            'decision', 'MERGE',
+            'canonical_id', v_new_id,
+            'superseded_count', v_rows
+        );
+        v_queue_target := v_new_id;
+    elsif v_decision = 'SUPERSEDE_CONSOLIDATION' then
+        if v_canonical_id is null then
+            raise exception 'SUPERSEDE_CONSOLIDATION requires canonical_id';
+        end if;
+
+        -- Same lifecycle semantics as MERGE: unconditional now() for
+        -- round-trip symmetry with rollback.
+        update memories
+        set superseded_by = v_canonical_id,
+            valid_to = now(),
+            expired_at = now()
+        where id = any(v_supersede_ids)
+          and id <> v_canonical_id;
+        get diagnostics v_rows = row_count;
+
+        insert into memory_links (source_id, target_id, link_type, strength)
+        select v_canonical_id, unnest_id, 'supersedes', 1.0
+        from unnest(v_supersede_ids) as unnest_id
+        where unnest_id <> v_canonical_id
+        on conflict (source_id, target_id, link_type) do nothing;
+
+        v_result := jsonb_build_object(
+            'status', 'applied',
+            'decision', 'SUPERSEDE_CONSOLIDATION',
+            'canonical_id', v_canonical_id,
+            'superseded_count', v_rows
+        );
+        v_queue_target := v_canonical_id;
+    else
+        raise exception 'Unsupported decision for apply_consolidation_plan: %', v_decision;
+    end if;
+
+    -- Queue audit row, transactional with the memory mutations. The RPC owns
+    -- the load-bearing fields so a misbuilt caller payload can't corrupt the
+    -- audit trail:
+    --   * decision: always v_decision (validated above). If queue_meta carries
+    --     a different decision, raise — silently overwriting hides a bug.
+    --   * classifier_model: required + non-blank. The audit trail is the only
+    --     place the model attribution survives; a NULL/empty write would lose
+    --     it silently and break provenance tracing.
+    --   * target_id: the canonical the RPC just computed (v_new_id for MERGE,
+    --     v_canonical_id for SUPERSEDE) — rollback_consolidation reads it and
+    --     raises on NULL, so owning the assignment here avoids the caller
+    --     having to echo it back.
+    if queue_meta is not null then
+        if queue_meta ? 'decision'
+           and queue_meta->>'decision' is not null
+           and queue_meta->>'decision' <> v_decision then
+            raise exception
+                'queue_meta decision % does not match plan decision %',
+                queue_meta->>'decision', v_decision;
+        end if;
+
+        if coalesce(nullif(trim(queue_meta->>'classifier_model'), ''), '') = '' then
+            raise exception
+                'queue_meta.classifier_model is required and must be non-blank for audit provenance';
+        end if;
+
+        insert into memory_review_queue (
+            decision,
+            confidence,
+            reasoning,
+            status,
+            consolidation_payload,
+            classifier_model,
+            target_id,
+            applied_at
+        )
+        values (
+            v_decision,
+            coalesce((queue_meta->>'confidence')::float, 0.0),
+            left(coalesce(queue_meta->>'reasoning', ''), 1000),
+            coalesce(queue_meta->>'status', 'auto_applied'),
+            queue_meta->'consolidation_payload',
+            trim(queue_meta->>'classifier_model'),
+            v_queue_target,
+            coalesce(
+                nullif(queue_meta->>'applied_at', '')::timestamptz,
+                now()
+            )
+        )
+        returning id into v_queue_id;
+
+        v_result := v_result || jsonb_build_object('queue_id', v_queue_id);
+    end if;
+
+    return v_result;
+end;
+$$;
+
+
+-- rollback_consolidation(queue_id): inverse of apply, keyed by the queue
+-- entry so the member-id list is authoritative (not re-derived from links,
+-- which could collide with Phase 2 classifier supersedes).
+--
+-- MERGE rollback:  soft-delete the synthesized canonical, clear members'
+--                  lifecycle cols, remove `consolidates` links.
+-- SUPERSEDE_CONSOLIDATION rollback: leave canonical live, restore the
+--                  losers, remove `supersedes` links created by this apply.
+--
+-- Status transitions: 'auto_applied'/'approved' → 'rolled_back'. Rejecting
+-- an already-applied entry is not supported through this RPC — it would
+-- conflate "owner disapproves future suggestion" with "undo this mutation".
+create or replace function rollback_consolidation(queue_id uuid)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_payload jsonb;
+    v_decision text;
+    v_status text;
+    v_canonical_id uuid;
+    v_supersede_ids uuid[];
+    v_rows int;
+begin
+    select consolidation_payload, decision, status, target_id
+    into v_payload, v_decision, v_status, v_canonical_id
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if v_payload is null then
+        raise exception 'Queue entry % missing (or has no consolidation_payload)', queue_id;
+    end if;
+
+    if v_decision not in ('MERGE', 'SUPERSEDE_CONSOLIDATION') then
+        raise exception 'Entry % is not a consolidation row (decision=%)', queue_id, v_decision;
+    end if;
+
+    if v_status not in ('auto_applied', 'approved') then
+        raise exception 'Can only roll back auto_applied/approved entries (status=%)', v_status;
+    end if;
+
+    if v_canonical_id is null then
+        raise exception 'Entry % has no target_id to roll back', queue_id;
+    end if;
+
+    v_supersede_ids := array(
+        select (jsonb_array_elements_text(coalesce(v_payload->'supersede_ids', '[]'::jsonb)))::uuid
+    );
+
+    update memories
+    set superseded_by = null,
+        valid_to = null,
+        expired_at = null
+    where id = any(v_supersede_ids)
+      and superseded_by = v_canonical_id;
+    get diagnostics v_rows = row_count;
+
+    delete from memory_links
+    where source_id = v_canonical_id
+      and target_id = any(v_supersede_ids)
+      and link_type in ('consolidates', 'supersedes');
+
+    if v_decision = 'MERGE' then
+        update memories
+        set deleted_at = now()
+        where id = v_canonical_id;
+    end if;
+
+    update memory_review_queue
+    set status = 'rolled_back',
+        reviewed_at = now(),
+        reviewed_by = coalesce(reviewed_by, 'rollback_script')
+    where id = queue_id;
+
+    return jsonb_build_object(
+        'status', 'rolled_back',
+        'decision', v_decision,
+        'canonical_id', v_canonical_id,
+        'canonical_soft_deleted', v_decision = 'MERGE',
+        'restored_count', v_rows
+    );
+end;
+$$;
+
+
+-- approve_consolidation(queue_id, reviewer): owner-review approval path for
+-- Phase 5.1d-β (#226). Reads the stored consolidation_payload, rebuilds the
+-- plan, calls apply_consolidation_plan in the same transaction (SELECT FOR
+-- UPDATE against concurrent approves), and transitions the queue row to
+-- status=approved. The queue_meta arg is intentionally omitted — we're
+-- updating an existing row, not inserting a new one.
+--
+-- source_provenance on the synthesized canonical is stamped
+-- `cli:review:<date>` so audit traces distinguish CLI-approved merges from
+-- auto_applied ones. canonical embedding is backfilled out-of-band by the
+-- Python caller (VoyageAI); the row is live-hidden until embedding lands
+-- because the member lifecycle filter already masks it from recall.
+--
+-- Race: two concurrent approves of the same row both take FOR UPDATE on the
+-- queue row, serialize, and the second one sees status='approved' and raises.
+create or replace function approve_consolidation(
+    queue_id uuid,
+    reviewer text default 'cli_review'
+)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text;
+    v_status text;
+    v_payload jsonb;
+    v_existing_target uuid;
+    v_plan jsonb;
+    v_applied jsonb;
+    v_canonical_id uuid;
+    v_today text := to_char(now() at time zone 'UTC', 'YYYY-MM-DD');
+begin
+    select decision, status, consolidation_payload, target_id
+    into v_decision, v_status, v_payload, v_existing_target
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if not found then
+        raise exception 'Queue entry % not found', queue_id;
+    end if;
+
+    if v_payload is null then
+        raise exception 'Queue entry % has no consolidation_payload', queue_id;
+    end if;
+
+    if v_status <> 'pending' then
+        raise exception 'Can only approve pending entries (status=%)', v_status;
+    end if;
+
+    if v_decision not in ('MERGE', 'SUPERSEDE_CONSOLIDATION') then
+        raise exception 'Entry % is not a consolidation row (decision=%)', queue_id, v_decision;
+    end if;
+
+    -- Rebuild the plan from the stored payload. source_provenance gets
+    -- overwritten to reflect reviewer provenance (cli:review:<today>) rather
+    -- than the original skill:consolidation:... stamp from the planner.
+    v_plan := jsonb_build_object(
+        'decision', v_decision,
+        'supersede_ids', coalesce(v_payload->'supersede_ids', '[]'::jsonb),
+        'source_provenance', 'cli:review:' || v_today,
+        'confidence', coalesce((v_payload->>'haiku_confidence')::float, 0.85)
+    );
+
+    if v_decision = 'MERGE' then
+        v_plan := v_plan || jsonb_build_object(
+            'canonical_name', v_payload->>'canonical_name',
+            'canonical_type', v_payload->>'canonical_type',
+            'canonical_description', v_payload->>'canonical_description',
+            'canonical_content', v_payload->>'canonical_content',
+            'canonical_project', v_payload->>'canonical_project',
+            'canonical_tags', coalesce(v_payload->'canonical_tags', '[]'::jsonb)
+        );
+    else
+        -- SUPERSEDE_CONSOLIDATION: canonical_id lives in target_id on the
+        -- pending queue row (set by queue_for_review). Fall back to payload
+        -- if the caller didn't populate target_id historically.
+        v_canonical_id := v_existing_target;
+        if v_canonical_id is null then
+            v_canonical_id := nullif(v_payload->>'canonical_id', '')::uuid;
+        end if;
+        if v_canonical_id is null then
+            raise exception 'SUPERSEDE_CONSOLIDATION queue row % has no canonical_id (target_id + payload both null)', queue_id;
+        end if;
+        v_plan := v_plan || jsonb_build_object('canonical_id', v_canonical_id);
+    end if;
+
+    -- Apply. Don't pass queue_meta — we're updating this existing row, not
+    -- creating a new audit entry.
+    v_applied := apply_consolidation_plan(v_plan);
+    v_canonical_id := (v_applied->>'canonical_id')::uuid;
+
+    update memory_review_queue
+    set status = 'approved',
+        reviewed_at = now(),
+        reviewed_by = reviewer,
+        applied_at = now(),
+        target_id = v_canonical_id
+    where id = queue_id;
+
+    return v_applied || jsonb_build_object(
+        'queue_id', queue_id,
+        'approved_by', reviewer
+    );
+end;
+$$;
+
+
+-- reject_consolidation(queue_id, reason, reviewer): mark a pending queue
+-- entry rejected so it won't be replanned (see find_consolidation_clusters
+-- dedup, which excludes 'rolled_back' but INCLUDES 'rejected'). Atomic —
+-- SELECT FOR UPDATE + status validation + UPDATE happen in one transaction.
+-- Two concurrent rejects of the same row serialize; the second sees
+-- status='rejected' and raises.
+--
+-- The reason (when provided) is appended to the reasoning column so the
+-- CLI `--list` view shows why it was rejected, without losing the original
+-- Haiku reasoning.
+create or replace function reject_consolidation(
+    queue_id uuid,
+    reason text default null,
+    reviewer text default 'cli_review'
+)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text;
+    v_status text;
+    v_reasoning text;
+    v_new_reasoning text;
+begin
+    select decision, status, reasoning
+    into v_decision, v_status, v_reasoning
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if not found then
+        raise exception 'Queue entry % not found', queue_id;
+    end if;
+
+    if v_status <> 'pending' then
+        raise exception 'Can only reject pending entries (status=%)', v_status;
+    end if;
+
+    v_new_reasoning := coalesce(v_reasoning, '');
+    if reason is not null and trim(reason) <> '' then
+        v_new_reasoning := left(
+            v_new_reasoning || E'\n-- rejected: ' || trim(reason),
+            1000
+        );
+    end if;
+
+    update memory_review_queue
+    set status = 'rejected',
+        reviewed_at = now(),
+        reviewed_by = reviewer,
+        reasoning = v_new_reasoning
+    where id = queue_id;
+
+    return jsonb_build_object(
+        'status', 'rejected',
+        'decision', v_decision,
+        'queue_id', queue_id,
+        'rejected_by', reviewer,
+        'reason', reason
+    );
+end;
+$$;
+
+
+-- =========================================================================
+-- Phase 5.2-β (memory overhaul, Osasuwu/jarvis#185, #232) — A-MEM neighbor
+-- evolution apply path.
+--
+-- Builds on 5.2-α (#230, #231): the Haiku planner surfaces per-neighbor
+-- tag/description evolution proposals for each recent UPDATE decision.
+-- 5.2-β converts those plans into actual mutations of the neighbor rows,
+-- gated by the same 0.85 confidence threshold used by consolidation.
+-- Rejected/low-confidence plans land in memory_review_queue for later
+-- owner review; high-confidence ones auto-apply with a full rollback
+-- snapshot so any mistake is reversible.
+--
+-- Queue strategy (reuse consolidation pattern):
+--   - Extend memory_review_queue.decision CHECK with 'EVOLVE'. Phase 2
+--     and 5.1b rows keep their decision semantics untouched.
+--   - New column evolution_payload jsonb holds per-neighbor snapshots
+--     (neighbor_id, old_tags, old_description, new_tags, new_description,
+--      action, confidence, reasoning) + parent lineage (update_queue_id,
+--      candidate_id, target_id). consolidation_payload stays NULL.
+--   - status CHECK is unchanged — already includes 'rolled_back' from
+--     5.1b-β.
+--
+-- target_id semantics for EVOLVE: the candidate_id of the spawning UPDATE
+-- (i.e. the memory whose arrival triggered the neighbor refresh). Neighbors
+-- themselves are listed inside evolution_payload.snapshots[].neighbor_id.
+-- =========================================================================
+
+alter table memory_review_queue
+  drop constraint if exists memory_review_queue_decision_check;
+
+alter table memory_review_queue
+  add constraint memory_review_queue_decision_check
+  check (decision in (
+    'ADD', 'UPDATE', 'DELETE', 'NOOP',
+    'MERGE', 'SUPERSEDE_CONSOLIDATION', 'KEEP_DISTINCT',
+    'EVOLVE'
+  ));
+
+alter table memory_review_queue
+  add column if not exists evolution_payload jsonb;
+
+-- Index for "has this UPDATE already been evolved?" dedup in the planner.
+-- The 5.2-α script's `fetch_recent_updates` pre-filter can use this to
+-- skip UPDATEs that already have a queue EVOLVE row (pending or applied).
+create index if not exists idx_review_queue_update_queue_id
+  on memory_review_queue((evolution_payload->>'update_queue_id'))
+  where evolution_payload is not null;
+
+
+-- apply_evolution_plan: atomic per plan.
+--
+-- For each non-KEEP proposal:
+--   1. SELECT current (tags, description, content_updated_at) FOR UPDATE —
+--      this is the snapshot that `rollback_evolution` restores from.
+--   2. UPDATE memories SET tags = new_tags (if present), description =
+--      new_description (if present). The content_updated_at trigger fires
+--      and bumps it to now() — intentional, this IS a content change.
+--
+-- KEEP proposals are filtered by the caller; if any sneak through, the RPC
+-- skips them (they'd be no-ops anyway, but surfacing them in the snapshot
+-- would pollute the rollback payload).
+--
+-- queue_meta (optional, mirrors apply_consolidation_plan): when non-null,
+-- inserts a memory_review_queue row in the same transaction for audit +
+-- rollback. Required for rollback — a mutation with no queue row is
+-- irrecoverable.
+--
+-- Returns jsonb: { status, decision, applied_count, queue_id? }.
+create or replace function apply_evolution_plan(
+    plan jsonb,
+    queue_meta jsonb default null
+)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_decision text := plan->>'decision';
+    v_proposals jsonb := coalesce(plan->'proposals', '[]'::jsonb);
+    v_proposal jsonb;
+    v_snapshots jsonb := '[]'::jsonb;
+    v_applied_count int := 0;
+    v_neighbor_id uuid;
+    v_action text;
+    v_old_tags text[];
+    v_old_desc text;
+    v_old_content_updated_at timestamptz;
+    v_new_tags text[];
+    v_new_desc text;
+    v_queue_id uuid;
+    v_result jsonb;
+    v_evolution_payload jsonb;
+begin
+    if v_decision <> 'EVOLVE' then
+        raise exception 'apply_evolution_plan only handles EVOLVE (got %)', v_decision;
+    end if;
+
+    if coalesce(plan->>'source_provenance', '') = '' then
+        raise exception 'EVOLVE plan missing required source_provenance';
+    end if;
+
+    -- Mutate neighbors + record snapshots in a single pass.
+    for v_proposal in select * from jsonb_array_elements(v_proposals)
+    loop
+        v_action := v_proposal->>'action';
+        if v_action not in ('UPDATE_TAGS', 'UPDATE_DESC', 'UPDATE_BOTH') then
+            -- KEEP or anything unrecognized — skip, don't snapshot.
+            continue;
+        end if;
+
+        v_neighbor_id := (v_proposal->>'neighbor_id')::uuid;
+
+        select tags, description, content_updated_at
+        into v_old_tags, v_old_desc, v_old_content_updated_at
+        from memories
+        where id = v_neighbor_id
+        for update;
+
+        if not found then
+            -- Neighbor vanished between planning and apply. Skip — don't
+            -- fail the whole plan. Log via snapshot with a missing flag
+            -- so owner-review UIs can surface the skip.
+            v_snapshots := v_snapshots || jsonb_build_object(
+                'neighbor_id', v_neighbor_id,
+                'skipped', 'neighbor_missing'
+            );
+            continue;
+        end if;
+
+        v_new_tags := null;
+        v_new_desc := null;
+        if v_action in ('UPDATE_TAGS', 'UPDATE_BOTH') then
+            -- Contract: action committed to a tag change, so the payload
+            -- MUST carry a non-null new_tags array. Empty-array payloads
+            -- pass (explicit "clear tags" is a valid evolution), but
+            -- missing/null would silently wipe the neighbor's tags under
+            -- the old coalesce(..., '[]') behaviour — raise instead so the
+            -- caller surfaces the planner bug.
+            if not (v_proposal ? 'new_tags')
+               or jsonb_typeof(v_proposal->'new_tags') = 'null' then
+                raise exception
+                    'EVOLVE action % requires non-null new_tags for neighbor %',
+                    v_action, v_neighbor_id;
+            end if;
+            v_new_tags := array(
+                select jsonb_array_elements_text(v_proposal->'new_tags')
+            );
+        end if;
+        if v_action in ('UPDATE_DESC', 'UPDATE_BOTH') then
+            if not (v_proposal ? 'new_description')
+               or jsonb_typeof(v_proposal->'new_description') = 'null' then
+                raise exception
+                    'EVOLVE action % requires non-null new_description for neighbor %',
+                    v_action, v_neighbor_id;
+            end if;
+            v_new_desc := v_proposal->>'new_description';
+        end if;
+
+        update memories
+        set tags = coalesce(v_new_tags, tags),
+            description = coalesce(v_new_desc, description)
+        where id = v_neighbor_id;
+
+        v_applied_count := v_applied_count + 1;
+
+        v_snapshots := v_snapshots || jsonb_build_object(
+            'neighbor_id', v_neighbor_id,
+            'action', v_action,
+            -- Store old_tags as a JSON array even when memories.tags was NULL.
+            -- to_jsonb(NULL::text[]) produces JSONB 'null' (not SQL NULL),
+            -- which would later trip jsonb_array_elements_text in rollback.
+            -- Normalize to '[]' at write time.
+            'old_tags', coalesce(to_jsonb(v_old_tags), '[]'::jsonb),
+            'old_description', v_old_desc,
+            'old_content_updated_at', v_old_content_updated_at,
+            'new_tags', to_jsonb(v_new_tags),
+            'new_description', v_new_desc,
+            'confidence', v_proposal->'confidence',
+            'reasoning', v_proposal->>'reasoning'
+        );
+    end loop;
+
+    v_evolution_payload := jsonb_build_object(
+        'update_queue_id', plan->>'update_queue_id',
+        'candidate_id', plan->>'candidate_id',
+        'target_id', plan->>'target_id',
+        'source_provenance', plan->>'source_provenance',
+        'snapshots', v_snapshots
+    );
+
+    v_result := jsonb_build_object(
+        'status', 'applied',
+        'decision', 'EVOLVE',
+        'applied_count', v_applied_count
+    );
+
+    -- Queue audit row, transactional with the memory mutations. Same
+    -- load-bearing-field ownership pattern as apply_consolidation_plan:
+    -- decision and classifier_model must match + be non-blank.
+    if queue_meta is not null then
+        if queue_meta ? 'decision'
+           and queue_meta->>'decision' is not null
+           and queue_meta->>'decision' <> 'EVOLVE' then
+            raise exception
+                'queue_meta decision % does not match plan decision EVOLVE',
+                queue_meta->>'decision';
+        end if;
+
+        if coalesce(nullif(trim(queue_meta->>'classifier_model'), ''), '') = '' then
+            raise exception
+                'queue_meta.classifier_model is required and must be non-blank for audit provenance';
+        end if;
+
+        insert into memory_review_queue (
+            decision,
+            confidence,
+            reasoning,
+            status,
+            evolution_payload,
+            classifier_model,
+            target_id,
+            applied_at
+        )
+        values (
+            'EVOLVE',
+            coalesce((queue_meta->>'confidence')::float, 0.0),
+            left(coalesce(queue_meta->>'reasoning', ''), 1000),
+            coalesce(queue_meta->>'status', 'auto_applied'),
+            v_evolution_payload,
+            trim(queue_meta->>'classifier_model'),
+            nullif(plan->>'candidate_id', '')::uuid,
+            coalesce(
+                nullif(queue_meta->>'applied_at', '')::timestamptz,
+                now()
+            )
+        )
+        returning id into v_queue_id;
+
+        v_result := v_result || jsonb_build_object('queue_id', v_queue_id);
+    end if;
+
+    return v_result;
+end;
+$$;
+
+
+-- rollback_evolution(queue_id): restore neighbors from the snapshot stored
+-- in evolution_payload.snapshots[].
+--
+-- content_updated_at: the update_content_updated_at trigger will fire on
+-- the rollback UPDATE and bump content_updated_at to now(). This IS a
+-- departure from 5.1b-β rollback's byte-identical restoration — the 5.1b-β
+-- path only touches lifecycle columns (superseded_by, valid_to,
+-- expired_at) which aren't tracked by the content trigger, while 5.2
+-- rollback has to touch tags/description which are tracked. Accepted
+-- tradeoff: rollback is rare, content_updated_at is a soft decay signal,
+-- and a rolled-back neighbor WAS recently touched (by the failed evolve).
+--
+-- Status transitions: 'auto_applied'/'approved' → 'rolled_back'.
+create or replace function rollback_evolution(queue_id uuid)
+returns jsonb
+language plpgsql volatile
+as $$
+declare
+    v_payload jsonb;
+    v_decision text;
+    v_status text;
+    v_snapshots jsonb;
+    v_snapshot jsonb;
+    v_restored_count int := 0;
+begin
+    select evolution_payload, decision, status
+    into v_payload, v_decision, v_status
+    from memory_review_queue
+    where id = queue_id
+    for update;
+
+    if v_payload is null then
+        raise exception 'Queue entry % missing (or has no evolution_payload)', queue_id;
+    end if;
+
+    if v_decision <> 'EVOLVE' then
+        raise exception 'Entry % is not an evolution row (decision=%)', queue_id, v_decision;
+    end if;
+
+    if v_status not in ('auto_applied', 'approved') then
+        raise exception 'Can only roll back auto_applied/approved entries (status=%)', v_status;
+    end if;
+
+    v_snapshots := coalesce(v_payload->'snapshots', '[]'::jsonb);
+
+    for v_snapshot in select * from jsonb_array_elements(v_snapshots)
+    loop
+        -- Skip snapshots that recorded a missing neighbor at apply time —
+        -- nothing to restore.
+        if v_snapshot ? 'skipped' then
+            continue;
+        end if;
+
+        update memories
+        set tags = array(
+                select jsonb_array_elements_text(
+                    -- Defend against legacy rows where old_tags was stored
+                    -- as JSONB 'null' (pre-fix apply path): jsonb_array_elements_text
+                    -- would raise on a non-array scalar. New rows are already
+                    -- normalized at write time, but this keeps rollback safe
+                    -- for rows inserted by the un-patched apply RPC.
+                    case
+                        when v_snapshot->'old_tags' is null
+                             or jsonb_typeof(v_snapshot->'old_tags') <> 'array'
+                        then '[]'::jsonb
+                        else v_snapshot->'old_tags'
+                    end
+                )
+            ),
+            description = v_snapshot->>'old_description'
+        where id = (v_snapshot->>'neighbor_id')::uuid;
+
+        if found then
+            v_restored_count := v_restored_count + 1;
+        end if;
+    end loop;
+
+    update memory_review_queue
+    set status = 'rolled_back',
+        reviewed_at = now(),
+        reviewed_by = coalesce(reviewed_by, 'rollback_script')
+    where id = queue_id;
+
+    return jsonb_build_object(
+        'status', 'rolled_back',
+        'decision', 'EVOLVE',
+        'restored_count', v_restored_count
+    );
+end;
+$$;
+
+
+-- =========================================================================
+-- #242: dual-embedding read-path for voyage model migration readiness
+--
+-- Adds a second, independently-indexed embedding column so we can dual-write
+-- today (zero risk) and cut over later without a hot-rebuild. Keeping the
+-- two columns + two indexes lets each RPC use its own HNSW index — no CASE
+-- in ORDER BY (which silently drops to seq-scan and killed PR #245).
+--
+-- Dimensions: current voyage-3-lite is 512, voyage-3 is 1024. v2 is sized
+-- for the next model we'd migrate to. If we ever bump to a different model
+-- family (e.g. BGE-Large = 1024, OpenAI text-embedding-3-large = 3072),
+-- add a further column / RPC rather than resizing.
+--
+-- No data migration here. Backfill is a separate issue.
+-- =========================================================================
+
+alter table memories add column if not exists embedding_v2 vector(1024);
+alter table memories add column if not exists embedding_model_v2 text;
+alter table memories add column if not exists embedding_version_v2 text;
+
+-- Partial HNSW index — only rows with populated v2 get indexed. Keeps the
+-- structure small while SECONDARY is unset (zero rows indexed initially).
+create index if not exists idx_memories_embedding_v2_hnsw
+  on memories using hnsw (embedding_v2 vector_cosine_ops)
+  with (m = 16, ef_construction = 64)
+  where embedding_v2 is not null;
+
+-- Read-path RPC for v2. Mirrors match_memories shape/filters so _hybrid_recall
+-- can swap by name. NO CASE expression in ORDER BY — pgvector HNSW requires
+-- a direct column reference to use the index.
+drop function if exists match_memories_v2(vector, int, float, text, text, boolean);
+create or replace function match_memories_v2(
+    query_embedding vector,
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    similarity float
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           1 - (m.embedding_v2 <=> query_embedding) as similarity
+    from memories m
+    where m.embedding_v2 is not null
+      and m.deleted_at is null
+      and 1 - (m.embedding_v2 <=> query_embedding) >= similarity_threshold
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by m.embedding_v2 <=> query_embedding
+    limit match_limit;
+$$;
+
+-- =========================================================================
+-- Known unknowns: retrieval gaps + unsatisfied queries
+-- Phase 5.3 — detect queries that consistently fail to match memories
+--
+-- Embedding dimension matches the PRIMARY embedding model (voyage-3-lite,
+-- 512 dims). If EMBEDDING_MODEL_PRIMARY is switched to voyage-3 (1024
+-- dims), this table needs a parallel column like memories.embedding_v2.
+-- Until then, server-side gap upserts skip the embedding on dim mismatch
+-- rather than crashing silently (see _upsert_known_unknown).
+-- =========================================================================
+
+CREATE TABLE IF NOT EXISTS known_unknowns (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  query text NOT NULL,
+  query_embedding vector(512),
+  top_similarity float NOT NULL,
+  top_memory_id uuid REFERENCES memories(id) ON DELETE SET NULL,
+  context jsonb,
+  first_seen_at timestamptz NOT NULL DEFAULT now(),
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  hit_count int NOT NULL DEFAULT 1,
+  resolved_at timestamptz,
+  resolved_by_memory_id uuid REFERENCES memories(id) ON DELETE SET NULL,
+  status text NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved','dismissed'))
+);
+
+-- Index covers the /status ORDER BY (hit_count DESC, last_seen_at DESC)
+CREATE INDEX IF NOT EXISTS idx_known_unknowns_status_hit
+  ON known_unknowns(status, hit_count DESC, last_seen_at DESC)
+  WHERE status = 'open';
+
+CREATE INDEX IF NOT EXISTS idx_known_unknowns_query_embedding_hnsw
+  ON known_unknowns USING hnsw (query_embedding vector_cosine_ops)
+  WHERE query_embedding IS NOT NULL;
+
+ALTER TABLE known_unknowns ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all for authenticated" ON known_unknowns
+  FOR ALL USING (true) WITH CHECK (true);
+
+CREATE POLICY "Allow all for anon" ON known_unknowns
+  FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- =========================================================================
+-- Phase 5 Metacognition: Confidence Calibration (#251)
+--
+-- Links task outcomes to the memories that informed them and exposes a
+-- Brier-score summary so /reflect and /self-improve can detect systemic
+-- over- or under-confidence per memory type.
+-- =========================================================================
+
+-- Link column: which memory most informed this outcome's decision.
+-- Nullable — outcomes recorded before calibration work won't have it,
+-- and some outcomes (e.g. pure research tasks) don't trace to a single
+-- memory.
+alter table task_outcomes
+  add column if not exists memory_id uuid references memories(id) on delete set null;
+
+create index if not exists idx_task_outcomes_memory_id
+  on task_outcomes(memory_id) where memory_id is not null;
+
+-- Per-memory calibration view: predicted confidence vs actual outcome rate.
+-- Only includes memories with at least one resolved outcome (success or
+-- failure). Partial/unknown/pending outcomes are excluded — they would
+-- bias the Brier score either way.
+create or replace view memory_calibration as
+select
+  m.id as memory_id,
+  m.type as memory_type,
+  m.name as memory_name,
+  m.project,
+  m.confidence as predicted_confidence,
+  count(o.id) as outcome_count,
+  sum(case when o.outcome_status = 'success' then 1 else 0 end) as success_count,
+  sum(case when o.outcome_status = 'failure' then 1 else 0 end) as failure_count,
+  -- actual_rate in [0, 1]: fraction of (success+failure) outcomes that succeeded
+  (sum(case when o.outcome_status = 'success' then 1.0 else 0.0 end)
+    / nullif(count(o.id), 0))::float as actual_rate,
+  -- Brier contribution per memory: (predicted - actual)^2, bounded [0, 1]
+  (power(
+    coalesce(m.confidence, 0.5)
+    - (sum(case when o.outcome_status = 'success' then 1.0 else 0.0 end)
+       / nullif(count(o.id), 0)),
+    2
+  ))::float as brier
+from memories m
+join task_outcomes o
+  on o.memory_id = m.id
+ and o.outcome_status in ('success', 'failure')
+where m.deleted_at is null
+  and m.superseded_by is null
+group by m.id, m.type, m.name, m.project, m.confidence;
+
+-- Summary RPC: aggregate brier by type and flag over/under-confidence.
+-- Returns a single-row table so Supabase client .data is a list with one
+-- item — caller picks [0] (pattern matches other RPCs in this file).
+--
+-- A type is flagged overconfident when its mean brier > 0.25 AND mean
+-- predicted_confidence > mean actual_rate (warning level bias). Threshold
+-- 0.25 is the midpoint of a Brier score for a miscalibrated binary
+-- classifier; tighter if we need less noise, looser if we need more.
+create or replace function memory_calibration_summary(
+  p_project text default null
+)
+returns table (
+  overall_brier float,
+  total_memories bigint,
+  by_type jsonb,
+  warnings jsonb
+)
+language sql stable
+as $$
+  with scoped as (
+    select *
+    from memory_calibration
+    where p_project is null or project = p_project
+  ),
+  agg_by_type as (
+    select
+      memory_type,
+      count(*)::bigint as n,
+      avg(brier)::float as brier,
+      avg(predicted_confidence)::float as avg_predicted,
+      avg(actual_rate)::float as avg_actual
+    from scoped
+    group by memory_type
+  ),
+  type_rows as (
+    select jsonb_agg(
+      jsonb_build_object(
+        'type', memory_type,
+        'n', n,
+        'brier', brier,
+        'avg_predicted', avg_predicted,
+        'avg_actual', avg_actual,
+        'over_confident', (brier > 0.25 and avg_predicted > avg_actual),
+        'under_confident', (brier > 0.25 and avg_predicted < avg_actual)
+      )
+      order by brier desc
+    ) as data
+    from agg_by_type
+  ),
+  warning_rows as (
+    select jsonb_agg(
+      format(
+        '%s: brier=%s (%s)',
+        memory_type,
+        round(brier::numeric, 3),
+        case when avg_predicted > avg_actual
+             then 'overconfident' else 'underconfident' end
+      )
+    ) as data
+    from agg_by_type
+    where brier > 0.25
+  )
+  select
+    coalesce((select avg(brier) from scoped), 0.0)::float as overall_brier,
+    (select count(*) from scoped)::bigint as total_memories,
+    coalesce((select data from type_rows), '[]'::jsonb) as by_type,
+    coalesce((select data from warning_rows), '[]'::jsonb) as warnings;
+$$;
+
+
+-- =========================================================================
+-- Recall soft-delete filter fix (Osasuwu/jarvis#284)
+--
+-- Problem: match_memories, keyword_search_memories, and get_linked_memories
+-- filter expired_at / superseded_by / valid_to on the show_history=false
+-- path but forget deleted_at, so memory_recall surfaces soft-deleted rows
+-- that memory_get / memory_list / match_memories_v2 correctly hide. Align
+-- every recall-path RPC with the rest of the API: deleted_at IS NULL is
+-- always required when show_history=false.
+--
+-- CREATE OR REPLACE redefines each function in-place; no data migration
+-- needed.
+-- =========================================================================
+
+drop function if exists match_memories(vector, int, float, text, text, boolean);
+create or replace function match_memories(
+    query_embedding vector,
+    match_limit int default 10,
+    similarity_threshold float default 0.3,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    similarity float
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           1 - (m.embedding <=> query_embedding) as similarity
+    from memories m
+    where m.embedding is not null
+      and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.deleted_at is null
+               and m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by m.embedding <=> query_embedding
+    limit match_limit;
+$$;
+
+drop function if exists keyword_search_memories(text, int, text, text, boolean);
+create or replace function keyword_search_memories(
+    search_query text,
+    match_limit int default 10,
+    filter_project text default null,
+    filter_type text default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    rank real
+)
+language sql stable as $$
+    select m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.updated_at, m.content_updated_at, m.last_accessed_at,
+           ts_rank(m.fts, websearch_to_tsquery('english', search_query)) as rank
+    from memories m
+    where m.fts @@ websearch_to_tsquery('english', search_query)
+      and (filter_project is null or m.project = filter_project or m.project is null)
+      and (filter_type is null or m.type = filter_type)
+      and (show_history
+           or (m.deleted_at is null
+               and m.expired_at is null
+               and m.superseded_by is null
+               and (m.valid_to is null or m.valid_to > now())))
+    order by rank desc
+    limit match_limit;
+$$;
+
+drop function if exists get_linked_memories(uuid[], text[], boolean);
+create or replace function get_linked_memories(
+    memory_ids uuid[],
+    link_types text[] default null,
+    show_history boolean default false
+)
+returns table(
+    id uuid, name text, type text, project text,
+    description text, content text, tags text[],
+    updated_at timestamptz, content_updated_at timestamptz,
+    last_accessed_at timestamptz,
+    link_type text, link_strength float, linked_from uuid
+)
+language sql stable as $$
+    select * from (
+        select distinct on (sub.id)
+            sub.id, sub.name, sub.type, sub.project, sub.description,
+            sub.content, sub.tags,
+            sub.updated_at, sub.content_updated_at, sub.last_accessed_at,
+            sub.link_type, sub.link_strength, sub.linked_from
+        from (
+            -- Outgoing edges: source ∈ memory_ids, target resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.source_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.target_id
+                     else find_chain_head(l.target_id) end,
+                l.target_id)
+            where l.source_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.deleted_at is null
+                       and m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+            union all
+            -- Incoming edges: target ∈ memory_ids, source resolved to head.
+            select m.id, m.name, m.type, m.project, m.description, m.content,
+                   m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   l.link_type, l.strength as link_strength, l.target_id as linked_from
+            from memory_links l
+            join memories m on m.id = coalesce(
+                case when show_history then l.source_id
+                     else find_chain_head(l.source_id) end,
+                l.source_id)
+            where l.target_id = any(memory_ids)
+              and not (m.id = any(memory_ids))
+              and (link_types is null or l.link_type = any(link_types))
+              and (show_history
+                   or (m.deleted_at is null
+                       and m.expired_at is null
+                       and m.superseded_by is null
+                       and (m.valid_to is null or m.valid_to > now())))
+        ) sub
+        order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
+    ) deduped
+    order by deduped.link_strength desc
+    limit 10;
+$$;
+
+
+-- =========================================================================
+-- Pillar 7 Sprint 2: task_queue — dispatcher input surface (issue #296, S2-1)
+--
+-- Owner inserts approved tasks; the task-dispatcher agent (S2-3) scans
+-- status='pending' and transitions rows through the FSM below, logging
+-- each transition to audit_log via the safety gate (agents/safety.py).
+--
+-- FSM transitions (enforced in the dispatcher; DB check guards the enum):
+--   pending    -> dispatched | escalated | rejected
+--   dispatched -> done | escalated
+--   escalated  -> pending      (owner re-approves)
+--   done       -> (terminal)
+--   rejected   -> (terminal)
+--
+-- Drift detection uses `approved_scope_hash` + `scope_files`: if the repo
+-- state at dispatch time disagrees with the approval-time hash/globs, the
+-- dispatcher flips the row to `escalated` instead of firing.
+-- =========================================================================
+
+create table if not exists task_queue (
+  id uuid primary key default gen_random_uuid(),
+
+  -- Intent
+  goal text not null,
+  scope_files text[] not null default '{}',
+
+  -- Approval (inputs for drift detection + auto-dispatch gating)
+  approved_at timestamptz not null default now(),
+  approved_by text not null,
+  approved_scope_hash text not null,
+  auto_dispatch boolean not null default false,
+
+  -- Lifecycle
+  status text not null default 'pending'
+    check (status in ('pending', 'dispatched', 'done', 'escalated', 'rejected')),
+  dispatched_at timestamptz,
+  completed_at timestamptz,
+  escalated_reason text,
+
+  -- Dedup. Matches the safety-gate idempotency_key shape (sha256 hex, 64
+  -- chars). Unique so a retrying dispatcher cannot double-enqueue.
+  idempotency_key text not null unique,
+
+  -- Timestamps
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- Dispatcher scan: oldest approved pending first. Also covers 'dispatched'
+-- so a restarted dispatcher can find in-flight rows to reconcile.
+create index if not exists idx_task_queue_pending_scan
+  on task_queue(status, approved_at)
+  where status in ('pending', 'dispatched');
+
+-- Dedicated updated_at trigger. The memories-shared update_updated_at()
+-- references last_accessed_at/fts/project_key -- columns task_queue does
+-- not have, so reusing it would error at runtime.
+create or replace function update_task_queue_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists task_queue_updated_at on task_queue;
+create trigger task_queue_updated_at
+  before update on task_queue
+  for each row execute function update_task_queue_updated_at();
+
+-- RLS -- matches the Pillar 7 convention (allow-all under service/anon
+-- key; app-layer gatekeeping is the safety gate + dispatcher). Hardening
+-- to per-role policies is its own sweep.
+alter table task_queue enable row level security;
+
+create policy "Allow all for authenticated" on task_queue
+  for all using (true) with check (true);
+
+create policy "Allow all for anon" on task_queue
   for all to anon using (true) with check (true);

@@ -31,12 +31,18 @@ Thumbs.DB
 .claude/settings.local.json
 .claude/worktrees/
 .claude/scheduled_tasks.lock
+.claude/session-snapshots/
 
 # Device-specific config (auto-generated per machine)
 config/device.json
 
 # Generated self-review reports (runtime artifacts - keep skill definitions)
 reports/self-review-*.md
+
+# Ad-hoc smoke-test / one-shot script artifacts
+.tmp/
+scripts/.smoke-markers/
+scripts/.dispatcher_smoke_state.json
 
 # Legacy Python (may remain locally)
 __pycache__/
