@@ -36,7 +36,7 @@ DEFAULT_MANIFEST = "install-manifest.yaml"
 class Action:
     """One planned filesystem action."""
 
-    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "write_version" | "set_env"
+    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "write_version" | "set_env"
     source: str | None
     dest: str
     template: bool = False
@@ -122,6 +122,16 @@ def detect_state(target_root: Path, current_sha: str) -> tuple[str, str | None]:
 _POSIX_PATH_PATTERN = re.compile(r"(?<!\S)(scripts|config)/")
 
 
+# A pre-migration `.mcp.json` sitting in any parent dir of JARVIS_HOME (e.g.
+# `D:\Github\.mcp.json`) shadows the correctly-templated user-level file:
+# Claude Code walks up from CWD and binds the first `.mcp.json` it finds.
+# Pre-migration files reference `jarvis/scripts/...` as a *relative* path,
+# which only resolves when CWD == the legacy file's parent. From any other
+# project (redrobot, etc.) the server fails to launch. Detect by JSON content,
+# not just filename, so we don't quarantine unrelated parent-dir MCP configs.
+_LEGACY_RELATIVE_JARVIS_PATTERN = re.compile(r"^jarvis[\\/]")
+
+
 def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
     """Rewrite relative `scripts/...` and `config/...` references to
     absolute paths inside the jarvis repo. JSON-aware walk preserves
@@ -135,6 +145,53 @@ def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
     if isinstance(node, dict):
         return {k: _transform_json_paths(v, repo_root_posix) for k, v in node.items()}
     return node
+
+
+def _references_relative_jarvis(node: Any) -> bool:
+    """True if any string leaf is a relative path beginning with `jarvis/` or `jarvis\\`."""
+    if isinstance(node, str):
+        return bool(_LEGACY_RELATIVE_JARVIS_PATTERN.match(node))
+    if isinstance(node, list):
+        return any(_references_relative_jarvis(x) for x in node)
+    if isinstance(node, dict):
+        return any(_references_relative_jarvis(v) for v in node.values())
+    return False
+
+
+def find_legacy_parent_mcp(repo_root: Path, max_depth: int = 4) -> list[Path]:
+    """Return parent-dir `.mcp.json` files referencing jarvis with relative paths.
+
+    Walks up to `max_depth` parents from `repo_root` (typically JARVIS_HOME).
+    A file is flagged only when its JSON content contains a string starting
+    with `jarvis/` or `jarvis\\` — i.e. a path that resolves correctly when
+    CWD is the legacy file's parent dir but breaks elsewhere. Absolute paths
+    (already-templated by a prior install) are left alone.
+    """
+    found: list[Path] = []
+    parent = repo_root.parent
+    for _ in range(max_depth):
+        if parent == parent.parent:  # filesystem root
+            break
+        candidate = parent / ".mcp.json"
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            else:
+                if _references_relative_jarvis(data):
+                    found.append(candidate)
+        parent = parent.parent
+    return found
+
+
+def _quarantine_dest(path: Path) -> Path:
+    """Compute non-clobbering `.bak.pre-jarvis-migration` destination for `path`."""
+    base = path.with_name(path.name + ".bak.pre-jarvis-migration")
+    if not base.exists():
+        return base
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return path.with_name(f"{path.name}.bak.pre-jarvis-migration-{stamp}")
 
 
 def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> str:
@@ -230,6 +287,17 @@ def build_plan(
                     note=f"include={include}" if include else "",
                 )
             )
+
+    for legacy in find_legacy_parent_mcp(repo_root):
+        actions.append(
+            Action(
+                kind="quarantine_file",
+                source=str(legacy),
+                dest=str(_quarantine_dest(legacy)),
+                group="legacy_mcp",
+                note="parent-dir .mcp.json shadows ~/.claude/.mcp.json",
+            )
+        )
 
     actions.append(
         Action(
@@ -490,6 +558,12 @@ def apply_plan(
                 plan.repo_root,
                 plan.target_root,
             )
+        elif action.kind == "quarantine_file":
+            src = Path(action.source)
+            dst = Path(action.dest)
+            if src.exists():
+                src.rename(dst)
+                print(f"quarantined legacy {src} -> {dst}", file=sys.stderr)
         elif action.kind == "write_version":
             Path(action.dest).write_text(action.note + "\n", encoding="utf-8")
         elif action.kind == "set_env":
@@ -620,6 +694,11 @@ def format_plan(plan: Plan) -> str:
                 extra = f"  {a.note}" if a.note else ""
                 lines.append(
                     f"  copy_dir   [{a.group:>14}] {a.source} -> {a.dest}{extra}"
+                )
+            elif a.kind == "quarantine_file":
+                lines.append(
+                    f"  quarantine [{a.group:>14}] {a.source} -> {a.dest}"
+                    + (f"  ({a.note})" if a.note else "")
                 )
             elif a.kind == "write_version":
                 lines.append(f"  write_ver  -> {a.dest}  sha={a.note[:12]}")

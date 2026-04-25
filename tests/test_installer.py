@@ -775,3 +775,76 @@ def test_backup_tolerates_locked_file(
     assert plan2.backup_path.exists()
     assert not (plan2.backup_path / "debug" / "locked.log").exists()
     assert "locked.log" in capsys.readouterr().err
+
+
+# ---------- legacy parent-dir .mcp.json quarantine ----------
+
+
+def _legacy_mcp_payload(rel_path: str = "jarvis/scripts/run-memory-server.py") -> str:
+    return json.dumps(
+        {"mcpServers": {"memory": {"command": "python", "args": [rel_path]}}},
+        indent=2,
+    )
+
+
+def test_find_legacy_parent_mcp_detects_relative_jarvis_refs(tmp_path: Path) -> None:
+    repo = tmp_path / "Github" / "jarvis"
+    repo.mkdir(parents=True)
+    legacy = tmp_path / "Github" / ".mcp.json"
+    legacy.write_text(_legacy_mcp_payload(), encoding="utf-8")
+
+    found = installer.find_legacy_parent_mcp(repo)
+    assert legacy.resolve() in [p.resolve() for p in found]
+
+
+def test_find_legacy_parent_mcp_ignores_absolute_paths(tmp_path: Path) -> None:
+    repo = tmp_path / "Github" / "jarvis"
+    repo.mkdir(parents=True)
+    correct = tmp_path / "Github" / ".mcp.json"
+    correct.write_text(
+        _legacy_mcp_payload(rel_path=str(repo / "scripts" / "run-memory-server.py")),
+        encoding="utf-8",
+    )
+
+    assert installer.find_legacy_parent_mcp(repo) == []
+
+
+def test_find_legacy_parent_mcp_ignores_unrelated_mcp_configs(tmp_path: Path) -> None:
+    repo = tmp_path / "Github" / "jarvis"
+    repo.mkdir(parents=True)
+    unrelated = tmp_path / "Github" / ".mcp.json"
+    unrelated.write_text(
+        json.dumps({"mcpServers": {"foo": {"command": "npx", "args": ["foo-mcp"]}}}),
+        encoding="utf-8",
+    )
+
+    assert installer.find_legacy_parent_mcp(repo) == []
+
+
+def test_apply_plan_quarantines_legacy_parent_mcp(
+    manifest: Path, fake_repo: Path
+) -> None:
+    legacy = fake_repo.parent / ".mcp.json"
+    legacy.write_text(_legacy_mcp_payload(), encoding="utf-8")
+
+    m = installer.load_manifest(manifest)
+    plan = installer.build_plan(m, fake_repo)
+
+    quarantine = [a for a in plan.actions if a.kind == "quarantine_file"]
+    assert any(Path(a.source).resolve() == legacy.resolve() for a in quarantine)
+
+    installer.apply_plan(plan, m, run_env=None)
+
+    assert not legacy.exists()
+    assert (legacy.parent / ".mcp.json.bak.pre-jarvis-migration").exists()
+
+
+def test_quarantine_dest_avoids_clobbering_existing_bak(tmp_path: Path) -> None:
+    legacy = tmp_path / ".mcp.json"
+    legacy.write_text("{}", encoding="utf-8")
+    existing_bak = tmp_path / ".mcp.json.bak.pre-jarvis-migration"
+    existing_bak.write_text("{}", encoding="utf-8")
+
+    dest = installer._quarantine_dest(legacy)
+    assert dest != existing_bak
+    assert dest.name.startswith(".mcp.json.bak.pre-jarvis-migration-")
