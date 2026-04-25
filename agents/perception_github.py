@@ -16,6 +16,10 @@ Architecture:
 
 Safety: per-repo allowlist prevents ingesting from arbitrary sources.
 Idempotency: upsert with ON CONFLICT (idempotency_key) DO NOTHING.
+
+CLI usage:
+    python -m agents.perception_github --once
+    python -m agents.perception_github --loop 60 --notify
 """
 
 from __future__ import annotations
