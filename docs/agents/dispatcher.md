@@ -10,6 +10,7 @@ Sprint 2 (issue #298, S2-3). Wires together every other S2 primitive:
 | **S2-2** `agents/usage_probe.py` | Pre-dispatch budget check |
 | **S2-4** `agents/escalation.py` | First-match triggers: stale / drift / limit / conflict / pattern |
 | **S2-5** `agents/scheduler.py` | Run-loop engine (APScheduler, 60s interval + jitter) |
+| **S4** `agents/perception_*.py` | Producer side — turns external signals into `pending` rows ([`perception.md`](perception.md)) |
 
 ## Graph
 

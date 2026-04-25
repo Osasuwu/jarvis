@@ -12,6 +12,7 @@ detail. Per-module contents:
 |--------|-----|------|
 | `config.py` | — | `load_config()` — Postgres/Supabase URLs from env |
 | `dispatcher.py` | [`docs/agents/dispatcher.md`](../docs/agents/dispatcher.md) | Task dispatcher (S2-3) — polls `task_queue`, spawns `claude -p <goal>` with sanitized env |
+| `perception_*.py` (S4, planned) | [`docs/agents/perception.md`](../docs/agents/perception.md) | Producer side — `task_queue` ingest from GitHub issues, morning_check alarms, future sources |
 | `escalation.py` | [`docs/agents/escalation.md`](../docs/agents/escalation.md) | First-match triggers (S2-4) used by the dispatcher |
 | `event_monitor.py` | [`docs/agents/langgraph-setup.md`](../docs/agents/langgraph-setup.md) | GitHub event monitor — fetch → classify → store |
 | `github_client.py` | — | Thin wrapper over `gh` CLI / GitHub Events API |
