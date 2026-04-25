@@ -14,7 +14,13 @@ These files must NEVER be modified by subagents. Changes require owner review in
 | `.mcp.json` | MCP server config — affects all devices and projects |
 | `config/SOUL.md` | Jarvis identity — changes alter all behavior |
 | `CLAUDE.md` | Project instructions — affects all sessions |
-| `mcp-memory/server.py` | Memory server — affects all projects |
+| `mcp-memory/server.py` | Memory server entry — affects all projects |
+| `mcp-memory/client.py` | Supabase client + audit log — split out by #360 |
+| `mcp-memory/embeddings.py` | Voyage AI embedding pipeline — split out by #360 |
+| `mcp-memory/tools_schema.py` | MCP tool schemas — schema drift breaks redrobot consumers |
+| `mcp-memory/classifier.py` | Phase 2b write-side classifier — affects all writes |
+| `mcp-memory/episode_extractor.py` | Episode → memory extractor — affects ingest |
+| `mcp-memory/handlers/*.py` | Memory tool handlers (#360 split) — same blast radius as server.py |
 | `.claude/settings.json` | Hooks and permissions — security boundary |
 | `.gitleaks.toml` | Secret scanning config — disabling = security bypass |
 | `.pre-commit-config.yaml` | Pre-commit hooks — disabling = security bypass |

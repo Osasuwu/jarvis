@@ -20,7 +20,22 @@ PROTECTED_FILES = {
     ".mcp.json",
     "config/SOUL.md",
     "CLAUDE.md",
+    # Memory MCP server — split across modules in #360 but the protection
+    # surface is unchanged: every file the server is built from requires
+    # owner review, since they're shared with redrobot via the MCP protocol.
     "mcp-memory/server.py",
+    "mcp-memory/client.py",
+    "mcp-memory/embeddings.py",
+    "mcp-memory/tools_schema.py",
+    "mcp-memory/classifier.py",
+    "mcp-memory/episode_extractor.py",
+    "mcp-memory/handlers/__init__.py",
+    "mcp-memory/handlers/memory.py",
+    "mcp-memory/handlers/goal.py",
+    "mcp-memory/handlers/outcome.py",
+    "mcp-memory/handlers/credential.py",
+    "mcp-memory/handlers/events.py",
+    "mcp-memory/handlers/decision.py",
     ".claude/settings.json",
     ".gitleaks.toml",
     ".pre-commit-config.yaml",
@@ -49,7 +64,7 @@ def normalize_path(path: str) -> str:
     for marker in ("/jarvis/", "\\jarvis\\"):
         idx = path.find(marker)
         if idx != -1:
-            path = path[idx + len(marker):]
+            path = path[idx + len(marker) :]
             break
     # Strip leading ./
     if path.startswith("./"):
@@ -73,7 +88,7 @@ def _is_user_level_protected(normalized: str) -> bool:
     candidate = os.path.normcase(normalized)
     if not candidate.startswith(prefix):
         return False
-    rel = normalized[len(prefix):]  # slice the original so case of `rel` is preserved
+    rel = normalized[len(prefix) :]  # slice the original so case of `rel` is preserved
     if rel in _USER_LEVEL_PROTECTED_FILES:
         return True
     # skills/<name>/SKILL.md — any user-level skill definition.
