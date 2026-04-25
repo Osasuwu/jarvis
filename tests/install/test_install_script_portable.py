@@ -117,3 +117,47 @@ def test_install_script_sets_proper_logging():
 
     # Should not hardcode an absolute log path like C:\logs
     assert "c:\\logs" not in content.lower(), "Script should not hardcode absolute log path"
+
+
+def test_no_multiarg_join_path_in_ps_scripts():
+    """Windows PowerShell 5.1's Join-Path takes only -Path/-ChildPath; 3+ positional args throw.
+
+    Caught a real bug: install-scheduler-service.ps1 had `Join-Path X "config" "device.json"`
+    which crashed with "Не удается найти позиционный параметр" on workshop install. PS 7+
+    accepts the multi-arg form via -AdditionalChildPath, but the default Windows shell is 5.1.
+
+    Multi-segment paths must be chained: Join-Path (Join-Path A "config") "device.json".
+
+    Detection strategy: only flag the broken shape — three or more *simple* arguments
+    (variable, double/single-quoted string, or bareword). Parenthesized expressions are
+    skipped, which means a chained `Join-Path (Join-Path A B) C` reads as "first arg is `(`"
+    and falls through. Trade-off: false negatives on exotic invocations are acceptable;
+    false positives would block correct code.
+    """
+    repo_root = Path(__file__).parent.parent.parent
+    ps_scripts = list((repo_root / "scripts").rglob("*.ps1"))
+    assert ps_scripts, "Expected at least one .ps1 script under scripts/"
+
+    simple_token = r'(?:\$\w+|"[^"]*"|\'[^\']*\'|\w+)'
+    bad_pattern = re.compile(
+        r'Join-Path\s+'
+        + simple_token + r'\s+'
+        + simple_token + r'\s+'
+        + simple_token + r'(?:\s|$|\))'
+    )
+
+    violations = []
+    for script in ps_scripts:
+        content = script.read_text(encoding="utf-8")
+        for line_num, line in enumerate(content.split("\n"), 1):
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if bad_pattern.search(line):
+                violations.append((script.relative_to(repo_root), line_num, stripped))
+
+    assert not violations, (
+        "Multi-arg Join-Path X Y Z is not supported in Windows PowerShell 5.1.\n"
+        "Chain it: Join-Path (Join-Path X Y) Z\n\n"
+        + "\n".join(f"  {path}:{line_num}  {body}" for path, line_num, body in violations)
+    )

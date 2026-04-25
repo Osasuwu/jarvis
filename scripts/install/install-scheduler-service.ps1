@@ -38,8 +38,12 @@ Write-Status "Reading configuration..." $InfoColor
 $repoPath = $null
 $pythonPath = $null
 
-# Try config/device.json first
-$configPath = Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) "config" "device.json"
+# Try config/device.json first.
+# Repo root = parent of parent of $PSScriptRoot (script lives at <repo>/scripts/install/).
+# Note: Windows PowerShell 5.1's Join-Path takes only -Path and -ChildPath, so multi-segment
+# paths must be chained: Join-Path (Join-Path A "config") "device.json".
+$repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$configPath = Join-Path (Join-Path $repoRoot "config") "device.json"
 if (Test-Path $configPath) {
     try {
         $config = Get-Content $configPath | ConvertFrom-Json
@@ -62,7 +66,7 @@ if (-not $repoPath) {
     $repoPath = $env:JARVIS_REPO_PATH
     if (-not $repoPath) {
         Write-Status "config/device.json not found and JARVIS_REPO_PATH not set. Assuming current script directory." $WarningColor
-        $repoPath = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+        $repoPath = $repoRoot
     }
 }
 
@@ -118,7 +122,7 @@ catch {
 $ServiceName = "jarvis-scheduler"
 $ServiceDisplayName = "Jarvis Scheduler"
 $ServiceDescription = "Persistent task dispatcher via APScheduler (Jarvis issue #368)"
-$LogDir = Join-Path $repoPath "logs" "scheduler"
+$LogDir = Join-Path (Join-Path $repoPath "logs") "scheduler"
 $StdoutLog = Join-Path $LogDir "stdout.log"
 $StderrLog = Join-Path $LogDir "stderr.log"
 
