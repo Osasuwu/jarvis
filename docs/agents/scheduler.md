@@ -35,14 +35,18 @@ or shut down.
 ## CLI
 
 ```bash
-python -m agents.scheduler                   # tick every 60s + jitter
-python -m agents.scheduler --interval 30     # override
-python -m agents.scheduler --once            # fire one tick and exit
+python -m agents.scheduler                              # production: tick every 60s + jitter
+python -m agents.scheduler --interval 30                # override interval
+python -m agents.scheduler --once                       # fire one tick and exit
+python -m agents.scheduler --once --dry-run             # traverse graph, skip 'claude -p'
+python -m agents.scheduler --interval 60 --jitter 5     # explicit timing
+python -m agents.scheduler --placeholder                # (dev) also register canary tick
 ```
 
-CLI runs `_placeholder_tick` — a log-only proof-of-life. Once the
-dispatcher lands in S2-3, its entry point registers the real job
-alongside.
+Production CLI (``python -m agents.scheduler``) registers the dispatcher
+with the default 60s interval and 10s jitter. The ``--placeholder`` dev
+flag (off by default) also registers the canary tick — a test fixture
+that verifies the jobstore pickle contract across restarts.
 
 ## Restart semantics
 
@@ -88,9 +92,17 @@ python -m agents.scheduler --interval 30 --jitter 0
 
 # Shell 2 — same DB, check the jobs table:
 psql "$AGENTS_POSTGRES_URL" -c 'select id, next_run_time from apscheduler_jobs;'
-# Should show scheduler-placeholder with a future next_run_time.
+# Should show task-dispatcher with a future next_run_time.
 
 # Shell 1 again
 python -m agents.scheduler --interval 30 --jitter 0
 # Job should resume from persisted next_run_time, not restart the interval.
 ```
+
+## Startup reaper
+
+The scheduler's ``run()`` function performs a one-shot cleanup on startup:
+it enumerates all persisted jobstore rows and removes any whose `id` is
+not in the set of currently-registered agent ids. This guards against
+drift if an agent is renamed or removed — orphan rows won't accumulate
+forever. Each reaped job is logged at INFO level.

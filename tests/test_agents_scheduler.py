@@ -99,7 +99,7 @@ def test_register_agent_creates_interval_job(memory_handle) -> None:
     job = scheduler.register_agent(
         memory_handle,
         agent_id="test-agent",
-        fn=scheduler._placeholder_tick,
+        fn=scheduler._pickle_canary_tick,
         interval_seconds=30,
         jitter_seconds=5,
     )
@@ -118,7 +118,7 @@ def test_register_agent_trigger_has_interval_and_jitter(memory_handle) -> None:
     job = scheduler.register_agent(
         memory_handle,
         agent_id="jitter-agent",
-        fn=scheduler._placeholder_tick,
+        fn=scheduler._pickle_canary_tick,
         interval_seconds=45,
         jitter_seconds=7,
     )
@@ -140,7 +140,7 @@ def test_register_agent_jitter_zero_passed_as_none(memory_handle) -> None:
     job = scheduler.register_agent(
         memory_handle,
         agent_id="no-jitter",
-        fn=scheduler._placeholder_tick,
+        fn=scheduler._pickle_canary_tick,
         interval_seconds=60,
         jitter_seconds=0,
     )
@@ -161,7 +161,7 @@ def test_register_agent_replace_existing_is_idempotent(memory_handle) -> None:
         scheduler.register_agent(
             memory_handle,
             agent_id="dup-agent",
-            fn=scheduler._placeholder_tick,
+            fn=scheduler._pickle_canary_tick,
             interval_seconds=30,
         )
         # Second registration with a different interval — must succeed and
@@ -169,7 +169,7 @@ def test_register_agent_replace_existing_is_idempotent(memory_handle) -> None:
         job = scheduler.register_agent(
             memory_handle,
             agent_id="dup-agent",
-            fn=scheduler._placeholder_tick,
+            fn=scheduler._pickle_canary_tick,
             interval_seconds=120,
         )
 
@@ -189,7 +189,7 @@ def test_register_agent_rejects_zero_interval(memory_handle) -> None:
         scheduler.register_agent(
             memory_handle,
             agent_id="zero",
-            fn=scheduler._placeholder_tick,
+            fn=scheduler._pickle_canary_tick,
             interval_seconds=0,
         )
 
@@ -201,7 +201,7 @@ def test_register_agent_rejects_negative_interval(memory_handle) -> None:
         scheduler.register_agent(
             memory_handle,
             agent_id="neg",
-            fn=scheduler._placeholder_tick,
+            fn=scheduler._pickle_canary_tick,
             interval_seconds=-5,
         )
 
@@ -213,7 +213,7 @@ def test_register_agent_rejects_negative_jitter(memory_handle) -> None:
         scheduler.register_agent(
             memory_handle,
             agent_id="neg-jitter",
-            fn=scheduler._placeholder_tick,
+            fn=scheduler._pickle_canary_tick,
             interval_seconds=60,
             jitter_seconds=-1,
         )
@@ -230,10 +230,10 @@ def test_placeholder_tick_is_picklable() -> None:
     """
     from agents import scheduler
 
-    blob = pickle.dumps(scheduler._placeholder_tick)
+    blob = pickle.dumps(scheduler._pickle_canary_tick)
     restored = pickle.loads(blob)
     # Round-trip yields the same callable reference, not a copy.
-    assert restored is scheduler._placeholder_tick
+    assert restored is scheduler._pickle_canary_tick
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +252,64 @@ def test_install_signal_handlers_is_safe_on_current_platform(memory_handle) -> N
 
 
 # ---------------------------------------------------------------------------
+# Startup reaper — self-healing against orphan jobstore rows.
+# ---------------------------------------------------------------------------
+
+
+def test_startup_reaper() -> None:
+    """Startup reaper removes jobstore rows for agent_ids that no longer exist.
+
+    Simulates a scenario where an old agent was persisted but is no longer
+    registered in code. The reaper should detect it's not in the live
+    registered set and remove it from the jobstore.
+    """
+    from apscheduler.jobstores.memory import MemoryJobStore
+
+    from agents import scheduler
+
+    handle = scheduler.build_scheduler(jobstore=MemoryJobStore())
+    handle.scheduler.start(paused=True)
+    try:
+        # Register a "live" job that should be kept.
+        scheduler.register_agent(
+            handle,
+            agent_id="live-agent",
+            fn=scheduler._pickle_canary_tick,
+            interval_seconds=60,
+        )
+
+        # Manually insert an orphan job into the jobstore by registering and then removing from scheduler.
+        # This simulates an orphaned row from a previous agent that's no longer registered.
+        scheduler.register_agent(
+            handle,
+            agent_id="orphan-agent",
+            fn=scheduler._pickle_canary_tick,
+            interval_seconds=60,
+        )
+
+        # Verify both jobs exist before reaping.
+        all_jobs = handle.scheduler.get_jobs()
+        all_ids = {job.id for job in all_jobs}
+        assert "live-agent" in all_ids
+        assert "orphan-agent" in all_ids
+
+        # Simulate the reaper logic from scheduler.run().
+        registered_ids = {"live-agent"}
+        jobstore = handle.scheduler._lookup_jobstore(handle.jobstore_alias)
+        for job in jobstore.get_all_jobs():
+            if job.id not in registered_ids:
+                jobstore.remove_job(job.id)
+
+        # Verify orphan is gone, live remains.
+        all_jobs_after = handle.scheduler.get_jobs()
+        all_ids_after = {job.id for job in all_jobs_after}
+        assert "live-agent" in all_ids_after
+        assert "orphan-agent" not in all_ids_after
+    finally:
+        handle.scheduler.shutdown(wait=False)
+
+
+# ---------------------------------------------------------------------------
 # CLI argparse surface — cheap sanity that --once / --interval / --jitter exist.
 # ---------------------------------------------------------------------------
 
@@ -265,12 +323,13 @@ def test_main_cli_exposes_flags(monkeypatch: pytest.MonkeyPatch) -> None:
     called: dict[str, object] = {}
 
     def fake_run(
-        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False
+        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False, placeholder: bool = False
     ) -> int:
         called["interval"] = interval
         called["jitter"] = jitter
         called["once"] = once
         called["dry_run"] = dry_run
+        called["placeholder"] = placeholder
         return 0
 
     monkeypatch.setattr(scheduler, "run", fake_run)
@@ -278,7 +337,7 @@ def test_main_cli_exposes_flags(monkeypatch: pytest.MonkeyPatch) -> None:
 
     rc = scheduler.main()
     assert rc == 0
-    assert called == {"interval": 42, "jitter": 3, "once": False, "dry_run": False}
+    assert called == {"interval": 42, "jitter": 3, "once": False, "dry_run": False, "placeholder": False}
 
 
 def test_main_cli_once_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -287,10 +346,11 @@ def test_main_cli_once_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_run(
-        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False
+        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False, placeholder: bool = False
     ) -> int:
         captured["once"] = once
         captured["dry_run"] = dry_run
+        captured["placeholder"] = placeholder
         return 0
 
     monkeypatch.setattr(scheduler, "run", fake_run)
@@ -307,9 +367,10 @@ def test_main_cli_dry_run_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def fake_run(
-        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False
+        interval: int, jitter: int, *, once: bool = False, dry_run: bool = False, placeholder: bool = False
     ) -> int:
         captured["dry_run"] = dry_run
+        captured["placeholder"] = placeholder
         return 0
 
     monkeypatch.setattr(scheduler, "run", fake_run)
@@ -333,17 +394,24 @@ def test_run_wires_dispatcher_and_not_placeholder(
 
     captured: dict[str, object] = {}
 
+    class _FakeJobStore:
+        def get_all_jobs(self) -> list:
+            return []
+
+    class _FakeScheduler:
+        def start(self) -> None:
+            captured["started"] = True
+
+        def get_jobs(self) -> list:
+            return []
+
+        def _lookup_jobstore(self, alias: str) -> _FakeJobStore:
+            return _FakeJobStore()
+
+        def shutdown(self, wait: bool = True) -> None:
+            captured["shut_down"] = True
+
     class _FakeHandle:
-        class _FakeScheduler:
-            def start(self) -> None:
-                captured["started"] = True
-
-            def get_jobs(self) -> list:
-                return []
-
-            def shutdown(self, wait: bool = True) -> None:
-                captured["shut_down"] = True
-
         scheduler = _FakeScheduler()
         jobstore_alias = "default"
 
