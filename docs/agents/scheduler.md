@@ -186,6 +186,45 @@ Verify with `python -m scripts.observability.morning_check` after a few
 ticks — `task-dispatcher` should report `success` outcomes, not
 `failure:FileNotFoundError`.
 
+### Running under a non-default account (issue #410)
+
+LocalSystem cannot read user-scoped Claude Max session credentials at
+`%USERPROFILE%\.claude\.credentials.json`. If the dispatcher needs them
+(every tier-1 row that spawns `claude -p` does), the service has to run
+under the user account that owns those credentials.
+
+Switching the service account on Windows hits a sharp edge: even with
+the **correct** password, `sc.exe config` and NSSM return error 1326
+("logon failure for .\username with current password") when the
+account is missing the **SeServiceLogonRight** privilege ("Log on as a
+service"). The services.msc GUI grants it implicitly when you re-enter
+the password through the Log On tab; `sc.exe` does not. This bit
+workshop deploy on 2026-04-25.
+
+The install script handles both halves of the dance via two opt-in
+parameters:
+
+```powershell
+# Grant the right, set NSSM ObjectName, password handled in-process.
+$pw = Read-Host -Prompt "Password for .\PC4_v" -AsSecureString
+.\scripts\install\install-scheduler-service.ps1 `
+    -ServiceAccount '.\PC4_v' `
+    -ServicePassword $pw
+
+# Or grant the right only; set the password later via services.msc:
+.\scripts\install\install-scheduler-service.ps1 -ServiceAccount '.\PC4_v'
+# Then: services.msc -> jarvis-scheduler -> Log On tab -> enter password.
+```
+
+Both forms are idempotent: if the account already has the right, the
+secedit round-trip detects it and no-ops. The script must run from an
+elevated PowerShell session so secedit can read/write the local
+security policy. `-DryRun` extends to the secedit operations and
+prints what it would do without mutating the policy.
+
+LocalSystem stays the default. Don't pass `-ServiceAccount` unless you
+specifically want the dispatcher to run under a user account.
+
 ### View logs
 
 Logs are written to `<repo>/logs/scheduler/stdout.log` and `stderr.log`:
