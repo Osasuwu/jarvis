@@ -161,3 +161,109 @@ def test_no_multiarg_join_path_in_ps_scripts():
         "Chain it: Join-Path (Join-Path X Y) Z\n\n"
         + "\n".join(f"  {path}:{line_num}  {body}" for path, line_num, body in violations)
     )
+
+
+def test_install_scheduler_checks_lastexitcode():
+    """Assert install script checks $LASTEXITCODE after nssm calls and exits on failure.
+
+    Regression test for issue #394: silent error swallowing via Out-Null.
+    """
+    script_path = Path(__file__).parent.parent.parent / "scripts" / "install" / "install-scheduler-service.ps1"
+    content = script_path.read_text(encoding="utf-8")
+
+    # Should reference $LASTEXITCODE in conditional checks
+    assert "LASTEXITCODE" in content, (
+        "Script should check $LASTEXITCODE after nssm calls to detect failures"
+    )
+
+    # Should exit on non-zero exit code (via Invoke-Nssm helper)
+    assert "if ($LASTEXITCODE -ne 0)" in content or "Exit-Script $LASTEXITCODE" in content, (
+        "Script should exit with error when nssm command fails"
+    )
+
+    # Should NOT pipe nssm output to Out-Null (suppresses stderr)
+    # Instead it should capture output for diagnostics
+    lines = content.split("\n")
+    for line_num, line in enumerate(lines, 1):
+        if "nssm" in line.lower() and "2>&1 | Out-Null" in line:
+            raise AssertionError(
+                f"Line {line_num}: nssm output should not be piped to Out-Null "
+                "(suppresses diagnostic output). Capture and print instead."
+            )
+
+
+def test_install_scheduler_resolves_python_path():
+    """Assert install script resolves python to absolute path before nssm install.
+
+    Regression test for issue #394: bareword 'python' fails under LocalSystem context.
+    """
+    script_path = Path(__file__).parent.parent.parent / "scripts" / "install" / "install-scheduler-service.ps1"
+    content = script_path.read_text(encoding="utf-8")
+
+    # Should check if path is absolute
+    assert "Split-Path" in content and "IsAbsolute" in content, (
+        "Script should check if pythonPath is absolute using Split-Path -IsAbsolute"
+    )
+
+    # Should resolve non-absolute paths using Get-Command
+    assert "Get-Command" in content, (
+        "Script should use Get-Command to resolve python from PATH"
+    )
+
+    # Should have clear error message if python cannot be found
+    assert "Cannot resolve Python" in content or "not found in PATH" in content, (
+        "Script should have clear error message when python cannot be resolved"
+    )
+
+    # Should honor JARVIS_PYTHON env var
+    assert "JARVIS_PYTHON" in content, (
+        "Script should support JARVIS_PYTHON env var"
+    )
+
+
+def test_install_scheduler_autodiscovers_nssm():
+    """Assert install script auto-discovers NSSM in winget package directory.
+
+    Regression test for issue #394: winget-installed NSSM has no PATH shim.
+    """
+    script_path = Path(__file__).parent.parent.parent / "scripts" / "install" / "install-scheduler-service.ps1"
+    content = script_path.read_text(encoding="utf-8")
+
+    # Should support JARVIS_NSSM_PATH env var
+    assert "JARVIS_NSSM_PATH" in content, (
+        "Script should support JARVIS_NSSM_PATH env var to override NSSM path"
+    )
+
+    # Should search winget package directory
+    assert "WinGet" in content and ("Packages" in content or "Microsoft" in content), (
+        "Script should search winget package directory when Get-Command fails"
+    )
+
+    # Should look for nssm.exe in win64 and/or win32 subdirectories
+    assert "win64" in content or "win32" in content or "Get-ChildItem" in content, (
+        "Script should search winget subdirectories for nssm.exe"
+    )
+
+
+def test_install_scheduler_supports_dryrun():
+    """Assert install script supports -DryRun flag for validation without side effects.
+
+    Regression test for issue #394: need smoke test that validates paths without calling nssm.
+    """
+    script_path = Path(__file__).parent.parent.parent / "scripts" / "install" / "install-scheduler-service.ps1"
+    content = script_path.read_text(encoding="utf-8")
+
+    # Should have DryRun parameter in param() block
+    assert "[switch]$DryRun" in content, (
+        "Script should have -DryRun parameter"
+    )
+
+    # Should check $DryRun before calling actual nssm commands
+    assert "$DryRun" in content, (
+        "Script should reference $DryRun to skip actual nssm calls"
+    )
+
+    # Should print what would be called in DryRun mode
+    assert "[DRY-RUN]" in content or "DRY-RUN" in content, (
+        "Script should indicate DryRun mode in output (prefix with [DRY-RUN])"
+    )
