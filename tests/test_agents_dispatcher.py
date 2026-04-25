@@ -239,6 +239,48 @@ def test_agent_id_matches_probe_and_escalation() -> None:
     assert AGENT_ID == DISPATCHER_AGENT_ID == PROBE_AGENT_ID == "task-dispatcher"
 
 
+def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
+    """Verify spawn whitelist has been tightened per #378.
+
+    - Bash(python:*) removed (arbitrary code escape)
+    - Bash(gh:*) bare wildcard removed (destructive verbs)
+    - Only scoped gh verbs (read/create, no merge/delete) present
+    """
+    from agents.dispatcher import _SPAWN_ALLOWED_TOOLS
+
+    # Assert dangerous entries are NOT present
+    assert "Bash(python:*)" not in _SPAWN_ALLOWED_TOOLS, \
+        "Bash(python:*) must be removed — arbitrary code escape hatch (#378)"
+    assert "Bash(gh:*)" not in _SPAWN_ALLOWED_TOOLS, \
+        "bare Bash(gh:*) must be replaced with scoped verbs (#378)"
+
+    # Assert safe scoped gh verbs ARE present
+    safe_gh_verbs = {
+        "Bash(gh pr view:*)",
+        "Bash(gh pr create:*)",
+        "Bash(gh pr list:*)",
+        "Bash(gh issue view:*)",
+        "Bash(gh issue create:*)",
+        "Bash(gh issue list:*)",
+        "Bash(gh issue comment:*)",
+        "Bash(gh api repos/*/issues:*)",
+        "Bash(gh api repos/*/pulls:*)",
+    }
+    for verb in safe_gh_verbs:
+        assert verb in _SPAWN_ALLOWED_TOOLS, \
+            f"Missing safe gh verb '{verb}' — dispatcher cannot read/create issues/PRs"
+
+    # Assert no destructive gh verbs present
+    destructive_patterns = [
+        "merge",  # gh pr merge --admin
+        "delete",  # gh repo delete, gh api DELETE
+    ]
+    for pattern in destructive_patterns:
+        for tool in _SPAWN_ALLOWED_TOOLS:
+            assert pattern not in tool, \
+                f"Destructive pattern '{pattern}' found in allowlist entry '{tool}'"
+
+
 def test_sensitive_env_keys_cover_known_variants() -> None:
     """Env-sanitization must strip every historical Anthropic env name."""
     from agents.dispatcher import _SENSITIVE_ENV_KEYS
