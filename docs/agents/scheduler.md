@@ -86,6 +86,50 @@ On Windows, use NSSM (Non-Sucking Service Manager) to run the scheduler as
 a persistent Windows service. This is the production recommended approach
 for issue #368.
 
+### Postgres prerequisite
+
+The scheduler service requires a Postgres database to persist APScheduler jobs.
+The dispatcher itself writes to Supabase; **Postgres is only for APScheduler's
+jobstore and LangGraph's checkpoint tables**. Choose one of the two paths below:
+
+#### Option 1: Docker Compose (recommended for dev/demo)
+
+```bash
+docker compose -f docker-compose.agents.yml up -d
+docker compose -f docker-compose.agents.yml ps   # expect 'healthy'
+```
+
+This exposes Postgres on `localhost:5433`. The default `AGENTS_POSTGRES_URL`
+in `agents/config.py` matches this port, so no env override is needed.
+
+#### Option 2: Native install (winget PostgreSQL 18)
+
+If you prefer a native system Postgres install (e.g., for production):
+
+```powershell
+winget install PostgreSQL.PostgreSQL.18
+```
+
+This installs Postgres on the default port `5432`. After installation, create
+the `jarvis` role and `agents` database:
+
+```powershell
+# Open a Postgres prompt as the system admin:
+psql -U postgres
+
+# Then in the psql shell, run:
+CREATE ROLE jarvis WITH LOGIN PASSWORD 'jarvis';
+CREATE DATABASE agents OWNER jarvis;
+\q
+```
+
+Then override the env var for the service to point at port 5432:
+
+```powershell
+nssm set jarvis-scheduler AppEnvironmentExtra "AGENTS_POSTGRES_URL=postgresql://jarvis:jarvis@localhost:5432/agents?sslmode=disable"
+Restart-Service jarvis-scheduler
+```
+
 ### Prerequisites
 
 - Windows 10+ (tested on Windows 11)
