@@ -12,7 +12,8 @@ detail. Per-module contents:
 |--------|-----|------|
 | `config.py` | — | `load_config()` — Postgres/Supabase URLs from env |
 | `dispatcher.py` | [`docs/agents/dispatcher.md`](../docs/agents/dispatcher.md) | Task dispatcher (S2-3) — polls `task_queue`, spawns `claude -p <goal>` with sanitized env |
-| `perception_*.py` (S4, planned) | [`docs/agents/perception.md`](../docs/agents/perception.md) | Producer side — `task_queue` ingest from GitHub issues, morning_check alarms, future sources |
+| `perception_github.py` | [`docs/agents/perception.md`](../docs/agents/perception.md) | GitHub issue ingest (S4 #388) — polls ready issues with tier labels, produces task_queue rows |
+| `perception_*.py` (S4, future) | [`docs/agents/perception.md`](../docs/agents/perception.md) | Producer side — `task_queue` ingest from morning_check alarms, future sources |
 | `escalation.py` | [`docs/agents/escalation.md`](../docs/agents/escalation.md) | First-match triggers (S2-4) used by the dispatcher |
 | `event_monitor.py` | [`docs/agents/langgraph-setup.md`](../docs/agents/langgraph-setup.md) | GitHub event monitor — fetch → classify → store |
 | `github_client.py` | — | Thin wrapper over `gh` CLI / GitHub Events API |
@@ -36,6 +37,22 @@ As a scheduled job (S2-5 APScheduler)::
 
     handle = scheduler.build_scheduler()
     dispatcher.register(handle, interval_seconds=60)
+    handle.scheduler.start()
+
+## Running perception modules
+
+GitHub perception ingest (#388)::
+
+    python -m agents.perception_github --once       # single poll tick
+    python -m agents.perception_github --loop 60    # poll every 60 seconds
+    python -m agents.perception_github --once --notify  # poll + notify completed issues
+
+Scheduled integration (future)::
+
+    from agents import scheduler, perception_github
+
+    handle = scheduler.build_scheduler()
+    perception_github.register(handle, interval_seconds=300)  # check every 5 min
     handle.scheduler.start()
 
 ## Running tests
