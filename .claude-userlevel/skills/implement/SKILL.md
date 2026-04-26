@@ -269,7 +269,7 @@ If the diff looks wrong, fix it before pushing.
 ## Recovery playbook
 
 See `docs/security/recovery-playbook.md` for how to handle:
-- Broke a file → revert from master
+- Broke a file → revert from main
 - Corrupted memory → `memory_restore`
 - Created bad PR → close + delete branch
 - Committed to wrong branch → cherry-pick + reset
