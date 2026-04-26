@@ -136,7 +136,7 @@ Report back: PR URL + 2-line summary of what you did.
 **Mitigations:**
 - Branch names are explicit, per-issue, and unique (`feat/<N>-<slug>`) — encode in the prompt
 - Cap parallelism: **2-3 agents concurrently** is the safe band; 5+ is a red flag
-- **Review the diff in the main repo tree as the authoritative check** — `cd <main repo> && git fetch && git diff origin/master...origin/feat/<N>-<slug>`. Treat the agent's worktree as a staging area, not a trusted sandbox.
+- **Review the diff in the main repo tree as the authoritative check** — `cd <main repo> && git fetch && git diff origin/main...origin/feat/<N>-<slug>`. Treat the agent's worktree as a staging area, not a trusted sandbox.
 - If you see contamination, abort and re-dispatch sequentially
 
 ### 5. Implement inline tasks (parallel with the subagents)
@@ -150,8 +150,8 @@ When a subagent reports done, review **in the main repo tree, not the agent's wo
 ```bash
 cd <main repo>
 git fetch origin
-git diff origin/master...origin/feat/<N>-<slug> --stat
-git diff origin/master...origin/feat/<N>-<slug>
+git diff origin/main...origin/feat/<N>-<slug> --stat
+git diff origin/main...origin/feat/<N>-<slug>
 ```
 
 Run the following checks in order — do NOT short-circuit:
@@ -214,4 +214,4 @@ See `docs/security/recovery-playbook.md`. Subagent-specific:
 - Subagent edited wrong files → revert in its worktree, re-prompt with stricter scope
 - Subagent broke its worktree → `git worktree remove --force <path>` + reclaim branch in fresh worktree
 - Two subagents raced on same file → abort both, re-dispatch sequentially
-- Subagent silently merged → revert merge on `master` immediately, open incident note, add to agent-boundaries.md
+- Subagent silently merged → revert merge on `main` immediately, open incident note, add to agent-boundaries.md
