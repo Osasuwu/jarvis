@@ -1,7 +1,34 @@
 # Agent Sandbox Boundaries
 
-Date: 2026-04-15 (revised 2026-04-23 for Pillar 7 Phase 0 federation — #341)
-Scope: Rules for subagents (current /delegate + future Pillar 7 agents)
+Date: 2026-04-15 (revised 2026-04-23 for Pillar 7 Phase 0 federation — #341; revised 2026-04-26 for principal-aware permissions — #426)
+Scope: Permission rules for **all principals** running Claude — interactive owner, autonomous loop, /delegate subagent, and the future dispatcher.
+
+## Principal model (#426)
+
+Permissions depend on **who is running Claude**. Four principals — detection lives in [`scripts/principal.py`](../../scripts/principal.py):
+
+| Principal | Signal | Trust |
+|---|---|---|
+| `live` | TTY + interactive harness, no `JARVIS_PRINCIPAL` override | Highest — owner watches, can correct in seconds |
+| `autonomous` | Scheduled task / cron / autonomous-loop (env or `not isatty()`) | Low — corrections take hours |
+| `subagent` | Dispatched by `/delegate` (Agent tool) | Medium — isolated worktree, parent reviews diff |
+| `supervised` | Future dispatcher (Pillar 7 Sprint 2) running Claude headless under a granted scope | Delegated — permissions ⊆ supervisor's grant |
+
+Detection is **default-safe**: a missing `JARVIS_PRINCIPAL` falls through `headless env → not isatty() → live`, so a future autonomous launcher that forgets to set the env still classifies as `autonomous`, never `live`.
+
+### Permission matrix (action × principal)
+
+Action tier model is shared with `agents/safety.py` (T0 = AUTO, T1 = OWNER_QUEUE, T2 = BLOCKED).
+
+| Action ↓ × Principal → | **live** | **autonomous** | **subagent** | **supervised** |
+|---|---|---|---|---|
+| **T0** narrow GitHub labels (`priority:*`, `area:*`, `needs-*`, `status:ready`); status updates; memory_store with `tag=auto-generated`; comment own PR; close issue with evidence; open jarvis tracking issue | ✅ act | ✅ act | ✅ act | ✅ act |
+| **T1** code edit own repo; open PR; merge LOW-risk own PR per skill policy; `/implement` work; workflow files; drive-by fixes | ✅ act | ⚠️ enqueue `task_queue` *(future, lands with dispatcher)* | ✅ in worktree, no merge | ✅ within dispatcher grant *(future)* |
+| **T2-canonical** repo-side sources of truth — see "Repo-level" table below | ⚠️ harness asks (hook exits 0) | ❌ block | ❌ block, escalate to `/implement` | ❌ block |
+| **T2-mirror** `~/.claude/*` files installed by `install.ps1` — see "User-level" table below | ❌ block (use installer) | ❌ block | ❌ block | ❌ block |
+| **T2-secret** `.env*` values; force push to main/master; impersonation; outbound to other humans (PR comments to others, Telegram, email) | ❌ always block | ❌ block | ❌ block | ❌ block |
+
+Currently enforced in code: only **T2** rows, via [`scripts/protected-files.py`](../../scripts/protected-files.py). T1 routing (autonomous-enqueue, supervised-grant) lands when the dispatcher ships; until then T1 work is owner-driven through `/implement` and `/delegate`.
 
 ## Protected Files
 
@@ -38,7 +65,7 @@ Editing these changes behaviour for **every Claude Code session on the device**,
 
 The source of truth for these files lives in the jarvis repo (`config/SOUL.md`, `.claude-userlevel/settings.json`, `.claude-userlevel/.mcp.json`, `.claude-userlevel/skills/*/SKILL.md`). The installer copies or templates them into `~/.claude/`. Direct edits to `~/.claude/` drift from source and are lost on the next `install.ps1 --apply`.
 
-Enforced via PreToolUse hook: `scripts/protected-files.py` (covers both surfaces; user-level paths anchored to `Path.home() / ".claude"` or `$JARVIS_CLAUDE_HOME` override).
+Enforced via PreToolUse hook: `scripts/protected-files.py` (covers both surfaces; user-level paths anchored to `Path.home() / ".claude"` or `$JARVIS_CLAUDE_HOME` override). The hook is principal-aware (#426): `live` principal can edit canonical sources directly (the harness asks for one-off approval), but mirror files always block — the canonical source + installer flow is the only sanctioned path to update them.
 
 ## Branch Rules
 
