@@ -668,7 +668,7 @@ def apply_plan(
             )
         elif action.kind == "copy_dir":
             # Re-derive include from manifest — cheaper than threading it through.
-            include = _include_for(manifest, action.group, action.source)
+            include = _include_for(manifest, action.group, action.source, plan.repo_root)
             _copy_dir(
                 Path(action.source),
                 Path(action.dest),
@@ -694,21 +694,28 @@ def apply_plan(
                 run_env(action.dest, action.note, _platform())
 
 
-def _include_for(manifest: dict[str, Any], group_id: str, source: str) -> list[str] | None:
+def _include_for(
+    manifest: dict[str, Any],
+    group_id: str,
+    source: str,
+    repo_root: Path,
+) -> list[str] | None:
     """Return include filter for a directory group if source matches.
 
-    Uses normalized path equality (via as_posix()) rather than substring matching
-    to avoid false positives when source prefixes overlap. E.g., if two groups have
-    sources "scripts" and "scripts/install", substring matching would incorrectly
-    match "scripts/install/foo" against both groups.
+    Compares as absolute paths (action.source is absolute via build_plan;
+    entry['source'] is repo-relative in the manifest, resolved against
+    repo_root here). Earlier revisions compared a relative manifest path
+    against an absolute action path and silently never matched, disabling
+    every directory-group whitelist in production (caught by
+    `test_apply_plan_creates_files_and_version_marker` after #413).
     """
-    source_normalized = Path(source).as_posix()
+    source_abs = Path(source).resolve()
     for group in manifest.get("groups") or []:
         if group.get("id") != group_id:
             continue
         for entry in group.get("directories") or []:
-            entry_normalized = Path(entry["source"]).as_posix()
-            if entry_normalized == source_normalized:
+            entry_abs = (repo_root / entry["source"]).resolve()
+            if entry_abs == source_abs:
                 return entry.get("include")
     return None
 
