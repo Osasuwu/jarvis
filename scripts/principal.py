@@ -3,18 +3,24 @@
 Hooks (PreToolUse and friends) read this to apply principal-aware policy.
 See ``docs/security/agent-boundaries.md`` for the full permission matrix.
 
-Detection chain (belt + suspenders, default-safe):
+Detection chain (#429 — simplified after the isatty fallback was found
+broken for hook subprocesses):
 
 1. Explicit env ``JARVIS_PRINCIPAL`` — primary signal.
    Accepted values: ``live``, ``autonomous``, ``subagent``, ``supervised``.
 2. Claude Code headless / non-interactive env vars → ``autonomous``.
-3. ``not sys.stdin.isatty()`` → ``autonomous``.
-4. Default → ``live``.
+3. Default → ``live``.
 
-Default-safe property: forgetting to set ``JARVIS_PRINCIPAL`` in a future
-autonomous launch path falls to ``autonomous`` (no human attached, narrow
-permissions), never to ``live``. The dispatcher (Pillar 7 Sprint 2) and any
-other future entry point inherit this safety net for free.
+**Why no isatty fallback**: hook subprocesses always receive piped JSON via
+stdin, so ``sys.stdin.isatty()`` returns False even in fully interactive
+sessions. The original chain mis-classified live owners as ``autonomous``
+inside hooks — a hard regression for ``protected-files.py`` decisions.
+
+**Contract for autonomous entry points**: launchers that run Claude headless
+(scheduler, future dispatcher, any cron/task wrapper) MUST set
+``JARVIS_PRINCIPAL`` explicitly. The scheduler does this via NSSM
+``AppEnvironmentExtra=JARVIS_PRINCIPAL=autonomous`` (see
+``scripts/install/install-scheduler-service.ps1``).
 
 Tier model is shared with ``agents.safety`` (T0=AUTO, T1=OWNER_QUEUE,
 T2=BLOCKED). This module covers the orthogonal "principal" axis; concrete
@@ -25,7 +31,6 @@ in the agent-boundaries doc.
 from __future__ import annotations
 
 import os
-import sys
 from typing import Literal
 
 Principal = Literal["live", "autonomous", "subagent", "supervised"]
@@ -63,29 +68,22 @@ def _is_headless_env() -> bool:
     return False
 
 
-def _is_tty() -> bool:
-    """Best-effort isatty() — returns False on detached stdin or errors."""
-    try:
-        return sys.stdin.isatty()
-    except (ValueError, AttributeError, OSError):
-        return False
-
-
 def detect() -> Principal:
     """Return the active principal for the current process.
 
-    Resolution order:
+    Resolution order (#429):
     1. ``JARVIS_PRINCIPAL`` env (explicit, primary)
     2. Headless env var → ``autonomous``
-    3. Not a TTY → ``autonomous``
-    4. Default → ``live``
+    3. Default → ``live``
+
+    Autonomous entry points must set ``JARVIS_PRINCIPAL`` explicitly. We
+    cannot fall back to ``isatty()`` because hook subprocesses always have
+    piped stdin, which would mis-classify interactive sessions as autonomous.
     """
     explicit = _explicit_env()
     if explicit is not None:
         return explicit  # type: ignore[return-value]
     if _is_headless_env():
-        return "autonomous"
-    if not _is_tty():
         return "autonomous"
     return "live"
 
