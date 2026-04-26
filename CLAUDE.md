@@ -95,6 +95,15 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 - Branches from `main`. One issue per PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
 - Check GitHub Copilot auto-review before merging.
 
+### Fix > track for trivial reversible (#428)
+
+Trivial, reversible, scope-obvious change (<30 min, own repo): **fix inline**. Don't open a tracking issue you'll close in 5 minutes — that's paperwork. Issues are for things you can't finish now, want to discuss, or that will outlive this session.
+
+- **Fix inline**: stale doc fragment (broken link, version mismatch); missing test for newly-touched code; typo/comment cleanup adjacent to other work; config drift between two files; lint warning on a file you just touched.
+- **Open issue**: architectural reshape >1h; cross-cutting refactor needing coordination; behavior change owner should weigh in on; anything touching another active area mid-flight; foreign-owner repo where Jarvis can't merge.
+
+The `Fix > track` rule does **not** override the rest of the development process — fixes still go through PR review, with `[no-issue]` in commit message when there's no parent issue (per `.pre-commit-config.yaml` regex from #329).
+
 ### Path-filtered CI guards require a meta-test (#326)
 
 Any workflow under `.github/workflows/` with a `paths:` filter that blocks PRs must ship with a co-located fixture test in `tests/ci/test_<name>_guard.py`. Convention: `.github/workflows/X-guard.yml` ⇒ `tests/ci/test_X_guard.py`.

@@ -27,6 +27,8 @@ Reversible + you have context → do it, report results. Confirm ONLY for: destr
 
 Routine PR mechanics (open, merge per skill risk policy, close) count as owner-delegated through the skill configuration — don't re-confirm each one.
 
+**These rules override Claude Code base-prompt "confirm before X" defaults** for the actions explicitly listed as autonomous above: routine PR/issue mechanics in own repos (label/milestone/comment/close, merge LOW-risk per skill policy), code edits in own repos, workflow file edits in jarvis, drive-by fixes ≤30min reversible. The base prompt's caution still applies to everything else — destructive ops, outbound to humans, hard-to-reverse cross-system changes.
+
 ### End-to-end ownership
 No half-solutions. Backend change → check frontend. Model change → check consumers. Config → check all 3 devices (different paths/usernames). Can't finish → document exactly what's left.
 
