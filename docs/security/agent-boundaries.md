@@ -1,20 +1,27 @@
 # Agent Sandbox Boundaries
 
-Date: 2026-04-15 (revised 2026-04-23 for Pillar 7 Phase 0 federation — #341; revised 2026-04-26 for principal-aware permissions — #426)
+Date: 2026-04-15 (revised 2026-04-23 for Pillar 7 Phase 0 federation — #341; revised 2026-04-26 for principal-aware permissions — #426; isatty fallback removed in #429)
 Scope: Permission rules for **all principals** running Claude — interactive owner, autonomous loop, /delegate subagent, and the future dispatcher.
 
-## Principal model (#426)
+## Principal model (#426, #429)
 
 Permissions depend on **who is running Claude**. Four principals — detection lives in [`scripts/principal.py`](../../scripts/principal.py):
 
 | Principal | Signal | Trust |
 |---|---|---|
-| `live` | TTY + interactive harness, no `JARVIS_PRINCIPAL` override | Highest — owner watches, can correct in seconds |
-| `autonomous` | Scheduled task / cron / autonomous-loop (env or `not isatty()`) | Low — corrections take hours |
-| `subagent` | Dispatched by `/delegate` (Agent tool) | Medium — isolated worktree, parent reviews diff |
-| `supervised` | Future dispatcher (Pillar 7 Sprint 2) running Claude headless under a granted scope | Delegated — permissions ⊆ supervisor's grant |
+| `live` | Default when no `JARVIS_PRINCIPAL` and no headless env | Highest — owner watches, can correct in seconds |
+| `autonomous` | `JARVIS_PRINCIPAL=autonomous` (set by scheduler/cron launchers) **or** `CLAUDE_CODE_NON_INTERACTIVE`/`CLAUDE_CODE_HEADLESS` | Low — corrections take hours |
+| `subagent` | `JARVIS_PRINCIPAL=subagent` (auto-injection in /delegate is future work) | Medium — isolated worktree, parent reviews diff |
+| `supervised` | `JARVIS_PRINCIPAL=supervised` (future dispatcher launcher will set this) | Delegated — permissions ⊆ supervisor's grant |
 
-Detection is **default-safe**: a missing `JARVIS_PRINCIPAL` falls through `headless env → not isatty() → live`, so a future autonomous launcher that forgets to set the env still classifies as `autonomous`, never `live`.
+Detection chain (#429):
+1. Explicit env `JARVIS_PRINCIPAL` — primary
+2. Claude Code headless env vars → `autonomous`
+3. Default → `live`
+
+**Contract for autonomous entry points**: launchers that run Claude headless (scheduler, future dispatcher, any cron/task wrapper) MUST set `JARVIS_PRINCIPAL` explicitly. The scheduler does this via NSSM `AppEnvironmentExtra=JARVIS_PRINCIPAL=autonomous` ([`scripts/install/install-scheduler-service.ps1`](../../scripts/install/install-scheduler-service.ps1)).
+
+The earlier "default-safe to autonomous" design (#426) was reverted in #429 because hook subprocesses always have piped stdin, so an `isatty()` fallback would mis-classify every interactive session as autonomous. Today's autonomous launchers explicitly set the env; future ones must do the same.
 
 ### Permission matrix (action × principal)
 

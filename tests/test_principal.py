@@ -1,6 +1,6 @@
-"""Tests for scripts/principal.py — principal detection (#426)."""
+"""Tests for scripts/principal.py — principal detection (#426 + #429)."""
 
-import os
+import io
 import sys
 from pathlib import Path
 
@@ -24,28 +24,6 @@ def clean_env(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
-class _FakeStdin:
-    """Stand-in for sys.stdin with a configurable isatty()."""
-
-    def __init__(self, tty: bool):
-        self._tty = tty
-
-    def isatty(self) -> bool:
-        return self._tty
-
-
-@pytest.fixture
-def fake_tty(monkeypatch):
-    """Force isatty()=True so default falls through to ``live``."""
-    monkeypatch.setattr(sys, "stdin", _FakeStdin(tty=True))
-
-
-@pytest.fixture
-def fake_no_tty(monkeypatch):
-    """Force isatty()=False so default falls through to ``autonomous``."""
-    monkeypatch.setattr(sys, "stdin", _FakeStdin(tty=False))
-
-
 # ── Explicit env var (primary signal) ────────────────────────────────
 
 
@@ -53,38 +31,33 @@ def fake_no_tty(monkeypatch):
     "value",
     ["live", "autonomous", "subagent", "supervised"],
 )
-def test_explicit_env_each_valid_value(monkeypatch, fake_no_tty, value):
-    """Explicit JARVIS_PRINCIPAL wins over fallback detection."""
+def test_explicit_env_each_valid_value(monkeypatch, value):
+    """Explicit JARVIS_PRINCIPAL wins over default."""
     monkeypatch.setenv("JARVIS_PRINCIPAL", value)
     assert principal.detect() == value
 
 
-def test_explicit_env_uppercase_normalized(monkeypatch, fake_no_tty):
+def test_explicit_env_uppercase_normalized(monkeypatch):
     monkeypatch.setenv("JARVIS_PRINCIPAL", "LIVE")
     assert principal.detect() == "live"
 
 
-def test_explicit_env_whitespace_stripped(monkeypatch, fake_no_tty):
+def test_explicit_env_whitespace_stripped(monkeypatch):
     monkeypatch.setenv("JARVIS_PRINCIPAL", "  autonomous  ")
     assert principal.detect() == "autonomous"
 
 
-def test_explicit_env_invalid_falls_through_to_autonomous(monkeypatch, fake_no_tty):
-    """An invalid value is ignored; chain continues — no TTY → autonomous.
+def test_explicit_env_invalid_falls_through_to_default_live(monkeypatch):
+    """Invalid value is ignored; default chain returns live (#429).
 
-    Default-safe property: a typo doesn't escalate to ``live``.
+    Earlier behavior fell to autonomous via isatty fallback. After the #429
+    fix, default is live. Autonomous launchers must set the env explicitly.
     """
     monkeypatch.setenv("JARVIS_PRINCIPAL", "garbage")
-    assert principal.detect() == "autonomous"
-
-
-def test_explicit_env_invalid_falls_through_to_live(monkeypatch, fake_tty):
-    """Same chain with TTY available: invalid env → TTY check → live."""
-    monkeypatch.setenv("JARVIS_PRINCIPAL", "root")
     assert principal.detect() == "live"
 
 
-def test_explicit_env_empty_treated_as_unset(monkeypatch, fake_tty):
+def test_explicit_env_empty_treated_as_unset(monkeypatch):
     monkeypatch.setenv("JARVIS_PRINCIPAL", "")
     assert principal.detect() == "live"
 
@@ -93,46 +66,68 @@ def test_explicit_env_empty_treated_as_unset(monkeypatch, fake_tty):
 
 
 @pytest.mark.parametrize("var_name", principal._HEADLESS_ENV_VARS)
-def test_headless_env_forces_autonomous_even_with_tty(monkeypatch, fake_tty, var_name):
-    """Headless env wins over a misleading TTY signal."""
+def test_headless_env_forces_autonomous(monkeypatch, var_name):
+    """Headless env vars route to autonomous regardless of other signals."""
     monkeypatch.setenv(var_name, "1")
     assert principal.detect() == "autonomous"
 
 
 @pytest.mark.parametrize("falsy", ["0", "false", "no", "FALSE", " "])
-def test_headless_env_falsy_values_ignored(monkeypatch, fake_tty, falsy):
+def test_headless_env_falsy_values_ignored(monkeypatch, falsy):
     """A headless env set to a falsy value isn't a real signal."""
     monkeypatch.setenv("CLAUDE_CODE_NON_INTERACTIVE", falsy)
     assert principal.detect() == "live"
 
 
-def test_explicit_env_overrides_headless(monkeypatch, fake_tty):
+def test_explicit_env_overrides_headless(monkeypatch):
     """Explicit JARVIS_PRINCIPAL still wins over headless env."""
     monkeypatch.setenv("CLAUDE_CODE_NON_INTERACTIVE", "1")
     monkeypatch.setenv("JARVIS_PRINCIPAL", "subagent")
     assert principal.detect() == "subagent"
 
 
-# ── isatty fallback ──────────────────────────────────────────────────
+# ── Default behavior ─────────────────────────────────────────────────
 
 
-def test_no_tty_falls_back_to_autonomous(fake_no_tty):
-    assert principal.detect() == "autonomous"
+def test_default_with_no_signals_returns_live():
+    """No env, no headless markers → live (#429).
 
-
-def test_tty_falls_back_to_live(fake_tty):
+    This is the contract: interactive sessions don't need explicit setup.
+    Autonomous launchers must set JARVIS_PRINCIPAL=autonomous explicitly.
+    """
     assert principal.detect() == "live"
 
 
-# ── Default-safe property check ──────────────────────────────────────
+def test_piped_stdin_does_not_force_autonomous(monkeypatch):
+    """Hook subprocesses always have piped stdin (the JSON tool_input).
 
-
-def test_default_safe_no_signals_with_no_tty(fake_no_tty):
-    """No env, no TTY — must be ``autonomous``, never ``live``.
-
-    This is THE safety property of detect(): if a future entry-point launches
-    Claude headless and forgets to set JARVIS_PRINCIPAL, the principal must
-    fall to a constrained mode, not the wide-permissions live mode.
+    Regression guard for #429: previously the isatty fallback misclassified
+    every hook invocation as autonomous because hook stdin is never a TTY.
+    With the fallback removed, piped stdin doesn't change the verdict.
     """
-    # No env vars set (clean_env fixture), no TTY.
-    assert principal.detect() == "autonomous"
+    # Simulate hook subprocess: stdin replaced with a non-TTY pipe-like.
+    monkeypatch.setattr(sys, "stdin", io.StringIO("{\"tool_input\": {}}"))
+    assert principal.detect() == "live"
+
+
+# ── Unit primitives ──────────────────────────────────────────────────
+
+
+def test_explicit_env_helper_returns_none_on_invalid(monkeypatch):
+    monkeypatch.setenv("JARVIS_PRINCIPAL", "garbage")
+    assert principal._explicit_env() is None
+
+
+def test_explicit_env_helper_returns_value_on_valid(monkeypatch):
+    monkeypatch.setenv("JARVIS_PRINCIPAL", "supervised")
+    assert principal._explicit_env() == "supervised"
+
+
+def test_is_headless_env_with_no_vars():
+    assert principal._is_headless_env() is False
+
+
+@pytest.mark.parametrize("var_name", principal._HEADLESS_ENV_VARS)
+def test_is_headless_env_with_each_var(monkeypatch, var_name):
+    monkeypatch.setenv(var_name, "1")
+    assert principal._is_headless_env() is True
