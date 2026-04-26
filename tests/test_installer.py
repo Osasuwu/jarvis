@@ -950,14 +950,44 @@ def test_register_mcp_user_stdio_command_shape(monkeypatch) -> None:
         {"command": "python", "args": ["/abs/run.py"], "env": {"K": "V"}},
     )
 
-    # First call: idempotent remove. Second: add with -e then `--` then command.
+    # First call: idempotent remove. Second: add — name BEFORE -e to avoid
+    # the variadic -e swallowing the positional (#432).
     assert captured[0][:5] == ["claude", "mcp", "remove", "-s", "user"]
     add = captured[1]
     assert add[:5] == ["claude", "mcp", "add", "-s", "user"]
+    # Layout: ... -s user <name> -e K=V -- <command> <args...>
+    name_idx = add.index("memory")
     assert "-e" in add and "K=V" in add
+    e_idx = add.index("-e")
+    assert name_idx < e_idx, "name must come BEFORE -e (variadic eats positional)"
     assert "--" in add
     dd = add.index("--")
+    assert e_idx < dd, "-e must come BEFORE -- separator"
     assert add[dd + 1 :] == ["python", "/abs/run.py"]
+
+
+def test_register_mcp_user_stdio_command_shape_no_env(monkeypatch) -> None:
+    """Stdio without env vars — name still goes before `--` boundary."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(list(cmd))
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    installer._register_mcp_user("simple", {"command": "uvx", "args": ["foo-mcp"]})
+
+    add = captured[1]
+    dd = add.index("--")
+    # No -e flag should appear when env is absent.
+    assert "-e" not in add
+    # Layout: ... -s user simple -- uvx foo-mcp
+    assert add[dd - 1] == "simple"
+    assert add[dd + 1 :] == ["uvx", "foo-mcp"]
 
 
 def test_register_mcp_user_http_command_shape(monkeypatch) -> None:
@@ -984,7 +1014,35 @@ def test_register_mcp_user_http_command_shape(monkeypatch) -> None:
     add = captured[1]
     assert "--transport" in add and "http" in add
     assert "-H" in add and "Authorization: Bearer xxx" in add
-    assert add[-2:] == ["remote", "https://example.com/mcp"]
+    # Layout: ... --transport http <name> <url> -H "..." (#432)
+    # Headers AFTER positionals so variadic -H doesn't eat <name>.
+    name_idx = add.index("remote")
+    url_idx = add.index("https://example.com/mcp")
+    h_idx = add.index("-H")
+    assert name_idx < url_idx < h_idx, "positionals must come BEFORE -H (variadic)"
+
+
+def test_register_mcp_user_http_no_headers(monkeypatch) -> None:
+    """HTTP server without auth headers — clean positional layout."""
+    captured: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        captured.append(list(cmd))
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    installer._register_mcp_user(
+        "open-mcp",
+        {"type": "http", "url": "https://example.com/mcp"},
+    )
+
+    add = captured[1]
+    assert "-H" not in add
+    assert add[-2:] == ["open-mcp", "https://example.com/mcp"]
 
 
 def test_register_mcp_user_raises_on_add_failure(monkeypatch) -> None:
