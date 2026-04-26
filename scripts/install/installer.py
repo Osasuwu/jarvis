@@ -254,6 +254,19 @@ def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
     Idempotent: a stale entry is removed (errors swallowed — it may not exist)
     before the add. Subprocess args are passed as a list so values containing
     spaces or shell metacharacters survive intact.
+
+    Argument order matters (#432). The Claude Code CLI declares variadic
+    options:
+        -e, --env <env...>
+        -H, --header <header...>
+    A variadic flag eats every following token until the next flag (or `--`),
+    including positional arguments. Putting `-H`/`-e` BEFORE the positional
+    `<name>` causes the parser to consume `<name>` as a header/env value and
+    fail with `error: missing required argument 'name'`.
+
+    Fix: place positionals first, then the variadic flags. For stdio, the
+    `--` separator marks the end of options, so `-e` between `<name>` and
+    `--` is safe.
     """
     subprocess.run(
         ["claude", "mcp", "remove", "-s", "user", name],
@@ -263,14 +276,19 @@ def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
     cmd: list[str] = ["claude", "mcp", "add", "-s", "user"]
     transport = spec.get("type")
     if transport in {"http", "sse"}:
-        cmd += ["--transport", transport]
+        # Order: --transport <t> <name> <url> -H ... -H ...
+        # Headers AFTER positionals so the -H variadic doesn't swallow them.
+        cmd += ["--transport", transport, name, spec["url"]]
         for hk, hv in (spec.get("headers") or {}).items():
             cmd += ["-H", f"{hk}: {hv}"]
-        cmd += [name, spec["url"]]
     else:
+        # Order: <name> -e ... -- <command> <args...>
+        # Env flags AFTER name so the -e variadic doesn't swallow it; the
+        # `--` separator then marks the boundary before the inner command.
+        cmd += [name]
         for ek, ev in (spec.get("env") or {}).items():
             cmd += ["-e", f"{ek}={ev}"]
-        cmd += [name, "--", spec["command"], *spec.get("args", [])]
+        cmd += ["--", spec["command"], *spec.get("args", [])]
     result = subprocess.run(cmd, check=False, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
