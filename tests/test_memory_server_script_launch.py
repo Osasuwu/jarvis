@@ -34,12 +34,21 @@ def test_server_script_launch_does_not_crash_on_import():
         cwd=str(REPO_ROOT),
     )
     try:
+        # Two acceptable outcomes:
+        #   (a) server still running after 3s — handlers fully imported, main
+        #       loop blocking on stdin (the historical happy path).
+        #   (b) server exited 0 within ~3s — happens after #436/#437 because
+        #       MCP stdio servers cleanly shut down on stdin EOF and we're
+        #       passing stdin=DEVNULL. As long as exit is 0 with no
+        #       ImportError/Traceback in stderr, the import chain landed.
+        # Anything else is the bug this test was added to catch.
         time.sleep(3)
-        if proc.poll() is not None:
-            stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
-            stdout = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
+        rc = proc.poll()
+        stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+        stdout = proc.stdout.read().decode("utf-8", errors="replace") if proc.stdout else ""
+        if rc is not None and rc != 0:
             pytest.fail(
-                f"server.py exited during import (rc={proc.returncode})\n"
+                f"server.py exited non-zero on script launch (rc={rc})\n"
                 f"--- stderr ---\n{stderr}\n--- stdout ---\n{stdout}"
             )
     finally:
@@ -51,6 +60,7 @@ def test_server_script_launch_does_not_crash_on_import():
                 proc.kill()
                 proc.wait(timeout=5)
 
+    # Re-collect stderr in case more arrived during shutdown.
     stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
     assert "ImportError" not in stderr, f"ImportError on script launch:\n{stderr}"
     assert "Traceback" not in stderr, f"Unexpected traceback on script launch:\n{stderr}"
