@@ -37,7 +37,7 @@ class TestIncludeFor:
                 }
             ]
         }
-        result = installer._include_for(manifest, "test_group", "scripts/foo")
+        result = installer._include_for(manifest, "test_group", "scripts/foo", Path("."))
         assert result == ["file1.py", "file2.py"]
 
     def test_overlapping_prefixes(self):
@@ -70,7 +70,7 @@ class TestIncludeFor:
             ]
         }
         # Should match group2 exactly, not group1 via substring
-        result = installer._include_for(manifest, "group2", "scripts/install")
+        result = installer._include_for(manifest, "group2", "scripts/install", Path("."))
         assert result == ["group2_file.py"]
 
     def test_no_match_returns_none(self):
@@ -88,7 +88,7 @@ class TestIncludeFor:
                 }
             ]
         }
-        result = installer._include_for(manifest, "test_group", "scripts/bar")
+        result = installer._include_for(manifest, "test_group", "scripts/bar", Path("."))
         assert result is None
 
     def test_normalized_path_variants(self):
@@ -107,7 +107,7 @@ class TestIncludeFor:
             ]
         }
         # Both forward slash and backslash should resolve to same normalized form
-        result = installer._include_for(manifest, "test_group", "scripts/foo")
+        result = installer._include_for(manifest, "test_group", "scripts/foo", Path("."))
         assert result == ["file1.py"]
 
 
@@ -511,7 +511,7 @@ class TestUnicodePathHandling:
             ]
         }
 
-        result = installer._include_for(manifest, "unicode_group", "тест/скрипты")
+        result = installer._include_for(manifest, "unicode_group", "тест/скрипты", Path("."))
         assert result == ["file1.py", "file2.py"]
 
 

@@ -22,11 +22,11 @@ on:
       - "Project Sync"
       - "Review Response"
     types: [completed]
-    branches: [main, master]
+    branches: [main]
 
   pull_request:
     types: [closed]
-    branches: [main, master]
+    branches: [main]
 
   pull_request_review:
     types: [submitted]

@@ -3,7 +3,7 @@ name: PR Merged
 on:
   pull_request:
     types: [closed]
-    branches: [master, main]
+    branches: [main]
 
 jobs:
   comment-on-linked-issues:
