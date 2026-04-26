@@ -53,3 +53,5 @@ __pycache__/
 .ruff_cache/
 htmlcov/
 *.egg-info/
+
+docs/proxy-network-plan.md
