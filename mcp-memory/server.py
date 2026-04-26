@@ -28,6 +28,15 @@ Usage in .mcp.json:
 
 from __future__ import annotations
 
+import sys
+
+# Alias __main__ -> 'server' so that handler modules' `import server`
+# (used to reach shared utilities via this module for test monkeypatch
+# propagation) doesn't re-execute this file when launched as a script
+# (`python mcp-memory/server.py`) and recursively re-enter the handler
+# imports below. No-op when already imported as `server` (pytest path).
+sys.modules.setdefault("server", sys.modules[__name__])
+
 import asyncio
 from pathlib import Path
 
