@@ -1,4 +1,8 @@
-"""Tests for scripts/protected-files.py — protected file detection."""
+"""Tests for scripts/protected-files.py — protected file detection.
+
+#426 added principal-aware decisions (classify + should_block); legacy
+``is_protected`` kept for backwards compat and still tested below.
+"""
 
 import sys
 import os
@@ -13,6 +17,8 @@ protected_files = importlib.import_module("protected-files")
 
 is_protected = protected_files.is_protected
 normalize_path = protected_files.normalize_path
+classify = protected_files.classify
+should_block = protected_files.should_block
 
 
 @pytest.fixture
@@ -144,3 +150,101 @@ def test_allows_user_level_non_protected(fake_claude_home):
 def test_allows_user_level_skill_subresource(fake_claude_home):
     # Only SKILL.md itself is protected — co-located scripts or resources aren't.
     assert not is_protected(f"{fake_claude_home}/skills/implement/helper.py")
+
+
+# ── #426: classification (canonical vs mirror vs none) ──────────────
+
+
+def test_classify_repo_canonical():
+    """Repo-side protected files classify as ``canonical``."""
+    assert classify("config/SOUL.md") == "canonical"
+    assert classify("CLAUDE.md") == "canonical"
+    assert classify(".mcp.json") == "canonical"
+    assert classify("mcp-memory/server.py") == "canonical"
+    assert classify(".pre-commit-config.yaml") == "canonical"
+
+
+def test_classify_user_level_mirror(fake_claude_home):
+    """User-level ``~/.claude/*`` files classify as ``mirror``."""
+    assert classify(f"{fake_claude_home}/SOUL.md") == "mirror"
+    assert classify(f"{fake_claude_home}/settings.json") == "mirror"
+    assert classify(f"{fake_claude_home}/.mcp.json") == "mirror"
+    assert classify(f"{fake_claude_home}/skills/delegate/SKILL.md") == "mirror"
+
+
+def test_classify_unprotected_returns_none():
+    """Files not on either list classify as None."""
+    assert classify("scripts/secret-scanner.py") is None
+    assert classify("docs/PROJECT_PLAN.md") is None
+    assert classify("tests/test_secret_scanner.py") is None
+
+
+# ── #426: should_block(path, principal) — the matrix ────────────────
+
+
+@pytest.mark.parametrize(
+    "principal", ["live", "autonomous", "subagent", "supervised"]
+)
+def test_unprotected_never_blocks(principal):
+    """Files outside the protected list never block, regardless of principal."""
+    assert not should_block("scripts/secret-scanner.py", principal)
+    assert not should_block("docs/PROJECT_PLAN.md", principal)
+    assert not should_block("config/device.json", principal)
+
+
+def test_canonical_allows_live_principal():
+    """Live owner can edit canonical sources — harness asks one-off."""
+    assert not should_block("config/SOUL.md", "live")
+    assert not should_block("CLAUDE.md", "live")
+    assert not should_block(".mcp.json", "live")
+    assert not should_block("mcp-memory/server.py", "live")
+
+
+@pytest.mark.parametrize(
+    "principal", ["autonomous", "subagent", "supervised"]
+)
+def test_canonical_blocks_non_live_principals(principal):
+    """Anything but live blocks canonical sources."""
+    assert should_block("config/SOUL.md", principal)
+    assert should_block("CLAUDE.md", principal)
+    assert should_block(".mcp.json", principal)
+    assert should_block("mcp-memory/server.py", principal)
+
+
+@pytest.mark.parametrize(
+    "principal", ["live", "autonomous", "subagent", "supervised"]
+)
+def test_mirror_blocks_all_principals(principal, fake_claude_home):
+    """User-level mirrors block ALL principals — even live owner uses installer flow.
+
+    Source of truth lives in the repo; direct edits to ``~/.claude/*`` drift
+    on the next ``install.ps1 --apply``. Hook directs everyone to the
+    installer rather than letting the harness ask owner to drift the mirror.
+    """
+    paths = [
+        f"{fake_claude_home}/SOUL.md",
+        f"{fake_claude_home}/settings.json",
+        f"{fake_claude_home}/.mcp.json",
+        f"{fake_claude_home}/skills/delegate/SKILL.md",
+    ]
+    for path in paths:
+        assert should_block(path, principal), (
+            f"{path} should block {principal} (mirror — use installer flow)"
+        )
+
+
+def test_block_reason_mentions_installer_for_mirror(fake_claude_home):
+    """Mirror block message must point users at the installer flow."""
+    reason = protected_files._block_reason(
+        f"{fake_claude_home}/SOUL.md", "mirror", "live"
+    )
+    assert "install" in reason.lower()
+
+
+def test_block_reason_mentions_principal_for_canonical():
+    """Canonical block message must explain the principal-side constraint."""
+    reason = protected_files._block_reason(
+        "config/SOUL.md", "canonical", "autonomous"
+    )
+    assert "autonomous" in reason.lower()
+    assert "owner" in reason.lower() or "live" in reason.lower()

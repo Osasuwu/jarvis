@@ -114,6 +114,7 @@ Follow the /implement skill pipeline (loaded in your session). Specifically:
 - §6 Record outcome — always record, pattern_tags=["delegation", "subagent", "<area>"]
 
 HARD RULES for you (subagent):
+- You operate as `JARVIS_PRINCIPAL=subagent` (#426). Hooks classify your tool calls as constrained — protected-file edits and protected-file mirrors will block. Do not try to bypass.
 - Do NOT merge the PR. Open it, push it, record outcome, stop.
 - Do NOT modify protected files (.mcp.json, CLAUDE.md, etc — see docs/security/agent-boundaries.md)
 - Do NOT send messages as the owner
@@ -122,6 +123,8 @@ HARD RULES for you (subagent):
 
 Report back: PR URL + 2-line summary of what you did.
 ```
+
+**Principal env propagation note (#426)**: The Agent tool inherits parent env, so `JARVIS_PRINCIPAL` set in the parent session carries to the subagent. Auto-injection of `JARVIS_PRINCIPAL=subagent` is deferred — the parent is `live` (owner-driven dispatch), and subagents are already constrained by the worktree isolation and skill-level rules above. If a future code path runs `/delegate` autonomously (e.g. dispatcher hands work to a subagent), revisit and inject `JARVIS_PRINCIPAL=subagent` explicitly via the spawn wrapper.
 
 ### 4a. Worktree-isolation caveat
 

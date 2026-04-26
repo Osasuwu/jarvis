@@ -1,13 +1,18 @@
-"""PreToolUse hook: block writes to protected files.
+"""PreToolUse hook: block writes to protected files (principal-aware).
 
 Checks Edit/Write tool inputs for file paths that match the protected list.
-Exits 2 to block if a protected file is targeted.
+Decision is principal-sensitive (#426):
 
-Covers two surfaces (kept in sync with ``docs/security/agent-boundaries.md``):
-- Repo-level files under the jarvis working copy (source of truth).
-- User-level files under ``~/.claude/`` installed by ``scripts/install/installer.py``.
-  Editing those affects every Claude Code session on the device, so they get
-  the same protection as the jarvis-repo source.
+- ``live`` (interactive owner) + repo-level canonical source → exit 0,
+  let the harness ask for permission. Owner can approve a one-off edit.
+- ``live`` + user-level mirror (``~/.claude/*``) → block. These are
+  installer-managed; direct edits drift from source on next ``install.ps1``.
+- ``autonomous`` / ``subagent`` / ``supervised`` + any protected file → block.
+  No human eye on these contexts; protected-file edits must be promoted
+  through the canonical PR + installer flow.
+
+See ``docs/security/agent-boundaries.md`` for the full action × principal
+matrix and ``scripts/principal.py`` for detection logic.
 """
 
 import json
@@ -15,8 +20,19 @@ import os
 import sys
 from pathlib import Path
 
-# Repo-level files that require owner review — agents must not modify these.
-PROTECTED_FILES = {
+# Wire in principal detection. Importing by relative name works because the
+# hook is invoked with cwd inside the repo and ``scripts/`` is the directory
+# this file lives in; for safety we also fall back to a path-based import.
+try:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import principal as _principal  # noqa: E402
+finally:
+    pass
+
+# Repo-level CANONICAL sources. Edits here flow to every device and project
+# via PR + installer. Live owner can approve one-off edits (harness asks);
+# autonomous / subagent / supervised must use the canonical PR flow.
+T2_CANONICAL = {
     ".mcp.json",
     "config/SOUL.md",
     "CLAUDE.md",
@@ -41,8 +57,14 @@ PROTECTED_FILES = {
     ".pre-commit-config.yaml",
 }
 
-# User-level paths (relative to ``~/.claude/``) that require owner review.
-# Expansion target matches installer.py — respects JARVIS_CLAUDE_HOME override.
+# Backwards-compat alias — older imports / docs may still reference this.
+PROTECTED_FILES = T2_CANONICAL
+
+# User-level MIRROR paths (relative to ``~/.claude/``). Canonical source for
+# these lives in the repo (``config/SOUL.md``, ``.claude-userlevel/...``);
+# the installer copies/templates them into ``~/.claude/``. Direct edits drift
+# from source on the next ``install.ps1 --apply``, so we block ALL principals
+# (including ``live``) and direct the user to the installer flow.
 _USER_LEVEL_PROTECTED_FILES = {
     "settings.json",
     "SOUL.md",
@@ -96,24 +118,79 @@ def _is_user_level_protected(normalized: str) -> bool:
     return len(parts) == 3 and parts[0] == "skills" and parts[2] == "SKILL.md"
 
 
-def is_protected(file_path: str) -> bool:
-    """Check if a file path matches any protected file (repo-level or user-level)."""
+def classify(file_path: str) -> str | None:
+    """Classify a path as ``"canonical"`` (repo-side T2), ``"mirror"``
+    (user-level T2 under ``~/.claude/``), or ``None`` (not protected).
+    """
     normalized = normalize_path(file_path)
-    if normalized in PROTECTED_FILES:
-        return True
-    return _is_user_level_protected(normalized)
+    if normalized in T2_CANONICAL:
+        return "canonical"
+    if _is_user_level_protected(normalized):
+        return "mirror"
+    return None
 
 
-def block(file_path: str):
-    """Output deny JSON and exit 2."""
+def is_protected(file_path: str) -> bool:
+    """Backwards-compat: True iff path matches any protected category."""
+    return classify(file_path) is not None
+
+
+def should_block(file_path: str, principal: str) -> bool:
+    """Principal-aware block decision.
+
+    Returns ``True`` iff the hook should block the write attempt for this
+    ``(path, principal)`` pair.
+
+    Policy (matches ``docs/security/agent-boundaries.md`` matrix):
+    - Not protected → never block.
+    - ``live`` + ``canonical`` → don't block (let harness ask owner).
+    - Any other combination of protected × principal → block.
+    """
+    classification = classify(file_path)
+    if classification is None:
+        return False
+    if principal == "live" and classification == "canonical":
+        return False
+    return True
+
+
+def _block_reason(file_path: str, classification: str, principal: str) -> str:
+    """Compose a human-readable reason for the block decision."""
+    if classification == "mirror":
+        return (
+            f"BLOCKED: '{file_path}' is a user-level mirror under ~/.claude/. "
+            "Edit the canonical source in the jarvis repo "
+            "(config/SOUL.md, .claude-userlevel/...), open a PR, then propagate "
+            "with `install.ps1 -Apply` (or `install.sh -a`). Direct edits drift "
+            "from source on next install."
+        )
+    # canonical, but principal != live
+    return (
+        f"BLOCKED: '{file_path}' is a protected canonical source and the "
+        f"current principal is '{principal}'. Only interactive (live) owner "
+        "sessions can edit canonical sources directly; autonomous loops, "
+        "subagents, and dispatched agents must document the change in the PR "
+        "description and leave the file for the owner to edit. See "
+        "docs/security/agent-boundaries.md for the full matrix."
+    )
+
+
+def block(file_path: str, classification: str | None = None, principal: str | None = None):
+    """Output deny JSON and exit 2.
+
+    ``classification`` and ``principal`` are optional for backwards
+    compatibility with the pre-#426 signature; main() always supplies them.
+    """
+    if classification is None:
+        classification = classify(file_path) or "canonical"
+    if principal is None:
+        principal = "unknown"
+    reason = _block_reason(file_path, classification, principal)
     result = {
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                f"BLOCKED: '{file_path}' is a protected file. "
-                "Document the needed change in the PR description instead."
-            ),
+            "permissionDecisionReason": reason,
         }
     }
     json.dump(result, sys.stdout)
@@ -138,10 +215,17 @@ def main():
     if not file_path:
         sys.exit(0)
 
-    if is_protected(file_path):
-        block(file_path)
+    classification = classify(file_path)
+    if classification is None:
+        sys.exit(0)
 
-    sys.exit(0)
+    principal = _principal.detect()
+
+    # live + canonical → let the harness handle the permission ask.
+    if principal == "live" and classification == "canonical":
+        sys.exit(0)
+
+    block(file_path, classification, principal)
 
 
 if __name__ == "__main__":

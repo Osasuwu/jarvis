@@ -360,6 +360,12 @@ Invoke-Nssm "set", $ServiceName, "AppRestartDelay", "5000"
 Invoke-Nssm "set", $ServiceName, "Description", "$ServiceDescription"
 Invoke-Nssm "set", $ServiceName, "DisplayName", "$ServiceDisplayName"
 
+# Principal (#426): scheduler service runs autonomously — no human in the loop.
+# Hooks (scripts/protected-files.py + future principal-aware hooks) read this
+# env var to apply constrained permissions vs interactive owner sessions.
+# AppEnvironmentExtra appends to the inherited service env; NUL-separated string.
+Invoke-Nssm "set", $ServiceName, "AppEnvironmentExtra", "JARVIS_PRINCIPAL=autonomous"
+
 # Service account configuration (issue #410)
 if ($ServiceAccount) {
     Write-Status "`nConfiguring service account: $ServiceAccount" $InfoColor
