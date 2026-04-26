@@ -55,13 +55,17 @@ groups:
         merge: true
 
   - id: mcp_config
-    description: ".mcp.json — MCP server config with absolute paths (M3 #338)"
+    description: "MCP servers — registered at user scope via `claude mcp add` (M3 #338)"
     enabled: true
     files:
+      # Source listing read by installer; each entry becomes a
+      # `claude mcp add -s user` call (writes to ~/.claude.json's mcpServers).
+      # Earlier revisions copied the file to ~/.claude/.mcp.json — Claude Code
+      # never reads that path, so the install was inert. The dead file is
+      # auto-quarantined on next apply.
       - source: ".claude-userlevel/.mcp.json"
-        dest: ".mcp.json"
+        install_as: "user_mcp_registrations"
         template: true
-        merge: true  # preserve user-added mcpServers entries on re-apply
 
   - id: skills
     description: "Core skills (M2 #337) — universal, not project-specific"

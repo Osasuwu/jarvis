@@ -40,7 +40,7 @@ DEFAULT_MANIFEST = "install-manifest.yaml"
 class Action:
     """One planned filesystem action."""
 
-    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "write_version" | "set_env"
+    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "register_mcp_user" | "write_version" | "set_env"
     source: str | None
     dest: str
     template: bool = False
@@ -126,6 +126,16 @@ def detect_state(target_root: Path, current_sha: str) -> tuple[str, str | None]:
 _POSIX_PATH_PATTERN = re.compile(r"(?<!\S)(scripts|config)/")
 
 
+# A pre-migration `.mcp.json` sitting in any parent dir of JARVIS_HOME (e.g.
+# `D:\Github\.mcp.json`) shadows the correctly-templated user-level file:
+# Claude Code walks up from CWD and binds the first `.mcp.json` it finds.
+# Pre-migration files reference `jarvis/scripts/...` as a *relative* path,
+# which only resolves when CWD == the legacy file's parent. From any other
+# project (redrobot, etc.) the server fails to launch. Detect by JSON content,
+# not just filename, so we don't quarantine unrelated parent-dir MCP configs.
+_LEGACY_RELATIVE_JARVIS_PATTERN = re.compile(r"^jarvis[\\/]")
+
+
 def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
     """Rewrite relative `scripts/...` and `config/...` references to
     absolute paths inside the jarvis repo. JSON-aware walk preserves
@@ -139,6 +149,133 @@ def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
     if isinstance(node, dict):
         return {k: _transform_json_paths(v, repo_root_posix) for k, v in node.items()}
     return node
+
+
+def _references_relative_jarvis(node: Any) -> bool:
+    """True if any string leaf is a relative path beginning with `jarvis/` or `jarvis\\`."""
+    if isinstance(node, str):
+        return bool(_LEGACY_RELATIVE_JARVIS_PATTERN.match(node))
+    if isinstance(node, list):
+        return any(_references_relative_jarvis(x) for x in node)
+    if isinstance(node, dict):
+        return any(_references_relative_jarvis(v) for v in node.values())
+    return False
+
+
+def find_legacy_parent_mcp(repo_root: Path, max_depth: int = 4) -> list[Path]:
+    """Return parent-dir `.mcp.json` files referencing jarvis with relative paths.
+
+    Walks up to `max_depth` parents from `repo_root` (typically JARVIS_HOME).
+    A file is flagged only when its JSON content contains a string starting
+    with `jarvis/` or `jarvis\\` — i.e. a path that resolves correctly when
+    CWD is the legacy file's parent dir but breaks elsewhere. Absolute paths
+    (already-templated by a prior install) are left alone.
+    """
+    found: list[Path] = []
+    parent = repo_root.parent
+    for _ in range(max_depth):
+        if parent == parent.parent:  # filesystem root
+            break
+        candidate = parent / ".mcp.json"
+        if candidate.is_file():
+            try:
+                data = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                pass
+            else:
+                if _references_relative_jarvis(data):
+                    found.append(candidate)
+        parent = parent.parent
+    return found
+
+
+def _quarantine_dest(path: Path) -> Path:
+    """Compute non-clobbering `.bak.pre-jarvis-migration` destination for `path`."""
+    base = path.with_name(path.name + ".bak.pre-jarvis-migration")
+    if not base.exists():
+        return base
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    return path.with_name(f"{path.name}.bak.pre-jarvis-migration-{stamp}")
+
+
+def _plan_mcp_user_registrations(
+    source: Path,
+    repo_root: Path,
+    target_root: Path,
+) -> list[Action]:
+    """Generate a `register_mcp_user` action per server in `source` (.mcp.json).
+
+    Claude Code does NOT read `~/.claude/.mcp.json` as user-scope MCP config —
+    only project-scope (CWD walk) and the `mcpServers` block inside
+    `~/.claude.json` (managed by `claude mcp add -s user`). Earlier installer
+    revisions dropped the file under `target_root` where Claude Code never
+    looked. This helper reads that file and plans `claude mcp add -s user`
+    invocations that actually register servers in user scope.
+
+    Path templating (`scripts/...` → `<repo_root>/scripts/...`) and
+    `{{JARVIS_HOME}}` substitution are applied before serialising each spec
+    into the action note, so apply-time runs see absolute paths.
+
+    Also schedules a quarantine of any pre-existing `target_root/.mcp.json`
+    left over from the dead file-drop strategy.
+    """
+    rendered = template_content(source, repo_root, target_root).decode("utf-8")
+    data = json.loads(rendered)
+    actions: list[Action] = []
+    for name, spec in (data.get("mcpServers") or {}).items():
+        payload = json.dumps({"name": name, "spec": spec}, ensure_ascii=False)
+        actions.append(
+            Action(
+                kind="register_mcp_user",
+                source=str(source),
+                dest=name,
+                template=False,
+                group="mcp_config",
+                note=payload,
+            )
+        )
+    stale = target_root / ".mcp.json"
+    if stale.is_file():
+        actions.append(
+            Action(
+                kind="quarantine_file",
+                source=str(stale),
+                dest=str(_quarantine_dest(stale)),
+                group="mcp_config",
+                note="superseded by user-scope MCP registrations",
+            )
+        )
+    return actions
+
+
+def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
+    """Run `claude mcp add -s user` for one server, removing any prior entry first.
+
+    Idempotent: a stale entry is removed (errors swallowed — it may not exist)
+    before the add. Subprocess args are passed as a list so values containing
+    spaces or shell metacharacters survive intact.
+    """
+    subprocess.run(
+        ["claude", "mcp", "remove", "-s", "user", name],
+        check=False,
+        capture_output=True,
+    )
+    cmd: list[str] = ["claude", "mcp", "add", "-s", "user"]
+    transport = spec.get("type")
+    if transport in {"http", "sse"}:
+        cmd += ["--transport", transport]
+        for hk, hv in (spec.get("headers") or {}).items():
+            cmd += ["-H", f"{hk}: {hv}"]
+        cmd += [name, spec["url"]]
+    else:
+        for ek, ev in (spec.get("env") or {}).items():
+            cmd += ["-e", f"{ek}={ev}"]
+        cmd += [name, "--", spec["command"], *spec.get("args", [])]
+    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"claude mcp add failed for {name!r}: {result.stderr.strip() or result.stdout.strip()}"
+        )
 
 
 def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> str:
@@ -207,6 +344,16 @@ def build_plan(
         gid = group.get("id", "?")
         for entry in group.get("files") or []:
             src = repo_root / entry["source"]
+            install_as = entry.get("install_as")
+            if install_as == "user_mcp_registrations":
+                actions.extend(
+                    _plan_mcp_user_registrations(src, repo_root, target_root)
+                )
+                continue
+            if install_as is not None:
+                raise ValueError(
+                    f"manifest group {gid!r}: unknown install_as {install_as!r}"
+                )
             dest = target_root / entry["dest"]
             # `merge: true` → deep-merge JSON instead of plain overwrite.
             # Preserves user keys not owned by jarvis (M3 #338).
@@ -234,6 +381,17 @@ def build_plan(
                     note=f"include={include}" if include else "",
                 )
             )
+
+    for legacy in find_legacy_parent_mcp(repo_root):
+        actions.append(
+            Action(
+                kind="quarantine_file",
+                source=str(legacy),
+                dest=str(_quarantine_dest(legacy)),
+                group="legacy_mcp",
+                note="parent-dir .mcp.json shadows ~/.claude/.mcp.json",
+            )
+        )
 
     actions.append(
         Action(
@@ -464,6 +622,7 @@ def apply_plan(
     plan: Plan,
     manifest: dict[str, Any],
     run_env: Callable[[str, str, str], None] | None = _set_env,
+    register_mcp: Callable[[str, dict[str, Any]], None] | None = _register_mcp_user,
 ) -> None:
     if plan.state == "current":
         return
@@ -500,6 +659,16 @@ def apply_plan(
                 plan.repo_root,
                 plan.target_root,
             )
+        elif action.kind == "quarantine_file":
+            src = Path(action.source)
+            dst = Path(action.dest)
+            if src.exists():
+                src.rename(dst)
+                print(f"quarantined legacy {src} -> {dst}", file=sys.stderr)
+        elif action.kind == "register_mcp_user":
+            if register_mcp is not None:
+                payload = json.loads(action.note)
+                register_mcp(payload["name"], payload["spec"])
         elif action.kind == "write_version":
             Path(action.dest).write_text(action.note + "\n", encoding="utf-8")
         elif action.kind == "set_env":
@@ -639,6 +808,15 @@ def format_plan(plan: Plan) -> str:
                 extra = f"  {a.note}" if a.note else ""
                 lines.append(
                     f"  copy_dir   [{a.group:>14}] {a.source} -> {a.dest}{extra}"
+                )
+            elif a.kind == "quarantine_file":
+                lines.append(
+                    f"  quarantine [{a.group:>14}] {a.source} -> {a.dest}"
+                    + (f"  ({a.note})" if a.note else "")
+                )
+            elif a.kind == "register_mcp_user":
+                lines.append(
+                    f"  mcp_user   [{a.group:>14}] claude mcp add -s user {a.dest}"
                 )
             elif a.kind == "write_version":
                 lines.append(f"  write_ver  -> {a.dest}  sha={a.note[:12]}")
