@@ -367,24 +367,6 @@ async def _hybrid_recall(
         _enrich_with_confidence(client, merged)
         _apply_temporal_scoring(merged)
 
-        # Phase 5: gap detection — fire-and-forget so we don't add Supabase
-        # round-trips to the recall hot path on low-match queries.
-        top_sim = merged[0].get("similarity", 0.0) if merged else 0.0
-        top_mem_id = merged[0].get("id") if merged else None
-        if not show_history and top_sim < GAP_THRESHOLD:
-            asyncio.create_task(
-                asyncio.to_thread(
-                    _upsert_known_unknown,
-                    client,
-                    query_text,
-                    query_embedding,
-                    top_sim,
-                    top_mem_id,
-                    project,
-                    "recall",
-                )
-            )
-
         formatted = _format_memories(merged, brief=brief)
         search_type = "hybrid+temporal" if keyword_rows else "semantic+temporal"
         mode_tag = ", brief" if brief else ""
@@ -392,11 +374,16 @@ async def _hybrid_recall(
             "\n".join(formatted) if brief else "\n---\n".join(formatted)
         )
 
-        # Track known unknowns: if top similarity < 0.45, log as a potential gap
-        # (best-effort, non-blocking)
+        # Phase 5: gap detection — fire-and-forget so we don't add Supabase
+        # round-trips to the recall hot path on low-match queries. Single
+        # path; an earlier duplicate at GAP_THRESHOLD passed positional
+        # args that didn't match the kwarg-only signature and silently
+        # raised TypeError under asyncio.to_thread (audit 2026-04-26).
+        # FoK 5.3-γ removes this entirely once batch judge owns gap
+        # detection; until then it's the only path.
         if not show_history and merged:
             top_sim = merged[0].get("similarity", 0.0)
-            if top_sim < 0.45:
+            if top_sim < GAP_THRESHOLD:
                 top_mem_id = merged[0].get("id")
                 asyncio.create_task(
                     _upsert_known_unknown(
@@ -405,7 +392,7 @@ async def _hybrid_recall(
                         query_embedding,
                         top_sim,
                         top_mem_id,
-                        context={"project": project},
+                        context={"project": project, "source": "recall"},
                     )
                 )
 

@@ -133,8 +133,18 @@ class _StubClient:
 
 
 def _now_utc() -> datetime:
-    """Fixed UTC now for testing."""
-    return datetime(2026, 4, 25, 14, 30, 0, tzinfo=UTC)
+    """UTC now for test seed timestamps.
+
+    Was previously a frozen 2026-04-25 14:30 UTC. That worked while the
+    repo's "today" was within 24h of that point, then silently broke
+    once two days had passed: morning_check filters audit_log by
+    `timestamp >= now() - 24h`, so seeds older than that disappeared
+    and the "healthy system" tests started seeing an empty result set
+    ("service may be down" path) → exit 1 instead of 0.
+
+    Use real now() so the seed always lands inside the lookback window.
+    """
+    return datetime.now(UTC)
 
 
 def _audit_row(**overrides: Any) -> dict[str, Any]:
