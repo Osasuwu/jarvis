@@ -92,7 +92,11 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 
 ## Development process
 
-- Branches from `main`. One issue per PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
+- Branches from `main`. **PRs are for code, not for discussions.**
+  - Code change → one issue, one PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
+  - Hotfix → label `priority:critical` (PR Body Check honors the label per #424; no linked issue required); commit-msg uses `[no-issue]` when there's no parent issue (per `.pre-commit-config.yaml` regex from #329).
+  - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (owner if owner-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
+  - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
 - Check GitHub Copilot auto-review before merging.
 
 ### Fix > track for trivial reversible (#428)

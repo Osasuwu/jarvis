@@ -15,12 +15,22 @@ jobs:
         with:
           script: |
             const repo = { owner: context.repo.owner, repo: context.repo.repo };
-            const body = context.payload.pull_request.body || '';
+            const pr = context.payload.pull_request;
+            const body = pr.body || '';
+            const labels = (pr.labels || []).map(l => l.name);
+
+            // Hotfix escape: priority:critical label bypasses the linked-issue requirement.
+            // Aligns with issue-checks.yml which treats priority:critical as hotfix.
+            if (labels.includes('priority:critical')) {
+              console.log('priority:critical label present — skipping linked-issue requirement (hotfix).');
+              return;
+            }
+
             const issueMatches = [...body.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi)];
             const issueNumbers = [...new Set(issueMatches.map(m => parseInt(m[1], 10)))];
 
             if (issueNumbers.length === 0) {
-              core.setFailed('PR body must include a linked issue reference, e.g. "Closes #123".');
+              core.setFailed('PR body must include a linked issue reference, e.g. "Closes #123". For hotfixes, apply the priority:critical label instead.');
               return;
             }
 

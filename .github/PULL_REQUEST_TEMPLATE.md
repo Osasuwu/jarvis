@@ -8,6 +8,14 @@
 
 Closes #
 
+<!--
+PR scope rules:
+  - Code change       → keep "Closes #NNN" above.
+  - Hotfix            → remove the line and apply the priority:critical label.
+  - Design / RFC      → wrong place. Use GitHub Discussions, not a PR.
+-->
+
+
 ## Decisions & Alternatives
 
 <!-- Key choices made during implementation. What alternatives were considered and why they were rejected. Non-obvious decisions that a reviewer would question. -->
