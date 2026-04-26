@@ -95,14 +95,22 @@ ORDER BY created_at ASC;
 
 `N = row count`, `first_flagged_at = min(created_at)`, `days_unaddressed = date(today) - date(first_flagged_at)`.
 
+**Branch by repo ownership** (#433): own-repo findings (`Osasuwu/*`) are auto-actionable in Step 2a, so paper-tracking them as a separate issue is redundant. Foreign-owner repos keep the full ladder because Jarvis can't action them directly.
+
+Detect via `gh repo view <R> --json owner --jq .owner.login`:
+- `Osasuwu` → **own-repo path** (rungs 1-3 + critical-event escalation at rung 4)
+- anything else → **foreign-repo path** (existing ladder, tracking issue at rung 4)
+
 **Escalation rungs:**
 
-| Rung | Threshold | Action |
-|----|----|----|
-| 1 | N ≥ 1 | Memory exists (handled above) |
-| 2 | N ≥ 2 or days_unaddressed ≥ 1 | `/status` surfaces `STALE FLAG` badge (handled by `/status` skill reading these memories — nothing to do here) |
-| 3 | N ≥ 3 | Emit one `events` row with `severity=high` so `telegram-notify-hook.py` picks it up this run |
-| 4 | N ≥ 5 | Create a jarvis-side tracking issue so the stale state is visible on GitHub |
+| Rung | Threshold | Foreign-owner repo | Own repo (Osasuwu/*) |
+|----|----|----|----|
+| 1 | N ≥ 1 | Memory exists | Memory exists |
+| 2 | N ≥ 2 or days_unaddressed ≥ 1 | `/status` surfaces `STALE FLAG` badge | Same |
+| 3 | N ≥ 3 | Emit `events` row, `severity=high`, `event_type=hygiene_stale` | Same |
+| 4 | N ≥ 5 | Create jarvis-side tracking issue (visibility on GitHub) | Emit `events` row, `severity=critical`, `event_type=hygiene_unaddressed_critical` — owner-facing nudge that auto-actionable findings are still untouched after 5 days; **no tracking issue** (would be paperwork) |
+
+The own-repo critical-event payload should include `memory_names`, `detail`, and a one-line "next action" suggestion (e.g. "delegate to subagent" / "promote to next /implement cycle").
 
 **Dedup before emitting (rung 3):** skip if an unprocessed `events` row with `event_type='hygiene_stale'` and `repo=<R>` already exists.
 
@@ -134,7 +142,9 @@ VALUES (
 );
 ```
 
-**Dedup before creating jarvis issue (rung 4):**
+**Rung 4 — foreign-owner repo (tracking issue):**
+
+Dedup first:
 
 ```bash
 gh issue list --repo Osasuwu/jarvis --state open --search "in:title stale flag <repo>" --json number --limit 1
@@ -150,6 +160,41 @@ gh issue create --repo Osasuwu/jarvis \
 ```
 
 Record the issue URL in the event payload (`payload.jarvis_tracking_issue = <url>`) via an update to the event row.
+
+**Rung 4 — own repo (critical-event escalation, no tracking issue):**
+
+Dedup first:
+
+```sql
+SELECT id FROM events
+WHERE event_type = 'hygiene_unaddressed_critical'
+  AND repo = '<R>'
+  AND processed = false
+ORDER BY created_at DESC LIMIT 1;
+```
+
+If none, insert:
+
+```sql
+INSERT INTO events (event_type, severity, repo, source, title, payload)
+VALUES (
+  'hygiene_unaddressed_critical',
+  'critical',
+  '<R>',
+  'skill:autonomous-loop',
+  'Auto-actionable findings unaddressed <N>d: <repo>',
+  jsonb_build_object(
+    'days_flagged', <N>,
+    'first_flagged_at', '<first_flagged_at ISO>',
+    'memory_names', <array of hygiene_sweep_proposals_* names>,
+    'detail', '<brief: top finding from latest memory>',
+    'next_action_hint', 'delegate via /delegate, or promote to /implement cycle',
+    'url', 'https://github.com/<R>'
+  )
+);
+```
+
+Telegram-notify-hook.py picks this up at `severity=critical` and pings owner. Owner decides: action inline, /delegate, or mark the finding obsolete (which clears it from the next sweep).
 
 **Ordering:** run Step 2b for every repo in `config/repos.conf` after Step 2a. Emitting an event here creates work the Low-risk batch will count (counts toward the 5-max limit).
 
