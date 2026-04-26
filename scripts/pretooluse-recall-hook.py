@@ -85,8 +85,13 @@ FETCH_LIMIT = 15  # pull wider, we still only emit top-N
 RECALL_TIMEOUT_SEC = 4.0  # hook runs inline before the tool call — keep tight
 DEDUP_TTL_SECONDS = 60  # identical-query cache window
 MIN_QUERY_CHARS = 8  # too-short query = too much noise from FTS
-MIN_MATCH_SCORE = 0.05  # keyword rank threshold — drops tail noise
+MIN_MATCH_SCORE = 0.08  # keyword rank threshold — drops tail noise (was 0.05; #434 audit)
 ALLOWED_TYPES = {"feedback", "decision", "reference"}
+
+# Stats file for per-session fire-rate audit (#434). Best-effort, never blocks.
+# Keys: fired (total invocations that ran the RPC), emitted (yielded ≥1 row),
+# deduped (skipped via cache). Reset by `--reset-stats` flag or manual delete.
+STATS_FILE = None  # set lazily, depends on _CLAUDE_HOME below
 
 # Projects Jarvis tracks — cwd basename must match to scope recall.
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
@@ -99,6 +104,30 @@ _CLAUDE_HOME = (
 )
 CACHE_DIR = _CLAUDE_HOME / "cache"
 CACHE_FILE = CACHE_DIR / "pretooluse-recall-dedup.json"
+STATS_FILE = CACHE_DIR / "pretooluse-recall-stats.json"
+
+
+def _bump_stat(key: str) -> None:
+    """Increment a counter in the stats file. Best-effort; never raises."""
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        if STATS_FILE.exists():
+            try:
+                data = json.loads(STATS_FILE.read_text(encoding="utf-8"))
+                if not isinstance(data, dict):
+                    data = {}
+            except (OSError, json.JSONDecodeError):
+                data = {}
+        else:
+            data = {}
+        data[key] = int(data.get(key, 0)) + 1
+        # session_started_at is set on first write so /reflect can compute rate
+        data.setdefault("session_started_at", time.time())
+        tmp = STATS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        tmp.replace(STATS_FILE)
+    except OSError:
+        pass
 
 
 def silent_exit() -> None:
@@ -310,6 +339,7 @@ def main() -> None:
     project = detect_project(cwd)
 
     if is_duplicate(query, project):
+        _bump_stat("deduped")
         silent_exit()
 
     # Deferred imports — keep non-matching tool calls cheap (no supabase)
@@ -345,12 +375,16 @@ def main() -> None:
     except Exception:
         silent_exit()
 
+    _bump_stat("fired")
+
     rows = resp.data or []
     rows = [r for r in rows if r.get("type") in ALLOWED_TYPES]
     rows = [r for r in rows if (r.get("rank") or 0) >= MIN_MATCH_SCORE]
     rows = rows[:MAX_BRIEF_ENTRIES]
     if not rows:
         silent_exit()
+
+    _bump_stat("emitted")
 
     header = (
         f"# Mid-turn recall for {tool_name}"
