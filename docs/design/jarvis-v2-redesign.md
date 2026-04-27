@@ -30,7 +30,7 @@ No intermediate diagrams. One C4 (Context → Container → Component) at the en
 | L2 — components per capability | **done** (Tier A: C3, C5, C6, C15, C16, C17; Tier B: C2, C4, C8, C13, C14; Tier C: C1, C7, C9, C10, C11, C12) |
 | Bootstrap protocol & migration order | **done** |
 | Critical review pass | **done** (high-severity addressed: bootstrap + cost reality + ~15 point fixes) |
-| L3 — technologies/patterns | **done** (options marked, decisions deferred to implementation) |
+| L3 — technologies/patterns | **done** (options marked + scout v2 adoption candidates folded in 2026-04-27 per [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md); decisions deferred to implementation) |
 | Final C4 | **done** ([jarvis-architecture-c4.md](jarvis-architecture-c4.md)) |
 | Sanity check vs `jarvis_v2_vision` | **done** |
 | v1 exit criteria + pillar→capability mapping | **done** |
@@ -1602,6 +1602,8 @@ This protocol explicitly accepts **degraded autonomy in month 1** in exchange fo
 
 L3 marks **candidate options** for each capability, not commitments. Final tech choices made during implementation against real benchmarks (per `Design-to-evaluate` op policy). For caps that inherit established stack (Claude Code native, MCP, Supabase, GitHub), L3 is short.
 
+After scout v2 (2026-04-27) — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md) — several Lean choices have moved from "options worth investigating" to "specific package / SQL file / plugin URL identified." These remain non-committal until benchmarked, but reduce search surface for implementation sprints.
+
 ### C1 — Identity & values
 - SOUL.md + CLAUDE.md plain markdown files loaded by session-context hook (current pattern, established).
 - Lean: keep as-is; no real alternatives worth investigating.
@@ -1610,16 +1612,23 @@ L3 marks **candidate options** for each capability, not commitments. Final tech 
 - **Storage**: existing `goals` table, schema cleanup per L2 (drop `progress_pct`, split `jarvis_focus`).
 - **Stale detection**: pg view + scheduled query OR pg trigger on event insert. Lean: scheduled query (simpler, traceable).
 - **`goal_slug` resolution at gate**: pg function consulted by C6 gate hook OR LLM-judged matching. Lean: pg function with semantic-similarity over goal embeddings (cheap, deterministic), LLM fallback only on ambiguity.
+- **Goal embeddings**: VoyageAI on `description` at insert/update. Lean: pg trigger fires Voyage call via `mcp-memory/server.py` background worker; cached in `goals.embedding` column.
+- **Parent-close cascade**: pg trigger on `goal_status_change` vs scheduled query. Lean: scheduled query — closing a goal is a strategic moment requiring owner judgment, not auto-action; trigger only emits `parent_close_suggested` event.
+- **Proactive child goal extraction**: scheduled subagent vs event-triggered handler on `owner_message`/`decision_made`. Lean: event-triggered with Haiku — per `Memory-driven autonomy` op policy, not periodic sweep.
 
 ### C3 — Memory
 - **Tables**: PostgreSQL with pgvector (current). No real alternative under Cost=9 + Memory=10.
-- **Bi-temporal model**: SQL standard `valid_from`/`valid_to` columns vs `system_versioning` extension. Lean: explicit columns (portable, queryable without extension).
+- **Bi-temporal model**: SQL standard `valid_from`/`valid_to` vs `system_versioning` extension vs `pg_bitemporal` `effective`/`asserted` periods. Lean: **adopt [`pg_bitemporal`](https://github.com/scalegenius/pg_bitemporal/tree/master/sql) column naming + SQL functions** (Apache-2.0); copy `ll_create_bitemporal_table.sql`, `ll_bitemporal_insert.sql`, `ll_bitemporal_correction.sql`, `ll_bitemporal_inactivate.sql`, `ll_bitemporal_update.sql` into Supabase migration. Supersession collapses into closing of `asserted` period — no separate `superseded_by` column. GIST exclusion constraint prevents overlapping periods per business key.
 - **Canonical recall function**: PL/pgSQL vs SQL function vs Postgres + Python wrapper. Lean: PL/pgSQL for the deterministic part (filter + score + lifecycle); Python wrapper adds optional LLM enhancements (rewriting, judge).
+- **Hybrid search recipe**: own math vs canonical SQL. Lean: [pgvector-python `examples/hybrid_search/rrf.py`](https://github.com/pgvector/pgvector-python/blob/master/examples/hybrid_search/rrf.py) — `RANK() OVER (... embedding <=> %s)` + `RANK() OVER (... ts_rank_cd)` joined via `1.0/(60+rank)`. Drop-in for current Supabase.
+- **Vector adapter library**: hand-formatted vector strings (current) vs `pgvector` Python lib. Lean: `pip install pgvector` — SQLAlchemy/psycopg adapter. Aligns with `memory_server_v2_improvements`.
 - **Embedding model**: VoyageAI (current, paid Tier 1) vs OpenAI text-embed vs Cohere. Lean: VoyageAI — already integrated, $0 at current volume.
 - **Conflict detection LLM verifier**: Haiku 4.5 vs Sonnet 4.6. Lean: Haiku (cheap), Sonnet only on flagged contention.
 
 ### C4 — Reasoning & planning
 - **Plan events**: structured JSONB payload in canonical events table vs separate `plans` table. Lean: JSONB on events (consistent with C17 substrate; views for step-level queries).
+- **Plan checkpointing backend (LangGraph carveout — scope expanded 2026-04-27 per `v2_open_questions_resolved_2026_04_27`)**: bespoke pg layer vs [LangGraph PostgresStore](https://docs.langchain.com/oss/python/langgraph/add-memory) + checkpointer. Lean: LangGraph PostgresStore wrapped behind ONE MCP server, pointing at Supabase. Broader state-machine use cases acceptable beyond plan-only.
+- **Plan state ledger shape**: bespoke vs Magentic-One verified-facts / derived-facts / guesses ([MS Agent Framework 1.0](https://github.com/microsoft/agent-framework), MIT). Lean: adopt Magentic ledger structure as plan-event payload — schema reference, no code import.
 - **Skill→template migration mechanism**: gradual per-skill rewrite vs introduce a template-runner that wraps existing skills. Lean: template-runner first (compatibility), per-skill rewrite as natural drift.
 - **Sequential-thinking trigger**: explicit `engage_sequential_thinking` tool call vs auto-engage on novelty signal. Lean: explicit (cheaper; novelty signal is fuzzy at first).
 - **Replan algorithm**: full-replan vs incremental-from-stall-point. Lean: incremental (preserves done steps).
@@ -1629,46 +1638,65 @@ L3 marks **candidate options** for each capability, not commitments. Final tech 
 - **Handlers**: separate Python scripts per handler (synthesizer, calibrator, etc.) vs single dispatcher dispatching internally. Lean: separate scripts (independent calibration, easier per-handler cost bounds).
 - **LLM choice per handler**: synthesizer/calibrator/FoK Haiku 4.5; stale-challenger Haiku→Sonnet escalation only. Lean: this default, capped Sonnet escalations per L2.
 - **Stale-challenge re-examination**: full LLM re-read vs structured prompt with diff-of-recent-evidence. Lean: structured (lower tokens, more reliable).
+- **Class-conditional calibration (closes Q4 sparse-class)**: bespoke vs `crepes` vs MAPIE. Lean: [`crepes`](https://github.com/henrikbostrom/crepes) — `pip install crepes`, Mondrian CP via `class_cond=True`, sklearn-compatible, CPU-only, ~10× faster than MAPIE on small data. Wires into `memory_calibration_summary` MCP tool. [`MAPIE`](https://github.com/scikit-learn-contrib/MAPIE) on watch list (2026 roadmap adds CP for LLM-as-judge).
+- **Calibration metrics**: bespoke vs `netcal`. Lean: [`netcal`](https://github.com/EFS-OpenSource/calibration-framework) (`pip install netcal`) — ECE/MCE/ACE/MMCE + reliability diagrams; pair with sklearn `brier_score_loss`.
+- **Judge prompt source**: bespoke strings vs published rubric prompts. Lean: [`prometheus-eval`](https://github.com/prometheus-eval/prometheus-eval) (`pip install prometheus-eval`) — `from prometheus_eval.prompts import ABSOLUTE_PROMPT, RELATIVE_PROMPT` for /reflect, /verify, calibrator. Removes bespoke prompt-engineering drift.
 
 ### C6 — Decision gating
 - **Hook substrate**: Claude Code PreToolUse hook (interactive lane) + similar gate at MCP boundary (cloud lane). Lean: this; the canonical gate function is the same behind both.
+- **Gate outcome enum**: ALLOW / LOG_AND_PROCEED / EXPLAIN / QUEUE / DEFER / BLOCK. DEFER per Claude Code v2.1.89 (Apr 1 2026) PreToolUse `defer` decision — pause headless and resume. Lean: support all six outcomes; DEFER for state probes that need async work.
+- **Permission-vs-hook precedence**: per Claude Code v2.1.105 (Apr 13 2026), `permissions.deny` correctly overrides hook `ask`. Lean: audit current config — deny-rules belong in `permissions`, not in hook-`ask`. Prior bug let hooks downgrade denies.
 - **Classifier engine**: rule-based config (current `safety.py` style) vs LLM classifier vs hybrid. Lean: hybrid — rules for known-class fast path, LLM for ambiguous (with Haiku, cap'd by C13).
 - **State probes (git, harness, etc.)**: synchronous calls during gate vs cached state with TTL. Lean: synchronous for fast probes (git status), cached for expensive (memory recall, embedding).
+- **Output validation (optional)**: bespoke checks vs [Guardrails AI](https://github.com/guardrails-ai/guardrails) (Apache-2.0). Lean: optional library; called from PostToolUse on tool outputs only, not flow control. Defer until concrete need.
+- **Tier 1 queue table**: separate `decision_queue` table — `(action_id PK, classification enum, payload JSONB, gated_at, decided_at, decision enum, reasoning, expires_at)`. Lean: separate table from C17 events (queues are stateful workflow; events are append-only).
 - **Tier 1 queue UI**: CLI command vs lightweight web dashboard vs batched-brief in chat. Lean: CLI initially; web dashboard if queue volume grows.
 
 ### C7 — Execution
 - Claude Code native tools (Read/Edit/Write/Bash/Glob/Grep) + MCP. No alternative under current platform.
+- **Tool latency attribution**: PostToolUse hook reads `duration_ms` (Claude Code v2.1.118, Apr 2026) → emits to C17 events with `gen_ai.operation.duration_ms`. Free input for C13 cost-by-action and C16 latency calibration.
+- **Tool retry / fallback**: hand-rolled `try/except` in `mcp-memory/server.py` callers; `tenacity` (`pip install tenacity`) only if 3+ tools share the same retry shape.
+- **MCP result-size cap**: per Claude Code v2.1.119, `_meta["anthropic/maxResultSizeChars"]` up to 500K. Lean: set explicitly on memory recall responses to avoid silent truncation.
 
 ### C8 — Sub-orchestration
 - **Subagent runtime**: Claude Code agents with `isolation: worktree` (current). No real alternative on platform.
+- **Worktree open-bug compensation**: per Claude Code [#39886](https://github.com/anthropics/claude-code/issues/39886) (silent fall-through) and [#50850](https://github.com/anthropics/claude-code/issues/50850) (HEAD-shift). Lean: post-dispatch HEAD-shift detector + diff-outside-scope regardless of harness fixes; pre-dispatch `git stash --include-untracked` closes `untracked_main_tree_leaks_into_subagent_worktree` class. Recent harness fixes (v2.1.119, .101, .82) shrink this surface but don't remove the need for orchestrator-side gates.
 - **Lock store**: Supabase row with TTL+heartbeat (per L2). Alternative: Postgres advisory locks. Lean: explicit row (visible, debuggable).
 - **Pre/post gates**: shell scripts (git status / HEAD-shift detector) called from orchestrator. Trivial.
-- **Handoff event payload**: JSONB schema validated at MCP boundary. Lean: this.
+- **Handoff event payload**: JSONB schema validated at MCP boundary. Lean: this; shape from Magentic-One verified-facts / derived-facts / guesses ledger ([MS Agent Framework 1.0](https://github.com/microsoft/agent-framework), MIT) — `claimed_files[]`, `test_results`, `blockers[]`, plus the tri-ledger fields.
+- **Subagent lifecycle hook**: `TaskCreated` hook (Claude Code v2.1.84) + scheduled-task `--resume`/`--continue` (v2.1.110) for autonomous-loop crash recovery without re-dispatching.
 
 ### C9 — Tool / environment interface
 - MCP for external systems; native Claude tools for fs/shell. Established. No alternatives.
 - **Heartbeat probes**: scheduled task per service, lightweight HEAD/auth-check call. Lean: this.
+- **MCP server scaffold**: hand-rolled vs `mcp-builder` skill. Lean: [`anthropics/skills/mcp-builder`](https://github.com/anthropics/skills/tree/main/skills/mcp-builder) — 4-phase guide; checklist when extending `mcp-memory/server.py` or adding new MCP servers.
+- **MCP auth**: must support OAuth 2.1 + Resource Indicators (RFC 8707) — mandatory since 2025-11-25. `.mcp.json` portability across 3 devices depends on this.
 
 ### C10 — Research
 - WebSearch + WebFetch + context7 (docs) + firecrawl (browser/scrape). Established stack.
-- **Multi-step research delegation**: subagent (current pattern, validated by this design exercise itself).
-- **Output**: structured event payload with sources + key findings; promotion to C3 facts via C5. No alternative worth marking.
+- **Multi-step research delegation**: subagent (current pattern) vs [GPT Researcher MCP](https://github.com/assafelovic/gpt-researcher) vs [STORM (Stanford)](https://github.com/stanford-oval/storm). Lean: GPT Researcher as primary engine (Apache-2.0, ships own MCP server, drop-in via `.mcp.json`); STORM for "deep dive" tier (long-form synthesis); subagent pattern remains for ad-hoc / context-heavy.
+- **Output**: structured event payload with sources + key findings; promotion to C3 facts via C5 generation arm. No alternative worth marking.
 
 ### C11 — Perception
 - **External event ingest**: GitHub Actions → Supabase events table (`event_driven_perception_v1` already established).
 - **File-watch source**: native fs-watch vs polling vs git hooks. Lean: git hooks for repo-meaningful changes; fs-watch only for narrow needs.
 - **Owner-message channel**: Claude Code interactive (primary). Future: desktop notifications, mobile (1.x feature).
+- **Noise filter config**: bespoke YAML — pattern `(actor regex, action regex) → drop`. Lean: YAML edited by owner via PR; discovery loop = incident → owner adds entry. Reference: `event_dispatch_spam_fix` (136 CI Issue-Checks events).
+- **Dropped-signal audit**: count-only events (no payload, just `signal_dropped` action + matched-pattern attr) for trail of filter hits. Cheap; required for "owner can answer why X didn't trigger" forensics.
 
 ### C12 — Communication with owner
 - **Interactive**: Claude Code CLI (primary). Future: native desktop app, voice (1.x).
 - **Critical alerts**: notification mechanism — desktop notifier vs Telegram message vs CLI banner-on-next-session. Lean: CLI banner-on-next-session as default; Telegram supplementary; desktop later.
-- **Batched briefs**: morning/evening summary written to a fixed file owner reads on session start vs sent via Telegram. Lean: file (read on session start; lower latency, no external dep), Telegram optional.
+- **Batched briefs**: morning/evening summary written to a fixed file owner reads on session start vs sent via Telegram, OR using [`session-report`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/session-report) plugin from `anthropics/claude-plugins-official`. Lean: `session-report` plugin as base, file output for cross-session continuity; Telegram optional.
+- **CLAUDE.md / SOUL drift management**: bespoke vs [`claude-md-management`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-md-management) plugin. Lean: install the plugin to detect drift; SOUL.md changes still M3 (owner-only) per C15.
 
 ### C13 — Budget / cost governance
 - **Cost ledger**: SQL views over C17 events (already decided in L2). No alternative.
+- **Token/cost calculation library**: hand-rolled price tables vs `litellm.cost_calculator` vs `tokonomics`. Lean: [`litellm.cost_calculator`](https://github.com/BerriAI/litellm/blob/main/litellm/cost_calculator.py) — `pip install litellm`, `from litellm import completion_cost, cost_per_token`; reads in-memory `litellm.model_cost`, fully offline, **no proxy** (fits `architecture_final`). [`tokonomics`](https://github.com/phil65/tokonomics) (`pip install tokonomics`) as fallback if LiteLLM upgrade pace becomes a problem (auto-cached pricing JSON, refreshes 24h).
+- **Pre-call token counting**: `tiktoken` for OpenAI-compatible models; Anthropic SDK exposes its own counter.
 - **Heartbeat probes**: scheduled task per service. Established.
 - **Reconciliation**: provider billing API where exposed (Anthropic Console, OpenAI usage API, Voyage). Where not exposed (GHA minutes), gh API + parsing.
-- **Model router**: declarative config (yaml/json with rules) vs LLM-as-router. Lean: declarative — reproducible, calibrated.
+- **Model router**: declarative config (yaml/json with rules) vs LLM-as-router. Lean: declarative — reproducible, calibrated. [LiteLLM YAML routing config](https://docs.litellm.ai/docs/proxy/users) format as reference shape for our hook-based router (routing rules, not the proxy itself).
 - **Different-provider for high-leverage review**: OpenAI GPT-5.4 vs Gemini 2.5 Pro vs both alternating. Lean: GPT-5.4 — current pricing favors it; revisit if Gemini's fall.
 
 ### C14 — Security & privacy
@@ -1684,19 +1712,26 @@ L3 marks **candidate options** for each capability, not commitments. Final tech 
 - **Trust-ladder state**: stored in C3 facts (`self_improve_class_<name>` memories with maturity counters) or in a small `m1_unlocks` table. Lean: facts — they're the natural home, no schema overhead.
 - **Misimprovement detection**: SQL queries over C17 events comparing claimed-benefit metrics vs observed outcomes. Lean: this.
 - **Bootstrap-protection enforcement**: PR check workflow (GitHub Action) reading event substrate to confirm prior-version review. Lean: GHA — already established for CI.
+- **Safeguard layers (prior-version-review is novel — add parallel)**: per [Darwin-Gödel Machine (arXiv:2505.22954)](https://arxiv.org/abs/2505.22954) and [SiriuS](https://openreview.net/forum?id=Mz2JYufbg4g) — empirical benchmark + sandboxing + human oversight, not prior-version alone. Lean: stack all four for C6/C16/C17 modifications (prior-version + benchmark + sandbox + owner sign-off). DGM concedes "proving most changes net beneficial is impossible" — defense in depth required.
+- **Tier-graduation alignment check**: per [biosecurity-agent lifecycle (bioRxiv 2025.09.17)](https://www.biorxiv.org/content/10.1101/2025.09.17.676717v1.full.pdf) — formal alignment check before each M-tier promotion. Lean: structured checklist (regression metrics + reviewer sign-off + SOUL alignment), not metric thresholds alone.
 
 ### C16 — Verification / QA
+- **Reviewer base**: bespoke build vs fork [Anthropic Code Review plugin](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/code-review). Lean: **fork the plugin** — MIT, source-available; ships 5 parallel reviewers (CLAUDE.md compliance / shallow bugs / git-blame context / prior PR comments / code-comment compliance) + Haiku 0–100 confidence with 80 threshold + verifier second-pass. Substantive PR comments rose 16% → 54%, <1% wrong-finding rate. ~70-80% of C16 covered by fork. **First sprint task per `v2_open_questions_resolved_2026_04_27`.**
+- **Reviewers added on top of fork**: diff-coherence (claimed-edits vs `git diff` — subagent fabrication detection, NOT in plugin), cross-device integrity, smoke-test. Implemented as additional parallel agents in the plugin's command Markdown file.
 - **Mechanical reviewers**: Python scripts (diff coherence via git, test coverage via AST) running as pre-merge GHA. Lean: this.
-- **LLM reviewers**: Claude Code subagent (peer-Jarvis) for routine; OpenAI GPT-5.4 / Gemini 2.5 for different-provider on high-leverage. Lean: GPT-5.4 first (cost), Gemini as A/B comparison later.
+- **LLM reviewers**: Claude Code subagent (peer-Jarvis, via plugin fork) for routine; OpenAI GPT-5.4 / Gemini 2.5 for different-provider on high-leverage. Lean: GPT-5.4 first (cost), Gemini as A/B comparison later.
 - **Smoke test reviewer**: subprocess + temp dir for scripts; ephemeral docker for services if needed. Lean: subprocess minimal (heavy infra deferred).
 - **Cross-device integrity**: device-profile YAML files (3 devices) consulted by reviewer to simulate paths. Lean: YAML profiles, simulation as Python script not LLM where possible.
-- **Aggregator**: PR-comment posting via gh API summarizing reviewer outputs. Lean: this.
+- **Aggregator**: PR-comment posting via gh API summarizing reviewer outputs. Lean: this; Anthropic plugin already implements aggregator pattern.
+- **Other useful plugins to install**: [`pr-review-toolkit`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/pr-review-toolkit), [`hookify`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/hookify), [`mcp-server-dev`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/mcp-server-dev).
 
 ### C17 — Observability & audit
 - **Substrate**: PostgreSQL events table (single canonical) per L2. No alternative.
+- **Event column naming**: bespoke schema vs [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/). Lean: **OTel GenAI verbatim** — `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, `gen_ai.request.model`, `gen_ai.response.model`, `gen_ai.response.id`, `gen_ai.response.finish_reasons`, `gen_ai.provider.name`, `gen_ai.agent.id`, `gen_ai.tool.name`, `gen_ai.conversation.id`, `gen_ai.operation.name`. No canonical `gen_ai.cost` exists yet — invent `gen_ai.usage.cost_usd` consistent with prefix.
 - **Real-time event delivery**: pg LISTEN/NOTIFY for handlers needing real-time (C5 dispatcher, alerts). Lean: this.
-- **Trace propagation**: standard UUID v4 + parent-event linkage; no need for OpenTelemetry SDK at current scale (overkill — pg-native works).
-- **View materialization**: simple SQL views vs materialized views. Lean: regular views first; materialize only if query performance forces.
+- **Trace propagation**: stdlib `contextvars.ContextVar[str]` + `uuid.uuid4().hex` + parent-event linkage. Lean: this — no library improves on this at our scale.
+- **Instrumentation library (optional)**: bespoke `events_insert()` calls vs OTel-shaped instrumentation. Lean: optional — `traceloop-sdk` ([OpenLLMetry](https://www.traceloop.com/docs/openllmetry/configuration)) with custom Supabase `SpanExporter` subclass (~30 LOC); `Traceloop.init(exporter=YourSupabaseExporter())` bypasses their SaaS, routes OTel spans into our events table. Defer until volume justifies; bespoke `events_insert()` is fine for cold-start.
+- **View materialization (closes Q1 reframe)**: simple SQL views vs materialized views with `pg_cron` refresh. Lean: **materialized views from day one** for hot read paths (cost-by-day, decisions-by-trace, last-run-by-actor) — `pg_cron` already enabled on Supabase; `cron.schedule('0 * * * *', 'REFRESH MATERIALIZED VIEW CONCURRENTLY events_cost_by_day_mv')`. Per Honeycomb / Greptime "Observability 2.0" guidance — single-canonical-events table needs read-side projections to avoid read-amplification.
 - **Dashboards**: SQL views queried via /status skill output OR Grafana/Metabase later. Lean: SQL views via CLI initially; visual dashboard is 1.x.
 - **Cost-event reconciliation**: scheduled job pulling provider billing APIs and writing reconciliation events. Lean: this.
 
