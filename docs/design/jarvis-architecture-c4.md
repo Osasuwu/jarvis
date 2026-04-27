@@ -9,29 +9,19 @@ Rendered SVGs alongside each block: [c4-1.svg](c4-1.svg) Context · [c4-2.svg](c
 ![Context diagram](c4-1.svg)
 
 ```mermaid
-C4Context
-  title Jarvis in its environment
+flowchart LR
+    owner((Owner))
+    jarvis[Jarvis<br/>Personal AI agent<br/>Claude Code-native + Supabase]
 
-  Person(owner, "Owner", "Solo developer; sole user; strategic stakeholder")
+    owner -->|interactive + queue approvals| jarvis
 
-  System(jarvis, "Jarvis", "Personal AI agent for software project work — Claude Code-native + Supabase substrate")
-
-  System_Ext(claude_api, "Anthropic Claude", "LLM inference — Max subscription for interactive + scheduled; API for cloud-side paths only")
-  System_Ext(other_llm, "OpenAI / Gemini", "Different-provider review for high-leverage changes (~25% PRs steady-state)")
-  System_Ext(supabase, "Supabase Postgres", "pgvector + pg_cron — memory facts/episodes, OTel GenAI events, decision_queue, goals, credentials")
-  System_Ext(voyage, "VoyageAI", "Embeddings (memory recall, goal embeddings, fact promotion)")
-  System_Ext(github, "GitHub", "Repos, Actions, issues, PRs — event_driven_perception via Actions → Supabase")
-  System_Ext(hibp, "HaveIBeenPwned", "Weekly credential breach probes")
-  System_Ext(plugin_eco, "Anthropic plugins ecosystem", "claude-plugins-official + skills repos — fork base for C16, install targets for C12/C9")
-
-  Rel(owner, jarvis, "Interactive sessions, queue approvals, batched briefs")
-  Rel(jarvis, claude_api, "Inference (subscription primary)")
-  Rel(jarvis, other_llm, "High-leverage review")
-  Rel(jarvis, supabase, "Memory + events + cost ledger + queues")
-  Rel(jarvis, voyage, "Embedding lookups")
-  Rel(jarvis, github, "PR/issue/CI events; gh actions")
-  Rel(jarvis, hibp, "Periodic credential probe")
-  Rel(jarvis, plugin_eco, "Plugin install / fork base / skill scaffolds")
+    jarvis -->|inference Max sub| claude_api[Anthropic Claude]
+    jarvis -->|different-provider review| other_llm[OpenAI / Gemini]
+    jarvis -->|memory + events + queues| supabase[(Supabase Postgres<br/>pgvector + pg_cron)]
+    jarvis -->|embeddings| voyage[VoyageAI]
+    jarvis -->|repos + Actions| github[GitHub]
+    jarvis -->|credential probes| hibp[HaveIBeenPwned]
+    jarvis -->|fork base + install| plugin_eco[Anthropic plugins<br/>claude-plugins-official + skills]
 ```
 
 ## C4 Level 2 — Container
@@ -39,68 +29,63 @@ C4Context
 ![Container diagram](c4-2.svg)
 
 ```mermaid
-flowchart TB
+flowchart LR
     owner((Owner))
 
     subgraph SURFACE[Claude Code surface]
         direction TB
-        claude_code[Claude Code interactive<br/>native tools + MCP + plugins]
-        hooks[Hooks layer<br/>PreToolUse / PostToolUse / SessionStart / Stop<br/>6-outcome gate: ALLOW/LOG/EXPLAIN/QUEUE/DEFER/BLOCK]
-        subagents[Subagents<br/>isolation:worktree + HEAD-shift detector<br/>+ diff-outside-scope post-gate]
-        scheduled[Scheduled tasks Routines<br/>reflection / autonomous loop / HIBP / cost reconciliation<br/>TaskCreated hook + --resume]
+        claude_code[Interactive session<br/>native + MCP + plugins]
+        scheduled[Routines<br/>scheduled tasks]
+        hooks[Hooks<br/>6-outcome gate]
+        subagents[Subagents<br/>worktree + post-gates]
     end
 
     subgraph PLUGINS[Plugins]
         direction TB
-        plugin_review[Code Review plugin fork<br/>5 reviewers + verifier<br/>+ diff-coherence / cross-device / smoke-test]
-        plugin_misc[Other Anthropic plugins<br/>session-report / hookify / claude-md-management<br/>/ mcp-server-dev / pr-review-toolkit]
+        plugin_review[Code Review<br/>fork base]
+        plugin_misc[session-report<br/>hookify + others]
     end
 
     subgraph MCPS[MCP servers]
         direction TB
-        mcp_memory[mcp-memory MCP<br/>imports pgvector, litellm.cost_calculator,<br/>crepes, prometheus-eval, traceloop-sdk<br/>uses pg_bitemporal SQL]
-        mcp_plan[Plan MCP — LangGraph carveout<br/>PostgresStore + checkpointer]
-        mcp_research[Research MCPs<br/>GPT Researcher + sequential-thinking<br/>+ firecrawl + context7]
+        mcp_memory[mcp-memory<br/>pg_bitemporal + libs]
+        mcp_plan[Plan MCP<br/>LangGraph carveout]
+        mcp_research[Research<br/>GPT Researcher + others]
     end
 
-    subgraph STORAGE[Supabase storage]
+    subgraph STORAGE[Supabase]
         direction TB
-        pg[(Postgres + pgvector + pg_cron<br/>memory_facts pg_bitemporal +<br/>memory_episodes + events OTel GenAI +<br/>materialized projections +<br/>decision_queue + goals + credentials)]
-        cloud_tasks[Supabase scheduled tasks<br/>execute_sql + REFRESH MATERIALIZED VIEW]
+        pg[(Postgres<br/>pgvector + pg_cron)]
+        cloud_tasks[Scheduled SQL]
     end
 
-    subgraph EXT[External services]
-        direction LR
-        claude_api[Anthropic Claude<br/>Max sub primary]
-        other_llm[OpenAI / Gemini<br/>different-provider]
-        voyage[VoyageAI<br/>embeddings]
-        github[GitHub<br/>repos + Actions]
-        hibp[HaveIBeenPwned]
+    subgraph EXT[External]
+        direction TB
+        claude_api[Claude API]
+        other_llm[OpenAI / Gemini]
+        voyage[VoyageAI]
+        github[GitHub]
+        hibp[HIBP]
     end
 
-    owner -->|CLI| claude_code
+    owner --> claude_code
     claude_code --> hooks
     claude_code --> subagents
-    claude_code --> plugin_review
-    claude_code --> plugin_misc
-    claude_code --> mcp_memory
-    claude_code --> mcp_plan
-    claude_code --> mcp_research
+    claude_code --> PLUGINS
+    claude_code --> MCPS
     claude_code --> claude_api
 
+    scheduled --> MCPS
     scheduled --> claude_api
-    scheduled --> mcp_memory
     scheduled --> other_llm
     scheduled --> hibp
 
-    mcp_memory --> pg
+    MCPS --> pg
     mcp_memory --> voyage
-    mcp_plan --> pg
     mcp_research --> voyage
-
+    PLUGINS --> pg
     hooks --> pg
     subagents --> pg
-    plugin_review --> pg
     cloud_tasks --> pg
     github --> pg
 ```
@@ -109,64 +94,61 @@ flowchart TB
 
 ![Component diagram](c4-3.svg)
 
+Detailed L3 tech adoptions per cap live in [`jarvis-v2-redesign.md` §L3](jarvis-v2-redesign.md#l3--technologies--patterns). Here we draw only the load-bearing dataflow edges so the structure stays readable.
+
 ```mermaid
 flowchart TB
-    subgraph IDENT[Identity Layer]
+    subgraph IDENT[Identity]
         direction LR
-        c1[C1 Identity<br/>SOUL.md + CLAUDE.md<br/>M3 protected]
-        c2[C2 Goals<br/>active strategic context<br/>goal_slug FK + VoyageAI embeddings]
+        c1[C1 Identity]
+        c2[C2 Goals]
     end
 
-    subgraph COG[Cognition Layer]
+    subgraph COG[Cognition]
         direction LR
-        c3[C3 Memory<br/>C3-F facts pg_bitemporal +<br/>C3-E episodes append-only<br/>pgvector RRF hybrid search]
-        c4[C4 Reasoning<br/>plans on LangGraph PostgresStore MCP<br/>Magentic ledger schema<br/>sequential-thinking on novel]
-        c5[C5 Reflection<br/>synth + stale-challenge + calibrator<br/>crepes Mondrian CP + netcal +<br/>prometheus-eval prompts]
-        c6[C6 Decision gating<br/>single canonical gate<br/>6 outcomes incl. DEFER<br/>decision_queue table]
+        c3[C3 Memory]
+        c4[C4 Reasoning]
+        c5[C5 Reflection]
+        c6[C6 Decision gating]
     end
 
-    subgraph ACT[Action Layer]
+    subgraph ACT[Action]
         direction LR
-        c7[C7 Execution<br/>native + MCP +<br/>PostToolUse duration_ms]
-        c8[C8 Sub-orchestration<br/>worktree + HEAD-shift / diff-outside-scope<br/>Magentic ledger handoff +<br/>TTL+heartbeat lock]
-        c9[C9 Tool / env<br/>MCP OAuth 2.1 + RFC 8707<br/>mcp-builder scaffold]
-        c10[C10 Research<br/>GPT Researcher MCP primary +<br/>STORM deep-dive + firecrawl + context7]
+        c7[C7 Execution]
+        c8[C8 Sub-orchestration]
+        c9[C9 Tool / env]
+        c10[C10 Research]
     end
 
-    subgraph IFACE[Interface Layer]
+    subgraph IFACE[Interface]
         direction LR
-        c11[C11 Perception<br/>GHA → events<br/>YAML noise filter +<br/>signal_dropped audit]
-        c12[C12 Communication<br/>CLI + session-report plugin +<br/>claude-md-management +<br/>c12_send_intent gate]
+        c11[C11 Perception]
+        c12[C12 Communication]
     end
 
     subgraph CROSS[Cross-cutting]
         direction LR
-        c13[C13 Budget<br/>litellm.cost_calculator lib<br/>tokonomics + tiktoken<br/>declarative router]
-        c14[C14 Security<br/>Sprint 1 + HIBP +<br/>Supabase RLS + principal verify]
-        c15[C15 Self-improve<br/>M0-M3 tiers<br/>4 safeguard layers]
-        c16[C16 Verification<br/>Code Review plugin fork +<br/>diff-coherence + cross-device + smoke-test]
-        c17[(C17 Observability<br/>single canonical events<br/>OTel GenAI semconv +<br/>materialized projections pg_cron)]
+        c13[C13 Budget]
+        c14[C14 Security]
+        c15[C15 Self-improve]
+        c16[C16 Verification]
+        c17[(C17 Observability<br/>canonical events substrate)]
     end
 
+    c1 --> c6
+    c2 --> c5
     c11 --> c17
     c6 --> c17
+    c6 --> c3
     c5 --> c17
     c5 --> c3
-    c6 --> c3
-    c6 --> c2
     c4 --> c10
     c4 --> c17
     c8 --> c17
-    c7 --> c17
     c16 --> c17
-    c16 --> c5
-    c13 --> c17
-    c14 --> c17
     c15 --> c16
-    c15 --> c5
+    c13 --> c17
     c12 --> c6
-    c1 --> c6
-    c2 --> c5
 ```
 
 ## C4 Level 4 — Event-substrate dataflow
