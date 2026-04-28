@@ -24,7 +24,7 @@
 Per redesign L0:
 
 - Personal-life management (smart home, calendar, shopping)
-- Sending on the owner's behalf — Jarvis drafts; owner sends
+- Sending on the principal's behalf — Jarvis drafts; principal sends
 - Multi-tenancy — one user only
 - Designing for other developers — open-source split is a separate fork (separate quality bar)
 - Telegram as a primary interface (chat-only role at most)
@@ -37,4 +37,4 @@ Semver discipline (per redesign): v2 is reserved for cardinal paradigm shifts (e
 
 ---
 
-History: this file used to hold pillar-by-pillar status and full scope (v7.0, 2026-04-13). Replaced with pointer 2026-04-28 after the [redesign](design/jarvis-v2-redesign.md) consolidated scope/architecture and live work moved to GitHub milestones.
+History: this file used to hold pillar-by-pillar status and full scope (v7.0, 2026-04-13). Replaced with pointer 2026-04-28 after the [redesign](design/jarvis-v2-redesign.md) consolidated scope/architecture and live work moved to GitHub milestones. VISION.md restructured 2026-04-29 (Phase B, PR #465) — five axes + 8 pillars + Digital Twin mode.
