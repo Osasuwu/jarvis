@@ -1,7 +1,6 @@
 # Task dispatcher agent
 
-Module: `agents/dispatcher.py`. First federation jurisdiction in Pillar 7
-Sprint 2 (issue #298, S2-3). Wires together every other S2 primitive:
+Module: `agents/dispatcher.py`. First federation jurisdiction (Federation & Delegation Sprint 2 — issue #298, S2-3). Wires together every other S2 primitive:
 
 | Upstream | Role |
 |----------|------|

@@ -1,6 +1,6 @@
 # Agent Sandbox Boundaries
 
-Date: 2026-04-15 (revised 2026-04-23 for Pillar 7 Phase 0 federation — #341; revised 2026-04-26 for principal-aware permissions — #426; isatty fallback removed in #429)
+Date: 2026-04-15 (revised 2026-04-23 for Federation & Delegation Phase 0 — #341; revised 2026-04-26 for principal-aware permissions — #426; isatty fallback removed in #429)
 Scope: Permission rules for **all principals** running Claude — interactive owner, autonomous loop, /delegate subagent, and the future dispatcher.
 
 ## Principal model (#426, #429)

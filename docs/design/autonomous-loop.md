@@ -1,6 +1,6 @@
 # Autonomous Work Loop — Architecture
 
-> Source of truth for Jarvis Pillar 2: Autonomous Work Loop.
+> Source of truth for the Jarvis Autonomous Work Loop pillar.
 > Created: 2026-04-08. Status: implementing.
 
 ## Overview

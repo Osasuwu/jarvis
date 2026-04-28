@@ -1,4 +1,4 @@
-# Feeling-of-Knowing (Pillar 4 Phase 5.3) — Design
+# Feeling-of-Knowing (Memory Phase 5.3) — Design
 
 **Status:** 5.3-α approved — six decisions ratified via Discussion [#439](https://github.com/Osasuwu/jarvis/discussions/439) (2026-04-27). 5.3-β/γ/δ may proceed.
 **Closes:** #420.

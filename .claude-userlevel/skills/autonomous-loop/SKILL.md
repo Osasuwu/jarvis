@@ -14,7 +14,7 @@ Implements the perceive→evaluate→decide→act→record loop from the Autonom
 
 - `/autonomous-loop` — manual invocation (full run)
 - Scheduled: daily 09:00 (after morning-brief)
-- Part of: Jarvis Pillar 2 — Autonomous Work Loop
+- Part of: Jarvis Autonomous Work Loop pillar
 
 ## Architecture
 
@@ -271,7 +271,7 @@ Never execute — save to memory:
 
 ## Step 7 — Record Outcomes
 
-**Each action** gets its own `outcome_record` (Pillar 3):
+**Each action** gets its own `outcome_record` (Outcome Tracking & Learning pillar):
 
 ```
 outcome_record(

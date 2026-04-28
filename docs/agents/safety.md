@@ -1,7 +1,7 @@
 # Action-agent safety gate
 
 Module: `agents/safety.py`. Ships as **S2-0** (issue #295), the foundation
-every Pillar 7 Sprint 2+ action agent must route its mutations through.
+every Federation & Delegation Sprint 2+ action agent must route its mutations through.
 Model memory: `action_agent_safety_gate_model_v1`.
 
 ## Three tiers

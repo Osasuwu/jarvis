@@ -1382,7 +1382,7 @@ C13 complete.
 
 ### C14 — Security & privacy
 
-Distillation: significantly more mature than other caps — Pillar 9 Sprint 1 shipped (`pillar9_sprint1_self_security`). Existing layered defense: secret scanner PreToolUse hook (12 regex families + 8 bash-exfil patterns, heredoc-aware), credential registry (metadata-only, DB CHECK rejecting raw values), protected-files hook with principal-aware tiering, action gate Tier 0/1/2 in `safety.py`, gitleaks pre-commit + CI, soft-delete with 30-day retention, recovery playbook. Threat model = external intruders / cloud-provider-trusted / single-user / GitHub-public-repo. Owner deliberately accepts: prompt injection via web/issues, personal-data leakage, password hygiene blindness.
+Distillation: significantly more mature than other caps — Security & Digital Hygiene Sprint 1 shipped (memory key: `pillar9_sprint1_self_security` — historical identifier from pre-Phase-B numbering). Existing layered defense: secret scanner PreToolUse hook (12 regex families + 8 bash-exfil patterns, heredoc-aware), credential registry (metadata-only, DB CHECK rejecting raw values), protected-files hook with principal-aware tiering, action gate Tier 0/1/2 in `safety.py`, gitleaks pre-commit + CI, soft-delete with 30-day retention, recovery playbook. Threat model = external intruders / cloud-provider-trusted / single-user / GitHub-public-repo. Principal deliberately accepts: prompt injection via web/issues, personal-data leakage, password hygiene blindness.
 
 Remaining gaps require structural treatment in v2; most are extensions of what shipped, not rebuilds.
 

@@ -1,7 +1,7 @@
 # Memory overhaul — research synthesis + design proposal
 
 **Status:** research complete, design pending owner review.
-**Context:** Pillar 4 (memory). Current system has measurable lifecycle bugs; before fixing ad-hoc, owner asked for research on (a) how production LLM agent systems solve the same problems, (b) theory of agent memory. Two parallel research agents ran; this doc consolidates findings with our local audit.
+**Context:** Memory pillar. Current system has measurable lifecycle bugs; before fixing ad-hoc, principal asked for research on (a) how production LLM agent systems solve the same problems, (b) theory of agent memory. Two parallel research agents ran; this doc consolidates findings with our local audit.
 
 ## 1. Local audit — what's actually broken
 

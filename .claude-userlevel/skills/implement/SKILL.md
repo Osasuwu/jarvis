@@ -191,7 +191,7 @@ EOF
 
 ### 6. Record outcome
 
-After PR creation (or failure at any step), record the outcome for Pillar 3 tracking:
+After PR creation (or failure at any step), record the outcome for the Outcome Tracking & Learning pillar:
 
 ```
 outcome_record(

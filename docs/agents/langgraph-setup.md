@@ -1,6 +1,6 @@
 # LangGraph Agents — Dev Setup
 
-Pillar 7 persistent agents run alongside Claude Code. LangGraph handles the lifecycle (graph definition, state, checkpointing), Ollama handles inference, local Postgres stores checkpoints.
+Federation & Delegation pillar — persistent agents run alongside Claude Code. LangGraph handles the lifecycle (graph definition, state, checkpointing), Ollama handles inference, local Postgres stores checkpoints.
 
 This document covers the Sprint 1 foundation (issue #172). Agent implementations live in later sprints.
 

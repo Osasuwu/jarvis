@@ -38,3 +38,25 @@ Semver discipline (per redesign): v2 is reserved for cardinal paradigm shifts (e
 ---
 
 History: this file used to hold pillar-by-pillar status and full scope (v7.0, 2026-04-13). Replaced with pointer 2026-04-28 after the [redesign](design/jarvis-v2-redesign.md) consolidated scope/architecture and live work moved to GitHub milestones. VISION.md restructured 2026-04-29 (Phase B, PR #465) — five axes + 8 pillars + Digital Twin mode.
+
+## Pillar names → numbers (transition table)
+
+Phase B (2026-04-29, PR #465) renumbered pillars in VISION.md. **Operational language now uses pillar names**, not numbers — numbers are narrative anchors only and exist solely in `docs/VISION.md`. Old EPIC issue titles, milestone names, and memory keys keep their original numbering as historical identifiers; new operational refs use names.
+
+| Pillar (current name) | Old number (pre-Phase-B) | New number (VISION.md v2.1) | Status |
+|---|---|---|---|
+| Goals & Strategic Context | 1 | 1 | unchanged |
+| Autonomous Work Loop | 2 | 2 | unchanged |
+| Outcome Tracking & Learning | 3 | 3 | unchanged |
+| Memory | 4 | 4 | unchanged |
+| Judgment & Calibration | — | 5 | **NEW Phase B** |
+| Federation & Delegation *(was Agent System)* | 7 | 6 | renamed + renumbered |
+| Integrations | 5 | 7 | renumbered, marked L1.x |
+| Security & Digital Hygiene | 9 | 8 | renumbered |
+| Digital Twin | *(part of 8: Identity & Interface)* | mode, not pillar | extracted |
+| ~~Data Intelligence~~ | 6 | *(deleted)* | distributed across other axes |
+
+Examples of historical identifiers that **stay as-is**:
+- Memory key `pillar9_sprint1_self_security` (= Security & Digital Hygiene Sprint 1)
+- EPIC #335 «Pillar 7 Phase 0: Federation» (= Federation & Delegation Phase 0)
+- Milestone titles «Pillar 4 Sprint: feeling-of-knowing» (= Memory Sprint: feeling-of-knowing)
