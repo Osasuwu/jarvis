@@ -4,7 +4,7 @@ This runbook defines the development process for the Jarvis repository itself.
 
 **Important**: this is a dev process document, not a Jarvis feature spec. Jarvis features are skills and runtime code in `skills/` and `src/`.
 
-Primary plan: `docs/PROJECT_PLAN.md`
+Architecture: [`docs/design/jarvis-v2-redesign.md`](../docs/design/jarvis-v2-redesign.md). Live sprint: GitHub milestones. `docs/PROJECT_PLAN.md` is a pointer index.
 
 ## 1. Daily Development
 
@@ -62,6 +62,6 @@ Use `-F` (not `-f`) — the ID must be sent as integer, not string.
 
 Current scope: Claude Agent SDK + MCP migration, then PM and research skills expansion.
 
-See `docs/PROJECT_PLAN.md` for full scope definition and out-of-scope items.
+See [`docs/design/jarvis-v2-redesign.md`](../docs/design/jarvis-v2-redesign.md) §L0 for scope and non-goals.
 
 Any issue that introduces out-of-scope work must be flagged and explicitly approved before execution.

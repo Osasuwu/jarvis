@@ -363,9 +363,109 @@ def setup_device_config():
     print(f"  {DIM}This file is gitignored (device-specific){RESET}")
 
 
+SIBLING_REPOS = [
+    {
+        "dir": "claude-plugins-official",
+        "fork": "Osasuwu/claude-plugins-official",
+        "upstream": "anthropics/claude-plugins-official",
+        "purpose": "C16 code-review plugin (forked from Anthropic, adapted for Jarvis)",
+    },
+]
+
+
+def setup_sibling_repos():
+    """Clone sibling repos that live alongside jarvis (e.g. forked plugins)."""
+    header(6, "Sibling repos")
+
+    if not shutil.which("git"):
+        warn("git not found -- skipping sibling repo setup")
+        return
+
+    repos_path = ROOT.parent
+
+    for repo in SIBLING_REPOS:
+        target = repos_path / repo["dir"]
+        if target.exists():
+            ok(f"{repo['dir']}/ exists at {target}")
+            continue
+
+        url = f"https://github.com/{repo['fork']}.git"
+        print(f"  Cloning {repo['fork']} -> {target} ...")
+        result = subprocess.run(
+            ["git", "clone", url, str(target)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "unknown error").strip()
+            warn(f"Clone failed for {repo['dir']}: {err[:200]}")
+            continue
+
+        ok(f"Cloned {repo['dir']} -- {repo['purpose']}")
+
+        upstream_url = f"https://github.com/{repo['upstream']}.git"
+        upstream_result = subprocess.run(
+            ["git", "-C", str(target), "remote", "add", "upstream", upstream_url],
+            capture_output=True, text=True,
+        )
+        if upstream_result.returncode == 0:
+            ok(f"  upstream remote -> {repo['upstream']}")
+        else:
+            warn(f"  could not add upstream remote: {upstream_result.stderr.strip()[:120]}")
+
+
+CLAUDE_PLUGINS = [
+    {
+        "plugin": "code-review",
+        "marketplace": "jarvis-fork-plugins",
+        "marketplace_path": ".claude/marketplace",
+        "purpose": "C16 PR code-review (forked + adapted)",
+    },
+]
+
+
+def install_claude_plugins():
+    """Install Claude Code plugins from in-repo local marketplaces."""
+    header(7, "Claude Code plugins")
+
+    if not shutil.which("claude"):
+        warn("claude CLI not found -- skipping plugin install")
+        return
+
+    for entry in CLAUDE_PLUGINS:
+        mp_path = ROOT / entry["marketplace_path"]
+        if not mp_path.exists():
+            warn(f"marketplace path missing: {entry['marketplace_path']}")
+            continue
+
+        # marketplace add (idempotent — claude reports "already on disk")
+        add_result = subprocess.run(
+            ["claude", "plugins", "marketplace", "add", str(mp_path)],
+            capture_output=True, text=True,
+        )
+        if add_result.returncode != 0:
+            warn(f"marketplace add failed for {entry['marketplace']}: "
+                 f"{add_result.stderr.strip()[:200]}")
+            continue
+
+        # plugin install (idempotent — re-install is a no-op success)
+        install_result = subprocess.run(
+            [
+                "claude", "plugins", "install",
+                f"{entry['plugin']}@{entry['marketplace']}",
+                "--scope", "user",
+            ],
+            capture_output=True, text=True,
+        )
+        if install_result.returncode == 0:
+            ok(f"{entry['plugin']}@{entry['marketplace']} -- {entry['purpose']}")
+        else:
+            err = (install_result.stderr or install_result.stdout or "").strip()
+            warn(f"install failed for {entry['plugin']}: {err[:200]}")
+
+
 def verify_skills():
     """Check that skills and key config files are present."""
-    header(6, "Project integrity")
+    header(8, "Project integrity")
 
     for name, path in [
         ("CLAUDE.md", ROOT / "CLAUDE.md"),
@@ -434,6 +534,8 @@ def main():
     env_vars = setup_env()
     errors += test_supabase(env_vars)
     setup_device_config()
+    setup_sibling_repos()
+    install_claude_plugins()
     verify_skills()
     print_summary(errors)
 

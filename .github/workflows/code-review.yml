@@ -1,0 +1,62 @@
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+        type: string
+
+jobs:
+  review:
+    # Skip fork PRs (untrusted code on main runner) and Dependabot (the
+    # plugin will mark these as trivial and exit anyway, but bail earlier
+    # to save Claude tokens). Draft PRs are skipped at the step-1 eligibility
+    # check inside the plugin.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run /code-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: ./.claude/marketplace
+          plugins: code-review@jarvis-fork-plugins
+          prompt: |
+            Run /code-review for PR #${{ steps.pr.outputs.number }} in repo ${{ github.repository }}.
+
+            The /code-review slash command is provided by the code-review plugin
+            (loaded via the action's plugins input). Follow its instructions
+            verbatim — eligibility check, guideline-file gather, 8 parallel
+            reviewers, confidence scoring, post comment.
+
+            Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
+            (not available in this runner). This is plugin invocation only.
+          claude_args: |
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"

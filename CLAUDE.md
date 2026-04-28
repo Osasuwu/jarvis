@@ -18,7 +18,7 @@ SessionStart hook (`.claude/settings.json` → `scripts/session-context.py`) inj
 
 ## Project
 
-**Jarvis** — universal personal AI agent. Repo `Osasuwu/jarvis`. Full scope in `docs/PROJECT_PLAN.md`.
+**Jarvis** — owner-only AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active sprint scope = GitHub milestones; `docs/PROJECT_PLAN.md` is a pointer index.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory + SOUL.md identity.
 
