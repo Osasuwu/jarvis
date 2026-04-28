@@ -79,7 +79,7 @@ User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
 | `/status` | Session start, "what's happening" | Project dashboard: git, PRs, issues, CI, risks, goals |
 | `/implement` | "реализуй #42", "implement #X" | Issue → branch → inline implementation → PR (main session does the work) |
 | `/delegate` | "делегируй #X #Y", "раскидай на агентов" | Multiple issues → parallel coding subagents, orchestrator reviews each diff + decides merge |
-| `/verify` | "проверь результаты", post-delegation | Closes outcome loop: PR merge status, test results, lessons extracted |
+| `/verify` | "проверь результаты", "post-delegation" | Closes outcome loop: PR merge status, test results, lessons extracted |
 | `/reflect` | "что сработало", "уроки" | Reviews recent decisions + outcomes, extracts lessons as feedback memories |
 | `/research` | "research X", "compare A vs B" | Web research with source validation |
 | `/self-improve` | "improve yourself" | Gap analysis -> ideation -> research -> implementation |
