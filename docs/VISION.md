@@ -2,8 +2,8 @@
 
 > **Jarvis — autonomous engineering peer for one principal: sees the full picture, works while you sleep, argues when you're wrong, and gets more accurate every day.**
 
-Version: 2.1
-Date: 2026-04-29
+Doc revision: 2.1 (Phase B · 2026-04-29)
+Product generation: 2.0
 
 ---
 
@@ -29,7 +29,7 @@ Jarvis owns **implementation** and **breadth**:
 | Physical-world interface | Autonomy within action-class gates |
 | Works when working | Works always |
 
-The relationship is **non-hierarchical** — peer-roles, asymmetric responsibilities. Jarvis can be *better* at certain things — and should own them. The principal cannot match Jarvis on breadth and persistence; Jarvis cannot replace the principal on taste, stop-decisions, and physical-world interface.
+The relationship is **non-hierarchical in capability** — peer-roles with asymmetric responsibilities, not director-and-executor. Jarvis can be *better* at certain things — and should own them. The principal cannot match Jarvis on breadth and persistence; Jarvis cannot replace the principal on taste, stop-decisions, and physical-world interface. Authority on long-running aims and stop-decisions stays with the principal; capability on breadth and execution stays with Jarvis.
 
 ---
 
@@ -53,11 +53,16 @@ Not memory-as-storage. A **living representation** that updates itself. Memory i
 
 ### 2. What it wants — Goals
 
-What Jarvis pursues. **Set by the principal, tracked by Jarvis, decomposed by Jarvis.**
+What Jarvis pursues — the connection between principal's intent and Jarvis's execution.
 
-Goals are commitments with context — see *Goals, not tasks* below.
+- **Set by the principal** at the top of each chain (long-running aims, success criteria, stop-decisions).
+- **Tracked and decomposed by Jarvis** down the chain (sub-goals, tasks, single-session actions).
+- **Drive proactive mode** — Jarvis evaluates every action against active goals; mismatch triggers push-back («#42 isn't priority, #38 is»).
+- **Surface stale or at-risk commitments** before they fail silently.
 
-*Lives in:* `goal_set` / `goal_list`, parent-id goal chains.
+Goals are commitments with context — see *Goals, not tasks* below for the structure.
+
+*Lives in:* `goal_set` / `goal_list` MCP tools, `goals` table with parent-id chains.
 
 ### 3. How it thinks — Judgment & Identity
 
@@ -84,15 +89,17 @@ The capabilities and the operating modes that govern them.
 
 These are not levels along a ladder. They're modes selected per session/goal. Default: proactive within goals, reactive in unfamiliar territory.
 
-**Action gates** — class-based, per `caution_vs_overconfirmation_principle`:
+**Action gates** — class-based (the surgical-caution principle):
 
 - Reversible + low-blast (typo fix, README update, lint) → auto + log.
 - Irreversible OR high-blast (sign legal, transfer funds, force-push main, send email-as-principal, deploy prod, drop tables) → gate.
 - Borderline → start gated, unlock by track record per class.
 
-Caution is surgical, not bureaucratic. Catastrophic-loss stories with AI all live in irreversible-without-gate territory; surgical gates protect without an interruption-tax on routine work.
+Caution is surgical, not bureaucratic. Catastrophic-loss stories with AI all live in irreversible-without-gate territory; class-based gates protect without an interruption-tax on routine work.
 
-*Lives in:* skills, subagents, MCP servers, hooks, scheduled tasks.
+**I/O surfaces** — how Jarvis reaches the world: CLI sessions (Claude Code), Telegram (channels + bot), scheduled task runners. Voice (TTS/STT) is on the future surface but not in current scope. The choice of surface affects gating defaults but not the gate classification — irreversible-via-Telegram is still irreversible.
+
+*Lives in:* skills, subagents, MCP servers, hooks, scheduled tasks, Telegram MCP.
 
 ### 5. How it learns — Outcomes & Reflection
 
@@ -100,7 +107,7 @@ Every action has an expected outcome. Later — check the actual outcome. Patter
 
 Without this loop the north-star line («gets more accurate every day») is a slogan. Learning is what makes Jarvis improve over time rather than running on yesterday's calibration forever.
 
-*Lives in:* outcome tracking, reflect skill, calibration summaries, episodic memory.
+*Lives in:* `outcome_record` / `outcome_list` MCP tools, `task_outcomes` table, `/reflect` skill, `memory_calibration_summary`, episodic memory.
 
 ---
 
@@ -185,7 +192,7 @@ Not the capabilities — Claude can already code, research, analyze, argue. The 
 
 Pillars are roadmap tracks — what we build over time. Each maps to one or more axes.
 
-> **Note:** Pillars are narrative organization for Vision. Structural work is done via caps and milestones (per `pillars_drop_structural_direction_2_2026_04_28`); pillars themselves don't gate code architecture.
+> **Note:** Pillars are narrative organization for Vision. Structural code-architecture work is done via capability units (caps) and sprint milestones — pillars themselves don't gate implementation. (April 2026 architecture decision.)
 
 ### Core (axis-aligned infrastructure)
 
@@ -207,7 +214,7 @@ Owns axis *how it thinks*. SOUL.md identity, always-load rules, behavioral hooks
 ### Reach (cross-cutting / future)
 
 **Pillar 6 — Federation & Delegation**
-Multi-agent coordination architecture: jurisdiction boundaries, `/delegate` dispatch, persistent agents (LangGraph), action-agent safety gates. Per `federated_architecture_direction`: HYBRID — federation across independent jurisdictions + orchestrator-worker inside each delegated task.
+Multi-agent coordination architecture: jurisdiction boundaries, `/delegate` dispatch, persistent agents (LangGraph — Sprint 1 prototype, not production), action-agent safety gates. Direction is **HYBRID** — federation across independent jurisdictions (each project owns its own Jarvis instance and memory) + orchestrator-worker inside each delegated task.
 
 **Pillar 7 — Integrations** *(L1.x — post-L0 scope)*
 Broader observation surface: email, calendar, messengers, services, dev tools. Read access by default; writes manually configured per tool. Currently non-goal per redesign L0; flagged here to make future scope honest, not to claim it as in-flight.
@@ -220,9 +227,9 @@ Proactive protection: credential registry, expiry monitoring, secret-leak scanni
 **Digital Twin — acting as principal**
 Distinct operating mode: Jarvis drafts and acts in the principal's style for outbound work the principal would normally do (emails, messages, professional documents). Inverts the default principal-Jarvis role.
 
-Has its own gating: drafts welcome; final send stays with the principal until the digital-twin pillar is mature (per SOUL §External content safety). Uses all five axes, but with judgment trained on the principal's voice rather than Jarvis's own.
+Has its own gating: drafts welcome; final send stays with the principal until the digital-twin mode is mature (per SOUL §External content safety). Uses all five axes, but with judgment **calibrated to** the principal's voice rather than Jarvis's own — through accumulated examples and explicit style memories, not model fine-tuning.
 
-Distinct from Pillar 5 (Judgment & Calibration): that one trains Jarvis-as-Jarvis; Digital Twin trains Jarvis-as-principal.
+Distinct from Pillar 5 (Judgment & Calibration): that one calibrates Jarvis-as-Jarvis; Digital Twin calibrates Jarvis-as-principal.
 
 ---
 
