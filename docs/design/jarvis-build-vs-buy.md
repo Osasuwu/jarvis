@@ -31,7 +31,7 @@ Three columns: **Adopt** (drop-in, integrates as MCP/plugin/hook/skill), **Patte
 | Cap | Adopt | Pattern | Custom |
 |---|---|---|---|
 | **C3 Memory** | None (heavy runtimes filtered) | **Zep / Graphiti** ([arXiv:2501.13956](https://arxiv.org/abs/2501.13956)) — bi-temporal column shape (`t_valid`/`t_invalid`/transaction-time). **Cognee** schema — node/edge + embedding. **LangGraph PostgresStore** for namespace-tuple `(facts \| episodes)` indexing pattern. | Bi-temporal `valid_from`/`valid_to`/`superseded_by` migration on existing `mcp-memory/server.py`. Conflict classifier (Haiku ADD/UPDATE/SUPERSEDE/NOOP). Provenance-aware ranking. |
-| **C4 Reasoning** | **sequential-thinking MCP** (already installed). **LangGraph as one MCP server** (Pillar 7 carveout) wrapping Postgres checkpointer pointing at Supabase. | **Magentic-One ledger** ([MS Agent Framework 1.0](https://github.com/microsoft/agent-framework), MIT) — verified-facts / derived-facts / guesses tri-ledger pattern for plan state. **Plan-and-Execute** template (LangGraph). | `applies_when` / `skip_if` template runtime. Replan-on-stall. Skills→templates migration glue. |
+| **C4 Reasoning** | **sequential-thinking MCP** (already installed). **LangGraph as one MCP server** (Federation & Delegation carveout) wrapping Postgres checkpointer pointing at Supabase. | **Magentic-One ledger** ([MS Agent Framework 1.0](https://github.com/microsoft/agent-framework), MIT) — verified-facts / derived-facts / guesses tri-ledger pattern for plan state. **Plan-and-Execute** template (LangGraph). | `applies_when` / `skip_if` template runtime. Replan-on-stall. Skills→templates migration glue. |
 | **C5 Reflection** | None | **Letta sleep-time agents** (Apache-2.0) — async secondary writer pattern. Implement as Routine. **Reflexion** (MIT) — verbal-feedback loop algorithm. **Cognee evolution pass** — synthesis-on-ingest reference. | Stale-belief challenger. LLM-as-judge Brier-score calibration. Owner-correction → label loop. |
 | **C6 Decision gating** | **PreToolUse hooks + permissions** (Claude Code native). **Guardrails AI** (Apache-2.0) — Pydantic schemas for *output* validation only, called from hook. | — | **Everything substantive.** State-aware classification (git status, convergence counter, harness restrictions) has no library — confirmed by scout 2: all gating frameworks are stateless. Tier 1 queue table custom. Auto-emit decision events custom. |
 
@@ -69,7 +69,7 @@ Three columns: **Adopt** (drop-in, integrates as MCP/plugin/hook/skill), **Patte
 2. **GPT Researcher MCP** → C10 primary engine. Apache-2.0, MCP-native; config: Claude model, Supabase store for promoted facts. **Estimated: 60% of C10 covered.**
 3. **sequential-thinking MCP** → C4 novel/high-stakes reasoning. Already installed; finally wire it.
 4. **firecrawl + context7 MCP** → C10 scrape/docs tier (already adopted).
-5. **LangGraph as one MCP server** → C4 plan-as-event + Postgres checkpointer to Supabase. Pillar 7 carveout pre-approved. Wrap behind ONE MCP boundary (not used directly throughout codebase).
+5. **LangGraph as one MCP server** → C4 plan-as-event + Postgres checkpointer to Supabase. Federation & Delegation carveout pre-approved. Wrap behind ONE MCP boundary (not used directly throughout codebase).
 6. **Guardrails AI (library, called from hook)** → C6 *output* validation only. Not flow control.
 7. **HIBP API** (free tier) → C14 breach probes. Scheduled task.
 

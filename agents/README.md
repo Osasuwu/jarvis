@@ -1,6 +1,6 @@
 # agents/
 
-Pillar 7 persistent LangGraph agents. Each module is a standalone agent
+Federation & Delegation pillar — persistent LangGraph agents. Each module is a standalone agent
 that runs alongside Claude Code (not as a replacement), uses Ollama as
 the local LLM, and persists state in PostgreSQL via LangGraph's
 `PostgresSaver` checkpointer.

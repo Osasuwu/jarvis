@@ -1,4 +1,4 @@
-# Ollama Setup for Pillar 7 Agents
+# Ollama Setup for Federation & Delegation Agents
 
 Local LLM runtime for LangGraph persistent agents. Ollama handles cheap, always-on decisions (routing, classification) without burning Claude tokens.
 

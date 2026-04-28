@@ -1,6 +1,6 @@
 # Perception → task_queue ingest
 
-Modules: `agents/perception_*.py` (one per source). Pillar 7 Sprint 4
+Modules: `agents/perception_*.py` (one per source). Federation & Delegation Sprint 4
 (milestone #32). Architecture-doc issue: #386. Implementation issues:
 #388 (GitHub), #389 (self-perception via morning_check). Telegram (#387)
 deferred — see "Future sources" below.

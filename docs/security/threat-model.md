@@ -1,7 +1,7 @@
 # Jarvis Threat Model
 
 Date: 2026-04-15
-Scope: Full system including multi-agent future (Pillar 7)
+Scope: Full system including multi-agent future (Federation & Delegation pillar)
 
 ## Data Classification
 
@@ -28,7 +28,7 @@ See `docs/security/mcp-audit.md` for per-server analysis. Summary:
 | Data corruption via memory writes | Medium | Soft delete with 30-day retention (#160) |
 | Obsidian vault data exposure | Low | Local only, no network |
 
-### 2. Subagents (current + Pillar 7)
+### 2. Subagents (current + Federation & Delegation pillar)
 
 | Vector | Risk | Current mitigation |
 |--------|------|--------------------|
@@ -36,7 +36,7 @@ See `docs/security/mcp-audit.md` for per-server analysis. Summary:
 | Agent modifies protected files | Medium | **Sprint 2: #162** |
 | Agent corrupts git state (wrong branch, conflict) | Medium | **Sprint 2: #163** |
 | Agent scope creep (edits unrelated files) | Low | CLAUDE.md rules (soft) |
-| Agent-to-agent data poisoning | Low | Not yet addressed (Pillar 7) |
+| Agent-to-agent data poisoning | Low | Not yet addressed (Federation & Delegation pillar) |
 | Agent infinite loop / resource waste | Low | Token budget awareness in CLAUDE.md |
 
 ### 3. External Integrations
@@ -89,7 +89,7 @@ Key flows to protect:
 | Prompt injection via web scrape | Low | Medium | Low | Accepted (Claude instruction hierarchy) |
 | Supply chain attack via dependency | Low | High | Medium | Partial (Dependabot) |
 | Prompt injection via GitHub issue | Low | Medium | Low | Accepted (trusted repo) |
-| Agent-to-agent poisoning | Low | Medium | Low | Deferred (Pillar 7) |
+| Agent-to-agent poisoning | Low | Medium | Low | Deferred (Federation & Delegation pillar) |
 
 ## Mitigations Summary
 
@@ -115,4 +115,4 @@ Key flows to protect:
 ### Accepted Risks
 - **Prompt injection via web/issues**: Claude's instruction hierarchy (system > user > tool output) is the defense. No additional mitigation planned unless incidents occur.
 - **Single-user assumption**: No RLS, no multi-tenant isolation. Acceptable for solo project.
-- **Agent-to-agent poisoning**: Deferred to Pillar 7 when multi-agent architecture is designed.
+- **Agent-to-agent poisoning**: Deferred to Federation & Delegation pillar when multi-agent architecture is designed.

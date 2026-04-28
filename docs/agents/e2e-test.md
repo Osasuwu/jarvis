@@ -1,4 +1,4 @@
-# Pillar 7 End-to-End Test (issue #175)
+# Federation & Delegation End-to-End Test (issue #175)
 
 Validates the full event pipeline:
 

@@ -1,6 +1,6 @@
 ---
 name: reflect
-description: "Learning loop: review recent decisions, check outcomes via GitHub PRs, extract lessons, update memory. Integrates with outcome tracking (Pillar 3)."
+description: "Learning loop: review recent decisions, check outcomes via GitHub PRs, extract lessons, update memory. Integrates with the Outcome Tracking & Learning pillar."
 ---
 
 # Reflect
