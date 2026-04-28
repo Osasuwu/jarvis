@@ -66,7 +66,7 @@ User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
 | Component | Description |
 |-----------|-------------|
 | **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI) + keyword fallback |
-| **8 skills** | `/status`, `/implement`, `/delegate`, `/research`, `/self-improve`, `/goals`, `/end`, `/end-quick` |
+| **12 skills** | `/status`, `/implement`, `/delegate`, `/verify`, `/reflect`, `/research`, `/self-improve`, `/goals`, `/setup-tasks`, `/autonomous-loop`, `/end`, `/end-quick` |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
 | **Delegation pipeline** | Issue -> branch -> coding agent -> PR, with verification |
@@ -79,9 +79,13 @@ User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
 | `/status` | Session start, "what's happening" | Project dashboard: git, PRs, issues, CI, risks, goals |
 | `/implement` | "реализуй #42", "implement #X" | Issue → branch → inline implementation → PR (main session does the work) |
 | `/delegate` | "делегируй #X #Y", "раскидай на агентов" | Multiple issues → parallel coding subagents, orchestrator reviews each diff + decides merge |
+| `/verify` | "проверь результаты", "post-delegation" | Closes outcome loop: PR merge status, test results, lessons extracted |
+| `/reflect` | "что сработало", "уроки" | Reviews recent decisions + outcomes, extracts lessons as feedback memories |
 | `/research` | "research X", "compare A vs B" | Web research with source validation |
 | `/self-improve` | "improve yourself" | Gap analysis -> ideation -> research -> implementation |
 | `/goals` | "goals", "priorities" | View, set, update strategic goals in Supabase |
+| `/setup-tasks` | New device bootstrap | Registers all scheduled tasks (idempotent) |
+| `/autonomous-loop` | Daily scheduled tick or manual | Perceives events, evaluates against goals, acts within safety bounds |
 | `/end` | End of session | Behavioral reflection, decision log, memory save, commit |
 | `/end-quick` | Quick exit | Checkpoint + commit only |
 
@@ -112,7 +116,7 @@ All devices connect to the same Supabase instance. No manual sync.
 | Identity & Strategy | C1 Identity & values, C2 Goals & priorities |
 | Cognition | C4 Reasoning & planning, C6 Decision gating |
 | Action | C7 Execution, C8 Sub-orchestration, C9 Tool / environment interface, C10 Research |
-| Interface | C11 Perception, C12 Communication with owner |
+| Interface | C11 Perception, C12 Communication with user |
 | Stewardship | C13 Budget, C14 Security & privacy, C15 Self-improvement, C16 Verification |
 
 Full capability detail, migration order, and bootstrap protocol: [docs/design/jarvis-v2-redesign.md](docs/design/jarvis-v2-redesign.md). Vision: [docs/VISION.md](docs/VISION.md). Active sprint scope: [GitHub milestones](https://github.com/Osasuwu/jarvis/milestones).
@@ -127,7 +131,7 @@ jarvis/
     SOUL.md              <- personality definition
     repos.conf           <- repos to scan
   .claude/
-    skills/              <- 7 custom slash commands
+    skills/              <- project-scoped slash commands (sprint-report)
     agents/              <- subagent definitions (coding)
     settings.json        <- project hooks
   mcp-memory/

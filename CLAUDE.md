@@ -76,6 +76,8 @@ Use skills — don't reinvent with raw tools.
 | "исследуй", "research", "сравни" | `/research` |
 | "улучши себя", self-improvement | `/self-improve` |
 | "цели", "приоритеты" | `/goals` |
+| New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
+| Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
 | End of sprint in redrobot | `/sprint-report` |
 | "end" / "end quick" | `/end` / `/end-quick` |
 
