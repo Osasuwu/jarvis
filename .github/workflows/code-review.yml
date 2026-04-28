@@ -42,6 +42,9 @@ jobs:
             echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Install code-review plugin
         run: |
           # Idempotent: marketplace add + plugin install. Plugin lives in the
