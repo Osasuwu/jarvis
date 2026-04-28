@@ -413,12 +413,46 @@ def setup_sibling_repos():
             warn(f"  could not add upstream remote: {upstream_result.stderr.strip()[:120]}")
 
 
+# NB: marketplace name is `jarvis-fork-plugins` for historical reasons —
+# only `code-review` is actually a fork (Osasuwu/claude-plugins-official).
+# The other 5 are upstream Anthropic plugins consumed via git-subdir directly.
+# Kept the name to avoid forcing an opt-in re-add on existing devices.
 CLAUDE_PLUGINS = [
     {
         "plugin": "code-review",
         "marketplace": "jarvis-fork-plugins",
         "marketplace_path": ".claude/marketplace",
         "purpose": "C16 PR code-review (forked + adapted)",
+    },
+    {
+        "plugin": "pr-review-toolkit",
+        "marketplace": "jarvis-fork-plugins",
+        "marketplace_path": ".claude/marketplace",
+        "purpose": "Specialized PR review agents (comments / tests / errors / types / quality / simplification)",
+    },
+    {
+        "plugin": "session-report",
+        "marketplace": "jarvis-fork-plugins",
+        "marketplace_path": ".claude/marketplace",
+        "purpose": "HTML report of session usage — tokens / cache / subagents / skills / costly prompts",
+    },
+    {
+        "plugin": "hookify",
+        "marketplace": "jarvis-fork-plugins",
+        "marketplace_path": ".claude/marketplace",
+        "purpose": "Author custom hooks via markdown rules (conversation pattern detection)",
+    },
+    {
+        "plugin": "claude-md-management",
+        "marketplace": "jarvis-fork-plugins",
+        "marketplace_path": ".claude/marketplace",
+        "purpose": "Audit + improve CLAUDE.md files; capture session learnings",
+    },
+    {
+        "plugin": "mcp-server-dev",
+        "marketplace": "jarvis-fork-plugins",
+        "marketplace_path": ".claude/marketplace",
+        "purpose": "Skills for designing/building MCP servers (deployment, tool patterns, auth, interactive apps)",
     },
 ]
 
@@ -431,36 +465,59 @@ def install_claude_plugins():
         warn("claude CLI not found -- skipping plugin install")
         return
 
+    # Group entries by (marketplace_name, marketplace_path) so we register +
+    # refresh each marketplace once, regardless of how many plugins it serves.
+    marketplaces = {}  # name -> (path, [entries])
     for entry in CLAUDE_PLUGINS:
+        mp_name = entry["marketplace"]
         mp_path = ROOT / entry["marketplace_path"]
+        marketplaces.setdefault(mp_name, (mp_path, []))[1].append(entry)
+
+    for mp_name, (mp_path, entries) in marketplaces.items():
         if not mp_path.exists():
-            warn(f"marketplace path missing: {entry['marketplace_path']}")
+            warn(f"marketplace path missing: {mp_path}")
             continue
 
-        # marketplace add (idempotent — claude reports "already on disk")
+        # add: idempotent — first run registers, subsequent runs are no-op
+        # ("already on disk"). Absolute path required so claude doesn't
+        # mis-treat it as a Git source.
         add_result = subprocess.run(
-            ["claude", "plugins", "marketplace", "add", str(mp_path)],
+            ["claude", "plugins", "marketplace", "add", str(mp_path.resolve())],
             capture_output=True, text=True,
         )
         if add_result.returncode != 0:
-            warn(f"marketplace add failed for {entry['marketplace']}: "
+            warn(f"marketplace add failed for {mp_name}: "
                  f"{add_result.stderr.strip()[:200]}")
             continue
 
-        # plugin install (idempotent — re-install is a no-op success)
-        install_result = subprocess.run(
-            [
-                "claude", "plugins", "install",
-                f"{entry['plugin']}@{entry['marketplace']}",
-                "--scope", "user",
-            ],
+        # update: re-reads marketplace.json from disk so newly-added plugin
+        # entries become visible to install. Without this step, plugins added
+        # to an already-registered marketplace would be invisible until the
+        # user manually ran `claude plugins marketplace update`.
+        update_result = subprocess.run(
+            ["claude", "plugins", "marketplace", "update", mp_name],
             capture_output=True, text=True,
         )
-        if install_result.returncode == 0:
-            ok(f"{entry['plugin']}@{entry['marketplace']} -- {entry['purpose']}")
-        else:
-            err = (install_result.stderr or install_result.stdout or "").strip()
-            warn(f"install failed for {entry['plugin']}: {err[:200]}")
+        if update_result.returncode != 0:
+            warn(f"marketplace update failed for {mp_name}: "
+                 f"{update_result.stderr.strip()[:200]}")
+            # don't `continue` — install may still work if marketplace
+            # already had the entry from a prior run
+
+        for entry in entries:
+            install_result = subprocess.run(
+                [
+                    "claude", "plugins", "install",
+                    f"{entry['plugin']}@{mp_name}",
+                    "--scope", "user",
+                ],
+                capture_output=True, text=True,
+            )
+            if install_result.returncode == 0:
+                ok(f"{entry['plugin']}@{mp_name} -- {entry['purpose']}")
+            else:
+                err = (install_result.stderr or install_result.stdout or "").strip()
+                warn(f"install failed for {entry['plugin']}: {err[:200]}")
 
 
 def verify_skills():
