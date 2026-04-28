@@ -6,7 +6,7 @@ Personal AI agent built on [Claude Code](https://claude.ai/code) + [MCP](https:/
 
 Not a tool, not an assistant -- an extension of thinking capacity, memory, and executive function. A solo developer lacks not hands but **breadth**. Jarvis compensates: tracking, researching, monitoring, remembering, prioritizing.
 
-> **Status:** v0.2.0 -- core memory + skills working. [Roadmap below](#roadmap).
+> **Status:** v0.2.0 -- core memory + skills working. [Capability map below](#capabilities).
 
 ## Quick Start
 
@@ -102,30 +102,20 @@ Memory types: `user`, `project`, `decision`, `feedback`, `reference`
 
 All devices connect to the same Supabase instance. No manual sync.
 
-## Roadmap
+## Capabilities
 
-9 pillars, two layers. Core = how Jarvis thinks. Reach = how Jarvis interacts with the world.
+17 capabilities grouped into 6 pillars. (Internally the design doc also stratifies them into 4 layers + cross-cutting — Identity / Cognition / Action / Interface / Cross-cutting — but pillars are the stable user-facing grouping.) Live migration progress lives in GitHub milestones, not in this file (status text gets stale).
 
-### Core
+| Pillar | Capabilities |
+|--------|--------------|
+| Memory | C3 Memory store, C5 Reflection / learning, C17 Observability |
+| Identity & Strategy | C1 Identity & values, C2 Goals & priorities |
+| Cognition | C4 Reasoning & planning, C6 Decision gating |
+| Action | C7 Execution, C8 Sub-orchestration, C9 Tool / environment interface, C10 Research |
+| Interface | C11 Perception, C12 Communication with owner |
+| Stewardship | C13 Budget, C14 Security & privacy, C15 Self-improvement, C16 Verification |
 
-| Pillar | Status | Description |
-|--------|--------|-------------|
-| 1. Goals & Strategic Context | Done | Goal-aware decisions, push-back, priority tracking |
-| 2. Autonomous Work Loop | ~90% | Event perception, judgment, continuous operation |
-| 3. Outcome Tracking & Learning | ~40% | Verify results, learn from patterns |
-| 4. Memory 2.0 | ~85% | Graph relations, temporal awareness, auto-hygiene |
-
-### Reach
-
-| Pillar | Status | Description |
-|--------|--------|-------------|
-| 5. Integrations / Data Access | Early | Read access to owner's accounts and services |
-| 6. Data Intelligence | Not started | Cross-platform search, pattern detection |
-| 7. Agent System | Prototype | Scalable multi-agent architecture |
-| 8. Identity & Interface | Partial | TTS/STT, Telegram, professional document drafting |
-| 9. Security & Digital Hygiene | Not started | Password audit, breach monitoring, proactive protection |
-
-Architecture detail (17 capabilities, 5 layers, migration order) — [docs/design/jarvis-v2-redesign.md](docs/design/jarvis-v2-redesign.md). Vision — [docs/VISION.md](docs/VISION.md). Active sprint scope — [GitHub milestones](https://github.com/Osasuwu/jarvis/milestones).
+Full capability detail, migration order, and bootstrap protocol: [docs/design/jarvis-v2-redesign.md](docs/design/jarvis-v2-redesign.md). Vision: [docs/VISION.md](docs/VISION.md). Active sprint scope: [GitHub milestones](https://github.com/Osasuwu/jarvis/milestones).
 
 ## Project Structure
 

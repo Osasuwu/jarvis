@@ -1770,8 +1770,8 @@ Pillars are long-lived capability groups (per `pillar_is_not_one_task` — they 
 |---|---|
 | Memory | C3 (Memory store), C5 (Reflection / learning), C17 (Observability — feeds episodic) |
 | Identity & Strategy | C1 (Identity & values), C2 (Goals & priorities) |
-| Cognition | C4 (Reasoning & planning), C6 (Decision gating), C10 (Research) |
-| Action | C7 (Execution), C8 (Sub-orchestration), C9 (Tool / env interface) |
+| Cognition | C4 (Reasoning & planning), C6 (Decision gating) |
+| Action | C7 (Execution), C8 (Sub-orchestration), C9 (Tool / env interface), C10 (Research) |
 | Interface | C11 (Perception), C12 (Communication with owner) |
 | Stewardship | C13 (Budget), C14 (Security & privacy), C15 (Self-improvement), C16 (Verification) |
 
