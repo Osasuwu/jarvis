@@ -13,7 +13,7 @@ on:
 jobs:
   review:
     # Skip fork PRs (untrusted code on main runner) and Dependabot (the
-    # plugin will mark these as trivial and exit anyway, but do it earlier
+    # plugin will mark these as trivial and exit anyway, but bail earlier
     # to save Claude tokens). Draft PRs are skipped at the step-1 eligibility
     # check inside the plugin.
     if: |
@@ -42,30 +42,21 @@ jobs:
             echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
           fi
 
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
-
-      - name: Install code-review plugin
-        run: |
-          # Idempotent: marketplace add + plugin install. Plugin lives in the
-          # fork (Osasuwu/claude-plugins-official) and is referenced via the
-          # in-repo marketplace at .claude/marketplace.
-          claude plugins marketplace add ./.claude/marketplace
-          claude plugins install code-review@jarvis-fork-plugins --scope user
-
       - name: Run /code-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          plugin_marketplaces: ./.claude/marketplace
+          plugins: code-review@jarvis-fork-plugins
           prompt: |
             Run /code-review for PR #${{ steps.pr.outputs.number }} in repo ${{ github.repository }}.
 
             The /code-review slash command is provided by the code-review plugin
-            (already installed in this runner via the prior step). Follow its
-            instructions verbatim — eligibility check, guideline-file gather,
-            8 parallel reviewers, confidence scoring, post comment.
+            (loaded via the action's plugins input). Follow its instructions
+            verbatim — eligibility check, guideline-file gather, 8 parallel
+            reviewers, confidence scoring, post comment.
 
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
             (not available in this runner). This is plugin invocation only.
-          allowed_tools: |
-            Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)
+          claude_args: |
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
