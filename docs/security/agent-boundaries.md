@@ -1,7 +1,7 @@
 # Agent Sandbox Boundaries
 
 Date: 2026-04-15 (revised 2026-04-23 for Federation & Delegation Phase 0 — #341; revised 2026-04-26 for principal-aware permissions — #426; isatty fallback removed in #429)
-Scope: Permission rules for **all principals** running Claude — interactive owner, autonomous loop, /delegate subagent, and the future dispatcher.
+Scope: Permission rules for **all principals** running Claude — interactive principal (`live`), autonomous loop, /delegate subagent, and the future dispatcher.
 
 ## Principal model (#426, #429)
 
@@ -9,7 +9,7 @@ Permissions depend on **who is running Claude**. Four principals — detection l
 
 | Principal | Signal | Trust |
 |---|---|---|
-| `live` | Default when no `JARVIS_PRINCIPAL` and no headless env | Highest — owner watches, can correct in seconds |
+| `live` | Default when no `JARVIS_PRINCIPAL` and no headless env | Highest — principal watches, can correct in seconds |
 | `autonomous` | `JARVIS_PRINCIPAL=autonomous` (set by scheduler/cron launchers) **or** `CLAUDE_CODE_NON_INTERACTIVE`/`CLAUDE_CODE_HEADLESS` | Low — corrections take hours |
 | `subagent` | `JARVIS_PRINCIPAL=subagent` (auto-injection in /delegate is future work) | Medium — isolated worktree, parent reviews diff |
 | `supervised` | `JARVIS_PRINCIPAL=supervised` (future dispatcher launcher will set this) | Delegated — permissions ⊆ supervisor's grant |
@@ -35,11 +35,11 @@ Action tier model is shared with `agents/safety.py` (T0 = AUTO, T1 = OWNER_QUEUE
 | **T2-mirror** `~/.claude/*` files installed by `install.ps1` — see "User-level" table below | ❌ block (use installer) | ❌ block | ❌ block | ❌ block |
 | **T2-secret** `.env*` values; force push to main/master; impersonation; outbound to other humans (PR comments to others, Telegram, email) | ❌ always block | ❌ block | ❌ block | ❌ block |
 
-Currently enforced in code: only **T2** rows, via [`scripts/protected-files.py`](../../scripts/protected-files.py). T1 routing (autonomous-enqueue, supervised-grant) lands when the dispatcher ships; until then T1 work is owner-driven through `/implement` and `/delegate`.
+Currently enforced in code: only **T2** rows, via [`scripts/protected-files.py`](../../scripts/protected-files.py). T1 routing (autonomous-enqueue, supervised-grant) lands when the dispatcher ships; until then T1 work is principal-driven through `/implement` and `/delegate`.
 
 ## Protected Files
 
-These files must NEVER be modified by subagents. Changes require owner review in the main session. This table is the **single source of truth** — skills reference it rather than redefining their own lists.
+These files must NEVER be modified by subagents. Changes require principal review in the main session. This table is the **single source of truth** — skills reference it rather than redefining their own lists.
 
 ### Repo-level (jarvis working copy)
 
@@ -83,13 +83,13 @@ Enforced via PreToolUse hook: `scripts/protected-files.py` (covers both surfaces
 ## Memory Rules
 
 - Agents CAN: store project/decision memories, record outcomes
-- Agents CANNOT: delete memories without owner confirmation (soft delete provides safety net)
+- Agents CANNOT: delete memories without principal confirmation (soft delete provides safety net)
 - Secret scanner blocks credential values in memory_store
 
 ## Scope Rules
 
 - Agent should only modify files relevant to its assigned issue
-- If an agent needs to change a protected file, it must document the needed change in the PR description and leave it for the owner
+- If an agent needs to change a protected file, it must document the needed change in the PR description and leave it for the principal
 - Cross-project changes (jarvis ↔ redrobot) require explicit mention in the issue
 
 ## Escalation
