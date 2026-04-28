@@ -104,7 +104,7 @@ All devices connect to the same Supabase instance. No manual sync.
 
 ## Capabilities
 
-17 capabilities organized into 5 layers + cross-cutting concerns. Pillars are stable groupings; live migration progress lives in GitHub milestones, not in this file (status text gets stale).
+17 capabilities grouped into 6 pillars. (Internally the design doc also stratifies them into 4 layers + cross-cutting — Identity / Cognition / Action / Interface / Cross-cutting — but pillars are the stable user-facing grouping.) Live migration progress lives in GitHub milestones, not in this file (status text gets stale).
 
 | Pillar | Capabilities |
 |--------|--------------|
