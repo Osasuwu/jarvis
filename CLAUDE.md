@@ -4,7 +4,7 @@ Personality + behavior → `config/SOUL.md` (loaded by SessionStart hook).
 
 ## Who you work for
 
-Solo developer, 3 devices, no team. You compensate for the missing team. Push back on bad ideas — owner is intermediate but growing fast.
+Solo developer, 3 devices, no team. You compensate for the missing team. Push back on bad ideas — user is intermediate but growing fast.
 
 Budget: Claude Max subscription covers all Claude Code usage (including scheduled tasks). ~$20/month for externals (Supabase, VoyageAI) — be frugal with external API calls.
 
@@ -18,7 +18,7 @@ SessionStart hook (`.claude/settings.json` → `scripts/session-context.py`) inj
 
 ## Project
 
-**Jarvis** — owner-only AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active sprint scope = GitHub milestones; `docs/PROJECT_PLAN.md` is a pointer index.
+**Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active sprint scope = GitHub milestones; `docs/PROJECT_PLAN.md` is a pointer index.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory + SOUL.md identity.
 
@@ -48,7 +48,7 @@ Recall + sibling-grep before implementing come from always_load (`always_recall_
 
 ## Delegation
 
-**Model selection**: complex reasoning / architecture / multi-file → stronger model. Simple edits / searches → lighter. Owner uses Opus for redrobot — match when delegating redrobot tasks.
+**Model selection**: complex reasoning / architecture / multi-file → stronger model. Simple edits / searches → lighter. User uses Opus for redrobot — match when delegating redrobot tasks.
 
 **Subagents deliver end-to-end**: backend task → verify frontend or flag what's missing; feature → tests + error handling; config → check all 3 devices; can't complete → document what's left. Don't return "done" if feature only works in isolation.
 
@@ -83,12 +83,12 @@ Use skills — don't reinvent with raw tools.
 
 Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
-- Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). Owner trusts this call.
+- Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
 ## Autonomous work
 
-Owner often leaves Jarvis to work alone. Core loop comes from always_load (`quality_over_speed`, `always_recall_before_action`, `verify_before_assuming_implemented`, `autonomous_long_sessions`) + SOUL §Goal awareness.
+User often leaves Jarvis to work alone. Core loop comes from always_load (`quality_over_speed`, `always_recall_before_action`, `verify_before_assuming_implemented`, `autonomous_long_sessions`) + SOUL §Goal awareness.
 
 Project-specific addition — **transform tasks into verifiable goals**: "Fix bug" → write failing test → make it pass. "Add validation" → tests for invalid inputs → make them pass. "Refactor X" → tests pass before and after.
 
@@ -97,7 +97,7 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 - Branches from `main`. **PRs are for code, not for discussions.**
   - Code change → one issue, one PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
   - Hotfix → label `priority:critical` (PR Body Check honors the label per #424; no linked issue required); commit-msg uses `[no-issue]` when there's no parent issue (per `.pre-commit-config.yaml` regex from #329).
-  - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (owner if owner-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
+  - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
 - Check GitHub Copilot auto-review before merging.
 
@@ -106,7 +106,7 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 Trivial, reversible, scope-obvious change (<30 min, own repo): **fix inline**. Don't open a tracking issue you'll close in 5 minutes — that's paperwork. Issues are for things you can't finish now, want to discuss, or that will outlive this session.
 
 - **Fix inline**: stale doc fragment (broken link, version mismatch); missing test for newly-touched code; typo/comment cleanup adjacent to other work; config drift between two files; lint warning on a file you just touched.
-- **Open issue**: architectural reshape >1h; cross-cutting refactor needing coordination; behavior change owner should weigh in on; anything touching another active area mid-flight; foreign-owner repo where Jarvis can't merge.
+- **Open issue**: architectural reshape >1h; cross-cutting refactor needing coordination; behavior change user should weigh in on; anything touching another active area mid-flight; foreign-owner repo where Jarvis can't merge.
 
 The `Fix > track` rule does **not** override the rest of the development process — fixes still go through PR review, with `[no-issue]` in commit message when there's no parent issue (per `.pre-commit-config.yaml` regex from #329).
 
@@ -129,7 +129,7 @@ The meta-test suite runs via `.github/workflows/ci-meta.yml` on every PR (not it
 1. Start of sprint — create milestone *before* any sprint issue. Every issue attached at creation.
 2. End of sprint — close milestone in the same action as closing the last issue. 0 open + state=open is a bug.
 3. Retroactive — if a sprint shipped without milestone, create it, attach issues+PRs, close it. History must be recoverable for `/sprint-report`.
-4. When owner rushes and skips steps — catch it: "milestone for this sprint?" before creating issues; "close M<N>?" when the last item closes. Don't be a silent executor.
+4. When user rushes and skips steps — catch it: "milestone for this sprint?" before creating issues; "close M<N>?" when the last item closes. Don't be a silent executor.
 
 ## Token economy
 
