@@ -125,7 +125,7 @@ All devices connect to the same Supabase instance. No manual sync.
 | 8. Identity & Interface | Partial | TTS/STT, Telegram, professional document drafting |
 | 9. Security & Digital Hygiene | Not started | Password audit, breach monitoring, proactive protection |
 
-See [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for full details and [docs/VISION.md](docs/VISION.md) for the vision.
+Architecture detail (17 capabilities, 5 layers, migration order) — [docs/design/jarvis-v2-redesign.md](docs/design/jarvis-v2-redesign.md). Vision — [docs/VISION.md](docs/VISION.md). Active sprint scope — [GitHub milestones](https://github.com/Osasuwu/jarvis/milestones).
 
 ## Project Structure
 
@@ -162,7 +162,7 @@ Memory syncs automatically via Supabase. All config lives in the repo.
 
 ## Contributing
 
-Contributions welcome. See [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for priorities.
+Contributions welcome. See [open issues](https://github.com/Osasuwu/jarvis/issues) and [milestones](https://github.com/Osasuwu/jarvis/milestones) for current priorities.
 
 Issues: [GitHub Issues](https://github.com/Osasuwu/jarvis/issues)
 
