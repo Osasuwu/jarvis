@@ -20,6 +20,7 @@ flowchart LR
     jarvis -->|memory + events + queues| supabase[(Supabase Postgres<br/>pgvector + pg_cron)]
     jarvis -->|embeddings| voyage[VoyageAI]
     jarvis -->|repos + Actions| github[GitHub]
+    owner -->|issues + comments + corrections| github
     jarvis -->|credential probes| hibp[HaveIBeenPwned]
     jarvis -->|fork base + install| plugin_eco[Anthropic plugins<br/>claude-plugins-official + skills]
 ```
@@ -137,6 +138,8 @@ flowchart TB
 
     c1 --> c6
     c2 --> c5
+    c2 --> c6
+    c5 --> c2
     c11 --> c17
     c6 --> c17
     c6 --> c3
@@ -145,7 +148,9 @@ flowchart TB
     c4 --> c10
     c4 --> c17
     c8 --> c17
+    c9 --> c17
     c16 --> c17
+    c16 --> c5
     c15 --> c16
     c13 --> c17
     c12 --> c6

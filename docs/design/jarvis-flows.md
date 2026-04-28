@@ -25,13 +25,25 @@ Re-render: `npx -p @mermaid-js/mermaid-cli mmdc -i jarvis-flows.md -o flow.svg` 
 sequenceDiagram
     autonumber
     actor Owner
+    participant Sched as Scheduled task
+    participant GHA as GitHub Action
+    participant ALoop as autonomous-loop
     participant CC as Claude Code
     participant Hook as SessionStart hook
     participant Pg as Supabase
     participant Mem as Memory recall
     participant State as working_state_jarvis
 
-    Owner->>CC: claude (start session)
+    alt Owner-initiated
+        Owner->>CC: claude (interactive start)
+    else Scheduled task fire
+        Sched->>CC: spawn with task prompt
+    else GHA event
+        GHA->>CC: claude-code-action via runner
+    else autonomous-loop tick
+        ALoop->>CC: spawn with goal-derived prompt
+    end
+
     CC->>Hook: fire SessionStart
     Hook->>Pg: load user profile + always-load rules
     Hook->>Mem: memory_recall topic-baseline
@@ -54,7 +66,7 @@ sequenceDiagram
     CC-->>Owner: session close
 ```
 
-**Key points.** Bootstrap context arrives via hook in one shot (no MCP calls during session start — already in window per CLAUDE.md). Targeted recall happens during interaction, not at session start. Working state is saved at natural breakpoints, not every tool call. After context compression, recall surfaces "working state" first.
+**Key points.** **Same bootstrap fires regardless of session origin** — owner-interactive, scheduled tasks, GHA-triggered, autonomous-loop tick all converge on the SessionStart hook. For autonomous origins, the interaction loop processes goal-derived queued prompts in place of owner messages; rest of the flow unchanged. Bootstrap context arrives via hook in one shot (no MCP calls during session start — already in window per CLAUDE.md). Targeted recall happens during interaction, not at session start. Working state is saved at natural breakpoints, not every tool call. After context compression, recall surfaces "working state" first.
 
 ---
 
@@ -140,9 +152,12 @@ flowchart TB
 
     emit[Auto-emit decision_made event<br/>no manual record_decision needed]
     emit --> action[Tool fires or held]
+    emit --> events[(C17 events)]
+    events --> calib[C5 calibrator<br/>per-class precision/recall<br/>from gate_overpermissive + gate_overcautious]
+    calib -.->|threshold update| classify
 ```
 
-**Key points.** **Single canonical gate** consulted for every tool call across all lanes (interactive / scheduled / subagent). **State-aware** — `topic_hash` convergence counter catches 3-attempt stalls deterministically. `decision_queue` is a **separate table** (workflow with state), not the C17 events table (append-only). `record_decision` is auto-emitted by the gate — no manual call required, closes compliance gap. **DEFER** outcome added per Claude Code v2.1.89 PreToolUse `defer` decision.
+**Key points.** **Single canonical gate** consulted for every tool call across all lanes (interactive / scheduled / subagent). **State-aware** — `topic_hash` convergence counter catches 3-attempt stalls deterministically. `decision_queue` is a **separate table** (workflow with state), not the C17 events table (append-only). `record_decision` is auto-emitted by the gate — no manual call required, closes compliance gap. **DEFER** outcome added per Claude Code v2.1.89 PreToolUse `defer` decision. **Learning loop closed** — `gate_overpermissive` (owner reverts) and `gate_overcautious` (owner approves queued with annotation) feed C5 calibrator; per-class threshold auto-adjusts (redesign §C6 calibration).
 
 ---
 
@@ -241,10 +256,14 @@ flowchart TB
     APPLY --> c3[(C3 Memory)]
     lane3 --> calib
 
+    synth --> goalcand[Candidate child goal<br/>from owner_message + decision_made]
+    goalcand --> c6q[C6 Tier 1 queue]
+    c6q -->|owner approves| c2[(C2 Goals)]
+
     c3 --> events[(C17 events:<br/>judgment_made, mutation_proposed,<br/>stale_challenge_fired)]
 ```
 
-**Key points.** **Event-triggered primary, sweeps as backstop** — no pure cron. Per `Memory-driven autonomy` op policy. **Each handler narrow + independently calibratable** — synthesizer, stale-challenger, calibrator, FoK, anomaly investigator. **Cold-start: `crepes` Mondrian CP** does class-conditional calibration — partial-pooling across semantically-near classes when leaf class has no labels. Stale-challenger sweep deferred until first month of labels accumulates.
+**Key points.** **Event-triggered primary, sweeps as backstop** — no pure cron. Per `Memory-driven autonomy` op policy. **Each handler narrow + independently calibratable** — synthesizer, stale-challenger, calibrator, FoK, anomaly investigator. **Cold-start: `crepes` Mondrian CP** does class-conditional calibration — partial-pooling across semantically-near classes when leaf class has no labels. Stale-challenger sweep deferred until first month of labels accumulates. **Goals as candidate output** — synthesizer also produces candidate child goals from `owner_message` + `decision_made` events; routed through C6 Tier 1 queue, owner-approved entries land in C2 (closes the C5 → C2 path per redesign §C2 proactive tracking).
 
 ---
 
