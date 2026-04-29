@@ -1,4 +1,4 @@
-# Jarvis Architecture — C4 Views (revised 2026-04-28)
+# Jarvis Architecture — C4 Views (revised 2026-04-29)
 
 Four views: Context (system in environment), Container (runtime + storage), Component (18 capabilities in 5 layers + cross-cutting), Event-substrate dataflow (the load-bearing edge: `everything → C17`). Companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md). C18 (Proactive challenger) added in Phase C (2026-04-29) per `audit_3_main_changes_lock_2026_04_28`; mermaid sources below include c18, SVG outputs need re-render. Reflects L3 concrete adoptions folded in 2026-04-27/28 — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md).
 

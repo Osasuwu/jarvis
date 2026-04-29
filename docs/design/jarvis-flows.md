@@ -257,13 +257,15 @@ flowchart TB
     lane3 --> calib
 
     synth --> goalcand[Candidate child goal<br/>from principal_message + decision_made]
-    goalcand --> c6q[C6 Tier 1 queue]
-    c6q -->|principal approves| c2[(C2 Goals)]
+    goalcand --> c2draft[C2 draft goal<br/>provenance:agent_extracted<br/>confidence:low<br/>status:draft]
+    c2draft --> brief[/status + batched brief<br/>accept / edit / dismiss]
+    c2draft -.->|7-day quiet auto-dismiss| dismiss[draft_auto_dismissed log]
+    brief -->|accept| c2[(C2 Goals)]
 
     c3 --> events[(C17 events:<br/>judgment_made, mutation_proposed,<br/>stale_challenge_fired)]
 ```
 
-**Key points.** **Event-triggered primary, sweeps as backstop** — no pure cron. Per `Memory-driven autonomy` op policy. **Each handler narrow + independently calibratable** — synthesizer, stale-challenger, calibrator, FoK, anomaly investigator. **Cold-start: `crepes` Mondrian CP** does class-conditional calibration — partial-pooling across semantically-near classes when leaf class has no labels. Stale-challenger sweep deferred until first month of labels accumulates. **Goals as candidate output** — synthesizer also produces candidate child goals from `principal_message` + `decision_made` events; routed through C6 Tier 1 queue, principal-approved entries land in C2 (closes the C5 → C2 path per redesign §C2 proactive tracking).
+**Key points.** **Event-triggered primary, sweeps as backstop** — no pure cron. Per `Memory-driven autonomy` op policy. **Each handler narrow + independently calibratable** — synthesizer, stale-challenger, calibrator, FoK, anomaly investigator. **Cold-start: `crepes` Mondrian CP** does class-conditional calibration — partial-pooling across semantically-near classes when leaf class has no labels. Stale-challenger sweep deferred until first month of labels accumulates. **Goals as candidate output** — synthesizer produces candidate child goals from `principal_message` + `decision_made` events; per Phase C redesign §C2, candidates **auto-create as drafts** (no C6 queue; rate-limited 3/week; 7-day quiet auto-dismiss). Principal accepts/edits/dismisses in `/status` or batched brief.
 
 ---
 
@@ -294,8 +296,12 @@ sequenceDiagram
     else M2 collaborative
         C6->>Principal: queue for collaborative session
         Principal-->>C6: applies during shared session
-    else M3 protected — SOUL, CLAUDE, .mcp.json, schema, .env, gate, reviewer, observability
-        C6->>Principal: explicit-only, never auto
+    else M2-strong — CLAUDE.md, .mcp.json, mcp-memory/server.py
+        C6->>C16: different-provider review + cross-device smoke
+        C16-->>C6: both gates pass
+        C6->>Pg: apply + emit self_modification_applied
+    else M3-hard — SOUL.md, schema.sql, .env, C6 logic, C16 logic, C17 schema
+        C6->>Principal: explicit-only, never auto, never auto-propose
     end
 
     Note over C5, Pg: For C6 / C16 / C17 changes — 4 safeguards stacked
@@ -318,7 +324,7 @@ sequenceDiagram
     end
 ```
 
-**Key points.** **Per-class trust ladder** — M0 → M1 unlocks per class only after K successful cycles. **M3 never unlocks autonomously** (SOUL, CLAUDE.md, .mcp.json, schema, .env, gate logic, reviewer, observability). **4 safeguards stacked for C6/C16/C17 changes** — prior-version review + empirical benchmark (per DGM) + sandbox + principal sign-off. Per-class precision unlocks/locks via `improvement_inconclusive` / `regression_suspected` events. **Compaction-aware**: state lives in artifacts (PR, issue, events), not session memory.
+**Key points.** **Per-class trust ladder** — M0 → M1 unlocks per class only after K successful cycles. **M3-hard never unlocks autonomously** (Phase C 6-item fixed list: SOUL.md, schema.sql, .env, C6 logic, C16 logic, C17 schema). **M2-strong** (CLAUDE.md, .mcp.json, mcp-memory/server.py) — autonomous OK with different-provider review + cross-device smoke per Phase C M3 split. **4 safeguards stacked for C6/C16/C17 changes** — prior-version review + empirical benchmark (per DGM) + sandbox + principal sign-off. Per-class precision unlocks/locks via `improvement_inconclusive` / `regression_suspected` events. **Compaction-aware**: state lives in artifacts (PR, issue, events), not session memory.
 
 ---
 

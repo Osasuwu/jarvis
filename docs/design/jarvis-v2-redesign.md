@@ -27,7 +27,7 @@ No intermediate diagrams. One C4 (Context → Container → Component) at the en
 |---|---|
 | L0 — mission, qualities, non-goals | **done** |
 | L1 — capabilities | **done** (18 caps, 5 layers, 3 ops policies) |
-| L2 — components per capability | **done** (Tier A: C3, C5, C6, C15, C16, C17; Tier B: C2, C4, C8, C13, C14; Tier C: C1, C7, C9, C10, C11, C12) |
+| L2 — components per capability | **done** (Tier A: C3, C5, C6, C15, C16, C17, C18; Tier B: C2, C4, C8, C13, C14; Tier C: C1, C7, C9, C10, C11, C12) |
 | Bootstrap protocol & migration order | **done** |
 | Critical review pass | **done** (high-severity addressed: bootstrap + cost reality + ~15 point fixes) |
 | L3 — technologies/patterns | **done** (options marked + scout v2 adoption candidates folded in 2026-04-27 per [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md); decisions deferred to implementation) |
@@ -236,11 +236,11 @@ For each capability we run two research streams and synthesize:
 2. **External research** — fresh subagent surveys current state of the art (no training-data trust).
 
 Stratification:
-- **Tier A** (deep): C3, C5, C6, C15, C16, C17 — novel or risky, full two-stream research.
+- **Tier A** (deep): C3, C5, C6, C15, C16, C17, C18 — novel or risky, full two-stream research.
 - **Tier B** (medium): C2, C4, C8, C13, C14 — discussion + targeted research.
 - **Tier C** (shallow): C1, C7, C9, C10, C11, C12 — single-line decision.
 
-Order within Tier A: C3 Memory and C17 Observability first (other caps depend on them), then C5/C6/C15/C16. After Tier A, Tier B, then Tier C.
+Order within Tier A: C3 Memory and C17 Observability first (other caps depend on them), then C5/C6/C15/C16/C18 (C18 sequenced after C5 — shares the calibration substrate). After Tier A, Tier B, then Tier C.
 
 ### C3 — Memory
 
