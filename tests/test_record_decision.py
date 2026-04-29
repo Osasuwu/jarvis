@@ -150,9 +150,24 @@ class TestRecordDecisionInsert:
         # Returned message contains episode id
         assert "ep-42" in result[0].text
 
-        # Correct table + row shape
-        client.table.assert_called_with("episodes")
-        insert_arg = client.table.return_value.insert.call_args.args[0]
+        # Both legacy episodes and canonical substrate get a write
+        # post-#477 (dual-write during cutover wave).
+        client.table.assert_any_call("episodes")
+        client.table.assert_any_call("events_canonical")
+        # Find the episodes-shaped insert (has 'kind', no 'trace_id').
+        all_inserts = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        episode_inserts = [
+            p for p in all_inserts if "kind" in p and "trace_id" not in p
+        ]
+        assert len(episode_inserts) == 1, (
+            "expected exactly one episodes insert, got "
+            f"{len(episode_inserts)}: {all_inserts!r}"
+        )
+        insert_arg = episode_inserts[0]
         assert insert_arg["actor"] == "skill:delegate"
         assert insert_arg["kind"] == "decision_made"
 
