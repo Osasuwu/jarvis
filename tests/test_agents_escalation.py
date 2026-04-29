@@ -37,8 +37,15 @@ from agents.usage_probe import UsageReading
 # ---------------------------------------------------------------------------
 
 
+# Module-load snapshot — gives every test in this file a single,
+# stable "current time" while still tracking real wall-clock so the
+# production code's datetime.now(UTC) (called in check_all paths
+# without explicit now= injection) sees a fresh approved_at.
+_NOW = datetime.now(UTC)
+
+
 def _now() -> datetime:
-    return datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
+    return _NOW
 
 
 def _queue_row(**overrides: Any) -> dict[str, Any]:
