@@ -2352,3 +2352,42 @@ create policy "Allow all for anon" on task_queue
 -- scan becomes the bottleneck.
 -- =========================================================================
 drop index if exists public.memories_embedding_idx;
+
+
+-- =========================================================================
+-- #443 (Phase 5.3-β memory): FOK judgments table
+--
+-- Stores feeling-of-knowing verdicts for memory_recall events.
+-- Tracks sufficiency of returned memories against queries, confidence
+-- of the judgment, and optional linkage to task outcomes for calibration.
+-- =========================================================================
+
+create table if not exists fok_judgments (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  recall_event_id uuid NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  query           text NOT NULL,
+  project         text,
+  verdict         text NOT NULL CHECK (verdict IN ('sufficient','partial','insufficient','unknown','skipped')),
+  confidence      real CHECK (confidence IS NULL OR confidence BETWEEN 0 AND 1),
+  rationale       text,
+  judge_model     text NOT NULL,
+  judge_version   text NOT NULL,
+  judged_at       timestamptz NOT NULL DEFAULT now(),
+  action_taken    text CHECK (action_taken IN ('pass_through','gap_recorded','widened') OR action_taken IS NULL),
+  action_at       timestamptz,
+  outcome_id      uuid REFERENCES task_outcomes(id) ON DELETE SET NULL,
+  outcome_correct boolean,
+  UNIQUE (recall_event_id)
+);
+
+create index if not exists idx_fok_judgments_verdict ON fok_judgments(verdict, judged_at DESC);
+create index if not exists idx_fok_judgments_query_project ON fok_judgments(project, query);
+create index if not exists idx_fok_judgments_outcome ON fok_judgments(outcome_id) WHERE outcome_id IS NOT NULL;
+
+ALTER TABLE fok_judgments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all for authenticated" ON fok_judgments
+  FOR ALL USING (true) WITH CHECK (true);
+
+CREATE POLICY "Allow all for anon" ON fok_judgments
+  FOR ALL TO anon USING (true) WITH CHECK (true);

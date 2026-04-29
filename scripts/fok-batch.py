@@ -252,24 +252,65 @@ def try_insert_known_unknown(client, event: dict, project: str) -> None:
         pass
 
 
+def format_judgment_for_display(
+    event_id: str, verdict: dict, payload: dict, judged_at: str
+) -> dict:
+    """Format judgment data for dry-run display."""
+    return {
+        "event_id": event_id,
+        "query": payload.get("query", ""),
+        "project": payload.get("project", "Osasuwu/jarvis"),
+        "verdict": verdict.get("verdict", "unknown"),
+        "confidence": verdict.get("confidence"),
+        "rationale": verdict.get("reason", ""),
+        "judge_model": "claude-3-5-haiku-20241022",
+        "judge_version": "5.3-β",
+        "judged_at": judged_at,
+    }
+
+
 def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
-    """Write FOK verdict back to event.payload."""
+    """Write FOK verdict to event.payload (legacy) AND fok_judgments (canonical).
+
+    Legacy mirror dropped in 5.3-δ.
+    """
+    db_payload: dict = {}
+    judged_at = datetime.now(timezone.utc).isoformat()
+
     try:
         current_event = client.table("events").select("payload").eq("id", event_id).execute()
         if not current_event.data:
             return
+        db_payload = current_event.data[0].get("payload") or {}
 
-        payload = current_event.data[0].get("payload") or {}
-        payload.update(
+        new_payload = dict(db_payload)
+        new_payload.update(
             {
                 "fok_verdict": verdict.get("verdict"),
                 "fok_confidence": verdict.get("confidence"),
                 "fok_reason": verdict.get("reason", ""),
-                "fok_judged_at": datetime.now(timezone.utc).isoformat(),
+                "fok_judged_at": judged_at,
             }
         )
+        client.table("events").update({"payload": new_payload}).eq("id", event_id).execute()
+    except Exception:
+        pass
 
-        client.table("events").update({"payload": payload}).eq("id", event_id).execute()
+    try:
+        client.table("fok_judgments").upsert(
+            {
+                "recall_event_id": event_id,
+                "query": db_payload.get("query", ""),
+                "project": db_payload.get("project", "Osasuwu/jarvis"),
+                "verdict": verdict.get("verdict", "unknown"),
+                "confidence": verdict.get("confidence"),
+                "rationale": verdict.get("reason", ""),
+                "judge_model": "claude-3-5-haiku-20241022",
+                "judge_version": "5.3-β",
+                "judged_at": judged_at,
+            },
+            on_conflict="recall_event_id",
+        ).execute()
     except Exception:
         pass
 
@@ -361,6 +402,7 @@ def main():
 
     verdicts_by_type = defaultdict(int)
     start_time = time.time()
+    dry_run_writes = []
 
     for event in events:
         event_id = event.get("id")
@@ -414,8 +456,24 @@ def main():
             file=sys.stderr,
         )
 
-        # Write verdict
-        if not args.dry_run:
+        # Collect dry-run output for both targets
+        if args.dry_run:
+            judged_at = datetime.now(timezone.utc).isoformat()
+            judgment = format_judgment_for_display(event_id, verdict, payload, judged_at)
+            dry_run_writes.append({"target": "fok_judgments", "record": judgment})
+            dry_run_writes.append(
+                {
+                    "target": "events.payload (legacy mirror)",
+                    "record": {
+                        "fok_verdict": verdict.get("verdict"),
+                        "fok_confidence": verdict.get("confidence"),
+                        "fok_reason": verdict.get("reason", ""),
+                        "fok_judged_at": judged_at,
+                    },
+                }
+            )
+        else:
+            # Write verdict
             write_verdict_to_event(client, event_id, verdict)
 
             # Try to insert into known_unknowns if applicable
@@ -431,6 +489,9 @@ def main():
         "elapsed_seconds": elapsed,
         "dry_run": args.dry_run,
     }
+    if args.dry_run and dry_run_writes:
+        summary["would_write"] = dry_run_writes
+
     print(f"\nSummary: {json.dumps(summary, indent=2)}", file=sys.stdout)
 
     if not args.dry_run:

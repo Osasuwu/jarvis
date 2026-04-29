@@ -235,17 +235,73 @@ def test_try_insert_known_unknown_above_similarity_threshold():
 
 
 def test_write_verdict_to_event():
-    """Test updating event.payload with FOK verdict."""
+    """Legacy mirror still updates events.payload with FOK verdict."""
     mock_client = MagicMock()
+    # Stub the events.payload fetch so write_verdict_to_event finds a row
+    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = (
+        Mock(data=[{"payload": {"query": "test", "project": "Osasuwu/jarvis"}}])
+    )
     event_id = "evt-001"
     verdict = {"verdict": "partial", "confidence": 0.7, "reason": "Some info present."}
 
     fok_batch.write_verdict_to_event(mock_client, event_id, verdict)
 
-    # Verify update was called
-    mock_client.table.assert_called_with("events")
-    update_call = mock_client.table.return_value.update.call_args
-    assert update_call is not None
+    # events.update was called with the merged payload
+    update_calls = mock_client.table.return_value.update.call_args_list
+    assert update_calls, "events.update should fire"
+    merged = update_calls[0].args[0]["payload"]
+    assert merged["fok_verdict"] == "partial"
+    assert merged["fok_confidence"] == 0.7
+
+
+def test_write_verdict_to_event_dual_writes_to_fok_judgments():
+    """Canonical write: fok_judgments table receives an upsert with the right shape."""
+    mock_client = MagicMock()
+    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = (
+        Mock(
+            data=[
+                {
+                    "payload": {
+                        "query": "what is fok?",
+                        "project": "Osasuwu/jarvis",
+                    }
+                }
+            ]
+        )
+    )
+    event_id = "evt-042"
+    verdict = {
+        "verdict": "insufficient",
+        "confidence": 0.42,
+        "reason": "Memories don't address the query.",
+    }
+
+    fok_batch.write_verdict_to_event(mock_client, event_id, verdict)
+
+    # Find the fok_judgments call specifically (events.update is also called)
+    upsert_calls = [
+        c
+        for c in mock_client.table.return_value.upsert.call_args_list
+        if c.args
+    ]
+    assert upsert_calls, "fok_judgments.upsert should fire"
+
+    # Confirm the table name was fok_judgments at least once
+    table_names = [c.args[0] for c in mock_client.table.call_args_list if c.args]
+    assert "fok_judgments" in table_names
+
+    record = upsert_calls[0].args[0]
+    assert record["recall_event_id"] == event_id
+    assert record["query"] == "what is fok?"
+    assert record["project"] == "Osasuwu/jarvis"
+    assert record["verdict"] == "insufficient"
+    assert record["confidence"] == 0.42
+    assert record["rationale"] == "Memories don't address the query."
+    assert record["judge_version"] == "5.3-β"
+    assert "judged_at" in record
+
+    # on_conflict for idempotent retries
+    assert upsert_calls[0].kwargs.get("on_conflict") == "recall_event_id"
 
 
 def test_write_event_summary():
