@@ -261,14 +261,17 @@ class TestRrfMergeBoost:
 
 
 class TestDetectProject:
+    # Forward-slash paths work cross-platform: Path on Linux uses "/" as the
+    # separator (so `.name` correctly extracts "jarvis"), and Path on Windows
+    # accepts "/" as well. Hardcoded backslash paths only resolve on Windows.
     def test_known_project(self):
-        assert mrh.detect_project(r"C:\Users\x\GitHub\jarvis") == "jarvis"
+        assert mrh.detect_project("/Users/x/GitHub/jarvis") == "jarvis"
 
     def test_case_insensitive(self):
-        assert mrh.detect_project(r"C:\Users\x\GitHub\Jarvis") == "jarvis"
+        assert mrh.detect_project("/Users/x/GitHub/Jarvis") == "jarvis"
 
     def test_unknown_project_returns_none(self):
-        assert mrh.detect_project(r"C:\Users\x\GitHub\random-repo") is None
+        assert mrh.detect_project("/Users/x/GitHub/random-repo") is None
 
 
 # ---------------------------------------------------------------------------

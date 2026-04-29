@@ -288,6 +288,14 @@ def test_health_check_failed_command_reports_failure(fake_repo: Path) -> None:
     assert any("FAIL" in line for line in logs)
 
 
+@pytest.mark.skipif(
+    _sys.platform != "win32",
+    reason=(
+        "Regression #352 is specific to non-UTF-8 Windows consoles (cp1251/"
+        "cp866). The inline `python -c \"...\"` quoting also relies on cmd.exe "
+        "parsing — bash terminates the outer string on the first inner quote."
+    ),
+)
 def test_health_check_handles_utf8_output(fake_repo: Path) -> None:
     """Regression for #352: on non-UTF-8 Windows locales (e.g. cp1251),
     text=True without explicit encoding crashes the reader thread when a
