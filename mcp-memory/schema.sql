@@ -2110,6 +2110,89 @@ $$;
 
 
 -- =========================================================================
+-- Phase 5.3-δ (issue #445): FOK calibration summary RPC
+-- Computes Brier score (mean squared error) of FOK verdicts against task outcomes
+-- for confidence calibration analysis.
+--
+-- verdict_score mapping: sufficient=1.0, partial=0.5, insufficient=0.0, unknown=NULL
+-- outcome_score mapping: success=1.0, partial=0.5, failure=0.0, unknown=NULL
+--   (task_outcomes.outcome_status enum values defined in schema.sql line ~335)
+--
+-- brier = mean((verdict_score - outcome_score)^2) over joined rows
+-- drift_signal = true if (brier >= 0.25 AND n >= 30); false if n < 30
+-- NULL scores excluded from n and brier computation.
+-- =========================================================================
+
+create or replace function fok_calibration_summary(p_project text default null)
+returns table (
+  n integer,
+  brier numeric,
+  by_verdict json,
+  drift_signal boolean
+)
+language sql stable
+as $$
+with judgments_with_scores as (
+  -- Map fok_judgments.verdict → numeric score
+  select
+    fj.id,
+    fj.verdict,
+    case fj.verdict
+      when 'sufficient' then 1.0
+      when 'partial' then 0.5
+      when 'insufficient' then 0.0
+      when 'unknown' then null
+      when 'skipped' then null
+      else null
+    end as verdict_score,
+    -- Map task_outcomes.outcome_status → numeric score
+    case tout.outcome_status
+      when 'success' then 1.0
+      when 'partial' then 0.5
+      when 'failure' then 0.0
+      when 'unknown' then null
+      when 'pending' then null
+      else null
+    end as outcome_score,
+    fj.project
+  from fok_judgments fj
+  left join task_outcomes tout on fj.outcome_id = tout.id
+  -- Per-project queries return ONLY that project's rows (no NULL-project bleed).
+  where (p_project is null or fj.project = p_project)
+),
+filtered_joined as (
+  -- Calibration math requires both verdict_score AND outcome_score.
+  select verdict_score, outcome_score
+  from judgments_with_scores
+  where verdict_score is not null and outcome_score is not null
+),
+calibration_stats as (
+  select
+    count(*)::integer as total_count,
+    avg(power(verdict_score - outcome_score, 2)) as brier_value
+  from filtered_joined
+)
+select
+  cs.total_count,
+  round(cs.brier_value::numeric, 4),
+  -- by_verdict counts judgments with an outcome per verdict label.
+  -- Unknown/skipped have NULL verdict_score by definition; require only
+  -- outcome_score for that bucket so it isn't silently always 0.
+  json_build_object(
+    'sufficient', (select count(*) from judgments_with_scores where verdict = 'sufficient' and verdict_score is not null and outcome_score is not null),
+    'partial', (select count(*) from judgments_with_scores where verdict = 'partial' and verdict_score is not null and outcome_score is not null),
+    'insufficient', (select count(*) from judgments_with_scores where verdict = 'insufficient' and verdict_score is not null and outcome_score is not null),
+    'unknown', (select count(*) from judgments_with_scores where verdict in ('unknown', 'skipped') and outcome_score is not null)
+  ),
+  case
+    when cs.total_count < 30 then false
+    else (cs.brier_value >= 0.25)
+  end as drift_signal
+from calibration_stats cs;
+$$;
+
+
+-- =========================================================================
 -- Recall soft-delete filter fix (Osasuwu/jarvis#284)
 --
 -- Problem: match_memories, keyword_search_memories, and get_linked_memories

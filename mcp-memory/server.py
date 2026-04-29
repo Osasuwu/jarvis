@@ -222,6 +222,7 @@ from handlers.outcome import (  # noqa: E402, F401
     _handle_outcome_update,
     _handle_outcome_list,
     _handle_memory_calibration_summary,
+    _handle_fok_calibration_summary,
 )
 from handlers.credential import (  # noqa: E402, F401
     _handle_credential_list,
@@ -274,6 +275,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return _big_result(await _handle_outcome_list(arguments))
         elif name == "memory_calibration_summary":
             return _big_result(await _handle_memory_calibration_summary(arguments))
+        elif name == "fok_calibration_summary":
+            return _big_result(await _handle_fok_calibration_summary(arguments))
         # Credential registry tools (Pillar 9)
         elif name == "credential_list":
             return _big_result(await _handle_credential_list(arguments))

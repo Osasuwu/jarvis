@@ -193,11 +193,15 @@ def check_known_unknowns_exists(client) -> bool:
         return False
 
 
-def try_insert_known_unknown(client, event: dict, project: str) -> None:
-    """Optionally insert insufficient verdicts into known_unknowns (#249 co-dep)."""
+def try_insert_known_unknown(client, event: dict, verdict_dict: dict, project: str) -> None:
+    """Optionally insert insufficient verdicts into known_unknowns (#249 co-dep).
+
+    Phase 5.3-δ: reads verdict from canonical source (verdict_dict from Haiku),
+    not from legacy event.payload.
+    """
     payload = event.get("payload") or {}
-    verdict = payload.get("fok_verdict")
-    confidence = payload.get("fok_confidence")
+    verdict = verdict_dict.get("verdict")
+    confidence = verdict_dict.get("confidence")
     top_sim = payload.get("top_sim", 0.0)
     query = payload.get("query", "")
 
@@ -270,9 +274,9 @@ def format_judgment_for_display(
 
 
 def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
-    """Write FOK verdict to event.payload (legacy) AND fok_judgments (canonical).
+    """Write FOK verdict to fok_judgments (canonical only).
 
-    Legacy mirror dropped in 5.3-δ.
+    Legacy mirror (events.payload.fok_verdict) dropped in 5.3-δ (#445).
     """
     db_payload: dict = {}
     judged_at = datetime.now(timezone.utc).isoformat()
@@ -283,20 +287,7 @@ def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
             return
         db_payload = current_event.data[0].get("payload") or {}
 
-        new_payload = dict(db_payload)
-        new_payload.update(
-            {
-                "fok_verdict": verdict.get("verdict"),
-                "fok_confidence": verdict.get("confidence"),
-                "fok_reason": verdict.get("reason", ""),
-                "fok_judged_at": judged_at,
-            }
-        )
-        client.table("events").update({"payload": new_payload}).eq("id", event_id).execute()
-    except Exception:
-        pass
-
-    try:
+        # Only write to canonical fok_judgments table
         client.table("fok_judgments").upsert(
             {
                 "recall_event_id": event_id,
@@ -306,7 +297,7 @@ def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
                 "confidence": verdict.get("confidence"),
                 "rationale": verdict.get("reason", ""),
                 "judge_model": "claude-haiku-4-5-20251001",
-                "judge_version": "5.3-γ",
+                "judge_version": "5.3-δ",
                 "judged_at": judged_at,
             },
             on_conflict="recall_event_id",
@@ -335,11 +326,10 @@ def write_event(client, summary: dict, project: str) -> None:
 
 
 def fetch_events(client, limit: int) -> list[dict]:
-    """Fetch memory_recall events without fok_verdict from the last 24h.
+    """Fetch memory_recall events without corresponding fok_judgments rows from the last 24h.
 
-    Applies order + limit server-side so we don't pull the full 24h window
-    into memory as event volume grows. We over-fetch by 3x because the
-    fok_verdict filter can only be applied client-side (payload->>'...').
+    Applies order + limit server-side. We over-fetch by 3x because the
+    fok_judgments matching filter can only be applied client-side (LEFT JOIN style).
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
@@ -354,9 +344,22 @@ def fetch_events(client, limit: int) -> list[dict]:
         )
         events = resp.data or []
         unfudged = []
+
+        # Check which events lack corresponding fok_judgments rows
+        try:
+            existing_judgments = (
+                client.table("fok_judgments")
+                .select("recall_event_id")
+                .gte("judged_at", cutoff.isoformat())
+                .execute()
+            )
+            judgment_event_ids = set(row.get("recall_event_id") for row in (existing_judgments.data or []))
+        except Exception:
+            judgment_event_ids = set()
+
         for e in events:
-            payload = e.get("payload") or {}
-            if not payload.get("fok_verdict"):
+            event_id = e.get("id")
+            if event_id not in judgment_event_ids:
                 unfudged.append(e)
             if len(unfudged) >= limit:
                 break
@@ -456,29 +459,18 @@ def main():
             file=sys.stderr,
         )
 
-        # Collect dry-run output for both targets
+        # Collect dry-run output
         if args.dry_run:
             judged_at = datetime.now(timezone.utc).isoformat()
             judgment = format_judgment_for_display(event_id, verdict, payload, judged_at)
             dry_run_writes.append({"target": "fok_judgments", "record": judgment})
-            dry_run_writes.append(
-                {
-                    "target": "events.payload (legacy mirror)",
-                    "record": {
-                        "fok_verdict": verdict.get("verdict"),
-                        "fok_confidence": verdict.get("confidence"),
-                        "fok_reason": verdict.get("reason", ""),
-                        "fok_judged_at": judged_at,
-                    },
-                }
-            )
         else:
             # Write verdict
             write_verdict_to_event(client, event_id, verdict)
 
             # Try to insert into known_unknowns if applicable
             if verdict["verdict"] == "insufficient":
-                try_insert_known_unknown(client, event, "Osasuwu/jarvis")
+                try_insert_known_unknown(client, event, verdict, "Osasuwu/jarvis")
 
     elapsed = time.time() - start_time
 
