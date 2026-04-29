@@ -138,18 +138,31 @@ Open vocabulary; new values added by PR. Reserved values for the first wave (Spr
 
 Not implemented in Sprint 35. Listed here so #476 implementer doesn't accidentally drop them, and so the C5/C13 sprint planners know the cutover targets.
 
+### 6.1 New table, legacy parallel during cutover
+
+Sprint 35 creates a **new** table named `events_canonical` (NOT an `ALTER` of the existing `events` table). Reasons:
+
+1. The existing `events` table (current [`mcp-memory/schema.sql:151`](../../mcp-memory/schema.sql#L151)) is GH-Actions-perception-shaped: `event_type` enum, `severity` check constraint, `repo`, `source`, `processed`/`processed_at`/`processed_by`/`action_taken` workflow fields. None of these fit the canonical actor/action/trace_id shape, and the columns have NOT-NULL constraints that an in-place ALTER cannot retrofit safely.
+2. `fok_judgments.recall_event_id` references `events(id) ON DELETE CASCADE` (Sprint #34 [#443](https://github.com/Osasuwu/jarvis/issues/443)). An in-place rename or schema-rewrite breaks the FK.
+3. Two-mode coexistence per [`jarvis-v2-redesign.md:1566`](jarvis-v2-redesign.md#migration-order-what-ships-first) explicitly calls for new and legacy paths running in parallel until C3 path-parity proves cutover safety.
+
+**Final state (cutover wave, post-Sprint 35):** legacy `events` rows migrate into `events_canonical`; FK on `fok_judgments` rewires; legacy table drops; canonical renames to `events`. Single canonical name restored.
+
+### 6.2 Cutover targets
+
 | Existing | Fate | When |
 |---|---|---|
-| `events` (current `mcp-memory/schema.sql:151`, FoK domain) | **Kept and extended to canonical schema.** Existing `event_type` column maps to `action`; existing `payload` migrates as-is. Sprint 35 lands the new schema; dual-write during cutover. | Sprint 35–36 |
-| `task_outcomes` | Becomes a view over `events_canonical WHERE action IN ('outcome_recorded', ...)`. | C5 sprint |
+| `events` (legacy, GH-Actions perception, FoK FK source) | **Kept verbatim during Sprint 35.** Migrated row-by-row into `events_canonical` and dropped (`fok_judgments` FK rewires) during cutover. | Cutover wave (post-Sprint 35) |
+| `events_canonical` (Sprint 35 new) | **Renames to `events`** at end of cutover. Single canonical name restored. | Cutover wave |
+| `task_outcomes` | Becomes a view over canonical events `WHERE action IN ('outcome_recorded', ...)`. | C5 sprint |
 | `episodes` | Folded — events with `action='episode_*'`. Standalone table dropped post-cutover. | Cutover wave |
-| `audit_log` (declared in code but never schematized — exact #326 class of drift) | Eliminated as a class. View over events. | Cutover wave |
-| `known_unknowns` | View over `events WHERE action IN ('recall_failed', 'tool_returned_empty')`. | C5 sprint |
+| `audit_log` (declared in code but never schematized — exact #326 class of drift) | Eliminated as a class. View over canonical events. | Cutover wave |
+| `known_unknowns` | View over canonical events `WHERE action IN ('recall_failed', 'tool_returned_empty')`. | C5 sprint |
 | `*_last_run` memories abusing C3 | **Dropped.** Replaced by view `last_run_by_actor` (`MAX(ts) FILTER (WHERE outcome='success') BY (actor, action)`). Ends abuse of memory store as task-heartbeat. | Sprint 36 |
 | `memory_review_queue` | **Kept** as a queue (workflow state, not log). Queue *operations* emit events to substrate. | n/a |
-| Device-local session jsonl | **Kept** for raw fidelity. Cross-device replay reads `events_canonical`, not synced jsonl. | n/a |
+| Device-local session jsonl | **Kept** for raw fidelity. Cross-device replay reads canonical events, not synced jsonl. | n/a |
 
-**Migration directory:** `supabase/migrations/` (existing convention per Sprint #34 work). NOT `mcp-memory/migrations/`. The #476 issue body had this wrong; correction recorded here.
+**Migration directory:** `supabase/migrations/` (existing convention — see Sprint #34 FoK migrations on main: `20260429065042_add_fok_judgments_table.sql` etc.). NOT `mcp-memory/migrations/`. The #476 issue body had this wrong; correction recorded here.
 
 ---
 
