@@ -82,6 +82,93 @@ def _resolve_memory_refs(client, refs: list, project: str | None) -> tuple[list[
     return resolved, unresolved
 
 
+async def _link_fok_judgments_to_outcomes(client, outcome_ids: list[str], memory_ids: list[str], decision_timestamp: str, project: str | None) -> None:
+    """Retroactively link FOK judgments to outcomes via memory linkage (#445).
+
+    Primary heuristic — time-window match:
+    For each memory_id in memory_ids, find fok_judgments rows where:
+    - recall_event_id references an events row whose payload.returned_ids contains that memory_id, AND
+    - judged_at is within 30 minutes BEFORE the decision timestamp, AND
+    - project matches (NULL-tolerant).
+
+    For each match: UPDATE fok_judgments SET outcome_id = <first outcome_id> ONLY if outcome_id IS NULL.
+    Fire-and-forget — failure doesn't block the decision write.
+    """
+    if not outcome_ids or not memory_ids or not decision_timestamp:
+        return
+
+    try:
+        from datetime import datetime, timedelta
+
+        # Use first outcome_id as the primary link target
+        outcome_id = outcome_ids[0] if isinstance(outcome_ids, list) else outcome_ids
+
+        # Parse decision timestamp
+        decision_dt = datetime.fromisoformat(decision_timestamp.replace('Z', '+00:00'))
+        cutoff_dt = decision_dt - timedelta(minutes=30)
+
+        # Build a set of memory IDs to check (normalize to strings)
+        mem_id_set = set(str(mid) for mid in memory_ids)
+
+        # For each memory_id, find FOK judgments where that memory_id was in returned_ids
+        for mem_id in mem_id_set:
+            try:
+                # Fetch FOK judgments within time window with no outcome_id
+                rows = (
+                    client.table("fok_judgments")
+                    .select("id,recall_event_id,project")
+                    .gte("judged_at", cutoff_dt.isoformat())
+                    .lte("judged_at", decision_dt.isoformat())
+                    .is_("outcome_id", "null")
+                    .execute()
+                )
+
+                # Check each judgment to see if its recalled memory_ids include our target
+                for row in rows.data or []:
+                    judgment_id = row.get("id")
+                    recall_event_id = row.get("recall_event_id")
+                    foj_project = row.get("project")
+
+                    if not judgment_id or not recall_event_id:
+                        continue
+
+                    # Optional project match
+                    if project and foj_project and foj_project != project:
+                        continue
+
+                    try:
+                        # Get the recall event to check returned_ids
+                        event_data = (
+                            client.table("events")
+                            .select("payload")
+                            .eq("id", recall_event_id)
+                            .single()
+                            .execute()
+                        )
+                        if not event_data.data:
+                            continue
+
+                        payload = event_data.data.get("payload") or {}
+                        returned_ids = payload.get("returned_ids") or []
+                        returned_ids_str = [str(rid) for rid in returned_ids]
+
+                        # Check if this memory_id is in the returned set
+                        if mem_id in returned_ids_str:
+                            # Update the judgment with the outcome_id
+                            client.table("fok_judgments").update(
+                                {"outcome_id": outcome_id}
+                            ).eq("id", judgment_id).execute()
+                    except Exception:
+                        # Skip individual check errors
+                        pass
+            except Exception:
+                # Skip individual memory errors, continue with next memory
+                pass
+    except Exception:
+        # Fire-and-forget: don't block decision recording
+        pass
+
+
 async def _handle_record_decision(args: dict) -> list[TextContent]:
     """Insert a 'decision_made' episode with structured payload (#252, #325).
 
@@ -164,6 +251,13 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text="Failed to record decision.")]
 
     eid = result.data[0].get("id", "?")
+    decision_timestamp = result.data[0].get("created_at")
+    outcome_ids = args.get("outcomes_referenced") or []
+
+    # Attempt FOK judgment linkage (fire-and-forget)
+    if decision_timestamp and resolved_memories and outcome_ids:
+        await _link_fok_judgments_to_outcomes(client, outcome_ids, resolved_memories, decision_timestamp, project)
+
     msg = f"Decision recorded: episode {eid}"
     if unresolved_memories:
         msg += (

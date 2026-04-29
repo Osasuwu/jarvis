@@ -205,3 +205,67 @@ async def _handle_memory_calibration_summary(args: dict) -> list[TextContent]:
             lines.append(f"- {w}")
 
     return [TextContent(type="text", text="\n".join(lines))]
+
+
+async def _handle_fok_calibration_summary(args: dict) -> list[TextContent]:
+    """Render FOK (feeling-of-knowing) calibration summary from the RPC (#445).
+
+    Computes Brier score (mean squared error) of FOK verdicts against task outcomes
+    to assess confidence calibration in memory recall judgments.
+    Returns n (count of linked judgments), brier score, verdict breakdown, and drift_signal.
+    """
+    client = server._get_client()
+    project = args.get("project")
+    if project == "global":
+        project = None
+
+    try:
+        result = client.rpc("fok_calibration_summary", {"p_project": project}).execute()
+    except Exception as exc:
+        return [TextContent(type="text", text=f"Error calling fok_calibration_summary: {exc}")]
+
+    # RPC returns a single row
+    rows = result.data or []
+    if isinstance(rows, list):
+        row = rows[0] if rows else {}
+    elif isinstance(rows, dict):
+        row = rows
+    else:
+        row = {}
+
+    n = row.get("n", 0)
+    brier = row.get("brier")
+    by_verdict = row.get("by_verdict") or {}
+    drift_signal = row.get("drift_signal", False)
+
+    if not n:
+        scope = f" (project={project})" if project else ""
+        return [
+            TextContent(
+                type="text",
+                text=f"No FOK calibration data yet{scope} — need fok_judgments linked to task_outcomes.",
+            )
+        ]
+
+    lines = [
+        "# FOK (Feeling-of-Knowing) Calibration",
+        "",
+        f"**Brier Score:** {brier:.4f}  (lower is better; 0.25 ≈ threshold)",
+        f"**Judgments evaluated:** {n}",
+        "",
+        "## Verdict breakdown",
+        f"- sufficient: {by_verdict.get('sufficient', 0)}",
+        f"- partial: {by_verdict.get('partial', 0)}",
+        f"- insufficient: {by_verdict.get('insufficient', 0)}",
+        f"- unknown: {by_verdict.get('unknown', 0)}",
+    ]
+
+    if drift_signal:
+        lines.append("")
+        lines.append("⚠️  **Calibration drift detected** (Brier ≥ 0.25 with n ≥ 30)")
+        lines.append("Your FOK verdicts may be systematically mis-calibrated. Consider reviewing recent insufficient verdicts.")
+    elif n < 30:
+        lines.append("")
+        lines.append("ℹ️  Insufficient data (n < 30) for drift signal — calibration judgment deferred.")
+
+    return [TextContent(type="text", text="\n".join(lines))]

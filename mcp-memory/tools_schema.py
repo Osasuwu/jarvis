@@ -562,6 +562,23 @@ def tool_definitions() -> list[Tool]:
             },
         ),
         Tool(
+            name="fok_calibration_summary",
+            description=(
+                "FOK (feeling-of-knowing) calibration summary: Brier score of FOK verdicts "
+                "against task outcome accuracy. Assesses confidence calibration in memory recall judgments. "
+                "Returns n (joined judgments), brier score, verdict breakdown, and drift_signal (#445)."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Optional project filter. null/omitted = global.",
+                    },
+                },
+            },
+        ),
+        Tool(
             name="record_decision",
             description=(
                 "Record a decision made by the agent as a 'decision_made' episode. "
