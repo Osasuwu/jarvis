@@ -374,10 +374,10 @@ async def _hybrid_recall(
             "\n".join(formatted) if brief else "\n---\n".join(formatted)
         )
 
-        # Phase 5: gap detection — fire-and-forget so we don't add Supabase
-        # round-trips to the recall hot path on low-match queries. Single
-        # path; an earlier duplicate at GAP_THRESHOLD passed positional
-        # Gap recording now owned by FOK batch processor (#445). Removed in 5.3-γ.
+        # Phase 5.3-γ: inline gap recording removed; FOK batch processor
+        # owns this now (judges sufficiency with full LLM context, not just
+        # GAP_THRESHOLD on top_sim). Recall stays on the hot path; gap
+        # surfacing is async via #444 / #445.
 
         # Optional: expand with 1-hop linked memories
         if include_links:

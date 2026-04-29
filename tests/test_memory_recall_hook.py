@@ -842,23 +842,27 @@ class TestMemoryRecallEventEmit:
         # Simulate successful insert
         mock_table.insert.return_value.execute.return_value = None
 
-        # Build a minimal recalled result to trigger event emission
+        # Build a minimal recalled result to trigger event emission.
+        # `similarity` is cosine — matches the server-side _emit_recall_event
+        # shape so the FOK judge gets the same features regardless of source.
+        # `_final_score` is RRF-rescaled and intentionally NOT in the payload.
         included_ids = ["mem-001", "mem-002"]
         rows = [
-            {"_final_score": 0.85, "id": "mem-001"},
-            {"_final_score": 0.70, "id": "mem-002"},
+            {"id": "mem-001", "similarity": 0.85, "_final_score": 0.42},
+            {"id": "mem-002", "similarity": 0.70, "_final_score": 0.31},
         ]
 
-        # Simulate the hook's event emission logic
+        included_rows = [r for r in rows if r["id"] in set(included_ids)]
         event_payload = {
             "query": "test query",
             "returned_ids": included_ids,
-            "top_sim": rows[0].get("_final_score", 0.0),
             "returned_similarities": [
-                float(row.get("_final_score") or 0.0)
-                for row in rows[:len(included_ids)]
+                float(r["similarity"]) if isinstance(r.get("similarity"), (int, float)) else None
+                for r in included_rows
             ],
-            "project": "Osasuwu/jarvis",
+            "returned_count": len(included_ids),
+            "top_sim": float(included_rows[0]["similarity"]),
+            "project": "jarvis",
             "source": "memory-recall-hook",
         }
         mock_client.table("events").insert(
