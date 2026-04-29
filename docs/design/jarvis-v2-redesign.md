@@ -422,6 +422,8 @@ C3 complete. All six original questions answered: Q0/Q6 boundary + sub-stores, Q
 
 ### C17 — Observability & audit
 
+> **Implementation 1-pager:** [`c17-events-substrate.md`](c17-events-substrate.md) (Sprint 35, locks schema + OTel column convention + trace propagation contract + write semantics for #476 and #477).
+
 Distillation surfaced 8+ piecemeal log/audit subsystems added reactively (events, episodes, task_outcomes, audit_log [no schema!], memory_review_queue, known_unknowns, `*_last_run` memories abusing memory store as task heartbeat, device-local session jsonl, `recall-audit.py` post-hoc grep). Pattern is identical to memory's: every pain → new table → schema drift + query fragmentation + instrumentation gaps.
 
 **Question:** What is the structure of Jarvis's observability/audit subsystem after collapsing the piecemeal pile?
