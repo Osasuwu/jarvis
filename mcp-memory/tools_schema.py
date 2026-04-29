@@ -632,6 +632,26 @@ def tool_definitions() -> list[Tool]:
                         "type": ["string", "null"],
                         "description": "Optional project scope for the decision payload.",
                     },
+                    "llm": {
+                        "type": "object",
+                        "description": (
+                            "Optional LLM call metadata. When present, populates "
+                            "OTel GenAI keys in the events_canonical payload "
+                            "(gen_ai.request.model, gen_ai.usage.input_tokens, "
+                            "gen_ai.usage.output_tokens, gen_ai.usage.cost_usd, "
+                            "gen_ai.provider.name, gen_ai.operation.name) and "
+                            "fills cost_tokens / cost_usd columns. C17 substrate, #477."
+                        ),
+                        "properties": {
+                            "model": {"type": "string"},
+                            "response_model": {"type": "string"},
+                            "input_tokens": {"type": "integer", "minimum": 0},
+                            "output_tokens": {"type": "integer", "minimum": 0},
+                            "cost_usd": {"type": "number", "minimum": 0},
+                            "provider": {"type": "string"},
+                            "operation": {"type": "string"},
+                        },
+                    },
                 },
             },
         ),

@@ -265,6 +265,78 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             )
         )
 
+    # Dual-write to events_canonical substrate (C17, #477). Two-mode
+    # coexistence — legacy episodes table stays for the cutover wave;
+    # this is the substrate path. emit_event MUST NOT raise — it buffers
+    # on failure and returns None so the legacy path still surfaces
+    # success to the caller.
+    try:
+        from events_canonical import emit_event
+    except Exception:  # noqa: BLE001 — substrate optional during rollout
+        emit_event = None
+    if emit_event is not None:
+        canonical_payload = dict(payload)
+        canonical_payload["episode_id"] = eid
+        if decision_timestamp:
+            canonical_payload["decision_made_at"] = decision_timestamp
+
+        llm_meta = args.get("llm") or {}
+        cost_tokens: int | None = None
+        cost_usd: float | None = None
+        if isinstance(llm_meta, dict) and llm_meta:
+            # OTel GenAI semantic conventions verbatim — see
+            # docs/design/c17-events-substrate.md §2.
+            if "model" in llm_meta:
+                canonical_payload["gen_ai.request.model"] = llm_meta["model"]
+                canonical_payload["gen_ai.response.model"] = llm_meta.get(
+                    "response_model", llm_meta["model"]
+                )
+            if "input_tokens" in llm_meta:
+                canonical_payload["gen_ai.usage.input_tokens"] = llm_meta[
+                    "input_tokens"
+                ]
+            if "output_tokens" in llm_meta:
+                canonical_payload["gen_ai.usage.output_tokens"] = llm_meta[
+                    "output_tokens"
+                ]
+            if "cost_usd" in llm_meta:
+                canonical_payload["gen_ai.usage.cost_usd"] = llm_meta["cost_usd"]
+                try:
+                    cost_usd = float(llm_meta["cost_usd"])
+                except (TypeError, ValueError):
+                    cost_usd = None
+            if "input_tokens" in llm_meta or "output_tokens" in llm_meta:
+                try:
+                    cost_tokens = int(llm_meta.get("input_tokens", 0)) + int(
+                        llm_meta.get("output_tokens", 0)
+                    )
+                except (TypeError, ValueError):
+                    cost_tokens = None
+            if "provider" in llm_meta:
+                canonical_payload["gen_ai.provider.name"] = llm_meta["provider"]
+            if "operation" in llm_meta:
+                canonical_payload["gen_ai.operation.name"] = llm_meta["operation"]
+
+        try:
+            emit_event(
+                client,
+                actor=actor,
+                action="decision_made",
+                payload=canonical_payload,
+                outcome="success",
+                cost_tokens=cost_tokens,
+                cost_usd=cost_usd,
+            )
+        except Exception as exc:  # noqa: BLE001 — defense in depth
+            # emit_event already buffers on its own exceptions — this
+            # catches anything in the wrapper logic itself.
+            import sys as _sys
+
+            print(
+                f"[decision.py] events_canonical dual-write skipped: {exc}",
+                file=_sys.stderr,
+            )
+
     msg = f"Decision recorded: episode {eid}"
     if unresolved_memories:
         msg += (
