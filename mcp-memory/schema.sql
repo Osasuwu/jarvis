@@ -2474,3 +2474,109 @@ CREATE POLICY "Allow all for authenticated" ON fok_judgments
 
 CREATE POLICY "Allow all for anon" ON fok_judgments
   FOR ALL TO anon USING (true) WITH CHECK (true);
+
+
+-- =========================================================================
+-- C17 events substrate (Sprint #35 / #476)
+-- Canonical events table for all observability writes. See
+-- docs/design/c17-events-substrate.md for the design 1-pager.
+-- Existing `events` table (above) stays during cutover wave (jarvis-v2-
+-- redesign.md:1566 two-mode coexistence).
+-- =========================================================================
+
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'event_outcome') THEN
+    CREATE TYPE event_outcome AS ENUM ('success', 'failure', 'timeout', 'partial');
+  END IF;
+END$$;
+
+CREATE TABLE IF NOT EXISTS events_canonical (
+  event_id        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  trace_id        uuid NOT NULL,
+  parent_event_id uuid NULL,
+  ts              timestamptz NOT NULL DEFAULT now(),
+  actor           text NOT NULL,
+  action          text NOT NULL,
+  payload         jsonb NOT NULL DEFAULT '{}'::jsonb,
+  outcome         event_outcome NULL,
+  cost_tokens     int NULL,
+  cost_usd        numeric(12, 6) NULL,
+  redacted        bool NOT NULL DEFAULT false,
+  degraded        bool NOT NULL DEFAULT false
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_canonical_trace_ts
+  ON events_canonical (trace_id, ts);
+CREATE INDEX IF NOT EXISTS idx_events_canonical_actor_ts
+  ON events_canonical (actor, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_events_canonical_action_ts
+  ON events_canonical (action, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_events_canonical_cost
+  ON events_canonical (ts DESC)
+  WHERE cost_usd IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION notify_events_canonical()
+RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify(
+    'events_canonical',
+    json_build_object(
+      'event_id', NEW.event_id,
+      'trace_id', NEW.trace_id,
+      'action',   NEW.action,
+      'actor',    NEW.actor
+    )::text
+  );
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS events_canonical_notify ON events_canonical;
+CREATE TRIGGER events_canonical_notify
+  AFTER INSERT ON events_canonical
+  FOR EACH ROW EXECUTE FUNCTION notify_events_canonical();
+
+ALTER TABLE events_canonical ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all for authenticated" ON events_canonical
+  FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Allow all for anon" ON events_canonical
+  FOR ALL TO anon USING (true) WITH CHECK (true);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS events_cost_by_day_mv AS
+SELECT
+  date_trunc('day', ts)                       AS day,
+  actor,
+  payload->>'gen_ai.request.model'            AS model,
+  SUM(cost_tokens)                            AS total_tokens,
+  SUM(cost_usd)                               AS total_usd,
+  COUNT(*)                                    AS n_events
+FROM events_canonical
+WHERE cost_usd IS NOT NULL
+  AND degraded = false
+GROUP BY 1, 2, 3
+WITH NO DATA;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_cost_by_day_mv_uniq
+  ON events_cost_by_day_mv (day, actor, model);
+
+CREATE MATERIALIZED VIEW IF NOT EXISTS events_last_run_by_actor_mv AS
+SELECT
+  actor,
+  action,
+  MAX(ts) FILTER (WHERE outcome = 'success') AS last_success_at,
+  MAX(ts)                                    AS last_event_at,
+  COUNT(*)                                   AS n_events
+FROM events_canonical
+GROUP BY actor, action
+WITH NO DATA;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_events_last_run_by_actor_mv_uniq
+  ON events_last_run_by_actor_mv (actor, action);
+
+-- pg_cron schedules registered in the migration file
+-- (cron.schedule(...) is idempotent on (jobname); not duplicated here to
+--  keep schema.sql declarative — the cron jobs live in cron.job).
