@@ -124,6 +124,53 @@ Renders per-type Brier score (mean squared error of `confidence - actual_outcome
 
 Surface flagged types in Step 9 output under "Calibration". Poor-calibration types become ideation seeds for `/self-improve` — the root cause is usually a specific pattern (e.g. "my `decision` memories in jarvis are overconfident when they rely on research memories without principal confirmation").
 
+## Step 5.75 — FoK calibration + insufficient clusters (#445, Phase 5.3-δ)
+
+Two parallel scans on `fok_judgments` (the canonical store written by `scripts/fok-batch.py`).
+
+**A. Calibration drift via RPC.** Call:
+
+```
+mcp__memory__execute_sql(query="SELECT * FROM fok_calibration_summary('jarvis')")
+```
+
+Returns `{n, brier, by_verdict, drift_signal}`. Apply:
+- `n < 30` → not enough joined verdict↔outcome pairs yet, skip surfacing.
+- `n >= 30 AND drift_signal = true` → flag in Step 9 under "FoK calibration drift" with `brier` value and `by_verdict` breakdown. Also pull the 5 most-divergent rows for the report:
+
+  ```sql
+  SELECT fj.query, fj.verdict, tout.outcome_status, fj.project, fj.judged_at
+  FROM fok_judgments fj
+  LEFT JOIN task_outcomes tout ON fj.outcome_id = tout.id
+  WHERE fj.outcome_id IS NOT NULL AND fj.project = 'jarvis'
+  ORDER BY POWER(
+    CASE fj.verdict WHEN 'sufficient' THEN 1.0 WHEN 'partial' THEN 0.5 WHEN 'insufficient' THEN 0.0 END
+    -
+    CASE tout.outcome_status WHEN 'success' THEN 1.0 WHEN 'partial' THEN 0.5 WHEN 'failure' THEN 0.0 END
+  , 2) DESC
+  LIMIT 5;
+  ```
+
+**B. Insufficient-knowledge clusters.** Group last-7d `insufficient` verdicts by normalized query:
+
+```sql
+SELECT
+  lower(regexp_replace(query, '\s+', ' ', 'g')) AS norm_query,
+  count(*) AS hits,
+  array_agg(DISTINCT rationale) FILTER (WHERE rationale IS NOT NULL) AS rationales
+FROM fok_judgments
+WHERE verdict = 'insufficient'
+  AND judged_at >= now() - interval '7 days'
+  AND project = 'jarvis'
+GROUP BY norm_query
+HAVING count(*) >= 3
+ORDER BY hits DESC;
+```
+
+Each cluster = a recurring gap. Surface in Step 9 with query + hit count + a sample rationale.
+
+**Empty state**: if both scans return nothing, print "No FoK clusters or calibration drift this period." — explicit, not silence.
+
 ## Step 6 — Extract lessons + patterns
 
 For each resolved decision and outcome, ask: *what's the generalizable lesson?*
@@ -198,6 +245,12 @@ memory_store(
 
 ### Calibration (flagged types only)
 - **<type>**: Brier <score>, n=<n>, <overconfident|underconfident> (avg_predicted=<p> vs avg_actual=<a>)
+
+### FoK calibration & clusters (#445)
+- **Calibration**: Brier <score>, n=<n>, drift=<true|false>, by_verdict=<...>
+- **Insufficient clusters (last 7d)**:
+  - "<normalized query>" — <hits> hits, sample: <rationale>
+- *(or)* "No FoK clusters or calibration drift this period."
 
 ### Recall audit aggregate (last 20 sessions)
 - sessions=N, decisions=M, flags=<breakdown>

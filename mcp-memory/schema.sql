@@ -2146,7 +2146,7 @@ with judgments_with_scores as (
       else null
     end as verdict_score,
     -- Map task_outcomes.outcome_status → numeric score
-    case to.outcome_status
+    case tout.outcome_status
       when 'success' then 1.0
       when 'partial' then 0.5
       when 'failure' then 0.0
@@ -2156,7 +2156,7 @@ with judgments_with_scores as (
     end as outcome_score,
     fj.project
   from fok_judgments fj
-  left join task_outcomes to on fj.outcome_id = to.id
+  left join task_outcomes tout on fj.outcome_id = tout.id
   where (p_project is null or fj.project = p_project or fj.project is null)
 ),
 filtered_joined as (
