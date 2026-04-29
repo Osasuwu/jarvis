@@ -83,6 +83,8 @@ Every L3 decision rests on Claude Code: PreToolUse, `isolation: worktree`, MCP, 
 
 Principal mentions "v2 reserved for paradigm shift (framework swap)" — implicit trade-off acceptance. Should be **explicit at L0**: *"harness lock-in accepted because cost of harness independence > benefit at this scale."* Otherwise future-self asks "why isn't this cap harness-independent?" and the answer stays implicit.
 
+**Resolved 2026-04-29 (Phase C):** explicit L0 §«Harness coupling — deliberate trade-off» added in `jarvis-v2-redesign.md`. Names what's locked (skills/hooks/auto-load/subagent isolation), what's portable (cap layer / schema / MCP / events substrate), the swap cost (~1–2 sprints rewrite of skills+hooks), and the reconsideration trigger.
+
 ---
 
 ## Pass-1/2 (implementation/realism — v1.x roadmap input, NOT architecture)

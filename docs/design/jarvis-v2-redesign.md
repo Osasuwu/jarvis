@@ -108,6 +108,20 @@ Decision routing:
 
 This makes **memory of principal preferences** the lever that reduces interruptions — every captured preference shifts the line further into autonomy. Reinforces *Memory = 10*.
 
+### Harness coupling — deliberate trade-off
+
+Jarvis is built on Claude Code as the runtime harness. This is a deliberate trade-off, not an oversight:
+
+**What's locked to Claude Code:** skills (slash commands), hooks (PreToolUse / SessionStart / etc.), SOUL.md / CLAUDE.md auto-load, subagent `isolation:worktree`, plugin marketplace fork base.
+
+**What's harness-agnostic by design:** the cap layer (C1–C18 describe *what*, not *which runtime*); Supabase memory schema + bi-temporal periods; canonical events substrate (OTel GenAI conventions); MCP servers (`mcp-memory/server.py` works with any client speaking MCP); embeddings via VoyageAI; goals tables.
+
+**Why accepted:** Claude Code currently closes the largest set of pain points (memory + breadth + subagent isolation + native plugin ecosystem) for the smallest implementation cost at this scale. Building a "harness adapter" abstraction with one real implementation = indirection, not abstraction (per SOUL §«Abstractions need two real implementations»).
+
+**Cost of swap if a better harness ships:** rewrite ~12 skills + 4–5 hooks + subagent dispatch glue (~1–2 sprints). Data, schema, and cap layer survive.
+
+**Trigger to reconsider:** another runtime substantively better than Claude Code in our use case (not «new shiny release»). Until then, harness lock-in stands. Q7 in pass2 review tracks this; v2 (per Status table) is reserved for the framework-swap class of change.
+
 ---
 
 ## L1 — Capabilities
