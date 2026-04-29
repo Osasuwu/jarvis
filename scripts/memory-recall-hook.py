@@ -845,6 +845,45 @@ def main():
     except Exception:
         pass
 
+    # Emit memory_recall event for FOK batch processor (#439 D2-bis).
+    # Mirrors the server-side `_emit_recall_event` shape exactly so the FOK
+    # judge sees identical features regardless of recall source: cosine
+    # `similarity` (NOT `_final_score`, which is RRF-rescaled and on a
+    # different scale), top_sim from the same field, and `repo` set to the
+    # canonical full repo slug used elsewhere in the events table.
+    try:
+        included_rows = [r for r in rows if r.get("id") in set(included_ids)]
+        returned_similarities = [
+            float(r["similarity"]) if isinstance(r.get("similarity"), (int, float)) else None
+            for r in included_rows
+        ]
+        top_sim = (
+            float(included_rows[0]["similarity"])
+            if included_rows and isinstance(included_rows[0].get("similarity"), (int, float))
+            else 0.0
+        )
+        event_payload = {
+            "query": prompt,
+            "returned_ids": included_ids,
+            "returned_similarities": returned_similarities,
+            "returned_count": len(included_ids),
+            "top_sim": top_sim,
+            "project": project,
+            "source": "memory-recall-hook",
+        }
+        client.table("events").insert(
+            {
+                "event_type": "memory_recall",
+                "severity": "info",
+                "repo": "Osasuwu/jarvis",
+                "source": "memory-recall-hook",
+                "title": f"Memory recall: {prompt[:60]}",
+                "payload": event_payload,
+            }
+        ).execute()
+    except Exception:
+        pass
+
     emit("".join(parts))
 
 
