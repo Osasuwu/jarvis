@@ -656,6 +656,8 @@ C5 complete. Substrate, triggering, generation arm, stale-challenge arm, judge c
 
 ### C18 — Proactive challenger
 
+> **Implementation 1-pager:** [`c18-proactive-challenger.md`](c18-proactive-challenger.md) (Sprint 36, locks drift-signal taxonomy + threshold YAML schema + `recalibration_proposed` event shape + surfacing routing + bootstrap protocol + false-positive calibration loop for #C18.2 and #C18.3).
+
 **Question:** Who notices when Jarvis's calibration drifts, when goals go neglected, or when stated direction doesn't match observed behavior — and surfaces it before the principal has to catch it?
 
 **Membership rule:** belongs in C18 iff *detects gaps between stated and observed* AND *surfaces to the principal without mutating memory*. Memory mutation = C5. Surfacing = C12. C18 is the detection layer that decides *when surfacing is warranted*.
