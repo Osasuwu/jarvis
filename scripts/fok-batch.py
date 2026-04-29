@@ -252,11 +252,10 @@ def try_insert_known_unknown(client, event: dict, project: str) -> None:
         pass
 
 
-def format_judgment_for_display(event_id: str, verdict: dict, event: dict) -> dict:
+def format_judgment_for_display(
+    event_id: str, verdict: dict, payload: dict, judged_at: str
+) -> dict:
     """Format judgment data for dry-run display."""
-    payload = event.get("payload") or {}
-    now = datetime.now(timezone.utc).isoformat()
-
     return {
         "event_id": event_id,
         "query": payload.get("query", ""),
@@ -266,54 +265,51 @@ def format_judgment_for_display(event_id: str, verdict: dict, event: dict) -> di
         "rationale": verdict.get("reason", ""),
         "judge_model": "claude-3-5-haiku-20241022",
         "judge_version": "5.3-β",
-        "judged_at": now,
+        "judged_at": judged_at,
     }
 
 
-def write_verdict_to_event(client, event_id: str, verdict: dict, event: dict) -> None:
-    """Write FOK verdict back to event.payload AND insert into fok_judgments (dual-write).
+def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
+    """Write FOK verdict to event.payload (legacy) AND fok_judgments (canonical).
 
-    Legacy mirror: event.payload.fok_verdict is dropped in 5.3-δ.
-    Canonical: fok_judgments table.
+    Legacy mirror dropped in 5.3-δ.
     """
+    db_payload: dict = {}
+    judged_at = datetime.now(timezone.utc).isoformat()
+
     try:
         current_event = client.table("events").select("payload").eq("id", event_id).execute()
         if not current_event.data:
             return
+        db_payload = current_event.data[0].get("payload") or {}
 
-        # Legacy write: event.payload
-        payload = current_event.data[0].get("payload") or {}
-        payload.update(
+        new_payload = dict(db_payload)
+        new_payload.update(
             {
                 "fok_verdict": verdict.get("verdict"),
                 "fok_confidence": verdict.get("confidence"),
                 "fok_reason": verdict.get("reason", ""),
-                "fok_judged_at": datetime.now(timezone.utc).isoformat(),
+                "fok_judged_at": judged_at,
             }
         )
-
-        client.table("events").update({"payload": payload}).eq("id", event_id).execute()
+        client.table("events").update({"payload": new_payload}).eq("id", event_id).execute()
     except Exception:
         pass
 
-    # Canonical write: fok_judgments table
     try:
-        payload = event.get("payload") or {}
-        now = datetime.now(timezone.utc).isoformat()
-
         client.table("fok_judgments").upsert(
             {
                 "recall_event_id": event_id,
-                "query": payload.get("query", ""),
-                "project": payload.get("project", "Osasuwu/jarvis"),
+                "query": db_payload.get("query", ""),
+                "project": db_payload.get("project", "Osasuwu/jarvis"),
                 "verdict": verdict.get("verdict", "unknown"),
                 "confidence": verdict.get("confidence"),
                 "rationale": verdict.get("reason", ""),
                 "judge_model": "claude-3-5-haiku-20241022",
                 "judge_version": "5.3-β",
-                "judged_at": now,
+                "judged_at": judged_at,
             },
-            on_conflict="recall_event_id"
+            on_conflict="recall_event_id",
         ).execute()
     except Exception:
         pass
@@ -462,23 +458,23 @@ def main():
 
         # Collect dry-run output for both targets
         if args.dry_run:
-            judgment = format_judgment_for_display(event_id, verdict, event)
-            dry_run_writes.append({
-                "target": "fok_judgments",
-                "record": judgment
-            })
-            dry_run_writes.append({
-                "target": "events.payload (legacy mirror)",
-                "record": {
-                    "fok_verdict": verdict.get("verdict"),
-                    "fok_confidence": verdict.get("confidence"),
-                    "fok_reason": verdict.get("reason", ""),
-                    "fok_judged_at": judgment["judged_at"],
+            judged_at = datetime.now(timezone.utc).isoformat()
+            judgment = format_judgment_for_display(event_id, verdict, payload, judged_at)
+            dry_run_writes.append({"target": "fok_judgments", "record": judgment})
+            dry_run_writes.append(
+                {
+                    "target": "events.payload (legacy mirror)",
+                    "record": {
+                        "fok_verdict": verdict.get("verdict"),
+                        "fok_confidence": verdict.get("confidence"),
+                        "fok_reason": verdict.get("reason", ""),
+                        "fok_judged_at": judged_at,
+                    },
                 }
-            })
+            )
         else:
             # Write verdict
-            write_verdict_to_event(client, event_id, verdict, event)
+            write_verdict_to_event(client, event_id, verdict)
 
             # Try to insert into known_unknowns if applicable
             if verdict["verdict"] == "insufficient":

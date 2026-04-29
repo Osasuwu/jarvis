@@ -2383,3 +2383,11 @@ create table if not exists fok_judgments (
 create index if not exists idx_fok_judgments_verdict ON fok_judgments(verdict, judged_at DESC);
 create index if not exists idx_fok_judgments_query_project ON fok_judgments(project, query);
 create index if not exists idx_fok_judgments_outcome ON fok_judgments(outcome_id) WHERE outcome_id IS NOT NULL;
+
+ALTER TABLE fok_judgments ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Allow all for authenticated" ON fok_judgments
+  FOR ALL USING (true) WITH CHECK (true);
+
+CREATE POLICY "Allow all for anon" ON fok_judgments
+  FOR ALL TO anon USING (true) WITH CHECK (true);
