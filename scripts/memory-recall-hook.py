@@ -845,6 +845,31 @@ def main():
     except Exception:
         pass
 
+    # Emit memory_recall event for FOK batch processor (#439 D2-bis)
+    try:
+        event_payload = {
+            "query": prompt,
+            "returned_ids": included_ids,
+            "top_sim": rows[0].get("_final_score", 0.0) if rows else 0.0,
+            "returned_similarities": [
+                float(row.get("_final_score") or 0.0) for row in rows[:len(included_ids)]
+            ],
+            "project": project or "Osasuwu/jarvis",
+            "source": "memory-recall-hook",
+        }
+        client.table("events").insert(
+            {
+                "event_type": "memory_recall",
+                "severity": "info",
+                "repo": project or "Osasuwu/jarvis",
+                "source": "memory-recall-hook",
+                "title": f"Memory recall: {prompt[:60]}",
+                "payload": event_payload,
+            }
+        ).execute()
+    except Exception:
+        pass
+
     emit("".join(parts))
 
 

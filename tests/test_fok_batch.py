@@ -297,7 +297,7 @@ def test_write_verdict_to_event_dual_writes_to_fok_judgments():
     assert record["verdict"] == "insufficient"
     assert record["confidence"] == 0.42
     assert record["rationale"] == "Memories don't address the query."
-    assert record["judge_version"] == "5.3-β"
+    assert record["judge_version"] == "5.3-γ"
     assert "judged_at" in record
 
     # on_conflict for idempotent retries

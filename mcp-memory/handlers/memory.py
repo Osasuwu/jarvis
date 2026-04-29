@@ -377,24 +377,7 @@ async def _hybrid_recall(
         # Phase 5: gap detection — fire-and-forget so we don't add Supabase
         # round-trips to the recall hot path on low-match queries. Single
         # path; an earlier duplicate at GAP_THRESHOLD passed positional
-        # args that didn't match the kwarg-only signature and silently
-        # raised TypeError under asyncio.to_thread (audit 2026-04-26).
-        # FoK 5.3-γ removes this entirely once batch judge owns gap
-        # detection; until then it's the only path.
-        if not show_history and merged:
-            top_sim = merged[0].get("similarity", 0.0)
-            if top_sim < GAP_THRESHOLD:
-                top_mem_id = merged[0].get("id")
-                asyncio.create_task(
-                    _upsert_known_unknown(
-                        client,
-                        query_text,
-                        query_embedding,
-                        top_sim,
-                        top_mem_id,
-                        context={"project": project, "source": "recall"},
-                    )
-                )
+        # Gap recording now owned by FOK batch processor (#445). Removed in 5.3-γ.
 
         # Optional: expand with 1-hop linked memories
         if include_links:

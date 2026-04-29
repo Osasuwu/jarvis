@@ -128,7 +128,7 @@ def judge_via_haiku(query: str, returned_results: list[dict]) -> dict:
                     "content-type": "application/json",
                 },
                 json={
-                    "model": "claude-3-5-haiku-20241022",
+                    "model": "claude-haiku-4-5-20251001",
                     "max_tokens": MAX_TOKENS,
                     "system": SYSTEM_PROMPT,
                     "messages": [{"role": "user", "content": user_msg}],
@@ -263,8 +263,8 @@ def format_judgment_for_display(
         "verdict": verdict.get("verdict", "unknown"),
         "confidence": verdict.get("confidence"),
         "rationale": verdict.get("reason", ""),
-        "judge_model": "claude-3-5-haiku-20241022",
-        "judge_version": "5.3-β",
+        "judge_model": "claude-haiku-4-5-20251001",
+        "judge_version": "5.3-γ",
         "judged_at": judged_at,
     }
 
@@ -305,8 +305,8 @@ def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
                 "verdict": verdict.get("verdict", "unknown"),
                 "confidence": verdict.get("confidence"),
                 "rationale": verdict.get("reason", ""),
-                "judge_model": "claude-3-5-haiku-20241022",
-                "judge_version": "5.3-β",
+                "judge_model": "claude-haiku-4-5-20251001",
+                "judge_version": "5.3-γ",
                 "judged_at": judged_at,
             },
             on_conflict="recall_event_id",
