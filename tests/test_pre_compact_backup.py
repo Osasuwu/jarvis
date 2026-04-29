@@ -75,7 +75,10 @@ def _assistant_text(ts: str, text: str) -> dict:
 # ---------------------------------------------------------------------------
 class TestDetectProject:
     def test_known_project(self):
-        assert pcb._detect_project(r"C:\Users\petrk\GitHub\jarvis") == "jarvis"
+        # Forward-slash form works on both Windows and POSIX; raw backslash
+        # paths only resolve on Windows (Path on Linux treats them as part of
+        # the name, so `.name` returns the entire string).
+        assert pcb._detect_project("/Users/petrk/GitHub/jarvis") == "jarvis"
         assert pcb._detect_project("/home/x/redrobot") == "redrobot"
 
     def test_unknown_returns_none(self):
