@@ -132,13 +132,12 @@ def test_try_insert_known_unknown_sufficient_verdict():
         "payload": {
             "query": "test",
             "top_sim": 0.95,
-            "fok_verdict": "sufficient",
-            "fok_confidence": 0.9,
         },
     }
+    verdict = {"verdict": "sufficient", "confidence": 0.9}
 
     # Should not insert for sufficient verdict
-    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+    fok_batch.try_insert_known_unknown(mock_client, event, verdict, "test-project")
 
     # Verify no insert was attempted
     assert not mock_client.table.called
@@ -152,12 +151,11 @@ def test_try_insert_known_unknown_high_confidence_insufficient():
         "payload": {
             "query": "test",
             "top_sim": 0.4,
-            "fok_verdict": "insufficient",
-            "fok_confidence": 0.95,  # Too high
         },
     }
+    verdict = {"verdict": "insufficient", "confidence": 0.95}  # Too high
 
-    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+    fok_batch.try_insert_known_unknown(mock_client, event, verdict, "test-project")
 
     # High confidence insufficient should not insert
     assert not mock_client.table.called
@@ -174,13 +172,12 @@ def test_try_insert_known_unknown_low_confidence_insufficient():
         "payload": {
             "query": "what is the meaning of life",
             "top_sim": 0.35,
-            "fok_verdict": "insufficient",
-            "fok_confidence": 0.65,  # Low confidence
             "returned_ids": ["mem-001"],
         },
     }
+    verdict = {"verdict": "insufficient", "confidence": 0.65}  # Low confidence
 
-    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+    fok_batch.try_insert_known_unknown(mock_client, event, verdict, "test-project")
 
     # Should attempt to insert
     mock_client.table.assert_called()
@@ -198,13 +195,12 @@ def test_try_insert_known_unknown_missing_table():
         "payload": {
             "query": "test",
             "top_sim": 0.3,
-            "fok_verdict": "insufficient",
-            "fok_confidence": 0.6,
         },
     }
+    verdict = {"verdict": "insufficient", "confidence": 0.6}
 
     # Should not raise; silently catch exception
-    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+    fok_batch.try_insert_known_unknown(mock_client, event, verdict, "test-project")
 
 
 def test_try_insert_known_unknown_above_similarity_threshold():
@@ -223,19 +219,18 @@ def test_try_insert_known_unknown_above_similarity_threshold():
         "payload": {
             "query": "duplicate query",
             "top_sim": 0.3,
-            "fok_verdict": "insufficient",
-            "fok_confidence": 0.6,
         },
     }
+    verdict = {"verdict": "insufficient", "confidence": 0.6}
 
-    fok_batch.try_insert_known_unknown(mock_client, event, "test-project")
+    fok_batch.try_insert_known_unknown(mock_client, event, verdict, "test-project")
 
     # Should have checked similarity but not inserted (match too similar)
     mock_client.table.assert_called()
 
 
 def test_write_verdict_to_event():
-    """Legacy mirror still updates events.payload with FOK verdict."""
+    """Canonical write: write_verdict_to_event writes to fok_judgments (no legacy mirror)."""
     mock_client = MagicMock()
     # Stub the events.payload fetch so write_verdict_to_event finds a row
     mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = (
@@ -246,12 +241,17 @@ def test_write_verdict_to_event():
 
     fok_batch.write_verdict_to_event(mock_client, event_id, verdict)
 
-    # events.update was called with the merged payload
-    update_calls = mock_client.table.return_value.update.call_args_list
-    assert update_calls, "events.update should fire"
-    merged = update_calls[0].args[0]["payload"]
-    assert merged["fok_verdict"] == "partial"
-    assert merged["fok_confidence"] == 0.7
+    # fok_judgments.upsert was called with verdict data
+    upsert_calls = [
+        c
+        for c in mock_client.table.return_value.upsert.call_args_list
+        if c.args
+    ]
+    assert upsert_calls, "fok_judgments.upsert should fire"
+    record = upsert_calls[0].args[0]
+    assert record["verdict"] == "partial"
+    assert record["confidence"] == 0.7
+    assert record["rationale"] == "Some info present."
 
 
 def test_write_verdict_to_event_dual_writes_to_fok_judgments():
@@ -297,7 +297,7 @@ def test_write_verdict_to_event_dual_writes_to_fok_judgments():
     assert record["verdict"] == "insufficient"
     assert record["confidence"] == 0.42
     assert record["rationale"] == "Memories don't address the query."
-    assert record["judge_version"] == "5.3-γ"
+    assert record["judge_version"] == "5.3-δ"
     assert "judged_at" in record
 
     # on_conflict for idempotent retries
@@ -327,16 +327,15 @@ def test_write_event_summary():
 
 
 def test_fetch_events_filters_unfudged():
-    """Test that fetch_events only returns events without fok_verdict."""
+    """Test that fetch_events only returns events without fok_judgments rows (LEFT JOIN filter)."""
     mock_client = MagicMock()
+    # In the new implementation, fetch_events uses LEFT JOIN to find events without
+    # matching fok_judgments rows. The test mocks the filtered result.
     mock_response = Mock()
     mock_response.data = [
-        {"id": "evt-001", "payload": {"query": "test", "fok_verdict": None}},
-        {
-            "id": "evt-002",
-            "payload": {"query": "test", "fok_verdict": "sufficient"},
-        },  # Should be filtered
-        {"id": "evt-003", "payload": {"query": "test"}},  # No fok_verdict key
+        {"id": "evt-001", "payload": {"query": "test"}},  # No fok_judgments row
+        # evt-002 would have a fok_judgments row, so filtered out by LEFT JOIN
+        {"id": "evt-003", "payload": {"query": "test"}},  # No fok_judgments row
     ]
     mock_client.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value = mock_response
 
@@ -365,14 +364,13 @@ def test_try_insert_zero_confidence_is_not_treated_as_missing():
     event = {
         "id": "evt-zero",
         "payload": {
-            "fok_verdict": "insufficient",
-            "fok_confidence": 0.0,
             "top_sim": 0.1,
             "query": "zero-confidence query",
         },
     }
+    verdict = {"verdict": "insufficient", "confidence": 0.0}
 
-    fok_batch.try_insert_known_unknown(client, event, "jarvis")
+    fok_batch.try_insert_known_unknown(client, event, verdict, "jarvis")
 
     insert_calls = [
         c for c in client.table.return_value.insert.call_args_list if c.args
@@ -405,13 +403,12 @@ def test_try_insert_dedupes_on_exact_query_and_bumps_hit_count():
     event = {
         "id": "evt-dup",
         "payload": {
-            "fok_verdict": "insufficient",
-            "fok_confidence": 0.2,
             "top_sim": 0.1,
             "query": "recurring gap",
         },
     }
-    fok_batch.try_insert_known_unknown(client, event, "jarvis")
+    verdict = {"verdict": "insufficient", "confidence": 0.2}
+    fok_batch.try_insert_known_unknown(client, event, verdict, "jarvis")
 
     update_chain.assert_called()
     update_payload = client.table.return_value.update.call_args.args[0]
