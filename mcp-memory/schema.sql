@@ -2157,10 +2157,11 @@ with judgments_with_scores as (
     fj.project
   from fok_judgments fj
   left join task_outcomes tout on fj.outcome_id = tout.id
-  where (p_project is null or fj.project = p_project or fj.project is null)
+  -- Per-project queries return ONLY that project's rows (no NULL-project bleed).
+  where (p_project is null or fj.project = p_project)
 ),
 filtered_joined as (
-  -- Exclude rows where either score is NULL (don't contribute to calibration)
+  -- Calibration math requires both verdict_score AND outcome_score.
   select verdict_score, outcome_score
   from judgments_with_scores
   where verdict_score is not null and outcome_score is not null
@@ -2174,16 +2175,19 @@ calibration_stats as (
 select
   cs.total_count,
   round(cs.brier_value::numeric, 4),
+  -- by_verdict counts judgments with an outcome per verdict label.
+  -- Unknown/skipped have NULL verdict_score by definition; require only
+  -- outcome_score for that bucket so it isn't silently always 0.
   json_build_object(
     'sufficient', (select count(*) from judgments_with_scores where verdict = 'sufficient' and verdict_score is not null and outcome_score is not null),
     'partial', (select count(*) from judgments_with_scores where verdict = 'partial' and verdict_score is not null and outcome_score is not null),
     'insufficient', (select count(*) from judgments_with_scores where verdict = 'insufficient' and verdict_score is not null and outcome_score is not null),
-    'unknown', (select count(*) from judgments_with_scores where verdict in ('unknown', 'skipped') and verdict_score is not null and outcome_score is not null)
+    'unknown', (select count(*) from judgments_with_scores where verdict in ('unknown', 'skipped') and outcome_score is not null)
   ),
   case
     when cs.total_count < 30 then false
     else (cs.brier_value >= 0.25)
-  end as drift_detected
+  end as drift_signal
 from calibration_stats cs;
 $$;
 

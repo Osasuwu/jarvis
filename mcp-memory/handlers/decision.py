@@ -8,6 +8,7 @@ propagate at call time.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from datetime import datetime, timezone  # noqa: F401
@@ -254,9 +255,15 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     decision_timestamp = result.data[0].get("created_at")
     outcome_ids = args.get("outcomes_referenced") or []
 
-    # Attempt FOK judgment linkage (fire-and-forget)
+    # Fire-and-forget FOK judgment linkage (#445). Await would block the
+    # decision response on N+1 Supabase round-trips inside the linker; the
+    # linker itself swallows exceptions, so a detached task is correct.
     if decision_timestamp and resolved_memories and outcome_ids:
-        await _link_fok_judgments_to_outcomes(client, outcome_ids, resolved_memories, decision_timestamp, project)
+        asyncio.create_task(
+            _link_fok_judgments_to_outcomes(
+                client, outcome_ids, resolved_memories, decision_timestamp, project
+            )
+        )
 
     msg = f"Decision recorded: episode {eid}"
     if unresolved_memories:
