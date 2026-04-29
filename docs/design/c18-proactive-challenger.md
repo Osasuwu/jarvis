@@ -10,17 +10,19 @@ This doc locks the drift-signal taxonomy, threshold-config schema, emit shape, s
 
 ## 1. Drift-signal taxonomy
 
-C18 detects 5 signal classes. Each has a fixed reads-from substrate, a single threshold parameter, and a payload contract for the emitted `recalibration_proposed` event. Substrate-readiness column dictates which signals #C18.2 ships in the first wave vs. defers until C5 / C16 land.
+C18 detects 5 signal classes. Each has a fixed reads-from substrate, a **primary threshold** that controls firing, optional **auxiliary parameters** (gating filters, per-brief caps, baseline minima), and a payload contract for the emitted `recalibration_proposed` event. All parameter names below match the YAML dotted form in §2 verbatim; the `threshold_snapshot.param` field of an emitted event (see §3) carries the same dotted string. Substrate-readiness column dictates which signals #C18.2 ships in the first wave vs. defers until C5 / C16 land.
 
-| `signal_class` | Reads from | Threshold param | Payload extras | Substrate readiness |
-|---|---|---|---|---|
-| `goal_neglect` | `goals` (active) + `events_canonical` (`action='decision_made'` grouped by `payload->>'goal_slug'`) | `goal_neglect_days` (default `14`, units: days since last linked decision) | `goal_id`, `goal_slug`, `last_activity_ts`, `days_since` | **ready** — C2 + C17 shipped (Sprint #35) |
-| `direction_vs_action` | `goals` (P0/P1 active) + `events_canonical` (`action IN ('decision_made','tool_call')` grouped by goal vs principal-stated priority) | `direction_gap_ratio` (default `0.30`, units: fraction of work hours on lower-prio goals while top-prio starves) | `top_priority_goal_id`, `time_share_actual`, `time_share_expected`, `gap_ratio` | **ready** — needs ≥30 days of `decision_made` history (per §5 bootstrap) |
-| `stale_assumption` | `memories` (`confidence < 0.5` AND `last_accessed_at < now() - interval '90 days'` AND `archived = false`) | `stale_assumption_min_confidence` (default `0.5`), `stale_assumption_min_idle_days` (default `90`) | `memory_id`, `memory_name`, `confidence`, `last_accessed_at`, `last_used_in_decision` | **ready** — C3 lifecycle columns shipped (Phase 0/1 of #185) |
-| `calibration_drift` | C5 calibrator outputs (Brier per memory type, per-class FP/FN — table TBD by C5) | `calibration_brier_ceiling` (default `0.20`, units: per-class Brier score) | `memory_class`, `current_brier`, `target_brier`, `sample_size` | **blocked-on-C5** — C5 calibrator emits not yet defined |
-| `principal_override` | C16 events (`action='principal_override'` grouped by `payload->>'classifier_class'`) | `principal_override_freq_per_class` (default `3`, units: overrides within `principal_override_window_days` = `30`) | `classifier_class`, `override_count`, `window_days`, `last_override_event_id` | **blocked-on-C16** — C16 verification arm not yet shipped |
+| `signal_class` | Reads from | Primary threshold (YAML dotted) | Auxiliary params | Payload extras | Substrate readiness |
+|---|---|---|---|---|---|
+| `goal_neglect` | `goals` (active) + `events_canonical` (`action='decision_made'` grouped by `payload->>'goal_slug'`) | `signals.goal_neglect.threshold_days` (default `14`, units: days since last linked decision) | — | `goal_id`, `goal_slug`, `last_activity_ts`, `days_since` | **ready** — C2 + C17 shipped (Sprint #35) |
+| `direction_vs_action` | `goals` (P0/P1 active) + `events_canonical` (`action IN ('decision_made','tool_call')` grouped by goal vs principal-stated priority) | `signals.direction_vs_action.gap_ratio_threshold` (default `0.30`, units: fraction of work hours on lower-prio goals while top-prio starves) | `signals.direction_vs_action.min_history_days` (`30`, baseline gate) | `top_priority_goal_id`, `time_share_actual`, `time_share_expected`, `gap_ratio` | **ready** — needs ≥30 days of `decision_made` history (per §5 bootstrap) |
+| `stale_assumption` | `memories` (matching idle + low-confidence filter, `archived = false`) | `signals.stale_assumption.min_idle_days` (default `90`, units: days since last access) | `signals.stale_assumption.min_confidence` (`0.5`, AND-gate filter), `signals.stale_assumption.cap_per_brief` (`3`, top-N by score) | `memory_id`, `memory_name`, `confidence`, `last_accessed_at`, `last_used_in_decision` | **ready** — C3 lifecycle columns shipped (Phase 0/1 of #185) |
+| `calibration_drift` | C5 calibrator outputs (Brier per memory type, per-class FP/FN — table TBD by C5) | `signals.calibration_drift.brier_ceiling_default` (default `0.20`, units: per-class Brier score) | `signals.calibration_drift.per_class_overrides` (map `memory_class → ceiling`, default empty) | `memory_class`, `current_brier`, `target_brier`, `sample_size` | **blocked-on-C5** — C5 calibrator emits not yet defined |
+| `principal_override` | C16 events (`action='principal_override'` grouped by `payload->>'classifier_class'`) | `signals.principal_override.freq_threshold` (default `3`, units: overrides within window) | `signals.principal_override.window_days` (`30`, rolling window length) | `classifier_class`, `override_count`, `window_days`, `last_override_event_id` | **blocked-on-C16** — C16 verification arm not yet shipped |
 
-**Why one threshold per class:** keeps `recalibration_thresholds.yaml` flat and editable. Per-class branching (e.g. different thresholds per memory type) lives inside the SQL detection query, not the YAML schema.
+**Primary vs auxiliary:** auto-tighten (§6) acts on the **primary** threshold only — auxiliary params are owner-tuned via YAML PR. `stale_assumption` triggers when `min_idle_days` AND `min_confidence` both gate-pass; auto-tighten only widens `min_idle_days`, never the confidence filter.
+
+**Why one primary threshold per class:** keeps the auto-tighten loop targetable to a single dimension per signal. Per-class branching (e.g. different thresholds per memory type) lives inside `per_class_overrides` (`calibration_drift`) or inside the SQL detection query — not as additional siblings of the primary threshold.
 
 **Why `signal_class` is a string not enum:** C18 is open to new signal classes (e.g. future "goal-vs-pillar drift", "tool-failure cluster"). Open vocabulary; new values added by PR alongside their threshold parameter and payload contract.
 
@@ -113,18 +115,22 @@ Extends C17 action vocabulary ([c17-events-substrate.md §5](c17-events-substrat
 {
   "signal_class": "goal_neglect",                // see §1 taxonomy
   "severity": 0.65,                              // 0.0-1.0; per-class formula in YAML
-  "evidence_event_ids": ["uuid", "uuid", ...],   // back-pointers to triggering events / goals / memories
-  "evidence_kind": "event_id",                   // "event_id" | "goal_id" | "memory_id" — disambiguates evidence_event_ids[] for non-event references
+  "evidence_ids": ["uuid", "uuid", ...],         // back-pointers — kind disambiguated by evidence_kind below
+  "evidence_kind": "goal_id",                    // "event_id" | "goal_id" | "memory_id" — tells the consumer which table evidence_ids[] dereferences against
   "proposed_action": "Goal `jarvis-v2-memory` last decision 21d ago. Re-prioritize or update.",
   "dismissable_until": "2026-05-13T00:00:00Z",   // cooldown — see §4
   "threshold_snapshot": {                        // what the threshold was when fired (audit, not enforcement)
-    "param": "goal_neglect_days",
+    "param": "signals.goal_neglect.threshold_days",
     "value": 14
   }
 }
 ```
 
-**Why `evidence_kind` not just polymorphic uuid array:** events/goals/memories share UUID type; without a kind discriminator, downstream consumers can't dereference the array. One field, three valid values, no JOINs needed at read time.
+**Why `evidence_ids` not `evidence_event_ids`:** events/goals/memories share UUID type but live in different tables. The previous name implied "always event_ids" which contradicts the documented multi-kind dereferencing. `evidence_ids` is kind-neutral; `evidence_kind` is the discriminator.
+
+**Why `evidence_kind` not just polymorphic uuid array:** without a kind discriminator, downstream consumers can't dereference the array. One field, three valid values, no JOINs needed at read time.
+
+**Why `threshold_snapshot.param` uses the YAML dotted form:** matches §1 taxonomy and §2 schema verbatim. `/reflect` queries can group by `payload->'threshold_snapshot'->>'param'` without translating between flat names and YAML paths.
 
 **Why `proposed_action` is text not structured:** the action is advisory, rendered to the principal via C12. Structured action would require an action vocabulary that doesn't exist yet (and may never — actions are situational). Text is good enough.
 
@@ -141,21 +147,24 @@ C18 emits to `events_canonical`. **C12 batched-brief picks up.** No new transpor
 C12's batched-brief aggregator (existing) extends to read C18 events:
 
 ```
-SELECT * FROM events_canonical
-WHERE action = 'recalibration_proposed'
-  AND ts > <last_brief_ts_per_principal>
-  AND (dismissable_until IS NULL OR dismissable_until > now())
+SELECT * FROM events_canonical e
+WHERE e.action = 'recalibration_proposed'
+  AND e.ts > <last_brief_ts_per_principal>
+  AND (
+        e.payload->>'dismissable_until' IS NULL
+     OR (e.payload->>'dismissable_until')::timestamptz > now()
+  )
   AND NOT EXISTS (
     SELECT 1 FROM events_canonical s
     WHERE s.action = 'surfacing_outcome'
-      AND s.trace_id = events_canonical.trace_id
-      AND s.payload->>'outcome' IN ('acted', 'dismissed')
+      AND s.trace_id = e.trace_id
+      AND s.payload->>'outcome' IN ('acted', 'dismissed', 'dismissed_with_reason')
   )
-ORDER BY (payload->>'severity')::numeric DESC
+ORDER BY (e.payload->>'severity')::numeric DESC
 LIMIT 5;
 ```
 
-(SQL above is illustrative — concrete query is #C18.2.)
+(SQL above is illustrative — concrete query is #C18.2. Note: `dismissable_until` lives **inside `payload`**, not as a top-level column — C17 schema reserves only the canonical `event_id`/`trace_id`/`ts`/`actor`/`action`/`outcome`/`cost_*`/`redacted`/`degraded`/`payload` columns. Cooldown joins on `trace_id` because §6 specifies that `surfacing_outcome` events **inherit** the originating `recalibration_proposed.trace_id` — that's the authoritative key for matching a surfacing back to its detection event.)
 
 ### Cooldown rule
 
@@ -250,23 +259,31 @@ Weekly C18 maintenance task (Sprint 36 #C18.2 ships this as `scripts/c18-tune-th
 1. For each `signal_class` with `enabled: true`:
    - `acceptance_rate = count(acted) / count(acted + dismissed*)` over last 4 weeks.
 2. If `acceptance_rate < 0.25` AND total surfacings ≥ 10 (sample-size guard):
-   - Tighten the class's primary threshold by 1 standard deviation of the last 100 emitted severities, **bounded by configured ceiling**.
+   - Apply the class's **fixed tighten step** to the primary threshold (table below), **bounded by configured ceiling**.
    - Emit a `decision_made` event recording the auto-tighten with full before/after values.
-   - Owner sees the tighten in the next batched brief (one-line: "C18 auto-tightened `goal_neglect` 14d → 18d, acceptance 18% over 4w").
-3. **Auto-tighten ceiling**: per-signal ceiling in YAML caps the parameter to prevent the loop from tightening into never-fires territory. Defaults:
+   - Owner sees the tighten in the next batched brief (one-line: "C18 auto-tightened `signals.goal_neglect.threshold_days` 14 → 17, acceptance 18% over 4w").
+3. **Per-class tighten step + ceiling**: each primary threshold has an explicit step formula in its own units (no severity-stddev mixing). Ship in YAML so the owner can tune. Defaults:
 
-| Signal | Param | Ceiling |
-|---|---|---|
-| `goal_neglect` | `threshold_days` | `30` |
-| `direction_vs_action` | `gap_ratio_threshold` | `0.50` |
-| `stale_assumption` | `min_idle_days` | `180` |
-| `stale_assumption` | `min_confidence` | `0.30` (lower bound — tightens *down*) |
+| Signal | Primary threshold | Tighten step (each trip) | Ceiling | Direction |
+|---|---|---|---|---|
+| `goal_neglect` | `signals.goal_neglect.threshold_days` | `× 1.2` (round to int) | `30` days | up = quieter |
+| `direction_vs_action` | `signals.direction_vs_action.gap_ratio_threshold` | `+ 0.05` | `0.50` | up = quieter |
+| `stale_assumption` | `signals.stale_assumption.min_idle_days` | `× 1.2` (round to int) | `180` days | up = quieter |
+| `calibration_drift` | `signals.calibration_drift.brier_ceiling_default` | `+ 0.02` | `0.40` | up = quieter |
+| `principal_override` | `signals.principal_override.freq_threshold` | `+ 1` | `10` overrides | up = quieter |
+
+**Why fixed steps not stddev:** primary thresholds carry *unit semantics* (days, ratio, count). `stddev(severity)` is in [0, 1] with no unit, so multiplying it into a threshold mixes units and produces unexplainable adjustments. Per-class explicit steps in native units stay implementable, auditable, and reversible by hand if a tighten goes wrong.
+
+**One step per trip:** the loop tightens by exactly one step per quarterly check that crosses the threshold — never multi-step jumps. Slow corrections give the owner a chance to notice and override before the signal goes mute.
+
+**`stale_assumption.min_confidence` is NOT auto-tuned.** It's an AND-gate filter, not the primary firing threshold. Owner-only via YAML PR.
 
 ### What auto-tighten does NOT do
 
 - **Loosen thresholds** — never. Loosening = more surfacings = drowning the principal. Owner-only operation, via YAML PR.
 - **Disable a signal class** — `enabled: false` is owner-only.
 - **Tune cooldown windows** — separate dimension; out of scope.
+- **Tune auxiliary parameters** — only the primary threshold per §1 is in scope.
 
 ### Why auto-tighten not auto-disable
 
