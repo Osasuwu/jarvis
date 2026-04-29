@@ -90,8 +90,8 @@ Get-EventLog -LogName System -Source "Service Control Manager" -Newest 20 |
 
 ### 4. Telegram channels — escalations + dispatch reports
 
-Owner-facing Telegram channel receives:
-- Escalations from the escalation ladder ([#327](https://github.com/Osasuwu/jarvis/issues/327)) — owner action needed
+Principal-facing Telegram channel receives:
+- Escalations from the escalation ladder ([#327](https://github.com/Osasuwu/jarvis/issues/327)) — principal action needed
 - Dispatcher post-run reports (success/failure summaries)
 
 Silence in Telegram is **not** evidence of health — could mean dispatcher is down. Cross-reference with `audit_log`.
@@ -115,12 +115,12 @@ Outputs a text report: 24 h dispatch count per agent, failures, gaps, stale orph
 | `apscheduler_jobs` rows | matches registered set | unexpected id present | 0 rows on running service |
 | `Get-Service jarvis-scheduler` | Running | Stopped (service start pending) | Not found / Disabled |
 
-`> 2 hours` of silence on `task-dispatcher` = wake owner via Telegram (when escalation auto-pinging is wired) or page manually.
+`> 2 hours` of silence on `task-dispatcher` = wake principal via Telegram (when escalation auto-pinging is wired) or page manually.
 
 ## What this doc is NOT
 
-- Not real-time alerting — Phase 1 is reactive (owner queries on demand)
-- Not a dashboard — owner runs the morning check at their own cadence
+- Not real-time alerting — Phase 1 is reactive (principal queries on demand)
+- Not a dashboard — principal runs the morning check at their own cadence
 - Not exhaustive metrics — captures liveness + failure rate, nothing finer-grained
 
 If/when we want auto-alerts or dashboards, file a separate issue. This is the minimum viable observability.

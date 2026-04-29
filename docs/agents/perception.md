@@ -17,7 +17,7 @@ truth for `approved_by` namespace, `auto_dispatch` policy, and
 Sprint 5 gets spent unifying them. This doc settles the conventions
 **before** code lands.
 
-Owner decisions encoded here (resolved 2026-04-25, [#386
+Principal decisions encoded here (resolved 2026-04-25, [#386
 comment](https://github.com/Osasuwu/jarvis/issues/386)):
 
 1. Safety gate is **always** in the FSM. Strictness is a gradient over
@@ -53,8 +53,8 @@ mutation, regardless of source tier.
 | Source tier | `auto_dispatch` | Dispatcher behaviour |
 |-------------|-----------------|----------------------|
 | `tier:1-auto` | `true` | Picked up on next tick. Escalation triggers still apply. |
-| `tier:2-review` | `false` | Row sits in `pending`. Owner flips `auto_dispatch=true` after review (or runs `/implement` manually). |
-| `tier:3-human` | `false` | Row exists for tracking only. Dispatcher never touches it. Owner-driven from start to finish. |
+| `tier:2-review` | `false` | Row sits in `pending`. Principal flips `auto_dispatch=true` after review (or runs `/implement` manually). |
+| `tier:3-human` | `false` | Row exists for tracking only. Dispatcher never touches it. Principal-driven from start to finish. |
 
 `auto_dispatch=true` is the *only* signal `dispatcher.poll_queue_node`
 honours. The source tier label is metadata for humans and for
@@ -96,13 +96,13 @@ Caveat: as of Sprint 4, the dispatcher is fire-and-forget — it sets
 `dispatched_at` and never flips status to `done` itself ([dispatcher.md
 "Fire-and-forget semantics"](dispatcher.md)). The done-watcher in #388
 will idle until a result-collection path lands (future sprint) or until
-the owner flips status manually via `/verify`. Implementers: write the
+the principal flips status manually via `/verify`. Implementers: write the
 watcher, but expect zero firings until that upstream change.
 
 Open in flight: what happens if labels change post-ingest — re-tier the
 existing row, or freeze at ingest-time? **Decision: freeze at ingest.**
 Re-tier introduces a race where the dispatcher reads tier:1 but the row
-silently became tier:3. Owner can close + re-open the issue if a re-tier
+silently became tier:3. Principal can close + re-open the issue if a re-tier
 is needed; idempotency_key includes the label set, so re-applying labels
 produces a fresh key and a fresh row.
 
@@ -133,10 +133,10 @@ Listed so conventions don't shift when these land:
 
 | Source | `approved_by` prefix | `idempotency_key` formula | Default `auto_dispatch` |
 |--------|----------------------|----------------------------|--------------------------|
-| Telegram (deferred from #387) | `telegram:<owner_id>` | `sha256(chat_id \| message_id)` | `false` (owner classifies inline via bot) |
+| Telegram (deferred from #387) | `telegram:<principal_id>` | `sha256(chat_id \| message_id)` | `false` (principal classifies inline via bot) |
 | Email | `email:<from_address>` | `sha256(message_id)` | `false` |
 | Calendar | `calendar:<event_uid>` | `sha256(event_uid \| occurrence_start)` | varies — recurring events default `false` |
-| Voice | `voice:<owner>` | `sha256(audio_sha256)` | `false` (transcription happens before ingest) |
+| Voice | `voice:<principal>` | `sha256(audio_sha256)` | `false` (transcription happens before ingest) |
 
 Rule for adding a new source: extend this table in the same PR that adds
 the perception module. The `approved_by` prefix MUST be unique across
@@ -170,7 +170,7 @@ states; the existing FSM is sufficient.
               │ auto_dispatch=true           │ auto_dispatch=false
               ▼                              ▼
     ┌──────────────────┐         ┌──────────────────────┐
-    │ dispatcher       │         │ Owner / /implement   │
+    │ dispatcher       │         │ Principal / /implement│
     │ poll_queue_node  │         │ (manual)             │
     └────────┬─────────┘         └──────────┬───────────┘
              │                              │
@@ -193,13 +193,13 @@ Existing FSM transitions (from `task_queue` migration, unchanged):
 ```
 pending    → dispatched | escalated | rejected
 dispatched → done | escalated
-escalated  → pending           (owner re-approves)
+escalated  → pending           (principal re-approves)
 done       → (terminal)
 rejected   → (terminal)
 ```
 
 Perception adds *no* new state. Every transition still happens in the
-dispatcher / owner-driven path; perception's job ends the moment the row
+dispatcher / principal-driven path; perception's job ends the moment the row
 is INSERTed.
 
 ### Idempotency under retry
@@ -254,18 +254,18 @@ signature ([`safety.py`](../../agents/safety.py)). What changes is
 | Axis | Effect on strictness | Example |
 |------|---------------------|---------|
 | **Source** (`approved_by` prefix) | Trusted prefixes (`github:issue:` from allowlisted repo, `cron:morning_check` for own tasks) get the standard whitelist. Untrusted prefixes (`external:*` — future) get a narrower whitelist. | A `cron:` source can `audit_log:insert` (Tier 0); an `external:` source cannot. |
-| **Source tier** | Higher tier (1 → 2 → 3) → more checks. Tier 1 fires through the existing gate. Tier 2/3 don't reach the gate at all because `auto_dispatch=false`. | Tier 3 is owner-driven by definition; gate checks the owner's actions, not the tier. |
+| **Source tier** | Higher tier (1 → 2 → 3) → more checks. Tier 1 fires through the existing gate. Tier 2/3 don't reach the gate at all because `auto_dispatch=false`. | Tier 3 is principal-driven by definition; gate checks the principal's actions, not the tier. |
 | **Executor model** | Stronger model (e.g. Claude Opus) gets looser scope-file diffing tolerance; weaker (Haiku) gets tighter. *Implementation lives in `agents/dispatcher.py` when model selection is wired in — not Sprint 4.* | Future: dispatcher reads model hint from row metadata, picks gate config. |
 
 What this means concretely for Sprint 4 implementation:
 
 - **#388 (GitHub ingest)**: no gate changes. `tier:1-auto` rows go through the existing gate. The label is the human nod; the gate is the technical guardrail.
-- **#389 (self-perception)**: every row is tier:3 → `auto_dispatch=false` → never reaches dispatch path → gate not invoked. Owner triggers the actual fix manually.
+- **#389 (self-perception)**: every row is tier:3 → `auto_dispatch=false` → never reaches dispatch path → gate not invoked. Principal triggers the actual fix manually.
 - **Future sources**: extend the `_TIER0_*` / `_TIER2_*` constants in `agents/safety.py` with source-aware classifications (or add a new `_TIER0_PERCEPTION_*` set). Don't touch the `gate()` signature.
 
 ### Why source tier ≠ skip-gate
 
-Owner-stated principle: gate is always there. The intuition that pushed
+Principal-stated principle: gate is always there. The intuition that pushed
 back on "gate skip for cron-internal tasks" was correct — once you allow
 *any* source to skip the gate, the audit trail breaks and the
 single-bottleneck property goes away. The gate's job is to be the last

@@ -1,6 +1,6 @@
 ---
 name: end-quick
-description: "Quick session close: checkpoint + commit only. ~30 sec. Use when owner needs to leave fast."
+description: "Quick session close: checkpoint + commit only. ~30 sec. Use when principal needs to leave fast."
 ---
 
 # End Session (Quick)

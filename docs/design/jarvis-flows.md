@@ -6,25 +6,25 @@ Re-render: `npx -p @mermaid-js/mermaid-cli mmdc -i jarvis-flows.md -o flow.svg` 
 
 ## Index
 
-1. [Owner session userflow](#1--owner-session-userflow) — how a session starts, runs, and ends from owner's POV.
+1. [Principal session userflow](#1--principal-session-userflow) — how a session starts, runs, and ends from principal's POV.
 2. [Memory I/O — write + recall](#2--memory-io--write--recall) — the C3 canonical funnel.
 3. [C6 decision gate](#3--c6-decision-gate) — pre-action act/ask classifier with 6 outcomes.
 4. [C8 sub-orchestration dispatch](#4--c8-sub-orchestration-dispatch) — pre/post-dispatch gates around subagent worktree work.
 5. [C5 reflection triggers and handlers](#5--c5-reflection-triggers-and-handlers) — event-driven mutation arm.
 6. [C15 self-modification cycle](#6--c15-self-modification-cycle) — M0–M3 propose → safeguards → apply → measure.
-7. [C16 PR review pipeline](#7--c16-pr-review-pipeline) — reviewer triggers, aggregation, owner surface.
+7. [C16 PR review pipeline](#7--c16-pr-review-pipeline) — reviewer triggers, aggregation, principal surface.
 8. [C13 cost cap enforcement](#8--c13-cost-cap-enforcement) — event ledger → projection → soft/hard cap → gate.
 
 ---
 
-## 1 — Owner session userflow
+## 1 — Principal session userflow
 
 ![Session userflow](flow-1.svg)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Owner
+    actor Principal
     participant Sched as Scheduled task
     participant GHA as GitHub Action
     participant ALoop as autonomous-loop
@@ -34,8 +34,8 @@ sequenceDiagram
     participant Mem as Memory recall
     participant State as working_state_jarvis
 
-    alt Owner-initiated
-        Owner->>CC: claude (interactive start)
+    alt Principal-initiated
+        Principal->>CC: claude (interactive start)
     else Scheduled task fire
         Sched->>CC: spawn with task prompt
     else GHA event
@@ -50,23 +50,23 @@ sequenceDiagram
     Hook->>Pg: goal_list active
     Hook->>State: read working_state if present
     Hook-->>CC: inject context (compact, in window)
-    CC-->>Owner: ready prompt with one-line continuation offer if state found
+    CC-->>Principal: ready prompt with one-line continuation offer if state found
 
     loop interaction
-        Owner->>CC: message
+        Principal->>CC: message
         CC->>Mem: targeted memory_recall on topic
         CC->>CC: reasoning + plan
         CC->>CC: tool calls (each gated by C6)
-        CC-->>Owner: response
+        CC-->>Principal: response
     end
 
-    Note over Owner, CC: At natural breakpoint or /end:
+    Note over Principal, CC: At natural breakpoint or /end:
     CC->>State: working_state_jarvis save
     CC->>Pg: record_decision events flushed
-    CC-->>Owner: session close
+    CC-->>Principal: session close
 ```
 
-**Key points.** **Same bootstrap fires regardless of session origin** — owner-interactive, scheduled tasks, GHA-triggered, autonomous-loop tick all converge on the SessionStart hook. For autonomous origins, the interaction loop processes goal-derived queued prompts in place of owner messages; rest of the flow unchanged. Bootstrap context arrives via hook in one shot (no MCP calls during session start — already in window per CLAUDE.md). Targeted recall happens during interaction, not at session start. Working state is saved at natural breakpoints, not every tool call. After context compression, recall surfaces "working state" first.
+**Key points.** **Same bootstrap fires regardless of session origin** — principal-interactive, scheduled tasks, GHA-triggered, autonomous-loop tick all converge on the SessionStart hook. For autonomous origins, the interaction loop processes goal-derived queued prompts in place of principal messages; rest of the flow unchanged. Bootstrap context arrives via hook in one shot (no MCP calls during session start — already in window per CLAUDE.md). Targeted recall happens during interaction, not at session start. Working state is saved at natural breakpoints, not every tool call. After context compression, recall surfaces "working state" first.
 
 ---
 
@@ -131,19 +131,19 @@ flowchart TB
     probes --> classify{Classifier<br/>rule fast path + Haiku for ambiguous}
     classify --> outcome{6 outcomes}
 
-    outcome -->|low risk, owner preference known| allow[ALLOW]
+    outcome -->|low risk, principal preference known| allow[ALLOW]
     outcome -->|low risk, log-explicit| log[LOG_AND_PROCEED]
-    outcome -->|owner needs informing| explain[EXPLAIN_AND_PROCEED]
+    outcome -->|principal needs informing| explain[EXPLAIN_AND_PROCEED]
     outcome -->|state probe needs async work| defer[DEFER<br/>v2.1.89]
-    outcome -->|multiple viable, owner pick| queue[QUEUE]
+    outcome -->|multiple viable, principal pick| queue[QUEUE]
     outcome -->|destructive or convergence stall| block[BLOCK]
 
     defer --> resume[Pause headless, resume after probe] --> outcome
     queue --> qtbl[(decision_queue table)]
     qtbl --> brief[Batched morning/evening brief]
-    brief --> ownerd{Owner decides}
-    ownerd -->|approve| emit
-    ownerd -->|reject| emit
+    brief --> principald{Principal decides}
+    principald -->|approve| emit
+    principald -->|reject| emit
 
     allow --> emit
     log --> emit
@@ -157,7 +157,7 @@ flowchart TB
     calib -.->|threshold update| classify
 ```
 
-**Key points.** **Single canonical gate** consulted for every tool call across all lanes (interactive / scheduled / subagent). **State-aware** — `topic_hash` convergence counter catches 3-attempt stalls deterministically. `decision_queue` is a **separate table** (workflow with state), not the C17 events table (append-only). `record_decision` is auto-emitted by the gate — no manual call required, closes compliance gap. **DEFER** outcome added per Claude Code v2.1.89 PreToolUse `defer` decision. **Learning loop closed** — `gate_overpermissive` (owner reverts) and `gate_overcautious` (owner approves queued with annotation) feed C5 calibrator; per-class threshold auto-adjusts (redesign §C6 calibration).
+**Key points.** **Single canonical gate** consulted for every tool call across all lanes (interactive / scheduled / subagent). **State-aware** — `topic_hash` convergence counter catches 3-attempt stalls deterministically. `decision_queue` is a **separate table** (workflow with state), not the C17 events table (append-only). `record_decision` is auto-emitted by the gate — no manual call required, closes compliance gap. **DEFER** outcome added per Claude Code v2.1.89 PreToolUse `defer` decision. **Learning loop closed** — `gate_overpermissive` (principal reverts) and `gate_overcautious` (principal approves queued with annotation) feed C5 calibrator; per-class threshold auto-adjusts (redesign §C6 calibration).
 
 ---
 
@@ -211,7 +211,7 @@ flowchart TB
     subgraph TRIG[Triggers]
         direction TB
         ev_outcome[outcome_recorded]
-        ev_correct[owner_correction]
+        ev_correct[principal_correction]
         ev_anomaly[anomaly_flagged spike]
         ev_decision[N decisions accumulated]
         ev_recall_fail[recall_failed FoK]
@@ -232,7 +232,7 @@ flowchart TB
     subgraph APPLY[3-lane apply mirrors C3]
         lane1[Confidence above class threshold<br/>AND judge precision validated<br/>auto-write to C3]
         lane2[Below thresholds<br/>review queue]
-        lane3[Owner correction<br/>ground-truth label<br/>feeds calibrator]
+        lane3[Principal correction<br/>ground-truth label<br/>feeds calibrator]
     end
 
     ev_outcome --> disp
@@ -256,14 +256,14 @@ flowchart TB
     APPLY --> c3[(C3 Memory)]
     lane3 --> calib
 
-    synth --> goalcand[Candidate child goal<br/>from owner_message + decision_made]
+    synth --> goalcand[Candidate child goal<br/>from principal_message + decision_made]
     goalcand --> c6q[C6 Tier 1 queue]
-    c6q -->|owner approves| c2[(C2 Goals)]
+    c6q -->|principal approves| c2[(C2 Goals)]
 
     c3 --> events[(C17 events:<br/>judgment_made, mutation_proposed,<br/>stale_challenge_fired)]
 ```
 
-**Key points.** **Event-triggered primary, sweeps as backstop** — no pure cron. Per `Memory-driven autonomy` op policy. **Each handler narrow + independently calibratable** — synthesizer, stale-challenger, calibrator, FoK, anomaly investigator. **Cold-start: `crepes` Mondrian CP** does class-conditional calibration — partial-pooling across semantically-near classes when leaf class has no labels. Stale-challenger sweep deferred until first month of labels accumulates. **Goals as candidate output** — synthesizer also produces candidate child goals from `owner_message` + `decision_made` events; routed through C6 Tier 1 queue, owner-approved entries land in C2 (closes the C5 → C2 path per redesign §C2 proactive tracking).
+**Key points.** **Event-triggered primary, sweeps as backstop** — no pure cron. Per `Memory-driven autonomy` op policy. **Each handler narrow + independently calibratable** — synthesizer, stale-challenger, calibrator, FoK, anomaly investigator. **Cold-start: `crepes` Mondrian CP** does class-conditional calibration — partial-pooling across semantically-near classes when leaf class has no labels. Stale-challenger sweep deferred until first month of labels accumulates. **Goals as candidate output** — synthesizer also produces candidate child goals from `principal_message` + `decision_made` events; routed through C6 Tier 1 queue, principal-approved entries land in C2 (closes the C5 → C2 path per redesign §C2 proactive tracking).
 
 ---
 
@@ -278,7 +278,7 @@ sequenceDiagram
     participant C16 as Reviewer
     participant Bench as Empirical benchmark
     participant Sandbox
-    participant Owner
+    participant Principal
     participant Pg as Supabase
 
     C5->>Pg: emit improvement_proposed event
@@ -292,17 +292,17 @@ sequenceDiagram
         C16-->>C6: ok
         C6->>Pg: apply + emit self_modification_applied
     else M2 collaborative
-        C6->>Owner: queue for collaborative session
-        Owner-->>C6: applies during shared session
+        C6->>Principal: queue for collaborative session
+        Principal-->>C6: applies during shared session
     else M3 protected — SOUL, CLAUDE, .mcp.json, schema, .env, gate, reviewer, observability
-        C6->>Owner: explicit-only, never auto
+        C6->>Principal: explicit-only, never auto
     end
 
     Note over C5, Pg: For C6 / C16 / C17 changes — 4 safeguards stacked
     C6->>C16: prior-version review (frozen image)
     C6->>Bench: empirical benchmark (DGM-style)
     C6->>Sandbox: sandbox test
-    C6->>Owner: sign-off
+    C6->>Principal: sign-off
 
     Note over C5, Pg: Misimprovement detection — observation window
     loop window
@@ -314,11 +314,11 @@ sequenceDiagram
         C5->>Pg: improvement_inconclusive — no progression
     else regression suspected
         C5->>Pg: regression_suspected — auto-propose revert via M1
-        Pg->>Owner: owner decides
+        Pg->>Principal: principal decides
     end
 ```
 
-**Key points.** **Per-class trust ladder** — M0 → M1 unlocks per class only after K successful cycles. **M3 never unlocks autonomously** (SOUL, CLAUDE.md, .mcp.json, schema, .env, gate logic, reviewer, observability). **4 safeguards stacked for C6/C16/C17 changes** — prior-version review + empirical benchmark (per DGM) + sandbox + owner sign-off. Per-class precision unlocks/locks via `improvement_inconclusive` / `regression_suspected` events. **Compaction-aware**: state lives in artifacts (PR, issue, events), not session memory.
+**Key points.** **Per-class trust ladder** — M0 → M1 unlocks per class only after K successful cycles. **M3 never unlocks autonomously** (SOUL, CLAUDE.md, .mcp.json, schema, .env, gate logic, reviewer, observability). **4 safeguards stacked for C6/C16/C17 changes** — prior-version review + empirical benchmark (per DGM) + sandbox + principal sign-off. Per-class precision unlocks/locks via `improvement_inconclusive` / `regression_suspected` events. **Compaction-aware**: state lives in artifacts (PR, issue, events), not session memory.
 
 ---
 
@@ -346,9 +346,9 @@ flowchart TB
     xdev --> agg
 
     agg[Aggregator<br/>summary comment via gh API]
-    agg --> owner_view{Owner reads}
-    owner_view -->|merge| merged([Merged])
-    owner_view -->|drill in| dr[Owner reads concern]
+    agg --> principal_view{Principal reads}
+    principal_view -->|merge| merged([Merged])
+    principal_view -->|drill in| dr[Principal reads concern]
     dr -->|override block| merged
     dr -->|reject| closed([Closed])
 
@@ -356,11 +356,11 @@ flowchart TB
     smoke -->|fails| incident[(Incident events)]
     smoke -->|ok| done([Done])
 
-    merged --> labels[Reviewer FP/FN labels<br/>via owner action + post-merge incidents]
+    merged --> labels[Reviewer FP/FN labels<br/>via principal action + post-merge incidents]
     labels --> calib[Feed C5 calibrator]
 ```
 
-**Key points.** **Diff coherence runs FIRST and gates everything else** — claimed-edits vs `git diff` mismatch → `subagent_fabrication_detected` BLOCK, no further review attempted. Cheap to implement, high-leverage. **Mechanical reviewers (deterministic)** alongside LLM ones — diff coherence + test coverage are facts, not judgment. **Different-provider mandatory** for high-leverage class (schema / cross-project / C6/C16/C17 / security / API contract). **Owner sees aggregator summary**, never individual reviewer outputs by default. FP/FN labels feed C5 — over-permissive vs over-cautious tracked symmetrically.
+**Key points.** **Diff coherence runs FIRST and gates everything else** — claimed-edits vs `git diff` mismatch → `subagent_fabrication_detected` BLOCK, no further review attempted. Cheap to implement, high-leverage. **Mechanical reviewers (deterministic)** alongside LLM ones — diff coherence + test coverage are facts, not judgment. **Different-provider mandatory** for high-leverage class (schema / cross-project / C6/C16/C17 / security / API contract). **Principal sees aggregator summary**, never individual reviewer outputs by default. FP/FN labels feed C5 — over-permissive vs over-cautious tracked symmetrically.
 
 ---
 
@@ -376,7 +376,7 @@ sequenceDiagram
     participant Views as Materialized views<br/>via pg_cron
     participant C13 as Budget gate
     participant C6 as Decision gate
-    participant Owner
+    participant Principal
 
     Tool->>PostHook: tool finished
     PostHook->>Events: emit tool_call event<br/>OTel GenAI: cost_usd, duration_ms
@@ -389,18 +389,18 @@ sequenceDiagram
         alt projected at most 20 USD soft cap
             C13->>C13: no action
         else 20 USD to 100 USD
-            C13->>Owner: warn via batched brief
+            C13->>Principal: warn via batched brief
             C13->>C6: deprioritize external LLM, prefer subscription/Haiku
         else above 100 USD hard cap
             C13->>C6: BLOCK non-essential external
-            C13->>Owner: critical alert
+            C13->>Principal: critical alert
         end
     end
 
     loop weekly
         C13->>C13: heartbeat probe per service<br/>Anthropic, Voyage, OpenAI, Gemini, GHA, Copilot
         alt probe fails
-            C13->>Owner: stale-credential or quota-out warning
+            C13->>Principal: stale-credential or quota-out warning
         end
     end
 
@@ -411,7 +411,7 @@ sequenceDiagram
         end
     end
 
-    Note over Tool, Owner: Pre-emptive structural guard
+    Note over Tool, Principal: Pre-emptive structural guard
     C6->>C13: routing intent check<br/>API key vs subscription
     alt API key path without allowlist entry
         C13-->>C6: routing_violation event, BLOCK

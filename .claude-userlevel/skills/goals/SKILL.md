@@ -23,7 +23,7 @@ Strategic goal management. Goals are NOT tasks — they are outcomes Jarvis purs
    - Title, project, priority, deadline (if any)
    - Accomplishment log (progress items marked done, with dates)
    - Risks (if any)
-   - Owner focus / Jarvis focus
+   - Principal focus / Jarvis focus (DB columns are still named `owner_focus`/`jarvis_focus` — schema rename is out of scope)
 3. If any goals have deadline within 7 days — highlight them
 4. If any P0 goals have no recent progress (no done items in last 14 days) — flag risk
 
@@ -100,7 +100,7 @@ Remaining (from success_criteria):
 - Scenario 3
 - UI polish
 Risks: #38 harder than expected
-Owner: Scenario 3 | Jarvis: Monitor #38, infra
+Principal: Scenario 3 | Jarvis: Monitor #38, infra
 
 ---
 
@@ -112,5 +112,5 @@ Done:
 Remaining:
 - Skill
 - Integration (CLAUDE.md, SOUL.md)
-Owner: Review | Jarvis: Implement
+Principal: Review | Jarvis: Implement
 ```

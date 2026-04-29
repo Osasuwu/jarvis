@@ -1,6 +1,6 @@
 ---
 name: implement
-description: This skill should be used when the owner asks Jarvis to implement a SINGLE GitHub issue directly in the current session, or says "реализуй #42", "сделай #42", "implement #X". For MULTIPLE issues that can run in parallel use /delegate instead. Do NOT trigger for viewing, triaging, or discussing issues — only for actual implementation requests.
+description: This skill should be used when the principal asks Jarvis to implement a SINGLE GitHub issue directly in the current session, or says "реализуй #42", "сделай #42", "implement #X". For MULTIPLE issues that can run in parallel use /delegate instead. Do NOT trigger for viewing, triaging, or discussing issues — only for actual implementation requests.
 version: 1.0.0
 ---
 
@@ -12,7 +12,7 @@ Use this when the work benefits from the full session context (memories just loa
 
 ## Usage
 
-Invoke when owner says "реализуй #42", "сделай #42", "implement #X".
+Invoke when principal says "реализуй #42", "сделай #42", "implement #X".
 Single-issue by default. If multiple issues arrive but only one needs session context → implement the context-heavy one here, hand the rest to `/delegate`.
 
 Target repo: determined from context (CWD, recent conversation, user mention). If ambiguous, ask. Read `config/repos.conf` for the full list of tracked repos.
@@ -50,7 +50,7 @@ Identify: files to change, acceptance criteria, safety implications.
 
 **Safety-critical zones** (`driver/`, `planning/`, `mujoco/`):
 - Post analysis + plan as comment
-- Wait for owner approval before implementing
+- Wait for principal approval before implementing
 - Do NOT dispatch to subagents (keep inline — this skill is the right tool)
 
 ### 3. Claim & branch
@@ -98,8 +98,8 @@ Pass `memories_used = [<uuids from step 0 recall>]` whenever recall surfaced som
 **Protected files — policy depends on who is editing.** The canonical list (repo-level + user-level `~/.claude/*`) lives in [`docs/security/agent-boundaries.md`](../../../docs/security/agent-boundaries.md). Don't duplicate it here — check that file before editing.
 
 - **Subagent dispatch (`/delegate`)** — never edits protected files. If the task requires it, escalate to inline `/implement`.
-- **Inline `/implement` with explicit owner approval in-session** — MAY edit protected files. Document the change prominently in the PR body (mark the file `[PROTECTED]` in the §Files Changed list + rationale) so the owner sees it before merge.
-- **Inline `/implement` without explicit approval** — document the needed change in the PR body and leave the file untouched for the owner.
+- **Inline `/implement` with explicit principal approval in-session** — MAY edit protected files. Document the change prominently in the PR body (mark the file `[PROTECTED]` in the §Files Changed list + rationale) so the principal sees it before merge.
+- **Inline `/implement` without explicit approval** — document the needed change in the PR body and leave the file untouched for the principal.
 
 #### 4a. Already-done audit (mandatory gate)
 
@@ -225,7 +225,7 @@ When implementing multiple related issues back-to-back:
 
 **The current session (the one running /implement) CAN merge — no permission needed for routine PRs:**
 - Tests green + Copilot review addressed + LOW/MEDIUM risk → **merge without asking**
-- HIGH/CRITICAL risk or safety-critical zone (`driver/`, `planning/`, `mujoco/`) → wait for owner explicit approval
+- HIGH/CRITICAL risk or safety-critical zone (`driver/`, `planning/`, `mujoco/`) → wait for principal explicit approval
 - CI infra-blocked (billing failure, empty `steps` array — not *failing* tests) → merge if local tests green AND Copilot review clean
 - Copilot findings are advisory — address substantive ones, ignore style nits
 
@@ -246,7 +246,7 @@ This prevents stale branch accumulation. If the branch has unmerged work, `-d` w
 - Never force-push to `master` / `main` or a shared branch
 - If change fails tests or breaks build, fix before pushing
 - Safety-critical code (`driver/`, `planning/`, `mujoco/`): analyze and comment, don't implement without approval
-- Merge policy: see §7.5 — LOW/MEDIUM routine merges are autonomous, HIGH/CRITICAL wait for owner
+- Merge policy: see §7.5 — LOW/MEDIUM routine merges are autonomous, HIGH/CRITICAL wait for principal
 
 ## Diff review (before marking done)
 

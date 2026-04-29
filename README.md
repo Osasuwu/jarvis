@@ -2,9 +2,9 @@
 
 Personal AI agent built on [Claude Code](https://claude.ai/code) + [MCP](https://modelcontextprotocol.io/).
 
-> **Jarvis -- cognitive extension of a developer: sees the full picture, works while you sleep, argues when you're wrong, and gets more accurate every day.**
+> **Jarvis -- autonomous engineering peer for one principal: sees the full picture, works while you sleep, argues when you're wrong, and gets more accurate every day.**
 
-Not a tool, not an assistant -- an extension of thinking capacity, memory, and executive function. A solo developer lacks not hands but **breadth**. Jarvis compensates: tracking, researching, monitoring, remembering, prioritizing.
+Not a tool, not an assistant. A peer-role with asymmetric responsibilities: the principal owns taste, stop-decisions, and physical-world interface; Jarvis owns breadth, persistence, and implementation. A solo developer lacks not hands but **breadth** -- Jarvis compensates: tracking, researching, monitoring, remembering, prioritizing. See [`docs/VISION.md`](docs/VISION.md) for the full framing.
 
 > **Status:** v0.2.0 -- core memory + skills working. [Capability map below](#capabilities).
 
@@ -108,16 +108,20 @@ All devices connect to the same Supabase instance. No manual sync.
 
 ## Capabilities
 
-17 capabilities grouped into 6 pillars. (Internally the design doc also stratifies them into 4 layers + cross-cutting — Identity / Cognition / Action / Interface / Cross-cutting — but pillars are the stable user-facing grouping.) Live migration progress lives in GitHub milestones, not in this file (status text gets stale).
+The architecture has two complementary groupings:
 
-| Pillar | Capabilities |
-|--------|--------------|
-| Memory | C3 Memory store, C5 Reflection / learning, C17 Observability |
-| Identity & Strategy | C1 Identity & values, C2 Goals & priorities |
-| Cognition | C4 Reasoning & planning, C6 Decision gating |
-| Action | C7 Execution, C8 Sub-orchestration, C9 Tool / environment interface, C10 Research |
-| Interface | C11 Perception, C12 Communication with user |
-| Stewardship | C13 Budget, C14 Security & privacy, C15 Self-improvement, C16 Verification |
+- **Vision pillars** — 8 narrative tracks + Digital Twin mode, organized around the [Five Axes](docs/VISION.md#five-axes) (what it knows / wants / thinks / does / learns). Stable framing for «what Jarvis is».
+- **Capabilities (caps)** — 18 implementation units grouped into engineering layers (Identity / Cognition / Action / Interface / Cross-cutting). Stable framing for «what we build». This is the structural unit — sprints close caps, not pillars.
+
+The cap-to-axis grouping below is a quick map; pillar membership is intentionally narrative-only (per [pillars vs caps decision](docs/VISION.md#implementation-pillars)). Live migration progress lives in GitHub milestones, not here.
+
+| Axis (Vision) | Capabilities |
+|---|---|
+| What it knows — World Model | C3 Memory store, C11 Perception, C17 Observability |
+| What it wants — Goals | C2 Goals & priorities |
+| How it thinks — Judgment & Identity | C1 Identity & values, C4 Reasoning & planning, C6 Decision gating, C18 Proactive challenger |
+| How it acts — Execution | C7 Execution, C8 Sub-orchestration, C9 Tool / environment interface, C10 Research, C12 Communication, C13 Budget, C14 Security & privacy, C16 Verification |
+| How it learns — Outcomes & Reflection | C5 Reflection / learning, C15 Self-improvement |
 
 Full capability detail, migration order, and bootstrap protocol: [docs/design/jarvis-v2-redesign.md](docs/design/jarvis-v2-redesign.md). Vision: [docs/VISION.md](docs/VISION.md). Active sprint scope: [GitHub milestones](https://github.com/Osasuwu/jarvis/milestones).
 

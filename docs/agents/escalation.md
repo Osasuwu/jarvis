@@ -3,7 +3,7 @@
 Module: `agents/escalation.py`. Ships as **S2-4** (issue #299) — the
 guardrails dispatcher (S2-3, #298) calls before every live dispatch. If
 any trigger fires, the `task_queue` row flips to `escalated` and an
-`events` row (`severity=high`) tells the owner.
+`events` row (`severity=high`) tells the principal.
 
 ## Triggers
 
@@ -41,14 +41,14 @@ if check.should_escalate:
 
 `check_all` runs triggers in this priority order:
 
-1. **Stale approval** — owner needs to re-approve, cheapest fix.
+1. **Stale approval** — principal needs to re-approve, cheapest fix.
 2. **Scope drift** — files changed, approval is stale in a different way.
 3. **Limit near-exhaustion** — wait for budget, no config change needed.
 4. **Cross-task conflict** — another task is already touching these files.
-5. **Pattern repeat** — probable loop; owner should inspect the queue.
+5. **Pattern repeat** — probable loop; principal should inspect the queue.
 
 First-match wins — surfacing five simultaneous reasons would drown the
-owner in noise. If multiple fire, the earliest-fixable one shows up in
+principal in noise. If multiple fire, the earliest-fixable one shows up in
 the event.
 
 ## `escalate()` side effect

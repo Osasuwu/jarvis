@@ -74,7 +74,7 @@ Generate candidates:
 
 **Write-action permissions (enforced here):**
 - Repos under `Osasuwu/*` → all Low/Medium actions execute normally.
-- Repos under any other owner (e.g. `SergazyNarynov/redrobot`) → **flag-only**: record the finding in memory (`type=project, name=hygiene_sweep_proposals_<repo>_<date>, source_provenance="skill:autonomous-loop"`) and surface it in the output, but never execute the action. Owner acts manually or flips the repo to an owned org.
+- Repos under any other GitHub owner (e.g. `SergazyNarynov/redrobot`) → **flag-only**: record the finding in memory (`type=project, name=hygiene_sweep_proposals_<repo>_<date>, source_provenance="skill:autonomous-loop"`) and surface it in the output, but never execute the action. Principal acts manually or flips the repo to an owned org.
 
 **Dedup per-finding:** before closing a milestone / creating a retroactive one, check `outcome_list(task_type='autonomous', pattern_tags=['hygiene'])` for matching description from last 3 days. Skip if same finding already actioned.
 
@@ -108,7 +108,7 @@ Detect via `gh repo view <R> --json owner --jq .owner.login`:
 | 1 | N ≥ 1 | Memory exists | Memory exists |
 | 2 | N ≥ 2 or days_unaddressed ≥ 1 | `/status` surfaces `STALE FLAG` badge | Same |
 | 3 | N ≥ 3 | Emit `events` row, `severity=high`, `event_type=hygiene_stale` | Same |
-| 4 | N ≥ 5 | Create jarvis-side tracking issue (visibility on GitHub) | Emit `events` row, `severity=critical`, `event_type=hygiene_unaddressed_critical` — owner-facing nudge that auto-actionable findings are still untouched after 5 days; **no tracking issue** (would be paperwork) |
+| 4 | N ≥ 5 | Create jarvis-side tracking issue (visibility on GitHub) | Emit `events` row, `severity=critical`, `event_type=hygiene_unaddressed_critical` — principal-facing nudge that auto-actionable findings are still untouched after 5 days; **no tracking issue** (would be paperwork) |
 
 The own-repo critical-event payload should include `memory_names`, `detail`, and a one-line "next action" suggestion (e.g. "delegate to subagent" / "promote to next /implement cycle").
 
@@ -156,7 +156,7 @@ If empty → create:
 gh issue create --repo Osasuwu/jarvis \
   --title "Stale flag: <repo> findings unaddressed <N>d" \
   --label "process,autonomous-loop" \
-  --body "Autonomous-loop has flagged findings for \`<R>\` on <N> consecutive days without owner action. Memories: <list>. First flagged: <date>. Jarvis cannot open issues in \`<R>\` (flag-only repo), so tracking here for visibility. Close this when the upstream finding is resolved."
+  --body "Autonomous-loop has flagged findings for \`<R>\` on <N> consecutive days without principal action. Memories: <list>. First flagged: <date>. Jarvis cannot open issues in \`<R>\` (flag-only repo), so tracking here for visibility. Close this when the upstream finding is resolved."
 ```
 
 Record the issue URL in the event payload (`payload.jarvis_tracking_issue = <url>`) via an update to the event row.
@@ -194,7 +194,7 @@ VALUES (
 );
 ```
 
-Telegram-notify-hook.py picks this up at `severity=critical` and pings owner. Owner decides: action inline, /delegate, or mark the finding obsolete (which clears it from the next sweep).
+Telegram-notify-hook.py picks this up at `severity=critical` and pings principal. Principal decides: action inline, /delegate, or mark the finding obsolete (which clears it from the next sweep).
 
 **Ordering:** run Step 2b for every repo in `config/repos.conf` after Step 2a. Emitting an event here creates work the Low-risk batch will count (counts toward the 5-max limit).
 
@@ -302,7 +302,7 @@ If any action advances a goal → `goal_update(slug=..., progress=[...])` — ap
 
 ## Step 7.5 — Drain high-severity events to Telegram (#327)
 
-Any `severity=high` events emitted this run (including Step 2b escalations) need to reach the owner outside of `/status`. Run the notifier as the final durable side effect:
+Any `severity=high` events emitted this run (including Step 2b escalations) need to reach the principal outside of `/status`. Run the notifier as the final durable side effect:
 
 ```bash
 python scripts/telegram-notify-hook.py --min-severity high
@@ -321,7 +321,7 @@ Skip silently if the script doesn't exist (older checkouts) — don't make this 
 - Create more than 1 PR per run (even in a batch)
 - Execute more than 5 Low-risk + 1 Medium-risk per run
 - Execute High-risk actions without explicit proposal
-- Execute write actions (close milestone, create milestone, delete branch, `gh issue/pr edit`) on repos outside `Osasuwu/*`. For other owners (e.g. `SergazyNarynov/redrobot`): flag-only — record the finding and surface in output, owner executes manually.
+- Execute write actions (close milestone, create milestone, delete branch, `gh issue/pr edit`) on repos outside `Osasuwu/*`. For other GitHub owners (e.g. `SergazyNarynov/redrobot`): flag-only — record the finding and surface in output, principal executes manually.
 
 **Always:**
 - Dedup: check `autonomous_loop_last_run` before acting

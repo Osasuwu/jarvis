@@ -1,6 +1,6 @@
 # Jarvis Architecture — C4 Views (revised 2026-04-28)
 
-Four views: Context (system in environment), Container (runtime + storage), Component (17 capabilities in 5 layers + cross-cutting), Event-substrate dataflow (the load-bearing edge: `everything → C17`). Companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md). Reflects L3 concrete adoptions folded in 2026-04-27/28 — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md).
+Four views: Context (system in environment), Container (runtime + storage), Component (18 capabilities in 5 layers + cross-cutting), Event-substrate dataflow (the load-bearing edge: `everything → C17`). Companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md). C18 (Proactive challenger) added in Phase C (2026-04-29) per `audit_3_main_changes_lock_2026_04_28`; mermaid sources below include c18, SVG outputs need re-render. Reflects L3 concrete adoptions folded in 2026-04-27/28 — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md).
 
 Rendered SVGs alongside each block: [c4-1.svg](c4-1.svg) Context · [c4-2.svg](c4-2.svg) Container · [c4-3.svg](c4-3.svg) Component · [c4-4.svg](c4-4.svg) Event dataflow. Re-render: `npx -p @mermaid-js/mermaid-cli mmdc -i jarvis-architecture-c4.md -o c4.svg` (writes `c4-1.svg`…`c4-4.svg`).
 
@@ -10,17 +10,17 @@ Rendered SVGs alongside each block: [c4-1.svg](c4-1.svg) Context · [c4-2.svg](c
 
 ```mermaid
 flowchart LR
-    owner((Owner))
+    principal((Principal))
     jarvis[Jarvis<br/>Personal AI agent<br/>Claude Code-native + Supabase]
 
-    owner -->|interactive + queue approvals| jarvis
+    principal -->|interactive + queue approvals| jarvis
 
     jarvis -->|inference Max sub| claude_api[Anthropic Claude]
     jarvis -->|different-provider review| other_llm[OpenAI / Gemini]
     jarvis -->|memory + events + queues| supabase[(Supabase Postgres<br/>pgvector + pg_cron)]
     jarvis -->|embeddings| voyage[VoyageAI]
     jarvis -->|repos + Actions| github[GitHub]
-    owner -->|issues + comments + corrections| github
+    principal -->|issues + comments + corrections| github
     jarvis -->|credential probes| hibp[HaveIBeenPwned]
     jarvis -->|fork base + install| plugin_eco[Anthropic plugins<br/>claude-plugins-official + skills]
 ```
@@ -31,7 +31,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    owner((Owner))
+    principal((Principal))
 
     subgraph SURFACE[Claude Code surface]
         direction TB
@@ -69,7 +69,7 @@ flowchart LR
         hibp[HIBP]
     end
 
-    owner --> claude_code
+    principal --> claude_code
     claude_code --> hooks
     claude_code --> subagents
     claude_code --> PLUGINS
@@ -111,6 +111,7 @@ flowchart TB
         c4[C4 Reasoning]
         c5[C5 Reflection]
         c6[C6 Decision gating]
+        c18[C18 Proactive challenger]
     end
 
     subgraph ACT[Action]
@@ -141,6 +142,7 @@ flowchart TB
     c2 --> c6
     c5 --> c2
     c11 --> c17
+    c11 --> c18
     c6 --> c17
     c6 --> c3
     c5 --> c17
@@ -154,6 +156,7 @@ flowchart TB
     c15 --> c16
     c13 --> c17
     c12 --> c6
+    c18 --> c12
 ```
 
 ## C4 Level 4 — Event-substrate dataflow
@@ -200,7 +203,7 @@ sequenceDiagram
         Pg->>MV: last_run_by_actor_mv
     end
 
-    Note over Pg, C5h: pg LISTEN/NOTIFY on outcome_recorded, owner_correction, anomaly_flagged, recall_failed
+    Note over Pg, C5h: pg LISTEN/NOTIFY on outcome_recorded, principal_correction, anomaly_flagged, recall_failed
     Pg-->>C5h: trigger handler - synthesizer or stale-challenge or calibrator
     C5h->>C5h: pattern extraction with crepes Mondrian CP for sparse classes
     C5h->>C3w: candidate fact - auto-write if confidence above class threshold, else queue
@@ -218,10 +221,10 @@ sequenceDiagram
 
 ## Reading guide
 
-- **Identity layer** is owner-authored axioms — the alignment substrate. Never auto-mutated (M3). Drift detection delegated to `claude-md-management` plugin (C12).
+- **Identity layer** is principal-authored axioms — the alignment substrate. Never auto-mutated (M3). Drift detection delegated to `claude-md-management` plugin (C12).
 - **Cognition layer** is what Jarvis *thinks with*. C3 is the durable substrate (bi-temporal facts + episodic events); C4 sequences work on a LangGraph-backed plan store; C5 is the active loop that mutates C3 from C17 events with class-conditional calibration; C6 is the act/ask classifier consulted before every tool call.
 - **Action layer** is what Jarvis *does*. C7/C8/C9 are the runtime; C10 is the external info-gathering arm with GPT Researcher as primary engine.
-- **Interface layer** is the boundary with the owner — C11 ingests with a YAML noise filter; C12 communicates out via CLI + Anthropic plugins.
+- **Interface layer** is the boundary with the principal — C11 ingests with a YAML noise filter; C12 communicates out via CLI + Anthropic plugins.
 - **Cross-cutting** layer wraps everything: C17 is the substrate every event passes through; C13/C14/C16/C15 are governance/safety/quality/evolution functions that consume and gate.
 
 The single most load-bearing edge is **everything → C17** (visualized in Level 4): substrate-as-source-of-truth means audit, reflection, calibration, cost, and review all share the same data. Materialized projections per hot read path (per Q1 reframe — Honeycomb / Greptime "Observability 2.0" guidance) prevent read-amplification on long streams.

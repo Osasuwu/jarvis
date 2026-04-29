@@ -4,7 +4,7 @@ Companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md). Two parallel scou
 
 ## Constraints (load-bearing)
 
-These are owner-locked decisions that pre-filter every adoption candidate:
+These are principal-locked decisions that pre-filter every adoption candidate:
 
 1. **`architecture_final` (2026-03-28, confirmed 2026-03-31):** *"Anthropic-native stack only. No custom Python services. Before writing Python for any feature: can Claude Code skills/MCP/hooks/subagents do it? If yes → don't write Python."*
    - Filters out: Cognee container, Letta runtime, LiteLLM proxy, Phoenix backend, OpenHands/Goose/Cline/Continue runtimes.
@@ -32,7 +32,7 @@ Three columns: **Adopt** (drop-in, integrates as MCP/plugin/hook/skill), **Patte
 |---|---|---|---|
 | **C3 Memory** | None (heavy runtimes filtered) | **Zep / Graphiti** ([arXiv:2501.13956](https://arxiv.org/abs/2501.13956)) — bi-temporal column shape (`t_valid`/`t_invalid`/transaction-time). **Cognee** schema — node/edge + embedding. **LangGraph PostgresStore** for namespace-tuple `(facts \| episodes)` indexing pattern. | Bi-temporal `valid_from`/`valid_to`/`superseded_by` migration on existing `mcp-memory/server.py`. Conflict classifier (Haiku ADD/UPDATE/SUPERSEDE/NOOP). Provenance-aware ranking. |
 | **C4 Reasoning** | **sequential-thinking MCP** (already installed). **LangGraph as one MCP server** (Federation & Delegation carveout) wrapping Postgres checkpointer pointing at Supabase. | **Magentic-One ledger** ([MS Agent Framework 1.0](https://github.com/microsoft/agent-framework), MIT) — verified-facts / derived-facts / guesses tri-ledger pattern for plan state. **Plan-and-Execute** template (LangGraph). | `applies_when` / `skip_if` template runtime. Replan-on-stall. Skills→templates migration glue. |
-| **C5 Reflection** | None | **Letta sleep-time agents** (Apache-2.0) — async secondary writer pattern. Implement as Routine. **Reflexion** (MIT) — verbal-feedback loop algorithm. **Cognee evolution pass** — synthesis-on-ingest reference. | Stale-belief challenger. LLM-as-judge Brier-score calibration. Owner-correction → label loop. |
+| **C5 Reflection** | None | **Letta sleep-time agents** (Apache-2.0) — async secondary writer pattern. Implement as Routine. **Reflexion** (MIT) — verbal-feedback loop algorithm. **Cognee evolution pass** — synthesis-on-ingest reference. | Stale-belief challenger. LLM-as-judge Brier-score calibration. Principal-correction → label loop. |
 | **C6 Decision gating** | **PreToolUse hooks + permissions** (Claude Code native). **Guardrails AI** (Apache-2.0) — Pydantic schemas for *output* validation only, called from hook. | — | **Everything substantive.** State-aware classification (git status, convergence counter, harness restrictions) has no library — confirmed by scout 2: all gating frameworks are stateless. Tier 1 queue table custom. Auto-emit decision events custom. |
 
 ### Action layer
@@ -121,11 +121,11 @@ Honest accounting (not the scout-1 70% number):
 
 **Aggregate: ~45% adoption + pattern coverage; ~55% custom-build.** Mainly because the substrate caps (C3/C6/C13/C17) and the project-specific safety caps (C8/C15) all skew custom under the "no Python services" filter.
 
-## Owner decisions 2026-04-27
+## Principal decisions 2026-04-27
 
 - **Q1 — fork Anthropic Code Review plugin: yes, first task next session.** Single biggest buy-win (~70-80% C16). Sprint shape: fork → adapt CLAUDE.md compliance reviewer → add 3 missing reviewers (diff-coherence subagent-fabrication, cross-device integrity, smoke-test) → wire into PR pipeline.
 - **Q2 — LangGraph carveout may expand** beyond plan-only. Still wrapped behind ONE MCP boundary, not used directly throughout codebase. Additional state-machine use cases acceptable when they fit.
-- **Q3 — `architecture_final` ("no Python services") rule stays.** Owner explicitly preferred custom-build over running Cognee/LiteLLM/Phoenix containers across 3 devices. The 55% custom-build remaining is acceptable.
+- **Q3 — `architecture_final` ("no Python services") rule stays.** Principal explicitly preferred custom-build over running Cognee/LiteLLM/Phoenix containers across 3 devices. The 55% custom-build remaining is acceptable.
 
 ## Action items (next-session priority order)
 
@@ -205,4 +205,4 @@ If the "no Python services" rule were relaxed (e.g., one shared cloud container 
 - **Phoenix** becomes adoptable (~40% of C17 covered).
 - Aggregate adoption rises to ~65-70%.
 
-Trade-off owner explicitly weighed and rejected: cross-device sync for the Python services creates a new pain class outweighing build savings.
+Trade-off principal explicitly weighed and rejected: cross-device sync for the Python services creates a new pain class outweighing build savings.
