@@ -193,11 +193,15 @@ def check_known_unknowns_exists(client) -> bool:
         return False
 
 
-def try_insert_known_unknown(client, event: dict, project: str) -> None:
-    """Optionally insert insufficient verdicts into known_unknowns (#249 co-dep)."""
+def try_insert_known_unknown(client, event: dict, verdict_dict: dict, project: str) -> None:
+    """Optionally insert insufficient verdicts into known_unknowns (#249 co-dep).
+
+    Phase 5.3-δ: reads verdict from canonical source (verdict_dict from Haiku),
+    not from legacy event.payload.
+    """
     payload = event.get("payload") or {}
-    verdict = payload.get("fok_verdict")
-    confidence = payload.get("fok_confidence")
+    verdict = verdict_dict.get("verdict")
+    confidence = verdict_dict.get("confidence")
     top_sim = payload.get("top_sim", 0.0)
     query = payload.get("query", "")
 
@@ -466,7 +470,7 @@ def main():
 
             # Try to insert into known_unknowns if applicable
             if verdict["verdict"] == "insufficient":
-                try_insert_known_unknown(client, event, "Osasuwu/jarvis")
+                try_insert_known_unknown(client, event, verdict, "Osasuwu/jarvis")
 
     elapsed = time.time() - start_time
 
