@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: This skill should be used when the owner asks Jarvis to dispatch one or more GitHub issues to coding subagents (typically multiple issues in parallel), or says "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z". Also used by autonomous-loop to hand off a single subagent-scoped job (e.g. CI debug). For a single issue the main session will do itself, use /implement instead. Jarvis's own judgment on task complexity OVERRIDES blind delegation — if a task is unfit for a subagent (needs session context, cross-cutting reasoning, safety review), keep it inline even if owner said "раскидай".
+description: This skill should be used when the principal asks Jarvis to dispatch one or more GitHub issues to coding subagents (typically multiple issues in parallel), or says "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z". Also used by autonomous-loop to hand off a single subagent-scoped job (e.g. CI debug). For a single issue the main session will do itself, use /implement instead. Jarvis's own judgment on task complexity OVERRIDES blind delegation — if a task is unfit for a subagent (needs session context, cross-cutting reasoning, safety review), keep it inline even if principal said "раскидай".
 version: 1.0.0
 ---
 
@@ -26,9 +26,9 @@ The main session stays as orchestrator: it reviews each subagent's diff, resolve
 **Mixed batch — split the work:**
 - Keep context-heavy or safety-critical issues for yourself (inline via /implement flow)
 - Delegate the rest to subagents
-- Report the split reasoning briefly to the owner
+- Report the split reasoning briefly to the principal
 
-**Jarvis judgment overrides the owner's "параллельно":** The owner has explicitly delegated this call to Jarvis (memory: this decision). If a task looks deceptively complex or a subagent will struggle (needs memory context, cross-file reasoning, recent-decisions awareness), keep it inline even if asked to delegate. Don't silently downgrade — tell the owner "keeping #X inline because <reason>".
+**Jarvis judgment overrides the principal's "параллельно":** The principal has explicitly delegated this call to Jarvis (memory: this decision). If a task looks deceptively complex or a subagent will struggle (needs memory context, cross-file reasoning, recent-decisions awareness), keep it inline even if asked to delegate. Don't silently downgrade — tell the principal "keeping #X inline because <reason>".
 
 ## Pipeline
 
@@ -48,7 +48,7 @@ For each issue in the batch:
    - **Delegatable** → fresh subagent can handle it from the issue body alone
    - **Inline** → needs session context / safety review / cross-cutting peripheral vision
 
-Produce a short split plan for the owner before acting. Example:
+Produce a short split plan for the principal before acting. Example:
 
 > Batch: #604, #613, #617.
 > - #604 (uncertainty map) → **delegate** — self-contained, single module.
@@ -57,7 +57,7 @@ Produce a short split plan for the owner before acting. Example:
 
 ### 2. Claim all issues
 
-Claim *everything* in the batch up front (label `status:in-progress` + comment), even the ones staying inline. Prevents race with other Jarvis instances or owner forgetting to route.
+Claim *everything* in the batch up front (label `status:in-progress` + comment), even the ones staying inline. Prevents race with other Jarvis instances or principal forgetting to route.
 
 ```bash
 for N in <N1> <N2> ...; do
@@ -117,14 +117,14 @@ HARD RULES for you (subagent):
 - You operate as `JARVIS_PRINCIPAL=subagent` (#426). Hooks classify your tool calls as constrained — protected-file edits and protected-file mirrors will block. Do not try to bypass.
 - Do NOT merge the PR. Open it, push it, record outcome, stop.
 - Do NOT modify protected files (.mcp.json, CLAUDE.md, etc — see docs/security/agent-boundaries.md)
-- Do NOT send messages as the owner
+- Do NOT send messages as the principal
 - Do NOT change values, defaults, or constants that are not explicitly named as targets in the issue body. Centralization / refactoring tasks are structural only — IK seeds, default timeouts, magic numbers, tuple constants must be preserved exactly unless the issue says to change them. If the issue is unclear, preserve the value and flag in the PR body.
 - If you hit a blocker you can't resolve, record a "partial" outcome with a clear note about what's missing
 
 Report back: PR URL + 2-line summary of what you did.
 ```
 
-**Principal env propagation note (#426)**: The Agent tool inherits parent env, so `JARVIS_PRINCIPAL` set in the parent session carries to the subagent. Auto-injection of `JARVIS_PRINCIPAL=subagent` is deferred — the parent is `live` (owner-driven dispatch), and subagents are already constrained by the worktree isolation and skill-level rules above. If a future code path runs `/delegate` autonomously (e.g. dispatcher hands work to a subagent), revisit and inject `JARVIS_PRINCIPAL=subagent` explicitly via the spawn wrapper.
+**Principal env propagation note (#426)**: The Agent tool inherits parent env, so `JARVIS_PRINCIPAL` set in the parent session carries to the subagent. Auto-injection of `JARVIS_PRINCIPAL=subagent` is deferred — the parent is `live` (principal-driven dispatch), and subagents are already constrained by the worktree isolation and skill-level rules above. If a future code path runs `/delegate` autonomously (e.g. dispatcher hands work to a subagent), revisit and inject `JARVIS_PRINCIPAL=subagent` explicitly via the spawn wrapper.
 
 ### 4a. Worktree-isolation caveat
 
@@ -176,7 +176,7 @@ If issues found:
 
 Per each PR (subagent's or your own):
 - Tests green + Copilot clean + LOW/MEDIUM risk → **merge** (see /implement §7.5)
-- HIGH/CRITICAL or safety-critical → wait for owner
+- HIGH/CRITICAL or safety-critical → wait for principal
 - CI infra-blocked (billing, not failing tests) → merge if local tests pass + Copilot clean
 
 ### 8. Record outcomes
@@ -203,10 +203,10 @@ Stale worktrees and branches accumulate fast with multi-issue batches. Clean up 
 
 ## Safety rules
 - All /implement safety rules apply
-- **Subagents must NEVER**: merge PRs, force-push, modify protected files, send messages as owner
+- **Subagents must NEVER**: merge PRs, force-push, modify protected files, send messages as principal
 - Orchestrator reviews **every** subagent diff before merge
 - Parallelism > 3 concurrent → red flag; prefer sequential or smaller batches
-- If owner says "параллельно все" but one task is unfit → keep it inline and tell the owner why
+- If principal says "параллельно все" but one task is unfit → keep it inline and tell the principal why
 
 ## Recovery playbook
 

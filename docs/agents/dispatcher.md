@@ -71,7 +71,7 @@ Failure modes surface as rows, not exceptions:
 | What fails | Surface |
 |-----------|---------|
 | `Popen` raises (e.g. `claude` not on PATH) | `audit_log` row with `outcome='failure:<ExceptionType>'`, FSM stays at `pending` |
-| `task_queue.update` fails (transient network) | `safety.audit` still records `success` (subprocess spawned); owner sees orphaned audit row + unchanged queue and can reconcile |
+| `task_queue.update` fails (transient network) | `safety.audit` still records `success` (subprocess spawned); principal sees orphaned audit row + unchanged queue and can reconcile |
 | Escalation check fires mid-flight | `evaluate_branch` routes to `escalate` — no subprocess spawned |
 
 ## Safety gate interpretation

@@ -122,7 +122,7 @@ Renders per-type Brier score (mean squared error of `confidence - actual_outcome
 - `brier > 0.25` AND `avg_predicted < avg_actual` → **underconfident**
 - `n < 20` → warning (insufficient data, skip calibration-based action)
 
-Surface flagged types in Step 9 output under "Calibration". Poor-calibration types become ideation seeds for `/self-improve` — the root cause is usually a specific pattern (e.g. "my `decision` memories in jarvis are overconfident when they rely on research memories without owner confirmation").
+Surface flagged types in Step 9 output under "Calibration". Poor-calibration types become ideation seeds for `/self-improve` — the root cause is usually a specific pattern (e.g. "my `decision` memories in jarvis are overconfident when they rely on research memories without principal confirmation").
 
 ## Step 6 — Extract lessons + patterns
 

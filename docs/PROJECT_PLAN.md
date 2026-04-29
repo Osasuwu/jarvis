@@ -9,7 +9,7 @@
 | What you need | Where to look |
 |---|---|
 | Vision / north-star | [`docs/VISION.md`](VISION.md) |
-| Architecture (17 capabilities, 5 layers, migration order, bootstrap) | [`docs/design/jarvis-v2-redesign.md`](design/jarvis-v2-redesign.md) |
+| Architecture (18 capabilities, 5 layers, migration order, bootstrap) | [`docs/design/jarvis-v2-redesign.md`](design/jarvis-v2-redesign.md) |
 | C4 diagrams (Context / Container / Component) | [`docs/design/jarvis-architecture-c4.md`](design/jarvis-architecture-c4.md) |
 | User / data-flow diagrams (8 scenarios) | [`docs/design/jarvis-flows.md`](design/jarvis-flows.md) |
 | Build-vs-buy library audit | [`docs/design/jarvis-build-vs-buy.md`](design/jarvis-build-vs-buy.md) |

@@ -1,6 +1,6 @@
 # Architecture review — pass 2 (2026-04-27)
 
-Critical-review companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md) and [`jarvis-architecture-c4.md`](jarvis-architecture-c4.md). Owner-invited two-pass critique (vacuum first, then memory-informed). Owner reframed mid-review: pass-1/2 findings are mostly realism/implementation, not architecture; pass-3 below collects the genuinely design-level concerns.
+Critical-review companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md) and [`jarvis-architecture-c4.md`](jarvis-architecture-c4.md). Principal-invited two-pass critique (vacuum first, then memory-informed). Principal reframed mid-review: pass-1/2 findings are mostly realism/implementation, not architecture; pass-3 below collects the genuinely design-level concerns.
 
 External SOTA validation in flight (2 parallel research agents, 2026-04-27) on memory architectures, event-substrate contracts, reviewer calibration, sparse-N calibration, self-modification recursion, Claude Code 2026 changes. This file gets updated when they return.
 
@@ -50,15 +50,15 @@ Architectural answer must be one of:
 
 1. Some classes don't need calibration (deterministic + universal threshold) — explicitly list which.
 2. Rare classes pool labels with semantically-near classes (transfer-shape).
-3. Rare classes are owner-only by design, no calibration loop attempted.
+3. Rare classes are principal-only by design, no calibration loop attempted.
 
 Doc applies the same calibration shape to all classes. Silent option 3 de-facto, but never written as architectural choice.
 
 ### Q5. C1 ↔ C3 boundary is syntactic, not semantic
 
-C1 = "owner-authored axioms"; C5 stale-challenge does NOT touch C1.
+C1 = "principal-authored axioms"; C5 stale-challenge does NOT touch C1.
 
-But C3 holds feedback memories (`quality_over_speed`, `step_back_after_3_failed_iterations`, `record_decision_when_what`) — axioms by content, in C3 only because owner didn't put them in SOUL.md by hand. Same content can live either side. Boundary is storage location, not semantics.
+But C3 holds feedback memories (`quality_over_speed`, `step_back_after_3_failed_iterations`, `record_decision_when_what`) — axioms by content, in C3 only because the principal didn't put them in SOUL.md by hand. Same content can live either side. Boundary is storage location, not semantics.
 
 If C5 doesn't touch identity but feedback-memories ARE de-facto identity → either C5 touches identity (via memory) or all feedback memories migrate to SOUL. Doc does neither, offers no semantic test "is this an axiom or a fact?".
 
@@ -81,7 +81,9 @@ Every L3 decision rests on Claude Code: PreToolUse, `isolation: worktree`, MCP, 
 - MCP auth changes → C9 dies.
 - `isolation: worktree` deprecates → C8 dies.
 
-Owner mentions "v2 reserved for paradigm shift (framework swap)" — implicit trade-off acceptance. Should be **explicit at L0**: *"harness lock-in accepted because cost of harness independence > benefit at this scale."* Otherwise future-self asks "why isn't this cap harness-independent?" and the answer stays implicit.
+Principal mentions "v2 reserved for paradigm shift (framework swap)" — implicit trade-off acceptance. Should be **explicit at L0**: *"harness lock-in accepted because cost of harness independence > benefit at this scale."* Otherwise future-self asks "why isn't this cap harness-independent?" and the answer stays implicit.
+
+**Resolved 2026-04-29 (Phase C):** explicit L0 §«Harness coupling — deliberate trade-off» added in `jarvis-v2-redesign.md`. Names what's locked (skills/hooks/auto-load/subagent isolation), what's portable (cap layer / schema / MCP / events substrate), the swap cost (~1–2 sprints rewrite of skills+hooks), and the reconsideration trigger.
 
 ---
 
@@ -118,7 +120,7 @@ Owner mentions "v2 reserved for paradigm shift (framework swap)" — implicit tr
 
 ## Confirmed by memory (don't change)
 
-- **C5 stale-challenge as missing piece** — `reflection_driven_sprint_2026_04_23` proves owner hand-mined outcomes; no autonomous mutation arm exists.
+- **C5 stale-challenge as missing piece** — `reflection_driven_sprint_2026_04_23` proves the principal hand-mined outcomes; no autonomous mutation arm exists.
 - **Memory facts/episodes split** — `metacognition_sprint_plan_*`, `consolidation_plan_*` are real C3 abuse class.
 - **Subagent fabrication first-class** — `subagent_fabrication_commit_message_vs_diff` + worktree incidents validate.
 - **Single canonical recall API** — closes real cloud-bypass pain.
@@ -190,10 +192,10 @@ The doc was written 2026-04-27; relevant Claude Code / MCP changes since early 2
 |---|---|---|
 | Q1 (C17 vs C3 single-table inconsistency) | **Reframed, not invalidated.** Wide-event substrate is right; missing piece is materialized projections discipline. | Promote "views" → "materialized projections" with per-cap list. |
 | Q2 (event substrate contract) | **Stands.** OTel GenAI conventions still experimental; consistency/replay/ordering not standardized. | Define contract explicitly. |
-| Q3 (role-axis vs coupling cut) | Stands as opinion; no SOTA opinion either way. | Owner judgment call. |
+| Q3 (role-axis vs coupling cut) | Stands as opinion; no SOTA opinion either way. | Principal judgment call. |
 | Q4 (sparse-class calibration) | **Strongly validated + concrete fix available.** | Adopt Hierarchical CP + LLM-prior bootstrap. |
 | Q5 (C1↔C3 boundary) | **Stands** (ICLR 2026 MemAgents workshop names this as unsolved). | Open problem. |
-| Q6 (cross-project sync) | Stands. No SOTA prior art. | Owner judgment call. |
+| Q6 (cross-project sync) | Stands. No SOTA prior art. | Principal judgment call. |
 | Q7 (harness lock-in) | **Stands; resource exists.** | Reference Anthropic harness-design blog at L0; make trade-off explicit. |
 
 ### Sources

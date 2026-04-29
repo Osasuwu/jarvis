@@ -1,6 +1,6 @@
 # Jarvis Architecture — Capability Roadmap
 
-> Top-down architectural design derived from owner goals. Structures the system into 17 capabilities across 5 layers, with membership rules, measurement plans, migration paths, and a bootstrap protocol. Maps to v1 stabilization + 1.x feature evolution; v2 is reserved for cardinal paradigm shifts (framework swap or equivalent).
+> Top-down architectural design derived from principal goals. Structures the system into 18 capabilities across 5 layers, with membership rules, measurement plans, migration paths, and a bootstrap protocol. Maps to v1 stabilization + 1.x feature evolution; v2 is reserved for cardinal paradigm shifts (framework swap or equivalent).
 
 ## How to read this doc
 
@@ -26,8 +26,8 @@ No intermediate diagrams. One C4 (Context → Container → Component) at the en
 | Level | State |
 |---|---|
 | L0 — mission, qualities, non-goals | **done** |
-| L1 — capabilities | **done** (17 caps, 5 layers, 3 ops policies) |
-| L2 — components per capability | **done** (Tier A: C3, C5, C6, C15, C16, C17; Tier B: C2, C4, C8, C13, C14; Tier C: C1, C7, C9, C10, C11, C12) |
+| L1 — capabilities | **done** (18 caps, 5 layers, 3 ops policies) |
+| L2 — components per capability | **done** (Tier A: C3, C5, C6, C15, C16, C17, C18; Tier B: C2, C4, C8, C13, C14; Tier C: C1, C7, C9, C10, C11, C12) |
 | Bootstrap protocol & migration order | **done** |
 | Critical review pass | **done** (high-severity addressed: bootstrap + cost reality + ~15 point fixes) |
 | L3 — technologies/patterns | **done** (options marked + scout v2 adoption candidates folded in 2026-04-27 per [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md); decisions deferred to implementation) |
@@ -41,32 +41,32 @@ No intermediate diagrams. One C4 (Context → Container → Component) at the en
 
 ### Mission
 
-Jarvis is an agentic system that takes the bulk of software-project work off the owner, helps with decisions, runs research, pushes back on bad ideas, and steers thinking — not just executing instructions, but actively shaping them.
+Jarvis is an agentic system that takes the bulk of software-project work off the principal, helps with decisions, runs research, pushes back on bad ideas, and steers thinking — not just executing instructions, but actively shaping them.
 
 ### Target user & scope
 
-**Personal-Jarvis for the owner only.** Not a product. Not multi-tenant. Tightly coupled to owner's repos, devices, identity, and SOUL.md.
+**Personal-Jarvis for the principal only.** Not a product. Not multi-tenant. Tightly coupled to principal's repos, devices, identity, and SOUL.md.
 
-A separate company-Jarvis variant may be developed in parallel by the owner's company, but it is a **separate project** with its own design, DB, and deployment (per `pillar7_personal_vs_company_separation`). Architecture design ignores company-variant requirements; shared code is extracted post-hoc when the company variant has concrete needs.
+A separate company-Jarvis variant may be developed in parallel by the principal's company, but it is a **separate project** with its own design, DB, and deployment (per `pillar7_personal_vs_company_separation`). Architecture design ignores company-variant requirements; shared code is extracted post-hoc when the company variant has concrete needs.
 
 Public-Jarvis open-source framework is also a **separate fork** with its own quality bar (per `open_source_quality_standard`); reformatted from private at release boundaries, not architected jointly.
 
 ### Problems solved
 
-Jarvis covers the work of an entire software development team, leaving the owner only as resource provider and strategic stakeholder:
+Jarvis covers the work of an entire software development team, leaving the principal only as resource provider and strategic stakeholder:
 - Code authoring & testing
 - Project management & progress tracking
 - Research & decision support
 - Deep code comprehension on demand
 - Managing other agents (sub-orchestration)
-- Catching owner errors / steering ideas
+- Catching principal errors / steering ideas
 
 ### Non-goals
 
 **This architecture explicitly excludes:**
 - Personal life management (smart home, shopping, calendar)
-- Email and messenger management on owner's behalf
-- Impersonating the owner — Jarvis drafts; owner sends
+- Email and messenger management on principal's behalf
+- Impersonating the principal — Jarvis drafts; principal sends
 - Telegram as a primary interface (chat-only role at most, see L1)
 - Designing for other developers / multi-tenancy (separate project)
 
@@ -74,7 +74,7 @@ Jarvis covers the work of an entire software development team, leaving the owner
 
 ### Quality attributes
 
-Owner-stated priorities (1–10), with tradeoff notes where they conflict:
+Principal-stated priorities (1–10), with tradeoff notes where they conflict:
 
 | Quality | Priority | Notes |
 |---|---|---|
@@ -85,7 +85,7 @@ Owner-stated priorities (1–10), with tradeoff notes where they conflict:
 | Multi-device | 8 | 3 devices baseline. Device-specific tasks (physical access) acceptable as exceptions. |
 | Personality | 7 | Has opinions, principles, thinks. SOUL.md-style is the baseline. |
 | Security + Privacy (merged) | 7 | Cloud storage OK. Threat model = external intruders / account takeover, not the cloud provider itself. Strong access control + recovery paths required. |
-| UX | 7 | Owner is the only user; doesn't need polish but must not be friction. |
+| UX | 7 | Principal is the only user; doesn't need polish but must not be friction. |
 | Flexibility (within work) | 7 | Wide range of work tasks; **does not** stretch beyond work scope. |
 | Offline tolerance | 3 | Acceptable to be unusable when offline (Claude API + Supabase + GitHub all need internet anyway). |
 
@@ -95,18 +95,32 @@ Owner-stated priorities (1–10), with tradeoff notes where they conflict:
 
 ### Autonomy / decision boundary
 
-Jarvis decides autonomously when it knows the owner's preference (from memory or SOUL); asks when it doesn't. **Long-term goal: digital-twin level — Jarvis knows the owner well enough to decide everything, only confirming critical/hard-to-reverse decisions.**
+Jarvis decides autonomously when it knows the principal's preference (from memory or SOUL); asks when it doesn't. **Long-term goal: digital-twin level — Jarvis knows the principal well enough to decide everything, only confirming critical/hard-to-reverse decisions.**
 
 Decision routing:
 
 | Situation | Behavior |
 |---|---|
-| Owner's view known (memory/SOUL) | Decide and act. |
-| Owner's view unknown, low-cost / reversible | Decide and act, log decision. |
-| Owner's view unknown, hard-to-reverse / high-cost | Research, propose, confirm. |
+| Principal's view known (memory/SOUL) | Decide and act. |
+| Principal's view unknown, low-cost / reversible | Decide and act, log decision. |
+| Principal's view unknown, hard-to-reverse / high-cost | Research, propose, confirm. |
 | Both don't know | Research, decide, confirm before acting. |
 
-This makes **memory of owner preferences** the lever that reduces interruptions — every captured preference shifts the line further into autonomy. Reinforces *Memory = 10*.
+This makes **memory of principal preferences** the lever that reduces interruptions — every captured preference shifts the line further into autonomy. Reinforces *Memory = 10*.
+
+### Harness coupling — deliberate trade-off
+
+Jarvis is built on Claude Code as the runtime harness. This is a deliberate trade-off, not an oversight:
+
+**What's locked to Claude Code:** skills (slash commands), hooks (PreToolUse / SessionStart / etc.), SOUL.md / CLAUDE.md auto-load, subagent `isolation:worktree`, plugin marketplace fork base.
+
+**What's harness-agnostic by design:** the cap layer (C1–C18 describe *what*, not *which runtime*); Supabase memory schema + bi-temporal periods; canonical events substrate (OTel GenAI conventions); MCP servers (`mcp-memory/server.py` works with any client speaking MCP); embeddings via VoyageAI; goals tables.
+
+**Why accepted:** Claude Code currently closes the largest set of pain points (memory + breadth + subagent isolation + native plugin ecosystem) for the smallest implementation cost at this scale. Building a "harness adapter" abstraction with one real implementation = indirection, not abstraction (per SOUL §«Abstractions need two real implementations»).
+
+**Cost of swap if a better harness ships:** rewrite ~12 skills + 4–5 hooks + subagent dispatch glue (~1–2 sprints). Data, schema, and cap layer survive.
+
+**Trigger to reconsider:** another runtime substantively better than Claude Code in our use case (not «new shiny release»). Until then, harness lock-in stands. Q7 in pass2 review tracks this; v2 (per Status table) is reserved for the framework-swap class of change.
 
 ---
 
@@ -138,26 +152,27 @@ Filling these gaps is the deliberate differentiator vs the field.
 
 ### Final capability list
 
-Five layers, 17 capabilities:
+Five layers, 18 capabilities:
 
 **Identity layer** — what Jarvis *is*:
-- **C1. Identity & values** — SOUL-style personality and principles that shape every decision. Distinct from memory: identity is owner-authored axioms; memory is learned facts.
+- **C1. Identity & values** — SOUL-style personality and principles that shape every decision. Distinct from memory: identity is principal-authored axioms; memory is learned facts.
 - **C2. Goals & priorities** — active strategic context that prioritizes work. Kept separate from C3 because goals are *active* (drive ranking) while memory is *passive* (provides context). Analogous to SOUL.md vs CLAUDE.md.
 
 **Cognition layer** — how Jarvis *thinks*:
-- **C3. Memory** — durable cross-device store. Has two sub-types (detail in L2): *owner/preference memory* (durable, slow-changing) and *project/world knowledge* (volatile, refreshable). State/handoff between sessions lives here.
+- **C3. Memory** — durable cross-device store. Has two sub-types (detail in L2): *principal/preference memory* (durable, slow-changing) and *project/world knowledge* (volatile, refreshable). State/handoff between sessions lives here.
 - **C4. Reasoning & planning** — decompose tasks, sequence steps, replan on signals.
-- **C5. Reflection / learning** — periodic synthesis. Two roles: (a) raw episodes → lessons → new memory; (b) **challenge stale preferences** so Jarvis doesn't fossilize on outdated owner views.
+- **C5. Reflection / learning** — periodic synthesis. Two roles: (a) raw episodes → lessons → new memory; (b) **challenge stale preferences** so Jarvis doesn't fossilize on outdated principal views.
 - **C6. Decision gating** — escalation matrix:
   | Situation | Behavior |
   |---|---|
-  | Only one viable path | Act, log decision (owner is *informed* afterward). |
+  | Only one viable path | Act, log decision (principal is *informed* afterward). |
   | Multiple options, only one fits the work | Act, log decision + why others rejected. |
-  | Multiple genuinely viable options | Escalate — propose options, owner picks. |
+  | Multiple genuinely viable options | Escalate — propose options, principal picks. |
   | Destructive / hard-to-reverse | Always confirm regardless of ambiguity (SOUL rule). |
   | Low confidence in own analysis + high stakes | Escalate even when above says "act". |
 
-  Owner's only inputs: (a) be informed of decisions (low-effort read), or (b) pick among proposals. Owner never reads implementation by default.
+  Principal's only inputs: (a) be informed of decisions (low-effort read), or (b) pick among proposals. Principal never reads implementation by default.
+- **C18. Proactive challenger** — alongside C5: surfaces calibration drift, neglected goals, and contradictions between principal's stated direction and observed behavior. Triggers user-facing recalibration via C12 when the gap exceeds threshold. Distinct from C5 (which mutates memory) — C18 *only surfaces* without mutating.
 
 **Action layer** — what Jarvis *does*:
 - **C7. Execution** — perform individual tasks (code edit, test run, message draft).
@@ -165,29 +180,29 @@ Five layers, 17 capabilities:
 - **C9. Tool / environment interface** — connect to repos, filesystem, MCP servers, external APIs.
 - **C10. Research** — gather external info to inform reasoning. Tightly coupled to C4 but kept separate: research explores possibilities without choosing; reasoning chooses based on what research returned.
 
-**Interface layer** — how Jarvis *interacts with owner*:
-- **C11. Perception** — receive inputs from all sources: owner messages, repo/GitHub events, schedule triggers, file changes, external system events. Decision *when to act on a trigger* lives here, but is informed by C2 + C3 (autonomy is memory-driven, not pipeline-driven — see `no_deterministic_pipelines`).
-- **C12. Communication with owner** — strategic comms: push back, propose, confirm, report. Channels (chat / desktop / mobile / voice) are L2 detail.
+**Interface layer** — how Jarvis *interacts with principal*:
+- **C11. Perception** — receive inputs from all sources: principal messages, repo/GitHub events, schedule triggers, file changes, external system events. Decision *when to act on a trigger* lives here, but is informed by C2 + C3 (autonomy is memory-driven, not pipeline-driven — see `no_deterministic_pipelines`).
+- **C12. Communication with principal** — strategic comms: push back, propose, confirm, report. Channels (chat / desktop / mobile / voice) are L2 detail.
 
 **Cross-cutting** — properties applied across all layers:
 - **C13. Budget / cost governance** — track spend against $100–200/mo cap, refuse cap-blowing actions, optimize model selection (use lighter models for mechanical work).
 - **C14. Security & privacy** — secret protection, access control, recovery paths. Threat model = external intruders / account takeover; cloud provider is trusted.
-- **C15. Self-improvement** — Jarvis modifies itself. **Hybrid scope**: read-only self-analysis when running autonomously (proposes changes); write access only when owner is actively collaborating on Jarvis's own code.
-- **C16. Verification / QA** — automated review of Jarvis's own work. Owner does not code-review by default. Reviewer is a dedicated agent: a peer Jarvis instance, or a different model/provider for independence (different-model = no shared bias). Owner reviews vision/plan alignment only.
-- **C17. Observability & audit** — track-record for autonomous operation: action logs, decision logs, replay/diff, self-monitoring (rate-limit, memory write failures, suspicious tool calls). Enables: (a) trust-building over time, (b) post-hoc owner inspection, (c) self-detection of malfunction. Required for *Memory=10* and *Autonomy=8* to work safely.
+- **C15. Self-improvement** — Jarvis modifies itself. **Hybrid scope**: read-only self-analysis when running autonomously (proposes changes); write access only when principal is actively collaborating on Jarvis's own code.
+- **C16. Verification / QA** — automated review of Jarvis's own work. Principal does not code-review by default. Reviewer is a dedicated agent: a peer Jarvis instance, or a different model/provider for independence (different-model = no shared bias). Principal reviews vision/plan alignment only.
+- **C17. Observability & audit** — track-record for autonomous operation: action logs, decision logs, replay/diff, self-monitoring (rate-limit, memory write failures, suspicious tool calls). Enables: (a) trust-building over time, (b) post-hoc principal inspection, (c) self-detection of malfunction. Required for *Memory=10* and *Autonomy=8* to work safely.
 
 ### Operational policies (flow from L0+L1, not capabilities themselves)
 
 These are not blocks on the diagram but commitments that constrain L2:
 
 - **Trust ladder.** Autonomy scope expands by track record. Day 1 = safe-class actions only (reversible, low-cost, well-precedented). Categories unlock as Jarvis builds successful history in C17.
-- **Review topology.** Code review is fully delegated. Owner's review surface = vision/plan alignment only, never implementation diff. Different-provider reviewer is preferred over same-model peer for high-leverage changes.
+- **Review topology.** Code review is fully delegated. Principal's review surface = vision/plan alignment only, never implementation diff. Different-provider reviewer is preferred over same-model peer for high-leverage changes.
 - **Memory-driven autonomy, not pipelined.** No hardcoded execution order. Jarvis decides what to do based on judgment + memory + goals (`no_deterministic_pipelines`).
 - **Design-to-evaluate.** Every L2 capability decision must include "How measured" — a real-task quality signal, not unit-test sufficiency. Rationale: in-vacuum success ≠ in-task success; if a block isn't measurable in production, we cannot tell if our design works. **Benchmarks are built before implementation**, not after. Capabilities without a viable measurement plan get deferred until one exists.
 
 ### Decision
 
-L1 capability set locked: **17 capabilities in 5 layers + 3 operational policies.** Justification for going wider than competitor systems: every "extra" capability (C5 challenge-old, C13 budget, C15 self-improvement, C16 verification, C17 observability) addresses a gap explicitly identified in research as missing in the field but required by L0 priorities.
+L1 capability set locked: **18 capabilities in 5 layers + 3 operational policies.** Justification for going wider than competitor systems: every "extra" capability (C5 challenge-old, C13 budget, C15 self-improvement, C16 verification, C17 observability, C18 proactive challenger) addresses a gap explicitly identified in research as missing in the field but required by L0 priorities.
 
 ### Rejected during review
 
@@ -221,11 +236,11 @@ For each capability we run two research streams and synthesize:
 2. **External research** — fresh subagent surveys current state of the art (no training-data trust).
 
 Stratification:
-- **Tier A** (deep): C3, C5, C6, C15, C16, C17 — novel or risky, full two-stream research.
+- **Tier A** (deep): C3, C5, C6, C15, C16, C17, C18 — novel or risky, full two-stream research.
 - **Tier B** (medium): C2, C4, C8, C13, C14 — discussion + targeted research.
 - **Tier C** (shallow): C1, C7, C9, C10, C11, C12 — single-line decision.
 
-Order within Tier A: C3 Memory and C17 Observability first (other caps depend on them), then C5/C6/C15/C16. After Tier A, Tier B, then Tier C.
+Order within Tier A: C3 Memory and C17 Observability first (other caps depend on them), then C5/C6/C15/C16/C18 (C18 sequenced after C5 — shares the calibration substrate). After Tier A, Tier B, then Tier C.
 
 ### C3 — Memory
 
@@ -243,7 +258,7 @@ Order within Tier A: C3 Memory and C17 Observability first (other caps depend on
 Rules requiring subjective judgment (rare) stay in memory tagged as procedural-feedback for retrieval on related context.
 
 **Decision: memory becomes 2 sub-stores.**
-- **C3-F. Factual store** — owner preferences, project knowledge. Slow-changing, retrieval-driven, supersedable.
+- **C3-F. Factual store** — principal preferences, project knowledge. Slow-changing, retrieval-driven, supersedable.
 - **C3-E. Episodic store** — decisions, outcomes, incidents. Append-only, time-ordered.
 
 Both accessed through one recall API (caller doesn't pick a store).
@@ -260,7 +275,7 @@ Both accessed through one recall API (caller doesn't pick a store).
 
 **How measured — four signals, ALL built before any v2 memory code lands:**
 
-1. **Self-replay regression** (offline, CI) — owner's historical sessions as gold set; on every memory-subsystem change, replay and verify recall surfaces the memories the session actually used. Primary CI gate. Cheap (use existing logs). Strongest fit for N=1 personal agent.
+1. **Self-replay regression** (offline, CI) — principal's historical sessions as gold set; on every memory-subsystem change, replay and verify recall surfaces the memories the session actually used. Primary CI gate. Cheap (use existing logs). Strongest fit for N=1 personal agent.
 2. **Useful-injection rate** (sampled online) — LLM-as-judge scores a **10% sample of recalls** for whether the surfaced memory was load-bearing in the response. Sampling (not every recall) is the deliberate cost choice — judging every recall would be the single biggest unbounded cost (~$30+/mo at high recall volume). 10% gives a continuous signal at ~$0.50/mo.
 3. **Staleness / contradiction probe** (periodic, FAMA-style) — sample N memories weekly; pose questions whose answers reveal whether stale or fresh content surfaces. Catches beliefs that should have been superseded but weren't.
 4. **Decision-outcome linkage** (retrospective) — for `record_decision` episodes, after outcome is known, were the memories that informed the decision actually correct? Calibrates `confidence` values via real outcomes.
@@ -335,13 +350,13 @@ Implications:
 *Truth selection at recall:* canonical function returns only current heads (`valid_to IS NULL`) by default. History accessible via explicit `include_history=true` flag for audit/UI.
 
 *Supersession trigger* — three lanes:
-1. **Explicit declaration** (writer states `supersedes=<id>`): trusted, applied immediately. Used by classifier when confidence is high and by owner corrections.
+1. **Explicit declaration** (writer states `supersedes=<id>`): trusted, applied immediately. Used by classifier when confidence is high and by principal corrections.
 2. **Classifier proposal** (Haiku-style ADD/UPDATE/SUPERSEDE/NOOP): auto-applied only if **(a)** classifier confidence ≥ threshold AND **(b)** measured class-precision (from outcome labels) ≥ threshold. The second gate self-throttles when classifier quality drifts. **Bootstrap:** before N labeled outcomes accumulate per class (N defined in bootstrap protocol), gate (b) is *bypassed* — classifier auto-applies on confidence alone but with a **conservative initial threshold** (e.g., 0.95 instead of 0.85). As labels accumulate, gate (b) activates and threshold relaxes if precision is high.
-3. **Below thresholds**: goes to review queue with owner CLI loop. Queue throughput is itself a measured signal.
+3. **Below thresholds**: goes to review queue with principal CLI loop. Queue throughput is itself a measured signal.
 
 *Conflict detection ("same topic")*: hybrid — embedding similarity gives candidate set; LLM verifier confirms semantic overlap before triggering supersession classification. Prevents embedding-only false positives.
 
-*Owner correction*: `record_correction(memory_id, correct=<id_or_content>)` creates a high-trust ground-truth label, used both to (a) immediately fix recall, and (b) feed the classifier eval that gates lane 2.
+*Principal correction*: `record_correction(memory_id, correct=<id_or_content>)` creates a high-trust ground-truth label, used both to (a) immediately fix recall, and (b) feed the classifier eval that gates lane 2.
 
 **Why this not pure auto-classify** (current state): classifier without measured precision is a black box; failures are silent. Two-gate (confidence + class-precision) makes failures self-correcting.
 
@@ -350,12 +365,12 @@ Implications:
 **Rejected:**
 - *Last-write-wins* — destroys provenance, loses minority-but-correct view.
 - *Highest-confidence-wins ignoring time* — old confident-but-stale memory beats new less-confident-but-correct one.
-- *Owner-only supersession* — bottlenecks the owner; conflicts with "only stakeholder" mission.
+- *Principal-only supersession* — bottlenecks the principal; conflicts with "only stakeholder" mission.
 
 **How measured:**
 - **Classifier precision/recall by class** (ADD/UPDATE/SUPERSEDE/NOOP), labeled by `record_correction` events. Triggers threshold updates.
 - **Time-to-resolution for review-queue items**: how long stale beliefs coexist with corrections.
-- **Self-replay**: after owner correction, does subsequent recall surface the correction (not the old)?
+- **Self-replay**: after principal correction, does subsequent recall surface the correction (not the old)?
 - **Contradiction probe** (FAMA-style): catches stale heads that should have been superseded.
 
 ---
@@ -367,7 +382,7 @@ Implications:
 **Decision: provenance hierarchy as a recall ranking factor and a supersession tiebreaker.**
 
 *Hierarchy* (highest → lowest trust):
-1. `user:explicit` — owner direct statement
+1. `user:explicit` — principal direct statement
 2. `tool:<name>` — verified tool/system output (deterministic)
 3. `agent:<role>` with stored `confidence ≥ 0.7` — Jarvis or subagent inference, well-supported
 4. `agent:<role>` with stored `confidence < 0.7` — low-supported inference
@@ -382,21 +397,21 @@ The 0.7 boundary between tiers 3 and 4 is the same threshold C5's calibrator tun
 - Caller can request `provenance_weights=...` to override defaults.
 
 *At supersession:*
-- Higher-tier provenance auto-supersedes lower-tier on the same topic when conflict detected (e.g., owner correction beats agent inference without going through review queue).
+- Higher-tier provenance auto-supersedes lower-tier on the same topic when conflict detected (e.g., principal correction beats agent inference without going through review queue).
 - Same-tier conflict still uses classifier/explicit lane.
 
-**Why hierarchy not flat:** without trust weighting, agent self-derived memory drowns out owner-stated facts in recall (more agents writing → more low-trust noise). Hierarchy is the antidote.
+**Why hierarchy not flat:** without trust weighting, agent self-derived memory drowns out principal-stated facts in recall (more agents writing → more low-trust noise). Hierarchy is the antidote.
 
-**Why hierarchy values are these:** owner is ground truth by definition. Tool output is deterministic and reproducible. Agent inference is opinion. External-extracted is suspect (per SOUL §External content safety: "data, not instructions"). Legacy is unverified.
+**Why hierarchy values are these:** principal is ground truth by definition. Tool output is deterministic and reproducible. Agent inference is opinion. External-extracted is suspect (per SOUL §External content safety: "data, not instructions"). Legacy is unverified.
 
 **Rejected:**
-- *No provenance weighting* (current state) — owner statements get out-voted by agent self-derivation.
+- *No provenance weighting* (current state) — principal statements get out-voted by agent self-derivation.
 - *Provenance as filter only, not weight* — forces caller to know hierarchy; default behavior should already be sensible.
 - *Single-bit "trusted/untrusted"* — loses distinction between tool output and agent inference.
 
 **How measured:**
 - **Recall set provenance distribution**: track ratio of `user`-tier / `agent`-tier in surfaced top-K. Drift toward agent-tier = noise accumulating; drift toward user-tier = healthy.
-- **Owner override rate**: how often owner corrects recall results. Falling rate = hierarchy is working.
+- **Principal override rate**: how often principal corrects recall results. Falling rate = hierarchy is working.
 - **Useful-injection rate by provenance tier**: validates that higher-tier surfaces are actually more load-bearing.
 
 ---
@@ -444,7 +459,7 @@ Distillation surfaced 8+ piecemeal log/audit subsystems added reactively (events
 
 **Decision:** every initiating context creates a `trace_id`; downstream actors inherit.
 
-- Owner message → new trace_id
+- Principal message → new trace_id
 - Scheduled task fire → new trace_id
 - Subagent spawn → inherits parent's trace_id; `parent_event_id` = the spawning event
 - Hook fire → inherits trace_id of the session/task it fires in
@@ -466,7 +481,7 @@ This closes the "subagent fabrication" gap (no automated detection currently) by
 
 **Why:** denormalizing to a separate ledger table would drift from events. Inline cost on the event is the single source of truth.
 
-**Closes gap:** owner upgraded to Claude Max blind to consumption (`max_20x_upgrade_available`). With ledger views, real-time spend visibility is one query away.
+**Closes gap:** principal upgraded to Claude Max blind to consumption (`max_20x_upgrade_available`). With ledger views, real-time spend visibility is one query away.
 
 #### Self-detection
 
@@ -476,7 +491,7 @@ This closes the "subagent fabrication" gap (no automated detection currently) by
 - **Periodic anomaly checks** (sample over events) — emit `anomaly_flagged`.
 - **System events** — `compaction_event`, `rate_limited`, `api_failure` emitted by infrastructure when detected.
 
-**Why explicit event types:** owner-facing dashboards and reflection (C5) need to query failure modes by category, not text-search payloads.
+**Why explicit event types:** principal-facing dashboards and reflection (C5) need to query failure modes by category, not text-search payloads.
 
 #### Migration / what dies
 
@@ -494,14 +509,14 @@ This closes the "subagent fabrication" gap (no automated detection currently) by
 
 - **Trace coverage** — % of significant agent-actions with corresponding events. Target: ≥99%. Sampled audit cross-checks session jsonl against events.
 - **Trace-id propagation** — % of subagent events with parent's trace_id. Target: 100%. Orphaned trace_id = bug.
-- **Self-detection precision** — when `hallucination_suspected` / `tool_returned_empty` fires, validation rate (manual spot-check sample). Maintains owner trust in the signal.
+- **Self-detection precision** — when `hallucination_suspected` / `tool_returned_empty` fires, validation rate (manual spot-check sample). Maintains principal trust in the signal.
 - **Cost-ledger drift** — ledger total vs Anthropic billing reality. Target <2% drift. Monthly reconciliation.
 - **MTTR (Mean-Time-To-Reveal)** — interval between an actual malfunction and its surfacing as an event. Lower better. Critical for autonomy=8.
 
 #### Rejected
 
 - *Many specialized tables* (current state) — schema drift, query fragmentation, instrumentation gaps.
-- *Local-only session jsonl as primary log* — no cross-device replay, no aggregation, owner can't audit autonomous-while-sleeping work.
+- *Local-only session jsonl as primary log* — no cross-device replay, no aggregation, principal can't audit autonomous-while-sleeping work.
 - *Subagent transcripts harvested post-hoc* — too late for in-flight observability, lossy.
 - *Cost ledger as separate table* — denormalization cost > query simplicity benefit.
 - *Hand-rolled trace propagation per skill* — drift inevitable; OpenTelemetry-style ID inheritance is the established pattern.
@@ -521,38 +536,38 @@ C17 complete. Substrate, trace propagation, subagent visibility, cost ledger, se
 
 ### C5 — Reflection / learning
 
-Distillation: 5+ reflection mechanisms exist (/reflect skill, /end behavioral, A-MEM evolution, consolidation, FoK batch, calibration view), all uncoordinated. **None have an autonomous mutation arm** — /reflect renders markdown for owner to manually `memory_store`. The "challenge stale" role doesn't exist: Step 8 of /reflect lists 14d-untouched memories without challenging them. The most successful reflection event in 2 months (`reflection_driven_sprint_2026_04_23`) was *owner mining outcome logs by hand* — exactly what C5 must do autonomously.
+Distillation: 5+ reflection mechanisms exist (/reflect skill, /end behavioral, A-MEM evolution, consolidation, FoK batch, calibration view), all uncoordinated. **None have an autonomous mutation arm** — /reflect renders markdown for principal to manually `memory_store`. The "challenge stale" role doesn't exist: Step 8 of /reflect lists 14d-untouched memories without challenging them. The most successful reflection event in 2 months (`reflection_driven_sprint_2026_04_23`) was *principal mining outcome logs by hand* — exactly what C5 must do autonomously.
 
 **Question:** What is the structure of Jarvis's reflection/learning subsystem so the two L1-committed roles (synthesize new + challenge stale) actually happen autonomously?
 
 **Membership rule:** belongs in C5 iff *reads from C17 events* AND *proposes mutations to C3 memory* AND *operates on a population of memories/events, not single writes*. Single-memory direct writes from skills are C3 writes, not C5.
 
 **Things that don't belong here:**
-- Owner-facing markdown render of "what happened" → C12 reporting (separate from learning).
+- Principal-facing markdown render of "what happened" → C12 reporting (separate from learning).
 - Single-memory writes from skills → C3 direct API.
 - Outcome recording (event capture) → C7/C17.
 
 #### Substrate
 
-**Reads:** events (C17) — decision_made, error, owner_correction, outcome_recorded, anomaly_flagged, hallucination_suspected.
+**Reads:** events (C17) — decision_made, error, principal_correction, outcome_recorded, anomaly_flagged, hallucination_suspected.
 **Writes:** C3 memory (new facts, supersession links, confidence updates) via the canonical Postgres function (single funnel from C3-Q2). Also emits its own events to C17 (`judgment_made`, `mutation_proposed`, `stale_challenge_fired`, etc.) so reflection itself is observable.
 
 **No separate "reflection" tables.** Current `consolidation_plan_*` and `evolution_plan_*` memories abuse C3 as a planning store; v2 represents plans as events (ephemeral, audit-trailed, not facts).
 
 #### Triggering
 
-**Decision: event-triggered primary, sweeps as backstop, owner-invoked as override.**
+**Decision: event-triggered primary, sweeps as backstop, principal-invoked as override.**
 
 | Lane | Trigger | Handler |
 |---|---|---|
 | Event-triggered (primary) | `outcome_recorded` | Calibration handler (Brier update on judges) |
-| | `owner_correction` | Stale-challenge on related beliefs |
+| | `principal_correction` | Stale-challenge on related beliefs |
 | | `anomaly_flagged` rate spike | Policy re-examination |
 | | N decisions since last synthesis | Pattern extraction |
 | | `recall_failed` (FoK) | Known-unknown logging + sampling |
 | Sweep (backstop) | Weekly: memories not touched 30+ days | Sample-based stale-challenge |
 | | Quarterly: deeper re-examination on long-held beliefs | Full stale-challenge |
-| Owner-invoked | `/reflect` command | All handlers run on demand |
+| Principal-invoked | `/reflect` command | All handlers run on demand |
 
 **Why event-triggered primary:** pure cron is fragile (distillation: scheduler may not run; A-MEM gated on classifier UPDATE → if classifier never writes, evolution never fires). Event-triggering = `no_deterministic_pipelines` + `Memory-driven autonomy` op policies.
 
@@ -564,8 +579,8 @@ Events → pattern detection → candidate memories. LLM extracts patterns over 
 
 Three-lane apply (mirrors C3 supersession pattern):
 1. **Confidence ≥ threshold AND judge class-precision validated** → auto-write to C3.
-2. **Below thresholds** → review queue with owner CLI loop.
-3. **Owner correction** of an applied write = ground-truth label feeding the judge calibrator.
+2. **Below thresholds** → review queue with principal CLI loop.
+3. **Principal correction** of an applied write = ground-truth label feeding the judge calibrator.
 
 Per C17 migration, the standalone `episodes` table is folded into the canonical events table with `action='episode_*'`. C5 synthesizer reads these events on schedule; what's new in v2 is the *extractor* (currently absent) that turns episode events into candidate memory writes.
 
@@ -574,7 +589,7 @@ Per C17 migration, the standalone `episodes` table is folded into the canonical 
 **This is the role the current system entirely lacks.** Detection-only is not enough.
 
 Triggers (in priority order):
-1. **Owner statement on a topic similar to existing memory** — owner says Y, memory says X on topic T. Handler asks LLM: "compatible, evolved, or contradiction?" → propose update/supersession via Q3 conflict resolution.
+1. **Principal statement on a topic similar to existing memory** — principal says Y, memory says X on topic T. Handler asks LLM: "compatible, evolved, or contradiction?" → propose update/supersession via Q3 conflict resolution.
 2. **Decision failure** — `outcome_recorded` with negative outcome → trace back to memories that informed the decision (via `memories_used` in `record_decision`) → re-examine those memories against recent evidence.
 3. **Anomaly pattern** — repeated `hallucination_suspected` events on related actions → re-examine policies/heuristics that produced them.
 4. **Sweep backstop** — sample old (90+ day untouched) memories; LLM judges "still valid given recent events on this topic."
@@ -582,13 +597,13 @@ Triggers (in priority order):
 Outcomes from re-examination:
 - **Still valid** → update `last_examined`, no mutation.
 - **Evolved** → propose supersession with new memory.
-- **Contradicted** → propose supersession or owner-confirm.
+- **Contradicted** → propose supersession or principal-confirm.
 
-Closes the `reflection_driven_sprint` gap — owner-mined lessons should now surface autonomously.
+Closes the `reflection_driven_sprint` gap — principal-mined lessons should now surface autonomously.
 
 #### Judge calibration loop
 
-Every internal judge (Phase-2 classifier, FoK verdict, consolidation MERGE, evolution UPDATE, stale-challenge re-examination) emits a `judgment_made` event with claim + confidence. Ground-truth labels arrive later (owner override, decision outcome) and link back to the judgment.
+Every internal judge (Phase-2 classifier, FoK verdict, consolidation MERGE, evolution UPDATE, stale-challenge re-examination) emits a `judgment_made` event with claim + confidence. Ground-truth labels arrive later (principal override, decision outcome) and link back to the judgment.
 
 **Periodic Brier per judge.** Threshold updates auto-derived: judge whose precision drops below floor has its auto-apply threshold raised (or auto-apply suspended). Self-correcting — closes the `DEFAULT_CONFIDENCE_GATE = 0.85` symptom-fix (universal threshold without calibration data).
 
@@ -602,12 +617,12 @@ Why specialized handlers under one dispatcher (not monolithic /reflect): differe
 
 C13 allocates per-handler monthly budget. Handler hits cap → backs off (sample rate down, queue accumulates, or skip non-critical work). C13 enforces; C5 self-throttles via emitted events.
 
-Concrete: most handlers use Haiku (cheap); only stale-challenge re-examination of high-stakes beliefs may use Sonnet, **capped at 5 Sonnet escalations per week** for the stale-challenge handler (rest defer to next week or owner queue). C13 enforces.
+Concrete: most handlers use Haiku (cheap); only stale-challenge re-examination of high-stakes beliefs may use Sonnet, **capped at 5 Sonnet escalations per week** for the stale-challenge handler (rest defer to next week or principal queue). C13 enforces.
 
 #### Migration
 
-- `/reflect` skill → owner-invoked entry; **most logic moves to autonomous handlers**. Skill becomes "fire all handlers now + render summary."
-- `/end` behavioral reflection → owner-correction events trigger C5 stale-challenge directly. Skill becomes thinner.
+- `/reflect` skill → principal-invoked entry; **most logic moves to autonomous handlers**. Skill becomes "fire all handlers now + render summary."
+- `/end` behavioral reflection → principal-correction events trigger C5 stale-challenge directly. Skill becomes thinner.
 - A-MEM evolution → integrated into stale-challenge arm (tag/desc drift is one signal among many).
 - Consolidation → integrated into generation arm (cluster detection → merge proposal).
 - FoK batch → calibration arm with proper schedule (currently unregistered per distillation).
@@ -617,7 +632,7 @@ Concrete: most handlers use Haiku (cheap); only stale-challenge re-examination o
 #### How measured
 
 - **Mutation arm activity** — memories created / superseded / confidence-updated by C5 per week. Zero = mutation arm broken.
-- **Owner override rate** of C5 mutations. Falling = handlers calibrated. Rising = drift.
+- **Principal override rate** of C5 mutations. Falling = handlers calibrated. Rising = drift.
 - **Stale-challenge yield** — re-examined memories: update vs still-valid ratio. Indicates whether stale-challenge is finding real staleness or thrashing.
 - **Judge Brier trends** — per-judge precision over time. Should be flat or improving.
 - **Event coverage** — % of significant event types subscribed by at least one handler. Gaps = unmonitored failure modes.
@@ -625,7 +640,7 @@ Concrete: most handlers use Haiku (cheap); only stale-challenge re-examination o
 
 #### Rejected
 
-- *Owner-facing markdown only* (current /reflect) — no autonomous mutation = role unmet.
+- *Principal-facing markdown only* (current /reflect) — no autonomous mutation = role unmet.
 - *Pure cron triggers* — fragile (current pain).
 - *Monolithic reflection engine* — different roles have different needs; collapsing them produced the kitchen-sink /reflect.
 - *Auto-apply without calibration* — universal threshold without measurement was a symptom-fix.
@@ -637,9 +652,73 @@ C5 complete. Substrate, triggering, generation arm, stale-challenge arm, judge c
 
 ---
 
+### C18 — Proactive challenger
+
+**Question:** Who notices when Jarvis's calibration drifts, when goals go neglected, or when stated direction doesn't match observed behavior — and surfaces it before the principal has to catch it?
+
+**Membership rule:** belongs in C18 iff *detects gaps between stated and observed* AND *surfaces to the principal without mutating memory*. Memory mutation = C5. Surfacing = C12. C18 is the detection layer that decides *when surfacing is warranted*.
+
+**Why it's not C5:** C5 mutates state — synthesizer writes new memories, stale-challenger supersedes old ones. C18 only observes and routes to C12. Folding it into C5 conflated "fix the belief" with "tell the principal a recalibration is needed". Different blast radii: C5 changes the system; C18 changes what the principal sees.
+
+**Why it's not just C12:** C12 is the comm channel. C18 decides *which patterns are worth surfacing*. Putting the detection inside C12 makes C12 carry judgment that doesn't belong with a transport layer.
+
+#### Detection signals (input)
+
+C18 reads from C17 events and C2 goal state:
+
+| Signal | Source | What it indicates |
+|---|---|---|
+| Calibration drift | C5 calibrator outputs (Brier per memory type, per-class FP/FN) | Memory class confidence has decayed; principal's mental model may be stale |
+| Goal neglect | C2 `goal_stale` events crossed N day threshold without activity | Stated priority isn't matching observed work allocation |
+| Direction-vs-action gap | `decision_made` events grouped by `goal_slug` vs principal-stated priority | Jarvis is working on P2 while P0 is starving |
+| Repeated principal override | C16 `principal_override` events on a recurring class | Jarvis's classifier disagrees with the principal systematically — recalibration needed |
+| Stale assumption | Memory `confidence < 0.5` AND last-used > 90 days | Belief Jarvis still acts on but no longer has evidence for |
+
+#### Surfacing decision (output)
+
+C18 emits a `recalibration_proposed` event when the gap exceeds threshold. C12 picks it up and routes to the principal in the next batched brief — never as a real-time interrupt (this isn't urgent; this is "you should know").
+
+Surfacing format (rendered by C12):
+> Calibration check: `decision` memories in jarvis are overconfident (Brier 0.31, target <0.20). Pattern: heavy reliance on research memories without principal confirmation. Suggest: `/reflect` pass on last 10 decisions, or change the always-load rule.
+
+#### Interaction with C5
+
+- C5 detects pattern → mutates memory (e.g. supersede stale belief).
+- C18 detects pattern → surfaces to principal (e.g. "your stated P0 hasn't been touched in 14 days; either re-prioritize or update the goal").
+
+If both fire on the same signal, C5 mutates first, C18 surfaces the mutation to the principal. They share the input substrate but the outputs are orthogonal.
+
+#### Cost bounds
+
+Pure C17-event reads + threshold checks. No LLM calls in the hot path. Optional Sonnet pass to phrase the surfacing message readably; capped at 1 LLM call per `recalibration_proposed` event, max 5 events surfaced per batched brief.
+
+#### Migration
+
+- New code; no current implementation to migrate.
+- First version: pure SQL queries over C17 events + `goals` table, emitted via existing batched brief plumbing (C12 already aggregates).
+- L3 detail: detection thresholds tuned per signal class.
+
+#### How measured
+
+- **Surfacing acceptance rate** — % of `recalibration_proposed` events the principal acts on (re-prioritizes goal, runs `/reflect`, edits the rule) vs dismisses. Target: >50% (otherwise C18 is noise).
+- **Pattern-discovery latency** — time from drift signal first detectable in C17 to first `recalibration_proposed` event. Target: <7 days.
+- **False-surface rate** — `recalibration_proposed` dismissed as "not actionable" by principal. Rising = thresholds too sensitive.
+
+#### Rejected
+
+- *Fold into C5 stale-challenger* — conflates mutation with surfacing.
+- *Real-time interrupt on first signal* — drowns the principal in noise; calibration drift is slow, doesn't need real-time.
+- *No detection layer (let the principal notice)* — exactly the gap C18 closes; the principal *should not have to notice* drift in their own AI peer.
+
+---
+
+C18 complete. Detection signals, surfacing decision routed to C12, no memory mutation, calibration-loop-aware.
+
+---
+
 ### C6 — Decision gating
 
-Distillation: enforcement is **scattered across 3 places that drift** (SOUL prose, `agents/safety.py` Tier model, skill §7.5 prose). `safety.py` only covers action-agent paths (~5% of decisions); conversational lane is ungated. Stakes are state-dependent (`gh pr merge --delete-branch` is Tier 0 normally, irreversible on a stack root — hit twice). No convergence detector (6 iterations before owner stepped in). Tier 1 owner queue is documented but the table doesn't exist; "ask owner" today = unstructured chat message. `record_decision` is post-hoc, doesn't gate, has the same compliance problem as the rules it logs.
+Distillation: enforcement is **scattered across 3 places that drift** (SOUL prose, `agents/safety.py` Tier model, skill §7.5 prose). `safety.py` only covers action-agent paths (~5% of decisions); conversational lane is ungated. Stakes are state-dependent (`gh pr merge --delete-branch` is Tier 0 normally, irreversible on a stack root — hit twice). No convergence detector (6 iterations before principal stepped in). Tier 1 principal queue is documented but the table doesn't exist; "ask principal" today = unstructured chat message. `record_decision` is post-hoc, doesn't gate, has the same compliance problem as the rules it logs.
 
 L1 already committed to the escalation matrix. L2 specifies how it's implemented as one canonical gate that's actually called from every action path.
 
@@ -651,7 +730,7 @@ L1 already committed to the escalation matrix. L2 specifies how it's implemented
 - Post-hoc decision logging → C7 + C17 events (gate output emits these, but they're not C6).
 - Verification of completed work → C16.
 - Memory of past decisions → C3.
-- Owner notification UI → C12.
+- Principal notification UI → C12.
 
 #### Single canonical gate
 
@@ -671,8 +750,8 @@ Inputs to `gate()`:
 - Action: `(tool, action, target, payload)` — current narrow input
 - **Git state**: dirty worktree? stacked-PR root? protected branch? unmerged children?
 - **Convergence state**: N attempts on this topic in this session?
-- **Memory recall** on topic: owner preference known?
-- **Cost class**: token-expensive? blocks owner?
+- **Memory recall** on topic: principal preference known?
+- **Cost class**: token-expensive? blocks principal?
 - **Harness restrictions**: does the harness block this action class? (e.g., Claude Code blocks `.claude/*` edits — `claude_dir_edits_need_manual_confirm`)
 
 State queries are LIVE at gate time, not snapshots. Each state probe is itself an event in C17 (cheap; lets us audit *what the gate knew* when it decided).
@@ -687,7 +766,7 @@ State queries are LIVE at gate time, not snapshots. Each state probe is itself a
 
 Thresholds:
 - **3 attempts, no progress signal** → emit `convergence_stall` event → C5 stale-challenge handler fires (the rule isn't working — re-examine) AND C6 force-escalates next attempt.
-- **5 attempts** → BLOCK until owner intervenes.
+- **5 attempts** → BLOCK until principal intervenes.
 
 "No progress" = no `outcome_recorded(success=true)` linked to this topic since counter started.
 
@@ -699,10 +778,10 @@ Thresholds:
 
 Queue item: `(action_id, classification, payload, gated_at, decided_at, decision, reasoning)`. Status enum: `pending → approved | rejected | superseded | expired`.
 
-Owner-facing review:
+Principal-facing review:
 - Batched morning brief lists pending items, sorted by reversibility (irreversible first).
 - Bulk approve/reject with rationale (rationale becomes a feedback memory + classifier label).
-- Items expire if not decided in N days (configurable per-class). **Irreversible-class items NEVER expire silently** — when N elapses, the item gets re-flagged with higher urgency in the next batched brief and stays in queue. Owner explicit decline is the only way out.
+- Items expire if not decided in N days (configurable per-class). **Irreversible-class items NEVER expire silently** — when N elapses, the item gets re-flagged with higher urgency in the next batched brief and stays in queue. Principal explicit decline is the only way out.
 
 Closes the documented-but-unbuilt gap (`action_agent_safety_gate_model_v1` queue piece).
 
@@ -711,12 +790,12 @@ Closes the documented-but-unbuilt gap (`action_agent_safety_gate_model_v1` queue
 **Decision:** track BOTH failure modes of the gate, not just over-permissive.
 
 Two outcome types feed gate calibration:
-- **`gate_overpermissive`** — owner reverts/corrects an action the gate let through. Logged via owner-correction or revert detection.
-- **`gate_overcautious`** — owner approves a queued item with annotation. **Channel:** queue UI (the batched-brief item that owner reads to approve) presents two approve-buttons: "approve" and "approve + 'should have been autonomous'". Single-click labelling, no implementation review required. Owner provides label by their choice of approve action, not by reading code.
+- **`gate_overpermissive`** — principal reverts/corrects an action the gate let through. Logged via principal-correction or revert detection.
+- **`gate_overcautious`** — principal approves a queued item with annotation. **Channel:** queue UI (the batched-brief item that principal reads to approve) presents two approve-buttons: "approve" and "approve + 'should have been autonomous'". Single-click labelling, no implementation review required. Principal provides label by their choice of approve action, not by reading code.
 
 Both update per-class precision/recall. Threshold for that class auto-adjusts (more cautious if over-permissive trend; less cautious if over-cautious trend).
 
-**Closes:** `decision_shedding_via_open_questions` showed 5/6 questions were over-cautious — owner caught it manually. v2: tracked structurally, threshold self-corrects.
+**Closes:** `decision_shedding_via_open_questions` showed 5/6 questions were over-cautious — principal caught it manually. v2: tracked structurally, threshold self-corrects.
 
 #### Real-time gating, not post-hoc logging
 
@@ -730,7 +809,7 @@ Both update per-class precision/recall. Threshold for that class auto-adjusts (m
 
 When gate sees an action the harness will block, it pre-emptively `QUEUE`s rather than `PROCEED`s — saves the cost of a failed attempt. Config seeded from memories (`claude_dir_edits_need_manual_confirm`).
 
-**Discovery loop:** new harness blocks emerge dynamically. Gate emits `harness_block_observed` event when an action fails with a harness-rejection signal; the config update path is **C15 M2** (collaborative — owner present), not M3 (fully protected). Adding new entries does not require schema/SOUL touches, so it's not in the highest-protection class. This avoids the "config goes stale because it's protected" pitfall.
+**Discovery loop:** new harness blocks emerge dynamically. Gate emits `harness_block_observed` event when an action fails with a harness-rejection signal; the config update path is **C15 M2** (collaborative — principal present), not M3 (fully protected). Adding new entries does not require schema/SOUL touches, so it's not in the highest-protection class. This avoids the "config goes stale because it's protected" pitfall.
 
 #### Boundary with C16
 
@@ -741,7 +820,7 @@ C6 = before action (act/ask classifier). C16 = after action (review of completed
 - `agents/safety.py` Tier model → kept as the rule store; gate() consumes it. Tier definitions migrate from hardcoded Python to config (still rule-based, but inspectable).
 - SOUL.md autonomy section → documentation of gate behavior, not parallel rules.
 - Skill §7.5 risk policies → migrated into per-action-class entries in the rule store; skills consult the same gate.
-- `record_decision` MCP tool → kept for owner-explicit decisions; auto-emission from gate covers the rest.
+- `record_decision` MCP tool → kept for principal-explicit decisions; auto-emission from gate covers the rest.
 - Tier 1 queue → finally implemented as a real table (currently `queued=True` flag with no actual queue).
 
 #### How measured
@@ -749,7 +828,7 @@ C6 = before action (act/ask classifier). C16 = after action (review of completed
 - **Gate coverage** — % of tool calls that passed through `gate()`. Target: 100%. Gaps = unenforced lanes.
 - **Per-class precision/recall** — over_permissive vs over_cautious rates by action class. Calibration spine.
 - **Convergence-stall trigger rate** — how often the 3-attempt threshold fires. Drop in rate = topics resolving faster (or detector dead).
-- **Queue latency** — time from `QUEUE` to owner decision. Long latency = owner-bottleneck pain.
+- **Queue latency** — time from `QUEUE` to principal decision. Long latency = principal-bottleneck pain.
 - **Queue approval rate** — what fraction of queued items get approved. Low rate = gate is over-queueing.
 - **Drift detection** — periodic comparison of gate decisions on same `(action, state)` over time. Drift signals miscalibration.
 
@@ -758,7 +837,7 @@ C6 = before action (act/ask classifier). C16 = after action (review of completed
 - *Multiple parallel rule stores* (current state) — drift inevitable.
 - *Action-only classification (no state)* — can't catch state-dependent reversibility.
 - *Memory-based convergence detection* — probabilistic; deterministic counter wins.
-- *Chat-message-per-ask* (current state) — owner-bottleneck, unstructured.
+- *Chat-message-per-ask* (current state) — principal-bottleneck, unstructured.
 - *Manual `record_decision`* — compliance always degrades; auto-emit by gate is the fix.
 
 ---
@@ -773,7 +852,7 @@ Distillation: reviewer agent **doesn't exist** — L1 commitment is stated inten
 
 C16 is essentially build-from-scratch. The L2 design specifies what the reviewer subsystem looks like.
 
-**Question:** What is the structure of Jarvis's verification subsystem so that owner stays out of code review while quality holds?
+**Question:** What is the structure of Jarvis's verification subsystem so that principal stays out of code review while quality holds?
 
 **Membership rule:** belongs in C16 iff *evaluates produced work* AND *can block its acceptance* AND *operates independently of the producer*. The independence requirement is non-negotiable: orchestrator self-review fails it.
 
@@ -812,7 +891,7 @@ C16 is essentially build-from-scratch. The L2 design specifies what the reviewer
 - Security-tagged path (`scripts/secret-scanner.py`, `agents/safety.py`, credential registry, `.env*` adjacency).
 - API contract change (public function signature, MCP tool schema, exported types).
 
-For these, run logical correctness reviewer twice: once peer-Jarvis, once different-provider (OpenAI/Gemini). Disagreement = automatic owner escalation via C12. Expected rate: ~25% of PRs (C13 cost rehearsal anchor).
+For these, run logical correctness reviewer twice: once peer-Jarvis, once different-provider (OpenAI/Gemini). Disagreement = automatic principal escalation via C12. Expected rate: ~25% of PRs (C13 cost rehearsal anchor).
 
 **Why not always different-provider:** $100–200/mo cap. Per-PR different-provider review is too expensive for routine changes.
 
@@ -829,8 +908,8 @@ This closes the documented incident class (redrobot #640/#647, jarvis #688/#700)
 **Decision:** every reviewer can BLOCK merge by setting check status fail. Reviewer is not advisory.
 
 - Mechanical reviewers: block is final (deterministic facts).
-- LLM reviewers: block carries reasoning + confidence; owner can override via C12 (override is a calibration label).
-- Reviewer disagreement with orchestrator → C6 escalation lane (multiple viable interpretations → owner picks).
+- LLM reviewers: block carries reasoning + confidence; principal can override via C12 (override is a calibration label).
+- Reviewer disagreement with orchestrator → C6 escalation lane (multiple viable interpretations → principal picks).
 
 #### Triggers
 
@@ -843,14 +922,23 @@ This closes the documented incident class (redrobot #640/#647, jarvis #688/#700)
 | Post-merge | Smoke test (high-leverage only at first; broader as trust ladder permits) |
 | Periodic (weekly) | Cross-device integrity sweep across recent merges |
 
-#### Owner surface
+#### Principal surface — class-aware auto-merge
 
-**Decision:** reviewers aggregate into a single owner-facing summary; owner never sees individual reviewer outputs by default.
+**Decision:** PRs split into two classes by leverage; class determines whether the principal sees the PR at all.
 
-Summary shape:
-> PR #123 — feat: X. Linked: #100. ✅ aligned with goal. ✅ tests cover new symbols. ⚠️ logical-correctness flagged: <one-line concern>. Recommend: review concern OR merge.
+| Class | What | Principal surface |
+|---|---|---|
+| **Auto-merge** | Typo / doc-only changes, behavior changes in low-leverage scope | None by default. Merges automatically when **all three** hold: (a) C16 diff-coherence pass, (b) tests pass, (c) every triggered reviewer green. Surfaces in batched brief as a one-line "merged" entry, not as an action. |
+| **Principal gate** | High-leverage class — schema (`*.sql`), cross-project shared code (per C15 cross-project list), hook/gate/reviewer/observability code (C6/C16/C17), security-tagged PRs, ANY reviewer block (even warning) | Mandatory principal review. Aggregator summary + drill-in available. Merge blocked until explicit principal action. |
 
-Owner reads summary (vision/plan check), drills in only if needed. Routine merges have summary-only owner touch.
+**Classifier:** reuse C6 high-leverage classifier (already exists for different-provider review trigger). Don't create a parallel classification — one classifier, two consumers.
+
+Summary shape (for the principal-gate class):
+> PR #123 — feat: X. Linked: #100. Class: **principal-gate** (touches `mcp-memory/schema.sql`). ✅ aligned with goal. ✅ tests cover new symbols. ⚠️ logical-correctness flagged: <one-line concern>. Recommend: review concern OR merge.
+
+Auto-merge class produces a thinner summary (one line in batched brief). Routine work has zero principal touch by default; the principal sees high-leverage work and reviewer-flagged work.
+
+**Why class-aware:** flat "all PRs aggregate to principal" surface either bottlenecks on routine doc PRs or trains the principal to rubber-stamp. Class split means routine work shipped autonomously and the principal's attention reserves for the cases where it matters. Closes the principal-bottleneck side of `caution_vs_overconfirmation_principle`.
 
 #### Cost bounds
 
@@ -862,7 +950,7 @@ Owner reads summary (vision/plan check), drills in only if needed. Routine merge
 #### Calibration loop
 
 Tracked per reviewer:
-- **FP rate** — reviewer blocked, owner overrode → label.
+- **FP rate** — reviewer blocked, principal overrode → label.
 - **FN rate** — reviewer passed, post-merge incident traced back to PR → label (via C17 incident events linked to merge).
 
 Both feed C5 calibration arm. Per-reviewer Brier; thresholds adjust per reviewer.
@@ -880,10 +968,11 @@ When FP rate climbs on a reviewer → its block authority is downgraded to advis
 #### How measured
 
 - **Reviewer coverage** — % merged PRs that went through full reviewer pipeline. Target: 100%.
-- **Per-reviewer FP/FN** — calibration spine. Tracked via owner overrides and post-merge incident attribution.
+- **Per-reviewer FP/FN** — calibration spine. Tracked via principal overrides and post-merge incident attribution.
 - **Time-to-review** — PR-open to aggregated verdict latency.
 - **Subagent fabrication catch rate** — known-fabrication audit (sample post-merge for hidden cases) vs reviewer-flagged.
-- **Owner override frequency** — when owner overrides reviewer block. Should be rare; rising = miscalibration.
+- **Principal override frequency** — when principal overrides reviewer block. Should be rare; rising = miscalibration.
+- **Auto-merge class accuracy** — % of auto-merged PRs that the principal later flags as "should have been gated". Rising = classifier needs tightening; ~0 = classifier working. Symmetric metric for the gated class: % the principal merges without comment (overcautious classification).
 - **Cost per PR by class** — average $$ spend on review by leverage class; tracks against C13 cap.
 
 #### Rejected
@@ -893,17 +982,17 @@ When FP rate climbs on a reviewer → its block authority is downgraded to advis
 - *Copilot as primary gate* — quota-fragile, misses domain bugs.
 - *Advisory-only reviewers* — Copilot pattern, not effective at the act/ask level.
 - *Same-model on high-leverage* — shared blind spots between same-provider instances.
-- *Owner reviews diff* — contradicts L0 mission (owner = stakeholder, not reviewer).
+- *Principal reviews diff* — contradicts L0 mission (principal = stakeholder, not reviewer).
 
 ---
 
-C16 complete. Specialized reviewers (mechanical + LLM), same-vs-different-provider triggered by C6 high-leverage, subagent fabrication as first-class gate, block authority, owner-facing summary aggregation, FP/FN calibration via C5.
+C16 complete. Specialized reviewers (mechanical + LLM), same-vs-different-provider triggered by C6 high-leverage, subagent fabrication as first-class gate, block authority, principal-facing summary aggregation, FP/FN calibration via C5.
 
 ---
 
 ### C15 — Self-improvement
 
-Distillation: the highest-yield self-improvement path is *owner mining outcomes by hand* (`reflection_driven_sprint_2026_04_23`), not `/self-improve` — that skill exists but cadence and yield are unmeasured. The current protected-file whitelist (SOUL.md, CLAUDE.md, .mcp.json, mcp-memory/server.py, .env) substitutes for an absent reviewer (C16 didn't exist). Same low/medium/high tier classification lives in 3+ places and drifts (same C6 pain). Documented bootstrap incidents: `.claude/*` edit halting autonomous run; Jarvis-written CI guard silently passing because guard watched wrong path while Jarvis edited the right one; compaction-induced fabrication of "I implemented X" when nothing was done; `always_load` rules growing context until token diet was needed.
+Distillation: the highest-yield self-improvement path is *principal mining outcomes by hand* (`reflection_driven_sprint_2026_04_23`), not `/self-improve` — that skill exists but cadence and yield are unmeasured. The current protected-file whitelist (SOUL.md, CLAUDE.md, .mcp.json, mcp-memory/server.py, .env) substitutes for an absent reviewer (C16 didn't exist). Same low/medium/high tier classification lives in 3+ places and drifts (same C6 pain). Documented bootstrap incidents: `.claude/*` edit halting autonomous run; Jarvis-written CI guard silently passing because guard watched wrong path while Jarvis edited the right one; compaction-induced fabrication of "I implemented X" when nothing was done; `always_load` rules growing context until token diet was needed.
 
 C15 in v2 is mostly *composition* of C5 (proposals), C6 (tier classifier), C16 (independent review), C17 (modification audit). The new pieces are: **modification tiers**, **bootstrap protection**, **trust ladder for self-modification specifically**, **misimprovement detection**.
 
@@ -912,7 +1001,7 @@ C15 in v2 is mostly *composition* of C5 (proposals), C6 (tier classifier), C16 (
 **Membership rule:** belongs in C15 iff *modifies Jarvis's own configuration / code / skills / hooks / schema* AND *operates as a deliberate self-improvement loop, not as side-effect of normal work*. Memory writes during task execution = C3 direct. Issue creation in workflow = C7/C12. Reflection-driven memory mutation = C5. C15 is reserved for changes to Jarvis itself.
 
 **Things that don't belong here:**
-- Hygiene/cleanup of owner repos (C7).
+- Hygiene/cleanup of principal repos (C7).
 - Memory consolidation/evolution (C5 handlers).
 - Issue creation as part of normal task flow (C12).
 - Reviewer-flagged auto-fixes on non-Jarvis PRs (C16).
@@ -925,10 +1014,31 @@ C15 in v2 is mostly *composition* of C5 (proposals), C6 (tier classifier), C16 (
 |---|---|---|---|
 | **M0** | Autonomous, read-only | Self-analysis, gap detection, friction logging, proposals (issues, design docs, memory) | Always available |
 | **M1** | Autonomous write | Doc-only changes, test additions, deletion of skills with measured zero-use, low-risk in non-protected scope | Trust-ladder unlocks after N successful M0 → M1 transitions |
-| **M2** | Collaborative write | Skill changes, code edits in Jarvis repo, hook changes, anything in `.claude/*` | Owner present in session OR explicit owner approval queued |
-| **M3** | Protected — always owner-explicit | Identity (SOUL.md), project instructions (CLAUDE.md), MCP config (.mcp.json), memory subsystem (mcp-memory/server.py + schema), gate logic (C6), reviewer logic (C16), observability substrate (C17), .env | Never auto-applied; never even auto-proposed without explicit owner ask |
+| **M2** | Collaborative or strong-reviewed | Skill changes, code edits in Jarvis repo, hook changes, anything in `.claude/*`. Plus the **M2-strong** subset (former M3 soft) — autonomous write OK only with C16 different-provider review + cross-device smoke | Principal present in session OR explicit principal approval queued (default M2). M2-strong adds the reviewer + smoke gates. |
+| **M3** | Protected — always principal-explicit, no auto-propose | The M3-hard list (below). Six items, fixed. | Never auto-applied; never even auto-proposed without explicit principal ask. |
 
-**Why M3 is fixed-protected:** these are the safety mechanisms that protect every other tier. Self-modifying them autonomously = self-validating safety. The schema-drift incident (Jarvis-written CI guard watching wrong path, silently passing) is exactly what M3 violations look like at scale.
+**M3-hard list (6 items, fixed-protected):**
+
+| Item | Why it's fixed M3 |
+|---|---|
+| `config/SOUL.md` | Identity axioms — self-modification = self-validating alignment. |
+| `mcp-memory/schema.sql` | Cross-project blast radius (redrobot uses the same Supabase). One wrong migration = both projects broken. |
+| `.env` (and `.env.*` secrets) | Secrets — never read, never write, ever. Absolute. |
+| C6 gate logic | The classifier deciding what's safe — self-modifying it = bypass mechanism for everything below. |
+| C16 reviewer logic | Quality gate. Self-modifying review = self-grading. |
+| C17 observability schema/projections | The audit substrate every other cap reports to. Tampering breaks reflection, calibration, cost tracking simultaneously. |
+
+**M2-strong (former M3 soft — 3 items, reclassified):**
+
+These were previously bundled with the M3-hard list under "always principal-explicit", but the cost was wrong: they're config/code, not safety mechanisms or secrets. Reclassified as M2 with **mandatory strong review** (different-provider per C16 + cross-device smoke per C16's cross-device sweep):
+
+| Item | Reason for reclassification |
+|---|---|
+| `CLAUDE.md` (project instructions) | Operational config. Routine edits (skill table updates, process clarifications) shouldn't bottleneck on principal touch. Wrong edits caught by reviewer + smoke. |
+| `.mcp.json` (MCP config) | Configuration, not gate logic. Misconfiguration = MCP server doesn't load = obvious failure mode (vs silent corruption). Cross-device smoke catches portability regressions. |
+| `mcp-memory/server.py` (code only — schema stays M3-hard) | Code with high test coverage and reviewer scrutiny. Schema migrations are the cross-project blast risk, not handler code. |
+
+**Why split M3:** flat M3 put `.mcp.json` (config) next to `.env` (secrets) — false equivalence. The schema-drift incident (Jarvis-written CI guard watching wrong path, silently passing) was a `mcp-memory/schema.sql` problem — that stays M3-hard. The CLAUDE.md/`.mcp.json`/server.py group was lumped in by association, not by blast radius. Real semantic distinction now applied.
 
 **Why M1 exists at all:** without M1 there's zero autonomous self-improvement and v2 mission ("Jarvis improves itself") fails. M1 is the only narrow autonomous lane; doc-only and zero-use deletion are genuinely safe.
 
@@ -945,9 +1055,10 @@ This blocks the class of failure where Jarvis modifies its gate/reviewer/observa
 **Decision:** progression specific to C15, narrower than the global trust ladder.
 
 - **Day 1:** M0 only. All self-modification proposals are issues/design docs/memory, no writes.
-- **After K successful M0 cycles** (proposal → owner review → owner-applied with no regression in N days) → M1 unlocks for the **specific class** that demonstrated reliability. Per-class unlock, not blanket.
-- **After M successful M1 applications with FP/FN within tolerance** → owner can manually elevate that class to M2 default. Not auto-elevated; M2 always remains a deliberate decision.
-- **M3 never unlocks.** New M3 items can only be added by owner.
+- **After K successful M0 cycles** (proposal → principal review → principal-applied with no regression in N days) → M1 unlocks for the **specific class** that demonstrated reliability. Per-class unlock, not blanket.
+- **After M successful M1 applications with FP/FN within tolerance** → principal can manually elevate that class to M2 default. Not auto-elevated; M2 always remains a deliberate decision.
+- **M3-hard never unlocks.** The 6-item list is fixed-protected. New M3-hard items can only be added by principal.
+- **M2-strong** (former M3-soft) follows normal M2 progression — the reviewer + smoke gates are the unlock condition, not a per-class trust counter.
 
 K and M are operational tunings (L3); the principle is per-class, evidence-based, monotonic-with-override.
 
@@ -958,7 +1069,7 @@ K and M are operational tunings (L3); the principle is per-class, evidence-based
 Outcomes:
 - **Benefit observed in metrics** → modification confirmed; class-precision label updated.
 - **No benefit observed** → modification flagged as `improvement_inconclusive` (not reverted, but no further M1→M2 progression for this class).
-- **Negative signal observed** (regression metrics, owner override frequency, reviewer FP/FN rises) → emit `regression_suspected` event; auto-propose revert via M1; owner decides.
+- **Negative signal observed** (regression metrics, principal override frequency, reviewer FP/FN rises) → emit `regression_suspected` event; auto-propose revert via M1; principal decides.
 
 **Closes:** current `/self-improve` produces PRs without measurement of whether they improved anything. Now every change has a measurable claim attached.
 
@@ -976,7 +1087,7 @@ This is enforced via a hook that triggers on compaction events for the C15 lane.
 
 #### Migration
 
-- `/self-improve` skill → kept as the C15 owner-invoked entry, but pipeline rebuilds: ideation = C5 generation arm; risk classification = C6; review = C16; apply = M1/M2 by tier; measurement = C17 + C5.
+- `/self-improve` skill → kept as the C15 principal-invoked entry, but pipeline rebuilds: ideation = C5 generation arm; risk classification = C6; review = C16; apply = M1/M2 by tier; measurement = C17 + C5.
 - Hard whitelist of protected files → kept but renamed *M3 list*; explicitly tied to safety semantics, not "files we're scared of".
 - Risk classifier (3-tier in 3 places) → consolidated under C6 (single canonical gate).
 - `/self-improve` Step 8 (orchestrator self-review of self-improvement PRs) → **deprecated**; C16 reviews instead, with bootstrap rule for C6/C16/C17 modifications.
@@ -986,7 +1097,7 @@ This is enforced via a hook that triggers on compaction events for the C15 lane.
 #### How measured
 
 - **Per-class M1 application precision** — `improvement_inconclusive` rate vs `confirmed` rate. Drives trust-ladder progression.
-- **Misimprovement detection rate** — `regression_suspected` flags raised before owner notices vs after. Lower-is-late = bad.
+- **Misimprovement detection rate** — `regression_suspected` flags raised before principal notices vs after. Lower-is-late = bad.
 - **Bootstrap-protection trigger frequency** — modifications that hit the prior-version-reviewer rule. Should be rare (most self-improvement avoids C6/C16/C17); spikes = something is wrong.
 - **M0 → M1 promotion latency** — how long it takes for a class to earn autonomous write. Unbounded latency = trust ladder dead.
 - **Compaction-induced fabrication catch rate** — instances where post-compaction verification rejected a fabricated "implemented" claim.
@@ -998,7 +1109,7 @@ This is enforced via a hook that triggers on compaction events for the C15 lane.
 - *Same C16 reviewer reviewing changes to itself* — fails the bootstrap protection rule.
 - *Hardcoded protected list as the only safety* — substitutes for review; new safety-critical files emerge and aren't covered.
 - *Trust ladder applied as one global policy* — self-modification has different risk profile than user-task autonomy.
-- *Auto-revert on regression suspicion* — too aggressive; owner-decision via M1 propose preserves judgment.
+- *Auto-revert on regression suspicion* — too aggressive; principal-decision via M1 propose preserves judgment.
 - *Allow M3 to unlock autonomously after enough successes* — the failure mode (autonomous gate self-modification) is catastrophic and rare; never trade it for cadence.
 
 ---
@@ -1019,7 +1130,7 @@ Distillation: schema is decent (11 real goals, lifecycle works); the bottleneck 
 
 - **`progress_pct` removed**; replaced with view `progress_ratio` = checked items / total in `success_criteria`. Auto-derived, can't lie.
 - **`jarvis_focus` split** into:
-  - `strategic_posture` — one short paragraph, current strategic stance (e.g., "blocked on owner review of v2 design").
+  - `strategic_posture` — one short paragraph, current strategic stance (e.g., "blocked on principal review of v2 design").
   - `progress_log` — moved out of the goal row entirely; goal-tagged events in C17 are the journal. The goal row stops being a write-amplification target.
 - **`direction` field** dropped as free-text. Multi-goal grouping handled by explicit `parent_id` chain (already in schema); no `directions` table. Free-text direction was rolled-up identical strings — chains do that semantically.
 
@@ -1028,7 +1139,7 @@ Distillation: schema is decent (11 real goals, lifecycle works); the bottleneck 
 Periodic checks run as SQL views over events:
 - P0 active goals with no events on `goal_slug` in 14d → emit `goal_stale` event.
 - Deadline within 7d → emit `goal_deadline_soon`.
-- Both feed **C12** (owner notification, batched, not interrupting) and **C5** (challenge handler — is this goal still relevant?).
+- Both feed **C12** (principal notification, batched, not interrupting) and **C5** (challenge handler — is this goal still relevant?).
 
 Closes the gap that `/goals review` text instructions never queried anything.
 
@@ -1036,20 +1147,25 @@ Closes the gap that `/goals review` text instructions never queried anything.
 
 - `goal_slug` becomes a **FK on every decision event** emitted by C6's gate. **Source at gate time:** gate runs a narrow C3 recall on the action's topic + active goals; if a single active goal matches semantically, it's bound automatically; if multiple match, the gate either picks the highest-priority active or escalates ambiguity. Default-required for decisions classified above a threshold (architectural / high-leverage); optional for trivial.
 - `outcome_record.goal_slug` validated against `goals.slug`; orphan slugs rejected.
-- `autonomous-loop` scoring formula: goal alignment becomes a **multiplier**, not one of N additive inputs. Work that doesn't align with any active goal is deprioritized by default — closes "owner forgets, Jarvis tracks" gap (`proactive_goal_tracking`) by making goal alignment structural.
+- `autonomous-loop` scoring formula: goal alignment becomes a **multiplier**, not one of N additive inputs. Work that doesn't align with any active goal is deprioritized by default — closes "principal forgets, Jarvis tracks" gap (`proactive_goal_tracking`) by making goal alignment structural.
 
 This makes "Goals drive priorities" a programmatic primitive instead of a SOUL.md aspiration.
 
 #### Hierarchy semantics
 
-- `parent_id` cascade: when all children of a parent are `status=achieved` → emit `parent_close_suggested` event. **Not auto-close** — owner judgment via C12 batched suggestion (a single goal closing is a strategic moment).
+- `parent_id` cascade: when all children of a parent are `status=achieved` → emit `parent_close_suggested` event. **Not auto-close** — principal judgment via C12 batched suggestion (a single goal closing is a strategic moment).
 - Progress rollup view: parent's effective progress = aggregate of children's `progress_ratio`. Surfaced in goal listing.
 
-#### Proactive tracking
+#### Proactive tracking — auto-create draft goals
 
-- C5 generation arm subscribes to `owner_message` and `decision_made` events; LLM extracts surfaced deadlines / commitments / time-bounded asks → candidate child goals.
-- Candidates go through C6 gate (Tier 1 queue) for owner approval. Owner accepts → child goal created with `parent_id`.
+- C5 generation arm subscribes to `principal_message` and `decision_made` events; LLM extracts surfaced deadlines / commitments / time-bounded asks → candidate child goals.
+- **Candidates auto-create as drafts**, not queued for approval. Goal row inserted with `provenance:agent_extracted`, `confidence:low`, `status:draft`. No C6 gate trip — these are extracted from the principal's own messages and decisions; treating them like risky autonomous actions adds friction without safety value.
+- Drafts surface to the principal in `/status` and the batched brief: "N draft goals — accept / edit / dismiss". Single-click triage; no approval ceremony.
+- **Quiet auto-dismiss after 7 days** of no principal action (with a `draft_auto_dismissed` log emit so the extractor's accuracy can still be measured).
+- **Rate limit: max 3 draft goals per week.** Prevents over-extraction noise; if the extractor is producing more than 3 useful candidates a week, that's a signal to revisit the formula.
 - Closes `university-degree` parent having 0 children despite 7 disciplines + 3 overdue.
+
+**Why auto-create vs queue:** worst case is a wrong draft sitting until dismiss — that's a UX issue, not a safety issue. The C6-queue route was wrong: it equated "agent extracts a candidate from the principal's own words" with "agent decides to fire a destructive action". Different blast radius, different gate.
 
 #### Migration
 
@@ -1062,8 +1178,8 @@ This makes "Goals drive priorities" a programmatic primitive instead of a SOUL.m
 
 - **Goal-tag coverage on decisions** — % decisions with valid `goal_slug`. Target rising.
 - **Stale-detection cadence** — `goal_stale` events fired, then resolved by activity within N days vs by abandonment.
-- **Proactive-extraction acceptance rate** — % LLM-proposed child goals accepted by owner. Calibrates the extractor.
-- **Parent-close-suggestion accuracy** — when owner accepts the suggestion (label).
+- **Proactive-extraction acceptance rate** — % LLM-proposed child goals accepted by principal. Calibrates the extractor.
+- **Parent-close-suggestion accuracy** — when principal accepts the suggestion (label).
 - **Goal-alignment multiplier effect** — ablation of autonomous-loop scoring with vs without multiplier.
 
 #### Rejected
@@ -1088,7 +1204,7 @@ Distillation surfaced deeper tensions than expected for a Tier B cap:
 - TodoWrite is optional, model-discretion. Plan state is transient or implicit.
 - Sprint plans live as freeform memories (`metacognition_sprint_plan_2026_04_20`, etc.) — same C3-abuse class we already retired in C5.
 - `sequential-thinking` MCP server is installed (`.mcp.json`) but **never used** in any skill or hook.
-- No mid-step replan — only post-compaction fresh-start or owner-pushback restart.
+- No mid-step replan — only post-compaction fresh-start or principal-pushback restart.
 - `Already-done audit` (`/implement §4a`) exists *because* planning routinely skips a "verify-not-done" step — symptom-fix bolted onto the pipeline.
 
 **Question:** What is the structure of C4 so that planning is judgment-driven (per op policy), plans are first-class observable artifacts, and replanning is incremental?
@@ -1124,7 +1240,7 @@ This commitment is **architectural** at L2; detailed template format is L3.
 | Trigger | Replan scope |
 |---|---|
 | Step outcome differs from `expected` (test fails, missing file, etc.) | Re-evaluate remaining steps that depended on the changed assumption |
-| Owner correction during execution | Re-evaluate from correction point |
+| Principal correction during execution | Re-evaluate from correction point |
 | Anomaly event in C17 (rate-limit, hallucination_suspected, error) | Re-evaluate against goal alignment |
 | `convergence_stall` from C6 | Force replan with broader template scope |
 | Compaction event | Re-ground premises (per `post_compaction_task_premise_verification`), preserve done steps |
@@ -1152,14 +1268,14 @@ This makes plan effectiveness measurable at the right level.
 
 Templates are not static. Each instantiation's outcome (success/partial/failure) attributes back to the template. C5 reflection arm:
 - High-success template → priority surface in planner
-- High-failure template → flagged for refinement (Tier 1 owner queue)
+- High-failure template → flagged for refinement (Tier 1 principal queue)
 - Stable, novel-task patterns → candidate for new templates
 
 Closes "skill not used in 2 weeks → merge or delete" rule that currently has no telemetry to enforce.
 
 #### Migration
 
-- TodoWrite usage → kept; writes also emit plan events. Owner UI unchanged.
+- TodoWrite usage → kept; writes also emit plan events. Principal UI unchanged.
 - /implement, /delegate, /research, /autonomous-loop → become templates over v2 development; pipeline behaviour kept until each is migrated.
 - Sprint plan memories (`*_sprint_plan_*`, `metacognition_sprint_plan_*`) → DEPRECATED as memory class; new sprints use plan events.
 - Sequential-thinking MCP → wired into reasoning mode for the triggers above.
@@ -1215,7 +1331,7 @@ Distillation: worktree isolation is **advisory, not enforced** — Edit/Write to
 
 **Decision:** three primitives, layered:
 
-- **GitHub labels + issue claim comment** — owner-visible status.
+- **GitHub labels + issue claim comment** — principal-visible status.
 - **Supabase lock with TTL + heartbeat** — fast intra-Jarvis claim. Initial values: heartbeat every **30s**, TTL **120s** (4× heartbeat — survives one missed beat). Auto-release on missed heartbeat. Concrete values tunable in config (L3); the rule is TTL ≥ 3× heartbeat. Closes stale-lock gap.
 - **Structured handoff event** (in C17) — subagent emits `subagent_complete(plan_id, branch, claimed_files[], claimed_changes_summary, test_results, blockers[])`. Orchestrator + C16 reviewer read this, not free-text summary. Trace_id propagated per C17.
 
@@ -1228,7 +1344,7 @@ Distillation: worktree isolation is **advisory, not enforced** — Edit/Write to
 - **Mandatory worktrees** for any parallel session — validated 2026-04-06; `git checkout` collisions destroy work otherwise. Not optional.
 - **Lock-before-work**: any session must acquire Supabase lock on the work item before touching files. TTL = work bound; heartbeat = liveness. No lock = no write.
 - **Stagger + lock acquisition order**: 10-second minimum stagger between session launches when both target same repo. Under contention (both still racing for same lock), Supabase `INSERT ... ON CONFLICT DO NOTHING` decides — first writer wins, second sees existing row and blocks/retries. Stagger reduces probability of contention; lock semantics resolves it deterministically when it happens.
-- **Crash recovery**: stale locks (heartbeat missed for 2× TTL) auto-released. Recovery emits event for owner audit.
+- **Crash recovery**: stale locks (heartbeat missed for 2× TTL) auto-released. Recovery emits event for principal audit.
 
 #### Cross-repo dispatch class
 
@@ -1242,7 +1358,7 @@ Orchestrator-worker only inside any delegated task (per `federated_architecture_
 
 - `/delegate` skill → kept as the dispatch entry, but pipeline gains the pre/post gates above.
 - "Always commit/stash before dispatch" memory rule → enforced by pre-dispatch gate, not relied on as discipline.
-- Free-text handoff summary → kept as owner-readable, but **canonical handoff** is the structured event.
+- Free-text handoff summary → kept as principal-readable, but **canonical handoff** is the structured event.
 - Supabase lock writes from skills → migrated to TTL+heartbeat schema.
 - Branch-naming convention `feat/<N>-<slug>` → enforced by gate, branch-race becomes structural-impossible (lock prevents two agents claiming same N).
 - `pm_dispatch_v1` (already retired) — no migration needed.
@@ -1272,7 +1388,7 @@ C8 complete.
 
 ### C13 — Budget / cost governance
 
-Distillation: no aggregated $/month dashboard across externals — owner is blind to cap proximity. Pain discovered via 400/422 errors (VoyageAI throttling, Anthropic API key empty, Copilot quota out, GHA minutes 50% in 5 days). One $1800 surprise bill when scheduled runs accidentally routed through `ANTHROPIC_API_KEY` instead of subscription auth (`max_20x_upgrade_available`). Dispatcher's `usage_probe` is the only live gate, single-agent only — undercount likely. Model selection is largely model-discretion; CLAUDE.md rules are prose.
+Distillation: no aggregated $/month dashboard across externals — principal is blind to cap proximity. Pain discovered via 400/422 errors (VoyageAI throttling, Anthropic API key empty, Copilot quota out, GHA minutes 50% in 5 days). One $1800 surprise bill when scheduled runs accidentally routed through `ANTHROPIC_API_KEY` instead of subscription auth (`max_20x_upgrade_available`). Dispatcher's `usage_probe` is the only live gate, single-agent only — undercount likely. Model selection is largely model-discretion; CLAUDE.md rules are prose.
 
 C17 already commits cost-on-event (inline `cost_tokens`/`cost_usd`). C13 is the consumer + enforcement layer + router.
 
@@ -1284,7 +1400,7 @@ C17 already commits cost-on-event (inline `cost_tokens`/`cost_usd`). C13 is the 
 **Routing rule** (closes the cost-ambiguity raised in cost rehearsal): the architecture supports two modes — *subscription-first* (current default) and *API-first* — and is designed to switch between them with config change, not refactor.
 
 - **Mode A — Subscription-first (current default while Max is active)**: C5 handlers, C16 LLM reviewers, classifiers, and recall judges run as Claude Code scheduled tasks under Max subscription wherever possible (free under Max). Only paths that *cannot* run on subscription — cloud Supabase scheduled tasks via `execute_sql` (no Python runtime), and C16 different-provider review — use API key. Pre-implementation cost rehearsal: ~$13/mo expected steady-state externals.
-- **Mode B — API-first (evaluation period, planned)**: same handlers route via API. Owner's interactive Claude Code usage joins the API-billed pool. Pre-implementation rehearsal at current usage tempo (~9.5M tokens/mo, Opus-favoured): ~$50–80/mo aggregate; well within hard cap.
+- **Mode B — API-first (evaluation period, planned)**: same handlers route via API. Principal's interactive Claude Code usage joins the API-billed pool. Pre-implementation rehearsal at current usage tempo (~9.5M tokens/mo, Opus-favoured): ~$50–80/mo aggregate; well within hard cap.
 
 **Operational plan**: run Mode A for the current Max period; collect real usage data; transition to Mode B for an equivalent observation window; final mode decided on actual data, not estimates. C13's cap enforcement and ledger work identically in both modes — only the routing default changes. No architectural rework required for the switch.
 
@@ -1305,7 +1421,7 @@ C17 already commits cost-on-event (inline `cost_tokens`/`cost_usd`). C13 is the 
 | GitHub Actions minutes | Per repo, monthly | gh API |
 | Copilot quota | Binary availability probe | gh API |
 
-Each service has a configured budget; sum constrained to owner's external cap.
+Each service has a configured budget; sum constrained to principal's external cap.
 
 #### Cap enforcement gate (soft + hard for externals)
 
@@ -1314,8 +1430,8 @@ Each service has a configured budget; sum constrained to owner's external cap.
 | Projected external spend | Behaviour |
 |---|---|
 | ≤ $20 (soft cap) | No action |
-| $20 – $100 (above soft, below hard) | Warn — event + owner notification (C12 batched); deprioritize non-essential external LLM use; prefer subscription/Haiku where possible |
-| > $100 (hard cap) | Block non-essential external calls; allow only critical (owner-tagged or hard-required) |
+| $20 – $100 (above soft, below hard) | Warn — event + principal notification (C12 batched); deprioritize non-essential external LLM use; prefer subscription/Haiku where possible |
+| > $100 (hard cap) | Block non-essential external calls; allow only critical (principal-tagged or hard-required) |
 
 Per-service projection inside the gate so one service hitting hard cap doesn't kill all others, but **aggregate hard cap** is the bottom line. Subscription usage tracked separately (units, throttling-based, not dollar gates).
 
@@ -1324,7 +1440,7 @@ Per-service projection inside the gate so one service hitting hard cap doesn't k
 **Decision:** silence-failure (key empty, quota out) is detected pre-emptively, not after a 400.
 
 - **Daily reconciliation**: C17-derived spend vs provider billing API (where available). Drift > N% → investigation event.
-- **Heartbeat probes**: weekly low-cost API call per external service to verify keys/quotas alive. Failed probe → owner notification (C12) before next action depending on it.
+- **Heartbeat probes**: weekly low-cost API call per external service to verify keys/quotas alive. Failed probe → principal notification (C12) before next action depending on it.
 
 Closes the "Anthropic API key empty discovered by 400 error" class.
 
@@ -1335,7 +1451,7 @@ Closes the "Anthropic API key empty discovered by 400 error" class.
 Rules (initial):
 - Mechanical / classifier / extraction → Haiku
 - Implementation / refactor / structured reasoning → Sonnet
-- Architectural decisions / cross-system reasoning / redrobot owner work → Opus (regular, not 1M unless owner-tagged)
+- Architectural decisions / cross-system reasoning / redrobot principal work → Opus (regular, not 1M unless principal-tagged)
 - Different-provider review (per C16 high-leverage) → OpenAI/Gemini per-class
 
 Router emits `model_routed` event with rule that fired. Calibration: if outcome of a class consistently underperforms with chosen model → C5 reflection proposes rule update.
@@ -1356,11 +1472,11 @@ Closes "default Opus / Opus 1M extra billing" prose-rule fragility (`opus_1m_ext
 - `agents/usage_probe.py` → kept; extended to all actors (not just dispatcher) by reading C17 cost events.
 - CLAUDE.md model-selection prose → migrated to router config; prose becomes documentation of router rules.
 - Scheduled-task subscription assumption (`scheduled_tasks_subscription_not_api`) → enforced by routing protection above, not behavioural memory.
-- Manual escalation Max → Max 20× → triggered by 4-week sustained throttling event from C17, surfaced via C12 to owner.
+- Manual escalation Max → Max 20× → triggered by 4-week sustained throttling event from C17, surfaced via C12 to principal.
 
 #### How measured
 
-- **Cap proximity** — projected month-end vs cap, per service. Owner-facing dashboard.
+- **Cap proximity** — projected month-end vs cap, per service. Principal-facing dashboard.
 - **Reconciliation drift** — C17 ledger vs provider billing. Should be near-zero.
 - **Heartbeat-failure lead time** — interval between heartbeat-detected exhaustion and the action that would have failed. Should be > 0 (i.e., we caught it early).
 - **Routing-violation events** — should be near-zero. Spike = something is bypassing routing.
@@ -1388,7 +1504,7 @@ Remaining gaps require structural treatment in v2; most are extensions of what s
 
 **Question:** What does C14 add to Sprint 1's foundation to close the audit-completeness, compromise-detection, and recovery-runbook gaps?
 
-**Membership rule:** belongs in C14 iff *protects credentials/access* OR *bounds blast radius of compromise* OR *enables forensic reconstruction*. Owner-stated out-of-scope (personal data, password hygiene, prompt injection on untrusted external content) stays out of scope unless owner re-decides at L0.
+**Membership rule:** belongs in C14 iff *protects credentials/access* OR *bounds blast radius of compromise* OR *enables forensic reconstruction*. Principal-stated out-of-scope (personal data, password hygiene, prompt injection on untrusted external content) stays out of scope unless principal re-decides at L0.
 
 #### Layered defense (preserved from Sprint 1)
 
@@ -1418,9 +1534,9 @@ C3's bi-temporal model preserves `memory_facts` history (no destructive overwrit
 
 **Decision:** active monitoring beyond passive scanners.
 
-- **HIBP-style breach probe**: weekly check of registered credential identifiers (emails, usernames where applicable) against haveibeenpwned API. Hit → emit `credential_potentially_compromised` event → C12 owner notification.
-- **Suspicious-activity heuristics**: anomaly events from C17 self-detection (rate-limited spikes, hallucinated tool calls, off-hours dispatcher activity) cross-checked against credential usage timestamps. Pattern match → flag for owner.
-- **Post-rotation verification**: when owner rotates a credential, registry's `last_rotated` updated; subsequent uses of old credential (failed auth events) → `stale_credential_in_use` event (a script somewhere wasn't updated).
+- **HIBP-style breach probe**: weekly check of registered credential identifiers (emails, usernames where applicable) against haveibeenpwned API. Hit → emit `credential_potentially_compromised` event → C12 principal notification.
+- **Suspicious-activity heuristics**: anomaly events from C17 self-detection (rate-limited spikes, hallucinated tool calls, off-hours dispatcher activity) cross-checked against credential usage timestamps. Pattern match → flag for principal.
+- **Post-rotation verification**: when principal rotates a credential, registry's `last_rotated` updated; subsequent uses of old credential (failed auth events) → `stale_credential_in_use` event (a script somewhere wasn't updated).
 
 #### Recovery runbook for credential compromise
 
@@ -1432,7 +1548,7 @@ C3's bi-temporal model preserves `memory_facts` history (no destructive overwrit
 3. Update credential in all storage locations (registry's `stored_in` field tracks them)
 4. Verify rotation via heartbeat probe (C13)
 5. Audit C17 events for the compromise window — what was accessed/modified
-6. Owner decides whether to rollback specific changes or accept
+6. Principal decides whether to rollback specific changes or accept
 
 Closes "no key-leaked runbook" gap.
 
@@ -1446,9 +1562,9 @@ v2: bootstrap reads launcher signature (process tree, env source) and verifies e
 
 #### Supabase RLS — defense in depth
 
-**Decision:** enable RLS even though single-user. Two roles: `owner` (full read/write) and `agent` (no read on `credential_registry.value-equivalents`, no DELETE on `memories`/`events`).
+**Decision:** enable RLS even though single-user. Two roles: `principal` (full read/write) and `agent` (no read on `credential_registry.value-equivalents`, no DELETE on `memories`/`events`).
 
-Single-user assumption is correct today, but RLS adds a guard if a leaked anon key ever happens. Cheap to add; matches owner's "восстановление если что-то всё-таки произойдёт" clarification at L0.
+Single-user assumption is correct today, but RLS adds a guard if a leaked anon key ever happens. Cheap to add; matches principal's "восстановление если что-то всё-таки произойдёт" clarification at L0.
 
 **Note:** RLS on the shared Supabase project is a **cross-project change** (per C15's cross-project shared-code class). Coordination with redrobot before applying — RLS rules must allow redrobot's existing access patterns or break it.
 
@@ -1475,7 +1591,7 @@ Single-user assumption is correct today, but RLS adds a guard if a leaked anon k
 - *No active breach monitoring* — discovers compromises by their consequences.
 - *Single recovery playbook for all classes* — credential-compromise has different steps than agent-broke-something.
 - *Reliance on principal env var without verification* — workshop scheduler class.
-- *Skip Supabase RLS because single-user* — cheap defense in depth that aligns with owner's recovery emphasis.
+- *Skip Supabase RLS because single-user* — cheap defense in depth that aligns with principal's recovery emphasis.
 - *Re-expanding scope to personal data / passwords / prompt injection* — explicitly out per L0; not re-decided here.
 
 ---
@@ -1490,9 +1606,9 @@ These caps inherit most structure from Tier A/B decisions. Each gets a single-pa
 
 #### C1 — Identity & values
 
-**Decision:** SOUL.md (owner-authored axioms) + CLAUDE.md (project-specific instructions) loaded at session start via the session-context hook. **Distinct storage from C3 memory** — identity is immutable-by-Jarvis (owner edits only, M3 in C15), retrieved by injection not query. C5 stale-challenge does NOT challenge identity (would break the alignment substrate); only owner does, via direct edits.
+**Decision:** SOUL.md (principal-authored axioms) + CLAUDE.md (project-specific instructions) loaded at session start via the session-context hook. **Distinct storage from C3 memory** — identity is immutable-by-Jarvis (principal edits only, M3 in C15), retrieved by injection not query. C5 stale-challenge does NOT challenge identity (would break the alignment substrate); only principal does, via direct edits.
 
-**How measured:** identity-drift detection — C5 reflection compares Jarvis's recent behavior pattern to SOUL.md rules; deviation flagged for owner review (not auto-corrected).
+**How measured:** identity-drift detection — C5 reflection compares Jarvis's recent behavior pattern to SOUL.md rules; deviation flagged for principal review (not auto-corrected).
 
 **Rejected:** identity learnable from outcomes (drift risk), identity stored in C3 (sub-type rule violation).
 
@@ -1516,29 +1632,29 @@ These caps inherit most structure from Tier A/B decisions. Each gets a single-pa
 
 #### C11 — Perception
 
-**Decision:** perception is the boundary where external events become C17 events. Sources: owner messages (CLI, future channels), GitHub events (via Actions → Supabase per `event_driven_perception_v1`), scheduled-task triggers, repo file-changes, MCP server signals. C11 does **not** decide what to act on — it converts external signals into structured events; **C2/C3/C5/C6 chain** decides response per `Memory-driven autonomy` op policy.
+**Decision:** perception is the boundary where external events become C17 events. Sources: principal messages (CLI, future channels), GitHub events (via Actions → Supabase per `event_driven_perception_v1`), scheduled-task triggers, repo file-changes, MCP server signals. C11 does **not** decide what to act on — it converts external signals into structured events; **C2/C3/C5/C6 chain** decides response per `Memory-driven autonomy` op policy.
 
 **Ingest gate:** raw signals from external sources can be high-volume (CI events, file watches). C11 has a thin filter — discards signals that match known-noise patterns (config) — but every accepted signal becomes an event regardless of whether anything acts on it. The decision *to act* is downstream (autonomous-loop / handlers query events); the decision *to record* is C11's only call, biased toward record-everything. Signals dropped by the noise filter emit a `signal_dropped` count event for audit (no payload).
 
-**How measured:** event-to-action latency for time-sensitive events (e.g., owner-message to first action), event drop rate (events that arrived but weren't ingested).
+**How measured:** event-to-action latency for time-sensitive events (e.g., principal-message to first action), event drop rate (events that arrived but weren't ingested).
 
-#### C12 — Communication with owner
+#### C12 — Communication with principal
 
 **Decision:** structured channels with priority semantics:
 - **Interactive** (CLI / future desktop) — primary, highest fidelity.
 - **Critical alerts** — interrupt-style; few, validated against false-positive rate. Examples: cap-breach (C13), credential compromise (C14), bootstrap fail (C15).
-- **Batched briefs** — morning/evening summary aggregator: pending C6 queue items, C16 reviewer summaries, C5 stale alerts, C2 deadline-soon, C13 cap proximity. **Single owner-facing surface**, not N notifications.
+- **Batched briefs** — morning/evening summary aggregator: pending C6 queue items, C16 reviewer summaries, C5 stale alerts, C2 deadline-soon, C13 cap proximity. **Single principal-facing surface**, not N notifications.
 - **Telegram** — chat-only role per L0 (dropped as primary interface).
 
-**Drafts vs sends:** Jarvis drafts; final send to other humans (PR comments, messages, emails) goes through owner approval per L0 non-goal "не пишет от моего лица". **Mechanism:** outgoing-message production is a separate C12 action class (not a tool call), gated by a `c12_send_intent` event that requires explicit owner-confirmed `c12_send_approval` before any tool actually emits text outward. Drafts written to a queue (visible to owner via batched brief) — sending = owner button-press = produces the approval event = unblocks the actual send tool call. Pre-confirmation tool calls don't fire.
+**Drafts vs sends:** Jarvis drafts; final send to other humans (PR comments, messages, emails) goes through principal approval per L0 non-goal "не пишет от моего лица". **Mechanism:** outgoing-message production is a separate C12 action class (not a tool call), gated by a `c12_send_intent` event that requires explicit principal-confirmed `c12_send_approval` before any tool actually emits text outward. Drafts written to a queue (visible to principal via batched brief) — sending = principal button-press = produces the approval event = unblocks the actual send tool call. Pre-confirmation tool calls don't fire.
 
-**How measured:** interrupt rate (should fall as autonomy + accuracy grows), batched-brief actionability (% of items in brief that owner acted on / dismissed).
+**How measured:** interrupt rate (should fall as autonomy + accuracy grows), batched-brief actionability (% of items in brief that principal acted on / dismissed).
 
-**Rejected:** Telegram as primary interface (L0); per-event owner notification (drowns owner); auto-send to other humans (L0 non-goal).
+**Rejected:** Telegram as primary interface (L0); per-event principal notification (drowns principal); auto-send to other humans (L0 non-goal).
 
 ---
 
-**L2 complete.** All 17 capabilities have membership rules, structural decisions, measurement plans, migration paths, and explicit rejections.
+**L2 complete.** All 18 capabilities have membership rules, structural decisions, measurement plans, migration paths, and explicit rejections.
 
 ---
 
@@ -1572,29 +1688,29 @@ Until enough labels accumulate, "calibrated" gates can't fire. Every such gate h
 | Capability | Seeded behavior until labels accumulate | What labels look like | N to mature |
 |---|---|---|---|
 | **C3 conflict classifier** | Auto-apply confidence threshold raised from 0.85 to 0.95 (conservative). Below queue. | `record_correction` events labeling classifier outcome. | ~30 labels per class |
-| **C5 generation arm** | Auto-write threshold 0.95; no super-aggressive synthesis until first 30 days of labels. | Owner override on synthesized memory. | ~50 labels global |
-| **C5 stale-challenge** | Triggers only on **owner correction** and **decision failure** (the strong signals); periodic sweep deferred until first quarter. | Owner override on superseded memory. | ~20 labels |
+| **C5 generation arm** | Auto-write threshold 0.95; no super-aggressive synthesis until first 30 days of labels. | Principal override on synthesized memory. | ~50 labels global |
+| **C5 stale-challenge** | Triggers only on **principal correction** and **decision failure** (the strong signals); periodic sweep deferred until first quarter. | Principal override on superseded memory. | ~20 labels |
 | **C5 judge calibrator** | Computed only on judges that have ≥10 ground-truth labels in last 90 days; below threshold, judge is reported "uncalibrated" and uses its seed threshold. | Outcome labels link back. | ≥10 per judge per 90 days |
-| **C6 gate per-class** | Action class with no calibration history: defaults to **escalate-on-uncertainty**. As classifier confidence + outcome data accumulate, threshold relaxes. | Owner override on queue items. | ~30 labels per class |
+| **C6 gate per-class** | Action class with no calibration history: defaults to **escalate-on-uncertainty**. As classifier confidence + outcome data accumulate, threshold relaxes. | Principal override on queue items. | ~30 labels per class |
 | **C6 convergence detector** | Counter active from Day 1 (deterministic, no calibration needed). | n/a | Immediate |
 | **C16 different-provider** | **Deferred to month 2.** Peer-Jarvis only in month 1; cost data from month 1 informs whether different-provider is affordable at planned cadence. | Cost reconciliation. | 30 days of operation |
-| **C13 cap enforcement** | **Warning only in month 1**, no blocking. Cost numbers vs cap inform whether caps are correctly set. Blocking starts month 2. | Owner observation of cost trends. | 30 days |
-| **C15 trust ladder** | All M1 classes start locked. Owner manually unlocks first class after first month of M0 success data. | Per-class regression / success counts. | Per-class threshold |
-| **C16 cross-device sweep** | Disabled until month 2. Manual cross-device test on owner-flagged config-touching changes only. | Cross-device incident reports. | 30 days |
-| **Bootstrap-protection rule (C15)** | On Day 1, **C6/C16/C17 modifications are owner-only** (no "previous version" to review against yet). After 30 days of stable operation, prior-version + different-provider review unlocks for these caps. | Operational stability of C6/C16/C17. | 30 days stable |
+| **C13 cap enforcement** | **Warning only in month 1**, no blocking. Cost numbers vs cap inform whether caps are correctly set. Blocking starts month 2. | Principal observation of cost trends. | 30 days |
+| **C15 trust ladder** | All M1 classes start locked. Principal manually unlocks first class after first month of M0 success data. | Per-class regression / success counts. | Per-class threshold |
+| **C16 cross-device sweep** | Disabled until month 2. Manual cross-device test on principal-flagged config-touching changes only. | Cross-device incident reports. | 30 days |
+| **Bootstrap-protection rule (C15)** | On Day 1, **C6/C16/C17 modifications are principal-only** (no "previous version" to review against yet). After 30 days of stable operation, prior-version + different-provider review unlocks for these caps. | Operational stability of C6/C16/C17. | 30 days stable |
 
 ### Cold-start month rules
 
-- **Cost cap**: warning thresholds active, no blocking. Owner sees real numbers before policy hardens.
-- **Autonomy default**: lower than mature target. Most decisions queue; owner approval rate informs C6 threshold tuning.
+- **Cost cap**: warning thresholds active, no blocking. Principal sees real numbers before policy hardens.
+- **Autonomy default**: lower than mature target. Most decisions queue; principal approval rate informs C6 threshold tuning.
 - **Mutation arm volume**: capped at ~5 autonomous writes/week from C5 to limit blast radius if calibration is wrong.
-- **Owner instrumentation**: weekly "cold-start readout" — cost, override rate, queue depth, per-cap volume — informs which thresholds to relax for month 2.
+- **Principal instrumentation**: weekly "cold-start readout" — cost, override rate, queue depth, per-cap volume — informs which thresholds to relax for month 2.
 
 Cold-start ends when each cap has its label budget met OR after 60 days, whichever comes first.
 
 ### Bootstrap caveat
 
-This protocol explicitly accepts **degraded autonomy in month 1** in exchange for safety + calibration data. The trade-off is owner-visible: more queueing, fewer auto-decisions, more manual labeling. By month 2 the system should be operating closer to design intent.
+This protocol explicitly accepts **degraded autonomy in month 1** in exchange for safety + calibration data. The trade-off is principal-visible: more queueing, fewer auto-decisions, more manual labeling. By month 2 the system should be operating closer to design intent.
 
 ---
 
@@ -1613,8 +1729,8 @@ After scout v2 (2026-04-27) — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-b
 - **Stale detection**: pg view + scheduled query OR pg trigger on event insert. Lean: scheduled query (simpler, traceable).
 - **`goal_slug` resolution at gate**: pg function consulted by C6 gate hook OR LLM-judged matching. Lean: pg function with semantic-similarity over goal embeddings (cheap, deterministic), LLM fallback only on ambiguity.
 - **Goal embeddings**: VoyageAI on `description` at insert/update. Lean: pg trigger fires Voyage call via `mcp-memory/server.py` background worker; cached in `goals.embedding` column.
-- **Parent-close cascade**: pg trigger on `goal_status_change` vs scheduled query. Lean: scheduled query — closing a goal is a strategic moment requiring owner judgment, not auto-action; trigger only emits `parent_close_suggested` event.
-- **Proactive child goal extraction**: scheduled subagent vs event-triggered handler on `owner_message`/`decision_made`. Lean: event-triggered with Haiku — per `Memory-driven autonomy` op policy, not periodic sweep.
+- **Parent-close cascade**: pg trigger on `goal_status_change` vs scheduled query. Lean: scheduled query — closing a goal is a strategic moment requiring principal judgment, not auto-action; trigger only emits `parent_close_suggested` event.
+- **Proactive child goal extraction**: scheduled subagent vs event-triggered handler on `principal_message`/`decision_made`. Lean: event-triggered with Haiku — per `Memory-driven autonomy` op policy, not periodic sweep.
 
 ### C3 — Memory
 - **Tables**: PostgreSQL with pgvector (current). No real alternative under Cost=9 + Memory=10.
@@ -1641,6 +1757,12 @@ After scout v2 (2026-04-27) — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-b
 - **Class-conditional calibration (closes Q4 sparse-class)**: bespoke vs `crepes` vs MAPIE. Lean: [`crepes`](https://github.com/henrikbostrom/crepes) — `pip install crepes`, Mondrian CP via `class_cond=True`, sklearn-compatible, CPU-only, ~10× faster than MAPIE on small data. Wires into `memory_calibration_summary` MCP tool. [`MAPIE`](https://github.com/scikit-learn-contrib/MAPIE) on watch list (2026 roadmap adds CP for LLM-as-judge).
 - **Calibration metrics**: bespoke vs `netcal`. Lean: [`netcal`](https://github.com/EFS-OpenSource/calibration-framework) (`pip install netcal`) — ECE/MCE/ACE/MMCE + reliability diagrams; pair with sklearn `brier_score_loss`.
 - **Judge prompt source**: bespoke strings vs published rubric prompts. Lean: [`prometheus-eval`](https://github.com/prometheus-eval/prometheus-eval) (`pip install prometheus-eval`) — `from prometheus_eval.prompts import ABSOLUTE_PROMPT, RELATIVE_PROMPT` for /reflect, /verify, calibrator. Removes bespoke prompt-engineering drift.
+
+### C18 — Proactive challenger
+- **Detection engine**: SQL queries over C17 events + `goals` table. No LLM in the hot detection path.
+- **Threshold tuning**: per-signal config in `recalibration_thresholds.yaml` (calibration-Brier, goal-stale-days, override-frequency-per-class). Editable as M2-strong (reviewer + smoke required) since wrong thresholds = surfacing storm.
+- **Surfacing renderer**: optional Haiku call to phrase the `recalibration_proposed` payload readably. Capped by C13 — max 5 surfacings per batched brief (1 LLM call each).
+- **Routing**: emit `recalibration_proposed` event; C12 batched-brief aggregator picks it up alongside other deferred items. No new transport.
 
 ### C6 — Decision gating
 - **Hook substrate**: Claude Code PreToolUse hook (interactive lane) + similar gate at MCP boundary (cloud lane). Lean: this; the canonical gate function is the same behind both.
@@ -1680,15 +1802,15 @@ After scout v2 (2026-04-27) — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-b
 ### C11 — Perception
 - **External event ingest**: GitHub Actions → Supabase events table (`event_driven_perception_v1` already established).
 - **File-watch source**: native fs-watch vs polling vs git hooks. Lean: git hooks for repo-meaningful changes; fs-watch only for narrow needs.
-- **Owner-message channel**: Claude Code interactive (primary). Future: desktop notifications, mobile (1.x feature).
-- **Noise filter config**: bespoke YAML — pattern `(actor regex, action regex) → drop`. Lean: YAML edited by owner via PR; discovery loop = incident → owner adds entry. Reference: `event_dispatch_spam_fix` (136 CI Issue-Checks events).
-- **Dropped-signal audit**: count-only events (no payload, just `signal_dropped` action + matched-pattern attr) for trail of filter hits. Cheap; required for "owner can answer why X didn't trigger" forensics.
+- **Principal-message channel**: Claude Code interactive (primary). Future: desktop notifications, mobile (1.x feature).
+- **Noise filter config**: bespoke YAML — pattern `(actor regex, action regex) → drop`. Lean: YAML edited by principal via PR; discovery loop = incident → principal adds entry. Reference: `event_dispatch_spam_fix` (136 CI Issue-Checks events).
+- **Dropped-signal audit**: count-only events (no payload, just `signal_dropped` action + matched-pattern attr) for trail of filter hits. Cheap; required for "principal can answer why X didn't trigger" forensics.
 
-### C12 — Communication with owner
+### C12 — Communication with principal
 - **Interactive**: Claude Code CLI (primary). Future: native desktop app, voice (1.x).
 - **Critical alerts**: notification mechanism — desktop notifier vs Telegram message vs CLI banner-on-next-session. Lean: CLI banner-on-next-session as default; Telegram supplementary; desktop later.
-- **Batched briefs**: morning/evening summary written to a fixed file owner reads on session start vs sent via Telegram, OR using [`session-report`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/session-report) plugin from `anthropics/claude-plugins-official`. Lean: `session-report` plugin as base, file output for cross-session continuity; Telegram optional.
-- **CLAUDE.md / SOUL drift management**: bespoke vs [`claude-md-management`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-md-management) plugin. Lean: install the plugin to detect drift; SOUL.md changes still M3 (owner-only) per C15.
+- **Batched briefs**: morning/evening summary written to a fixed file principal reads on session start vs sent via Telegram, OR using [`session-report`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/session-report) plugin from `anthropics/claude-plugins-official`. Lean: `session-report` plugin as base, file output for cross-session continuity; Telegram optional.
+- **CLAUDE.md / SOUL drift management**: bespoke vs [`claude-md-management`](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/claude-md-management) plugin. Lean: install the plugin to detect drift; SOUL.md changes still M3 (principal-only) per C15.
 
 ### C13 — Budget / cost governance
 - **Cost ledger**: SQL views over C17 events (already decided in L2). No alternative.
@@ -1712,7 +1834,7 @@ After scout v2 (2026-04-27) — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-b
 - **Trust-ladder state**: stored in C3 facts (`self_improve_class_<name>` memories with maturity counters) or in a small `m1_unlocks` table. Lean: facts — they're the natural home, no schema overhead.
 - **Misimprovement detection**: SQL queries over C17 events comparing claimed-benefit metrics vs observed outcomes. Lean: this.
 - **Bootstrap-protection enforcement**: PR check workflow (GitHub Action) reading event substrate to confirm prior-version review. Lean: GHA — already established for CI.
-- **Safeguard layers (prior-version-review is novel — add parallel)**: per [Darwin-Gödel Machine (arXiv:2505.22954)](https://arxiv.org/abs/2505.22954) and [SiriuS](https://openreview.net/forum?id=Mz2JYufbg4g) — empirical benchmark + sandboxing + human oversight, not prior-version alone. Lean: stack all four for C6/C16/C17 modifications (prior-version + benchmark + sandbox + owner sign-off). DGM concedes "proving most changes net beneficial is impossible" — defense in depth required.
+- **Safeguard layers (prior-version-review is novel — add parallel)**: per [Darwin-Gödel Machine (arXiv:2505.22954)](https://arxiv.org/abs/2505.22954) and [SiriuS](https://openreview.net/forum?id=Mz2JYufbg4g) — empirical benchmark + sandboxing + human oversight, not prior-version alone. Lean: stack all four for C6/C16/C17 modifications (prior-version + benchmark + sandbox + principal sign-off). DGM concedes "proving most changes net beneficial is impossible" — defense in depth required.
 - **Tier-graduation alignment check**: per [biosecurity-agent lifecycle (bioRxiv 2025.09.17)](https://www.biorxiv.org/content/10.1101/2025.09.17.676717v1.full.pdf) — formal alignment check before each M-tier promotion. Lean: structured checklist (regression metrics + reviewer sign-off + SOUL alignment), not metric thresholds alone.
 
 ### C16 — Verification / QA
@@ -1756,7 +1878,7 @@ Before shifting effort to the new architecture's 1.x feature roll-out, the curre
 Required for v1 stable:
 - Memory contradictions visible to current recall do not actively mislead in daily ops (current pain class — bi-temporal + supersession in C3 fixes this, but interim is acceptable if it doesn't cause incidents).
 - Subagent fabrication rate ≤ 1 per 30 dispatches via existing manual-review discipline (until C16 ships).
-- Cost visibility — owner can answer "how much did Jarvis cost me last month" within 1 minute (precondition for any A/B routing experiment).
+- Cost visibility — principal can answer "how much did Jarvis cost me last month" within 1 minute (precondition for any A/B routing experiment).
 - No active blocker on cross-device usage (keys, MCP portability, principal env).
 - Critical security defenses (Sprint 1) operational on all 3 devices.
 
@@ -1770,9 +1892,9 @@ Pillars are long-lived capability groups (per `pillar_is_not_one_task` — they 
 |---|---|
 | Memory | C3 (Memory store), C5 (Reflection / learning), C17 (Observability — feeds episodic) |
 | Identity & Strategy | C1 (Identity & values), C2 (Goals & priorities) |
-| Cognition | C4 (Reasoning & planning), C6 (Decision gating) |
+| Cognition | C4 (Reasoning & planning), C6 (Decision gating), C18 (Proactive challenger) |
 | Action | C7 (Execution), C8 (Sub-orchestration), C9 (Tool / env interface), C10 (Research) |
-| Interface | C11 (Perception), C12 (Communication with owner) |
+| Interface | C11 (Perception), C12 (Communication with principal) |
 | Stewardship | C13 (Budget), C14 (Security & privacy), C15 (Self-improvement), C16 (Verification) |
 
 Pillars are how progress gets summarized; capabilities are how work gets sliced.
@@ -1782,7 +1904,7 @@ Pillars are how progress gets summarized; capabilities are how work gets sliced.
 Independent re-derivation compared to `jarvis_v2_vision` + `jarvis_v2_hybrid_agile`:
 
 - **Convergent on core** (10 themes): memory primacy, cloud-trust threat model, outcome-driven learning, autonomous loop, goals separate from memory, identity separate from memory, sub-orchestration, decisions outside memory, research-gated, security cloud-trust. Strong signal that the core direction is right.
-- **Scope divergence (deliberate per L0)**: prior framing was "universal personal AI agent" with personal life included; this architecture is owner-only, work-only. Personal life, TTS/STT, broader data ingestion, open-source split → 1.x feature backlog, not separate version.
+- **Scope divergence (deliberate per L0)**: prior framing was "universal personal AI agent" with personal life included; this architecture is principal-only, work-only. Personal life, TTS/STT, broader data ingestion, open-source split → 1.x feature backlog, not separate version.
 - **Structural additions in this design** (formalization, not scope creep): C6 single canonical gate, C13 budget governance, C15 modification tiers + bootstrap protection, C16 reviewer independence, C17 events as canonical substrate, "design-to-evaluate" op policy, bootstrap protocol.
 
 No findings forced re-decision. Prior vision's broader scope captured in 1.x backlog rather than in this architecture.

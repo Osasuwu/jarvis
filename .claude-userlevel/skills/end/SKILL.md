@@ -63,7 +63,7 @@ Reconcile pre-existing records with anything surfaced in reflection:
   - If no → save it now via `record_decision` (or `memory_store` type=decision) **and flag in Step 7 output**: "Decision X was not recorded in real time — consider why". Real-time capture is the goal; post-hoc saves are a regression.
 - **User preferences** or profile updates → `user` memory (upsert existing, don't duplicate).
 - **Project state** changes → `project` memory.
-- **Feedback** given by owner → `feedback` memory.
+- **Feedback** given by principal → `feedback` memory.
 
 Upsert existing memories, don't create duplicates. Check name before creating new.
 

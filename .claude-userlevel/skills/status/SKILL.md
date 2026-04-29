@@ -64,7 +64,7 @@ WHERE name LIKE 'hygiene_sweep_proposals_%'
 ORDER BY created_at ASC
 LIMIT 10;
 ```
-These are flag-only findings autonomous-loop recorded against foreign-owner repos (e.g. redrobot). Each day without owner action compounds — the `/status` prompt is the daily nudge. Compute `days_unaddressed = today - date(created_at)` per memory and group by repo (name format `hygiene_sweep_proposals_<repo>_<date>`).
+These are flag-only findings autonomous-loop recorded against foreign-owner repos (e.g. redrobot). Each day without principal action compounds — the `/status` prompt is the daily nudge. Compute `days_unaddressed = today - date(created_at)` per memory and group by repo (name format `hygiene_sweep_proposals_<repo>_<date>`).
 
 
 ## Step 3 — Analyze
@@ -105,7 +105,7 @@ Flag: N stale branches (remote gone), M unmerged branches, K stashes.
 
 ## Step 4 — Output
 
-**STALE FLAG section goes at the top of Alerts** — these compound daily and the owner needs to see them first. Group by repo; show oldest first so the most-ignored rises to the top:
+**STALE FLAG section goes at the top of Alerts** — these compound daily and the principal needs to see them first. Group by repo; show oldest first so the most-ignored rises to the top:
 
 ```
 [STALE FLAG] <repo> — <N>d unaddressed (<M> consecutive flags)
@@ -141,4 +141,4 @@ Omit the section if no stale flag-only findings were returned.
 3. <etc>
 ```
 
-Keep concise. Skip empty sections. Owner scans in 30 seconds.
+Keep concise. Skip empty sections. Principal scans in 30 seconds.

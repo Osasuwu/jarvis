@@ -8,7 +8,7 @@ Model memory: `action_agent_safety_gate_model_v1`.
 
 | Tier | Meaning | Examples |
 |------|---------|----------|
-| `0 AUTO` | Fires without owner involvement. | `priority:{high,medium,low}`, `area:*`, `needs-research`, `needs-triage`, `status:ready` labels. Insert into `events` / `audit_log`. `goals.progress` append. Memory store with tag `auto-generated`. |
+| `0 AUTO` | Fires without principal involvement. | `priority:{high,medium,low}`, `area:*`, `needs-research`, `needs-triage`, `status:ready` labels. Insert into `events` / `audit_log`. `goals.progress` append. Memory store with tag `auto-generated`. |
 | `1 OWNER_QUEUE` | Default. Gate refuses to fire and flags `queued=True`. | New issue comments, closing issues, merging PRs, `priority:critical`, `pillar:*` labels, any write to a table not on the Sprint-1 whitelist. |
 | `2 BLOCKED` | Never runs. `gate()` raises `GateError`. | `.env*`, `.claude/*`, destructive verbs (`delete`, `drop`, `force_push`), impersonation / `send_as_owner`, cross-repo writes, the whole `messaging` area. |
 
@@ -85,7 +85,7 @@ double-count.
 
 ## Changing tiers
 
-Owner-driven moves only. If the owner says "stop asking about X,
+Principal-driven moves only. If the principal says "stop asking about X,
 auto-apply it" → move the action to Tier 0 and narrow the rule as much
 as possible. If "this was too aggressive" → move to Tier 1. Each move
 is a decision memory with the reason. Never expand Tier 0 silently.
