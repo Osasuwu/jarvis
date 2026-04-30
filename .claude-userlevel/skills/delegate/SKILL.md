@@ -32,7 +32,27 @@ The main session stays as orchestrator: it reviews each subagent's diff, resolve
 
 ## Pipeline
 
-### 0. Load context from memory (parallel)
+### 0a. Grill-me trigger checkbox per issue (alignment protocol — SOUL.md)
+
+For **each** issue in the batch — apply the SOUL.md `### Grill-me trigger checkbox`:
+
+- Touches user-visible behavior?
+- Touches domain logic / algorithmics?
+- Tests will be non-trivial?
+- Crosses existing non-trivial code?
+
+**≥1 yes on an issue:**
+- That issue is **NOT delegate-ready**. Acceptance criteria need `/grill-me` first.
+- Two paths:
+  - **Inline grill** — main session runs `/grill-me` against the issue, updates AC + CONTEXT.md + memory, *then* the issue becomes delegatable. Use this when the issue is otherwise subagent-suitable, just under-specified.
+  - **Keep inline for /implement** — if grill-me reveals the work is also context-heavy or safety-adjacent, route through `/implement` instead.
+- Report to the principal: "issues #X, #Y need grill-me before dispatch — running it inline now / routing to /implement".
+
+**0 yes on an issue:** delegatable as-is. Continue.
+
+**Subagents do NOT run grill-me on their own.** They consume already-grilled AC via the issue body. Their dispatch prompt must include the literal AC list, and their first action is to confirm the AC is verifiable from the issue body alone — if not, they post a comment and stop, escalating back to main session.
+
+### 0b. Load context from memory (parallel)
 
 Same as /implement §0:
 - `memory_recall(query="delegation", limit=3)` — past delegation rules and feedback

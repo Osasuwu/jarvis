@@ -19,7 +19,27 @@ Target repo: determined from context (CWD, recent conversation, user mention). I
 
 ## Pipeline
 
-### 0. Load context from memory (parallel)
+### 0a. Grill-me trigger checkbox (alignment protocol — SOUL.md)
+
+**Before anything else** — apply the 4-question checkbox from SOUL.md `### Grill-me trigger checkbox`. Read the issue body and answer:
+
+- Does it touch user-visible behavior? (not cosmetic / refactor / doc-fix)
+- Does it touch domain logic / algorithmics / physics?
+- Will tests be non-trivial?
+- Does the change cross existing non-trivial code?
+
+**≥1 yes:** **STOP this pipeline**. Run `/grill-me` first against the issue. Output:
+- Refined acceptance criteria (literally verifiable) → `gh issue edit <N> --body` to update the AC section
+- Domain insight → inline `CONTEXT.md` update
+- Architectural decision → `record_decision` with UUIDs in `memories_used`
+
+After grill-me, re-enter `/implement` — the AC will now drive the rest of the pipeline.
+
+**Exception**: if the principal explicitly says "skip grill-me, just implement" — proceed, but log it as a `decision_made` with `confidence` lowered and rationale "user override of grill-me checkbox".
+
+**0 yes:** continue to step 0b. Most "fix typo / bump dep / move file" issues land here.
+
+### 0b. Load context from memory (parallel)
 
 Before anything else, recall relevant memories:
 - `memory_recall(query="delegation", limit=3)` — past delegation rules and feedback

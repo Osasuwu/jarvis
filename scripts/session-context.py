@@ -209,6 +209,39 @@ def _format_recovery_section(snapshot: str) -> str:
     )
 
 
+# Cap injected CONTEXT.md size so a runaway file can't blow the smart-zone
+# budget at session start. Full file is one Read away if Jarvis needs it.
+_CONTEXT_MAX_BYTES = 8 * 1024
+
+
+def _load_project_context() -> str | None:
+    """Return formatted '## Project Context' section if CONTEXT.md exists at
+    the project repo root. Truncates at _CONTEXT_MAX_BYTES with a note.
+
+    Resolves the project root via _root (the jarvis repo). For sessions
+    started outside the jarvis repo (other tracked projects), this is a
+    no-op until those repos add their own CONTEXT.md and we generalize the
+    lookup. Phase 1: jarvis-only — keep simple.
+    """
+    ctx_path = _root / "CONTEXT.md"
+    if not ctx_path.exists():
+        return None
+    try:
+        raw = ctx_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        print(f"[session-context] CONTEXT.md read failed: {e}", file=sys.stderr)
+        return None
+    if not raw.strip():
+        return None
+    truncated = False
+    if len(raw.encode("utf-8")) > _CONTEXT_MAX_BYTES:
+        # Slice on character boundary — len in bytes is approximate.
+        raw = raw[: _CONTEXT_MAX_BYTES]
+        truncated = True
+    suffix = "\n\n_(truncated — full file at `CONTEXT.md`)_" if truncated else ""
+    return f"## Project Context\n{raw.rstrip()}{suffix}"
+
+
 def main():
     hook_input = _read_hook_input()
     compact_resume = _is_compact_resume(hook_input)
@@ -271,8 +304,20 @@ def main():
         sections.append("## Always-Load Rules\n" + section)
         touched_ids.extend(ids)
 
-    # 3. Working state — ONLY when session is inside a known project dir.
-    #    In a non-project cwd (e.g. scheduled research) working_state is noise.
+    # 3a. Project domain context (CONTEXT.md) — glossary + invariants + arch
+    #     shape. Read order at session start: CLAUDE.md (rules) → SOUL.md
+    #     (identity) → CONTEXT.md (domain). Loaded only when session is inside
+    #     a project dir AND the file exists. CONTEXT.md is canonical at repo
+    #     root per Pocock convention; multi-context repos use CONTEXT-MAP.md.
+    #     Truncated at 8KB to avoid blowing the smart-zone budget — full file
+    #     is one Read away if needed.
+    if project:
+        ctx_section = _load_project_context()
+        if ctx_section:
+            sections.append(ctx_section)
+
+    # 3b. Working state — ONLY when session is inside a known project dir.
+    #     In a non-project cwd (e.g. scheduled research) working_state is noise.
     if project:
         section, ids = _query_memories(
             client, mem_type="project", limit=1,
