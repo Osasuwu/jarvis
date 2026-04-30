@@ -248,6 +248,22 @@ def _plan_mcp_user_registrations(
     return actions
 
 
+def _resolve_claude_cli() -> str:
+    """Return an executable path for the Claude Code CLI.
+
+    On Windows the npm wrapper installs both ``claude`` (POSIX shell script,
+    no extension) and ``claude.CMD`` to ``%APPDATA%\\npm``. ``CreateProcessW``
+    only consults PATHEXT when the bare name fails to resolve to a file —
+    if a sibling ``claude`` (no extension) exists, it wins, and Windows
+    refuses to launch it as a process (FileNotFoundError / WinError 2).
+    ``shutil.which`` honours PATHEXT, so it picks the ``.CMD`` directly.
+    Fall back to bare ``claude`` for environments where it isn't on PATH
+    yet but will be (e.g. fresh installs); the subprocess error message
+    will be clearer than a silent miss.
+    """
+    return shutil.which("claude") or "claude"
+
+
 def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
     """Run `claude mcp add -s user` for one server, removing any prior entry first.
 
@@ -268,12 +284,13 @@ def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
     `--` separator marks the end of options, so `-e` between `<name>` and
     `--` is safe.
     """
+    claude = _resolve_claude_cli()
     subprocess.run(
-        ["claude", "mcp", "remove", "-s", "user", name],
+        [claude, "mcp", "remove", "-s", "user", name],
         check=False,
         capture_output=True,
     )
-    cmd: list[str] = ["claude", "mcp", "add", "-s", "user"]
+    cmd: list[str] = [claude, "mcp", "add", "-s", "user"]
     transport = spec.get("type")
     if transport in {"http", "sse"}:
         # Order: --transport <t> <name> <url> -H ... -H ...

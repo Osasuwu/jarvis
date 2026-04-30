@@ -953,6 +953,7 @@ def test_register_mcp_user_stdio_command_shape(monkeypatch) -> None:
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
     installer._register_mcp_user(
         "memory",
         {"command": "python", "args": ["/abs/run.py"], "env": {"K": "V"}},
@@ -987,6 +988,7 @@ def test_register_mcp_user_stdio_command_shape_no_env(monkeypatch) -> None:
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
     installer._register_mcp_user("simple", {"command": "uvx", "args": ["foo-mcp"]})
 
     add = captured[1]
@@ -1010,6 +1012,7 @@ def test_register_mcp_user_http_command_shape(monkeypatch) -> None:
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
     installer._register_mcp_user(
         "remote",
         {
@@ -1043,6 +1046,7 @@ def test_register_mcp_user_http_no_headers(monkeypatch) -> None:
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
     installer._register_mcp_user(
         "open-mcp",
         {"type": "http", "url": "https://example.com/mcp"},
@@ -1064,8 +1068,25 @@ def test_register_mcp_user_raises_on_add_failure(monkeypatch) -> None:
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
     with pytest.raises(RuntimeError, match="claude mcp add failed"):
         installer._register_mcp_user("x", {"command": "y", "args": []})
+
+
+def test_resolve_claude_cli_uses_pathext_when_available(monkeypatch, tmp_path) -> None:
+    """Regression: bare ``claude`` (no extension) on Windows breaks
+    ``CreateProcessW`` when a sibling ``claude.CMD`` also exists; resolver must
+    return the PATHEXT-aware match so subprocess can launch it directly.
+    """
+    fake = tmp_path / "claude.CMD"
+    fake.write_text("@echo off\n")
+    monkeypatch.setattr(installer.shutil, "which", lambda name: str(fake) if name == "claude" else None)
+    assert installer._resolve_claude_cli() == str(fake)
+
+
+def test_resolve_claude_cli_falls_back_to_bare_name(monkeypatch) -> None:
+    monkeypatch.setattr(installer.shutil, "which", lambda name: None)
+    assert installer._resolve_claude_cli() == "claude"
 
 
 def test_unknown_install_as_raises(fake_repo: Path, tmp_path: Path) -> None:
