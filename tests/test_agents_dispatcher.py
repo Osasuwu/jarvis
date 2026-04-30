@@ -156,8 +156,16 @@ class _StubClient:
 # ---------------------------------------------------------------------------
 
 
+# Snapshot real wall-clock UTC at module import. See
+# test_agents_escalation.py for full rationale — TL;DR: dispatcher uses
+# real-now for staleness, so the fixture must follow real-now, but cached
+# once per import so multiple `_now()` calls in one test return the same
+# instant (avoids μs drift between calls).
+_NOW_SNAPSHOT = datetime.now(UTC)
+
+
 def _now() -> datetime:
-    return datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
+    return _NOW_SNAPSHOT
 
 
 def _queue_row(**overrides: Any) -> dict[str, Any]:

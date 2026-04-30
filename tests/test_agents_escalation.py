@@ -37,8 +37,19 @@ from agents.usage_probe import UsageReading
 # ---------------------------------------------------------------------------
 
 
+# Snapshot real wall-clock UTC once at module import. The escalation checks
+# under test compare `approved_at` against `datetime.now(timezone.utc)`
+# directly, so the fixture must drift WITH real-now (not be hard-coded to a
+# past date that crosses STALE_APPROVAL_MAX_DAYS as the real clock advances).
+# Caching at module-load — instead of returning a fresh `datetime.now()` on
+# each call — keeps `_now()` calls within one test consistent: the
+# "exact-threshold-does-not-escalate" test would otherwise tick a few μs
+# between its two `_now()` calls and trip the strict-greater check.
+_NOW_SNAPSHOT = datetime.now(UTC)
+
+
 def _now() -> datetime:
-    return datetime(2026, 4, 22, 12, 0, 0, tzinfo=UTC)
+    return _NOW_SNAPSHOT
 
 
 def _queue_row(**overrides: Any) -> dict[str, Any]:
