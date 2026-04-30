@@ -54,7 +54,7 @@ For **each** issue in the batch — apply the SOUL.md `### Grill-me trigger chec
 
 ### 0b. Load context from memory (parallel)
 
-Same as /implement §0:
+Same as /implement §0b:
 - `memory_recall(query="delegation", limit=3)` — past delegation rules and feedback
 - `memory_recall(query=<batch topic>, limit=3)` — decisions about this area
 - `memory_recall(type="feedback", project="global", limit=3)` — behavioral rules
