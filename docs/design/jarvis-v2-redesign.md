@@ -122,6 +122,22 @@ Jarvis is built on Claude Code as the runtime harness. This is a deliberate trad
 
 **Trigger to reconsider:** another runtime substantively better than Claude Code in our use case (not «new shiny release»). Until then, harness lock-in stands. Q7 in pass2 review tracks this; v2 (per Status table) is reserved for the framework-swap class of change.
 
+### Engineering principles (anti-vibe-coding stance)
+
+Jarvis is built and operated under the AI Hero / Pocock stance: AI raised the stakes on engineering fundamentals, didn't lower them. Garbage codebase → garbage agent output. The principles below constrain *how* Jarvis is built and *how* Jarvis builds (the agent applies them to its own work too).
+
+- **Real engineering > vibe coding.** Modularity, testability, clear interfaces. LLM speed is not a substitute for engineering discipline.
+- **Smart zone (~100K tokens), Plan / Execute / Clear.** Past ~100K, reasoning quality drops. Sessions write state to memory and start fresh windows. Reviews of own work go in fresh sessions, not the same one that wrote the code.
+- **Vertical slices.** Each task crosses the whole stack to a verifiable result. No "all schema then all API then all UI" — feedback arrives too late.
+- **Deep modules.** Small interface, large hidden implementation. Apply the deletion test before adding a third small adjacent file.
+- **TDD as the agent's runtime ground truth.** Tests verify behavior through public interfaces. Without them, the agent flies blind.
+- **Tight automated feedback loops.** Types, tests, linters, scripts — anything that gives the agent ground truth without a human in the loop.
+- **Reach shared understanding before writing the plan.** PRD is an *input* for the next phase, not a human-readable artifact (`/grill-me`).
+- **Don't bite off more than you can chew.** Decompose into independently-grabbable issues. Planning depth beats task ambition.
+- **Treat agents like humans with no memory.** Strict, repo-level processes (skills, playbooks, glossaries) compensate. Vibes don't.
+
+Canonical statements live in `config/SOUL.md` § Engineering principles (operational rules) and `docs/research-aihero-principles.md` (full research, sources, 3-layer mapping). `CONTEXT.md` carries domain glossary + invariants for in-session loading. This section is the L0 cross-link, not the source of truth — keep it short and let the canonical files drift independently.
+
 ---
 
 ## L1 — Capabilities
