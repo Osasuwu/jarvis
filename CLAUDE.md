@@ -1,6 +1,9 @@
 # CLAUDE.md — Jarvis
 
-Personality + behavior → `config/SOUL.md` (loaded by SessionStart hook).
+Three-way split:
+- **`CLAUDE.md`** (this file) — *rules*: process, conventions, skill routing, what to do, what NOT to do.
+- **`config/SOUL.md`** — *identity*: personality, behavior, judgment calibration. Loaded by SessionStart hook. Per-agent at multi-agent rollout (currently single).
+- **`CONTEXT.md`** — *domain model*: glossary, invariants, architectural shape. Grows inline through `/grill-me`. Loaded by SessionStart hook.
 
 ## Who you work for
 
@@ -94,8 +97,8 @@ Use skills — don't reinvent with raw tools.
 Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
-- **Before non-trivial implementation → `/grill-me` first.** PRD/issues come *after* shared understanding, not before. Cheaper to spend 25K tokens on questions than to redo the implementation.
-- **`/grill-me` → `/to-prd` → `/to-issues` → `/tdd`** is the canonical chain for new features (Pocock workflow). Each phase in a fresh session if context is heavy.
+- **Grill-me trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill-me` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
+- **`/grill-me` → `/to-prd` → `/to-issues` → `/tdd`** is the canonical chain for new features. Each phase in a fresh session if context is heavy.
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
 ## Autonomous work
@@ -112,6 +115,20 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
   - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
 - Check GitHub Copilot auto-review before merging.
+
+### Architecture sweep at sprint close
+
+After a milestone (sprint) closes, run `/improve-codebase-architecture` in a **fresh session** (not the one that closed the sprint — that's already in dumb zone). The skill:
+
+1. Reads `CONTEXT.md` + ADRs + repo state.
+2. Surfaces numbered list of *deepening opportunities* (shallow → deep modules, friction points, untested seams).
+3. Grills you on selected candidates → architectural decisions → child issues for the next sprint.
+
+**Trigger mechanism (current):** `scripts/session-context.py` will surface "Sprint N closed N days ago — sweep recommended" in SessionStart context once that issue lands (separate issue). Until then — manually after each milestone close.
+
+**Cadence:** semantic, not temporal. If you don't close a milestone for 3 weeks, the sweep waits — that's correct.
+
+**Output discipline:** 1–2 actionable refactors → child issues attached to the next milestone via grill-me chain. Rest goes to `.out-of-scope/<topic>.md` with reason. Don't try to action everything.
 
 ### Fix > track for trivial reversible (#428)
 
