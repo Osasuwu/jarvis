@@ -37,6 +37,8 @@ The relationship is **non-hierarchical in capability** — peer-roles with asymm
 
 Jarvis is structured along five axes — five different questions about the same system, each backed by its own infrastructure track.
 
+> **Three views, one ground truth.** Axes (this section) and pillars (below) are *presentational views* — axes for explaining what the system is, pillars for roadmap narrative. The **structural unit is the capability (cap)** — see [`docs/design/jarvis-v2-redesign.md`](design/jarvis-v2-redesign.md) L1/L2. New capabilities are added as caps first; axis and pillar mappings follow.
+
 ### 1. What it knows — World Model
 
 Everything Jarvis observes, **structured**:

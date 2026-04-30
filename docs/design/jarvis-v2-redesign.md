@@ -1666,18 +1666,38 @@ These caps inherit most structure from Tier A/B decisions. Each gets a single-pa
 
 L2 commits to mature-state behaviors that depend on data, calibration, or peer subsystems. **Bootstrap protocol** specifies the minimum viable system on Day 1 and how each capability transitions from cold-start to mature operation. Closes the reviewer's flag that decisions assumed mature infrastructure.
 
-### Migration order (what ships first)
+### Migration shape — vertical slices, not horizontal layers
 
-Capabilities have load-bearing dependencies. First-ship order:
+Per `Vertical slices, not horizontal` (SOUL §Engineering principles, adopted 2026-04-30): bootstrap is cut as **per-action-class vertical slices**, each delivering a runnable end-to-end result, not as horizontal cap-by-cap layers. Old path coexists for action classes not yet cut over (`two-mode coexistence`).
 
-1. **C17 substrate** (events table + canonical schema). Nothing else has somewhere to write.
-2. **C3 storage shape** (`memory_facts` + `memory_episodes` tables; canonical Postgres function). Existing memories migrated; existing recall paths still work via compatibility view during cutover.
+Each slice carries one action class through whichever caps are needed for an end-to-end audit trail in MVP form. Slices reach across multiple caps; subsequent slices reuse and deepen the substrate the earlier ones laid down.
+
+**Slice 0 — `memory_write` warmup.**
+- Path: `memory_store` → C6 gate (conservative seed threshold) → tool execution → C17 event written → C5 outcome record (success / `record_correction`).
+- Verifiable: `memory_store` runs end-to-end, events table shows full chain (gate decision, tool call, outcome). Old `memory_store` path still serves writes not yet on the new path.
+- Goal: learn the cutover mechanic on a low-blast, high-frequency action class; seed C6 + C5 calibration labels.
+- Out of slice 0: C16 review, C13 enforcement, C3 schema migration, multi-cap correlations.
+
+**Slice 1 — `/implement` AFK-trust path.**
+- Path: `/implement` invocation → C6 pre-tool gate → C17 event log per step → C16 mechanical reviewers (diff coherence + test coverage) → C5 outcome record → principal-visible audit.
+- Verifiable: run `/implement` on a small task, inspect events table for full audit trail with gate decisions, review verdict, outcome. C16 catches `N edited + diff = 0` automatically.
+- Goal: directly move the HITL → AFK-trust needle. Closes the pain points captured in `verify_before_assuming_implemented`, `subagent_acceptance_criteria_dodged_as_out_of_scope`, `record_decision_during_session_not_at_end`.
+- Out of slice 1: LLM reviewers (slice 2), `/delegate` path (slice 3), cross-device sweep, C13 enforcement.
+
+Subsequent slices extend slice 1 (LLM reviewers, cross-device) or cut new action classes (`/delegate`, `goal_set`, etc.). Slice ordering is biased toward AFK-trust caps first — substrate-only slices that don't move principal autonomy forward are deprioritized.
+
+### Cap-level dependency order (substrate availability)
+
+The vertical-slice cuts above constrain *which* substrate must exist before a slice can run. The cap-level dependency order is the load-bearing graph that decides when each cap's MVP becomes available to slices that need it:
+
+1. **C17 substrate** (events table + canonical schema). Required by every slice.
+2. **C3 storage shape** (`memory_facts` + `memory_episodes` tables; canonical Postgres function). Required by slice 0. Existing memories migrated via compatibility view during cutover.
 3. **C13 cost ledger view + routing rule**. Read-only first — observability before enforcement.
-4. **C6 single canonical gate** (PreToolUse on every tool, with conservative defaults — see below). Replaces SOUL prose drift.
-5. **C16 mechanical reviewers** (diff coherence + test coverage). Cheap, deterministic, immediate value.
-6. **C5 dispatcher + handlers** (synthesizer + calibrator first; stale-challenger last because it depends on C5's own calibration loop being seeded).
+4. **C6 single canonical gate** (PreToolUse on every tool, conservative defaults — see below). Required by slice 0 + 1. Replaces SOUL prose drift.
+5. **C16 mechanical reviewers** (diff coherence + test coverage). Required by slice 1. Cheap, deterministic, immediate value.
+6. **C5 dispatcher + handlers** (synthesizer + calibrator first; stale-challenger last because it depends on C5's own calibration loop being seeded). Required by slice 0 + 1.
 7. **C16 LLM reviewers** (peer-Jarvis logical correctness + goal alignment). Different-provider review **deferred** until first month of cost data validates the budget.
-8. **C8 pre/post dispatch gates**. Wraps existing /delegate.
+8. **C8 pre/post dispatch gates**. Wraps existing /delegate (slice 3 candidate).
 9. **C2 schema cleanup + goal-decision linkage**. Touches existing live data; coordinated cutover.
 10. **C4 plan events + skill-template migration**. Per-skill migration; existing pipelines stay functional during.
 11. **C15 self-improvement formal loop**. Last because it depends on C16 + C5 + C17 being measurable.
