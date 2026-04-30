@@ -99,18 +99,20 @@ Scripts save tokens and improve reliability vs generated code.
 
 ## When to Split Files
 
-Split into separate files when:
+Consider splitting into separate files when any of the below applies — these are heuristics, not hard limits:
 
-- SKILL.md exceeds 100 lines
+- SKILL.md grows past ~100 lines AND the extra content is reference material or examples (not core flow)
 - Content has distinct domains (finance vs sales schemas)
-- Advanced features are rarely needed
+- Advanced features are rarely needed and would hide the common path
+
+A meta-skill (like this one — `write-a-skill`) that *is itself* a reference document can reasonably be longer; the heuristic targets task-execution skills where every line is read in-flight.
 
 ## Review Checklist
 
 After drafting, verify:
 
 - [ ] Description includes triggers ("Use when...")
-- [ ] SKILL.md under 100 lines
+- [ ] SKILL.md is as short as the workflow allows (split reference/examples once growth threatens readability)
 - [ ] No time-sensitive info
 - [ ] Consistent terminology
 - [ ] Concrete examples included

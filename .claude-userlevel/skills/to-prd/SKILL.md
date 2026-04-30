@@ -3,7 +3,7 @@ name: to-prd
 description: Turn the current conversation context into a PRD and publish it to the project issue tracker. Use when user wants to create a PRD from the current context.
 ---
 
-This skill takes the current conversation context and codebase understanding and produces a PRD. Do NOT interview the user — just synthesize what you already know.
+This skill takes the current conversation context and codebase understanding and produces a PRD. **Do NOT run a full grill-me here** — that's a separate phase that should already have happened (`/grill-me` upstream). Targeted clarifying questions on specific points (e.g. confirming a module boundary, picking among already-discussed alternatives) are fine and expected — see step 2.
 
 Issue tracker conventions and triage label vocabulary should be defined in the project's CLAUDE.md or context docs (e.g. `CONTEXT.md`, `docs/`). If unclear, ask the user about: which tracker (GitHub Issues, Linear, etc.), which labels exist, and the project's PR/issue process before publishing anything.
 
@@ -17,7 +17,7 @@ A deep module (as opposed to a shallow module) is one which encapsulates a lot o
 
 Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
 
-3. Write the PRD using the template below, then publish it to the project issue tracker. Apply the `needs-triage` triage label so it enters the normal triage flow.
+3. Write the PRD using the template below, then publish it to the project issue tracker. Apply the project's **triage-entry label** (the label that signals "needs triage"; commonly `needs-triage`, but use whatever the project's CLAUDE.md / context docs define). If no such mapping exists, ask the user before applying any label.
 
 <prd-template>
 

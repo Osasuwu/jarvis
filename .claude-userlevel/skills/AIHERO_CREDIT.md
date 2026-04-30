@@ -36,4 +36,7 @@ Re-apply our `setup-matt-pocock-skills` adaptations on top.
 
 ## License
 
-All upstream content is MIT (Copyright (c) 2026 Matt Pocock). Original LICENSE: https://github.com/mattpocock/skills/blob/main/LICENSE.
+All upstream content is MIT (Copyright (c) 2026 Matt Pocock).
+
+- **Full license text bundled at** [`THIRD_PARTY_LICENSES/aihero-skills-MIT.txt`](../../THIRD_PARTY_LICENSES/aihero-skills-MIT.txt) — local copy that travels with the redistributed code, per MIT's "include this permission notice in all copies" requirement.
+- **Upstream source LICENSE:** https://github.com/mattpocock/skills/blob/main/LICENSE

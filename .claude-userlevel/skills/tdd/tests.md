@@ -28,10 +28,16 @@ Characteristics:
 
 ```typescript
 // BAD: Tests implementation details
+import * as paymentService from "./paymentService";
+jest.mock("./paymentService");
+
 test("checkout calls paymentService.process", async () => {
-  const mockPayment = jest.mock(paymentService);
+  const mockProcess = paymentService.process as jest.MockedFunction<
+    typeof paymentService.process
+  >;
+  mockProcess.mockResolvedValue({ ok: true });
   await checkout(cart, payment);
-  expect(mockPayment.process).toHaveBeenCalledWith(cart.total);
+  expect(mockProcess).toHaveBeenCalledWith(cart.total);
 });
 ```
 
