@@ -371,3 +371,75 @@ def test_format_recovery_section_has_header_and_body():
     assert out.startswith("## Pre-Compact Recovery\n")
     assert "# body" in out
     assert "pre-compact snapshot" in out.lower()
+
+
+# ---------------------------------------------------------------------------
+# _load_project_context — domain-context auto-load (PR #489)
+# ---------------------------------------------------------------------------
+def test_load_project_context_returns_none_when_missing(tmp_path):
+    """No CONTEXT.md at project_root → silently skip."""
+    assert sc._load_project_context(tmp_path) is None
+
+
+def test_load_project_context_returns_none_when_empty(tmp_path):
+    """Empty / whitespace-only CONTEXT.md → treat as missing."""
+    (tmp_path / "CONTEXT.md").write_text("   \n  \n", encoding="utf-8")
+    assert sc._load_project_context(tmp_path) is None
+
+
+def test_load_project_context_returns_section_when_present(tmp_path):
+    """Normal CONTEXT.md → wrapped in '## Project Context' header, no truncation."""
+    body = "# CONTEXT\n\nGlossary entry: **Pillar** — multi-sprint capability."
+    (tmp_path / "CONTEXT.md").write_text(body, encoding="utf-8")
+    out = sc._load_project_context(tmp_path)
+    assert out is not None
+    assert out.startswith("## Project Context\n")
+    assert "Glossary entry: **Pillar**" in out
+    assert "_(truncated" not in out
+
+
+def test_load_project_context_truncates_at_byte_cap(tmp_path):
+    """File larger than _CONTEXT_MAX_BYTES → truncated with note."""
+    cap = sc._CONTEXT_MAX_BYTES
+    # ASCII payload — bytes == chars, easy to reason about.
+    body = "# CONTEXT\n\n" + ("x" * (cap + 500))
+    (tmp_path / "CONTEXT.md").write_text(body, encoding="utf-8")
+    out = sc._load_project_context(tmp_path)
+    assert out is not None
+    assert "_(truncated — full file at `CONTEXT.md`)_" in out
+    # The injected text (excluding header + truncation note) should not exceed
+    # the cap. Strip our wrapper to measure the body we actually emitted.
+    inner = out[len("## Project Context\n"):].split("\n\n_(truncated")[0]
+    assert len(inner.encode("utf-8")) <= cap
+
+
+def test_load_project_context_byte_cap_handles_multibyte(tmp_path):
+    """Multi-byte UTF-8 (Cyrillic) cut at byte boundary doesn't produce U+FFFD."""
+    cap = sc._CONTEXT_MAX_BYTES
+    # Cyrillic each char = 2 bytes in UTF-8, so 5000 chars = 10000 bytes > cap.
+    body = "# CONTEXT\n\n" + ("я" * 5000)
+    (tmp_path / "CONTEXT.md").write_text(body, encoding="utf-8")
+    out = sc._load_project_context(tmp_path)
+    assert out is not None
+    assert "_(truncated" in out
+    # No replacement-char artefact from a mid-codepoint cut.
+    assert "�" not in out
+    inner = out[len("## Project Context\n"):].split("\n\n_(truncated")[0]
+    assert len(inner.encode("utf-8")) <= cap
+
+
+def test_load_project_context_resolves_per_project_root(tmp_path):
+    """A CONTEXT.md in one project root must NOT leak into a different one.
+
+    Regression for PR #489 review: previously _load_project_context used the
+    jarvis repo path unconditionally, so a redrobot session would inject
+    jarvis's CONTEXT.md.
+    """
+    proj_a = tmp_path / "proj_a"
+    proj_b = tmp_path / "proj_b"
+    proj_a.mkdir()
+    proj_b.mkdir()
+    (proj_a / "CONTEXT.md").write_text("# Project A context", encoding="utf-8")
+    # proj_b deliberately has NO CONTEXT.md
+    assert "Project A" in sc._load_project_context(proj_a)
+    assert sc._load_project_context(proj_b) is None
