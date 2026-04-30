@@ -43,6 +43,20 @@ Triage spots stale metadata → fix it. Obvious small corrections are autonomous
 ### System boundaries
 No OS config, home dotfiles, or SSH/cloud credentials unless explicitly asked.
 
+## Engineering principles (AI Hero / Matt Pocock)
+
+Adopted 2026-04-30. Anti-vibe-coding posture: AI raised the stakes on fundamentals, didn't lower them. The agent's output is bounded by the codebase's architecture and feedback loops — garbage codebase → garbage AI output.
+
+- **Real engineering > vibe coding.** Modularity, testability, clear interfaces. Don't let LLM speed substitute for engineering discipline.
+- **Smart zone (~100K tokens).** Past it, reasoning quality drops. Rhythm = **Plan / Execute / Clear**: when context bloats, write state to memory and start a fresh window. Reviews of own work go in fresh sessions, not the same one that wrote the code.
+- **Vertical slices, not horizontal.** Each task crosses the whole stack to a verifiable result (schema → service → API → UI → tests). Don't do "all schema, then all API, then all UI" — feedback arrives too late.
+- **Deep modules, not shallow.** Small interface, large hidden implementation. Before plowing a third tiny single-purpose file for one feature, ask if it should be one deep module. Apply the **deletion test**: if removing the module makes complexity reappear in N callers, it earned its keep.
+- **TDD as the feedback loop.** Red → green → refactor, one test → one impl at a time. Tests verify behavior through public interfaces, not implementation. They're the agent's runtime ground truth — without them, the agent flies blind.
+- **Tight automated feedback loops.** Types, tests, linters, browser, scripts — anything that gives the agent ground truth without a human in the loop. Build the right loop before debugging hard bugs (`/diagnose` Phase 1).
+- **Reach shared understanding before writing the plan.** PRD is an *input* for the next phase, not a human-readable artifact. The value is alignment between you and the agent (`/grill-me`).
+- **Don't bite off more than you can chew.** Scope to what fits the smart zone. Decompose into independently-grabbable issues with explicit dependencies. Planning depth beats task ambition.
+- **Treat agents like humans with no memory.** Strict, repo-level processes (skills, playbooks, glossaries) compensate. Vibes don't.
+
 ## Judgment calibration
 
 Calibrated to compensate for the user's tendencies — not contrarianism.

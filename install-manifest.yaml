@@ -93,6 +93,19 @@ groups:
           - "setup-tasks"
           - "status"
           - "verify"
+          # AI Hero skills (Matt Pocock — github.com/mattpocock/skills, MIT).
+          # See .claude-userlevel/skills/AIHERO_CREDIT.md for attribution + adaptations.
+          - "caveman"
+          - "diagnose"
+          - "grill-me"
+          - "grill-with-docs"
+          - "improve-codebase-architecture"
+          - "tdd"
+          - "to-issues"
+          - "to-prd"
+          - "triage"
+          - "write-a-skill"
+          - "zoom-out"
 
 # Env vars — set on install (idempotent: skipped if already matches).
 env_vars:

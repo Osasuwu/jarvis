@@ -80,10 +80,22 @@ Use skills — don't reinvent with raw tools.
 | Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
 | End of sprint in redrobot | `/sprint-report` |
 | "end" / "end quick" | `/end` / `/end-quick` |
+| Stress-test plan / "grill me" / before non-trivial implementation | `/grill-me` (or `/grill-with-docs` if project has CONTEXT.md / ADRs) |
+| Conversation context → PRD on issue tracker | `/to-prd` |
+| Plan / PRD → vertical-slice issues | `/to-issues` |
+| Build feature / fix bug test-first ("red-green-refactor") | `/tdd` |
+| "diagnose this", bug repro, perf regression | `/diagnose` |
+| "improve architecture", find shallow modules, refactoring opportunities | `/improve-codebase-architecture` |
+| "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
+| Issue triage / state machine / "ready for agent" | `/triage` |
+| Author/edit a skill | `/write-a-skill` |
+| "be brief", "caveman", token compression | `/caveman` |
 
 Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
+- **Before non-trivial implementation → `/grill-me` first.** PRD/issues come *after* shared understanding, not before. Cheaper to spend 25K tokens on questions than to redo the implementation.
+- **`/grill-me` → `/to-prd` → `/to-issues` → `/tdd`** is the canonical chain for new features (Pocock workflow). Each phase in a fresh session if context is heavy.
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
 ## Autonomous work
