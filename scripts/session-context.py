@@ -214,16 +214,21 @@ def _format_recovery_section(snapshot: str) -> str:
 _CONTEXT_MAX_BYTES = 8 * 1024
 
 
-def _load_project_context() -> str | None:
-    """Return formatted '## Project Context' section if CONTEXT.md exists at
-    the project repo root. Truncates at _CONTEXT_MAX_BYTES with a note.
+def _load_project_context(project_root: Path) -> str | None:
+    """Return formatted '## Project Context' section if `CONTEXT.md` exists
+    at `project_root`. Truncates at `_CONTEXT_MAX_BYTES` with a note.
 
-    Resolves the project root via _root (the jarvis repo). For sessions
-    started outside the jarvis repo (other tracked projects), this is a
-    no-op until those repos add their own CONTEXT.md and we generalize the
-    lookup. Phase 1: jarvis-only — keep simple.
+    `project_root` is the repo of the *current* session (resolved by the
+    caller from cwd). This must NOT default to the jarvis repo — sessions
+    started in other tracked repos (e.g. redrobot) would otherwise inject
+    jarvis's CONTEXT.md into their context.
+
+    Returns None when:
+      - the file is missing
+      - the file is empty / whitespace-only
+      - read fails (logged to stderr)
     """
-    ctx_path = _root / "CONTEXT.md"
+    ctx_path = project_root / "CONTEXT.md"
     if not ctx_path.exists():
         return None
     try:
@@ -233,10 +238,13 @@ def _load_project_context() -> str | None:
         return None
     if not raw.strip():
         return None
+    encoded = raw.encode("utf-8")
     truncated = False
-    if len(raw.encode("utf-8")) > _CONTEXT_MAX_BYTES:
-        # Slice on character boundary — len in bytes is approximate.
-        raw = raw[: _CONTEXT_MAX_BYTES]
+    if len(encoded) > _CONTEXT_MAX_BYTES:
+        # Strict byte cap: slice the bytes, then decode with errors="ignore"
+        # so a multi-byte sequence cut in the middle is dropped cleanly
+        # rather than producing a U+FFFD replacement char.
+        raw = encoded[:_CONTEXT_MAX_BYTES].decode("utf-8", errors="ignore")
         truncated = True
     suffix = "\n\n_(truncated — full file at `CONTEXT.md`)_" if truncated else ""
     return f"## Project Context\n{raw.rstrip()}{suffix}"
@@ -307,12 +315,19 @@ def main():
     # 3a. Project domain context (CONTEXT.md) — glossary + invariants + arch
     #     shape. Read order at session start: CLAUDE.md (rules) → SOUL.md
     #     (identity) → CONTEXT.md (domain). Loaded only when session is inside
-    #     a project dir AND the file exists. CONTEXT.md is canonical at repo
-    #     root per Pocock convention; multi-context repos use CONTEXT-MAP.md.
-    #     Truncated at 8KB to avoid blowing the smart-zone budget — full file
-    #     is one Read away if needed.
+    #     a project dir AND the file exists.
+    #
+    #     Project root is resolved from cwd (the directory the session was
+    #     launched in), not from `_root` — `_root` is the jarvis repo and
+    #     would inject jarvis's CONTEXT.md into a redrobot session.
+    #     `_detect_project()` only returns a project name when cwd basename
+    #     matches a known project, so cwd IS the project root in that case.
+    #
+    #     CONTEXT.md is canonical at repo root per Pocock convention;
+    #     multi-context repos use CONTEXT-MAP.md. Truncated at 8KB to avoid
+    #     blowing the smart-zone budget — full file is one Read away.
     if project:
-        ctx_section = _load_project_context()
+        ctx_section = _load_project_context(Path(os.getcwd()))
         if ctx_section:
             sections.append(ctx_section)
 

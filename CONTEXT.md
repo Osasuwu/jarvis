@@ -4,7 +4,7 @@
 
 This file **grows organically** through `/grill-me` and `/grill-with-docs` sessions — every time an implicit assumption surfaces, it lands here inline. Don't batch updates.
 
-**Read order at session start:** `CLAUDE.md` (rules) → `SOUL.md` (identity) → `CONTEXT.md` (domain). Any ADRs in `docs/adr/` override conflicting glossary entries.
+**Read order at session start:** `CLAUDE.md` (rules) → `config/SOUL.md` (identity) → `CONTEXT.md` (domain). Any ADRs in `docs/adr/` override conflicting glossary entries.
 
 ---
 
