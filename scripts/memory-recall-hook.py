@@ -84,14 +84,22 @@ from supabase import create_client
 # names back to the legacy private ones so downstream code (and tests
 # patching `mrh._cosine_sim`) keeps working.
 sys.path.insert(0, str(_root / "mcp-memory"))
-from recall import (  # noqa: E402
+# Re-exported for tests that introspect mrh.<NAME> directly. Tests in
+# tests/test_memory_recall_hook.py reach into the module to verify
+# constants and functions whose canonical home is now recall.py; keeping
+# them as module attributes preserves that contract.
+from recall import (  # noqa: E402, F401
+    LINK_DECAY,
+    LINK_EXPAND_TOP_K,
     LINK_SCORE_FIELD,
+    RRF_K,
     cosine_sim as _cosine_sim,
+    expand_links,
     filter_excluded_tags as _filter_excluded_tags,
+    merge_with_links,
     parse_pgvector as _parse_embedding,
     rrf_merge,
-    expand_links,
-    merge_with_links,
+    score_linked_rows as _score_linked_rows,
 )
 
 # ---------------------------------------------------------------------------
