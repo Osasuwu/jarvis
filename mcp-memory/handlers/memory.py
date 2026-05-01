@@ -17,7 +17,6 @@ preserved.
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import os
 from datetime import datetime, timezone
@@ -25,6 +24,20 @@ from datetime import datetime, timezone
 from mcp.types import TextContent
 
 import server  # late-bound — see module docstring
+
+# Recall pipeline constants and primitive helpers live in mcp-memory/recall.py
+# (deep-module split, #496). Aliased back to the legacy private names so that
+# server.py's re-export chain and tests that patch `server.<name>` keep working
+# unchanged.
+from recall import (  # noqa: F401
+    EXCLUDE_TAGS_FROM_RECALL,
+    RRF_K,
+    SIMILARITY_THRESHOLD,
+    TEMPORAL_HALF_LIVES,
+    cosine_sim as _cosine_sim,
+    filter_excluded_tags as _filter_excluded_tags,
+    parse_pgvector as _parse_pgvector,
+)
 
 # Phase 2b classifier — same conditional-import pattern as server.py.
 try:
@@ -45,34 +58,6 @@ from embeddings import _canonical_embed_text, _model_slot, _embed_upsert_fields 
 VALID_TYPES = ("user", "project", "decision", "feedback", "reference")
 
 
-# #417: operational artifacts like session snapshots carry mixed transcript
-# content that semantically matches a wide range of queries. They're meant
-# to be fetched by name via memory_get during /end recovery, never to
-# compete in normal recall. Filtering at the Python layer keeps the schema
-# and RPCs untouched while measurably lifting recall@5.
-EXCLUDE_TAGS_FROM_RECALL = frozenset({"session-snapshot"})
-
-
-def _filter_excluded_tags(rows):
-    """Drop rows whose tags overlap EXCLUDE_TAGS_FROM_RECALL. See #417."""
-    if not rows or not EXCLUDE_TAGS_FROM_RECALL:
-        return rows
-    out = []
-    for row in rows:
-        tags = row.get("tags") or []
-        if isinstance(tags, list) and any(t in EXCLUDE_TAGS_FROM_RECALL for t in tags):
-            continue
-        out.append(row)
-    return out
-
-
-TEMPORAL_HALF_LIVES = {
-    "project": 7,
-    "reference": 30,
-    "decision": 60,
-    "feedback": 90,
-    "user": 180,
-}
 DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
@@ -97,47 +82,8 @@ MAX_AUTO_LINKS = 5
 MAX_CLASSIFIER_NEIGHBORS = 5
 
 
-SIMILARITY_THRESHOLD = 0.25  # minimum cosine similarity to include in results
-
 GAP_THRESHOLD = 0.45  # known-unknowns: log gaps when top_similarity < this
 GAP_DEDUP_SIM = 0.9
-
-
-def _parse_pgvector(v: list[float] | str | None) -> list[float] | None:
-    """Normalize a pgvector value returned by supabase-py.
-
-    PostgREST returns vector columns as JSON-encoded strings
-    (e.g. ``"[0.1,0.2,...]"``), not Python lists. Callers that pass the raw
-    value into `_cosine_sim` hit the len-mismatch guard and silently score 0.
-    Return a float list, or None if the value is missing / unparseable.
-    """
-    if v is None:
-        return None
-    if isinstance(v, list):
-        return v
-    if isinstance(v, str):
-        try:
-            parsed = json.loads(v)
-        except (ValueError, TypeError):
-            return None
-        return parsed if isinstance(parsed, list) else None
-    return None
-
-
-def _cosine_sim(v1: list[float] | None, v2: list[float] | None) -> float:
-    """Cosine similarity between two embedding vectors. Returns 0.0 if either
-    is None/empty or if lengths differ (dim mismatch would otherwise silently
-    truncate via zip — important during embedding-model migrations)."""
-    if v1 is None or v2 is None or len(v1) == 0 or len(v2) == 0:
-        return 0.0
-    if len(v1) != len(v2):
-        return 0.0
-    dot = sum(a * b for a, b in zip(v1, v2))
-    mag1 = math.sqrt(sum(a * a for a in v1))
-    mag2 = math.sqrt(sum(b * b for b in v2))
-    if mag1 == 0 or mag2 == 0:
-        return 0.0
-    return dot / (mag1 * mag2)
 
 
 async def _upsert_known_unknown(

@@ -57,7 +57,11 @@ _venv_py = _root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/
 # Guard: only re-exec when run as script. When imported (e.g. by tests via
 # importlib with a non-"__main__" module name), skip the re-exec so the
 # module's top-level sys.exit doesn't kill pytest collection.
-if __name__ == "__main__" and _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
+if (
+    __name__ == "__main__"
+    and _venv_py.exists()
+    and Path(sys.executable).resolve() != _venv_py.resolve()
+):
     sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve())]))
 
 # ---------------------------------------------------------------------------
@@ -75,39 +79,37 @@ for _env in [_root / ".env", _root.parent / ".env"]:
 
 from supabase import create_client
 
+# Recall pipeline primitives live in mcp-memory/recall.py (deep-module split,
+# #496). Hook adds mcp-memory/ to sys.path on import and aliases the public
+# names back to the legacy private ones so downstream code (and tests
+# patching `mrh._cosine_sim`) keeps working.
+sys.path.insert(0, str(_root / "mcp-memory"))
+from recall import (  # noqa: E402
+    RRF_K,
+    cosine_sim as _cosine_sim,
+    filter_excluded_tags as _filter_excluded_tags,
+    parse_pgvector as _parse_embedding,
+)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SIMILARITY_THRESHOLD = 0.30  # calibrated 2026-04-17: real user prompts hit 0.35-0.50
-
-# #417: mirror of mcp-memory/handlers/memory.py — operational artifacts
-# like session snapshots are recovery-only, never recall candidates.
-EXCLUDE_TAGS_FROM_RECALL = frozenset({"session-snapshot"})
-
-
-def _filter_excluded_tags(rows: list[dict]) -> list[dict]:
-    """Drop rows whose tags overlap EXCLUDE_TAGS_FROM_RECALL. See #417."""
-    if not rows or not EXCLUDE_TAGS_FROM_RECALL:
-        return rows
-    out = []
-    for row in rows:
-        tags = row.get("tags") or []
-        if isinstance(tags, list) and any(t in EXCLUDE_TAGS_FROM_RECALL for t in tags):
-            continue
-        out.append(row)
-    return out
-# top-similarity on voyage-3-lite/512 with conversational queries. 0.30 catches
-# clearly-relevant matches without firing on unrelated memories (which sit <0.25).
-# server.py default SIMILARITY_THRESHOLD is also 0.25 for the same reason.
+# Hook-local override: tighter than recall.SIMILARITY_THRESHOLD (0.25, server
+# default). Calibrated 2026-04-17 against voyage-3-lite/512 on real user
+# prompts: top-similarity sits at 0.35-0.50 for relevant memories and below
+# 0.25 for unrelated ones. 0.30 catches clearly-relevant matches without
+# firing on conversational glue tokens. Slice 3 will express this divergence
+# as a RecallConfig flag flip.
+SIMILARITY_THRESHOLD = 0.30
 # Phase 7.2 default: brief-mode one-line entries instead of full content. Jarvis
 # sees the inventory relevant to the prompt and fetches content via memory_get
 # on hits it actually wants. Reduces per-turn rot since we no longer dump
 # 5-10 full bodies into every UserPromptSubmit.
 BRIEF_MODE = True
-CHAR_BUDGET_FULL = 40_000    # ~10K tokens, ~5% of 200K window (legacy path)
-CHAR_BUDGET_BRIEF = 12_000   # ~3K tokens ceiling — rarely hit after MAX_BRIEF_ENTRIES cap
+CHAR_BUDGET_FULL = 40_000  # ~10K tokens, ~5% of 200K window (legacy path)
+CHAR_BUDGET_BRIEF = 12_000  # ~3K tokens ceiling — rarely hit after MAX_BRIEF_ENTRIES cap
 CHAR_BUDGET = CHAR_BUDGET_BRIEF if BRIEF_MODE else CHAR_BUDGET_FULL
-FETCH_LIMIT = 50             # pull wide per signal, cap by budget in Python
+FETCH_LIMIT = 50  # pull wide per signal, cap by budget in Python
 # Cap brief-mode injection at top-N direct hits. Earlier default was char-budget
 # only, which let 30-40 entries through every prompt (~4-5KB) — mostly tail
 # noise the agent never reads. Top-7 preserves the relevance head; deeper hits
@@ -134,8 +136,7 @@ KNOWN_UNKNOWN_SCAN_LIMIT = 200
 #               already session-loaded; broader project memories will be
 #               pulled in once Phase 3 gains a proper tag filter.
 ALLOWED_TYPES = {"feedback", "decision", "reference"}
-MIN_PROMPT_CHARS = 15        # too-short prompts produce noisy embeddings
-RRF_K = 60                   # matches _rrf_merge in mcp-memory/server.py
+MIN_PROMPT_CHARS = 15  # too-short prompts produce noisy embeddings
 # Rewriter types are applied as a soft rank boost, not a hard filter. An
 # earlier version gated rows by requested_types and recall@5 dropped -5pp
 # on the eval set whenever Haiku misclassified a feedback/decision query
@@ -173,7 +174,7 @@ ANTHROPIC_VERSION = "2023-06-01"
 REWRITER_MODEL = "claude-haiku-4-5"
 REWRITER_TIMEOUT = 2.5
 REWRITER_MAX_TOKENS = 200
-MIN_REWRITE_CHARS = 25   # shorter than this → LLM call not worth the latency
+MIN_REWRITE_CHARS = 25  # shorter than this → LLM call not worth the latency
 REWRITER_MAX_ENTITIES = 8
 REWRITER_MAX_TYPES = 3
 # Types the rewriter is allowed to suggest. Subset of {feedback, decision,
@@ -266,9 +267,7 @@ def _parse_rewriter(text: str) -> dict | None:
     raw_entities = data.get("entities")
     if isinstance(raw_entities, list):
         entities = [
-            str(e).strip().lower()
-            for e in raw_entities
-            if isinstance(e, (str, int, float))
+            str(e).strip().lower() for e in raw_entities if isinstance(e, (str, int, float))
         ]
         entities = [e for e in entities if e][:REWRITER_MAX_ENTITIES]
     else:
@@ -335,49 +334,6 @@ def detect_project(cwd: str) -> str | None:
     except Exception:
         return None
     return name if name in KNOWN_PROJECTS else None
-
-
-def _parse_embedding(v) -> list[float] | None:
-    """Parse a pgvector column as returned by supabase-py.
-
-    PostgREST serializes `vector(N)` as a JSON-array string like "[0.1,0.2,...]"
-    rather than a native list — silently zipping that with a real list of
-    floats (the fail mode in server.py's _cosine_sim callers) produces 0.0
-    similarity instead of an error. Parse to list[float] up front so cosine
-    math sees matching shapes.
-
-    Returns None for anything unparseable; callers treat None as "no vector"
-    and fall through to a miss.
-    """
-    if v is None:
-        return None
-    if isinstance(v, list):
-        return v
-    if isinstance(v, str):
-        try:
-            parsed = json.loads(v)
-        except (json.JSONDecodeError, ValueError):
-            return None
-        if isinstance(parsed, list):
-            return parsed
-    return None
-
-
-def _cosine_sim(a: list[float] | None, b: list[float] | None) -> float:
-    """Cosine similarity. Returns 0.0 on any dim mismatch or missing input.
-
-    Same math as mcp-memory/server.py::_cosine_sim. Duplicated here so the
-    hook doesn't import from the MCP server (no Python package structure in
-    place yet — Phase 4+ consolidation task).
-    """
-    if not a or not b or len(a) != len(b):
-        return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
-    na = sum(x * x for x in a) ** 0.5
-    nb = sum(y * y for y in b) ** 0.5
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
 
 
 def check_known_unknown_gate(client, query_embedding: list[float] | None) -> bool:
@@ -618,9 +574,7 @@ def expand_links(
     return _score_linked_rows(top_rows, linked_rows, top_k=top_k, decay=decay)
 
 
-def merge_with_links(
-    ranked_rows: list[dict], linked_rows: list[dict]
-) -> list[dict]:
+def merge_with_links(ranked_rows: list[dict], linked_rows: list[dict]) -> list[dict]:
     """Fold linked rows into the already-ranked hybrid result.
 
     Each `ranked_rows` entry carries `_final_score` (set by `rrf_merge`);
@@ -717,35 +671,38 @@ def main():
     # If yes, widen — disable brief mode for this invocation and raise the
     # char budget to the legacy full-content limit so the agent gets bodies,
     # not just names. Gate is best-effort; any DB error falls back to False.
-    widened = (
-        BRIEF_MODE
-        and check_known_unknown_gate(client, query_embedding)
-    )
+    widened = BRIEF_MODE and check_known_unknown_gate(client, query_embedding)
     brief_mode = BRIEF_MODE and not widened
     char_budget = CHAR_BUDGET_BRIEF if brief_mode else CHAR_BUDGET_FULL
 
     semantic_rows: list[dict] = []
     if query_embedding is not None:
         try:
-            sem = client.rpc("match_memories", {
-                "query_embedding": query_embedding,
-                "match_limit": FETCH_LIMIT,
-                "similarity_threshold": SIMILARITY_THRESHOLD,
-                "filter_project": project,  # None → no project filter
-                "filter_type": None,        # filter types in Python
-            }).execute()
+            sem = client.rpc(
+                "match_memories",
+                {
+                    "query_embedding": query_embedding,
+                    "match_limit": FETCH_LIMIT,
+                    "similarity_threshold": SIMILARITY_THRESHOLD,
+                    "filter_project": project,  # None → no project filter
+                    "filter_type": None,  # filter types in Python
+                },
+            ).execute()
             semantic_rows = sem.data or []
         except Exception:
             semantic_rows = []
 
     keyword_rows: list[dict] = []
     try:
-        kw = client.rpc("keyword_search_memories", {
-            "search_query": keyword_query,
-            "match_limit": FETCH_LIMIT,
-            "filter_project": project,
-            "filter_type": None,
-        }).execute()
+        kw = client.rpc(
+            "keyword_search_memories",
+            {
+                "search_query": keyword_query,
+                "match_limit": FETCH_LIMIT,
+                "filter_project": project,
+                "filter_type": None,
+            },
+        ).execute()
         keyword_rows = kw.data or []
     except Exception:
         keyword_rows = []
