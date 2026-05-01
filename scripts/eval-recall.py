@@ -28,7 +28,6 @@ import argparse
 import asyncio
 import importlib.util
 import json
-import math
 import os
 import sys
 from dataclasses import dataclass, field, asdict
@@ -44,20 +43,18 @@ from typing import Any, Callable
 _eval_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_eval_root / "mcp-memory"))
 from recall import (  # noqa: E402
-    RRF_K,
     SIMILARITY_THRESHOLD,
-    TEMPORAL_HALF_LIVES,
     filter_excluded_tags as _filter_excluded_tags,
+    rrf_merge as _rrf_merge,
+    apply_temporal_scoring as _apply_temporal_scoring,
+    expand_links as _expand_links,
+    merge_with_links as _merge_with_links,
+    enrich_with_confidence as _enrich_with_confidence,
 )
 
 # TYPE_BOOST_MULTIPLIER intentionally not duplicated here. When --with-rewriter
 # is enabled, we load scripts/memory-recall-hook.py and read its constant,
 # so re-tuning the boost only needs to happen in one place.
-DEFAULT_HALF_LIFE = 30
-ACCESS_BOOST_MAX = 0.3
-ACCESS_HALF_LIFE = 14
-# Phase 1 polish (#240): mirror of server.py — entrenchment multiplier.
-CONFIDENCE_FLOOR = 0.5
 
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
@@ -117,194 +114,6 @@ async def _embed_query(text: str) -> list[float]:
         )
         resp.raise_for_status()
         return resp.json()["data"][0]["embedding"]
-
-
-def _rrf_merge(
-    semantic_rows: list[dict],
-    keyword_rows: list[dict],
-    limit: int,
-    k: int = RRF_K,
-    boost_types: set[str] | None = None,
-    boost_multiplier: float = 1.0,
-) -> list[dict]:
-    scores: dict[str, float] = {}
-    by_id: dict[str, dict] = {}
-    for rank, row in enumerate(semantic_rows):
-        rid = row.get("id") or row["name"]
-        scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
-        by_id[rid] = row
-    for rank, row in enumerate(keyword_rows):
-        rid = row.get("id") or row["name"]
-        scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
-        by_id[rid] = row
-    if boost_types:
-        for rid, row in by_id.items():
-            if row.get("type") in boost_types:
-                scores[rid] *= boost_multiplier
-    ranked = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
-    result = []
-    for rid in ranked[:limit]:
-        row = by_id[rid]
-        row["_rrf_score"] = scores[rid]
-        # _final_score is the unified sort key carried through any
-        # downstream merge step (e.g. link expansion in --with-links).
-        row["_final_score"] = scores[rid]
-        result.append(row)
-    return result
-
-
-# 1-hop BFS link expansion. Mirrors memory-recall-hook.py constants/logic
-# so eval predicts hook behavior. When both are enabled (--with-rewriter
-# --with-links) the combined mode measures the full Phase 3 pipeline.
-LINK_EXPAND_TOP_K = 5
-LINK_DECAY = 0.5
-LINK_SCORE_FIELD = "_link_score"
-
-
-def _score_linked_rows(
-    top_rows: list[dict],
-    linked_rows: list[dict],
-    *,
-    top_k: int = LINK_EXPAND_TOP_K,
-    decay: float = LINK_DECAY,
-    k: int = RRF_K,
-) -> list[dict]:
-    if not top_rows or not linked_rows:
-        return []
-    seed_rank: dict[str, int] = {}
-    for i, row in enumerate(top_rows[:top_k]):
-        rid = row.get("id")
-        if rid is not None and rid not in seed_rank:
-            seed_rank[rid] = i
-    if not seed_rank:
-        return []
-    seen: set[str] = set(seed_rank.keys())
-    out: list[dict] = []
-    for row in linked_rows:
-        rid = row.get("id")
-        if not rid or rid in seen:
-            continue
-        parent = row.get("linked_from")
-        if parent not in seed_rank:
-            continue
-        seen.add(rid)
-        strength = row.get("link_strength")
-        try:
-            strength_f = float(strength) if strength is not None else 1.0
-        except (TypeError, ValueError):
-            strength_f = 1.0
-        parent_rank = seed_rank[parent]
-        row[LINK_SCORE_FIELD] = (1.0 / (k + parent_rank)) * decay * strength_f
-        out.append(row)
-    return out
-
-
-def _expand_links(client, top_rows: list[dict]) -> list[dict]:
-    seed_ids = [r["id"] for r in top_rows[:LINK_EXPAND_TOP_K] if r.get("id")]
-    if not seed_ids:
-        return []
-    try:
-        result = client.rpc(
-            "get_linked_memories",
-            {"memory_ids": seed_ids, "link_types": None, "show_history": False},
-        ).execute()
-        linked_rows = result.data or []
-    except Exception:
-        return []
-    return _score_linked_rows(top_rows, linked_rows)
-
-
-def _merge_with_links(ranked_rows: list[dict], linked_rows: list[dict]) -> list[dict]:
-    if not linked_rows:
-        return ranked_rows
-    by_id: dict[str, dict] = {}
-    scores: dict[str, float] = {}
-    for row in ranked_rows:
-        rid = row.get("id")
-        if not rid:
-            continue
-        by_id[rid] = row
-        scores[rid] = float(row.get("_final_score") or 0.0)
-    for row in linked_rows:
-        rid = row.get("id")
-        if not rid:
-            continue
-        link_s = float(row.get(LINK_SCORE_FIELD) or 0.0)
-        if rid in scores:
-            scores[rid] = max(scores[rid], link_s)
-        else:
-            by_id[rid] = row
-            scores[rid] = link_s
-    final_ids = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
-    out: list[dict] = []
-    for rid in final_ids:
-        row = by_id[rid]
-        row["_final_score"] = scores[rid]
-        out.append(row)
-    return out
-
-
-def _enrich_with_confidence(client, rows: list[dict]) -> None:
-    """Mirror of server.py helper (#240). match_memories doesn't project
-    confidence; enrich rows before scoring so eval numbers match production.
-    """
-    ids = [r["id"] for r in rows if r.get("id") and "confidence" not in r]
-    if not ids:
-        return
-    try:
-        result = client.table("memories").select("id, confidence").in_("id", ids).execute()
-    except Exception:
-        return
-    conf_map = {r["id"]: r.get("confidence") for r in (result.data or [])}
-    for row in rows:
-        rid = row.get("id")
-        if rid in conf_map and "confidence" not in row:
-            row["confidence"] = conf_map[rid]
-
-
-def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
-    now = datetime.now(timezone.utc)
-    for row in rows:
-        rrf = row.get("_rrf_score", 0.01)
-        mem_type = row.get("type", "decision")
-        half_life = TEMPORAL_HALF_LIVES.get(mem_type, DEFAULT_HALF_LIFE)
-
-        # Phase 1: decay is driven by content_updated_at (content changes),
-        # not updated_at (which gets bumped by every recall's touch_memories).
-        # Fall back to updated_at for rows without backfilled content_updated_at.
-        updated_str = row.get("content_updated_at") or row.get("updated_at") or ""
-        try:
-            updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-            days_since_update = max(0, (now - updated).total_seconds() / 86400)
-        except (ValueError, AttributeError):
-            days_since_update = half_life
-
-        accessed_str = row.get("last_accessed_at") or ""
-        try:
-            accessed = datetime.fromisoformat(accessed_str.replace("Z", "+00:00"))
-            days_since_access = max(0, (now - accessed).total_seconds() / 86400)
-        except (ValueError, AttributeError):
-            days_since_access = days_since_update * 2
-
-        recency = math.exp(-0.693 * days_since_update / half_life)
-        access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
-
-        # Entrenchment multiplier (Phase 1 polish #240). NULL → 1.0 no-regression.
-        confidence_raw = row.get("confidence")
-        if confidence_raw is None:
-            conf = 1.0
-        else:
-            try:
-                conf = float(confidence_raw)
-            except (TypeError, ValueError):
-                conf = 1.0
-        conf = max(0.0, min(1.0, conf))
-        entrenchment = CONFIDENCE_FLOOR + (1.0 - CONFIDENCE_FLOOR) * conf
-
-        row["_temporal_score"] = rrf * recency * access * entrenchment
-
-    rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
-    return rows
 
 
 # ---------------------------------------------------------------------------

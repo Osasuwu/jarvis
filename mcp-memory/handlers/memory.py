@@ -17,7 +17,6 @@ preserved.
 from __future__ import annotations
 
 import asyncio
-import math
 import os
 from datetime import datetime, timezone
 
@@ -34,9 +33,16 @@ from recall import (  # noqa: F401
     RRF_K,
     SIMILARITY_THRESHOLD,
     TEMPORAL_HALF_LIVES,
+    DEFAULT_HALF_LIFE,
+    ACCESS_BOOST_MAX,
+    ACCESS_HALF_LIFE,
+    CONFIDENCE_FLOOR,
     cosine_sim as _cosine_sim,
     filter_excluded_tags as _filter_excluded_tags,
     parse_pgvector as _parse_pgvector,
+    rrf_merge as _rrf_merge,
+    enrich_with_confidence as _enrich_with_confidence,
+    apply_temporal_scoring as _apply_temporal_scoring,
 )
 
 # Phase 2b classifier — same conditional-import pattern as server.py.
@@ -58,14 +64,6 @@ from embeddings import _canonical_embed_text, _model_slot, _embed_upsert_fields 
 VALID_TYPES = ("user", "project", "decision", "feedback", "reference")
 
 
-DEFAULT_HALF_LIFE = 30
-ACCESS_BOOST_MAX = 0.3
-ACCESS_HALF_LIFE = 14
-# Phase 1 polish (#240): entrenchment multiplier (ACT-R / Gärdenfors). Folds
-# memories.confidence into temporal score so low-confidence rows rank lower
-# without a hard cutoff. final *= FLOOR + (1 - FLOOR) * confidence.
-# NULL confidence → treated as 1.0 (no regression for legacy rows).
-CONFIDENCE_FLOOR = 0.5
 LINK_SIM_THRESHOLD = 0.60
 # Phase 2b: classifier replaces the bare similarity gate. We still keep a
 # threshold, but it now decides *when to ask the classifier*, not whether to
@@ -379,36 +377,6 @@ async def _hybrid_recall(
     except Exception:
         # RPC not available (e.g. migration not applied) — fall back to keyword
         return [], await server._keyword_recall(client, query_text, project, mem_type, limit, brief)
-
-
-def _rrf_merge(
-    semantic_rows: list[dict], keyword_rows: list[dict], limit: int, k: int = 60
-) -> list[dict]:
-    """Reciprocal Rank Fusion: combine two ranked lists into one.
-
-    Score = sum(1 / (k + rank)) for each list the item appears in.
-    Higher k gives more weight to items appearing in both lists.
-    """
-    scores: dict[str, float] = {}
-    by_id: dict[str, dict] = {}
-
-    for rank, row in enumerate(semantic_rows):
-        rid = row.get("id") or row["name"]
-        scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
-        by_id[rid] = row
-
-    for rank, row in enumerate(keyword_rows):
-        rid = row.get("id") or row["name"]
-        scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank)
-        by_id[rid] = row
-
-    ranked = sorted(scores.keys(), key=lambda r: scores[r], reverse=True)
-    result = []
-    for rid in ranked[:limit]:
-        row = by_id[rid]
-        row["_rrf_score"] = scores[rid]
-        result.append(row)
-    return result
 
 
 async def _keyword_recall(
@@ -903,78 +871,6 @@ async def _expand_with_links(
         return result.data or []
     except Exception:
         return []
-
-
-def _enrich_with_confidence(client, rows: list[dict]) -> None:
-    """Backfill `confidence` on rows that came from match_memories (which doesn't
-    project it). Batched SELECT keeps this cheap. Best-effort: on error we leave
-    rows untouched and scoring falls back to the NULL→1.0 branch.
-
-    Phase 1 polish (#240).
-    """
-    ids = [r["id"] for r in rows if r.get("id") and "confidence" not in r]
-    if not ids:
-        return
-    try:
-        result = client.table("memories").select("id, confidence").in_("id", ids).execute()
-    except Exception:
-        return
-    conf_map = {r["id"]: r.get("confidence") for r in (result.data or [])}
-    for row in rows:
-        rid = row.get("id")
-        if rid in conf_map and "confidence" not in row:
-            row["confidence"] = conf_map[rid]
-
-
-def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
-    """Re-rank rows by combining RRF score with temporal decay and access frequency."""
-    now = datetime.now(timezone.utc)
-    for row in rows:
-        rrf = row.get("_rrf_score", 0.01)
-        mem_type = row.get("type", "decision")
-        half_life = TEMPORAL_HALF_LIVES.get(mem_type, DEFAULT_HALF_LIFE)
-
-        # Parse content_updated_at (Phase 1: decay is driven by content edits,
-        # not any write — touch_memories bumps updated_at on every recall).
-        # Fall back to updated_at for rows backfilled before Phase 0.
-        updated_str = row.get("content_updated_at") or row.get("updated_at", "")
-        try:
-            updated = datetime.fromisoformat(updated_str.replace("Z", "+00:00"))
-            days_since_update = max(0, (now - updated).total_seconds() / 86400)
-        except (ValueError, AttributeError):
-            days_since_update = half_life  # assume mid-decay if unparsable
-
-        # Parse last_accessed_at
-        accessed_str = row.get("last_accessed_at") or ""
-        try:
-            accessed = datetime.fromisoformat(accessed_str.replace("Z", "+00:00"))
-            days_since_access = max(0, (now - accessed).total_seconds() / 86400)
-        except (ValueError, AttributeError):
-            days_since_access = days_since_update * 2  # never accessed = low boost
-
-        # Exponential decay: recency factor (0..1)
-        recency = math.exp(-0.693 * days_since_update / half_life)
-        # Access frequency boost (1..1+ACCESS_BOOST_MAX)
-        access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
-
-        # Entrenchment multiplier (Phase 1 polish #240). NULL confidence treated
-        # as 1.0 so legacy rows don't regress; FLOOR ensures confidence=0 only
-        # halves the score rather than zeroing it.
-        confidence_raw = row.get("confidence")
-        if confidence_raw is None:
-            conf = 1.0
-        else:
-            try:
-                conf = float(confidence_raw)
-            except (TypeError, ValueError):
-                conf = 1.0
-        conf = max(0.0, min(1.0, conf))
-        entrenchment = CONFIDENCE_FLOOR + (1.0 - CONFIDENCE_FLOOR) * conf
-
-        row["_temporal_score"] = rrf * recency * access * entrenchment
-
-    rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
-    return rows
 
 
 async def _handle_store(args: dict) -> list[TextContent]:

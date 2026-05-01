@@ -32,6 +32,7 @@ class _FakeTextContent:
     The real mcp.types.TextContent is a pydantic model; tests don't need
     validation, just attribute access for the error-path checks below.
     """
+
     def __init__(self, type: str = "text", text: str = ""):
         self.type = type
         self.text = text
@@ -40,19 +41,25 @@ class _FakeTextContent:
 _mcp_types.TextContent = _FakeTextContent
 _mcp_types.Tool = MagicMock
 
+
 def _noop_decorator(*args, **kwargs):
     """Return a no-op decorator that passes the function through."""
+
     def decorator(fn):
         return fn
+
     return decorator
 
 
 class _FakeServer:
     """Minimal stub that supports @server.list_tools() and @server.call_tool() decorators."""
+
     def __init__(self, *args, **kwargs):
         pass
+
     def list_tools(self):
         return _noop_decorator()
+
     def call_tool(self):
         return _noop_decorator()
 
@@ -120,6 +127,7 @@ import server as server_module
 # _rrf_merge
 # ---------------------------------------------------------------------------
 
+
 class TestRRFMerge:
     """Reciprocal Rank Fusion merges two ranked lists."""
 
@@ -140,9 +148,10 @@ class TestRRFMerge:
         kw = [{"id": "a", "name": "shared"}, {"id": "c", "name": "kw-only"}]
         result = _rrf_merge(sem, kw, limit=5)
 
-        # 'a' appears in both → highest score
+        # 'a' appears in both → highest score; use _final_score (always present,
+        # unlike _rrf_score which is dual-hit only in the canonical rrf_merge).
         assert result[0]["id"] == "a"
-        assert result[0]["_rrf_score"] > result[1]["_rrf_score"]
+        assert result[0]["_final_score"] > result[1]["_final_score"]
 
     def test_limit_respected(self):
         rows = [{"id": str(i), "name": f"m{i}"} for i in range(10)]
@@ -155,7 +164,8 @@ class TestRRFMerge:
         rows = [{"id": "a", "name": "x"}]
         result = _rrf_merge(rows, [], limit=5, k=k)
         expected = 1.0 / (k + 0)
-        assert abs(result[0]["_rrf_score"] - expected) < 1e-10
+        # Single-hit rows use _final_score (unified key); _rrf_score is dual-hit only.
+        assert abs(result[0]["_final_score"] - expected) < 1e-10
 
     def test_score_both_lists(self):
         """Score = sum of 1/(k+rank) from each list."""
@@ -179,6 +189,7 @@ class TestRRFMerge:
 # _apply_temporal_scoring
 # ---------------------------------------------------------------------------
 
+
 class TestTemporalScoring:
     """Temporal scoring re-ranks by recency × access boost."""
 
@@ -186,7 +197,11 @@ class TestTemporalScoring:
     def _make_row(mem_type="decision", days_ago=0, accessed_days_ago=None, rrf=0.5):
         now = datetime.now(timezone.utc)
         updated = (now - timedelta(days=days_ago)).isoformat()
-        accessed = (now - timedelta(days=accessed_days_ago)).isoformat() if accessed_days_ago is not None else None
+        accessed = (
+            (now - timedelta(days=accessed_days_ago)).isoformat()
+            if accessed_days_ago is not None
+            else None
+        )
         return {
             "type": mem_type,
             "updated_at": updated,
@@ -300,6 +315,7 @@ class TestTemporalScoring:
 # _format_memories
 # ---------------------------------------------------------------------------
 
+
 class TestFormatMemories:
     """Memory formatting for LLM output."""
 
@@ -321,7 +337,14 @@ class TestFormatMemories:
         assert "Some content here" in result[0]
 
     def test_global_project(self):
-        mem = {"name": "x", "type": "user", "project": None, "description": "", "content": "c", "tags": []}
+        mem = {
+            "name": "x",
+            "type": "user",
+            "project": None,
+            "description": "",
+            "content": "c",
+            "tags": [],
+        }
         result = _format_memories([mem])
         assert "(user, global)" in result[0]
 
@@ -333,7 +356,14 @@ class TestFormatMemories:
         assert "] " not in header_line or header_line.endswith(")")
 
     def test_empty_tags_list(self):
-        mem = {"name": "x", "type": "user", "project": None, "description": "", "content": "c", "tags": []}
+        mem = {
+            "name": "x",
+            "type": "user",
+            "project": None,
+            "description": "",
+            "content": "c",
+            "tags": [],
+        }
         result = _format_memories([mem])
         header_line = result[0].split("\n")[0]
         # Empty tags list should not produce brackets
@@ -356,16 +386,28 @@ class TestFormatMemories:
 
     def test_link_info_not_shown_without_flag(self):
         mem = {
-            "name": "x", "type": "decision", "project": None,
-            "description": "", "content": "c", "tags": [],
-            "link_type": "related", "link_strength": 0.75,
+            "name": "x",
+            "type": "decision",
+            "project": None,
+            "description": "",
+            "content": "c",
+            "tags": [],
+            "link_type": "related",
+            "link_strength": 0.75,
         }
         result = _format_memories([mem], link_info=False)
         assert "← related" not in result[0]
 
     def test_multiple_memories(self):
         mems = [
-            {"name": f"m{i}", "type": "project", "project": "j", "description": "", "content": f"c{i}", "tags": []}
+            {
+                "name": f"m{i}",
+                "type": "project",
+                "project": "j",
+                "description": "",
+                "content": f"c{i}",
+                "tags": [],
+            }
             for i in range(5)
         ]
         result = _format_memories(mems)
@@ -411,8 +453,11 @@ class TestFormatMemories:
 
     def test_brief_rrf_wins_over_similarity(self):
         mem = {
-            "name": "r", "type": "decision", "description": "x",
-            "_rrf_score": 0.05, "similarity": 0.9,
+            "name": "r",
+            "type": "decision",
+            "description": "x",
+            "_rrf_score": 0.05,
+            "similarity": 0.9,
         }
         result = _format_memories([mem], brief=True)
         assert "rrf 0.050" in result[0]
@@ -420,9 +465,13 @@ class TestFormatMemories:
 
     def test_brief_link_info(self):
         mem = {
-            "name": "l", "type": "decision", "project": "jarvis",
-            "description": "d", "similarity": 0.5,
-            "link_type": "related", "link_strength": 0.75,
+            "name": "l",
+            "type": "decision",
+            "project": "jarvis",
+            "description": "d",
+            "similarity": 0.5,
+            "link_type": "related",
+            "link_strength": 0.75,
         }
         result = _format_memories([mem], link_info=True, brief=True)
         assert "← related (0.75)" in result[0]
@@ -445,6 +494,7 @@ class TestFormatMemories:
 # _create_auto_links (async, mocked Supabase)
 # ---------------------------------------------------------------------------
 
+
 class TestCreateAutoLinks:
     """Auto-linking creates memory_links entries based on similarity.
 
@@ -459,7 +509,9 @@ class TestCreateAutoLinks:
         client = MagicMock()
         client.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
         # Hydration query returns no rows (test path skips classifier anyway).
-        client.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(data=[])
+        client.table.return_value.select.return_value.in_.return_value.execute.return_value = (
+            MagicMock(data=[])
+        )
         return client
 
     def _first_links_upsert(self, mock_client):
@@ -490,13 +542,18 @@ class TestCreateAutoLinks:
         the legacy heuristic fires: same type + sim >= 0.85 → supersede."""
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         similar = [
-            {"id": "old-decision", "type": "decision", "similarity": SUPERSEDE_SIM_THRESHOLD + 0.05},
+            {
+                "id": "old-decision",
+                "type": "decision",
+                "similarity": SUPERSEDE_SIM_THRESHOLD + 0.05,
+            },
         ]
         await _create_auto_links(mock_client, "new-decision", similar, mem_type="decision")
 
         # The legacy fallback updates memories.superseded_by on the target.
         update_calls = [
-            c for c in mock_client.table.return_value.update.call_args_list
+            c
+            for c in mock_client.table.return_value.update.call_args_list
             if c[0][0].get("superseded_by") == "new-decision"
         ]
         assert len(update_calls) == 1
@@ -511,7 +568,8 @@ class TestCreateAutoLinks:
         await _create_auto_links(mock_client, "source", similar, mem_type="project")
 
         update_calls = [
-            c for c in mock_client.table.return_value.update.call_args_list
+            c
+            for c in mock_client.table.return_value.update.call_args_list
             if c[0][0].get("superseded_by") == "source"
         ]
         assert update_calls == []
@@ -528,10 +586,7 @@ class TestCreateAutoLinks:
     async def test_empty_similar_rows(self, mock_client):
         await _create_auto_links(mock_client, "source", [], mem_type="project")
         # No links to insert → the memory_links upsert should not fire.
-        link_calls = [
-            c for c in mock_client.table.call_args_list
-            if c[0][0] == "memory_links"
-        ]
+        link_calls = [c for c in mock_client.table.call_args_list if c[0][0] == "memory_links"]
         assert link_calls == []
 
     @pytest.mark.asyncio
@@ -539,7 +594,9 @@ class TestCreateAutoLinks:
         """Fire-and-forget: errors don't propagate."""
         mock_client.table.side_effect = Exception("DB error")
         # Should not raise
-        await _create_auto_links(mock_client, "source", [{"id": "t", "type": "p", "similarity": 0.7}], "project")
+        await _create_auto_links(
+            mock_client, "source", [{"id": "t", "type": "p", "similarity": 0.7}], "project"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -567,8 +624,9 @@ class TestApplyClassifierDecision:
                 t = MagicMock()
                 # update().eq().is_().execute() returns truthy .data so the
                 # rowcount check in _apply_classifier_decision sees a hit.
-                t.update.return_value.eq.return_value.is_.return_value \
-                    .execute.return_value = MagicMock(data=[{"id": "row"}])
+                t.update.return_value.eq.return_value.is_.return_value.execute.return_value = (
+                    MagicMock(data=[{"id": "row"}])
+                )
                 t.insert.return_value.execute.return_value = MagicMock()
                 t.upsert.return_value.execute.return_value = MagicMock()
                 client._tables[name] = t
@@ -582,10 +640,7 @@ class TestApplyClassifierDecision:
         t = mock_client._tables.get(table)
         if t is None:
             return []
-        return [
-            c for c in t.update.call_args_list
-            if isinstance(c[0][0], dict) and key in c[0][0]
-        ]
+        return [c for c in t.update.call_args_list if isinstance(c[0][0], dict) and key in c[0][0]]
 
     def _queue_inserts(self, mock_client):
         """Find insert calls into memory_review_queue specifically."""
@@ -612,8 +667,10 @@ class TestApplyClassifierDecision:
     @pytest.mark.asyncio
     async def test_high_confidence_update_marks_superseded(self, mock_client):
         decision = ClassifierDecision(
-            decision="UPDATE", target_id="old-id",
-            confidence=0.95, reasoning="refines target",
+            decision="UPDATE",
+            target_id="old-id",
+            confidence=0.95,
+            reasoning="refines target",
         )
         neighbors = [{"id": "old-id", "name": "old", "similarity": 0.82}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -641,8 +698,10 @@ class TestApplyClassifierDecision:
     @pytest.mark.asyncio
     async def test_high_confidence_delete_sets_expired(self, mock_client):
         decision = ClassifierDecision(
-            decision="DELETE", target_id="old-id",
-            confidence=0.92, reasoning="negates target",
+            decision="DELETE",
+            target_id="old-id",
+            confidence=0.92,
+            reasoning="negates target",
         )
         neighbors = [{"id": "old-id", "name": "old", "similarity": 0.85}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -658,7 +717,8 @@ class TestApplyClassifierDecision:
     async def test_low_confidence_update_queues_pending(self, mock_client):
         """Low confidence: do NOT mutate target, write queue entry as pending."""
         decision = ClassifierDecision(
-            decision="UPDATE", target_id="old-id",
+            decision="UPDATE",
+            target_id="old-id",
             confidence=CLASSIFIER_APPLY_THRESHOLD - 0.1,
             reasoning="ambiguous",
         )
@@ -676,8 +736,10 @@ class TestApplyClassifierDecision:
     @pytest.mark.asyncio
     async def test_noop_records_decision_no_mutation(self, mock_client):
         decision = ClassifierDecision(
-            decision="NOOP", target_id=None,
-            confidence=0.9, reasoning="redundant",
+            decision="NOOP",
+            target_id=None,
+            confidence=0.9,
+            reasoning="redundant",
         )
         neighbors = [{"id": "x", "name": "x", "similarity": 0.9}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -694,8 +756,10 @@ class TestApplyClassifierDecision:
     async def test_high_confidence_add_no_queue_entry(self, mock_client):
         """ADD with high confidence is the trivial case — don't pollute queue."""
         decision = ClassifierDecision(
-            decision="ADD", target_id=None,
-            confidence=0.95, reasoning="genuinely new",
+            decision="ADD",
+            target_id=None,
+            confidence=0.95,
+            reasoning="genuinely new",
         )
         neighbors = [{"id": "x", "name": "x", "similarity": 0.76}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -706,8 +770,10 @@ class TestApplyClassifierDecision:
     async def test_hallucinated_target_id_refused(self, mock_client):
         """Model returned an id we never showed it → refuse to mutate."""
         decision = ClassifierDecision(
-            decision="UPDATE", target_id="never-existed",
-            confidence=0.95, reasoning="...",
+            decision="UPDATE",
+            target_id="never-existed",
+            confidence=0.95,
+            reasoning="...",
         )
         neighbors = [{"id": "real-id", "name": "real", "similarity": 0.85}]
         await _apply_classifier_decision(mock_client, "new-id", decision, neighbors)
@@ -724,6 +790,7 @@ class TestApplyClassifierDecision:
 # _expand_with_links (async, mocked Supabase)
 # ---------------------------------------------------------------------------
 
+
 class TestExpandWithLinks:
     """Graph traversal fetches 1-hop linked memories."""
 
@@ -736,7 +803,12 @@ class TestExpandWithLinks:
     async def test_returns_linked_memories(self, mock_client):
         mock_client.rpc.return_value.execute.return_value = MagicMock(
             data=[
-                {"id": "linked-1", "name": "linked_mem", "link_type": "related", "link_strength": 0.75},
+                {
+                    "id": "linked-1",
+                    "name": "linked_mem",
+                    "link_type": "related",
+                    "link_strength": 0.75,
+                },
             ]
         )
         result = await _expand_with_links(mock_client, ["source-id"])
@@ -777,6 +849,7 @@ class TestExpandWithLinks:
 # ---------------------------------------------------------------------------
 # Recall pipeline dedup regression (bidirectional link bug)
 # ---------------------------------------------------------------------------
+
 
 class TestRecallLinkedDedup:
     """Regression: bidirectional links should not produce duplicate linked memories."""
@@ -833,6 +906,7 @@ class TestRecallLinkedDedup:
 # Phase 2c: memory_store must reject writes missing source_provenance
 # ---------------------------------------------------------------------------
 
+
 class TestHandleStoreProvenance:
     """Phase 2c — every memory write carries a namespaced source_provenance.
 
@@ -848,12 +922,14 @@ class TestHandleStoreProvenance:
 
     @pytest.mark.asyncio
     async def test_rejects_missing_provenance(self):
-        result = await _handle_store({
-            "type": "project",
-            "name": "test_missing",
-            "content": "test content",
-            # no source_provenance
-        })
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_missing",
+                "content": "test content",
+                # no source_provenance
+            }
+        )
         assert len(result) == 1
         assert "source_provenance is required" in result[0].text
         # Validation fired before any DB access.
@@ -861,23 +937,27 @@ class TestHandleStoreProvenance:
 
     @pytest.mark.asyncio
     async def test_rejects_blank_provenance(self):
-        result = await _handle_store({
-            "type": "project",
-            "name": "test_blank",
-            "content": "test content",
-            "source_provenance": "   ",
-        })
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_blank",
+                "content": "test content",
+                "source_provenance": "   ",
+            }
+        )
         assert "source_provenance is required" in result[0].text
         self.client.table.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_rejects_none_provenance(self):
-        result = await _handle_store({
-            "type": "project",
-            "name": "test_none",
-            "content": "test content",
-            "source_provenance": None,
-        })
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_none",
+                "content": "test content",
+                "source_provenance": None,
+            }
+        )
         assert "source_provenance is required" in result[0].text
         self.client.table.assert_not_called()
 
@@ -885,10 +965,12 @@ class TestHandleStoreProvenance:
     async def test_provenance_stripped_before_persist(self, monkeypatch):
         """Accepted provenance is trimmed — no leading/trailing whitespace
         leaks into the DB row, keeping audit queries clean."""
+
         # Short-circuit embedding so we don't need Voyage env/network.
         # Signature accepts **kwargs so #242's model= param doesn't break it.
         async def _fake_embed(_text, **_kwargs):
             return None
+
         monkeypatch.setattr(server_module, "_embed", _fake_embed)
 
         # project="jarvis" takes the upsert branch. Rig the chain to return
@@ -897,13 +979,15 @@ class TestHandleStoreProvenance:
         tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "stored-1"}])
         self.client.table.return_value = tbl
 
-        await _handle_store({
-            "type": "project",
-            "name": "test_strip",
-            "content": "test content",
-            "project": "jarvis",
-            "source_provenance": "  skill:test  ",
-        })
+        await _handle_store(
+            {
+                "type": "project",
+                "name": "test_strip",
+                "content": "test content",
+                "project": "jarvis",
+                "source_provenance": "  skill:test  ",
+            }
+        )
 
         upsert_calls = tbl.upsert.call_args_list
         assert upsert_calls, "expected at least one upsert call"
@@ -1019,6 +1103,7 @@ class TestDualEmbedWrite:
     async def test_secondary_failure_single_leg(self, monkeypatch):
         """PRIMARY succeeds but SECONDARY embed returns None → write PRIMARY
         only. Missing v2 is recoverable via backfill; corrupt row is not."""
+
         async def fake_embed(text, input_type="document", model=None):
             if model == "voyage-3":
                 return None
@@ -1036,6 +1121,7 @@ class TestDualEmbedWrite:
     async def test_primary_failure_no_write(self, monkeypatch):
         """PRIMARY embed fails → no embed fields at all. Row still saves
         with text content, _backfill_missing_embeddings picks it up later."""
+
         async def fake_embed(text, input_type="document", model=None):
             return None
 
@@ -1167,7 +1253,9 @@ class TestKnownUnknowns:
         # select().eq().eq().limit().execute() returns no data
         # (fallback path — no embedding, because 3 dims ≠ 512)
         mock_select_chain = MagicMock()
-        mock_select_chain.eq.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+        mock_select_chain.eq.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+            data=[]
+        )
 
         mock_insert = MagicMock()
         mock_update = MagicMock()
@@ -1287,6 +1375,7 @@ class TestKnownUnknowns:
 # #284: memory_recall must exclude soft-deleted + superseded + expired rows
 # ---------------------------------------------------------------------------
 
+
 class TestRecallLifecycleFilters:
     """Regression (Osasuwu/jarvis#284): memory_recall surfaced soft-deleted
     rows even when show_history=false, because the SQL RPCs and the Python
@@ -1338,8 +1427,7 @@ class TestRecallLifecycleFilters:
         # valid_to must be selected so the client can filter it after fetch.
         select_args = [call.args[0] for call in query.select.call_args_list]
         assert any("valid_to" in s for s in select_args), (
-            f"valid_to must be in SELECT for client-side filtering; "
-            f"got select calls: {select_args}"
+            f"valid_to must be in SELECT for client-side filtering; got select calls: {select_args}"
         )
 
     @pytest.mark.asyncio
@@ -1352,9 +1440,7 @@ class TestRecallLifecycleFilters:
         client = MagicMock()
         client.table.return_value = query
 
-        await _keyword_recall(
-            client, "anything", project=None, mem_type=None, limit=5, brief=True
-        )
+        await _keyword_recall(client, "anything", project=None, mem_type=None, limit=5, brief=True)
 
         is_args = [tuple(call.args) for call in query.is_.call_args_list]
         assert ("deleted_at", "null") in is_args
@@ -1378,15 +1464,33 @@ class TestRecallLifecycleFilters:
         future = (now + timedelta(days=30)).isoformat()
 
         rows = [
-            {"name": "live_null_vt", "type": "project", "project": "jarvis",
-             "description": "d", "tags": [], "updated_at": now.isoformat(),
-             "valid_to": None},
-            {"name": "live_future_vt", "type": "project", "project": "jarvis",
-             "description": "d", "tags": [], "updated_at": now.isoformat(),
-             "valid_to": future},
-            {"name": "tombstoned_past_vt", "type": "project", "project": "jarvis",
-             "description": "d", "tags": [], "updated_at": now.isoformat(),
-             "valid_to": past},
+            {
+                "name": "live_null_vt",
+                "type": "project",
+                "project": "jarvis",
+                "description": "d",
+                "tags": [],
+                "updated_at": now.isoformat(),
+                "valid_to": None,
+            },
+            {
+                "name": "live_future_vt",
+                "type": "project",
+                "project": "jarvis",
+                "description": "d",
+                "tags": [],
+                "updated_at": now.isoformat(),
+                "valid_to": future,
+            },
+            {
+                "name": "tombstoned_past_vt",
+                "type": "project",
+                "project": "jarvis",
+                "description": "d",
+                "tags": [],
+                "updated_at": now.isoformat(),
+                "valid_to": past,
+            },
         ]
 
         query = self._fluent_query()
@@ -1415,9 +1519,15 @@ class TestRecallLifecycleFilters:
 
         past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
         rows = [
-            {"name": "dead1", "type": "project", "project": "jarvis",
-             "description": "d", "tags": [], "updated_at": past,
-             "valid_to": past},
+            {
+                "name": "dead1",
+                "type": "project",
+                "project": "jarvis",
+                "description": "d",
+                "tags": [],
+                "updated_at": past,
+                "valid_to": past,
+            },
         ]
 
         query = self._fluent_query()
@@ -1445,6 +1555,7 @@ class TestRecallLifecycleFilters:
         # Stub the fallback so it doesn't re-hit client and muddy assertions.
         async def _noop_fallback(*_args, **_kwargs):
             return []
+
         monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
 
         await _hybrid_recall(
@@ -1480,6 +1591,7 @@ class TestRecallLifecycleFilters:
 
         async def _noop_fallback(*_args, **_kwargs):
             return []
+
         monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
 
         await _hybrid_recall(
@@ -1499,6 +1611,7 @@ class TestRecallLifecycleFilters:
 # ---------------------------------------------------------------------------
 # #417: session-snapshot tag filter — recall must drop operational artifacts
 # ---------------------------------------------------------------------------
+
 
 class TestExcludedTagsFilter:
     """Osasuwu/jarvis#417: session_snapshot_* memories (auto-created by the
@@ -1561,15 +1674,36 @@ class TestExcludedTagsFilter:
         from server import _keyword_recall
 
         rows = [
-            {"name": "snap1", "type": "project", "project": "jarvis",
-             "description": "d", "content": "c", "tags": ["session-snapshot", "auto"],
-             "updated_at": "2026-04-25T00:00:00+00:00", "valid_to": None},
-            {"name": "real_mem", "type": "decision", "project": "jarvis",
-             "description": "d", "content": "c", "tags": ["pillar-4"],
-             "updated_at": "2026-04-25T00:00:00+00:00", "valid_to": None},
-            {"name": "snap2", "type": "project", "project": "jarvis",
-             "description": "d", "content": "c", "tags": ["session-snapshot"],
-             "updated_at": "2026-04-25T00:00:00+00:00", "valid_to": None},
+            {
+                "name": "snap1",
+                "type": "project",
+                "project": "jarvis",
+                "description": "d",
+                "content": "c",
+                "tags": ["session-snapshot", "auto"],
+                "updated_at": "2026-04-25T00:00:00+00:00",
+                "valid_to": None,
+            },
+            {
+                "name": "real_mem",
+                "type": "decision",
+                "project": "jarvis",
+                "description": "d",
+                "content": "c",
+                "tags": ["pillar-4"],
+                "updated_at": "2026-04-25T00:00:00+00:00",
+                "valid_to": None,
+            },
+            {
+                "name": "snap2",
+                "type": "project",
+                "project": "jarvis",
+                "description": "d",
+                "content": "c",
+                "tags": ["session-snapshot"],
+                "updated_at": "2026-04-25T00:00:00+00:00",
+                "valid_to": None,
+            },
         ]
 
         query = MagicMock()
@@ -1593,6 +1727,7 @@ class TestExcludedTagsFilter:
 # #286: outcome_record / outcome_update must accept and persist memory_id
 # ---------------------------------------------------------------------------
 
+
 class TestOutcomeMemoryId:
     """Osasuwu/jarvis#286: task_outcomes.memory_id is the FK that drives the
     memory_calibration view. The DB column + FK + view already exist; these
@@ -1605,9 +1740,7 @@ class TestOutcomeMemoryId:
         # Chain: client.table(...).insert(...).execute() → data=[{"id": "..."}]
         self.tbl = MagicMock()
         self.client.table.return_value = self.tbl
-        self.tbl.insert.return_value.execute.return_value = MagicMock(
-            data=[{"id": "outcome-uuid"}]
-        )
+        self.tbl.insert.return_value.execute.return_value = MagicMock(data=[{"id": "outcome-uuid"}])
         # For update: client.table(...).update(...).eq(...).execute() → data=[...]
         self.tbl.update.return_value.eq.return_value.execute.return_value = MagicMock(
             data=[{"id": "outcome-uuid"}]
@@ -1618,12 +1751,14 @@ class TestOutcomeMemoryId:
     async def test_outcome_record_persists_memory_id(self):
         from server import _handle_outcome_record
 
-        await _handle_outcome_record({
-            "task_type": "delegation",
-            "task_description": "test",
-            "outcome_status": "success",
-            "memory_id": "11111111-1111-1111-1111-111111111111",
-        })
+        await _handle_outcome_record(
+            {
+                "task_type": "delegation",
+                "task_description": "test",
+                "outcome_status": "success",
+                "memory_id": "11111111-1111-1111-1111-111111111111",
+            }
+        )
 
         insert_payload = self.tbl.insert.call_args[0][0]
         assert insert_payload["memory_id"] == "11111111-1111-1111-1111-111111111111"
@@ -1634,11 +1769,13 @@ class TestOutcomeMemoryId:
         and the key is not written as NULL (keeps existing rows' shape)."""
         from server import _handle_outcome_record
 
-        await _handle_outcome_record({
-            "task_type": "delegation",
-            "task_description": "test",
-            "outcome_status": "success",
-        })
+        await _handle_outcome_record(
+            {
+                "task_type": "delegation",
+                "task_description": "test",
+                "outcome_status": "success",
+            }
+        )
 
         insert_payload = self.tbl.insert.call_args[0][0]
         assert "memory_id" not in insert_payload
@@ -1649,12 +1786,14 @@ class TestOutcomeMemoryId:
         pattern used for every other optional field in _handle_outcome_record."""
         from server import _handle_outcome_record
 
-        await _handle_outcome_record({
-            "task_type": "delegation",
-            "task_description": "test",
-            "outcome_status": "success",
-            "memory_id": None,
-        })
+        await _handle_outcome_record(
+            {
+                "task_type": "delegation",
+                "task_description": "test",
+                "outcome_status": "success",
+                "memory_id": None,
+            }
+        )
 
         insert_payload = self.tbl.insert.call_args[0][0]
         assert "memory_id" not in insert_payload
@@ -1663,10 +1802,12 @@ class TestOutcomeMemoryId:
     async def test_outcome_update_persists_memory_id(self):
         from server import _handle_outcome_update
 
-        await _handle_outcome_update({
-            "id": "outcome-uuid",
-            "memory_id": "22222222-2222-2222-2222-222222222222",
-        })
+        await _handle_outcome_update(
+            {
+                "id": "outcome-uuid",
+                "memory_id": "22222222-2222-2222-2222-222222222222",
+            }
+        )
 
         update_payload = self.tbl.update.call_args[0][0]
         assert update_payload["memory_id"] == "22222222-2222-2222-2222-222222222222"
@@ -1678,10 +1819,12 @@ class TestOutcomeMemoryId:
         discovered which memory informed it."""
         from server import _handle_outcome_update
 
-        result = await _handle_outcome_update({
-            "id": "outcome-uuid",
-            "memory_id": "33333333-3333-3333-3333-333333333333",
-        })
+        result = await _handle_outcome_update(
+            {
+                "id": "outcome-uuid",
+                "memory_id": "33333333-3333-3333-3333-333333333333",
+            }
+        )
 
         update_payload = self.tbl.update.call_args[0][0]
         assert update_payload == {"memory_id": "33333333-3333-3333-3333-333333333333"}
