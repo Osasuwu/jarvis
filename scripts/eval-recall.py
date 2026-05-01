@@ -16,11 +16,10 @@ Usage:
     python scripts/eval-recall.py --diff baseline # run + print delta vs baseline.json
     python scripts/eval-recall.py --quiet         # only print aggregates
 
-No dependency on mcp-memory/server.py: we duplicate the pipeline constants here
-so Phase-by-phase server.py changes are measurable as deltas against the
-previous baseline. Keep this file's constants in sync with server.py OR, when
-pipeline diverges intentionally, the delta in eval output *is* the thing we
-wanted to measure.
+Pipeline constants and primitive helpers come from mcp-memory/recall.py
+(deep-module split, #496). Phase-by-phase pipeline changes are measurable as
+deltas against the previous baseline; eval and production share one
+implementation so a delta in eval output reflects a real pipeline change.
 """
 
 from __future__ import annotations
@@ -38,38 +37,22 @@ from pathlib import Path
 from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
-# Pipeline constants — mirrored from mcp-memory/server.py as of Phase 1.
-# When server.py changes, re-sync OR deliberately let them differ to measure.
+# Pipeline constants & primitive helpers — single source of truth lives in
+# mcp-memory/recall.py (#496). Add mcp-memory/ to sys.path so the import
+# resolves regardless of cwd.
 # ---------------------------------------------------------------------------
-SIMILARITY_THRESHOLD = 0.25
-RRF_K = 60
-# #417: mirror of handlers/memory.py — exclude operational artifacts
-# (session snapshots etc.) from recall so they don't drown out real
-# content. Eval has to apply the same filter to predict production.
-EXCLUDE_TAGS_FROM_RECALL = frozenset({"session-snapshot"})
+_eval_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_eval_root / "mcp-memory"))
+from recall import (  # noqa: E402
+    RRF_K,
+    SIMILARITY_THRESHOLD,
+    TEMPORAL_HALF_LIVES,
+    filter_excluded_tags as _filter_excluded_tags,
+)
 
-
-def _filter_excluded_tags(rows: list[dict]) -> list[dict]:
-    """Drop rows whose tags overlap EXCLUDE_TAGS_FROM_RECALL. See #417."""
-    if not rows or not EXCLUDE_TAGS_FROM_RECALL:
-        return rows
-    out = []
-    for row in rows:
-        tags = row.get("tags") or []
-        if isinstance(tags, list) and any(t in EXCLUDE_TAGS_FROM_RECALL for t in tags):
-            continue
-        out.append(row)
-    return out
 # TYPE_BOOST_MULTIPLIER intentionally not duplicated here. When --with-rewriter
 # is enabled, we load scripts/memory-recall-hook.py and read its constant,
 # so re-tuning the boost only needs to happen in one place.
-TEMPORAL_HALF_LIVES = {
-    "user": 180,
-    "feedback": 90,
-    "decision": 60,
-    "reference": 30,
-    "project": 7,
-}
 DEFAULT_HALF_LIFE = 30
 ACCESS_BOOST_MAX = 0.3
 ACCESS_HALF_LIFE = 14
@@ -231,9 +214,7 @@ def _expand_links(client, top_rows: list[dict]) -> list[dict]:
     return _score_linked_rows(top_rows, linked_rows)
 
 
-def _merge_with_links(
-    ranked_rows: list[dict], linked_rows: list[dict]
-) -> list[dict]:
+def _merge_with_links(ranked_rows: list[dict], linked_rows: list[dict]) -> list[dict]:
     if not linked_rows:
         return ranked_rows
     by_id: dict[str, dict] = {}
@@ -330,6 +311,7 @@ def _apply_temporal_scoring(rows: list[dict]) -> list[dict]:
 # Eval core
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class QueryResult:
     id: str
@@ -337,22 +319,22 @@ class QueryResult:
     kind: str
     expected: list[str]
     must_not: list[str]
-    top_names: list[str]                 # top-10 names in order
-    first_hit_rank: int | None           # 1-indexed, None if no expected hit in top-10
-    hits_at_5: list[str]                 # expected names that appeared in top-5
+    top_names: list[str]  # top-10 names in order
+    first_hit_rank: int | None  # 1-indexed, None if no expected hit in top-10
+    hits_at_5: list[str]  # expected names that appeared in top-5
     hits_at_10: list[str]
     must_not_violations_at_5: list[str]  # must_not names that appeared in top-5
-    passed: bool                         # recall@5 >= 1 AND no must_not violations
+    passed: bool  # recall@5 >= 1 AND no must_not violations
     rewriter_entities: list[str] = field(default_factory=list)
     rewriter_types: list[str] = field(default_factory=list)
-    rewriter_fired: bool = False         # True when rewriter returned a non-null result
-    links_added: int = 0                 # new rows added via 1-hop BFS
+    rewriter_fired: bool = False  # True when rewriter returned a non-null result
+    links_added: int = 0  # new rows added via 1-hop BFS
 
 
 @dataclass
 class EvalReport:
     timestamp: str
-    mode: str                            # e.g. "server_only", "with_rewriter+links"
+    mode: str  # e.g. "server_only", "with_rewriter+links"
     corpus_size: int
     total_queries: int
     recall_at_5: float
@@ -361,16 +343,18 @@ class EvalReport:
     must_not_violations: int
     passed: int
     failed: int
-    rewriter_fired_count: int = 0        # queries where rewriter produced output
-    links_added_total: int = 0           # total new rows pulled in via link expansion
+    rewriter_fired_count: int = 0  # queries where rewriter produced output
+    links_added_total: int = 0  # total new rows pulled in via link expansion
     results: list[dict] = field(default_factory=list)
 
 
 # -- #241: context-rot measurement -----------------------------------------
 
+
 @dataclass
 class ContextRotResult:
     """Per-query comparison of plain vs. context-injected recall."""
+
     id: str
     query: str
     plain_top_names: list[str]
@@ -393,12 +377,13 @@ class ContextRotReport:
     Positive → context HELPS recall. Negative → retrieval-induced
     forgetting ("context rot"), as in LongMemEval.
     """
+
     timestamp: str
     corpus_size: int
     total_queries: int
     plain_recall_at_5: float
     context_recall_at_5: float
-    delta_recall_at_5_pp: float           # (context - plain) * 100
+    delta_recall_at_5_pp: float  # (context - plain) * 100
     plain_recall_at_10: float
     context_recall_at_10: float
     delta_recall_at_10_pp: float
@@ -407,9 +392,9 @@ class ContextRotReport:
     delta_mrr: float
     plain_must_not_violations: int
     context_must_not_violations: int
-    only_plain_passed: list[str]          # query ids where plain passed but context didn't (= rot)
-    only_context_passed: list[str]        # query ids where context passed but plain didn't (= helps)
-    context_budget: dict                  # chars, tokens, item counts
+    only_plain_passed: list[str]  # query ids where plain passed but context didn't (= rot)
+    only_context_passed: list[str]  # query ids where context passed but plain didn't (= helps)
+    context_budget: dict  # chars, tokens, item counts
     per_query: list[dict] = field(default_factory=list)
 
 
@@ -455,23 +440,29 @@ async def run_query(
     if context_blob:
         keyword_query = f"{keyword_query} {context_blob}"
 
-    sem = client.rpc("match_memories", {
-        "query_embedding": embedding,
-        "match_limit": 20,
-        "similarity_threshold": SIMILARITY_THRESHOLD,
-        "filter_project": None,
-        "filter_type": None,
-        "show_history": False,
-    }).execute()
+    sem = client.rpc(
+        "match_memories",
+        {
+            "query_embedding": embedding,
+            "match_limit": 20,
+            "similarity_threshold": SIMILARITY_THRESHOLD,
+            "filter_project": None,
+            "filter_type": None,
+            "show_history": False,
+        },
+    ).execute()
     sem_rows = _filter_excluded_tags(sem.data or [])
 
-    kw = client.rpc("keyword_search_memories", {
-        "search_query": keyword_query,
-        "match_limit": 20,
-        "filter_project": None,
-        "filter_type": None,
-        "show_history": False,
-    }).execute()
+    kw = client.rpc(
+        "keyword_search_memories",
+        {
+            "search_query": keyword_query,
+            "match_limit": 20,
+            "filter_project": None,
+            "filter_type": None,
+            "show_history": False,
+        },
+    ).execute()
     kw_rows = _filter_excluded_tags(kw.data or [])
 
     # Rewriter types → soft boost (matches hook behavior after the
@@ -496,9 +487,7 @@ async def run_query(
         if linked:
             before_ids = {r.get("id") for r in merged}
             merged = _merge_with_links(merged, linked)
-            links_added = sum(
-                1 for r in merged if r.get("id") and r.get("id") not in before_ids
-            )
+            links_added = sum(1 for r in merged if r.get("id") and r.get("id") not in before_ids)
         # Trim back to top-10 for metrics; any linked row that made it
         # into top-10 has earned its place via the unified _final_score.
         merged = merged[:10]
@@ -572,7 +561,13 @@ async def run_all(
     links_added_total = sum(r.links_added for r in results)
 
     # corpus size for context
-    cs = client.table("memories").select("id", count="exact").is_("deleted_at", "null").limit(1).execute()
+    cs = (
+        client.table("memories")
+        .select("id", count="exact")
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
     corpus_size = cs.count or 0
 
     return EvalReport(
@@ -724,7 +719,9 @@ def _load_session_context(client) -> tuple[str, dict]:
     return blob, budget
 
 
-def _metrics_from_results(results: list[QueryResult], total: int) -> tuple[float, float, float, int]:
+def _metrics_from_results(
+    results: list[QueryResult], total: int
+) -> tuple[float, float, float, int]:
     r5 = sum(1 for r in results if r.hits_at_5) / total if total else 0.0
     r10 = sum(1 for r in results if r.hits_at_10) / total if total else 0.0
     mrr = sum(1.0 / r.first_hit_rank for r in results if r.first_hit_rank) / total if total else 0.0
@@ -753,35 +750,47 @@ async def run_context_rot_eval(
         with_ctx = await run_query(client, q, context_blob=context_blob)
         plain_results.append(plain)
         context_results.append(with_ctx)
-        per_query.append(asdict(ContextRotResult(
-            id=q["id"],
-            query=q["query"],
-            plain_top_names=plain.top_names[:5],
-            context_top_names=with_ctx.top_names[:5],
-            plain_hits_at_5=plain.hits_at_5,
-            context_hits_at_5=with_ctx.hits_at_5,
-            plain_first_hit_rank=plain.first_hit_rank,
-            context_first_hit_rank=with_ctx.first_hit_rank,
-            plain_must_not_viol=plain.must_not_violations_at_5,
-            context_must_not_viol=with_ctx.must_not_violations_at_5,
-            plain_passed=plain.passed,
-            context_passed=with_ctx.passed,
-        )))
+        per_query.append(
+            asdict(
+                ContextRotResult(
+                    id=q["id"],
+                    query=q["query"],
+                    plain_top_names=plain.top_names[:5],
+                    context_top_names=with_ctx.top_names[:5],
+                    plain_hits_at_5=plain.hits_at_5,
+                    context_hits_at_5=with_ctx.hits_at_5,
+                    plain_first_hit_rank=plain.first_hit_rank,
+                    context_first_hit_rank=with_ctx.first_hit_rank,
+                    plain_must_not_viol=plain.must_not_violations_at_5,
+                    context_must_not_viol=with_ctx.must_not_violations_at_5,
+                    plain_passed=plain.passed,
+                    context_passed=with_ctx.passed,
+                )
+            )
+        )
 
     total = len(queries)
     p_r5, p_r10, p_mrr, p_mn = _metrics_from_results(plain_results, total)
     c_r5, c_r10, c_mrr, c_mn = _metrics_from_results(context_results, total)
 
     only_plain = [
-        q["id"] for q, p, c in zip(queries, plain_results, context_results)
+        q["id"]
+        for q, p, c in zip(queries, plain_results, context_results)
         if p.passed and not c.passed
     ]
     only_context = [
-        q["id"] for q, p, c in zip(queries, plain_results, context_results)
+        q["id"]
+        for q, p, c in zip(queries, plain_results, context_results)
         if c.passed and not p.passed
     ]
 
-    cs = client.table("memories").select("id", count="exact").is_("deleted_at", "null").limit(1).execute()
+    cs = (
+        client.table("memories")
+        .select("id", count="exact")
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
 
     return ContextRotReport(
         timestamp=datetime.now(timezone.utc).isoformat(),
@@ -807,14 +816,18 @@ async def run_context_rot_eval(
 
 def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> None:
     if not quiet:
-        print(f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: context-rot\n")
-        print(f"Context budget: {report.context_budget['chars']} chars "
-              f"(~{report.context_budget['tokens_approx']} tokens), "
-              f"{report.context_budget['item_count']} items "
-              f"(user={report.context_budget['user']}, "
-              f"always_load={report.context_budget['always_load']}, "
-              f"goals={report.context_budget['goals']}, "
-              f"catalog={report.context_budget.get('catalog', 0)})\n")
+        print(
+            f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: context-rot\n"
+        )
+        print(
+            f"Context budget: {report.context_budget['chars']} chars "
+            f"(~{report.context_budget['tokens_approx']} tokens), "
+            f"{report.context_budget['item_count']} items "
+            f"(user={report.context_budget['user']}, "
+            f"always_load={report.context_budget['always_load']}, "
+            f"goals={report.context_budget['goals']}, "
+            f"catalog={report.context_budget.get('catalog', 0)})\n"
+        )
 
         # Per-query table: plain rank → context rank, mark regressions/wins
         print(f"{'id':<5} {'plain':>6}  {'ctx':>6}  drank  result   query")
@@ -845,17 +858,25 @@ def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> N
     print(f"plain    recall@5 : {_fmt_pct(report.plain_recall_at_5)}")
     print(f"context  recall@5 : {_fmt_pct(report.context_recall_at_5)}")
     sign = "+" if report.delta_recall_at_5_pp >= 0 else ""
-    print(f"delta recall@5        : {sign}{report.delta_recall_at_5_pp:.1f} pp   "
-          f"({'context helps' if report.delta_recall_at_5_pp > 0 else 'context rot' if report.delta_recall_at_5_pp < 0 else 'no effect'})")
+    print(
+        f"delta recall@5        : {sign}{report.delta_recall_at_5_pp:.1f} pp   "
+        f"({'context helps' if report.delta_recall_at_5_pp > 0 else 'context rot' if report.delta_recall_at_5_pp < 0 else 'no effect'})"
+    )
     sign10 = "+" if report.delta_recall_at_10_pp >= 0 else ""
     print(f"delta recall@10       : {sign10}{report.delta_recall_at_10_pp:.1f} pp")
     sign_mrr = "+" if report.delta_mrr >= 0 else ""
     print(f"delta MRR             : {sign_mrr}{report.delta_mrr:.3f}")
-    print(f"must_not (p/c)    : {report.plain_must_not_violations} / {report.context_must_not_violations}")
+    print(
+        f"must_not (p/c)    : {report.plain_must_not_violations} / {report.context_must_not_violations}"
+    )
     if report.only_plain_passed:
-        print(f"lost with context : {report.only_plain_passed}  (rot — passed plain, failed with context)")
+        print(
+            f"lost with context : {report.only_plain_passed}  (rot — passed plain, failed with context)"
+        )
     if report.only_context_passed:
-        print(f"won  with context : {report.only_context_passed}  (helps — passed only with context)")
+        print(
+            f"won  with context : {report.only_context_passed}  (helps — passed only with context)"
+        )
     print()
 
 
@@ -863,13 +884,16 @@ def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> N
 # Formatting / CLI
 # ---------------------------------------------------------------------------
 
+
 def _fmt_pct(x: float) -> str:
-    return f"{x*100:5.1f}%"
+    return f"{x * 100:5.1f}%"
 
 
 def print_report(report: EvalReport, quiet: bool = False) -> None:
     if not quiet:
-        print(f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: {report.mode}\n")
+        print(
+            f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: {report.mode}\n"
+        )
         print(f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit5':>5}  {'viol':>5}  {'rw':>3}  query")
         print("-" * 100)
         for r in report.results:
@@ -893,14 +917,20 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
                 if r["must_not_violations_at_5"]:
                     print(f"    violated:  {r['must_not_violations_at_5']}")
                 if r.get("rewriter_fired"):
-                    print(f"    rewriter:  entities={r.get('rewriter_entities') or []} types={r.get('rewriter_types') or []}")
+                    print(
+                        f"    rewriter:  entities={r.get('rewriter_entities') or []} types={r.get('rewriter_types') or []}"
+                    )
 
     print("\n=== AGGREGATES ===")
     print(f"mode               : {report.mode}")
-    print(f"recall@5           : {_fmt_pct(report.recall_at_5)}  ({report.passed}/{report.total_queries} queries retrieved at least one expected memory in top-5)")
+    print(
+        f"recall@5           : {_fmt_pct(report.recall_at_5)}  ({report.passed}/{report.total_queries} queries retrieved at least one expected memory in top-5)"
+    )
     print(f"recall@10          : {_fmt_pct(report.recall_at_10)}")
     print(f"MRR                : {report.mrr:.3f}")
-    print(f"must_not violations: {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)")
+    print(
+        f"must_not violations: {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)"
+    )
     print(f"passed / failed    : {report.passed} / {report.failed}")
     if "with_rewriter" in report.mode:
         print(f"rewriter fired     : {report.rewriter_fired_count}/{report.total_queries}")
@@ -921,13 +951,17 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
     print(f"baseline saved : {baseline.get('timestamp', '?')}")
     base_mode = baseline.get("mode", "server_only")
     if base_mode != current.mode:
-        print(f"MODE MISMATCH  : current={current.mode}  baseline={base_mode}  — delta mixes pipeline changes with mode change")
+        print(
+            f"MODE MISMATCH  : current={current.mode}  baseline={base_mode}  — delta mixes pipeline changes with mode change"
+        )
     else:
         print(f"mode           : {current.mode}")
     print(f"recall@5       : {delta('recall_at_5')}")
     print(f"recall@10      : {delta('recall_at_10')}")
     print(f"MRR            : {delta('mrr')}")
-    print(f"must_not viol  : {current.must_not_violations}  (baseline {baseline.get('must_not_violations', '?')})")
+    print(
+        f"must_not viol  : {current.must_not_violations}  (baseline {baseline.get('must_not_violations', '?')})"
+    )
     print()
 
     # per-query regression
@@ -953,49 +987,77 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--save-baseline", action="store_true",
-                    help="Overwrite tests/memory-eval/baseline.json with this run's results")
-    ap.add_argument("--diff", choices=["baseline"],
-                    help="Print delta vs baseline.json")
+    ap.add_argument(
+        "--save-baseline",
+        action="store_true",
+        help="Overwrite tests/memory-eval/baseline.json with this run's results",
+    )
+    ap.add_argument("--diff", choices=["baseline"], help="Print delta vs baseline.json")
     ap.add_argument("--quiet", action="store_true")
-    ap.add_argument("--queries", default=None,
-                    help="Path to queries.yaml (default: tests/memory-eval/queries.yaml)")
-    ap.add_argument("--with-rewriter", action="store_true",
-                    help="Run the hook's Haiku rewriter on each query — entities "
-                         "substitute for the raw prompt in keyword search, and "
-                         "returned types narrow both RPC result sets Python-side. "
-                         "Requires ANTHROPIC_API_KEY; falls back per-query to raw "
-                         "prompt when the rewriter returns None.")
-    ap.add_argument("--with-links", action="store_true",
-                    help="Expand top-5 RRF rows with a 1-hop BFS on memory_links — "
-                         "closes coverage gaps where the expected memory is one "
-                         "edge away from a retrieved row. Uses get_linked_memories "
-                         "RPC with a decayed RRF score (decay=0.5); fails soft if "
-                         "the RPC is unavailable.")
-    ap.add_argument("--with-session-context", action="store_true",
-                    help="#241 context-rot mode: measure whether session-start "
-                         "context injection helps or hurts recall. Runs each query "
-                         "twice — plain vs. with the SessionStart hook's blob "
-                         "appended to the keyword leg — and reports delta "
-                         "(positive = helps, negative = rot).")
-    ap.add_argument("--save-context-rot-baseline", action="store_true",
-                    help="Write tests/memory-eval/context-rot-baseline.json from "
-                         "this run (only valid with --with-session-context).")
-    ap.add_argument("--context-warn-threshold", type=float, default=-5.0,
-                    help="Warn if delta recall@5 < this (pp). Default -5.")
-    ap.add_argument("--context-fail-threshold", type=float, default=None,
-                    help="Exit 1 if delta recall@5 < this (pp). Advisory-only by "
-                         "default (spec #241: flip to blocking after 2-week "
-                         "baseline).")
+    ap.add_argument(
+        "--queries",
+        default=None,
+        help="Path to queries.yaml (default: tests/memory-eval/queries.yaml)",
+    )
+    ap.add_argument(
+        "--with-rewriter",
+        action="store_true",
+        help="Run the hook's Haiku rewriter on each query — entities "
+        "substitute for the raw prompt in keyword search, and "
+        "returned types narrow both RPC result sets Python-side. "
+        "Requires ANTHROPIC_API_KEY; falls back per-query to raw "
+        "prompt when the rewriter returns None.",
+    )
+    ap.add_argument(
+        "--with-links",
+        action="store_true",
+        help="Expand top-5 RRF rows with a 1-hop BFS on memory_links — "
+        "closes coverage gaps where the expected memory is one "
+        "edge away from a retrieved row. Uses get_linked_memories "
+        "RPC with a decayed RRF score (decay=0.5); fails soft if "
+        "the RPC is unavailable.",
+    )
+    ap.add_argument(
+        "--with-session-context",
+        action="store_true",
+        help="#241 context-rot mode: measure whether session-start "
+        "context injection helps or hurts recall. Runs each query "
+        "twice — plain vs. with the SessionStart hook's blob "
+        "appended to the keyword leg — and reports delta "
+        "(positive = helps, negative = rot).",
+    )
+    ap.add_argument(
+        "--save-context-rot-baseline",
+        action="store_true",
+        help="Write tests/memory-eval/context-rot-baseline.json from "
+        "this run (only valid with --with-session-context).",
+    )
+    ap.add_argument(
+        "--context-warn-threshold",
+        type=float,
+        default=-5.0,
+        help="Warn if delta recall@5 < this (pp). Default -5.",
+    )
+    ap.add_argument(
+        "--context-fail-threshold",
+        type=float,
+        default=None,
+        help="Exit 1 if delta recall@5 < this (pp). Advisory-only by "
+        "default (spec #241: flip to blocking after 2-week "
+        "baseline).",
+    )
     args = ap.parse_args()
 
     _load_env()
 
     repo = Path(__file__).resolve().parent.parent
-    queries_path = Path(args.queries) if args.queries else repo / "tests" / "memory-eval" / "queries.yaml"
+    queries_path = (
+        Path(args.queries) if args.queries else repo / "tests" / "memory-eval" / "queries.yaml"
+    )
     baseline_path = repo / "tests" / "memory-eval" / "baseline.json"
 
     import yaml
+
     with queries_path.open("r", encoding="utf-8") as f:
         doc = yaml.safe_load(f)
     queries = doc["queries"]
@@ -1018,26 +1080,36 @@ def main() -> int:
     if args.with_rewriter:
         hook_mod = _load_hook_module()
         if hook_mod is None:
-            print("ERROR: --with-rewriter set but scripts/memory-recall-hook.py "
-                  "could not be loaded as a module", file=sys.stderr)
+            print(
+                "ERROR: --with-rewriter set but scripts/memory-recall-hook.py "
+                "could not be loaded as a module",
+                file=sys.stderr,
+            )
             return 2
         rewriter = getattr(hook_mod, "rewrite_prompt", None)
         if rewriter is None:
-            print("ERROR: --with-rewriter set but rewrite_prompt not found in hook "
-                  "module", file=sys.stderr)
+            print(
+                "ERROR: --with-rewriter set but rewrite_prompt not found in hook module",
+                file=sys.stderr,
+            )
             return 2
         # Source boost calibration from the hook — single source of truth.
         boost_multiplier = float(getattr(hook_mod, "TYPE_BOOST_MULTIPLIER", 1.5))
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            print("WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
-                  "rewriter will return None for every query (degrades to server_only).",
-                  file=sys.stderr)
+            print(
+                "WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
+                "rewriter will return None for every query (degrades to server_only).",
+                file=sys.stderr,
+            )
 
     # #241 context-rot path: dual-run plain vs context-injected and exit
     if args.with_session_context:
         if args.with_rewriter or args.with_links:
-            print("ERROR: --with-session-context is exclusive with --with-rewriter / "
-                  "--with-links (baseline signal only). Run separately.", file=sys.stderr)
+            print(
+                "ERROR: --with-session-context is exclusive with --with-rewriter / "
+                "--with-links (baseline signal only). Run separately.",
+                file=sys.stderr,
+            )
             return 2
         blob, budget = _load_session_context(client)
         if not blob:
@@ -1055,18 +1127,28 @@ def main() -> int:
 
         delta = rot_report.delta_recall_at_5_pp
         if delta < args.context_warn_threshold:
-            print(f"WARN: delta recall@5 = {delta:+.1f} pp below warn threshold "
-                  f"({args.context_warn_threshold:+.1f} pp) — context rot present.",
-                  file=sys.stderr)
+            print(
+                f"WARN: delta recall@5 = {delta:+.1f} pp below warn threshold "
+                f"({args.context_warn_threshold:+.1f} pp) — context rot present.",
+                file=sys.stderr,
+            )
         if args.context_fail_threshold is not None and delta < args.context_fail_threshold:
-            print(f"FAIL: delta recall@5 = {delta:+.1f} pp below fail threshold "
-                  f"({args.context_fail_threshold:+.1f} pp).", file=sys.stderr)
+            print(
+                f"FAIL: delta recall@5 = {delta:+.1f} pp below fail threshold "
+                f"({args.context_fail_threshold:+.1f} pp).",
+                file=sys.stderr,
+            )
             return 1
         return 0
 
     report = asyncio.run(
-        run_all(queries, client, rewriter=rewriter,
-                boost_multiplier=boost_multiplier, with_links=args.with_links)
+        run_all(
+            queries,
+            client,
+            rewriter=rewriter,
+            boost_multiplier=boost_multiplier,
+            with_links=args.with_links,
+        )
     )
     print_report(report, quiet=args.quiet)
 
