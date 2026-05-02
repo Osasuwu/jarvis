@@ -532,6 +532,9 @@ async def recall(
     project: str | None = None,
     type_filter: str | None = None,
     show_history: bool = False,
+    keyword_query: str | None = None,
+    boost_types: set[str] | None = None,
+    boost_multiplier: float = 1.5,
     config: RecallConfig = PROD_RECALL_CONFIG,
 ) -> list[RecallHit]:
     """Run the hybrid-recall pipeline and return ranked RecallHits.
@@ -553,6 +556,21 @@ async def recall(
     ``show_history`` is plumbed through to both RPCs but is not a
     RecallConfig flag — it's a query-time audit/debug knob, not a pipeline
     toggle. Same shape as the pre-#498 ``_hybrid_recall`` signature.
+
+    ``keyword_query`` (#499 fix-forward): when provided, used as the
+    ``search_query`` for the FTS keyword leg instead of the raw ``query``.
+    Adapter-side rewriters (the hook's Haiku prompt-to-entities rewriter)
+    use this to denoise the keyword leg with literal-content tokens
+    (proper nouns, paths, identifiers) — the kind that match memories by
+    keyword but not semantically. Falls back to ``query`` when None,
+    preserving server-side recall() behavior unchanged.
+
+    ``boost_types`` + ``boost_multiplier`` (#499 fix-forward): threaded into
+    rrf_merge to apply a soft rank boost on rows whose type matches. The
+    hook uses this to lift rewriter-suggested types without a hard filter
+    (a misclassified-but-relevant memory still survives single-signal). When
+    None or empty, no boost is applied. Default multiplier 1.5 matches the
+    pre-#499 hook calibration.
     """
     # Late-bind `server` so test patches of the embedding model + embed
     # function still apply. Same pattern as handlers/memory.py.
@@ -588,7 +606,7 @@ async def recall(
         kw_result = client.rpc(
             "keyword_search_memories",
             {
-                "search_query": query,
+                "search_query": keyword_query or query,
                 "match_limit": rpc_fetch_limit,
                 "filter_project": project,
                 "filter_type": type_filter,
@@ -604,7 +622,14 @@ async def recall(
     semantic_ids = {r.get("id") for r in semantic_rows if r.get("id")}
     keyword_ids = {r.get("id") for r in keyword_rows if r.get("id")}
 
-    merged = rrf_merge(semantic_rows, keyword_rows, limit=fetch_limit, k=config.rrf_k)
+    merged = rrf_merge(
+        semantic_rows,
+        keyword_rows,
+        limit=fetch_limit,
+        k=config.rrf_k,
+        boost_types=boost_types,
+        boost_multiplier=boost_multiplier,
+    )
     if not merged:
         return []
 

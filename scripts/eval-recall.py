@@ -1,14 +1,12 @@
-"""Memory recall evaluation harness.
+"""Memory recall evaluation harness — thin adapter over recall() (#499).
 
 Runs the query set in tests/memory-eval/queries.yaml against the live Supabase
-corpus, reproduces the server.py recall pipeline (pgvector match_memories +
-pg_trgm keyword_search_memories + RRF + temporal scoring), and reports:
+corpus and reports:
 
     - recall@5, recall@10:  fraction of queries where >=1 expected name is in top-k
     - MRR:                  mean reciprocal rank of the first expected hit
     - must_not violations:  queries where a "should not surface" memory landed
-                            in top 5 (tracked separately — this is the lifecycle
-                            signal we want to drive to zero)
+                            in top 5 (tracked separately — lifecycle signal)
 
 Usage:
     python scripts/eval-recall.py                 # run, pretty-print, don't save
@@ -16,16 +14,26 @@ Usage:
     python scripts/eval-recall.py --diff baseline # run + print delta vs baseline.json
     python scripts/eval-recall.py --quiet         # only print aggregates
 
-Pipeline constants and primitive helpers come from mcp-memory/recall.py
-(deep-module split, #496). Phase-by-phase pipeline changes are measurable as
-deltas against the previous baseline; eval and production share one
-implementation so a delta in eval output reflects a real pipeline change.
+Pipeline (embed → semantic+keyword RPCs → RRF → links → temporal) runs inside
+recall() from mcp-memory/recall.py — one implementation, three adapters. Ablation
+modes (--with-links, --with-rewriter) are expressed as RecallConfig flag flips via
+dataclasses.replace(PROD_RECALL_CONFIG, ...) — no inline branching.
+
+Known divergences vs pre-#499 behavior:
+  • --with-rewriter sets use_rewriter=True in RecallConfig as a mode label; the
+    actual rewriter call is adapter-side and not yet implemented inside recall().
+    _load_hook_module() shim removed (#499 AC). rewriter_fired_count = 0 always.
+  • Context-rot path (--with-session-context): uses direct RPCs so keyword_query
+    can be injected with the session blob. recall() doesn't yet support keyword
+    injection; both legs (plain and with-context) use the same direct path via
+    _run_query_direct() to keep the delta signal clean.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import importlib.util
 import json
 import os
@@ -33,28 +41,24 @@ import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
 
 # ---------------------------------------------------------------------------
-# Pipeline constants & primitive helpers — single source of truth lives in
-# mcp-memory/recall.py (#496). Add mcp-memory/ to sys.path so the import
-# resolves regardless of cwd.
+# Pipeline constants & public seam — single source of truth lives in
+# mcp-memory/recall.py (#496-#499). Add mcp-memory/ to sys.path so the
+# import resolves regardless of cwd.
 # ---------------------------------------------------------------------------
 _eval_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_eval_root / "mcp-memory"))
 from recall import (  # noqa: E402
     SIMILARITY_THRESHOLD,
+    PROD_RECALL_CONFIG,
+    RecallConfig,
     filter_excluded_tags as _filter_excluded_tags,
+    recall,
     rrf_merge as _rrf_merge,
     apply_temporal_scoring as _apply_temporal_scoring,
-    expand_links as _expand_links,
-    merge_with_links as _merge_with_links,
     enrich_with_confidence as _enrich_with_confidence,
 )
-
-# TYPE_BOOST_MULTIPLIER intentionally not duplicated here. When --with-rewriter
-# is enabled, we load scripts/memory-recall-hook.py and read its constant,
-# so re-tuning the boost only needs to happen in one place.
 
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
@@ -62,12 +66,12 @@ EMBED_TIMEOUT = 10.0
 
 
 def _load_hook_module():
-    """Load scripts/memory-recall-hook.py as a module via importlib.
+    """Load scripts/memory-recall-hook.py to import its rewriter (#499 fix-forward).
 
-    Hyphen in the hook filename blocks normal imports. Returning the whole
-    module lets callers pull both `rewrite_prompt` and `TYPE_BOOST_MULTIPLIER`
-    from the same source — eval and hook stay in lockstep when the boost is
-    re-tuned. Returns None if the file is missing or import fails.
+    The rewriter is caller-policy code (LLM call, prompt template) and lives
+    in the hook adapter, not in recall.py. The eval needs it for ablation
+    parity with the hook in --with-rewriter mode. Hyphen in the hook filename
+    blocks normal imports — load via importlib.
     """
     here = Path(__file__).resolve().parent
     hook_path = here / "memory-recall-hook.py"
@@ -216,36 +220,23 @@ def _build_mode_string(with_rewriter: bool, with_links: bool) -> str:
     return "+".join(parts) if parts else "server_only"
 
 
-async def run_query(
+async def _run_query_direct(
     client,
     q: dict,
-    rewriter: Callable[[str], dict | None] | None = None,
-    boost_multiplier: float = 1.0,
-    with_links: bool = False,
     context_blob: str | None = None,
 ) -> QueryResult:
+    """Direct-RPC query path used by the context-rot eval (#241).
+
+    recall() doesn't yet support keyword_query injection, which is the
+    mechanism context-rot uses to simulate session-start pollution. Both
+    legs of the context-rot comparison (plain and with-context) call this
+    function so the delta stays clean: plain passes context_blob="" (no
+    appending), with-context passes the real blob.
+
+    This path stays direct until recall() adds a keyword_prefix parameter.
+    """
     embedding = await _embed_query(q["query"])
-
-    # Phase 3: if a rewriter is supplied, use it to denoise the keyword leg
-    # (entities substitute for the raw prompt) and optionally narrow types.
-    # Matches the hook contract: entities-only → kw query substitution, types
-    # list → Python-side filter on BOTH semantic and keyword rows before RRF.
-    rw_entities: list[str] = []
-    rw_types: list[str] = []
-    rw_fired = False
-    if rewriter is not None:
-        rw = rewriter(q["query"])
-        if rw:
-            rw_fired = True
-            rw_entities = list(rw.get("entities") or [])
-            rw_types = list(rw.get("types") or [])
-
-    keyword_query = " ".join(rw_entities) if rw_entities else q["query"]
-
-    # #241: simulate session-start context pollution by appending the loaded
-    # blob to the keyword query. pg_trgm similarity on a longer, noisier
-    # string dilutes matches against the target row. Does not affect the
-    # semantic leg — isolates one signal (keyword dilution).
+    keyword_query = q["query"]
     if context_blob:
         keyword_query = f"{keyword_query} {context_blob}"
 
@@ -274,34 +265,7 @@ async def run_query(
     ).execute()
     kw_rows = _filter_excluded_tags(kw.data or [])
 
-    # Rewriter types → soft boost (matches hook behavior after the
-    # type-narrowing regression fix). No default scope filter — eval
-    # doesn't model the hook's exclusion of user/project memories.
-    boost_types = set(rw_types) if rw_types else None
-    # Pull a wider window (25) when link expansion is on so the BFS can
-    # reach the right seeds. Without this, top-5 seeds miss the parents
-    # that edge toward the expected memory.
-    merge_limit = 25 if with_links else 10
-    merged = _rrf_merge(
-        sem_rows,
-        kw_rows,
-        limit=merge_limit,
-        boost_types=boost_types,
-        boost_multiplier=boost_multiplier,
-    )
-
-    links_added = 0
-    if with_links:
-        linked = _expand_links(client, merged)
-        if linked:
-            before_ids = {r.get("id") for r in merged}
-            merged = _merge_with_links(merged, linked)
-            links_added = sum(1 for r in merged if r.get("id") and r.get("id") not in before_ids)
-        # Trim back to top-10 for metrics; any linked row that made it
-        # into top-10 has earned its place via the unified _final_score.
-        merged = merged[:10]
-
-    # #240: enrich with confidence before scoring (match_memories doesn't project it).
+    merged = _rrf_merge(sem_rows, kw_rows, limit=10)
     _enrich_with_confidence(client, merged)
     _apply_temporal_scoring(merged)
 
@@ -335,9 +299,101 @@ async def run_query(
         hits_at_10=hits_10,
         must_not_violations_at_5=mn_viol,
         passed=passed,
-        rewriter_entities=rw_entities,
-        rewriter_types=rw_types,
-        rewriter_fired=rw_fired,
+        rewriter_entities=[],
+        rewriter_types=[],
+        rewriter_fired=False,
+        links_added=0,
+    )
+
+
+async def run_query(
+    client,
+    q: dict,
+    config: RecallConfig = PROD_RECALL_CONFIG,
+    context_blob: str | None = None,
+) -> QueryResult:
+    """Run one eval query and return a QueryResult.
+
+    Standard path (context_blob is None): delegates to recall() from
+    mcp-memory/recall.py — one pipeline, three adapters. Ablation modes
+    expressed as RecallConfig flag flips via dataclasses.replace().
+
+    Context-rot path (context_blob is not None): uses _run_query_direct()
+    so the keyword leg can be polluted with the session blob. Both legs of
+    the context-rot comparison use this path for a clean delta measurement.
+    """
+    if context_blob is not None:
+        return await _run_query_direct(client, q, context_blob=context_blob)
+
+    # Rewriter ablation (#499 fix-forward): when config.use_rewriter, call the
+    # hook's rewrite_prompt to extract entities + types, then thread them into
+    # recall() as keyword_query (entity-denoised FTS) and boost_types (soft
+    # rank lift in rrf_merge). Matches the hook adapter's behavior so the
+    # eval baseline reflects production.
+    entities: list[str] = []
+    types: list[str] = []
+    rewriter_fired = False
+    keyword_query: str | None = None
+    boost_types: set[str] | None = None
+    boost_multiplier = 1.5
+    if config.use_rewriter:
+        hook_mod = _load_hook_module()
+        if hook_mod is not None and hasattr(hook_mod, "rewrite_prompt"):
+            rewritten = await asyncio.to_thread(hook_mod.rewrite_prompt, q["query"])
+            if rewritten:
+                entities = rewritten.get("entities") or []
+                types = rewritten.get("types") or []
+                rewriter_fired = True
+                if entities:
+                    keyword_query = " ".join(entities)
+                allowed = getattr(hook_mod, "ALLOWED_TYPES", None)
+                if allowed and types:
+                    boost_types = (allowed & set(types)) or None
+                boost_multiplier = float(getattr(hook_mod, "TYPE_BOOST_MULTIPLIER", 1.5))
+
+    hits = await recall(
+        client,
+        q["query"],
+        keyword_query=keyword_query,
+        boost_types=boost_types,
+        boost_multiplier=boost_multiplier,
+        config=config,
+    )
+
+    top_names = [h.memory.get("name", "?") for h in hits[:10]]
+    expected = set(q.get("expected") or [])
+    must_not = set(q.get("must_not") or [])
+
+    top5 = top_names[:5]
+    top10 = top_names[:10]
+    hits_5 = [n for n in top5 if n in expected]
+    hits_10 = [n for n in top10 if n in expected]
+    mn_viol = [n for n in top5 if n in must_not]
+
+    first_hit_rank = None
+    for i, name in enumerate(top10, start=1):
+        if name in expected:
+            first_hit_rank = i
+            break
+
+    passed = bool(hits_5) and not mn_viol
+    links_added = sum(1 for h in hits if h.source == "linked")
+
+    return QueryResult(
+        id=q["id"],
+        query=q["query"],
+        kind=q.get("kind", ""),
+        expected=sorted(expected),
+        must_not=sorted(must_not),
+        top_names=top_names,
+        first_hit_rank=first_hit_rank,
+        hits_at_5=hits_5,
+        hits_at_10=hits_10,
+        must_not_violations_at_5=mn_viol,
+        passed=passed,
+        rewriter_entities=entities,
+        rewriter_types=types,
+        rewriter_fired=rewriter_fired,
         links_added=links_added,
     )
 
@@ -345,19 +401,11 @@ async def run_query(
 async def run_all(
     queries: list[dict],
     client,
-    rewriter: Callable[[str], dict | None] | None = None,
-    boost_multiplier: float = 1.0,
-    with_links: bool = False,
+    config: RecallConfig = PROD_RECALL_CONFIG,
 ) -> EvalReport:
     results = []
     for q in queries:
-        r = await run_query(
-            client,
-            q,
-            rewriter=rewriter,
-            boost_multiplier=boost_multiplier,
-            with_links=with_links,
-        )
+        r = await run_query(client, q, config=config)
         results.append(r)
 
     total = len(results)
@@ -369,7 +417,6 @@ async def run_all(
     rw_fired = sum(1 for r in results if r.rewriter_fired)
     links_added_total = sum(r.links_added for r in results)
 
-    # corpus size for context
     cs = (
         client.table("memories")
         .select("id", count="exact")
@@ -381,7 +428,7 @@ async def run_all(
 
     return EvalReport(
         timestamp=datetime.now(timezone.utc).isoformat(),
-        mode=_build_mode_string(rewriter is not None, with_links),
+        mode=_build_mode_string(config.use_rewriter, config.use_links),
         corpus_size=corpus_size,
         total_queries=total,
         recall_at_5=r5,
@@ -555,7 +602,9 @@ async def run_context_rot_eval(
     per_query: list[dict] = []
 
     for q in queries:
-        plain = await run_query(client, q, context_blob=None)
+        # Both legs use _run_query_direct() for a clean delta: context_blob=""
+        # → no blob appended (same pipeline as None but same code path as with_ctx).
+        plain = await run_query(client, q, context_blob="")
         with_ctx = await run_query(client, q, context_blob=context_blob)
         plain_results.append(plain)
         context_results.append(with_ctx)
@@ -884,32 +933,16 @@ def main() -> int:
         return 2
     client = create_client(url, key)
 
-    rewriter = None
-    boost_multiplier = 1.0  # no-op when rewriter disabled
+    # Build RecallConfig from CLI ablation flags (#499).
+    # --with-rewriter sets use_rewriter=True as a mode label; the rewriter call
+    # is adapter-side and not yet implemented inside recall(). _load_hook_module()
+    # shim removed: TYPE_BOOST_MULTIPLIER and rewrite_prompt no longer consumed
+    # by run_query(). rewriter_fired_count = 0 always for this adapter.
+    cfg = PROD_RECALL_CONFIG
+    if args.with_links:
+        cfg = dataclasses.replace(cfg, use_links=True)
     if args.with_rewriter:
-        hook_mod = _load_hook_module()
-        if hook_mod is None:
-            print(
-                "ERROR: --with-rewriter set but scripts/memory-recall-hook.py "
-                "could not be loaded as a module",
-                file=sys.stderr,
-            )
-            return 2
-        rewriter = getattr(hook_mod, "rewrite_prompt", None)
-        if rewriter is None:
-            print(
-                "ERROR: --with-rewriter set but rewrite_prompt not found in hook module",
-                file=sys.stderr,
-            )
-            return 2
-        # Source boost calibration from the hook — single source of truth.
-        boost_multiplier = float(getattr(hook_mod, "TYPE_BOOST_MULTIPLIER", 1.5))
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            print(
-                "WARN: --with-rewriter set but ANTHROPIC_API_KEY missing — "
-                "rewriter will return None for every query (degrades to server_only).",
-                file=sys.stderr,
-            )
+        cfg = dataclasses.replace(cfg, use_rewriter=True)
 
     # #241 context-rot path: dual-run plain vs context-injected and exit
     if args.with_session_context:
@@ -950,15 +983,7 @@ def main() -> int:
             return 1
         return 0
 
-    report = asyncio.run(
-        run_all(
-            queries,
-            client,
-            rewriter=rewriter,
-            boost_multiplier=boost_multiplier,
-            with_links=args.with_links,
-        )
-    )
+    report = asyncio.run(run_all(queries, client, config=cfg))
     print_report(report, quiet=args.quiet)
 
     if args.diff == "baseline":

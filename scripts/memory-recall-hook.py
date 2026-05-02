@@ -1,46 +1,35 @@
 """UserPromptSubmit hook: task-aware hybrid recall injected as context.
 
-Phase 3: LLM rewriter + fan-out. On each prompt we do, in parallel:
-  1. Embed the prompt (voyage-3-lite) for semantic search.
-  2. Call Haiku-4.5 to extract {entities, types} — literal keywords that
-     are likely to appear in relevant memories, plus an optional type
-     narrowing hint.
-Then we run `match_memories` (semantic) and `keyword_search_memories`
-(FTS on entities if available, else on the raw prompt) and merge both
-ranked lists via Reciprocal Rank Fusion (RRF, k=60).
+Thin adapter over mcp-memory/recall.py (#499, slice 4 of 4). main()
+calls asyncio.run(_recall(...)); the hook owns only caller-policy code:
+  - rewriter call (LLM — stays adapter-side)
+  - project detection
+  - known-unknown gate (Phase 7.3 per-prompt widen signal)
+  - ALLOWED_TYPES post-filter (user/project excluded here, loaded at
+    session start by scripts/session-context.py)
+  - brief vs full formatting + char-budget trim
+  - stdout emission via hookSpecificOutput JSON
 
-Why a rewriter? The raw prompt carries a lot of noise ("help me", "can
-you", conversational glue). FTS on that gives diluted matches. Haiku
-strips the prompt to its literal content signal (proper nouns, paths,
-technical identifiers) — the kind of tokens that match memories by
-keyword but not semantically.
+Pipeline (semantic + keyword + RRF + temporal + link expansion) runs
+inside recall() from mcp-memory/recall.py — one implementation, three
+adapters (hook, MCP server, eval harness).
 
-Types ∈ {feedback, decision, reference}. Scope: current project (cwd
-basename) + global. `user` + `project` are already loaded at session
-start by scripts/session-context.py and excluded here to avoid
-duplication.
-
-Phase 7.2: by default emits **brief** entries (one line per hit —
-name + type/project + tags + score + description). The agent previews
-what's relevant and calls memory_get(name=...) on anything worth
-reading, instead of every UserPromptSubmit paying ~40KB of full
-content. Legacy full mode still available via BRIEF_MODE=False for
-debugging.
-
-Phase 7.3: per-prompt gate on `known_unknowns`. Before emitting, we
-cosine-compare the prompt embedding against open known_unknowns (topics
-where recall has been historically weak). A match above threshold
-widens this invocation back to full-content + CHAR_BUDGET_FULL — the
-signal says "brief isn't enough for this one". Default brief path is
-untouched on a miss.
-
-Touches accessed memories via RPC so the ACT-R access-frequency boost
-applies. Semantic failure falls back to keyword-only search (still using
-rewriter-extracted entities when available); rewriter failure falls back
-to raw-prompt keyword search with the default type set. Hook never
-blocks the prompt.
+Known divergences vs pre-#499 behavior (documented, not bugs):
+  • Rewriter-extracted entities no longer denoise the keyword leg inside
+    recall(). recall() receives the raw prompt; entity substitution is
+    adapter-side but not yet plumbed through the recall() API. The
+    rewriter output still appears in the header note for transparency.
+  • TYPE_BOOST_MULTIPLIER (soft rewriter-type boost in rrf_merge) is not
+    yet threaded into recall(). Future slice: add boost_types to
+    RecallConfig or recall() signature.
+  • Hook embeds the prompt TWICE per invocation: once via embed() for
+    the known-unknown gate, once via server._embed_query inside recall().
+    Future slice: expose query_embedding from recall() to eliminate the
+    redundant call.
 """
 
+import asyncio
+import dataclasses
 import json
 import os
 import subprocess
@@ -79,27 +68,28 @@ for _env in [_root / ".env", _root.parent / ".env"]:
 
 from supabase import create_client
 
-# Recall pipeline primitives live in mcp-memory/recall.py (deep-module split,
-# #496). Hook adds mcp-memory/ to sys.path on import and aliases the public
-# names back to the legacy private ones so downstream code (and tests
-# patching `mrh._cosine_sim`) keeps working.
+# recall.py is the deep module (#496-#499). Hook adds mcp-memory/ to
+# sys.path and re-exports the public names so tests that introspect
+# mrh.<NAME> directly (tests/test_memory_recall_hook.py) keep working.
+# noqa: F401 — names not used inside this module; they exist as the
+# re-export surface for downstream test code.
 sys.path.insert(0, str(_root / "mcp-memory"))
-# Re-exported for tests that introspect mrh.<NAME> directly. Tests in
-# tests/test_memory_recall_hook.py reach into the module to verify
-# constants and functions whose canonical home is now recall.py; keeping
-# them as module attributes preserves that contract.
-from recall import (  # noqa: E402, F401
-    LINK_DECAY,
-    LINK_EXPAND_TOP_K,
-    LINK_SCORE_FIELD,
-    RRF_K,
-    cosine_sim as _cosine_sim,
-    expand_links,
-    filter_excluded_tags as _filter_excluded_tags,
-    merge_with_links,
-    parse_pgvector as _parse_embedding,
-    rrf_merge,
-    score_linked_rows as _score_linked_rows,
+from recall import (  # noqa: E402
+    LINK_DECAY,  # noqa: F401
+    LINK_EXPAND_TOP_K,  # noqa: F401
+    LINK_SCORE_FIELD,  # noqa: F401
+    PROD_RECALL_CONFIG,
+    RRF_K,  # noqa: F401
+    RecallConfig,  # noqa: F401
+    RecallHit,
+    cosine_sim as _cosine_sim,  # noqa: F401
+    expand_links,  # noqa: F401
+    filter_excluded_tags as _filter_excluded_tags,  # noqa: F401
+    merge_with_links,  # noqa: F401
+    parse_pgvector as _parse_embedding,  # noqa: F401
+    recall as _recall,
+    rrf_merge,  # noqa: F401
+    score_linked_rows as _score_linked_rows,  # noqa: F401
 )
 
 # ---------------------------------------------------------------------------
@@ -109,8 +99,9 @@ from recall import (  # noqa: E402, F401
 # default). Calibrated 2026-04-17 against voyage-3-lite/512 on real user
 # prompts: top-similarity sits at 0.35-0.50 for relevant memories and below
 # 0.25 for unrelated ones. 0.30 catches clearly-relevant matches without
-# firing on conversational glue tokens. Slice 3 will express this divergence
-# as a RecallConfig flag flip.
+# firing on conversational glue tokens. Expressed as a RecallConfig flag
+# flip via dataclasses.replace(PROD_RECALL_CONFIG, semantic_threshold=0.30)
+# in main() (#499).
 SIMILARITY_THRESHOLD = 0.30
 # Phase 7.2 default: brief-mode one-line entries instead of full content. Jarvis
 # sees the inventory relevant to the prompt and fetches content via memory_get
@@ -120,7 +111,7 @@ BRIEF_MODE = True
 CHAR_BUDGET_FULL = 40_000  # ~10K tokens, ~5% of 200K window (legacy path)
 CHAR_BUDGET_BRIEF = 12_000  # ~3K tokens ceiling — rarely hit after MAX_BRIEF_ENTRIES cap
 CHAR_BUDGET = CHAR_BUDGET_BRIEF if BRIEF_MODE else CHAR_BUDGET_FULL
-FETCH_LIMIT = 50  # pull wide per signal, cap by budget in Python
+FETCH_LIMIT = 50  # retained for legacy reference; recall() controls its own fetch window
 # Cap brief-mode injection at top-N direct hits. Earlier default was char-budget
 # only, which let 30-40 entries through every prompt (~4-5KB) — mostly tail
 # noise the agent never reads. Top-7 preserves the relevance head; deeper hits
@@ -148,12 +139,12 @@ KNOWN_UNKNOWN_SCAN_LIMIT = 200
 #               pulled in once Phase 3 gains a proper tag filter.
 ALLOWED_TYPES = {"feedback", "decision", "reference"}
 MIN_PROMPT_CHARS = 15  # too-short prompts produce noisy embeddings
-# Rewriter types are applied as a soft rank boost, not a hard filter. An
-# earlier version gated rows by requested_types and recall@5 dropped -5pp
-# on the eval set whenever Haiku misclassified a feedback/decision query
-# as `reference`. The boost keeps misclassified-but-relevant memories in
-# the candidate pool; calibrated so a boosted single-signal hit still
-# loses to an unboosted dual-signal hit (0.0167*1.5 < 0.0333).
+# Rewriter type boost calibration constant. Pre-#499 this was threaded into
+# rrf_merge via boost_types. After #499, the orchestration runs inside
+# recall() which does not yet accept boost_types; the constant is kept here
+# so tests (TestRrfMergeBoost) can verify the calibration invariant against
+# mrh.TYPE_BOOST_MULTIPLIER, and for a future slice that adds boost_types
+# to RecallConfig.
 TYPE_BOOST_MULTIPLIER = 1.5
 
 # 1-hop BFS link-expansion constants imported from recall.py (#497):
@@ -451,9 +442,13 @@ def main():
     if not url or not key:
         silent_exit()
 
-    # Embed and rewrite run in parallel — both are network-bound, and the
-    # rewriter's output only feeds the keyword leg, so Voyage doesn't need
-    # to wait. If either fails, the other's result is still useful.
+    # Embed and rewrite run in parallel — both are network-bound.
+    # embed() result feeds the known-unknown gate (Phase 7.3 widening).
+    # rewrite_prompt() result feeds the header note (entities display).
+    # Note: recall() does its own embed internally for the search RPCs.
+    # The double embed is a known inefficiency (#499 divergence); future
+    # slice: expose query_embedding from recall() to eliminate the redundant
+    # embed() call here.
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_embed = ex.submit(embed, prompt)
         fut_rewrite = ex.submit(rewrite_prompt, prompt)
@@ -463,15 +458,13 @@ def main():
     entities = (rewritten or {}).get("entities") or []
     requested_types = (rewritten or {}).get("types") or []
 
-    # Keyword query: joined entities (denoised) if rewriter gave us any,
-    # else the raw prompt (MVP behavior, still works without Haiku).
-    keyword_query = " ".join(entities) if entities else prompt
-
-    # Rewriter's type hint becomes a soft boost (see TYPE_BOOST_MULTIPLIER
-    # comment). Intersecting with ALLOWED_TYPES keeps the boost confined
-    # to types the hook actually surfaces; an out-of-set suggestion (e.g.
-    # the rewriter hallucinates `episode`) resolves to no boost instead
-    # of falling through to "boost everything".
+    # Rewriter-derived signals threaded into recall() (#499 fix-forward):
+    #   - keyword_query: entity-denoised text for the FTS leg. Strips
+    #     conversational glue ("help me", "can you") that dilutes keyword
+    #     matches; literal entities match memory bodies verbatim.
+    #   - boost_types: ALLOWED ∩ requested. Soft rank boost in rrf_merge —
+    #     misclassified-but-relevant single-signal hits still survive.
+    keyword_query = " ".join(entities) if entities else None
     boost_types = (ALLOWED_TYPES & set(requested_types)) if requested_types else None
 
     try:
@@ -487,78 +480,50 @@ def main():
     brief_mode = BRIEF_MODE and not widened
     char_budget = CHAR_BUDGET_BRIEF if brief_mode else CHAR_BUDGET_FULL
 
-    semantic_rows: list[dict] = []
-    if query_embedding is not None:
-        try:
-            sem = client.rpc(
-                "match_memories",
-                {
-                    "query_embedding": query_embedding,
-                    "match_limit": FETCH_LIMIT,
-                    "similarity_threshold": SIMILARITY_THRESHOLD,
-                    "filter_project": project,  # None → no project filter
-                    "filter_type": None,  # filter types in Python
-                },
-            ).execute()
-            semantic_rows = sem.data or []
-        except Exception:
-            semantic_rows = []
+    # Hook config: tighter semantic threshold than the PROD default (0.25),
+    # calibrated for conversational prompts which carry more glue tokens.
+    hook_config = dataclasses.replace(PROD_RECALL_CONFIG, semantic_threshold=SIMILARITY_THRESHOLD)
 
-    keyword_rows: list[dict] = []
     try:
-        kw = client.rpc(
-            "keyword_search_memories",
-            {
-                "search_query": keyword_query,
-                "match_limit": FETCH_LIMIT,
-                "filter_project": project,
-                "filter_type": None,
-            },
-        ).execute()
-        keyword_rows = kw.data or []
+        hits: list[RecallHit] = asyncio.run(
+            _recall(
+                client,
+                prompt,
+                project=project,
+                keyword_query=keyword_query,
+                boost_types=boost_types,
+                boost_multiplier=TYPE_BOOST_MULTIPLIER,
+                config=hook_config,
+            )
+        )
     except Exception:
-        keyword_rows = []
-
-    # #417: drop session-snapshot etc. before any other filtering — they're
-    # operational artifacts, not knowledge. Same filter lives in
-    # mcp-memory/handlers/memory.py and scripts/eval-recall.py so all three
-    # paths predict the same recall behavior.
-    semantic_rows = _filter_excluded_tags(semantic_rows)
-    keyword_rows = _filter_excluded_tags(keyword_rows)
-
-    # Level 1 scope: always restrict to types the hook is responsible for.
-    # user/project memories are loaded by scripts/session-context.py at
-    # session start and excluded here to avoid duplication.
-    semantic_rows = [r for r in semantic_rows if r.get("type") in ALLOWED_TYPES]
-    keyword_rows = [r for r in keyword_rows if r.get("type") in ALLOWED_TYPES]
-
-    if not semantic_rows and not keyword_rows:
         silent_exit()
 
-    rows = rrf_merge(semantic_rows, keyword_rows, boost_types=boost_types)
+    # Post-filter by ALLOWED_TYPES (hook caller policy).
+    # user/project memories are loaded by scripts/session-context.py at
+    # session start and excluded here to avoid duplication.
+    hits = [h for h in hits if h.memory.get("type") in ALLOWED_TYPES]
+    if not hits:
+        silent_exit()
 
-    # 1-hop BFS: pull linked neighbors of the top-K RRF rows and fold them
-    # into the ranking. Covers the "expected memory is one edge away from
-    # a retrieved row" failure mode (q15/q19 in the eval set). Linked rows
-    # are type-scoped like direct rows. Fail-soft: RPC or link_score error
-    # yields zero linked rows and the ranking is unchanged.
-    linked_rows_raw = expand_links(client, rows)
-    linked_rows = [r for r in linked_rows_raw if r.get("type") in ALLOWED_TYPES]
-    linked_count = len(linked_rows)
-    if linked_rows:
-        rows = merge_with_links(rows, linked_rows)
-
-    # Accumulate under char budget
-    scope = f" (project: {project}+global)" if project else " (all projects)"
+    # Derive signal label from RecallHit source attribution.
+    # Dual-hit rows (both legs) carry _rrf_score on the raw memory dict;
+    # source="semantic" for dual-hits (rrf_merge keeps the semantic row).
+    has_dual = any(h.memory.get("_rrf_score") is not None for h in hits)
+    has_sem = any(h.source == "semantic" for h in hits)
+    has_kw = any(h.source == "keyword" for h in hits) or has_dual
+    linked_count = sum(1 for h in hits if h.source == "linked")
     signal = (
         "semantic+keyword (RRF)"
-        if semantic_rows and keyword_rows
+        if (has_sem and has_kw)
         else "semantic-only"
-        if semantic_rows
+        if has_sem
         else "keyword-only"
     )
     if linked_count:
         signal += f" + {linked_count} linked"
+
+    scope = f" (project: {project}+global)" if project else " (all projects)"
     rewriter_note = ""
     if rewritten:
         bits = []
@@ -590,7 +555,8 @@ def main():
     separator = "\n" if brief_mode else "\n\n---\n\n"
     formatter = format_memory_brief if brief_mode else format_memory
 
-    for row in rows:
+    for hit in hits:
+        row = hit.memory
         block = formatter(row) + separator
         if total + len(block) > char_budget:
             break
@@ -621,16 +587,12 @@ def main():
     # different scale), top_sim from the same field, and `repo` set to the
     # canonical full repo slug used elsewhere in the events table.
     try:
-        included_rows = [r for r in rows if r.get("id") in set(included_ids)]
+        included_set = set(included_ids)
+        included_hits = [h for h in hits if h.memory.get("id") in included_set]
         returned_similarities = [
-            float(r["similarity"]) if isinstance(r.get("similarity"), (int, float)) else None
-            for r in included_rows
+            h.semantic_score if h.semantic_score > 0 else None for h in included_hits
         ]
-        top_sim = (
-            float(included_rows[0]["similarity"])
-            if included_rows and isinstance(included_rows[0].get("similarity"), (int, float))
-            else 0.0
-        )
+        top_sim = included_hits[0].semantic_score if included_hits else 0.0
         event_payload = {
             "query": prompt,
             "returned_ids": included_ids,
