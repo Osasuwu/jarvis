@@ -1552,22 +1552,21 @@ class TestRecallLifecycleFilters:
         # branch; we only care about what args we sent to the RPCs.
         client.rpc.return_value.execute.return_value = MagicMock(data=[])
 
-        # Stub the fallback so it doesn't re-hit client and muddy assertions.
-        async def _noop_fallback(*_args, **_kwargs):
-            return []
+        async def _stub_embed(_text):
+            return [0.0] * 512
 
-        monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
+        monkeypatch.setattr(server_module, "_embed_query", _stub_embed)
 
         await _hybrid_recall(
             client,
-            query_embedding=[0.0] * 512,
             query_text="anything",
             project="jarvis",
             mem_type=None,
             limit=5,
         )
 
-        # Both RPCs invoked with show_history=False.
+        # Both RPCs invoked with show_history=False. Pure-empty result means
+        # recall() bails before any link-expansion RPC, so exactly two calls.
         rpc_calls = client.rpc.call_args_list
         assert len(rpc_calls) == 2
         for call in rpc_calls:
@@ -1589,14 +1588,13 @@ class TestRecallLifecycleFilters:
         client = MagicMock()
         client.rpc.return_value.execute.return_value = MagicMock(data=[])
 
-        async def _noop_fallback(*_args, **_kwargs):
-            return []
+        async def _stub_embed(_text):
+            return [0.0] * 512
 
-        monkeypatch.setattr(server_module, "_keyword_recall", _noop_fallback)
+        monkeypatch.setattr(server_module, "_embed_query", _stub_embed)
 
         await _hybrid_recall(
             client,
-            query_embedding=[0.0] * 512,
             query_text="anything",
             project=None,
             mem_type=None,

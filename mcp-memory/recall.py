@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Literal
 
 
 # Reciprocal-Rank-Fusion constant. Higher k flattens rank weighting; k=60
@@ -402,3 +404,219 @@ def apply_temporal_scoring(rows: list[dict]) -> list[dict]:
 
     rows.sort(key=lambda r: r.get("_temporal_score", 0), reverse=True)
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Slice 3 of 4 (issue #498): public seam — RecallConfig, RecallHit, recall().
+# ---------------------------------------------------------------------------
+#
+# When use_links is True, rrf_merge runs against a wider window so the BFS over
+# get_linked_memories has enough seed candidates to find the right parent;
+# matches scripts/eval-recall.py:284 (`merge_limit = 25 if with_links else 10`).
+LINK_MERGE_FETCH_LIMIT = 25
+
+
+@dataclass(frozen=True)
+class RecallConfig:
+    """Toggles + thresholds that shape one recall() invocation.
+
+    All-on defaults are PROD_RECALL_CONFIG. Adapters that want ablations
+    (eval, slice-4 hook migration) flip flags via dataclasses.replace, never by
+    mutation — frozen=True locks the instance.
+
+    Slice 3 only consumes ``use_links``, ``use_temporal``, ``semantic_threshold``,
+    ``rrf_k``, and ``limit``. ``use_rewriter`` and ``use_classifier`` are
+    declared here for the slice-4 adapter migration so the public surface is
+    stable in advance: the rewriter is still adapter-side (the hook rewrites,
+    eval may not), and the classifier drives memory_store side-effects, not
+    recall mechanics. ``temporal_half_lives`` and ``excluded_tags`` mirror the
+    module constants for documentation; the helpers still read the module-level
+    versions in slice 3.
+    """
+
+    use_rewriter: bool = True
+    use_links: bool = True
+    use_classifier: bool = True
+    use_temporal: bool = True
+    semantic_threshold: float = SIMILARITY_THRESHOLD
+    rrf_k: int = RRF_K
+    temporal_half_lives: dict[str, float] = field(default_factory=lambda: dict(TEMPORAL_HALF_LIVES))
+    excluded_tags: frozenset[str] = EXCLUDE_TAGS_FROM_RECALL
+    limit: int = 10
+
+
+PROD_RECALL_CONFIG = RecallConfig()
+
+
+@dataclass(frozen=True)
+class RecallHit:
+    """One ranked recall result with full score-stack attribution.
+
+    ``memory`` is the raw row dict (still carries ``_rrf_score`` /
+    ``_temporal_score`` / ``similarity`` so existing display helpers keep
+    working). ``source`` records which signal contributed the hit at retrieval
+    time — semantic-only, keyword-only, or pulled in via 1-hop link expansion.
+    ``linked_via`` is the parent memory's UUID for ``source="linked"``, None
+    otherwise.
+    """
+
+    memory: dict
+    semantic_score: float
+    keyword_score: float
+    rrf_score: float
+    temporal_score: float
+    final_score: float
+    source: Literal["semantic", "keyword", "linked"]
+    linked_via: str | None = None
+
+
+def _row_to_hit(row: dict, semantic_ids: set, keyword_ids: set) -> RecallHit:
+    """Build a RecallHit from a pipeline row + retrieval-leg id sets.
+
+    Source attribution: if the row carries ``linked_from`` (set by
+    score_linked_rows during 1-hop expansion) AND it didn't come back from
+    either the semantic or keyword leg, it's a pure link hit. Rows that
+    appeared in either retrieval leg take that leg's label; dual-hits get
+    "semantic" since rrf_merge keeps the semantic row to preserve the
+    similarity field for display fallback.
+    """
+    rid = row.get("id")
+    linked_from = row.get("linked_from")
+    if linked_from and rid not in semantic_ids and rid not in keyword_ids:
+        source: Literal["semantic", "keyword", "linked"] = "linked"
+        linked_via = linked_from
+    elif rid in semantic_ids:
+        source = "semantic"
+        linked_via = None
+    elif rid in keyword_ids:
+        source = "keyword"
+        linked_via = None
+    else:
+        # Defensive: a row with no leg attribution shouldn't happen, but
+        # keep the pipeline lossy-safe rather than raising.
+        source = "semantic"
+        linked_via = None
+
+    similarity = row.get("similarity")
+    rank = row.get("rank")
+    # rrf_score: post-fusion score (RRF + optional link-merge) — every row
+    # gets _final_score from rrf_merge; merge_with_links may overwrite it
+    # with max(_final_score, _link_score), so a pure-link hit reads its
+    # link score here. _rrf_score (dual-hit marker) is intentionally not
+    # used: single-hit rows would otherwise read 0.0 and the field would
+    # mostly be empty.
+    rrf = row.get("_final_score") or row.get(LINK_SCORE_FIELD) or 0.0
+    temporal = row.get("_temporal_score") or 0.0
+    # final_score follows the production sort key: temporal score when
+    # use_temporal is on, otherwise the post-link/post-rrf _final_score.
+    final = row.get("_temporal_score")
+    if final is None:
+        final = row.get("_final_score") or 0.0
+
+    return RecallHit(
+        memory=row,
+        semantic_score=float(similarity) if isinstance(similarity, (int, float)) else 0.0,
+        keyword_score=float(rank) if isinstance(rank, (int, float)) else 0.0,
+        rrf_score=float(rrf),
+        temporal_score=float(temporal),
+        final_score=float(final),
+        source=source,
+        linked_via=linked_via,
+    )
+
+
+async def recall(
+    client,
+    query: str,
+    *,
+    project: str | None = None,
+    type_filter: str | None = None,
+    show_history: bool = False,
+    config: RecallConfig = PROD_RECALL_CONFIG,
+) -> list[RecallHit]:
+    """Run the hybrid-recall pipeline and return ranked RecallHits.
+
+    Pipeline (matches scripts/eval-recall.py:run_query for behavior parity —
+    the eval baseline.json is generated with the same composition):
+
+        embed → semantic + keyword RPCs → rrf_merge
+              → (use_links) expand_links + merge_with_links + trim
+              → enrich_with_confidence
+              → (use_temporal) apply_temporal_scoring
+
+    Returns ``[]`` on embed failure or when both legs return no rows; the
+    caller (handler / hook) decides whether to fall back to a keyword-only
+    path. Embedding model + RPC name are read from the ``server`` module via
+    late-import so test monkeypatches of ``server.EMBEDDING_MODEL_PRIMARY``
+    and ``server._embed_query`` apply at call time.
+
+    ``show_history`` is plumbed through to both RPCs but is not a
+    RecallConfig flag — it's a query-time audit/debug knob, not a pipeline
+    toggle. Same shape as the pre-#498 ``_hybrid_recall`` signature.
+    """
+    # Late-bind `server` so test patches of the embedding model + embed
+    # function still apply. Same pattern as handlers/memory.py.
+    import server  # noqa: PLC0415
+
+    query_embedding = await server._embed_query(query)
+    if query_embedding is None:
+        return []
+
+    # Wider window when links will be merged — the BFS over get_linked_memories
+    # needs enough seed candidates to reach parents that edge toward the
+    # expected memory.
+    fetch_limit = LINK_MERGE_FETCH_LIMIT if config.use_links else config.limit
+    rpc_fetch_limit = fetch_limit * 2
+
+    from embeddings import _model_slot  # noqa: PLC0415
+
+    try:
+        sem_rpc = _model_slot(server.EMBEDDING_MODEL_PRIMARY)["rpc"]
+        sem_result = client.rpc(
+            sem_rpc,
+            {
+                "query_embedding": query_embedding,
+                "match_limit": rpc_fetch_limit,
+                "similarity_threshold": config.semantic_threshold,
+                "filter_project": project,
+                "filter_type": type_filter,
+                "show_history": show_history,
+            },
+        ).execute()
+        semantic_rows = filter_excluded_tags(sem_result.data or [])
+
+        kw_result = client.rpc(
+            "keyword_search_memories",
+            {
+                "search_query": query,
+                "match_limit": rpc_fetch_limit,
+                "filter_project": project,
+                "filter_type": type_filter,
+                "show_history": show_history,
+            },
+        ).execute()
+        keyword_rows = filter_excluded_tags(kw_result.data or [])
+    except Exception:
+        return []
+
+    # Capture leg membership BEFORE rrf_merge mutates row dicts — needed for
+    # RecallHit.source attribution at the end.
+    semantic_ids = {r.get("id") for r in semantic_rows if r.get("id")}
+    keyword_ids = {r.get("id") for r in keyword_rows if r.get("id")}
+
+    merged = rrf_merge(semantic_rows, keyword_rows, limit=fetch_limit, k=config.rrf_k)
+    if not merged:
+        return []
+
+    if config.use_links:
+        linked = expand_links(client, merged)
+        if linked:
+            merged = merge_with_links(merged, linked)
+        merged = merged[: config.limit]
+
+    enrich_with_confidence(client, merged)
+
+    if config.use_temporal:
+        apply_temporal_scoring(merged)
+
+    return [_row_to_hit(row, semantic_ids, keyword_ids) for row in merged[: config.limit]]

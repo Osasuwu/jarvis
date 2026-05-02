@@ -212,6 +212,10 @@ from handlers.memory import (  # noqa: E402, F401
     SIMILARITY_THRESHOLD,
     EXCLUDE_TAGS_FROM_RECALL,
     _filter_excluded_tags,
+    PROD_RECALL_CONFIG,
+    RecallConfig,
+    RecallHit,
+    recall,
 )
 from handlers.events import (  # noqa: E402, F401
     _handle_events_list,

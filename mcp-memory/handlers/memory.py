@@ -37,13 +37,18 @@ from recall import (  # noqa: F401
     ACCESS_BOOST_MAX,
     ACCESS_HALF_LIFE,
     CONFIDENCE_FLOOR,
+    PROD_RECALL_CONFIG,
+    RecallConfig,
+    RecallHit,
     cosine_sim as _cosine_sim,
     filter_excluded_tags as _filter_excluded_tags,
     parse_pgvector as _parse_pgvector,
+    recall,
     rrf_merge as _rrf_merge,
     enrich_with_confidence as _enrich_with_confidence,
     apply_temporal_scoring as _apply_temporal_scoring,
 )
+import dataclasses
 
 # Phase 2b classifier — same conditional-import pattern as server.py.
 try:
@@ -213,26 +218,24 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
     # Hybrid search: combine semantic + keyword results via RRF + temporal scoring
     if query_text:
-        query_embedding = await server._embed_query(query_text)
-        if query_embedding is not None:
-            rows, results = await _hybrid_recall(
-                client,
-                query_embedding,
-                query_text,
-                project,
-                mem_type,
-                limit,
-                include_links,
-                show_history,
-                brief,
-            )
+        rows, results = await _hybrid_recall(
+            client,
+            query_text,
+            project,
+            mem_type,
+            limit,
+            include_links,
+            show_history,
+            brief,
+        )
+        if rows:
             # Track reads (fire-and-forget)
             ids = [r["id"] for r in rows if r.get("id")]
             if ids:
                 asyncio.create_task(_touch_memories(client, ids))
             return results
 
-    # Fallback: keyword-only search
+    # Fallback: keyword-only search (embed failure or empty hybrid result)
     results = await server._keyword_recall(client, query_text, project, mem_type, limit, brief)
 
     # Lazily backfill embeddings for records missing them (fire-and-forget)
@@ -244,7 +247,6 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
 async def _hybrid_recall(
     client,
-    query_embedding: list[float],
     query_text: str,
     project,
     mem_type,
@@ -253,130 +255,82 @@ async def _hybrid_recall(
     show_history: bool = False,
     brief: bool = False,
 ) -> tuple[list[dict], list[TextContent]]:
-    """Hybrid search: server-side pgvector semantic + pg_trgm keyword, merged via RRF.
+    """Adapter wrapping the recall() pipeline for the MCP recall tool.
 
-    Memory 2.0: adds temporal scoring (recency × access frequency) and optional
-    1-hop link expansion for graph-aware recall.
-
-    Phase 1: default filters out superseded/expired/valid_to-past memories via
-    the RPC's show_history=false path. Pass show_history=true to bypass.
+    Pipeline mechanics live in mcp-memory/recall.py (#498). This wrapper owns
+    the adapter-level concerns: result formatting, the "Linked memories"
+    display section (preserved from the pre-#498 handler — partitioned out
+    of the now-unified rank by RecallHit.source), and the recall_event
+    metacognition emit (#250). Returns ``([], [])`` on empty result so the
+    caller can take the keyword fallback path.
     """
+    config = dataclasses.replace(
+        PROD_RECALL_CONFIG,
+        limit=limit,
+        use_links=include_links,
+    )
     try:
-        # Fetch double the limit from each source to give RRF good candidates
-        fetch_limit = limit * 2
-
-        # Server-side semantic search via pgvector HNSW. #242: the RPC name
-        # is selected by PRIMARY model so v1 and v2 columns each use their
-        # own HNSW index. query_embedding's dim was already matched to
-        # PRIMARY by _embed_query.
-        sem_rpc = _model_slot(server.EMBEDDING_MODEL_PRIMARY)["rpc"]
-        sem_result = client.rpc(
-            sem_rpc,
-            {
-                "query_embedding": query_embedding,
-                "match_limit": fetch_limit,
-                "similarity_threshold": SIMILARITY_THRESHOLD,
-                "filter_project": project,
-                "filter_type": mem_type,
-                "show_history": show_history,
-            },
-        ).execute()
-        # #417: filter operational artifacts (session snapshots) at the
-        # Python layer so they never compete in semantic recall.
-        semantic_rows = _filter_excluded_tags(sem_result.data or [])
-
-        # Server-side keyword search via pg_trgm
-        kw_result = client.rpc(
-            "keyword_search_memories",
-            {
-                "search_query": query_text,
-                "match_limit": fetch_limit,
-                "filter_project": project,
-                "filter_type": mem_type,
-                "show_history": show_history,
-            },
-        ).execute()
-        keyword_rows = _filter_excluded_tags(kw_result.data or [])
-
-        # Reciprocal Rank Fusion (k=60) + temporal scoring
-        merged = _rrf_merge(semantic_rows, keyword_rows, limit)
-
-        if not merged:
-            return [], await server._keyword_recall(
-                client, query_text, project, mem_type, limit, brief
-            )
-
-        # Phase 1 polish (#240): match_memories RPC doesn't project confidence.
-        # Enrich merged rows before scoring so entrenchment multiplier has data.
-        _enrich_with_confidence(client, merged)
-        _apply_temporal_scoring(merged)
-
-        formatted = _format_memories(merged, brief=brief)
-        search_type = "hybrid+temporal" if keyword_rows else "semantic+temporal"
-        mode_tag = ", brief" if brief else ""
-        text = f"Found {len(merged)} memories ({search_type} search{mode_tag}):\n\n" + (
-            "\n".join(formatted) if brief else "\n---\n".join(formatted)
+        hits = await recall(
+            client,
+            query_text,
+            project=project,
+            type_filter=mem_type,
+            show_history=show_history,
+            config=config,
         )
-
-        # Phase 5.3-γ: inline gap recording removed; FOK batch processor
-        # owns this now (judges sufficiency with full LLM context, not just
-        # GAP_THRESHOLD on top_sim). Recall stays on the hot path; gap
-        # surfacing is async via #444 / #445.
-
-        # Optional: expand with 1-hop linked memories
-        if include_links:
-            ids = [r["id"] for r in merged if r.get("id")]
-            if ids:
-                linked = await _expand_with_links(client, ids, show_history=show_history)
-                if linked:
-                    # Deduplicate against already-found IDs and within linked results
-                    found_ids = set(ids)
-                    seen_linked = set()
-                    unique_linked = []
-                    for r in linked:
-                        rid = r.get("id")
-                        if rid not in found_ids and rid not in seen_linked:
-                            seen_linked.add(rid)
-                            unique_linked.append(r)
-                    if unique_linked:
-                        link_formatted = _format_memories(
-                            unique_linked, link_info=True, brief=brief
-                        )
-                        text += f"\n\n### Linked memories ({len(unique_linked)}):\n\n" + (
-                            "\n".join(link_formatted) if brief else "\n---\n".join(link_formatted)
-                        )
-
-        # Phase 5 metacognition: emit memory_recall event for FOK batch processing (#250).
-        returned_ids = [r.get("id") for r in merged if r.get("id")]
-        # Per-memory similarities (same length + order as returned_ids) so the
-        # FOK judge can show true ranking instead of pinning every memory to
-        # top_sim.
-        returned_similarities = [
-            float(r["similarity"]) if isinstance(r.get("similarity"), (int, float)) else None
-            for r in merged
-            if r.get("id")
-        ]
-        top_sim = merged[0].get("similarity", 0.0) if merged else 0.0
-        payload = {
-            "query": query_text,
-            "returned_ids": returned_ids,
-            "returned_similarities": returned_similarities,
-            "returned_count": len(merged),
-            "top_sim": float(top_sim),
-            "threshold": SIMILARITY_THRESHOLD,
-            "project": project,
-            "type_filter": mem_type,
-            "show_history": show_history,
-        }
-        asyncio.create_task(_emit_recall_event(client, payload))
-
-        return merged, [TextContent(type="text", text=text)]
-
     except asyncio.CancelledError:
         raise
     except Exception:
-        # RPC not available (e.g. migration not applied) — fall back to keyword
-        return [], await server._keyword_recall(client, query_text, project, mem_type, limit, brief)
+        return [], []
+
+    if not hits:
+        return [], []
+
+    direct_hits = [h for h in hits if h.source != "linked"]
+    linked_hits = [h for h in hits if h.source == "linked"]
+    direct_rows = [h.memory for h in direct_hits]
+    linked_rows = [h.memory for h in linked_hits]
+
+    formatted = _format_memories(direct_rows, brief=brief)
+    search_type = "hybrid+temporal"
+    mode_tag = ", brief" if brief else ""
+    text = f"Found {len(direct_rows)} memories ({search_type} search{mode_tag}):\n\n" + (
+        "\n".join(formatted) if brief else "\n---\n".join(formatted)
+    )
+
+    if include_links and linked_rows:
+        link_formatted = _format_memories(linked_rows, link_info=True, brief=brief)
+        text += f"\n\n### Linked memories ({len(linked_rows)}):\n\n" + (
+            "\n".join(link_formatted) if brief else "\n---\n".join(link_formatted)
+        )
+
+    # Phase 5 metacognition: emit memory_recall event for FOK batch processing (#250).
+    # FOK judge keys off the direct retrieval rank, so the payload mirrors what
+    # rrf_merge produced — direct hits only, in their post-temporal order.
+    returned_ids = [r.get("id") for r in direct_rows if r.get("id")]
+    returned_similarities = [
+        float(r["similarity"]) if isinstance(r.get("similarity"), (int, float)) else None
+        for r in direct_rows
+        if r.get("id")
+    ]
+    top_sim = direct_rows[0].get("similarity", 0.0) if direct_rows else 0.0
+    payload = {
+        "query": query_text,
+        "returned_ids": returned_ids,
+        "returned_similarities": returned_similarities,
+        "returned_count": len(direct_rows),
+        "top_sim": float(top_sim),
+        "threshold": SIMILARITY_THRESHOLD,
+        "project": project,
+        "type_filter": mem_type,
+        "show_history": show_history,
+    }
+    asyncio.create_task(_emit_recall_event(client, payload))
+
+    # Touch fans out across the whole displayed set (direct + linked) so
+    # access-frequency boost matches what the user actually saw.
+    all_rows = direct_rows + linked_rows
+    return all_rows, [TextContent(type="text", text=text)]
 
 
 async def _keyword_recall(
