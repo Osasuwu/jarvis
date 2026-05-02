@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import dataclasses
+import importlib.util
 import json
 import os
 import sys
@@ -62,6 +63,30 @@ from recall import (  # noqa: E402
 VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 10.0
+
+
+def _load_hook_module():
+    """Load scripts/memory-recall-hook.py to import its rewriter (#499 fix-forward).
+
+    The rewriter is caller-policy code (LLM call, prompt template) and lives
+    in the hook adapter, not in recall.py. The eval needs it for ablation
+    parity with the hook in --with-rewriter mode. Hyphen in the hook filename
+    blocks normal imports — load via importlib.
+    """
+    here = Path(__file__).resolve().parent
+    hook_path = here / "memory-recall-hook.py"
+    if not hook_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("memory_recall_hook", hook_path)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+    except Exception as e:
+        print(f"WARN: failed to load hook module: {e}", file=sys.stderr)
+        return None
 
 
 def _load_env() -> None:
@@ -300,7 +325,40 @@ async def run_query(
     if context_blob is not None:
         return await _run_query_direct(client, q, context_blob=context_blob)
 
-    hits = await recall(client, q["query"], config=config)
+    # Rewriter ablation (#499 fix-forward): when config.use_rewriter, call the
+    # hook's rewrite_prompt to extract entities + types, then thread them into
+    # recall() as keyword_query (entity-denoised FTS) and boost_types (soft
+    # rank lift in rrf_merge). Matches the hook adapter's behavior so the
+    # eval baseline reflects production.
+    entities: list[str] = []
+    types: list[str] = []
+    rewriter_fired = False
+    keyword_query: str | None = None
+    boost_types: set[str] | None = None
+    boost_multiplier = 1.5
+    if config.use_rewriter:
+        hook_mod = _load_hook_module()
+        if hook_mod is not None and hasattr(hook_mod, "rewrite_prompt"):
+            rewritten = await asyncio.to_thread(hook_mod.rewrite_prompt, q["query"])
+            if rewritten:
+                entities = rewritten.get("entities") or []
+                types = rewritten.get("types") or []
+                rewriter_fired = True
+                if entities:
+                    keyword_query = " ".join(entities)
+                allowed = getattr(hook_mod, "ALLOWED_TYPES", None)
+                if allowed and types:
+                    boost_types = (allowed & set(types)) or None
+                boost_multiplier = float(getattr(hook_mod, "TYPE_BOOST_MULTIPLIER", 1.5))
+
+    hits = await recall(
+        client,
+        q["query"],
+        keyword_query=keyword_query,
+        boost_types=boost_types,
+        boost_multiplier=boost_multiplier,
+        config=config,
+    )
 
     top_names = [h.memory.get("name", "?") for h in hits[:10]]
     expected = set(q.get("expected") or [])
@@ -333,9 +391,9 @@ async def run_query(
         hits_at_10=hits_10,
         must_not_violations_at_5=mn_viol,
         passed=passed,
-        rewriter_entities=[],
-        rewriter_types=[],
-        rewriter_fired=False,
+        rewriter_entities=entities,
+        rewriter_types=types,
+        rewriter_fired=rewriter_fired,
         links_added=links_added,
     )
 

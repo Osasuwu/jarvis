@@ -458,8 +458,13 @@ def main():
     entities = (rewritten or {}).get("entities") or []
     requested_types = (rewritten or {}).get("types") or []
 
-    # boost_types computed for rewriter_note display only (#499: not yet
-    # threaded into recall() — see module docstring divergence note).
+    # Rewriter-derived signals threaded into recall() (#499 fix-forward):
+    #   - keyword_query: entity-denoised text for the FTS leg. Strips
+    #     conversational glue ("help me", "can you") that dilutes keyword
+    #     matches; literal entities match memory bodies verbatim.
+    #   - boost_types: ALLOWED ∩ requested. Soft rank boost in rrf_merge —
+    #     misclassified-but-relevant single-signal hits still survive.
+    keyword_query = " ".join(entities) if entities else None
     boost_types = (ALLOWED_TYPES & set(requested_types)) if requested_types else None
 
     try:
@@ -481,7 +486,15 @@ def main():
 
     try:
         hits: list[RecallHit] = asyncio.run(
-            _recall(client, prompt, project=project, config=hook_config)
+            _recall(
+                client,
+                prompt,
+                project=project,
+                keyword_query=keyword_query,
+                boost_types=boost_types,
+                boost_multiplier=TYPE_BOOST_MULTIPLIER,
+                config=hook_config,
+            )
         )
     except Exception:
         silent_exit()
