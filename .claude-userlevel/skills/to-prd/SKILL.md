@@ -5,9 +5,17 @@ description: Turn the current conversation context into a PRD and publish it to 
 
 This skill takes the current conversation context and codebase understanding and produces a PRD. **Do NOT run a full grill-me here** — that's a separate phase that should already have happened (`/grill-me` upstream). Targeted clarifying questions on specific points (e.g. confirming a module boundary, picking among already-discussed alternatives) are fine and expected — see step 2.
 
+**Decision references are mandatory when a grill preceded.** If the upstream `/grill-me` produced `decision_uuids[]` (in conversation context or `working_state_<project>`), the PRD body MUST list them under a `## Decisions` section. If the conversation looks like a grill but no UUIDs exist, run the grill-me completeness gate first — do not paper over missing `record_decision` calls by burying the *why* in PRD prose. PRD prose decays; queryable decisions don't.
+
 Issue tracker conventions and triage label vocabulary should be defined in the project's CLAUDE.md or context docs (e.g. `CONTEXT.md`, `docs/`). If unclear, ask the user about: which tracker (GitHub Issues, Linear, etc.), which labels exist, and the project's PR/issue process before publishing anything.
 
 ## Process
+
+0. **Memory & context load.** Before drafting:
+   - `memory_list(project=<project>, type=feedback, always_load=true)` — session-wide gates.
+   - `memory_recall(query="to-prd <topic> <entities>", type=decision/feedback, brief=true, limit=10)`. **Include the literal skill name `to-prd` in the query** so skill-specific contract memory (e.g. `grill_me_record_decision_gate`, tagged `to-prd`) surfaces every invocation — these are not always_load. Parse `id=<uuid>` from brief output into a local `name → uuid` map; these UUIDs feed the `## Decisions` section.
+   - Read `CONTEXT.md` (full). Glob `docs/adr/*.md` filenames; full-Read only ADRs matching the topic area. PRD vocabulary must align with these.
+   - Auto-flag stale memory hits (dead file/skill/issue refs) — ignore + note for `/reflect`, don't ask. Surface load-bearing hits inline `(leaning on: <one-line> — <uuid>)` so the user can interject if stale.
 
 1. Explore the repo to understand the current state of the codebase, if you haven't already. Use the project's domain glossary vocabulary throughout the PRD, and respect any ADRs in the area you're touching.
 
@@ -40,6 +48,10 @@ A LONG, numbered list of user stories. Each user story should be in the format o
 </user-story-example>
 
 This list of user stories should be extremely extensive and cover all aspects of the feature.
+
+## Decisions
+
+References to `decision_made` episode UUIDs from the upstream grill. Format: `- <uuid> — one-line summary`. Omit this section ONLY if no grill preceded. The Implementation Decisions section below describes *what* will be built; this section points to *why it was chosen* in the queryable decision log.
 
 ## Implementation Decisions
 
