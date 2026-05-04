@@ -81,7 +81,6 @@ groups:
         # scratch note under .claude-userlevel/skills/) doesn't leak into
         # every user's ~/.claude/. Update when adding/removing a core skill.
         include:
-          - "analyze-comms"
           - "autonomous-loop"
           - "delegate"
           - "end"

@@ -1,5 +1,12 @@
 """Recall-audit: scan session jsonl for decision points without preceding recall (#333).
 
+NOTE (#510): the ``/reflect`` references below describe the OLD reflect
+skill (cross-session aggregate consumer). After #510, ``/reflect`` is a
+behavioral comms-audit skill and no longer consumes this aggregate.
+The aggregate consumer migrates to ``/self-improve`` once that skill is
+grilled — see ``docs/design/reflect-aggregates-pending-migration.md``
+and follow-up issue #516.
+
 Complements ``scripts/memory-recall-hook.py`` (UserPromptSubmit) and
 ``scripts/pretooluse-recall-hook.py`` (PreToolUse). Those hooks *inject*
 recall. This script *audits* whether recall actually happened at the
