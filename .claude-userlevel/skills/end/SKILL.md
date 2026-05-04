@@ -1,73 +1,88 @@
 ---
 name: end
-description: "Full session close: behavioral reflection, decision log, memory save, commit, handoff. ~5 min."
+description: "Full session close: decision log, CONTEXT gap check, outcome enrichment, memory save, commit, handoff. ~5 min."
 ---
 
 # End Session (Full)
 
-Closes the session with quality reflection. For quick exit, use `/end-quick`.
+Closes the session with decision reconciliation, gap detection, and outcome enrichment. For quick exit, use `/end-quick`.
 
-**Mindset — survives compaction:** *Supabase is the session journal. The conversation is working memory.* The post-compact conversation is a lossy summary; the journal (pre-compact snapshot + real-time `record_decision` entries) is the authoritative record. `/end` consolidates the journal into learnings. Don't rely on scanning the conversation alone — anything older than the last summary may already be gone from your window.
+**Mindset — survives compaction:** *Supabase is the session journal. The conversation is working memory.* The post-compact conversation is a lossy summary; the journal (pre-compact snapshot + real-time `record_decision` entries) is the authoritative record. `/end` consolidates the journal and enriches it. Don't rely on scanning the conversation alone — anything older than the last summary may already be gone from your window.
 
 ## Step 0 — Load the session journal (non-negotiable)
 
-Before reflecting or scanning, pull everything durable from Supabase:
+Before reconciling or enriching, pull everything durable from Supabase:
 
 1. **Pre-compact snapshot** — `memory_recall(query="pre-compact session snapshot", project="jarvis", type="project", limit=5, brief=true)`. Results are live memories sorted by relevance + recency. Pick the entry whose name starts with `session_snapshot_` and whose tags include `session-snapshot` (ignore any with `test` in the name). Then `memory_get` on that name to load the full content.
    - If no snapshot found → this session never compacted. Fine, skip. Conversation alone is enough.
    - If the freshest snapshot looks like a *different* session's work (content references work unrelated to what you remember from the current context) → flag in Step 7 output and fall back to conversation only.
    - Multiple compacts in one session share a single snapshot (same session_id, upserted on each compaction); the one you pick is the latest state.
-2. **Real-time decisions** — `memory_recall(query="decisions today <date>", project="jarvis", type="decision", limit=20, brief=true)` where `<date>` is today's ISO date. These should already be in place via `record_decision` calls made during the session. Step 2 will verify completeness.
+2. **Real-time decisions** — `memory_recall(query="decisions today <date>", project="jarvis", type="decision", limit=20, brief=true)` where `<date>` is today's ISO date. These should already be in place via `record_decision` calls made during the session. Step 1 will verify completeness and enrich with post-hoc markers.
 3. **Recent episodes (optional)** — if you need finer-grained provenance, `events_list` surfaces `tool_call`, `decision`, and `observation` episodes the extractor captured.
 
-Carry the snapshot + decisions into Steps 1-2 as the primary source. The conversation (post-compact) is only a hint overlay for anything that happened *after* the snapshot was written.
+Carry the snapshot + decisions into Steps 1-3 as the primary source. The conversation (post-compact) is only a hint overlay for anything that happened *after* the snapshot was written.
 
-## Step 0.5 — Recall audit (#333)
+## Step 1 — Decision reconciliation & post-hoc marking
 
-Scan the current session's jsonl for decision points without preceding recall. This is a *process* check on top of Step 0's artifact load — did the agent actually look at memory at the moments that mattered?
-
-```bash
-python scripts/recall-audit.py "$CLAUDE_PROJECT_DIR/<session-id>.jsonl" --format md
-```
-
-The session jsonl lives at `~/.claude/projects/<cwd-slug>/<session-id>.jsonl` — the current session is the newest file in that directory. The script emits empty output when there are zero flags (most sessions), so only surface it in Step 7 when non-empty.
-
-Three detectors fire:
-1. **`empty_memories_used`** — a `record_decision` call with no memory IDs. Hard signal of a recall gap OR a broken attribution path; either way, worth looking at.
-2. **`decision_text_no_recall`** — decision language ("I decided to X / going with Y / chose Z") in an assistant message with NO `memory_recall` or `memory_get` in the preceding ~15 tool uses. Soft signal — sometimes the decision was already informed by always_load rules, so false-positives happen. User confirms.
-3. **`store_no_recall`** — a `feedback` or `decision` memory_store call without a preceding recall. Duplicate-creation risk.
-
-**Threshold**: 3+ flagged events in one session → in Step 7 output, explicitly prompt "User: was this a real recall gap, or known false positives? If real → save a feedback memory so next session avoids it." Don't auto-save.
-
-If the audit fails (script error, jsonl missing) → skip silently. The audit is informational, not blocking.
-
-## Step 1 — Behavioral reflection
-
-Review your own behavior this session against feedback memories (already in context from session start). Reflect against **snapshot + conversation union**, not conversation alone — the snapshot preserves what the LLM summary smoothed over:
-
-1. **Rule violations**: did you break any known rules? (e.g., skipped memory load, assumed instead of verified, added unrequested features, was sycophantic)
-2. **Missed context**: did you ignore goals, forget cross-project impact, miss something obvious?
-3. **Quality**: did you deliver end-to-end or leave loose ends? Did you verify your work?
-4. **Communication**: were you too verbose? Too terse? Did you ask when you should have acted, or act when you should have asked?
-
-If you find a pattern worth recording (not a one-off): save as `feedback` memory. Include **why** it matters and **how to apply** next time.
-
-If nothing notable — skip. Don't fabricate observations.
-
-## Step 2 — Decision & knowledge scan
-
-Reconcile pre-existing records with anything surfaced in reflection:
+Reconcile pre-existing records with decisions identified from snapshot + conversation:
 
 - **Decisions** made this session should already live in Supabase via `record_decision` (fires in real time). Go through the snapshot + conversation and check: every decision you can identify → is it in the list from Step 0?
   - If yes → do nothing. Don't re-save.
-  - If no → save it now via `record_decision` (or `memory_store` type=decision) **and flag in Step 7 output**: "Decision X was not recorded in real time — consider why". Real-time capture is the goal; post-hoc saves are a regression.
+  - If no → save it now via `record_decision` **and flag in Step 8 output**: "Decision X was not recorded in real time — post-hoc save". Real-time capture is the goal; post-hoc saves are a regression. **Mark post-hoc decision saves by encoding `:post-hoc` into the `actor` field** (e.g. `actor="session:<id>:post-hoc"`) — `/self-improve` greps the actor field to detect regression patterns. The `record_decision` tool has no dedicated `post_hoc` field today; #517 tracks adding one as a structured payload extension.
 - **User preferences** or profile updates → `user` memory (upsert existing, don't duplicate).
 - **Project state** changes → `project` memory.
 - **Feedback** given by principal → `feedback` memory.
 
 Upsert existing memories, don't create duplicates. Check name before creating new.
 
-## Step 3 — Goal progress log
+## Step 2 — CONTEXT.md gap check
+
+Scan for domain terms this session that fall outside the CONTEXT.md glossary, and check for new design docs that may need documentation.
+
+**Trigger (skip silently if neither fires):**
+1. **Rationale-term diff** — extract topic/domain terms from all `decision_made` episode rationales (snapshot + session decisions). Common terms: noun phrases from rationale text that appear 2+ times and are not in `CONTEXT.md` glossary section.
+2. **Design-doc git-diff** — run `git diff --name-only HEAD origin/main -- docs/design/ docs/adr/`. If files were added/modified this session → signal fires.
+
+If **either signal fires**:
+- Output: "Potential CONTEXT.md gap. New terms: X, Y, Z. New design docs: <file list>. Patch?" 
+- Owner answers yes/no. If yes → **you generate an inline diff for owner to apply** (don't apply yourself — stays in conversation for owner review).
+- If **neither signal fires** → skip silently; do not output anything.
+
+If the signal check itself fails (git command error, CONTEXT.md unreadable) → skip silently.
+
+## Step 3 — Outcome record enrichment
+
+For each `decision_made` episode loaded in Step 0 from this session:
+
+1. Check if an `outcome_record` already exists for that decision UUID.
+   - If yes → skip.
+   - If no → proceed to step 2.
+2. **Deliverable heuristic** — scan the decision's `rationale` field for any of:
+   - GitHub issue reference: `#NNN` 
+   - PR reference: `PR <num>` or `pull request <num>`
+   - File path under: `docs/`, `scripts/`, `mcp-memory/`, `.claude-userlevel/`, or `.github/`
+   - If **any match found** → extract the deliverable kind (`pr`, `issue`, or `file`)
+   - If **no match** → skip (architectural-only decision; outcome attribution belongs to `/self-improve`)
+3. **Create outcome record** — call `outcome_record(outcome_status="pending", ...)` with:
+   - `task_description` = first sentence of decision rationale (max 1 line)
+   - `task_type` = `"autonomous"` (the `outcome_record` enum is `delegation|research|fix|review|autonomous`; agent-emitted decisions during session work map to `autonomous`)
+   - `project` = extracted from decision payload (or "jarvis" if missing)
+   - `pattern_tags` = **union of**:
+     - Topic tags already in the decision's `pattern_tags` (if present)
+     - `"source:end-enrichment"`
+     - `"deliverable_kind:<pr|issue|file>"` (the detected kind)
+   - `pr_url` = extracted from rationale if kind==pr (format: extract `PR <num>` → construct URL)
+   - `issue_url` = extracted from rationale if kind==issue (format: extract `#NNN` → construct URL)
+
+Skip if decision's rationale has no deliverable hint (architectural decisions stay untracked here; `/self-improve` owns those).
+
+**Session-PR fallback** (for PR-based enrichment if journal doesn't give source):
+- Primary: session journal decision captures the PR context (most reliable)
+- Fallback: `gh pr list --author @me --search "created:>=<today>" --json number,title` — use the freshest PR if journal is empty
+
+Post-hoc decisions saved by Step 1 are now enriched here if they have deliverable hints.
+
+## Step 4 — Goal progress log
 
 If work this session advanced any active goal:
 
@@ -79,18 +94,18 @@ Keep items terse — "secret scanner + credential registry (2026-04-13)", not a 
 
 Skip if the session didn't advance any goal (e.g., pure discussion, research without deliverables).
 
-## Step 4 — Working state (non-negotiable)
+## Step 5 — Working state (non-negotiable)
 
 Save `working_state_jarvis` (type=project) to Supabase. Always. Content:
 - What was done this session
 - Open items: unfinished work, things to fix, deferred tasks
 - Key context for next session (blockers, decisions pending review)
 
-This is the handoff to the next session. If open items exist in Step 7 output, they MUST be in this memory too — output is ephemeral, memory persists.
+This is the handoff to the next session. If open items exist in Step 8 output, they MUST be in this memory too — output is ephemeral, memory persists.
 
 Only exception: truly empty session (user asked one question and left).
 
-## Step 5 — Branch cleanup
+## Step 6 — Branch cleanup
 
 Check for local branches whose remote tracking branch has been deleted:
 ```bash
@@ -108,7 +123,7 @@ If any found, for each branch:
 
 Skip if none found.
 
-## Step 6 — Commit (non-negotiable: leave nothing uncommitted)
+## Step 7 — Commit (non-negotiable: leave nothing uncommitted)
 
 Check ALL project repos for uncommitted changes (jarvis, redrobot, any other repo touched this session).
 
@@ -135,7 +150,7 @@ For each repo with changes:
 **Goal: zero uncommitted changes across all repos after /end.**
 If stashing (mid-task), report the stash ref and repo in output so next session can recover.
 
-## Step 7 — Output
+## Step 8 — Output
 
 ```
 ## Session closed — YYYY-MM-DD
@@ -145,12 +160,11 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 - Decisions loaded: N
 - Post-hoc decision saves: N  (0 is ideal — every decision should have been recorded in real time)
 
-### Recall audit (Step 0.5)
-- <paste markdown from recall-audit.py, or "No gaps detected">
-- <if 3+ flags: "User: confirm whether these are real gaps. If real, save a feedback memory.">
+### CONTEXT.md gap (Step 2)
+- <"No gaps detected" OR "Potential gap: new terms X, Y or new design docs — patch?" — only render when Step 2 signals fire>
 
-### Reflection
-- <1-3 behavioral observations, or "Clean session — no issues">
+### Outcome enrichment (Step 3)
+- <"Outcomes created: N" OR "No deliverable hints detected" — only render when enrichment fired>
 
 ### Saved to memory (N)
 - <name> — <one-line>
@@ -165,4 +179,4 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 - <unfinished work, deferred tasks, things for next session>
 ```
 
-Keep it concise. This is a handoff, not a report.
+Keep it concise. This is a handoff, not a report. Render the CONTEXT.md gap and Outcome enrichment sections only when their respective steps fire (heuristic triggers).
