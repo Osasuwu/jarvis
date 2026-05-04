@@ -28,7 +28,7 @@ Reconcile pre-existing records with decisions identified from snapshot + convers
 
 - **Decisions** made this session should already live in Supabase via `record_decision` (fires in real time). Go through the snapshot + conversation and check: every decision you can identify → is it in the list from Step 0?
   - If yes → do nothing. Don't re-save.
-  - If no → save it now via `record_decision` **and flag in Step 7 output**: "Decision X was not recorded in real time — post-hoc save". Real-time capture is the goal; post-hoc saves are a regression. **Mark post-hoc decision saves with `post_hoc=true` in the `record_decision` call** — `/self-improve` uses this to detect regression patterns.
+  - If no → save it now via `record_decision` **and flag in Step 8 output**: "Decision X was not recorded in real time — post-hoc save". Real-time capture is the goal; post-hoc saves are a regression. **Mark post-hoc decision saves by encoding `:post-hoc` into the `actor` field** (e.g. `actor="session:<id>:post-hoc"`) — `/self-improve` greps the actor field to detect regression patterns. The `record_decision` tool has no dedicated `post_hoc` field today; #517 tracks adding one as a structured payload extension.
 - **User preferences** or profile updates → `user` memory (upsert existing, don't duplicate).
 - **Project state** changes → `project` memory.
 - **Feedback** given by principal → `feedback` memory.
@@ -65,7 +65,7 @@ For each `decision_made` episode loaded in Step 0 from this session:
    - If **no match** → skip (architectural-only decision; outcome attribution belongs to `/self-improve`)
 3. **Create outcome record** — call `outcome_record(outcome_status="pending", ...)` with:
    - `task_description` = first sentence of decision rationale (max 1 line)
-   - `task_type` = "decision"
+   - `task_type` = `"autonomous"` (the `outcome_record` enum is `delegation|research|fix|review|autonomous`; agent-emitted decisions during session work map to `autonomous`)
    - `project` = extracted from decision payload (or "jarvis" if missing)
    - `pattern_tags` = **union of**:
      - Topic tags already in the decision's `pattern_tags` (if present)
