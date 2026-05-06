@@ -13,13 +13,13 @@ Issue tracker conventions and triage label vocabulary should be defined in the p
 
 ### 0. Memory & context load
 
-Run before anything else, even before fetching a passed-in issue reference:
+Run before anything else, even before fetching a passed-in issue reference.
 
-1. **Always-load gates.** `memory_list(project=<project>, type=feedback, always_load=true)`. These rules constrain how the breakdown is shaped (e.g. label vocabulary, PR-scope rules, naming conventions).
-2. **Topic recall — include the skill name in the query.** `memory_recall(query="to-issues <source-material topic>", type=decision/feedback, brief=true, limit=10)`. The literal skill name `to-issues` ensures this skill's own contract memory (e.g. `grill_me_record_decision_gate`, which tags `to-issues`) surfaces every invocation. Skill-specific contracts are not always_load — they ride on the skill's own recall. Capture `id=<uuid>` from the brief output into a local `name → uuid` map — these UUIDs feed the `## Decisions` section in each issue body.
-3. **Repo context files.** Read `CONTEXT.md`. Glob `docs/adr/*.md` filenames; full-Read only ADRs whose filename matches the area being broken down. Issue titles + descriptions must use this vocabulary.
+Apply the recall protocol from user-level CLAUDE.md `### 1. Recall before deciding` with `<skill-name>=to-issues` and `<topic>=<source-material topic + entities>`. The brief-mode UUIDs feed the `## Decisions` section in each issue body produced below.
 
-If a recalled memory references a file/skill/issue that no longer exists, ignore it and note in output for `/reflect` — don't ask the user about every dead reference. For load-bearing memory hits surface them inline as `(leaning on: <one-line> — <uuid>)` so the user can interject if stale.
+Read `CONTEXT.md` (full). Glob `docs/adr/*.md` filenames; full-Read only ADRs whose filename matches the area being broken down. Issue titles + descriptions must use this vocabulary.
+
+Apply the staleness rules from user-level CLAUDE.md `### Memory staleness` (auto-flag dead refs, show-and-continue inline `(leaning on: ...)`).
 
 ### 1. Gather context
 

@@ -12,10 +12,9 @@ Issue tracker conventions and triage label vocabulary should be defined in the p
 ## Process
 
 0. **Memory & context load.** Before drafting:
-   - `memory_list(project=<project>, type=feedback, always_load=true)` — session-wide gates.
-   - `memory_recall(query="to-prd <topic> <entities>", type=decision/feedback, brief=true, limit=10)`. **Include the literal skill name `to-prd` in the query** so skill-specific contract memory (e.g. `grill_me_record_decision_gate`, tagged `to-prd`) surfaces every invocation — these are not always_load. Parse `id=<uuid>` from brief output into a local `name → uuid` map; these UUIDs feed the `## Decisions` section.
+   - Apply the recall protocol from user-level CLAUDE.md `### 1. Recall before deciding` with `<skill-name>=to-prd` and `<topic>=<PRD topic + entities>`. The brief-mode UUIDs feed the `## Decisions` section below.
    - Read `CONTEXT.md` (full). Glob `docs/adr/*.md` filenames; full-Read only ADRs matching the topic area. PRD vocabulary must align with these.
-   - Auto-flag stale memory hits (dead file/skill/issue refs) — ignore + note for `/reflect`, don't ask. Surface load-bearing hits inline `(leaning on: <one-line> — <uuid>)` so the user can interject if stale.
+   - Apply the staleness rules from user-level CLAUDE.md `### Memory staleness` (auto-flag dead refs, show-and-continue inline `(leaning on: ...)`).
 
 1. Explore the repo to understand the current state of the codebase, if you haven't already. Use the project's domain glossary vocabulary throughout the PRD, and respect any ADRs in the area you're touching.
 

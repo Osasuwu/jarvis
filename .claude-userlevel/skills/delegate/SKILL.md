@@ -52,12 +52,9 @@ For **each** issue in the batch — apply the SOUL.md `### Grill-me trigger chec
 
 **Subagents do NOT run grill-me on their own.** They consume already-grilled AC via the issue body. Their dispatch prompt must include the literal AC list, and their first action is to confirm the AC is verifiable from the issue body alone — if not, they post a comment and stop, escalating back to main session.
 
-### 0b. Load context from memory (parallel)
+### 0b. Load context from memory
 
-Same as /implement §0b:
-- `memory_recall(query="delegation", limit=3)` — past delegation rules and feedback
-- `memory_recall(query=<batch topic>, limit=3)` — decisions about this area
-- `memory_recall(type="feedback", project="global", limit=3)` — behavioral rules
+Apply the memory recall protocol from user-level CLAUDE.md `### 1. Recall before deciding`, with `<skill-name>=delegate` and `<topic>=<batch-topic + per-issue entities>`. Brief-mode hits feed the `name → uuid` map used in §3 below.
 
 ### 1. Classify each issue: delegatable or inline
 
@@ -88,13 +85,13 @@ done
 
 ### 3. Record decision
 
-Emit one `record_decision` covering the batch — which went to subagents, which stayed inline, why.
+Apply the `record_decision` contract from user-level CLAUDE.md `### 3. record_decision contract`. One call covers the batch — which went to subagents, which stayed inline, why. Skeleton:
 
 ```
 mcp__memory__record_decision(
   decision="delegate batch #<N1> #<N2> ... (split <inline>/<delegated>)",
   rationale="<why this split — subagent fitness, session-context dependency, safety zones>",
-  memories_used=[<ids>],
+  memories_used=[<UUIDs from §0b recall>],
   confidence=<0.0-1.0>,
   alternatives_considered=["all inline", "all delegated", "sequential"],
   reversibility="reversible"

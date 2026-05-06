@@ -41,6 +41,21 @@ groups:
         dest: "SOUL.md"
         template: false
 
+  - id: claude_md
+    description: "User-level CLAUDE.md — process rules incl. memory & decision protocol (#523)"
+    enabled: true
+    files:
+      # Canonical source at .claude-userlevel/CLAUDE.md (git-versioned,
+      # PR-reviewed). Installer copies to ~/.claude/CLAUDE.md, which
+      # Claude Code auto-loads as user-level memory in every session.
+      # Edit flow: edit .claude-userlevel/CLAUDE.md -> PR -> merge ->
+      # `git pull && install.ps1 -Apply` on each device propagates.
+      # Per ADR-0002: skills reference this file rather than restate
+      # the memory/decision protocol locally.
+      - source: ".claude-userlevel/CLAUDE.md"
+        dest: "CLAUDE.md"
+        template: false
+
   - id: hooks_settings
     description: "settings.json — hooks pointing at JARVIS_HOME scripts (M3 #338)"
     enabled: true
