@@ -38,6 +38,20 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Deletion test** — diagnostic for module depth: imagine deleting it. If complexity vanishes, it was a pass-through (shallow). If complexity reappears across N callers, it earned its keep (deep).
 - **Implicit assumption** — domain rule that's "obvious" to the human but not in writing. Source of scope shrinkage. Surfaced via `/grill-me`, fixed by adding to this file or to AC.
 
+### Skill trigger model (ADR-0001)
+
+- **Type 1 trigger** — event/cron-driven skill invocation (Stop hook, SessionStart, scheduled cron, GitHub webhook). The skill fires in a fresh session, deterministically, without the model deciding. Examples: `/cycle`, `/learn`, `/end`.
+- **Type 2 trigger** — user or orchestrator supplies an intent-shaped prompt at session start; the model matches the skill description and invokes. Both human-typed and headless-orchestrator-issued prompts are Type 2. Examples: `/grill`, `/implement`, `/diagnose`.
+- **Type 3 trigger** — mid-task self-trigger by the model. **Not designed for.** Skill invocation mid-task eats smart-zone budget for the current task and empirically fires unreliably. Let the current task finish; the orchestrator triggers the next skill in a fresh session.
+
+### Protocol layers (ADR-0002)
+
+Where load-bearing rules live, in order of preference:
+
+- **Tier 1 — durable prompt rules** in user-level CLAUDE.md (mirrored from `.claude-userlevel/CLAUDE.md`). Loaded every session via SessionStart context. Memory recall protocol, `record_decision` contract, skill-name-in-query rule live here. Default home for cross-skill rules.
+- **Tier 2 — mechanical hooks** (`PreToolUse`, `PostToolUse`). Backstop for binary checks Tier 1 might miss — e.g. blocking `record_decision` when `memories_used` is empty. Hooks are not for nuanced judgement; they are deterministic fences.
+- **Tier 3 — skill-specific gates** that genuinely belong to one skill (`/grill`'s completeness gate, `/implement`'s already-done audit). Stay inside the skill file. Never duplicate Tier 1 content here.
+
 ### Devices & paths
 
 - **3 devices** — owner runs Jarvis on Lenovo laptop, desktop, MacBook. Different usernames, different paths. Anything device-pinned is a bug.
