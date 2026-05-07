@@ -39,14 +39,11 @@ After grill-me, re-enter `/implement` — the AC will now drive the rest of the 
 
 **0 yes:** continue to step 0b. Most "fix typo / bump dep / move file" issues land here.
 
-### 0b. Load context from memory (parallel)
+### 0b. Load context from memory
 
-Before anything else, recall relevant memories:
-- `memory_recall(query="delegation", limit=3)` — past delegation rules and feedback
-- `memory_recall(query=<issue topic>, limit=3)` — decisions about this area
-- `memory_recall(type="feedback", project="global", limit=3)` — behavioral rules
+Apply the memory recall protocol from user-level CLAUDE.md `### 1. Recall before deciding`, with `<skill-name>=implement` and `<topic>=<issue-area + acceptance-criteria entities>`. The brief-mode hits feed the `name → uuid` map used in §3.5 below.
 
-Apply recalled context to all subsequent steps. Skip if memories are empty.
+Skip subsequent steps gracefully when memories are empty.
 
 ### 1. Pre-flight checks (parallel work protocol)
 
@@ -84,34 +81,21 @@ git checkout -b feat/<N>-<slug>
 
 ### 3.5. Record decision (reasoning trace, #252, #334)
 
-After claim, before implementation — emit a `decision_made` episode so `/reflect` can later attribute outcomes to reasoning (missing memory / wrong memory / wrong reasoning):
+After claim, before implementation — emit a `decision_made` episode so `/reflect` can later attribute outcomes to reasoning (missing memory / wrong memory / wrong reasoning).
+
+Apply the `record_decision` contract from user-level CLAUDE.md `### 3. record_decision contract`. Issue implementation always satisfies trigger #1, so the call is non-optional. Skeleton:
 
 ```
 mcp__memory__record_decision(
   decision="implement <issue title> (#<N>)",
   rationale="<one paragraph: why this issue matters now, what approach is planned, what non-obvious choices were made at claim time>",
-  memories_used=[<ids from step 0 recall>],
+  memories_used=[<UUIDs from §0b recall>],
   outcomes_referenced=[],
   confidence=<0.0-1.0>,
   alternatives_considered=["<rejected options — e.g. 'defer to next sprint', 'delegate to subagent'>"],
   reversibility="reversible"
 )
 ```
-
-**Trigger list — emit `record_decision` when ANY of the following hold** (canonical rule; mirrored in global `record_decision_when_what` feedback memory):
-
-1. **Issue implementation** — always, even if reversible. Outcome attribution needs the basis.
-2. **`reversibility ∈ {hard, irreversible}`** — e.g. destructive DB ops, force-pushed history, published API changes.
-3. **`confidence < 0.7`** — uncertain calls deserve a recorded rationale so `/reflect` can classify the outcome as reasoning-failure vs execution-failure.
-4. **Policy / schema / tag / config change** — tagging memories `always_load`, editing protected files, adding/removing skills, changing hook config, schema migrations, installer manifest edits. These are *reversible* but affect the system's behavior across future sessions.
-5. **Architectural direction picked** — a resolved "chose X over Y" after discussion, even if reversible. The rationale matters more than the bit that's set; `/reflect` can only learn if the picked direction is captured at pick time.
-
-Rules of thumb:
-- "I just made a call that will outlive this session" → emit.
-- "I just clarified my own thinking on an approach" → don't emit (no persisted effect).
-- When unsure, emit. The cost is one tool call; the cost of missing a decision is a blind spot for `/reflect`.
-
-Pass `memories_used = [<uuids from step 0 recall>]` whenever recall surfaced something. Empty list is valid only when nothing in memory informed the decision — which itself is rare and should be noted in the rationale.
 
 ### 4. Implement
 
