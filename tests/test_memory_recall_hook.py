@@ -26,9 +26,11 @@ for _stub in ("httpx", "dotenv", "supabase"):
             mod = types.ModuleType(_stub)
             if _stub == "dotenv":
                 mod.load_dotenv = lambda *a, **k: None
-            if _stub == "supabase":
-                mod.create_client = lambda *a, **k: None
             sys.modules[_stub] = mod
+    if _stub == "dotenv" and not hasattr(sys.modules[_stub], "load_dotenv"):
+        sys.modules[_stub].load_dotenv = lambda *a, **k: None
+    if _stub == "supabase" and not hasattr(sys.modules[_stub], "create_client"):
+        sys.modules[_stub].create_client = lambda *a, **k: None
 
 
 _HOOK_PATH = Path(__file__).resolve().parent.parent / "scripts" / "memory-recall-hook.py"
