@@ -179,7 +179,8 @@ jobs:
           fi
 
       - name: Set PR status to In Progress
-        if: ${{ github.event_name == 'pull_request' }}
+        # Bot PRs (dependabot/renovate) run with restricted secrets and aren't on the planning board.
+        if: ${{ github.event_name == 'pull_request' && github.actor != 'dependabot[bot]' && github.actor != 'renovate[bot]' }}
         env:
           ITEM_URL: ${{ github.event.pull_request.html_url }}
           CONTENT_NODE_ID: ${{ github.event.pull_request.node_id }}
