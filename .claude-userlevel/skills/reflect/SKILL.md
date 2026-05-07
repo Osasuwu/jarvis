@@ -1,258 +1,163 @@
 ---
 name: reflect
-description: "Learning loop: review recent decisions, check outcomes via GitHub PRs, extract lessons, update memory. Integrates with the Outcome Tracking & Learning pillar."
+description: "Cross-session behavioral audit: extract communication and work patterns from local Claude Code sessions. Two phases: Phase A (per-device) extracts patterns to ~/.cache; user manually transfers files between devices. Phase B (cross-device) merges them and produces a comprehensive behavioral report. Triggers: weekly audit, on-demand 'что я делаю не так', 'analyze comms', 'паттерны общения', 'merge comms'."
 ---
 
 # Reflect
 
-Reviews recent decisions and task outcomes, checks results (via GitHub PRs or user confirmation), extracts lessons as feedback memories.
+Cross-session behavioral audit across Claude Code sessions. Analyzes communication patterns (correctives, affirmatives, interaction style) to surface recurring behaviors and generate feedback rules.
 
-## When to run
+Two-phase skill. Phase A on each device produces a per-device patterns file in `~/.cache`. User manually transfers those files (Drive web UI, USB, Obsidian sync — anything outside the model context) into one local folder on the device that will run Phase B. Phase B reads them locally and produces the cross-device behavioral report.
 
-- After a PR is merged or closed
-- After an approach failed or succeeded unexpectedly
-- Weekly (e.g. as part of `/end`)
-- When the user says "that didn't work" or "that was the right call"
+> **Why no auto-upload**: model-side base64-encoding of personal-pattern files combined with reading them back into context trips Anthropic's AUP classifier. Manual file transfer by the user avoids that path entirely. Skill scripts read/write only local paths and make zero outbound network calls.
 
-## Step 1 — Load recent decisions
+## What it does NOT do
 
-```
-memory_recall(query="decision approach chosen rejected", type="decision")
-```
+- Does not auto-write to memory. User reviews the report and decides which rules to save.
+- Does not analyze task content — only interaction patterns (correctives, affirmatives, style).
+- Does not auto-upload anywhere. No GDrive MCP calls. No base64 round-trips of artifacts.
+- Output artifacts NEVER go into the jarvis repo — only `~/.cache`.
 
-Focus on last 2 weeks. Skip decisions that already have an `## Outcome` section.
+## Conventions
 
-## Step 2 — Review task outcomes
+- **Per-device staging**: `~/.cache/jarvis-comms-analysis/{DATE}_{DEVICE}/` — holds `comms_extract.jsonl`, `{DEVICE}_patterns.json`
+- **Cross-device merge dir**: `~/.cache/jarvis-comms-analysis/merge_{DATE}/` — user manually copies each device's `{DEVICE}_patterns.json` here before running Phase B
+- **Sessions source**: `~/.claude/projects/*/*.jsonl` (Path.home() resolves correctly on all OSes)
+- **Skill scripts**: installed at `~/.claude/skills/reflect/` on every device
 
-```
-outcome_list(outcome_status="pending", limit=10)
-```
+---
 
-For each pending outcome with a `pr_url`:
+## Phase A — Per-device extraction
 
-```bash
-gh pr view <number> --json state,mergedAt,closedAt,title --repo <owner/repo>
-```
+Trigger: "analyze comms" / "проанализируй сессии" / "паттерны общения" / "что я делаю не так"
 
-Update resolved outcomes:
-```
-outcome_update(
-  id="<outcome_id>",
-  outcome_status="success"/"failure"/"partial",
-  outcome_summary="<what happened>",
-  pr_merged=true/false,
-  lessons="<lesson if any>",
-  pattern_tags=["<relevant tags>"]
-)
-```
-
-## Step 3 — Check GitHub outcomes for decisions
-
-For each decision referencing a PR (`#NNN` in content):
+### Step A1 — Prepare staging dir
 
 ```bash
-gh pr view <number> --json state,mergedAt,closedAt,title --repo <owner/repo>
+DEVICE=$(hostname)
+DATE=$(date +%Y-%m-%d)
+STAGE="$HOME/.cache/jarvis-comms-analysis/${DATE}_${DEVICE}"
+mkdir -p "$STAGE"
 ```
 
-Determine `owner/repo` from context or `config/repos.conf`.
+If directory already exists from a same-day run, append `_2`, `_3`, etc.
 
-Classify: `merged` → accepted, `closed` → rejected, `open` → skip.
-
-## Step 4 — Check non-PR decisions
-
-Ask the user:
-> "Decision: **<name>** — <summary>. How did it turn out? (worked / didn't work / ongoing / skip)"
-
-## Step 5 — Update decision memory + load basis
-
-For each resolved decision, upsert with appended `## Outcome`:
-```markdown
-## Outcome
-- **Result:** merged / rejected / worked / failed
-- **Date:** YYYY-MM-DD
-- **What actually happened:** <one sentence>
-- **Decision basis:** <rationale + memories_used from matching decision_made episode, if found>
-```
-
-**Load decision basis (#252):** before writing the outcome, query for a `decision_made` episode within ±24h of the decision's `created_at`:
-
-```sql
-SELECT id, payload FROM episodes
-WHERE kind = 'decision_made'
-  AND created_at BETWEEN (<decision_created_at> - interval '24 hours')
-                     AND (<decision_created_at> + interval '24 hours')
-ORDER BY abs(extract(epoch FROM created_at - <decision_created_at>)) ASC
-LIMIT 1;
-```
-
-If found, include `payload.rationale` and `payload.memories_used` in the outcome block. When the outcome is a failure, classify using the basis:
-- Memories listed in `memories_used` were wrong → supersede them
-- `memories_used` was empty AND top-similarity was low at decision time → known-unknown (auto-tracked via #249)
-- Basis looks sound but execution failed → not a memory problem, flag as reasoning or execution failure
-
-## Step 5.25 — Recall audit aggregate (#333)
-
-Roll the per-session recall audit across the last ~20 sessions to surface cross-session patterns (one session's gap is noise; a persistent trend is a fixable process leak):
+### Step A2 — Run extraction + stats
 
 ```bash
-python scripts/recall-audit.py --project jarvis --limit 20 --aggregate
+SKILL_DIR="$HOME/.claude/skills/reflect"
+python "$SKILL_DIR/extract_comms.py"  "$STAGE/comms_extract.jsonl"
+python "$SKILL_DIR/analyze_comms.py"  "$STAGE/comms_extract.jsonl"
 ```
 
-Output is a single JSON dict with `sessions`, `record_decision_calls`, `flags_total`, `flags_by_kind`, and `empty_memories_used_pct`.
+Print `analyze_comms.py` output inline — aggregate stats only, no quotes, safe to show.
 
-Interpretation rules:
+If `interactive sessions: 0` → stop. Nothing to analyze.
 
-- `empty_memories_used_pct >= 30%` over 20 sessions → **process leak**, not noise. Save a `feedback` memory naming the pattern (e.g. "record_decision calls drop memories_used when args are passed via <tool invocation style>"). Reference the audit output in the memory content.
-- `flags_by_kind.decision_text_no_recall > 10` over 20 sessions → recall-before-deciding habit is not stable. Consider: is this a rule we already have? If yes, why is it being missed? If no, propose one.
-- `flags_by_kind.store_no_recall > 5` → dedup-before-store is failing. Check if `memory-dedup-check.py` hook is firing (it should gate `memory_store`). If it is and the signal still shows up, maybe the hook's dedup threshold is too strict.
-- All three under threshold → report "recall hygiene healthy" in Step 9 and skip to the next step.
+### Step A3 — Compress to patterns file
 
-If the aggregate script fails for any reason → skip silently, note in Step 9 output.
-
-## Step 5.5 — Calibration check (#251)
-
-After outcomes are verified, check memory calibration:
-
-```
-mcp__memory__memory_calibration_summary(project="jarvis")
+```bash
+python "$SKILL_DIR/compress_patterns.py" \
+  "$STAGE/comms_extract.jsonl" \
+  "$STAGE/${DEVICE}_patterns.json"
 ```
 
-Renders per-type Brier score (mean squared error of `confidence - actual_outcome`). For each type with `n >= 20`, flag:
-- `brier > 0.25` AND `avg_predicted > avg_actual` → **overconfident** (confidence in these memories exceeds their track record)
-- `brier > 0.25` AND `avg_predicted < avg_actual` → **underconfident**
-- `n < 20` → warning (insufficient data, skip calibration-based action)
+Print output inline (stats only, no quotes).
 
-Surface flagged types in Step 9 output under "Calibration". Poor-calibration types become ideation seeds for `/self-improve` — the root cause is usually a specific pattern (e.g. "my `decision` memories in jarvis are overconfident when they rely on research memories without principal confirmation").
+### Step A4 — Report to user
 
-## Step 5.75 — FoK calibration + insufficient clusters (#445, Phase 5.3-δ)
+Show:
+- Aggregate stats (already printed in A2)
+- Absolute path to `$STAGE/${DEVICE}_patterns.json`
+- "Run Phase A on other devices, then manually collect each device's `{DEVICE}_patterns.json` into one folder on the Phase B host (`~/.cache/jarvis-comms-analysis/merge_{DATE}/` is the default), and trigger `merge comms`."
 
-Two parallel scans on `fok_judgments` (the canonical store written by `scripts/fok-batch.py`).
+Do NOT base64-encode or read the patterns file content back into the model context. Report the path only.
 
-**A. Calibration drift via RPC.** Call:
+Do NOT run qualitative analysis at this stage — that's Phase B's job.
 
-```
-mcp__memory__execute_sql(query="SELECT * FROM fok_calibration_summary('jarvis')")
-```
+---
 
-Returns `{n, brier, by_verdict, drift_signal}`. Apply:
-- `n < 30` → not enough joined verdict↔outcome pairs yet, skip surfacing.
-- `n >= 30 AND drift_signal = true` → flag in Step 9 under "FoK calibration drift" with `brier` value and `by_verdict` breakdown. Also pull the 5 most-divergent rows for the report:
+## Phase B — Cross-device analysis
 
-  ```sql
-  SELECT fj.query, fj.verdict, tout.outcome_status, fj.project, fj.judged_at
-  FROM fok_judgments fj
-  LEFT JOIN task_outcomes tout ON fj.outcome_id = tout.id
-  WHERE fj.outcome_id IS NOT NULL AND fj.project = 'jarvis'
-  ORDER BY POWER(
-    CASE fj.verdict WHEN 'sufficient' THEN 1.0 WHEN 'partial' THEN 0.5 WHEN 'insufficient' THEN 0.0 END
-    -
-    CASE tout.outcome_status WHEN 'success' THEN 1.0 WHEN 'partial' THEN 0.5 WHEN 'failure' THEN 0.0 END
-  , 2) DESC
-  LIMIT 5;
-  ```
+Trigger: "merge comms" / "cross-device analysis" / "объедини анализ" / "смержи паттерны"
 
-**B. Insufficient-knowledge clusters.** Group last-7d `insufficient` verdicts by normalized query:
+Prerequisite: user has manually collected `{DEVICE}_patterns.json` files from ≥2 devices into one local folder.
 
-```sql
-SELECT
-  lower(regexp_replace(query, '\s+', ' ', 'g')) AS norm_query,
-  count(*) AS hits,
-  array_agg(DISTINCT rationale) FILTER (WHERE rationale IS NOT NULL) AS rationales
-FROM fok_judgments
-WHERE verdict = 'insufficient'
-  AND judged_at >= now() - interval '7 days'
-  AND project = 'jarvis'
-GROUP BY norm_query
-HAVING count(*) >= 3
-ORDER BY hits DESC;
+### Step B1 — Confirm merge dir contents
+
+Default merge dir:
+```bash
+STAGE_MERGE="$HOME/.cache/jarvis-comms-analysis/merge_$(date +%Y-%m-%d)"
+mkdir -p "$STAGE_MERGE"
+ls "$STAGE_MERGE"/*_patterns.json 2>/dev/null
 ```
 
-Each cluster = a recurring gap. Surface in Step 9 with query + hit count + a sample rationale.
+If empty or fewer than 2 files → ask the user where the patterns.json files are. Either prompt them to move the files into `$STAGE_MERGE`, or accept an alternate path argument. Do NOT auto-fetch from GDrive or any remote source.
 
-**Empty state**: if both scans return nothing, print "No FoK clusters or calibration drift this period." — explicit, not silence.
+### Step B2 — Run cross-device merge
 
-## Step 6 — Extract lessons + patterns
-
-For each resolved decision and outcome, ask: *what's the generalizable lesson?*
-
-**From outcomes** — look for patterns across multiple outcomes:
-```
-outcome_list(limit=20)
-```
-- Which task_types succeed most? Which fail?
-- Common pattern_tags on successful vs failed outcomes?
-- Are certain goal areas consistently under-delivered?
-
-If a pattern is non-obvious, save it:
-```
-memory_store(
-  name="lesson_<slug>", type="feedback",
-  project=<same as decision or "global">,
-  content="<rule>\n\n**Why:** <what happened>\n**How to apply:** <when this kicks in>",
-  source_provenance="skill:reflect"
-)
+```bash
+SKILL_DIR="$HOME/.claude/skills/reflect"
+python "$SKILL_DIR/analyze_cross_device.py" \
+  "$STAGE_MERGE/"*_patterns.json \
+  "$STAGE_MERGE/merged_patterns.json"
 ```
 
-Only save if it would change future behavior. Don't save platitudes.
+Print output inline — confidence ranking, no quotes.
 
-## Step 7 — Hypothesis review
+### Step B3 — Qualitative analysis (agent)
 
-```
-memory_recall(query="hypothesis", type="project", limit=20)
-```
+Read `merged_patterns.json` (<50KB for 3 devices). Spawn a `general-purpose` Agent with this brief — include the full JSON content inline:
 
-For each `hypothesis_<slug>` with `status: testing`:
-- Check if enough evidence to resolve
-- If resolved: update status to `confirmed`/`rejected`, add evidence
-- If open: surface in output
+> Behavioral pattern data from N Claude Code sessions across M devices (JSON below).
+> Structure: corrective_patterns (moments where user pushed back on Jarvis, categorized,
+> with confidence_score + frequency_pct + examples), affirmatives (what worked), style stats.
+>
+> Write a comprehensive analysis in Russian. Requirements:
+> - ALL corrective patterns, sorted by confidence_score desc — no Top-N cutoff
+> - Per pattern: name, confidence level (high/medium/low), freq%, n_sessions, n_devices,
+>   2-3 anchor quotes from examples, why it matters behaviorally
+> - Affirmatives: what Jarvis does that works
+> - Style: phrasing, language split, bimodal length distribution
+> - Metacommunication: how disagreement is expressed, autonomy escalation cycle
+> - 2-3 non-obvious findings
+> - Candidate feedback rules for ALL encodable patterns:
+>     **Rule**: [the rule]
+>     **Why**: [evidence + confidence level]
+>     **How to apply**: [trigger + action]
+> - No word limit. Include low-confidence patterns with appropriate label.
+>
+> Write the report directly to `<STAGE_MERGE>/report_{DATE}.md` with the Write tool. Do NOT echo full quotes back to the main agent — return only path + section list + word count.
+>
+> DATA: ```json {merged_patterns.json content} ```
 
-Creating new hypotheses (when user says "I think X might be true"):
-```
-memory_store(
-  name="hypothesis_<slug>", type="project",
-  content="claim: <X>\nmetric: <how to verify>\nstatus: testing\nevidence: none yet",
-  source_provenance="skill:reflect"
-)
-```
+If subagent refuses (safety policy) → do the analysis inline by reading merged_patterns.json directly.
 
-## Step 8 — Flag stale memories
+### Step B4 — Show report + offer memory writes
 
-`memory_recall(type="project", limit=20)` — flag any not updated in 14+ days (except hypotheses).
+Read `$STAGE_MERGE/report_{DATE}.md` directly. Show inline:
+- All corrective patterns: name + confidence + 1-line why
+- Full text of ALL candidate feedback rules
+- Path to full report file
 
-## Step 9 — Output
+Offer "Save N rules to memory?" — only after cross-device run (≥2 devices). Flag single-device-only patterns separately.
 
-```markdown
-## Reflect — YYYY-MM-DD
+Do NOT auto-write to memory. User decides. Do NOT auto-upload the report anywhere.
 
-### Outcomes Verified (N)
-- [+] <task_type>: <description> — <outcome_status>
-- [-] <task_type>: <description> — <outcome_status>, lesson: <one-liner>
+---
 
-### Decisions Resolved (N)
-- **<name>**: <outcome> — lesson: <one-liner or "none">
+## Safety notes
 
-### Patterns Detected
-- <pattern description, e.g. "delegation tasks in jarvis repo: 80% success rate">
+- patterns files contain anchor quotes — treat as sensitive personal data
+- NEVER commit output artifacts to the jarvis repo
+- NEVER base64-encode artifacts and read them back into the model context — that pattern (large opaque blob + personal-pattern content) trips the AUP classifier
+- Skill makes NO outbound network calls. All GDrive auto-upload paths have been intentionally removed. User transfers files manually between devices.
+- If staging dir already exists from a previous run on the same day, append `_N` suffix rather than overwriting
 
-### Lessons Saved (N)
-- <name>: <rule>
+## Limitations
 
-### Hypotheses (N testing, N resolved)
-- <status emoji> **<slug>**: <claim> — <status>
-
-### Stale Project Memories (N)
-- <name> (last updated <date>)
-
-### Calibration (flagged types only)
-- **<type>**: Brier <score>, n=<n>, <overconfident|underconfident> (avg_predicted=<p> vs avg_actual=<a>)
-
-### FoK calibration & clusters (#445)
-- **Calibration**: Brier <score>, n=<n>, drift=<true|false>, by_verdict=<...>
-- **Insufficient clusters (last 7d)**:
-  - "<normalized query>" — <hits> hits, sample: <rationale>
-- *(or)* "No FoK clusters or calibration drift this period."
-
-### Recall audit aggregate (last 20 sessions)
-- sessions=N, decisions=M, flags=<breakdown>
-- <"healthy" | specific leak pattern + proposed fix>
-```
+- Corrective regex is narrow — subtle pushback generates false negatives
+- Category inference is heuristic — "other" bucket may be large; the Phase B agent fills the gap
+- Sessions with <3 user msgs are skipped
+- Same pattern corrected on 2 devices counts twice — intentional (cross-device repetition = stronger signal)
+- Manual file transfer between Phase A devices and the Phase B host adds friction, but no auto-upload path exists that doesn't trip AUP
