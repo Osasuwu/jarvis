@@ -167,7 +167,7 @@ class TestPolicyLogic:
             "skill:implement",
             "user:explicit",
             "Sandcastle:agent",  # case-sensitive — LIKE in PG is case-sensitive
-            "sandcastles:agent",  # close but no colon
+            "sandcastles:agent",  # extra 's' — prefix is 'sandcastles:', not 'sandcastle:'
             "",
             "sandcastle",  # no colon
         ]:
