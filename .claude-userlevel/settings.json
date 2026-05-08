@@ -1,5 +1,9 @@
 {
+  "autoMode": {
+    "environment": ["$defaults"]
+  },
   "permissions": {
+    "defaultMode": "auto",
     "allow": [
       "Bash(git status)",
       "Bash(git status:*)",
@@ -27,7 +31,11 @@
       "Bash(gh milestone:*)",
       "Bash(gh repo view:*)",
       "Bash(gh release view:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "WebFetch",
+      "WebSearch",
+      "mcp__firecrawl__firecrawl_search",
+      "mcp__firecrawl__firecrawl_scrape"
     ]
   },
   "hooks": {
