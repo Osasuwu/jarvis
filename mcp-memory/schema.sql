@@ -68,6 +68,12 @@ create trigger memories_updated_at
 -- Row Level Security (optional but recommended)
 alter table memories enable row level security;
 
+-- `source_provenance` is referenced by the anon-INSERT policy below and must
+-- exist before CREATE POLICY validates the WITH CHECK expression. The full
+-- column definition + index live in the JTMS section further down (search for
+-- `source_provenance text`); this early add makes a from-scratch apply work.
+alter table memories add column if not exists source_provenance text;
+
 -- Allow all operations for authenticated users (single-user system)
 create policy "Allow all for authenticated" on memories
   for all using (true) with check (true);

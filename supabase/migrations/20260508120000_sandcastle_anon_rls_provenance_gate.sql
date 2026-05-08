@@ -16,7 +16,8 @@
 
 -- =========================================================================
 -- 1. Add source_provenance column to task_outcomes (nullable; existing rows
---    keep NULL). Matches the column already on memories (line 568 schema.sql).
+--    keep NULL). Matches the existing `source_provenance` column on memories
+--    (search schema.sql for `add column if not exists source_provenance`).
 -- =========================================================================
 ALTER TABLE task_outcomes
   ADD COLUMN IF NOT EXISTS source_provenance text;
@@ -53,7 +54,8 @@ CREATE POLICY "Anon sandcastle insert" ON task_outcomes
 
 -- =========================================================================
 -- 4. episodes: anon INSERT gated on `actor` (the column already used as the
---    provenance field — see schema.sql line 858-860 conventions).
+--    provenance field — see schema.sql `episodes` actor-namespace conventions
+--    e.g. 'session:<id>', 'scheduled:<skill>', 'hook:<name>').
 -- =========================================================================
 DROP POLICY IF EXISTS "Allow all for anon" ON episodes;
 
