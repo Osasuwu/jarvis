@@ -26,7 +26,9 @@ def _get_client():
     key = os.environ.get("SUPABASE_SERVICE_KEY")
     if not key:
         key = os.environ.get("SUPABASE_KEY")
-        if key:
+        # Suppress in sandcastle containers — they intentionally ship anon-only
+        # (decision 228a2d9b) and the warning would mis-instruct the operator.
+        if key and not os.environ.get("SANDCASTLE_RUN_ID"):
             print(
                 "WARNING: mcp-memory using SUPABASE_KEY (anon). After the #542 RLS "
                 "migration is applied, host writes with non-sandcastle provenance "
