@@ -10,7 +10,7 @@
     "type": "git",
     "url": "git+https://github.com/Osasuwu/jarvis.git"
   },
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "devDependencies": {
     "@ai-hero/sandcastle": "^0.5.7",

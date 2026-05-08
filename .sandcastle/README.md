@@ -53,6 +53,10 @@ already. It then:
 From the repo root:
 
 ```powershell
+# 0. Install Node dev-dependencies (one-time, or after package.json changes).
+#    Pulls tsx + @ai-hero/sandcastle.
+npm install
+
 # 1. Build the image (one-time, or after Dockerfile changes).
 docker build -t sandcastle:jarvis .sandcastle/
 
@@ -89,7 +93,7 @@ Ollama-routed runs).
 
 ## Decisions (referenced by UUID)
 
-- `894ac658-5697-4b89-b642-9a84c4b9c459` — Runtime: Claude Code + local Ollama, sterile container, no `~/.claude` mount.
+- `894ac658-67da-4f32-a0a2-5b5ebefac8ee` — Runtime: Claude Code + local Ollama, sterile container, no `~/.claude` mount.
 - `436f9549-3acf-4ee0-85e5-c7259735d62e` — Sandcastle opens PRs only, never merges.
 
 Slice-1 implementation choice (no proxy, native Ollama Anthropic endpoint)

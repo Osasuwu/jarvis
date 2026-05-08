@@ -10,6 +10,13 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
 const ollamaModel = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:14b";
 const ollamaUrl = process.env.OLLAMA_BASE_URL ?? "http://host.docker.internal:11434";
+const ghToken = process.env.GH_TOKEN;
+if (!ghToken) {
+  throw new Error(
+    "GH_TOKEN is required (sandcastle agent claims issues + opens PRs via gh). " +
+      "Set it in .sandcastle/.env — see .sandcastle/.env.example.",
+  );
+}
 
 await run({
   name: "jarvis-worker",
@@ -20,7 +27,7 @@ await run({
       ANTHROPIC_BASE_URL: ollamaUrl,
       ANTHROPIC_AUTH_TOKEN: "ollama",
       // Forward host-side gh credentials so the agent can claim issues + open PRs.
-      GH_TOKEN: process.env.GH_TOKEN ?? "",
+      GH_TOKEN: ghToken,
     },
   }),
   agent: claudeCode(ollamaModel),
