@@ -33,6 +33,13 @@ if (!supabaseUrl || !supabaseKey) {
   );
 }
 
+// Stable per-run identifier consumed by the agent's source_provenance tags
+// (prompt.md §"Memory provenance"). Format: <run-name>-<UTC-yyyymmdd-hhmmss>.
+// Stays opaque (no secrets) so it's safe to embed in memory rows and PR bodies.
+const runId =
+  process.env.SANDCASTLE_RUN_ID ??
+  `jarvis-worker-${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}`;
+
 await run({
   name: "jarvis-worker",
   sandbox: docker({
@@ -43,10 +50,14 @@ await run({
       ANTHROPIC_AUTH_TOKEN: "ollama",
       // Forward host-side gh credentials so the agent can claim issues + open PRs.
       GH_TOKEN: ghToken,
-      // Memory MCP bridge — Claude Code expands ${...} in ~/.claude.json from these.
+      // Memory MCP bridge — Claude Code expands ${...} in the project-scope
+      // .mcp.json (copied from /opt/sandcastle/container-mcp.json by the
+      // onSandboxReady hook below) from these container env vars.
       SUPABASE_URL: supabaseUrl,
       SUPABASE_KEY: supabaseKey,
       VOYAGE_API_KEY: voyageKey,
+      // Per-run id for the agent's source_provenance tags. See prompt.md.
+      SANDCASTLE_RUN_ID: runId,
     },
   }),
   agent: claudeCode(ollamaModel),
@@ -62,6 +73,9 @@ await run({
         // (memory MCP only). The host .mcp.json registers many host-only
         // servers that would fail inside the sterile container. Sandcastle
         // uses copy-on-write worktrees so this never touches the host repo.
+        // Adding the path to .git/info/exclude first ensures `git add -A`
+        // inside the agent loop cannot accidentally stage the override.
+        { command: "echo /.mcp.json >> .git/info/exclude" },
         { command: "cp /opt/sandcastle/container-mcp.json .mcp.json" },
       ],
     },
