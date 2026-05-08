@@ -21,7 +21,7 @@ SessionStart hook (`.claude/settings.json` → `scripts/session-context.py`) inj
 
 ## Project
 
-**Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active sprint scope = GitHub milestones; `docs/PROJECT_PLAN.md` is a pointer index.
+**Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active scope = open GitHub milestones (capability-shipping units, see `milestone_hierarchy_v3`); `docs/PROJECT_PLAN.md` is a pointer index.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory + SOUL.md identity.
 
@@ -80,7 +80,6 @@ Use skills — don't reinvent with raw tools.
 | "цели", "приоритеты" | `/goals` |
 | New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
 | Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
-| End of sprint in redrobot | `/sprint-report` |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
 | Conversation context → PRD on issue tracker | `/to-prd` |
@@ -114,19 +113,19 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
 - Check GitHub Copilot auto-review before merging.
 
-### Architecture sweep at sprint close
+### Architecture sweep at milestone close
 
-After a milestone (sprint) closes, run `/improve-codebase-architecture` in a **fresh session** (not the one that closed the sprint — that's already in dumb zone). The skill:
+After a milestone closes (capability shipped), run `/improve-codebase-architecture` in a **fresh session** (not the one that closed the milestone — that's already in dumb zone). The skill:
 
 1. Reads `CONTEXT.md` + ADRs + repo state.
 2. Surfaces numbered list of *deepening opportunities* (shallow → deep modules, friction points, untested seams).
-3. Grills you on selected candidates → architectural decisions → child issues for the next sprint.
+3. Grills you on selected candidates → architectural decisions → child issues attached to a follow-up milestone (or as standalone slices).
 
-**Trigger mechanism (current):** `scripts/session-context.py` will surface "Sprint N closed N days ago — sweep recommended" in SessionStart context once that issue lands (separate issue). Until then — manually after each milestone close.
+**Trigger mechanism:** `scripts/session-context.py` surfaces "Milestone N closed — architecture sweep recommended" in SessionStart context when a milestone closed with **≥3 closed slices** AND no sweep has run since `closed_at`. Small milestones (1–2 slices) skip the sweep.
 
-**Cadence:** semantic, not temporal. If you don't close a milestone for 3 weeks, the sweep waits — that's correct.
+**Cadence:** semantic, not temporal. The sweep follows capability shipping, never a date.
 
-**Output discipline:** 1–2 actionable refactors → child issues attached to the next milestone via grill chain. Rest goes to `.out-of-scope/<topic>.md` with reason. Don't try to action everything.
+**Output discipline:** 1–2 actionable refactors → child issues attached to a follow-up milestone via grill chain. Rest goes to `.out-of-scope/<topic>.md` with reason. Don't try to action everything.
 
 ### Fix > track for trivial reversible (#428)
 
@@ -147,16 +146,26 @@ The test covers two dimensions:
 
 The meta-test suite runs via `.github/workflows/ci-meta.yml` on every PR (not itself path-filtered — that would be self-undermining).
 
-### Sprint vs pillar hygiene
+### Milestone vs pillar hygiene
 
-**Pillars** live in memory, never close — multi-sprint capability areas. Don't treat a pillar as done after one sprint (memory: `pillar_is_not_one_task`).
+Authoritative model lives in memory: `milestone_hierarchy_v3` (always_load). Summary:
 
-**Sprints = GitHub milestones.** Concrete, time-boxed, close cleanly.
+```
+pillar (narrative only) → goal (Type A) → milestone (capability + PRD) → slice (one PR)
+```
 
-1. Start of sprint — create milestone *before* any sprint issue. Every issue attached at creation.
-2. End of sprint — close milestone in the same action as closing the last issue. 0 open + state=open is a bug.
-3. Retroactive — if a sprint shipped without milestone, create it, attach issues+PRs, close it. History must be recoverable for `/sprint-report`.
-4. When user rushes and skips steps — catch it: "milestone for this sprint?" before creating issues; "close M<N>?" when the last item closes. Don't be a silent executor.
+- **Pillars** live in memory, never close — multi-milestone capability areas. Don't treat a pillar as done after one milestone closes (memory: `pillar_is_not_one_task`).
+- **Milestones** group ≥2 capability-coherent slices. Description carries the PRD. Close on capability shipping — **no date in title**, no time-boxing. 0 open issues + state=open is a bug.
+- **Slices** = one PR each. A single independent slice (no inter-deps) ships **without** a milestone. No ceremony for one-offs.
+- **No numerical WIP limit.** Self-throttle by HITL/grill/review attention load. AFK milestones (running through subagents/sandcastle) cost ~0 attention — opening another unrelated milestone is fine when prior ones are AFK.
+
+Mechanics:
+1. New work needing grouping → create milestone *first*, write description (PRD), then attach slices. `/to-prd` writes to milestone description.
+2. Capability shipped → close milestone in the same action as closing the last slice.
+3. Retroactive — if related slices shipped without a milestone, create it, attach the issues+PRs, close it. History must be recoverable.
+4. When user rushes and skips the milestone for grouped work — catch it: "milestone for these N slices?" before creating issues. Don't be a silent executor.
+
+Term **"epic"** is **not used** — milestone is the only grouping primitive (decision: `2a7ae10e-afc3-4523-b0bc-c4b90ddbe1a5`).
 
 ## Token economy
 
