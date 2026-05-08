@@ -13,6 +13,16 @@
 --
 -- Anon SELECT/UPDATE/DELETE preserved as-is (current behaviour). Only INSERT is gated.
 -- Paired with mcp-memory/schema.sql per #326 schema-drift CI gate.
+--
+-- LIKE 'sandcastle:%' is **case-sensitive by design** — PostgreSQL's LIKE is
+-- case-sensitive (use ILIKE to widen). Agent prompts must emit lowercase
+-- 'sandcastle:' prefixes; tests assert 'Sandcastle:…' is rejected.
+--
+-- Rollback (manual, if needed): drop the four split policies on each table,
+-- recreate `CREATE POLICY "Allow all for anon" ON <table> FOR ALL TO anon
+-- USING (true) WITH CHECK (true);` on each, and optionally
+-- `ALTER TABLE task_outcomes DROP COLUMN source_provenance;` (destructive if
+-- any rows have been written via the new path).
 
 -- =========================================================================
 -- 1. Add source_provenance column to task_outcomes (nullable; existing rows

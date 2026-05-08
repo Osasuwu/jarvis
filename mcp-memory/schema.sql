@@ -81,6 +81,8 @@ create policy "Allow all for authenticated" on memories
 -- Anon access (sandcastle agent path) — INSERT is gated by source_provenance
 -- prefix per slice 3 of sandcastle epic (#534, #542, decision 228a2d9b).
 -- Service-role bypasses RLS automatically; host orchestrator unaffected.
+-- LIKE is **case-sensitive by design** — agent prompts must emit lowercase
+-- 'sandcastle:'. Do NOT change to ILIKE without revisiting the threat model.
 create policy "Anon select" on memories
   for select to anon using (true);
 create policy "Anon update" on memories
