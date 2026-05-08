@@ -72,15 +72,20 @@ alter table memories enable row level security;
 create policy "Allow all for authenticated" on memories
   for all using (true) with check (true);
 
--- Anon access (sandcastle agent path) — INSERT is gated by source_provenance
--- prefix per slice 3 of sandcastle epic (#534, #542, decision 228a2d9b).
+-- Anon access (sandcastle agent path) — INSERT/UPDATE/DELETE all gated by
+-- source_provenance prefix. Slice 3 (#542) gated INSERT; slice 3.5 (#565)
+-- extended the gate to UPDATE+DELETE so anon cannot wipe rows or forge the
+-- provenance column. Decisions 228a2d9b (slice 3), f3b85eeb (slice 3.5).
 -- Service-role bypasses RLS automatically; host orchestrator unaffected.
 create policy "Anon select" on memories
   for select to anon using (true);
-create policy "Anon update" on memories
-  for update to anon using (true) with check (true);
-create policy "Anon delete" on memories
-  for delete to anon using (true);
+create policy "Anon sandcastle update" on memories
+  for update to anon
+  using (source_provenance like 'sandcastle:%')
+  with check (source_provenance like 'sandcastle:%');
+create policy "Anon sandcastle delete" on memories
+  for delete to anon
+  using (source_provenance like 'sandcastle:%');
 create policy "Anon sandcastle insert" on memories
   for insert to anon
   with check (source_provenance like 'sandcastle:%');
@@ -391,13 +396,17 @@ alter table task_outcomes enable row level security;
 create policy "Allow all for authenticated" on task_outcomes
   for all using (true) with check (true);
 
--- Anon access — INSERT gated by source_provenance prefix (slice 3, #542).
+-- Anon access — INSERT/UPDATE/DELETE gated by source_provenance prefix
+-- (slices 3 + 3.5, #542 + #565).
 create policy "Anon select" on task_outcomes
   for select to anon using (true);
-create policy "Anon update" on task_outcomes
-  for update to anon using (true) with check (true);
-create policy "Anon delete" on task_outcomes
-  for delete to anon using (true);
+create policy "Anon sandcastle update" on task_outcomes
+  for update to anon
+  using (source_provenance like 'sandcastle:%')
+  with check (source_provenance like 'sandcastle:%');
+create policy "Anon sandcastle delete" on task_outcomes
+  for delete to anon
+  using (source_provenance like 'sandcastle:%');
 create policy "Anon sandcastle insert" on task_outcomes
   for insert to anon
   with check (source_provenance like 'sandcastle:%');
@@ -913,14 +922,18 @@ alter table episodes enable row level security;
 create policy "Allow all for authenticated" on episodes
   for all using (true) with check (true);
 
--- Anon access — INSERT gated on `actor` (the column already used as the
--- provenance field per the convention comment above). Slice 3, #542.
+-- Anon access — INSERT/UPDATE/DELETE gated on `actor` (the column already
+-- used as the provenance field per the convention comment above).
+-- Slices 3 + 3.5, #542 + #565.
 create policy "Anon select" on episodes
   for select to anon using (true);
-create policy "Anon update" on episodes
-  for update to anon using (true) with check (true);
-create policy "Anon delete" on episodes
-  for delete to anon using (true);
+create policy "Anon sandcastle update" on episodes
+  for update to anon
+  using (actor like 'sandcastle:%')
+  with check (actor like 'sandcastle:%');
+create policy "Anon sandcastle delete" on episodes
+  for delete to anon
+  using (actor like 'sandcastle:%');
 create policy "Anon sandcastle insert" on episodes
   for insert to anon
   with check (actor like 'sandcastle:%');
@@ -2574,13 +2587,17 @@ ALTER TABLE events_canonical ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all for authenticated" ON events_canonical
   FOR ALL USING (true) WITH CHECK (true);
--- Anon access — INSERT gated on `actor` (provenance field). Slice 3, #542.
+-- Anon access — INSERT/UPDATE/DELETE gated on `actor` (provenance field).
+-- Slices 3 + 3.5, #542 + #565.
 CREATE POLICY "Anon select" ON events_canonical
   FOR SELECT TO anon USING (true);
-CREATE POLICY "Anon update" ON events_canonical
-  FOR UPDATE TO anon USING (true) WITH CHECK (true);
-CREATE POLICY "Anon delete" ON events_canonical
-  FOR DELETE TO anon USING (true);
+CREATE POLICY "Anon sandcastle update" ON events_canonical
+  FOR UPDATE TO anon
+  USING (actor LIKE 'sandcastle:%')
+  WITH CHECK (actor LIKE 'sandcastle:%');
+CREATE POLICY "Anon sandcastle delete" ON events_canonical
+  FOR DELETE TO anon
+  USING (actor LIKE 'sandcastle:%');
 CREATE POLICY "Anon sandcastle insert" ON events_canonical
   FOR INSERT TO anon
   WITH CHECK (actor LIKE 'sandcastle:%');

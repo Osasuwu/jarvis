@@ -33,6 +33,12 @@ MIGRATION_PATH = (
     / "migrations"
     / "20260508120000_sandcastle_anon_rls_provenance_gate.sql"
 )
+UPDATE_DELETE_MIGRATION_PATH = (
+    REPO_ROOT
+    / "supabase"
+    / "migrations"
+    / "20260508130000_sandcastle_anon_rls_update_delete_gate.sql"
+)
 SCHEMA_PATH = REPO_ROOT / "mcp-memory" / "schema.sql"
 
 # Per-table provenance column. memories + task_outcomes use source_provenance;
@@ -52,6 +58,13 @@ PROVENANCE_COLUMN = {
 def _migration_sql() -> str:
     assert MIGRATION_PATH.exists(), f"Missing migration: {MIGRATION_PATH}"
     return MIGRATION_PATH.read_text(encoding="utf-8")
+
+
+def _update_delete_migration_sql() -> str:
+    assert UPDATE_DELETE_MIGRATION_PATH.exists(), (
+        f"Missing migration: {UPDATE_DELETE_MIGRATION_PATH}"
+    )
+    return UPDATE_DELETE_MIGRATION_PATH.read_text(encoding="utf-8")
 
 
 def _schema_sql() -> str:
@@ -193,3 +206,219 @@ class TestPolicyLogic:
             "Migration should not reference service_role — it bypasses RLS. "
             "If you intentionally added a service_role policy, update this test."
         )
+
+
+# -- Slice 3.5 (#565): UPDATE + DELETE gated on provenance --------------------
+
+
+class TestUpdateDeleteMigrationShape:
+    """Slice 3.5 migration drops the open anon UPDATE/DELETE policies and
+    replaces them with provenance-gated ones (USING + WITH CHECK on the
+    per-table provenance column)."""
+
+    def test_migration_file_exists(self):
+        assert UPDATE_DELETE_MIGRATION_PATH.exists()
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_drops_open_update_policy(self, table: str):
+        sql = _update_delete_migration_sql()
+        pattern = rf'DROP\s+POLICY\s+IF\s+EXISTS\s+"Anon update"\s+ON\s+{table}\b'
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            f"Migration must drop legacy open 'Anon update' policy on {table}"
+        )
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_drops_open_delete_policy(self, table: str):
+        sql = _update_delete_migration_sql()
+        pattern = rf'DROP\s+POLICY\s+IF\s+EXISTS\s+"Anon delete"\s+ON\s+{table}\b'
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            f"Migration must drop legacy open 'Anon delete' policy on {table}"
+        )
+
+    @pytest.mark.parametrize("table,column", list(PROVENANCE_COLUMN.items()))
+    def test_installs_sandcastle_update_policy(self, table: str, column: str):
+        sql = _update_delete_migration_sql()
+        # CREATE POLICY ... ON <t> FOR UPDATE TO anon USING (<col> LIKE 'sandcastle:%') WITH CHECK (<col> LIKE 'sandcastle:%')
+        pattern = (
+            rf"CREATE\s+POLICY\s+\"[^\"]+\"\s+ON\s+{table}\s+"
+            rf"FOR\s+UPDATE\s+TO\s+anon\s+"
+            rf"USING\s*\(\s*{column}\s+LIKE\s+'sandcastle:%'\s*\)\s+"
+            rf"WITH\s+CHECK\s*\(\s*{column}\s+LIKE\s+'sandcastle:%'\s*\)"
+        )
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            f"Missing or malformed sandcastle UPDATE policy on {table} "
+            f"(expected USING + WITH CHECK ({column} LIKE 'sandcastle:%'))"
+        )
+
+    @pytest.mark.parametrize("table,column", list(PROVENANCE_COLUMN.items()))
+    def test_installs_sandcastle_delete_policy(self, table: str, column: str):
+        sql = _update_delete_migration_sql()
+        pattern = (
+            rf"CREATE\s+POLICY\s+\"[^\"]+\"\s+ON\s+{table}\s+"
+            rf"FOR\s+DELETE\s+TO\s+anon\s+"
+            rf"USING\s*\(\s*{column}\s+LIKE\s+'sandcastle:%'\s*\)"
+        )
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            f"Missing or malformed sandcastle DELETE policy on {table} "
+            f"(expected USING ({column} LIKE 'sandcastle:%'))"
+        )
+
+    def test_no_service_role_reference(self):
+        sql = _update_delete_migration_sql()
+        assert "service_role" not in sql.lower(), (
+            "Slice 3.5 migration should not reference service_role — it bypasses RLS."
+        )
+
+
+class TestUpdateDeleteSchemaMirror:
+    """schema.sql must mirror the slice-3.5 UPDATE/DELETE policies and must
+    not retain the legacy open 'Anon update' / 'Anon delete' policies on the
+    four sandcastle-touched tables (#326 schema-drift gate)."""
+
+    @pytest.mark.parametrize("table,column", list(PROVENANCE_COLUMN.items()))
+    def test_schema_has_sandcastle_update_policy(self, table: str, column: str):
+        sql = _schema_sql()
+        pattern = (
+            rf"CREATE\s+POLICY\s+\"[^\"]+\"\s+ON\s+{table}\s+"
+            rf"FOR\s+UPDATE\s+TO\s+anon\s+"
+            rf"USING\s*\(\s*{column}\s+LIKE\s+'sandcastle:%'\s*\)\s+"
+            rf"WITH\s+CHECK\s*\(\s*{column}\s+LIKE\s+'sandcastle:%'\s*\)"
+        )
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            f"schema.sql missing sandcastle UPDATE policy for {table} — drift from migration"
+        )
+
+    @pytest.mark.parametrize("table,column", list(PROVENANCE_COLUMN.items()))
+    def test_schema_has_sandcastle_delete_policy(self, table: str, column: str):
+        sql = _schema_sql()
+        pattern = (
+            rf"CREATE\s+POLICY\s+\"[^\"]+\"\s+ON\s+{table}\s+"
+            rf"FOR\s+DELETE\s+TO\s+anon\s+"
+            rf"USING\s*\(\s*{column}\s+LIKE\s+'sandcastle:%'\s*\)"
+        )
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            f"schema.sql missing sandcastle DELETE policy for {table} — drift from migration"
+        )
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_schema_has_no_open_update_policy(self, table: str):
+        """An unconditional 'Anon update' (USING (true) WITH CHECK (true)) on
+        any of the four tables means slice 3.5 was not mirrored into
+        schema.sql."""
+        sql = _schema_sql()
+        # Match the legacy shape specifically: USING (true) WITH CHECK (true)
+        pattern = (
+            rf'"Anon update"\s+ON\s+{table}\s+'
+            rf"FOR\s+UPDATE\s+TO\s+anon\s+USING\s*\(\s*true\s*\)"
+        )
+        assert not re.search(pattern, sql, re.IGNORECASE), (
+            f"Legacy open 'Anon update' policy still in schema.sql for {table}"
+        )
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_schema_has_no_open_delete_policy(self, table: str):
+        sql = _schema_sql()
+        pattern = (
+            rf'"Anon delete"\s+ON\s+{table}\s+'
+            rf"FOR\s+DELETE\s+TO\s+anon\s+USING\s*\(\s*true\s*\)"
+        )
+        assert not re.search(pattern, sql, re.IGNORECASE), (
+            f"Legacy open 'Anon delete' policy still in schema.sql for {table}"
+        )
+
+
+# -- Slice 3.5 policy logic --------------------------------------------------
+
+
+def _anon_update_allowed(table: str, existing_row: dict, new_row: dict) -> bool:
+    """Pure-Python reimplementation of the anon UPDATE policy.
+
+    Both USING (existing row) and WITH CHECK (new row) must satisfy the
+    sandcastle prefix predicate. This blocks two classes of forgery:
+      - touching a non-sandcastle row at all (USING fails)
+      - rewriting provenance from sandcastle → non-sandcastle (WITH CHECK fails)
+    """
+    column = PROVENANCE_COLUMN[table]
+    existing = existing_row.get(column)
+    new = new_row.get(column, existing)  # unchanged if not in update payload
+    if existing is None or new is None:
+        return False
+    return existing.startswith("sandcastle:") and new.startswith("sandcastle:")
+
+
+def _anon_delete_allowed(table: str, row: dict) -> bool:
+    """Pure-Python reimplementation of the anon DELETE policy."""
+    column = PROVENANCE_COLUMN[table]
+    value = row.get(column)
+    if value is None:
+        return False
+    return value.startswith("sandcastle:")
+
+
+class TestUpdateDeletePolicyLogic:
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_update_sandcastle_to_sandcastle_accepted(self, table: str):
+        col = PROVENANCE_COLUMN[table]
+        assert _anon_update_allowed(
+            table,
+            existing_row={col: "sandcastle:agent:run-1", "data": "old"},
+            new_row={col: "sandcastle:agent:run-1", "data": "new"},
+        )
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_update_non_sandcastle_row_rejected(self, table: str):
+        """Touching a host-owned row (provenance not sandcastle) must fail USING."""
+        col = PROVENANCE_COLUMN[table]
+        for hostlike in ["session:abc", "skill:implement", "user:explicit", "hook:foo"]:
+            assert not _anon_update_allowed(
+                table,
+                existing_row={col: hostlike},
+                new_row={col: hostlike, "data": "rewrite"},
+            ), f"{table}: anon UPDATE should reject host-owned row {hostlike!r}"
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_update_provenance_forge_rejected(self, table: str):
+        """Anon must not be able to rewrite provenance away from sandcastle:
+        (audit erase) or rewrite into sandcastle: from non-sandcastle (forge)."""
+        col = PROVENANCE_COLUMN[table]
+        # Audit-erase: sandcastle row → host-owned provenance (WITH CHECK fails)
+        assert not _anon_update_allowed(
+            table,
+            existing_row={col: "sandcastle:agent"},
+            new_row={col: "user:explicit"},
+        ), f"{table}: anon UPDATE should reject sandcastle → user:explicit (audit erase)"
+        # Forge: host row → sandcastle (USING fails — covered by test_update_non_sandcastle_row_rejected,
+        # but include the symmetric direction here for clarity)
+        assert not _anon_update_allowed(
+            table,
+            existing_row={col: "skill:implement"},
+            new_row={col: "sandcastle:agent"},
+        ), f"{table}: anon UPDATE should reject skill:* → sandcastle (forge)"
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_delete_sandcastle_accepted(self, table: str):
+        col = PROVENANCE_COLUMN[table]
+        assert _anon_delete_allowed(table, {col: "sandcastle:agent:run-7"})
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_delete_non_sandcastle_rejected(self, table: str):
+        col = PROVENANCE_COLUMN[table]
+        for bad in [
+            "session:abc",
+            "skill:implement",
+            "user:explicit",
+            "hook:user-prompt-submit",
+            "Sandcastle:agent",  # case-sensitive
+            "sandcastles:agent",  # extra 's'
+            "",
+            None,
+        ]:
+            assert not _anon_delete_allowed(table, {col: bad}), (
+                f"{table}: anon DELETE should reject row with provenance {bad!r}"
+            )
+
+    @pytest.mark.parametrize("table", list(PROVENANCE_COLUMN.keys()))
+    def test_delete_null_provenance_rejected(self, table: str):
+        col = PROVENANCE_COLUMN[table]
+        assert not _anon_delete_allowed(table, {col: None})
+        assert not _anon_delete_allowed(table, {})
