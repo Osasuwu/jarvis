@@ -7,6 +7,7 @@ fire-and-forget — never raises into the caller.
 from __future__ import annotations
 
 import os
+import sys
 
 _supabase = None
 
@@ -17,10 +18,27 @@ def _get_client():
         return _supabase
 
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
+    # Prefer service-role key on the host: after #542 RLS lands in live DB,
+    # anon-key INSERTs are gated to source_provenance LIKE 'sandcastle:%'.
+    # Host writes (skill:/hook:/session:/...) bypass RLS via service-role.
+    # Sandcastle containers continue to ship only SUPABASE_KEY (anon) per
+    # decision 228a2d9b — never set SUPABASE_SERVICE_KEY in .sandcastle/.env.
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not key:
+        key = os.environ.get("SUPABASE_KEY")
+        # Suppress in sandcastle containers — they intentionally ship anon-only
+        # (decision 228a2d9b) and the warning would mis-instruct the operator.
+        if key and not os.environ.get("SANDCASTLE_RUN_ID"):
+            print(
+                "WARNING: mcp-memory using SUPABASE_KEY (anon). After the #542 RLS "
+                "migration is applied, host writes with non-sandcastle provenance "
+                "(skill:/hook:/session:/...) will be rejected. Set SUPABASE_SERVICE_KEY "
+                "in .env — see .env.example.",
+                file=sys.stderr,
+            )
     if not url or not key:
         raise RuntimeError(
-            "SUPABASE_URL and SUPABASE_KEY must be set. "
+            "SUPABASE_URL and one of SUPABASE_SERVICE_KEY / SUPABASE_KEY must be set. "
             "Get them from your Supabase project settings."
         )
 

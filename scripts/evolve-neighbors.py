@@ -869,9 +869,11 @@ def main() -> int:
     args = p.parse_args()
 
     sb_url = os.environ.get("SUPABASE_URL")
-    sb_key = os.environ.get("SUPABASE_KEY")
+    # Prefer service-role: writes memories with skill:evolution:* provenance,
+    # which the #542 RLS gate rejects for anon. See mcp-memory/client.py.
+    sb_key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
     if not sb_url or not sb_key:
-        print("SUPABASE_URL / SUPABASE_KEY missing from env", file=sys.stderr)
+        print("SUPABASE_URL / SUPABASE_KEY (or SUPABASE_SERVICE_KEY) missing from env", file=sys.stderr)
         return 2
     # ANTHROPIC_API_KEY is NOT a hard requirement: call_haiku() falls back to
     # a KEEP-only plan when the key is absent, matching the documented fallback
