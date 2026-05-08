@@ -32,6 +32,9 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Candidate** — memory row with `requires_review=true`, not yet accepted by owner. Hidden from default recall; opt-in via `include_unreviewed=true`. Promoted to live memory by `memory_review_decide(action=accept)`.
 - **Merge proposal** — Dreamer-emitted candidate with non-empty `merge_targets UUID[]`. Recall MUST skip these even when `include_unreviewed=true` — they are meta-rows, not knowledge. Atomic accept via `memory_review_decide(action=merge_into)` writes new memory + sets `superseded_by` on targets.
 - **Always-gate** — review policy: every Deriver/Dreamer write requires explicit owner accept before influencing recall. No auto-promote tier in v1; future tiered policy must be data-driven from accumulated review decisions, not prompt-derived.
+- **Sandcastle** — Docker-isolated AFK coding-agent runtime (epic #534). One iteration per container: pick a `sandcastle`-labelled issue, work it on local Ollama, **open a PR but never merge** (decision `436f9549`). Sterile image — no `~/.claude` mount, all skills + memory MCP baked in (decisions `894ac658`, `228a2d9b`). Worktree is copy-on-write, so runtime overwrites of tracked files (e.g. `.mcp.json`) don't leak to the host.
+- **Watchdog** — PowerShell wrapper around a sandcastle run. Auto-starts Docker + Ollama with bounded poll, parses iteration result, writes the `outcome_record` row, fires Telegram only when infrastructure cannot come up. Single command interface, large hidden surface — qualifies as a deep module.
+- **Safe-hours window** — clock-bound interval (e.g. 22:00–08:00) during which AFK loops may run on Workshop PC. Enforced by **soft-stop**: no kill mid-iteration, just refuse to start a new one once the window closes. Loss-of-WIP avoidance, not strict scheduling.
 
 ### Workflow vocabulary
 
@@ -68,6 +71,8 @@ Where load-bearing rules live, in order of preference:
 ## Invariants (domain rules that must always hold)
 
 These are the "obvious" assumptions that previously bit because they weren't written down. Add to this list every time a `/grill-me` session surfaces one.
+
+- **Threat-model duality** — defence layers must match the threat model, not stack defensively for "more is better". Sandcastle is already process-isolated by Docker + sterile image; piling host-grade defences on top adds friction without adding security. Cross-link memory `enforcement_layer_matches_threat_model`.
 
 ### Memory & persistence
 
