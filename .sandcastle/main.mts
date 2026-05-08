@@ -1,25 +1,35 @@
 import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 
-// Jarvis sandcastle entry — AFK loop over ready-for-agent issues.
-// Run: npx tsx .sandcastle/main.mts
+// Jarvis sandcastle entry — slice 1 of epic #534. Manual smoke loop on Main PC.
+// Run: npm run sandcastle  (or: npx tsx .sandcastle/main.mts)
 //
-// This is scaffolding. The /delegate skill still uses the in-session Agent
-// dispatch path; sandcastle is being introduced as a parallel option. See
-// docs/design/sandcastle-integration.md (TBD) before wiring /delegate on top.
+// Prereqs + decisions: see .sandcastle/README.md and decisions 894ac658,
+// 436f9549, 0c3017c6 referenced from epic #534. Watchdog + schedule + memory
+// MCP bridge land in slices 2/4 — this file stays config-only (<50 lines).
+
+const ollamaModel = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:14b";
+const ollamaUrl = process.env.OLLAMA_BASE_URL ?? "http://host.docker.internal:11434";
 
 await run({
   name: "jarvis-worker",
-  sandbox: docker(),
-  agent: claudeCode("claude-sonnet-4-6"),
+  sandbox: docker({
+    imageName: "sandcastle:jarvis",
+    env: {
+      // Native Anthropic-compatible endpoint exposed by Ollama ≥ 0.14 (Jan 2026).
+      ANTHROPIC_BASE_URL: ollamaUrl,
+      ANTHROPIC_AUTH_TOKEN: "ollama",
+      // Forward host-side gh credentials so the agent can claim issues + open PRs.
+      GH_TOKEN: process.env.GH_TOKEN ?? "",
+    },
+  }),
+  agent: claudeCode(ollamaModel),
   promptFile: "./.sandcastle/prompt.md",
-  maxIterations: 3,
+  maxIterations: 1,
   branchStrategy: { type: "merge-to-head" },
   hooks: {
     sandbox: {
       onSandboxReady: [
-        // Repo is Python+Claude-Code-native, but agents may still need gh + git.
-        // No npm install here by default — package.json is for sandcastle only.
         { command: "git config user.email agent@jarvis.local" },
         { command: "git config user.name 'Jarvis Agent'" },
       ],
