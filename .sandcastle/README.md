@@ -2,8 +2,9 @@
 
 This directory is the substrate for [epic #534](https://github.com/Osasuwu/jarvis/issues/534)
 — Docker-isolated AFK coding agent. Slice 1 ([#537](https://github.com/Osasuwu/jarvis/issues/537))
-ships only the **manual smoke command** on Main PC. No watchdog, no scheduler,
-no memory bridge yet — those land in slices 2/4/8.
+shipped the **manual smoke command** on Main PC. Slice 2 ([#540](https://github.com/Osasuwu/jarvis/issues/540))
+adds the **memory MCP bridge inside the container** + canonical skill set baked
+into the image. Watchdog and scheduler land in slices 4/8.
 
 ## What it does
 
@@ -58,11 +59,14 @@ From the repo root:
 npm install
 
 # 1. Build the image (one-time, or after Dockerfile changes).
-docker build -t sandcastle:jarvis .sandcastle/
+#    Build context is the repo root because the image vendors mcp-memory/
+#    and .claude-userlevel/skills/ from outside .sandcastle/.
+docker build -t sandcastle:jarvis -f .sandcastle/Dockerfile .
 
-# 2. Copy env example and fill in GH_TOKEN.
+# 2. Copy env example and fill in GH_TOKEN, SUPABASE_URL, SUPABASE_KEY.
 cp .sandcastle/.env.example .sandcastle/.env
-# edit .sandcastle/.env — set GH_TOKEN
+# edit .sandcastle/.env — set GH_TOKEN, SUPABASE_URL, SUPABASE_KEY (anon!),
+# VOYAGE_API_KEY (optional)
 
 # 3. Run the smoke loop. Picks one tracer issue, opens a PR, exits.
 #    `npm run sandcastle` auto-loads .sandcastle/.env via Node's
@@ -85,7 +89,7 @@ Ollama-routed runs).
 | Concern | Lands in |
 |---|---|
 | PowerShell watchdog (autostart, soft-stop, outcome_record) | slice 4 ([#541](https://github.com/Osasuwu/jarvis/issues/541)) |
-| Memory MCP bridge inside container + skills baked in | slice 2 ([#540](https://github.com/Osasuwu/jarvis/issues/540)) |
+| ~~Memory MCP bridge inside container + skills baked in~~ | **slice 2 — landed ([#540](https://github.com/Osasuwu/jarvis/issues/540))** |
 | Supabase RLS for `sandcastle:agent` provenance | slice 3 ([#542](https://github.com/Osasuwu/jarvis/issues/542)) |
 | Multi-tier model escalation (Ollama → small → DeepSeek → owner) | slice 5 ([#543](https://github.com/Osasuwu/jarvis/issues/543)) |
 | Telegram alerting | slice 6 ([#544](https://github.com/Osasuwu/jarvis/issues/544)) |
@@ -95,6 +99,7 @@ Ollama-routed runs).
 
 - `894ac658-67da-4f32-a0a2-5b5ebefac8ee` — Runtime: Claude Code + local Ollama, sterile container, no `~/.claude` mount.
 - `436f9549-3acf-4ee0-85e5-c7259735d62e` — Sandcastle opens PRs only, never merges.
+- `228a2d9b-b57a-4d0f-8771-662482386b8a` — Memory MCP in container with anon key + provenance discipline; skills baked into image (slice 2).
 
 Slice-1 implementation choice (no proxy, native Ollama Anthropic endpoint)
 recorded as `decision_made` episode `375449f9-5026-4471-a705-922c5baddf7f`.
