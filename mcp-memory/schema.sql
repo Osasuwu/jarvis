@@ -72,9 +72,18 @@ alter table memories enable row level security;
 create policy "Allow all for authenticated" on memories
   for all using (true) with check (true);
 
--- Allow anonymous access (using anon key from MCP server)
-create policy "Allow all for anon" on memories
-  for all to anon using (true) with check (true);
+-- Anon access (sandcastle agent path) — INSERT is gated by source_provenance
+-- prefix per slice 3 of sandcastle epic (#534, #542, decision 228a2d9b).
+-- Service-role bypasses RLS automatically; host orchestrator unaffected.
+create policy "Anon select" on memories
+  for select to anon using (true);
+create policy "Anon update" on memories
+  for update to anon using (true) with check (true);
+create policy "Anon delete" on memories
+  for delete to anon using (true);
+create policy "Anon sandcastle insert" on memories
+  for insert to anon
+  with check (source_provenance like 'sandcastle:%');
 
 
 -- =========================================================================
@@ -362,7 +371,12 @@ create table if not exists task_outcomes (
   verified_at timestamptz,  -- when outcome was verified (e.g. PR merged check)
 
   -- Timestamps
-  created_at timestamptz default now()
+  created_at timestamptz default now(),
+
+  -- Provenance prefix used by RLS to gate anon INSERT (slice 3, #542,
+  -- decision 228a2d9b). Nullable for legacy rows; new sandcastle-agent
+  -- writes must set 'sandcastle:<...>' to be accepted via anon key.
+  source_provenance text
 );
 
 create index if not exists idx_task_outcomes_project on task_outcomes(project);
@@ -377,8 +391,16 @@ alter table task_outcomes enable row level security;
 create policy "Allow all for authenticated" on task_outcomes
   for all using (true) with check (true);
 
-create policy "Allow all for anon" on task_outcomes
-  for all to anon using (true) with check (true);
+-- Anon access — INSERT gated by source_provenance prefix (slice 3, #542).
+create policy "Anon select" on task_outcomes
+  for select to anon using (true);
+create policy "Anon update" on task_outcomes
+  for update to anon using (true) with check (true);
+create policy "Anon delete" on task_outcomes
+  for delete to anon using (true);
+create policy "Anon sandcastle insert" on task_outcomes
+  for insert to anon
+  with check (source_provenance like 'sandcastle:%');
 
 
 -- =========================================================================
@@ -891,8 +913,17 @@ alter table episodes enable row level security;
 create policy "Allow all for authenticated" on episodes
   for all using (true) with check (true);
 
-create policy "Allow all for anon" on episodes
-  for all to anon using (true) with check (true);
+-- Anon access — INSERT gated on `actor` (the column already used as the
+-- provenance field per the convention comment above). Slice 3, #542.
+create policy "Anon select" on episodes
+  for select to anon using (true);
+create policy "Anon update" on episodes
+  for update to anon using (true) with check (true);
+create policy "Anon delete" on episodes
+  for delete to anon using (true);
+create policy "Anon sandcastle insert" on episodes
+  for insert to anon
+  with check (actor like 'sandcastle:%');
 
 
 -- =========================================================================
@@ -2543,8 +2574,16 @@ ALTER TABLE events_canonical ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all for authenticated" ON events_canonical
   FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all for anon" ON events_canonical
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+-- Anon access — INSERT gated on `actor` (provenance field). Slice 3, #542.
+CREATE POLICY "Anon select" ON events_canonical
+  FOR SELECT TO anon USING (true);
+CREATE POLICY "Anon update" ON events_canonical
+  FOR UPDATE TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Anon delete" ON events_canonical
+  FOR DELETE TO anon USING (true);
+CREATE POLICY "Anon sandcastle insert" ON events_canonical
+  FOR INSERT TO anon
+  WITH CHECK (actor LIKE 'sandcastle:%');
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS events_cost_by_day_mv AS
 SELECT
