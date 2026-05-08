@@ -27,6 +27,11 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **FOK** (First-of-Kind) — a memory recall calibration metric. Indicates how often a recall returns a memory the agent has never seen before. Pillar-1 quality signal.
 - **Episode** — a structured event in the memory layer (decision, recall, outcome). Each has UUID; cross-references via UUID, not name.
 - **Goal** — a strategic priority registered in the goals table. Drives Jarvis's autonomous decisions about what to do first.
+- **Deriver** — per-session-end implicit-memory pass (Workshop+Ollama, DeepSeek fallback). Reads scrubbed transcript, emits ≤5 candidate memories per run with `requires_review=true`. Owner-level, runs on every session regardless of project; candidates self-classify scope (`user` → global, `feedback` → session project or global per content). Honcho analog.
+- **Dreamer** — scheduled cross-corpus consolidation pass. Triggers on pending-candidate count ≥30 OR ≥7d since last run. Reads pending + accepted `feedback` from last 90d (cap 200), emits new candidates and merge proposals — both gated. Owner-level, single pass across all projects.
+- **Candidate** — memory row with `requires_review=true`, not yet accepted by owner. Hidden from default recall; opt-in via `include_unreviewed=true`. Promoted to live memory by `memory_review_decide(action=accept)`.
+- **Merge proposal** — Dreamer-emitted candidate with non-empty `merge_targets UUID[]`. Recall MUST skip these even when `include_unreviewed=true` — they are meta-rows, not knowledge. Atomic accept via `memory_review_decide(action=merge_into)` writes new memory + sets `superseded_by` on targets.
+- **Always-gate** — review policy: every Deriver/Dreamer write requires explicit owner accept before influencing recall. No auto-promote tier in v1; future tiered policy must be data-driven from accumulated review decisions, not prompt-derived.
 
 ### Workflow vocabulary
 
