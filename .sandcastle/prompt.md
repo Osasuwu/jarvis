@@ -2,7 +2,7 @@
 
 ## Open issues in the AFK queue
 
-!`gh issue list --label "sandcastle" --state open --limit 20 || echo "(no gh available or queue empty)"`
+!`gh issue list --repo Osasuwu/jarvis --label "sandcastle" --state open --limit 20 2>&1 || echo "(gh failed)"`
 
 ## Recent agent commits
 

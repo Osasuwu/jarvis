@@ -26,14 +26,22 @@ already. It then:
 - **Ollama ≥ v0.14** (Jan 2026 release — first to expose the native
   `/v1/messages` Anthropic-compatible endpoint) running on the host.
   Verify with `ollama --version`.
-- **A coding model pulled on Ollama** with tool-use support and ≥64K context.
-  Default in `.env.example` is `qwen2.5-coder:14b`. Pull once:
+- **A coding model pulled on Ollama** with tool-use support. Slice 7
+  ([#538](https://github.com/Osasuwu/jarvis/issues/538)) benchmarks and picks
+  the production default — pin whatever `OLLAMA_MODEL` you want to test in
+  `.sandcastle/.env`.
+- **Ollama context length ≥ 64K.** Claude Code requires ≥64K context per
+  the official integration guide. Ollama's default is 8K — running with the
+  default truncates the system prompt and tool definitions silently, and
+  smaller models (≤8B) tend to bail to `<promise>COMPLETE</promise>` without
+  invoking tools. Restart Ollama with the env var set:
   ```powershell
-  ollama pull qwen2.5-coder:14b
+  $env:OLLAMA_CONTEXT_LENGTH = "65536"
+  ollama serve
   ```
-  Slice 7 ([#538](https://github.com/Osasuwu/jarvis/issues/538)) will benchmark
-  and pick the production default — for slice-1 smoke any tool-use-capable
-  coding model works.
+  On Workshop hardware with limited VRAM, slice 7 will determine the right
+  (model, context, kv-cache-quant) combo. On Main PC with 6 GB VRAM, you may
+  need to pick a smaller model or quantised KV cache to fit 64K context.
 - **A GitHub PAT** in `.sandcastle/.env` (`GH_TOKEN=…`) scoped to Issues: RW,
   PRs: RW, Contents: RW on this repo.
 - **A tracer issue** labelled `sandcastle` exists in the repo and is small
@@ -53,12 +61,20 @@ cp .sandcastle/.env.example .sandcastle/.env
 # edit .sandcastle/.env — set GH_TOKEN
 
 # 3. Run the smoke loop. Picks one tracer issue, opens a PR, exits.
+#    `npm run sandcastle` auto-loads .sandcastle/.env via Node's
+#    --env-file-if-exists flag (Node ≥ 20).
 npm run sandcastle
 ```
 
 Expected outcome: a new branch `feat/<N>-<slug>` is pushed, a PR with
 `Closes #<N>` exists, and the container has exited cleanly with no Anthropic
 API calls (since `ANTHROPIC_BASE_URL` is pointed at Ollama).
+
+To inspect what the agent actually did, look at the captured session JSONL at
+`~/.claude/projects/C-Users-petrk-GitHub-jarvis/<run-id>.jsonl`. The
+`message.model` field on assistant turns confirms which model handled the
+request (`qwen3:8b`, `qwen2.5-coder:14b`, etc. — never `claude-…` for
+Ollama-routed runs).
 
 ## What is intentionally NOT here
 
