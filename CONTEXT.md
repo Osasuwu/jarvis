@@ -76,6 +76,8 @@ These are the "obvious" assumptions that previously bit because they weren't wri
 
 - **Threat-model duality** — defence layers must match the threat model, not stack defensively for "more is better". Sandcastle is already process-isolated by Docker + sterile image; piling host-grade defences on top adds friction without adding security. Cross-link memory `enforcement_layer_matches_threat_model`.
 
+- **Threat-model duality** — defence layers must match the threat model, not stack defensively for "more is better". Sandcastle is already process-isolated by Docker + sterile image; piling host-grade defences on top adds friction without adding security. Cross-link memory `enforcement_layer_matches_threat_model`.
+
 ### Memory & persistence
 
 - **Memory is cross-device source of truth.** Anything important goes through Supabase. File-based memory (`~/.claude/projects/.../memory/`) is device-local and does NOT sync.
