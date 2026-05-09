@@ -107,11 +107,10 @@ Describe 'Read-DotEnvFile' {
 
 Describe 'Test-IsInfraDown' {
     It 'returns true for whitelisted infra reasons' {
-        Test-IsInfraDown -Reason 'docker-down'             | Should Be $true
-        Test-IsInfraDown -Reason 'ollama-down'             | Should Be $true
-        Test-IsInfraDown -Reason 'npm-not-found'           | Should Be $true
-        Test-IsInfraDown -Reason 'no-result-file'          | Should Be $true
-        Test-IsInfraDown -Reason 'container-launch-fail'   | Should Be $true
+        Test-IsInfraDown -Reason 'docker-down'    | Should Be $true
+        Test-IsInfraDown -Reason 'ollama-down'    | Should Be $true
+        Test-IsInfraDown -Reason 'npm-not-found'  | Should Be $true
+        Test-IsInfraDown -Reason 'no-result-file' | Should Be $true
     }
 
     It 'matches reasons with trailing detail (StartsWith)' {
@@ -134,7 +133,7 @@ Describe 'Send-TelegramAlert' {
     }
 
     It 'truncates messages over 200 chars' {
-        $captured = $null
+        $script:captured = $null   # script-scoped; clear before mock so prior tests don't bleed in.
         Mock Invoke-RestMethod -ParameterFilter { $true } -MockWith {
             $script:captured = $Body
             'ok'
@@ -143,6 +142,28 @@ Describe 'Send-TelegramAlert' {
         Send-TelegramAlert -BotToken 't' -ChatId '1' -Message $long | Out-Null
         $script:captured.text.Length | Should Be 200
         $script:captured.text        | Should Match '\.\.\.$'
+    }
+
+}
+
+Describe 'Format-RedactedError' {
+    It 'replaces every occurrence of the secret with TOKEN-REDACTED' {
+        $err = "Invoke-RestMethod : (404) https://api.telegram.org/botSECRET-TOKEN/sendMessage failed; SECRET-TOKEN exposed twice"
+        $out = Format-RedactedError -Message $err -Secret 'SECRET-TOKEN'
+        $out | Should Match '<TOKEN-REDACTED>'
+        $out | Should Not Match 'SECRET-TOKEN'
+    }
+
+    It 'returns input unchanged when secret is empty (no global wipe)' {
+        $err = 'boom'
+        Format-RedactedError -Message $err -Secret '' | Should Be 'boom'
+    }
+
+    It 'escapes regex metacharacters in the secret' {
+        $err = 'leaked: a.b+c'
+        $out = Format-RedactedError -Message $err -Secret 'a.b+c'
+        $out | Should Match '<TOKEN-REDACTED>'
+        $out | Should Not Match 'a\.b\+c'
     }
 }
 

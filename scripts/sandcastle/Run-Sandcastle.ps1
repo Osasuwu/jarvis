@@ -233,12 +233,19 @@ function Invoke-Sandcastle {
 # Reasons that warrant waking up the principal in chat. Anything else
 # (agent-side exit codes, partial:window-expired, success) stays silent
 # so morning chat carries signal not noise.
+#
+# Note: AC #534/#544 mention 'container-launch-fail' as a class but the
+# watchdog has no current call site that emits that literal reason --
+# Docker container start failures surface as `exit=N` from sandcastle's
+# tsx/npm wrapper, classified agent-side by Test-IsInfraDown. Wiring a
+# Docker-level health check that distinguishes "image missing / container
+# crashed at start" from agent-side errors is tracked in the watchdog
+# hardening follow-up #572.
 $script:TelegramInfraReasons = @(
     'docker-down',
     'ollama-down',
     'npm-not-found',
-    'no-result-file',
-    'container-launch-fail'
+    'no-result-file'
 )
 
 function Test-IsInfraDown {
@@ -251,6 +258,13 @@ function Test-IsInfraDown {
     return $false
 }
 
+function Format-RedactedError {
+    [CmdletBinding()]
+    param([string]$Message, [string]$Secret)
+    if (-not $Secret) { return $Message }
+    return ($Message -replace [regex]::Escape($Secret), '<TOKEN-REDACTED>')
+}
+
 function Send-TelegramAlert {
     [CmdletBinding()]
     param(
@@ -260,13 +274,23 @@ function Send-TelegramAlert {
     )
     if (-not $BotToken -or -not $ChatId) {
         Write-Warning "Telegram token/chat-id missing -- skipping alert."
-        return $null
+        return
     }
-    # 200-char cap is an AC. Truncate defensively; real callers stay well under.
-    if ($Message.Length -gt 200) { $Message = $Message.Substring(0, 197) + '...' }
+    # 200-char cap is an AC; -3 for the '...' tail.
+    $maxLen = 200
+    if ($Message.Length -gt $maxLen) {
+        $Message = $Message.Substring(0, $maxLen - 3) + '...'
+    }
     $url = "https://api.telegram.org/bot$BotToken/sendMessage"
     $body = @{ chat_id = $ChatId; text = $Message }
-    return Invoke-RestMethod -Uri $url -Method Post -Body $body -ErrorAction Stop
+    try {
+        return Invoke-RestMethod -Uri $url -Method Post -Body $body -ErrorAction Stop
+    } catch {
+        # Sanitize before re-raising: Invoke-RestMethod error messages
+        # include the request URL with the bot token embedded. Strip it
+        # so callers / logs only ever see "<TOKEN-REDACTED>".
+        throw "telegram alert failed: $(Format-RedactedError -Message "$_" -Secret $BotToken)"
+    }
 }
 
 # ---------------------------------------------------------------------------
