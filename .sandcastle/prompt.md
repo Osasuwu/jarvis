@@ -1,5 +1,9 @@
 # Context
 
+## Forced target (escalation retry)
+
+!`if [ -n "$SANDCASTLE_TARGET_ISSUE" ]; then echo "**Tier escalation retry — pinned to issue #$SANDCASTLE_TARGET_ISSUE.** Skip the pick step below; resume work on this exact issue (claim if not already claimed by you, otherwise continue on its branch)."; else echo "(no forced target — free pick)"; fi`
+
 ## Open issues in the AFK queue
 
 !`gh issue list --repo Osasuwu/jarvis --label "sandcastle" --state open --limit 20 2>&1 || echo "(gh failed)"`

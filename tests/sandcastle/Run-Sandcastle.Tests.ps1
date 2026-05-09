@@ -169,6 +169,289 @@ Describe 'Format-RedactedError' {
     }
 }
 
+Describe 'Test-IsOOM' {
+    It 'flags exit code 137 (Linux OOM-kill) without a log file' {
+        Test-IsOOM -Reason 'exit=137' -LogFile '' | Should Be $true
+    }
+
+    It 'rejects unrelated exit codes' {
+        Test-IsOOM -Reason 'exit=7' -LogFile '' | Should Be $false
+    }
+
+    It 'rejects json-parse-error even if the log mentions OOM' {
+        # Malformed result.json comes from a torn write, not from a model
+        # OOM -- escalating to a smaller model would not help.
+        $tmp = Join-Path $env:TEMP "oom-log-$([guid]::NewGuid()).txt"
+        'CUDA out of memory' | Set-Content -Path $tmp -Encoding UTF8
+        try {
+            Test-IsOOM -Reason 'json-parse-error: Unexpected token' -LogFile $tmp | Should Be $false
+        } finally {
+            Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'matches OOM substrings in the log file (case-insensitive)' {
+        $tmp = Join-Path $env:TEMP "oom-log-$([guid]::NewGuid()).txt"
+        'ollama serve: model requires more system memory than available' | Set-Content -Path $tmp -Encoding UTF8
+        try {
+            Test-IsOOM -Reason 'exit=1' -LogFile $tmp | Should Be $true
+        } finally {
+            Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'returns false when log file does not exist' {
+        Test-IsOOM -Reason 'exit=1' -LogFile (Join-Path $env:TEMP "missing-$([guid]::NewGuid()).log") | Should Be $false
+    }
+}
+
+Describe 'Get-IssueFromBranch' {
+    It 'parses feat/<N>-slug' {
+        Get-IssueFromBranch -Branch 'feat/543-multi-tier' | Should Be 543
+    }
+    It 'parses fix/<N>-slug' {
+        Get-IssueFromBranch -Branch 'fix/42-broken' | Should Be 42
+    }
+    It 'returns null for unknown shapes' {
+        Get-IssueFromBranch -Branch 'main' | Should BeNullOrEmpty
+        Get-IssueFromBranch -Branch ''     | Should BeNullOrEmpty
+        Get-IssueFromBranch -Branch $null  | Should BeNullOrEmpty
+    }
+}
+
+Describe 'Resolve-Tier2Config' {
+    It 'returns null when provider is empty' {
+        Mock Get-IssueLabels { @() }
+        Resolve-Tier2Config -Provider '' -Issue 1 -RepoSlug 'x/y' -EnvVars @{} | Should BeNullOrEmpty
+    }
+
+    It 'maps deepseek with envVar overrides + key' {
+        Mock Get-IssueLabels { @() }
+        $env = @{ DEEPSEEK_API_KEY = 'ds-secret'; DEEPSEEK_MODEL = 'ds-coder-mini' }
+        $cfg = Resolve-Tier2Config -Provider 'deepseek' -Issue 99 -RepoSlug 'x/y' -EnvVars $env
+        $cfg.Provider  | Should Be 'deepseek'
+        $cfg.Model     | Should Be 'ds-coder-mini'
+        $cfg.AuthToken | Should Be 'ds-secret'
+        $cfg.BaseUrl   | Should Match '^https://'
+    }
+
+    It 'use-claude-api label flips deepseek default to claude' {
+        Mock Get-IssueLabels { @('use-claude-api', 'priority:high') }
+        $env = @{ ANTHROPIC_API_KEY = 'sk-ant-test'; DEEPSEEK_API_KEY = 'ds' }
+        $cfg = Resolve-Tier2Config -Provider 'deepseek' -Issue 99 -RepoSlug 'x/y' -EnvVars $env
+        $cfg.Provider  | Should Be 'claude'
+        $cfg.AuthToken | Should Be 'sk-ant-test'
+    }
+
+    It 'leaves provider as deepseek when label missing' {
+        Mock Get-IssueLabels { @('priority:medium') }
+        $env = @{ DEEPSEEK_API_KEY = 'ds' }
+        $cfg = Resolve-Tier2Config -Provider 'deepseek' -Issue 99 -RepoSlug 'x/y' -EnvVars $env
+        $cfg.Provider | Should Be 'deepseek'
+    }
+}
+
+Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
+    BeforeEach {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Start-DockerDesktop { }
+        Mock Start-OllamaServer  { }
+        Mock Get-RepoRoot { $env:TEMP }
+        Mock Read-DotEnvFile {
+            @{
+                SUPABASE_URL       = 'https://x'
+                SUPABASE_KEY       = 'k'
+                TELEGRAM_BOT_TOKEN = 't'
+                TELEGRAM_CHAT_ID   = '1'
+                DEEPSEEK_API_KEY   = 'ds-key'
+                ANTHROPIC_API_KEY  = 'cl-key'
+            }
+        }
+        Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-tier-test-$([guid]::NewGuid())" }
+        Mock Write-OutcomeRecord { 'mocked' }
+        Mock Send-TelegramAlert  { 'mocked' }
+        Mock Add-IssueLabel      { $true }
+        Mock Get-IssueLabels     { @() }
+    }
+
+    It 'AC: Tier 0 success -> no escalation, no labels, no Tier 1/2 invocation' {
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += $Model
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/100-foo'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 1 -Exactly -Scope It
+        Assert-MockCalled Add-IssueLabel    -Times 0 -Exactly -Scope It
+        $script:calls[0] | Should Be 'qwen-large'
+    }
+
+    It 'AC: Tier 0 OOM -> exactly one Tier 1 retry, success records tier1' {
+        $script:calls = @()
+        $script:n = 0
+        Mock Invoke-Sandcastle {
+            $script:n++
+            $script:calls += $Model
+            if ($script:n -eq 1) {
+                return [pscustomobject]@{ ok = $false; exitCode = 137; reason = 'exit=137'; result = $null }
+            }
+            return [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/200-bar'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $true }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
+        $script:calls[0] | Should Be 'qwen-large'
+        $script:calls[1] | Should Be 'qwen-small'
+        Assert-MockCalled Add-IssueLabel -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'tier1' }
+    }
+
+    It 'AC: Tier 0+1 fail -> Tier 2 (deepseek) success, no too-large label' {
+        $script:n = 0
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:n++
+            $script:calls += @{ Model = $Model; BaseUrl = $BaseUrl; Token = $AuthToken }
+            if ($script:n -le 2) {
+                $branch = if ($script:n -eq 1) { 'feat/300-baz' } else { $null }
+                return [pscustomobject]@{
+                    ok = $false; exitCode = 137; reason = 'exit=137'
+                    result = if ($branch) { [pscustomobject]@{ branch = $branch } } else { $null }
+                }
+            }
+            return [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/300-baz'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $true }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 3 -Exactly -Scope It
+        $script:calls[2].Token | Should Be 'ds-key'
+        Assert-MockCalled Add-IssueLabel -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'tier2:deepseek' }
+    }
+
+    It 'AC: full chain fail -> too-large-for-local label applied + outcome=failure' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $false; exitCode = 137; reason = 'exit=137'
+                result = [pscustomobject]@{ branch = 'feat/400-qux' }
+            }
+        }
+        Mock Test-IsOOM { $true }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Invoke-Sandcastle -Times 3 -Exactly -Scope It
+        Assert-MockCalled Add-IssueLabel -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Issue -eq 400 -and $Label -eq 'too-large-for-local' }
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $Summary -like '*tier=tier2:deepseek*' }
+    }
+
+    It 'AC: use-claude-api label flips Tier 2 to Claude API key' {
+        Mock Get-IssueLabels { @('use-claude-api') }
+        $script:n = 0
+        $script:tier2Token = $null
+        Mock Invoke-Sandcastle {
+            $script:n++
+            if ($script:n -le 2) {
+                return [pscustomobject]@{
+                    ok = $false; exitCode = 137; reason = 'exit=137'
+                    result = [pscustomobject]@{ branch = 'feat/500-claude' }
+                }
+            }
+            $script:tier2Token = $AuthToken
+            return [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/500-claude'; commits = @(); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $true }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        $script:tier2Token | Should Be 'cl-key'
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $LlmMetrics.tier -eq 'tier2:claude' }
+    }
+
+    It 'AC: non-OOM Tier 0 failure does NOT escalate (logic error stays a failure)' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 7; reason = 'exit=7'; result = $null }
+        }
+        Mock Test-IsOOM { $false }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Invoke-Sandcastle -Times 1 -Exactly -Scope It
+        Assert-MockCalled Add-IssueLabel    -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $LlmMetrics.tier -eq 'tier0' }
+    }
+
+    It 'no Tier 1 configured: Tier 0 OOM jumps directly to Tier 2 (deepseek)' {
+        $script:n = 0
+        Mock Invoke-Sandcastle {
+            $script:n++
+            if ($script:n -eq 1) {
+                return [pscustomobject]@{
+                    ok = $false; exitCode = 137; reason = 'exit=137'
+                    result = [pscustomobject]@{ branch = 'feat/600-skip-tier1' }
+                }
+            }
+            return [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/600-skip-tier1'; commits = @(); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $true }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model '' -Tier2Provider 'deepseek' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $LlmMetrics.tier -eq 'tier2:deepseek' }
+    }
+}
+
 Describe 'Invoke-Watchdog daemon-state matrix' {
     BeforeEach {
         Mock Start-DockerDesktop { }

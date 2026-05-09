@@ -10,8 +10,27 @@ import { dirname } from "node:path";
 // 436f9549, 228a2d9b, 0c3017c6 referenced from epic #534. Watchdog + schedule
 // land in slice 4 — this file stays config-only.
 
-const ollamaModel = process.env.OLLAMA_MODEL ?? "qwen2.5-coder:14b";
-const ollamaUrl = process.env.OLLAMA_BASE_URL ?? "http://host.docker.internal:11434";
+// Agent model + endpoint. Slice 5 (#543) introduces multi-tier escalation:
+// the PS1 watchdog re-invokes us with SANDCASTLE_AGENT_{MODEL,BASE_URL,AUTH_TOKEN}
+// overridden when retrying on a smaller Ollama model (Tier 1) or a remote
+// DeepSeek/Claude API endpoint (Tier 2). Falls back to the slice-1/2 Ollama
+// defaults when the watchdog isn't driving — single-shot manual smoke runs
+// keep working unchanged.
+const agentModel =
+  process.env.SANDCASTLE_AGENT_MODEL ??
+  process.env.OLLAMA_MODEL ??
+  "qwen2.5-coder:14b";
+const agentBaseUrl =
+  process.env.SANDCASTLE_AGENT_BASE_URL ??
+  process.env.OLLAMA_BASE_URL ??
+  "http://host.docker.internal:11434";
+// Tier 0/1 use the literal "ollama" auth token (Ollama's native Anthropic
+// endpoint ignores it); Tier 2 carries a real API key (DeepSeek / Claude).
+const agentAuthToken = process.env.SANDCASTLE_AGENT_AUTH_TOKEN ?? "ollama";
+// When the watchdog retries on the same issue (escalation chain, AC #3),
+// it sets SANDCASTLE_TARGET_ISSUE so prompt.md can pin the agent to that
+// issue instead of picking afresh from the queue.
+const targetIssue = process.env.SANDCASTLE_TARGET_ISSUE ?? "";
 const ghToken = process.env.GH_TOKEN;
 if (!ghToken) {
   throw new Error(
@@ -56,9 +75,10 @@ const result = await run({
   sandbox: docker({
     imageName: "sandcastle:jarvis",
     env: {
-      // Native Anthropic-compatible endpoint exposed by Ollama ≥ 0.14 (Jan 2026).
-      ANTHROPIC_BASE_URL: ollamaUrl,
-      ANTHROPIC_AUTH_TOKEN: "ollama",
+      // Native Anthropic-compatible endpoint exposed by Ollama ≥ 0.14 (Jan 2026)
+      // for Tier 0/1; remote provider URL + key for Tier 2 (slice 5, #543).
+      ANTHROPIC_BASE_URL: agentBaseUrl,
+      ANTHROPIC_AUTH_TOKEN: agentAuthToken,
       // Forward host-side gh credentials so the agent can claim issues + open PRs.
       GH_TOKEN: ghToken,
       // Memory MCP bridge — Claude Code expands ${...} in the project-scope
@@ -69,9 +89,12 @@ const result = await run({
       VOYAGE_API_KEY: voyageKey,
       // Per-run id for the agent's source_provenance tags. See prompt.md.
       SANDCASTLE_RUN_ID: runId,
+      // Forced-target issue for slice-5 escalation retries. Empty string =
+      // free pick from queue (default behavior).
+      SANDCASTLE_TARGET_ISSUE: targetIssue,
     },
   }),
-  agent: claudeCode(ollamaModel),
+  agent: claudeCode(agentModel),
   promptFile: "./.sandcastle/prompt.md",
   maxIterations,
   branchStrategy: { type: "merge-to-head" },
