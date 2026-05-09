@@ -103,10 +103,11 @@ if (resultFile) {
         completionSignal: result.completionSignal,
         logFilePath: result.logFilePath,
         preservedWorktreePath: result.preservedWorktreePath,
-        iterations: result.iterations.map((it) => ({
-          sessionId: it.sessionId,
-          usage: it.usage,
-        })),
+        iterations:
+          result.iterations?.map((it) => ({
+            sessionId: it.sessionId,
+            usage: it.usage,
+          })) ?? [],
       },
       null,
       2,

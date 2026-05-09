@@ -75,6 +75,10 @@ Describe 'Read-DotEnvFile' {
         'SUPABASE_URL=https://example.supabase.co',
         'SUPABASE_KEY="anon-key-here"',
         "QUOTED='single'",
+        # Unbalanced quotes must survive verbatim (regression: naive Trim
+        # corrupted base64 padding `key=` and apostrophes in values).
+        'BASE64_KEY=abcd1234==',
+        "APOS_VAL=it's",
         '',
         'INVALID_LINE_NO_EQUALS'
     ) | Set-Content -Path $tmp -Encoding UTF8
@@ -85,6 +89,12 @@ Describe 'Read-DotEnvFile' {
         $vars['SUPABASE_KEY']                          | Should Be 'anon-key-here'
         $vars['QUOTED']                                | Should Be 'single'
         $vars.ContainsKey('INVALID_LINE_NO_EQUALS')    | Should Be $false
+    }
+
+    It 'preserves base64 padding and apostrophes' {
+        $vars = Read-DotEnvFile -Path $tmp
+        $vars['BASE64_KEY'] | Should Be 'abcd1234=='
+        $vars['APOS_VAL']   | Should Be "it's"
     }
 
     It 'returns empty hashtable for missing file' {
@@ -187,5 +197,65 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Invoke-Sandcastle   -Times 0 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'partial' -and $Summary -like '*window-expired*' }
+    }
+
+    It 'accumulates commits and usage across multiple successful iterations' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 3 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        # 3 iterations × the BeforeEach mock (1k input, 200 output, 1 commit each)
+        Assert-MockCalled Invoke-Sandcastle -Times 3 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Status -eq 'success' -and
+                $Summary -like '*iterations=3*' -and
+                $Summary -like '*commits=3*' -and
+                $LlmMetrics.input_tokens -eq 3000 -and
+                $LlmMetrics.output_tokens -eq 600
+            }
+    }
+
+    It 'records failure and stops loop when sandcastle invocation returns ok=false' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 0; result = $null; reason = 'no-result-file' }
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 3 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } |
+            Should Throw 'no-result-file'
+
+        Assert-MockCalled Invoke-Sandcastle   -Times 1 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $Summary -like '*no-result-file*' }
+    }
+
+    It 'soft-stops mid-run when window expires after iteration N succeeds' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+
+        # Window expires partway through. First call → not expired; subsequent
+        # calls → expired. With MaxIterations=3 the watchdog should run
+        # exactly one iteration then bail with partial:window-expired.
+        $script:windowChecks = 0
+        Mock Test-WindowExpired {
+            $script:windowChecks++
+            return ($script:windowChecks -gt 1)
+        }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 3 -Model 'm' `
+            -WindowEnd '23:59' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle   -Times 1 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Status -eq 'partial' -and
+                $Summary -like '*window-expired*' -and
+                $Summary -like '*iterations=1*'
+            }
     }
 }

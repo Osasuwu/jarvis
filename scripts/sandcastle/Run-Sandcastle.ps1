@@ -162,31 +162,51 @@ function Invoke-Sandcastle {
         [string]$Model,
         [int]$MaxIterations,
         [string]$ResultFile,
-        [string]$LogFile
+        [string]$LogFile,
+        [string]$RunId
     )
 
-    $env:SANDCASTLE_RESULT_FILE = $ResultFile
+    # Stale result.json from a prior iteration would otherwise be silently
+    # re-read on a partial-write crash. Always start clean.
+    Remove-Item -LiteralPath $ResultFile -ErrorAction SilentlyContinue
+
+    # Save-and-restore so dot-sourced Pester runs don't bleed values across calls.
+    $prev = @{
+        SANDCASTLE_RESULT_FILE    = $env:SANDCASTLE_RESULT_FILE
+        SANDCASTLE_MAX_ITERATIONS = $env:SANDCASTLE_MAX_ITERATIONS
+        SANDCASTLE_RUN_ID         = $env:SANDCASTLE_RUN_ID
+        OLLAMA_MODEL              = $env:OLLAMA_MODEL
+    }
+    $env:SANDCASTLE_RESULT_FILE    = $ResultFile
     $env:SANDCASTLE_MAX_ITERATIONS = "$MaxIterations"
-    if ($Model) { $env:OLLAMA_MODEL = $Model }
+    if ($RunId) { $env:SANDCASTLE_RUN_ID = $RunId }
+    if ($Model) { $env:OLLAMA_MODEL      = $Model }
 
     Push-Location -LiteralPath $RepoRoot
     try {
-        # Capture stderr to the same log file (per fire_and_forget_subprocess_capture_stderr).
-        $stdout = & npm run --silent sandcastle 2>&1
+        $combined = & npm run --silent sandcastle 2>&1
         $exitCode = $LASTEXITCODE
-        $stdout | Out-File -FilePath $LogFile -Encoding utf8 -Append
+        $combined | Out-File -FilePath $LogFile -Encoding utf8 -Append
     } finally {
         Pop-Location
+        $env:SANDCASTLE_RESULT_FILE    = $prev.SANDCASTLE_RESULT_FILE
+        $env:SANDCASTLE_MAX_ITERATIONS = $prev.SANDCASTLE_MAX_ITERATIONS
+        $env:SANDCASTLE_RUN_ID         = $prev.SANDCASTLE_RUN_ID
+        $env:OLLAMA_MODEL              = $prev.OLLAMA_MODEL
     }
 
     if ($exitCode -ne 0) {
-        return [pscustomobject]@{ ok = $false; exitCode = $exitCode; result = $null }
+        return [pscustomobject]@{ ok = $false; exitCode = $exitCode; result = $null; reason = "exit=$exitCode" }
     }
     if (-not (Test-Path -LiteralPath $ResultFile)) {
         return [pscustomobject]@{ ok = $false; exitCode = $exitCode; result = $null; reason = 'no-result-file' }
     }
-    $json = Get-Content -LiteralPath $ResultFile -Raw -Encoding utf8 | ConvertFrom-Json
-    return [pscustomobject]@{ ok = $true; exitCode = 0; result = $json }
+    try {
+        $json = Get-Content -LiteralPath $ResultFile -Raw -Encoding utf8 | ConvertFrom-Json
+    } catch {
+        return [pscustomobject]@{ ok = $false; exitCode = $exitCode; result = $null; reason = "json-parse-error: $_" }
+    }
+    return [pscustomobject]@{ ok = $true; exitCode = 0; result = $json; reason = $null }
 }
 
 # ---------------------------------------------------------------------------
@@ -204,7 +224,15 @@ function Read-DotEnvFile {
         $eq = $trimmed.IndexOf('=')
         if ($eq -lt 1) { continue }
         $key = $trimmed.Substring(0, $eq).Trim()
-        $val = $trimmed.Substring($eq + 1).Trim().Trim('"').Trim("'")
+        $val = $trimmed.Substring($eq + 1).Trim()
+        # Strip only matched outer quote pairs so values like "it's" or
+        # base64 padding ending in '=' survive verbatim.
+        if ($val.Length -ge 2) {
+            $first = $val[0]; $last = $val[$val.Length - 1]
+            if (($first -eq '"' -and $last -eq '"') -or ($first -eq "'" -and $last -eq "'")) {
+                $val = $val.Substring(1, $val.Length - 2)
+            }
+        }
         $vars[$key] = $val
     }
     return $vars
@@ -220,9 +248,7 @@ function Write-OutcomeRecord {
         [string]$Summary,
         [hashtable]$LlmMetrics, # @{ input_tokens; output_tokens; cache_read; cache_creation; model }
         [string[]]$ExtraTags = @(),
-        [string]$RunId,
-        [string]$IssueUrl,
-        [string]$PrUrl
+        [string]$RunId
     )
 
     if (-not $SupabaseUrl -or -not $SupabaseKey) {
@@ -244,9 +270,6 @@ function Write-OutcomeRecord {
         lessons           = ($LlmMetrics | ConvertTo-Json -Compress)
         source_provenance = "sandcastle:watchdog:$RunId"
     }
-    if ($IssueUrl) { $body.issue_url = $IssueUrl }
-    if ($PrUrl)    { $body.pr_url    = $PrUrl }
-
     $headers = @{
         apikey          = $SupabaseKey
         Authorization   = "Bearer $SupabaseKey"
@@ -337,11 +360,12 @@ function Invoke-Watchdog {
         Write-Host "[watchdog] iteration $iter/$MaxIterations"
 
         $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $Model `
-            -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile
+            -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId
 
         if (-not $invocation.ok) {
-            Record 'failure' "sandcastle invocation failed (exit=$($invocation.exitCode))" $totalUsage
-            throw "sandcastle invocation failed: exit=$($invocation.exitCode)"
+            $reason = if ($invocation.reason) { $invocation.reason } else { "exit=$($invocation.exitCode)" }
+            Record 'failure' "sandcastle invocation failed: $reason" $totalUsage
+            throw "sandcastle invocation failed: $reason"
         }
 
         $r = $invocation.result
