@@ -1,5 +1,7 @@
 import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { writeFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
 
 // Jarvis sandcastle entry — slices 1 + 2 of epic #534. Manual smoke loop on Main PC.
 // Run: npm run sandcastle  (or: npx tsx .sandcastle/main.mts)
@@ -40,7 +42,16 @@ const runId =
   process.env.SANDCASTLE_RUN_ID ??
   `jarvis-worker-${new Date().toISOString().replace(/[-:T.Z]/g, "").slice(0, 14)}`;
 
-await run({
+// Slice 4 (#541): when the PowerShell watchdog invokes us, it sets
+// SANDCASTLE_RESULT_FILE so we dump the RunResult JSON for it to parse
+// (commits, branch, iterations, usage). Direct stdout capture is too noisy
+// — sandcastle interleaves agent output with orchestrator logs.
+const resultFile = process.env.SANDCASTLE_RESULT_FILE;
+// `??` does not coalesce empty string -- guard against blank env vars
+// silently producing maxIterations=0 (zero-iteration silent run).
+const maxIterations = Math.max(1, Number(process.env.SANDCASTLE_MAX_ITERATIONS) || 1);
+
+const result = await run({
   name: "jarvis-worker",
   sandbox: docker({
     imageName: "sandcastle:jarvis",
@@ -62,7 +73,7 @@ await run({
   }),
   agent: claudeCode(ollamaModel),
   promptFile: "./.sandcastle/prompt.md",
-  maxIterations: 1,
+  maxIterations,
   branchStrategy: { type: "merge-to-head" },
   hooks: {
     sandbox: {
@@ -81,3 +92,28 @@ await run({
     },
   },
 });
+
+if (resultFile) {
+  await mkdir(dirname(resultFile), { recursive: true });
+  await writeFile(
+    resultFile,
+    JSON.stringify(
+      {
+        runId,
+        branch: result.branch,
+        commits: result.commits,
+        completionSignal: result.completionSignal,
+        logFilePath: result.logFilePath,
+        preservedWorktreePath: result.preservedWorktreePath,
+        iterations:
+          result.iterations?.map((it) => ({
+            sessionId: it.sessionId,
+            usage: it.usage,
+          })) ?? [],
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
