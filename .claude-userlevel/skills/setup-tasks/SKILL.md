@@ -27,11 +27,13 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 | Task ID | Cron | Prompt |
 |---------|------|--------|
 | nightly-research | `17 7 * * *` | Run `/research` in `--mode=autonomous` |
-| morning-brief | `43 7 * * *` | Run `/status` |
+| status-record | `0 7 * * *` | Run `/status-record` — write daily snapshot of repo/CI/PR/issue/milestone state to memory under tag `status-snapshot`. |
 | risk-radar | `7 9,14,19 * * *` | Quick risk scan: check CI status, stale issues, security alerts across repos in `config/repos.conf` |
 | autonomous-loop | `3 9 * * *` | Run `/autonomous-loop` |
 | intel | `12 10 * * 1` | Weekly tech intelligence: search for new Claude Code features, MCP servers, AI agent patterns. Save findings to memory. |
 | verify | `47 16 * * 5` | Run `/verify` — verify pending outcomes, detect patterns, save lessons. |
+
+> `status-record` supersedes the old `morning-brief`/`/status` slot — the skill records state only, owner reads inline via `memory_recall(query="status-snapshot")`. Decisions/actions on findings belong to the sandcastle orchestrator (#531).
 
 ## Notes
 
