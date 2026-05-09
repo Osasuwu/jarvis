@@ -42,7 +42,7 @@ Installed to `~/.claude/` by `scripts/install/installer.py` (entry points `insta
 | Component | Source in repo | Installed to | Purpose |
 |-----------|----------------|--------------|---------|
 | Identity | `config/SOUL.md` | `~/.claude/SOUL.md` | Personality, tone, behavior rules (loaded by SessionStart) |
-| Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` | 12 core slash commands: `implement`, `delegate`, `verify`, `status`, `reflect`, `end`, `end-quick`, `research`, `goals`, `self-improve`, `setup-tasks`, `autonomous-loop` |
+| Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` | 11 core slash commands: `implement`, `delegate`, `verify`, `status`, `reflect`, `end` (with `--quick` flag), `research`, `goals`, `self-improve`, `setup-tasks`, `autonomous-loop` |
 | Hooks | `.claude-userlevel/settings.json` | `~/.claude/settings.json` (deep-merged) | SessionStart, PreCompact, PreToolUse secret/dedup/protected-file scans, UserPromptSubmit memory recall |
 | MCP servers | `.claude-userlevel/.mcp.json` | `~/.claude/.mcp.json` (deep-merged) | memory, github, context7, etc. |
 | Version pin | — | `~/.claude/.jarvis-version` | Current applied jarvis SHA (for no-op detection) |
@@ -134,7 +134,7 @@ Universal skills live at `~/.claude/skills/` (source of truth: `.claude-userleve
 | `/verify` | Check pending outcomes: PRs merged, tests pass, extract lessons |
 | `/status` | Project dashboard: git, PRs, issues, CI, risks, goal alerts |
 | `/reflect` | Learning loop — review decisions, check outcomes via PRs |
-| `/end`, `/end-quick` | Session closure (full / 30-sec checkpoint) |
+| `/end` (with `--quick`) | Session closure (full reconciliation / 30-sec checkpoint with `--quick`) |
 | `/research` | Topic investigation, option comparison, autonomous discovery |
 | `/goals` | View / set / update strategic goals |
 | `/self-improve` | Health check + gap analysis + auto-apply low-risk fixes |

@@ -66,7 +66,7 @@ User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
 | Component | Description |
 |-----------|-------------|
 | **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI) + keyword fallback |
-| **12 skills** | `/status`, `/implement`, `/delegate`, `/verify`, `/reflect`, `/research`, `/self-improve`, `/goals`, `/setup-tasks`, `/autonomous-loop`, `/end`, `/end-quick` |
+| **11 skills** | `/status`, `/implement`, `/delegate`, `/verify`, `/reflect`, `/research`, `/self-improve`, `/goals`, `/setup-tasks`, `/autonomous-loop`, `/end` (`--quick` for fast exit) |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
 | **Delegation pipeline** | Issue -> branch -> coding agent -> PR, with verification |
@@ -86,8 +86,7 @@ User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
 | `/goals` | "goals", "priorities" | View, set, update strategic goals in Supabase |
 | `/setup-tasks` | New device bootstrap | Registers all scheduled tasks (idempotent) |
 | `/autonomous-loop` | Daily scheduled tick or manual | Perceives events, evaluates against goals, acts within safety bounds |
-| `/end` | End of session | Behavioral reflection, decision log, memory save, commit |
-| `/end-quick` | Quick exit | Checkpoint + commit only |
+| `/end` | End of session | Behavioral reflection, decision log, memory save, commit. With `--quick`: checkpoint + commit only (~30 sec). |
 
 ## Memory System
 

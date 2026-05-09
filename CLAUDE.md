@@ -82,7 +82,7 @@ Use skills — don't reinvent with raw tools.
 | New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
 | Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
 | End of sprint in redrobot | `/sprint-report` |
-| "end" / "end quick" | `/end` / `/end-quick` |
+| "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill-me` (or `/grill-with-docs` if project has CONTEXT.md / ADRs) |
 | Conversation context → PRD on issue tracker | `/to-prd` |
 | Plan / PRD → vertical-slice issues | `/to-issues` |
