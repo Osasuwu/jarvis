@@ -17,10 +17,12 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 ## Implementation
 
 1. Call `list_scheduled_tasks` to see what's already registered
-2. For each of the 6 required tasks:
+2. **Deregister obsolete tasks** before adding new ones:
+   - If `morning-brief` exists → call `delete_scheduled_task` (or the MCP equivalent) and note `removed: morning-brief (superseded by status-record)`. Without this step, devices that ran `/setup-tasks` before #525 keep firing the dead `/status` task at 07:43 alongside the new `/status-record` at 07:00.
+3. For each of the 6 required tasks:
    - If exists with matching name → skip ("already registered")
    - If missing → `create_scheduled_task` with cron + prompt
-3. Print summary: N created, N skipped (already existed)
+4. Print summary: N created, N skipped, N removed.
 
 ## Tasks to Register
 

@@ -19,15 +19,19 @@ Local path resolution: read `$JARVIS_HOME/config/device.json` for `{repos_path, 
 
 Run in parallel across repos. For each repo, collect:
 
-**Git state** (if local directory exists):
+**Git state** (if local directory exists; `<path>` always quoted to tolerate spaces):
 
 ```bash
-git -C <path> branch --show-current
-git -C <path> status --short
-git -C <path> log --oneline -5
-git -C <path> branch -vv | grep ': gone]' | wc -l   # stale branches
-git -C <path> stash list | wc -l                    # stashes
+git -C "<path>" branch --show-current
+git -C "<path>" status --short                                 # empty stdout → clean=true (any output, incl. untracked-only, → clean=false)
+git -C "<path>" log --oneline -5                               # prose only — surfaced in markdown body, NOT in YAML
+git -C "<path>" for-each-ref --format='%(upstream:track)' refs/heads/ | grep -c '\[gone\]'   # stale branches (locale-independent)
+git -C "<path>" stash list | wc -l                             # stashes
 ```
+
+`git log` output is for the human-readable markdown body only — not part of the v1 YAML contract.
+
+**Preflight** (before any external invocations): `command -v gh >/dev/null 2>&1 || exit 1`. Cron strips PATH; if `gh` isn't resolvable, fail fast rather than silently producing an empty snapshot.
 
 **GitHub state:**
 
@@ -67,11 +71,11 @@ Rates (e.g. failure %) are deliberately not stored — the consumer computes the
 
 ## Step 4 — Write the snapshot
 
-One memory per run. The `memories` table has a unique constraint on `(project, name)` and `_handle_store` upserts via `on_conflict="project,name"` ([handlers/memory.py:892](mcp-memory/handlers/memory.py:892)) — same-day re-runs cleanly overwrite. No manual dedup needed.
+One memory per run. The `memories` table has a unique constraint on `(project, name)` and `_handle_store` (in `mcp-memory/handlers/memory.py`) upserts via `on_conflict="project,name"` — same-day re-runs cleanly overwrite. No manual dedup needed.
 
 Schema:
 
-- **`name`**: `status_snapshot_<YYYY-MM-DD>` (one per UTC date — re-runs same day overwrite).
+- **`name`**: `status_snapshot_<YYYY-MM-DD>` where the date is derived from `generated_at` in **UTC** (not local wall-clock — avoids divergence between name and `generated_at` for non-UTC devices). One per UTC date; re-runs same day overwrite.
 - **`type`**: `reference`
 - **`project`**: `jarvis`
 - **`tags`**: `["status-snapshot", "auto-generated"]`
@@ -117,6 +121,7 @@ global:
   credential_expiry:
     - name: voyageai
       expires_at: 2026-06-15
+  partial: null   # string reason if any data was skipped/rate-limited; null on a complete run
 ```
 
 # Status snapshot — YYYY-MM-DD
@@ -150,6 +155,12 @@ Single line, machine-parseable:
 status_snapshot_<YYYY-MM-DD> stored. <N> repos, <M> open PRs, <K> open issues.
 ```
 
+If any data was skipped (rate-limit, 404, 403, parse error) append a `partial:` clause so cron monitors can detect:
+
+```
+status_snapshot_<YYYY-MM-DD> stored. <N> repos, <M> open PRs, <K> open issues. partial: <reason>
+```
+
 That's it. No table, no analysis, no recommendations.
 
 ## Failure modes
@@ -159,12 +170,24 @@ That's it. No table, no analysis, no recommendations.
 - `mcp__memory__credential_check_expiry` fails or returns nothing → omit `global.credential_expiry`, continue silently.
 - `mcp__memory__memory_store` fails → exit non-zero. Don't try alternative storage; the next cron tick will overwrite.
 - `dependabot/alerts` returns 403 (non-admin scope) → set `security.dependabot_open: null` (not `0`); document this in the YAML body so consumers don't conflate "no alerts" with "no permission".
+- `gh pr list` / `gh issue list` returns 404 (repo gone or renamed) → fall through to the `null`-fields path: emit the repo entry with `prs: null`, `issues: null`, set `global.partial: 404 on owner/repo`.
+- `device.json` exists but is malformed JSON → treat identically to "missing": omit the `device` field, continue. Don't fail the whole run on a single broken config file.
+- `git -C` exits non-zero on a corrupted local repo → emit the repo entry with `branch: null`, `clean: null`, `hygiene: null`, set `global.partial: corrupted local repo: <name>`. GitHub-side fields still gather.
+
+## Derivations not in the YAML field table
+
+A few fields are computed but their derivation is implicit; spelled out here so consumers don't guess:
+
+- **`clean: bool`** — `true` iff `git status --short` produces empty stdout. Untracked-only state still produces output → `clean=false`. Intentional: an untracked `.lock` file is a hygiene signal, not noise.
+- **`branch: string`** — output of `git branch --show-current`; empty on detached-HEAD checkouts.
+- **`device: string`** — `device.json.name`, omitted entirely if `device.json` is missing or unparseable.
 
 ## Schema versioning
 
 `schema_version: 1` is the current contract. Bump to `2` when:
 - Any YAML field is renamed or removed.
 - A field's type changes (count → list, scalar → object, etc.).
+- A threshold constant changes semantically (e.g. `stale_14d` → `stale_30d`) — same field name with new meaning is a breaking change for trend queries.
 
 Adding new optional fields is **not** a version bump. Consumers reading `schema_version: 1` data must tolerate extra unknown fields.
 
