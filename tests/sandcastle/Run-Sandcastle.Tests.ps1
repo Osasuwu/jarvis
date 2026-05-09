@@ -132,6 +132,8 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Mock Write-OutcomeRecord { 'mocked-outcome-id' }
         Mock Get-RepoRoot { $env:TEMP }
         Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k' } }
+        # No real .sandcastle/runtime/* directories during tests.
+        Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-test-$([guid]::NewGuid())" }
     }
 
     It 'records success when both daemons are up' {
@@ -216,6 +218,21 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
                 $LlmMetrics.input_tokens -eq 3000 -and
                 $LlmMetrics.output_tokens -eq 600
             }
+    }
+
+    It 'records failure when npm is not on PATH (npm-not-found surfaces through Record)' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = -1; result = $null; reason = 'npm-not-found' }
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } |
+            Should Throw 'npm-not-found'
+
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $Summary -like '*npm-not-found*' }
     }
 
     It 'records failure and stops loop when sandcastle invocation returns ok=false' {

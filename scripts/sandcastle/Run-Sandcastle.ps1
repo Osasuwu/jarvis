@@ -155,6 +155,14 @@ function Get-RepoRoot {
     }
 }
 
+function New-RuntimeDir {
+    [CmdletBinding()]
+    param([string]$RepoRoot, [string]$Stamp)
+    $dir = Join-Path $RepoRoot ".sandcastle/runtime/$Stamp"
+    New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    return $dir
+}
+
 function Invoke-Sandcastle {
     [CmdletBinding()]
     param(
@@ -183,10 +191,15 @@ function Invoke-Sandcastle {
     if ($Model) { $env:OLLAMA_MODEL      = $Model }
 
     Push-Location -LiteralPath $RepoRoot
+    $cmdNotFound = $false
     try {
-        $combined = & npm run --silent sandcastle 2>&1
-        $exitCode = $LASTEXITCODE
-        $combined | Out-File -FilePath $LogFile -Encoding utf8 -Append
+        try {
+            $combined = & npm run --silent sandcastle 2>&1
+            $exitCode = $LASTEXITCODE
+            $combined | Out-File -FilePath $LogFile -Encoding utf8 -Append
+        } catch [System.Management.Automation.CommandNotFoundException] {
+            $cmdNotFound = $true
+        }
     } finally {
         Pop-Location
         $env:SANDCASTLE_RESULT_FILE    = $prev.SANDCASTLE_RESULT_FILE
@@ -195,6 +208,9 @@ function Invoke-Sandcastle {
         $env:OLLAMA_MODEL              = $prev.OLLAMA_MODEL
     }
 
+    if ($cmdNotFound) {
+        return [pscustomobject]@{ ok = $false; exitCode = -1; result = $null; reason = 'npm-not-found' }
+    }
     if ($exitCode -ne 0) {
         return [pscustomobject]@{ ok = $false; exitCode = $exitCode; result = $null; reason = "exit=$exitCode" }
     }
@@ -267,6 +283,10 @@ function Write-OutcomeRecord {
         pattern_tags      = $tags
         # Token metrics ride in lessons until task_outcomes gains a dedicated
         # llm jsonb column -- slice 4 keeps the schema untouched on purpose.
+        # `lessons` carries token metrics as JSON until task_outcomes gains a
+        # dedicated llm jsonb column. Stable shape consumers can rely on:
+        #   { input_tokens, output_tokens, cache_read_input_tokens,
+        #     cache_creation_input_tokens, model }
         lessons           = ($LlmMetrics | ConvertTo-Json -Compress)
         source_provenance = "sandcastle:watchdog:$RunId"
     }
@@ -299,8 +319,7 @@ function Invoke-Watchdog {
 
     $repoRoot = Get-RepoRoot -Repo $Repo
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
-    $runtimeDir = Join-Path $repoRoot ".sandcastle/runtime/$stamp"
-    New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+    $runtimeDir = New-RuntimeDir -RepoRoot $repoRoot -Stamp $stamp
     $logFile = Join-Path $runtimeDir 'run.log'
     $resultFile = Join-Path $runtimeDir 'result.json'
     $runId = "$Repo-watchdog-$stamp"

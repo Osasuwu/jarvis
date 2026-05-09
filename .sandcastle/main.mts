@@ -47,7 +47,9 @@ const runId =
 // (commits, branch, iterations, usage). Direct stdout capture is too noisy
 // — sandcastle interleaves agent output with orchestrator logs.
 const resultFile = process.env.SANDCASTLE_RESULT_FILE;
-const maxIterations = Number(process.env.SANDCASTLE_MAX_ITERATIONS ?? "1");
+// `??` does not coalesce empty string -- guard against blank env vars
+// silently producing maxIterations=0 (zero-iteration silent run).
+const maxIterations = Math.max(1, Number(process.env.SANDCASTLE_MAX_ITERATIONS) || 1);
 
 const result = await run({
   name: "jarvis-worker",
