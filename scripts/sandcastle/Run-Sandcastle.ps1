@@ -226,6 +226,50 @@ function Invoke-Sandcastle {
 }
 
 # ---------------------------------------------------------------------------
+# Telegram alerting -- infra-down only (slice 6, #544, decision 0c3017c6).
+# Routine partial / agent-side failure / OOM-escalated outcomes stay silent.
+# ---------------------------------------------------------------------------
+
+# Reasons that warrant waking up the principal in chat. Anything else
+# (agent-side exit codes, partial:window-expired, success) stays silent
+# so morning chat carries signal not noise.
+$script:TelegramInfraReasons = @(
+    'docker-down',
+    'ollama-down',
+    'npm-not-found',
+    'no-result-file',
+    'container-launch-fail'
+)
+
+function Test-IsInfraDown {
+    [CmdletBinding()]
+    param([string]$Reason)
+    if (-not $Reason) { return $false }
+    foreach ($r in $script:TelegramInfraReasons) {
+        if ($Reason.StartsWith($r)) { return $true }
+    }
+    return $false
+}
+
+function Send-TelegramAlert {
+    [CmdletBinding()]
+    param(
+        [string]$BotToken,
+        [string]$ChatId,
+        [string]$Message
+    )
+    if (-not $BotToken -or -not $ChatId) {
+        Write-Warning "Telegram token/chat-id missing -- skipping alert."
+        return $null
+    }
+    # 200-char cap is an AC. Truncate defensively; real callers stay well under.
+    if ($Message.Length -gt 200) { $Message = $Message.Substring(0, 197) + '...' }
+    $url = "https://api.telegram.org/bot$BotToken/sendMessage"
+    $body = @{ chat_id = $ChatId; text = $Message }
+    return Invoke-RestMethod -Uri $url -Method Post -Body $body -ErrorAction Stop
+}
+
+# ---------------------------------------------------------------------------
 # Outcome recording -- direct PostgREST insert (anon, RLS-gated by source_provenance)
 # ---------------------------------------------------------------------------
 
@@ -327,18 +371,30 @@ function Invoke-Watchdog {
     $envVars = Read-DotEnvFile -Path (Join-Path $repoRoot '.sandcastle/.env')
     $supabaseUrl = $envVars['SUPABASE_URL']
     $supabaseKey = $envVars['SUPABASE_KEY']
-    if ($env:SUPABASE_URL) { $supabaseUrl = $env:SUPABASE_URL }
-    if ($env:SUPABASE_KEY) { $supabaseKey = $env:SUPABASE_KEY }
+    $tgToken     = $envVars['TELEGRAM_BOT_TOKEN']
+    $tgChatId    = $envVars['TELEGRAM_CHAT_ID']
+    if ($env:SUPABASE_URL)        { $supabaseUrl = $env:SUPABASE_URL }
+    if ($env:SUPABASE_KEY)        { $supabaseKey = $env:SUPABASE_KEY }
+    if ($env:TELEGRAM_BOT_TOKEN)  { $tgToken     = $env:TELEGRAM_BOT_TOKEN }
+    if ($env:TELEGRAM_CHAT_ID)    { $tgChatId    = $env:TELEGRAM_CHAT_ID }
 
     $windowEndDt = Resolve-WindowEnd -WindowEnd $WindowEnd
 
-    function Record([string]$status, [string]$summary, [hashtable]$llm) {
+    function Record([string]$status, [string]$summary, [hashtable]$llm, [string]$reason) {
         try {
             Write-OutcomeRecord -SupabaseUrl $supabaseUrl -SupabaseKey $supabaseKey `
                 -Repo $Repo -Status $status -Summary $summary -LlmMetrics $llm `
                 -RunId $runId | Out-Null
         } catch {
             Write-Warning "outcome_record write failed: $_"
+        }
+        if ((Test-IsInfraDown -Reason $reason)) {
+            $msg = "[sandcastle:$Repo] $reason | run=$runId | log=$logFile"
+            try {
+                Send-TelegramAlert -BotToken $tgToken -ChatId $tgChatId -Message $msg | Out-Null
+            } catch {
+                Write-Warning "telegram alert failed: $_"
+            }
         }
     }
 
@@ -347,7 +403,7 @@ function Invoke-Watchdog {
         Write-Host "[watchdog] Docker not running -- autostarting."
         Start-DockerDesktop
         if (-not (Wait-DockerReady -TimeoutSec $DockerTimeoutSec)) {
-            Record 'failure' "docker-down: daemon not ready within ${DockerTimeoutSec}s" @{}
+            Record 'failure' "docker-down: daemon not ready within ${DockerTimeoutSec}s" @{} 'docker-down'
             throw "docker-down: daemon did not come up within ${DockerTimeoutSec}s"
         }
     }
@@ -357,7 +413,7 @@ function Invoke-Watchdog {
         Write-Host "[watchdog] Ollama not running -- autostarting."
         Start-OllamaServer
         if (-not (Wait-OllamaReady -TimeoutSec $OllamaTimeoutSec)) {
-            Record 'failure' "ollama-down: server not ready within ${OllamaTimeoutSec}s" @{}
+            Record 'failure' "ollama-down: server not ready within ${OllamaTimeoutSec}s" @{} 'ollama-down'
             throw "ollama-down: server did not come up within ${OllamaTimeoutSec}s"
         }
     }
@@ -383,7 +439,7 @@ function Invoke-Watchdog {
 
         if (-not $invocation.ok) {
             $reason = if ($invocation.reason) { $invocation.reason } else { "exit=$($invocation.exitCode)" }
-            Record 'failure' "sandcastle invocation failed: $reason" $totalUsage
+            Record 'failure' "sandcastle invocation failed: $reason" $totalUsage $reason
             throw "sandcastle invocation failed: $reason"
         }
 
@@ -402,13 +458,13 @@ function Invoke-Watchdog {
 
     if ($partialReason) {
         $summary = "partial:$partialReason -- branch=$branch iterations=$iter commits=$($allCommits.Count)"
-        Record 'partial' $summary $totalUsage
+        Record 'partial' $summary $totalUsage ''
         Write-Host "[watchdog] $summary"
         return
     }
 
     $summary = "success -- branch=$branch iterations=$iter commits=$($allCommits.Count)"
-    Record 'success' $summary $totalUsage
+    Record 'success' $summary $totalUsage ''
     Write-Host "[watchdog] $summary"
 }
 
