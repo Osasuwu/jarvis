@@ -140,8 +140,10 @@ Describe 'Send-TelegramAlert' {
         }
         $long = ('x' * 250)
         Send-TelegramAlert -BotToken 't' -ChatId '1' -Message $long | Out-Null
-        $script:captured.text.Length | Should Be 200
-        $script:captured.text        | Should Match '\.\.\.$'
+        # Body is JSON-encoded; parse to inspect the text field.
+        $parsed = $script:captured | ConvertFrom-Json
+        $parsed.text.Length | Should Be 200
+        $parsed.text        | Should Match '\.\.\.$'
     }
 
 }
@@ -312,6 +314,20 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'failure' }
         Assert-MockCalled Send-TelegramAlert -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC: no-result-file surfaces as infra-down and fires Telegram' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 0; result = $null; reason = 'no-result-file' }
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*no-result-file*' }
     }
 
     It 'AC: npm-not-found surfaces as infra-down and fires Telegram' {

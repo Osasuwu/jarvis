@@ -282,9 +282,12 @@ function Send-TelegramAlert {
         $Message = $Message.Substring(0, $maxLen - 3) + '...'
     }
     $url = "https://api.telegram.org/bot$BotToken/sendMessage"
-    $body = @{ chat_id = $ChatId; text = $Message }
+    # JSON-encoded body for parity with Write-OutcomeRecord (the file's other
+    # HTTP call) and explicit content-type. Telegram accepts both, but
+    # consistency makes drift / regressions easier to spot.
+    $body = @{ chat_id = $ChatId; text = $Message } | ConvertTo-Json -Compress
     try {
-        return Invoke-RestMethod -Uri $url -Method Post -Body $body -ErrorAction Stop
+        return Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType 'application/json' -ErrorAction Stop
     } catch {
         # Sanitize before re-raising: Invoke-RestMethod error messages
         # include the request URL with the bot token embedded. Strip it
