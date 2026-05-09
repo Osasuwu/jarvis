@@ -40,7 +40,7 @@ DEFAULT_MANIFEST = "install-manifest.yaml"
 class Action:
     """One planned filesystem action."""
 
-    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "register_mcp_user" | "write_version" | "set_env"
+    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "prune_orphan" | "register_mcp_user" | "write_version" | "set_env"
     source: str | None
     dest: str
     template: bool = False
@@ -97,9 +97,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"manifest {path} did not parse to a mapping")
     if data.get("version") != 1:
-        raise ValueError(
-            f"unsupported manifest version {data.get('version')!r}; expected 1"
-        )
+        raise ValueError(f"unsupported manifest version {data.get('version')!r}; expected 1")
     return data
 
 
@@ -141,9 +139,7 @@ def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
     absolute paths inside the jarvis repo. JSON-aware walk preserves
     structure while only touching string leaves."""
     if isinstance(node, str):
-        return _POSIX_PATH_PATTERN.sub(
-            lambda m: f"{repo_root_posix}/{m.group(1)}/", node
-        )
+        return _POSIX_PATH_PATTERN.sub(lambda m: f"{repo_root_posix}/{m.group(1)}/", node)
     if isinstance(node, list):
         return [_transform_json_paths(x, repo_root_posix) for x in node]
     if isinstance(node, dict):
@@ -189,13 +185,18 @@ def find_legacy_parent_mcp(repo_root: Path, max_depth: int = 4) -> list[Path]:
     return found
 
 
-def _quarantine_dest(path: Path) -> Path:
-    """Compute non-clobbering `.bak.pre-jarvis-migration` destination for `path`."""
-    base = path.with_name(path.name + ".bak.pre-jarvis-migration")
+def _backup_dest(path: Path, label: str) -> Path:
+    """Compute non-clobbering `.bak.<label>` destination for `path`."""
+    base = path.with_name(path.name + f".bak.{label}")
     if not base.exists():
         return base
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    return path.with_name(f"{path.name}.bak.pre-jarvis-migration-{stamp}")
+    return path.with_name(f"{path.name}.bak.{label}-{stamp}")
+
+
+def _quarantine_dest(path: Path) -> Path:
+    """Legacy-MCP quarantine path. See `_backup_dest` for the generic form."""
+    return _backup_dest(path, "pre-jarvis-migration")
 
 
 def _plan_mcp_user_registrations(
@@ -314,9 +315,8 @@ def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
 
 
 def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> str:
-    return (
-        text.replace("{{JARVIS_HOME}}", repo_root.as_posix())
-        .replace("{{CLAUDE_USER_HOME}}", claude_home.as_posix())
+    return text.replace("{{JARVIS_HOME}}", repo_root.as_posix()).replace(
+        "{{CLAUDE_USER_HOME}}", claude_home.as_posix()
     )
 
 
@@ -336,9 +336,7 @@ def template_content(source: Path, repo_root: Path, claude_home: Path) -> bytes:
             return raw
         transformed = _transform_json_paths(data, repo_root.as_posix())
         rendered = json.dumps(transformed, indent=2, ensure_ascii=False) + "\n"
-        return _substitute_placeholders(rendered, repo_root, claude_home).encode(
-            "utf-8"
-        )
+        return _substitute_placeholders(rendered, repo_root, claude_home).encode("utf-8")
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
@@ -354,9 +352,7 @@ def build_plan(
     repo_root: Path,
     target_root_override: str | None = None,
 ) -> Plan:
-    target_root = _expand(
-        target_root_override or manifest.get("target_root", "~/.claude")
-    )
+    target_root = _expand(target_root_override or manifest.get("target_root", "~/.claude"))
     current_sha = current_git_sha(repo_root)
     state, previous_sha = detect_state(target_root, current_sha)
 
@@ -381,14 +377,10 @@ def build_plan(
             src = repo_root / entry["source"]
             install_as = entry.get("install_as")
             if install_as == "user_mcp_registrations":
-                actions.extend(
-                    _plan_mcp_user_registrations(src, repo_root, target_root)
-                )
+                actions.extend(_plan_mcp_user_registrations(src, repo_root, target_root))
                 continue
             if install_as is not None:
-                raise ValueError(
-                    f"manifest group {gid!r}: unknown install_as {install_as!r}"
-                )
+                raise ValueError(f"manifest group {gid!r}: unknown install_as {install_as!r}")
             dest = target_root / entry["dest"]
             # `merge: true` → deep-merge JSON instead of plain overwrite.
             # Preserves user keys not owned by jarvis (M3 #338).
@@ -416,6 +408,24 @@ def build_plan(
                     note=f"include={include}" if include else "",
                 )
             )
+            # Orphan cleanup (#576): if the entry pins an `include` whitelist
+            # and the destination already exists, anything under dest not in
+            # the whitelist is a leftover from a previous install whose
+            # source/manifest no longer lists it. Quarantine each leftover.
+            if include and dest.exists() and dest.is_dir():
+                allowed = set(include)
+                for child in sorted(dest.iterdir()):
+                    if child.name in allowed:
+                        continue
+                    actions.append(
+                        Action(
+                            kind="prune_orphan",
+                            source=str(child),
+                            dest=str(_backup_dest(child, "orphan")),
+                            group=gid,
+                            note=f"absent from {entry['dest']} include whitelist",
+                        )
+                    )
 
     for legacy in find_legacy_parent_mcp(repo_root):
         actions.append(
@@ -449,9 +459,7 @@ def build_plan(
         )
 
     # Backup only when target_root already exists AND we have destructive actions.
-    has_writes = any(
-        a.kind in {"copy_file", "copy_dir", "merge_json"} for a in actions
-    )
+    has_writes = any(a.kind in {"copy_file", "copy_dir", "merge_json"} for a in actions)
     backup_path: Path | None = None
     if target_root.exists() and has_writes:
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -486,9 +494,7 @@ def _copy_dir(
         if allowed is not None and child.name not in allowed:
             continue
         if child.is_dir():
-            _copy_dir(
-                child, dest / child.name, None, template, repo_root, claude_home
-            )
+            _copy_dir(child, dest / child.name, None, template, repo_root, claude_home)
         else:
             _copy_file(child, dest / child.name, template, repo_root, claude_home)
 
@@ -594,11 +600,8 @@ def _set_env(name: str, value: str, platform: str) -> None:
     if platform == "windows":
         result = subprocess.run(["setx", name, value], check=False, capture_output=True)
         if result.returncode != 0:
-            stderr_msg = result.stderr.decode(errors='replace').strip()
-            print(
-                f"setx {name} failed (rc={result.returncode}): {stderr_msg}",
-                file=sys.stderr
-            )
+            stderr_msg = result.stderr.decode(errors="replace").strip()
+            print(f"setx {name} failed (rc={result.returncode}): {stderr_msg}", file=sys.stderr)
     else:
         rc_files = [Path.home() / ".bashrc", Path.home() / ".zshrc"]
         line = f'export {name}="{value}"\n'
@@ -608,8 +611,7 @@ def _set_env(name: str, value: str, platform: str) -> None:
             existing = rc.read_text(encoding="utf-8")
             if f"export {name}=" in existing:
                 continue
-            rc.write_text(existing + "\n# added by jarvis installer\n" + line,
-                          encoding="utf-8")
+            rc.write_text(existing + "\n# added by jarvis installer\n" + line, encoding="utf-8")
 
 
 def _platform() -> str:
@@ -700,6 +702,16 @@ def apply_plan(
             if src.exists():
                 src.rename(dst)
                 print(f"quarantined legacy {src} -> {dst}", file=sys.stderr)
+        elif action.kind == "prune_orphan":
+            src = Path(action.source)
+            dst = Path(action.dest)
+            # `dst` was computed at plan time; recompute if a sibling backup
+            # has appeared since (rare race during long installs).
+            if dst.exists():
+                dst = _backup_dest(src, "orphan")
+            if src.exists():
+                src.rename(dst)
+                print(f"quarantined orphan {src} -> {dst}", file=sys.stderr)
         elif action.kind == "register_mcp_user":
             if register_mcp is not None:
                 payload = json.loads(action.note)
@@ -778,9 +790,7 @@ def _rollback_failed_apply(plan: Plan) -> None:
         rollback(plan.target_root, plan.backup_path)
         return
     if plan.state == "fresh" and plan.target_root.exists():
-        print(
-            f"fresh install failed — removing {plan.target_root}", file=sys.stderr
-        )
+        print(f"fresh install failed — removing {plan.target_root}", file=sys.stderr)
         shutil.rmtree(plan.target_root, ignore_errors=True)
 
 
@@ -812,9 +822,7 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[bool, l
             logs.append(f"FAIL {cmd}: {exc}")
             return False, logs
         if result.returncode != 0:
-            logs.append(
-                f"FAIL {cmd} exit={result.returncode} stderr={result.stderr[:200]}"
-            )
+            logs.append(f"FAIL {cmd} exit={result.returncode} stderr={result.stderr[:200]}")
             return False, logs
         logs.append(f"OK   {cmd}")
     return True, logs
@@ -848,18 +856,19 @@ def format_plan(plan: Plan) -> str:
                 )
             elif a.kind == "copy_dir":
                 extra = f"  {a.note}" if a.note else ""
-                lines.append(
-                    f"  copy_dir   [{a.group:>14}] {a.source} -> {a.dest}{extra}"
-                )
+                lines.append(f"  copy_dir   [{a.group:>14}] {a.source} -> {a.dest}{extra}")
             elif a.kind == "quarantine_file":
                 lines.append(
                     f"  quarantine [{a.group:>14}] {a.source} -> {a.dest}"
                     + (f"  ({a.note})" if a.note else "")
                 )
-            elif a.kind == "register_mcp_user":
+            elif a.kind == "prune_orphan":
                 lines.append(
-                    f"  mcp_user   [{a.group:>14}] claude mcp add -s user {a.dest}"
+                    f"  prune_orph [{a.group:>14}] {a.source} -> {a.dest}"
+                    + (f"  ({a.note})" if a.note else "")
                 )
+            elif a.kind == "register_mcp_user":
+                lines.append(f"  mcp_user   [{a.group:>14}] claude mcp add -s user {a.dest}")
             elif a.kind == "write_version":
                 lines.append(f"  write_ver  -> {a.dest}  sha={a.note[:12]}")
             elif a.kind == "set_env":
