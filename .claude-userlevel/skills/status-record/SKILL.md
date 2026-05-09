@@ -11,9 +11,9 @@ Type 1 skill. Fires on cron, scans tracked repos, writes one structured snapshot
 
 ## Step 1 — Load repos
 
-Read `config/repos.conf` (one `owner/repo` per line, `#` = comment).
+Read `$JARVIS_HOME/config/repos.conf` (one `owner/repo` per line, `#` = comment). The skill runs under cron with no guaranteed CWD, so resolve via `JARVIS_HOME` (set by the installer per `install-manifest.yaml` `env_vars`). If `JARVIS_HOME` is unset, fall back to scanning the running process's repo root via `git rev-parse --show-toplevel` only if the CWD is already inside the jarvis repo; otherwise exit non-zero with a clear error.
 
-Local path resolution: `{device.json.repos_path}/{repo-name}` where `repo-name` is the segment after `/`. If the directory doesn't exist on this device, skip local git checks gracefully — GitHub-side checks still run.
+Local path resolution: read `$JARVIS_HOME/config/device.json` for `{repos_path, name}`. Per-repo local path is `{repos_path}/{repo-name}` where `repo-name` is the segment after `/`. If the directory doesn't exist on this device, skip local git checks gracefully — GitHub-side checks still run. If `device.json` is unreadable, omit `device` from the snapshot YAML and continue (don't fail the run).
 
 ## Step 2 — Gather data per repo (parallel)
 
@@ -42,23 +42,34 @@ gh api "repos/<R>/dependabot/alerts" --jq '[.[] | select(.state=="open")] | leng
 **Global state** (once, not per repo):
 
 ```
-credential_check_expiry(days_ahead=14)
+mcp__memory__credential_check_expiry(days_ahead=14)
 ```
 
-## Step 3 — Compute derived fields
+## Step 3 — Compute derived counts
 
-Per repo:
+Per repo, compute counts only (no rates, no severity tagging, no proposals). Each count maps 1:1 to a YAML field in Step 4:
 
-- **`ci_failure_rate`** — proportion of `failure`/`cancelled` in last 10 runs.
-- **`stale_issues`** — open issues not updated in >14 days, excluding `blocked` label.
-- **`blocked`** — issues/PRs with `blocked` label or `CHANGES_REQUESTED` review.
-- **`review_backlog`** — non-draft PRs awaiting review >2 days.
+| YAML field | Derivation |
+|------------|------------|
+| `ci.failure_count` | runs with `conclusion=failure` in last 10 |
+| `ci.cancelled_count` | runs with `conclusion=cancelled` in last 10 |
+| `prs.open` | total open PRs |
+| `prs.draft` | open PRs with `isDraft=true` |
+| `prs.review_pending_2d` | non-draft open PRs with no review and `updatedAt` >2 days ago |
+| `prs.blocked` | open PRs with `blocked` label or `CHANGES_REQUESTED` review |
+| `issues.open` | total open issues |
+| `issues.stale_14d` | open issues with `updatedAt` >14 days ago, excluding `blocked` label |
+| `issues.blocked` | open issues with `blocked` label |
 
-No thresholds, no severity tagging, no proposals. Just numbers.
+Thresholds (`>14d`, `>2d`) are policy constants. If a future tweak is needed, change here and bump `schema_version`.
+
+Rates (e.g. failure %) are deliberately not stored — the consumer computes them at recall time so policy lives in the reader, not in N days of frozen snapshots.
 
 ## Step 4 — Write the snapshot
 
-One memory per run, upserted by name. Schema:
+One memory per run. The `memories` table has a unique constraint on `(project, name)` and `_handle_store` upserts via `on_conflict="project,name"` ([handlers/memory.py:892](mcp-memory/handlers/memory.py:892)) — same-day re-runs cleanly overwrite. No manual dedup needed.
+
+Schema:
 
 - **`name`**: `status_snapshot_<YYYY-MM-DD>` (one per UTC date — re-runs same day overwrite).
 - **`type`**: `reference`
@@ -86,6 +97,7 @@ repos:
       open: 3
       draft: 1
       review_pending_2d: 1
+      blocked: 0
     issues:
       open: 17
       stale_14d: 4
@@ -143,9 +155,18 @@ That's it. No table, no analysis, no recommendations.
 ## Failure modes
 
 - `repos.conf` unreadable → log error, exit non-zero. The cron run is logged failed.
-- `gh` rate-limit on a single repo → record what was gathered, mark missing fields as `null` in YAML, note in description (`partial: rate-limit on owner/repo`).
-- `credential_check_expiry` fails → omit `global.credential_expiry`, continue.
-- `memory_store` fails → exit non-zero. Don't try alternative storage; the next cron tick will overwrite.
+- `gh` rate-limit on a single repo → record what was gathered, mark missing fields as `null` in YAML, set `global.partial: <reason>`, **and append `partial: <reason>` to the Step 5 stdout line** so cron monitors can detect.
+- `mcp__memory__credential_check_expiry` fails or returns nothing → omit `global.credential_expiry`, continue silently.
+- `mcp__memory__memory_store` fails → exit non-zero. Don't try alternative storage; the next cron tick will overwrite.
+- `dependabot/alerts` returns 403 (non-admin scope) → set `security.dependabot_open: null` (not `0`); document this in the YAML body so consumers don't conflate "no alerts" with "no permission".
+
+## Schema versioning
+
+`schema_version: 1` is the current contract. Bump to `2` when:
+- Any YAML field is renamed or removed.
+- A field's type changes (count → list, scalar → object, etc.).
+
+Adding new optional fields is **not** a version bump. Consumers reading `schema_version: 1` data must tolerate extra unknown fields.
 
 ## Reading these snapshots
 
