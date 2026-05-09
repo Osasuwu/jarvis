@@ -13,6 +13,8 @@ Type 1 skill. Fires on cron, scans tracked repos, writes one structured snapshot
 
 Read `$JARVIS_HOME/config/repos.conf` (one `owner/repo` per line, `#` = comment). The skill runs under cron with no guaranteed CWD, so resolve via `JARVIS_HOME` (set by the installer per `install-manifest.yaml` `env_vars`). If `JARVIS_HOME` is unset, fall back to scanning the running process's repo root via `git rev-parse --show-toplevel` only if the CWD is already inside the jarvis repo; otherwise exit non-zero with a clear error.
 
+**Empty file is an error**: after parsing, if zero repo entries remain, exit non-zero with `error: repos.conf has no entries`. A zero-repo run would silently store an empty snapshot and trend queries would show false zeroes.
+
 Local path resolution: read `$JARVIS_HOME/config/device.json` for `{repos_path, name}`. Per-repo local path is `{repos_path}/{repo-name}` where `repo-name` is the segment after `/`. If the directory doesn't exist on this device, skip local git checks gracefully — GitHub-side checks still run. If `device.json` is unreadable, omit `device` from the snapshot YAML and continue (don't fail the run).
 
 ## Step 2 — Gather data per repo (parallel)
@@ -31,17 +33,26 @@ git -C "<path>" stash list | wc -l                             # stashes
 
 `git log` output is for the human-readable markdown body only — not part of the v1 YAML contract.
 
-**Preflight** (before any external invocations): `command -v gh >/dev/null 2>&1 || exit 1`. Cron strips PATH; if `gh` isn't resolvable, fail fast rather than silently producing an empty snapshot.
+**Preflight** (before any external invocations):
+
+```bash
+command -v gh >/dev/null 2>&1 || { echo "error: gh not in PATH" >&2; exit 1; }
+gh auth status --hostname github.com >/dev/null 2>&1 || { echo "error: gh not authenticated" >&2; exit 1; }
+```
+
+Cron strips PATH; an unauthenticated `gh` silently 401s on every call and produces an empty-but-not-erroring snapshot. Fail fast on either.
 
 **GitHub state:**
 
 ```bash
-gh pr list --repo <R> --state open --json number,title,updatedAt,reviewDecision,isDraft --limit 20
-gh issue list --repo <R> --state open --json number,title,labels,updatedAt --limit 50
+gh pr list --repo <R> --state open --json number,title,createdAt,updatedAt,reviewDecision,isDraft --limit 100
+gh issue list --repo <R> --state open --json number,title,labels,updatedAt --limit 100
 gh run list --repo <R> --json conclusion --limit 10
 gh api "repos/<R>/milestones?state=open&per_page=50" --jq '.[] | {number, title, open_issues, closed_issues, due_on}'
 gh api "repos/<R>/dependabot/alerts" --jq '[.[] | select(.state=="open")] | length' 2>/dev/null
 ```
+
+If any list returns exactly its `--limit` size (or `per_page` for `gh api`), set the corresponding `*.truncated: true` field in the YAML and append `partial: <kind> truncated at <limit> for <repo>` to `global.partial`. Limits are sized for current usage (≤100 open issues per repo); a truncation event is itself a signal worth surfacing.
 
 **Global state** (once, not per repo):
 
@@ -59,7 +70,7 @@ Per repo, compute counts only (no rates, no severity tagging, no proposals). Eac
 | `ci.cancelled_count` | runs with `conclusion=cancelled` in last 10 |
 | `prs.open` | total open PRs |
 | `prs.draft` | open PRs with `isDraft=true` |
-| `prs.review_pending_2d` | non-draft open PRs with no review and `updatedAt` >2 days ago |
+| `prs.review_pending_2d` | non-draft open PRs with no review and `createdAt` >2 days ago (uses `createdAt` not `updatedAt` — the latter resets on every push/comment/label and would mask genuinely-stale review state) |
 | `prs.blocked` | open PRs with `blocked` label or `CHANGES_REQUESTED` review |
 | `issues.open` | total open issues |
 | `issues.stale_14d` | open issues with `updatedAt` >14 days ago, excluding `blocked` label |
@@ -167,7 +178,8 @@ That's it. No table, no analysis, no recommendations.
 
 - `repos.conf` unreadable → log error, exit non-zero. The cron run is logged failed.
 - `gh` rate-limit on a single repo → record what was gathered, mark missing fields as `null` in YAML, set `global.partial: <reason>`, **and append `partial: <reason>` to the Step 5 stdout line** so cron monitors can detect.
-- `mcp__memory__credential_check_expiry` fails or returns nothing → omit `global.credential_expiry`, continue silently.
+- `mcp__memory__credential_check_expiry` fails → omit `global.credential_expiry`, set `global.partial: credential_check_expiry unavailable`. Don't fall silent — an expiring credential is exactly the signal this field exists to surface, so absence-of-data deserves a flag.
+- `mcp__memory__credential_check_expiry` returns zero results → set `global.credential_expiry: []` (empty list, not omitted) so consumers can skip presence checks.
 - `mcp__memory__memory_store` fails → exit non-zero. Don't try alternative storage; the next cron tick will overwrite.
 - `dependabot/alerts` returns 403 (non-admin scope) → set `security.dependabot_open: null` (not `0`); document this in the YAML body so consumers don't conflate "no alerts" with "no permission".
 - `gh pr list` / `gh issue list` returns 404 (repo gone or renamed) → fall through to the `null`-fields path: emit the repo entry with `prs: null`, `issues: null`, set `global.partial: 404 on owner/repo`.
