@@ -99,7 +99,6 @@ groups:
           - "autonomous-loop"
           - "delegate"
           - "end"
-          - "end-quick"
           - "goals"
           - "implement"
           - "reflect"
