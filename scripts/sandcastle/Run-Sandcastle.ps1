@@ -29,6 +29,15 @@ param(
 
     [int]$OllamaTimeoutSec = 30,
 
+    # Slice 5 (#543): multi-tier escalation. -Model is Tier 0; -Tier1Model is
+    # the smaller Ollama fallback on OOM/crash; -Tier2Provider switches to a
+    # remote API (deepseek | claude) on persistent failure. Empty values
+    # disable that tier (the chain still runs as a single-tier loop).
+    [string]$Tier1Model,
+
+    [ValidateSet('', 'deepseek', 'claude')]
+    [string]$Tier2Provider = '',
+
     # Skip the actual sandcastle invocation -- for dry runs and Pester.
     [switch]$NoExecute
 )
@@ -171,7 +180,13 @@ function Invoke-Sandcastle {
         [int]$MaxIterations,
         [string]$ResultFile,
         [string]$LogFile,
-        [string]$RunId
+        [string]$RunId,
+        # Slice 5 (#543) tier overrides. Empty => main.mts falls back to Ollama
+        # defaults via OLLAMA_BASE_URL / "ollama" auth.
+        [string]$BaseUrl,
+        [string]$AuthToken,
+        # Forced-target issue (escalation retries). Empty => agent free-picks.
+        [string]$TargetIssue
     )
 
     # Stale result.json from a prior iteration would otherwise be silently
@@ -180,15 +195,24 @@ function Invoke-Sandcastle {
 
     # Save-and-restore so dot-sourced Pester runs don't bleed values across calls.
     $prev = @{
-        SANDCASTLE_RESULT_FILE    = $env:SANDCASTLE_RESULT_FILE
-        SANDCASTLE_MAX_ITERATIONS = $env:SANDCASTLE_MAX_ITERATIONS
-        SANDCASTLE_RUN_ID         = $env:SANDCASTLE_RUN_ID
-        OLLAMA_MODEL              = $env:OLLAMA_MODEL
+        SANDCASTLE_RESULT_FILE      = $env:SANDCASTLE_RESULT_FILE
+        SANDCASTLE_MAX_ITERATIONS   = $env:SANDCASTLE_MAX_ITERATIONS
+        SANDCASTLE_RUN_ID           = $env:SANDCASTLE_RUN_ID
+        SANDCASTLE_AGENT_MODEL      = $env:SANDCASTLE_AGENT_MODEL
+        SANDCASTLE_AGENT_BASE_URL   = $env:SANDCASTLE_AGENT_BASE_URL
+        SANDCASTLE_AGENT_AUTH_TOKEN = $env:SANDCASTLE_AGENT_AUTH_TOKEN
+        SANDCASTLE_TARGET_ISSUE     = $env:SANDCASTLE_TARGET_ISSUE
+        OLLAMA_MODEL                = $env:OLLAMA_MODEL
     }
     $env:SANDCASTLE_RESULT_FILE    = $ResultFile
     $env:SANDCASTLE_MAX_ITERATIONS = "$MaxIterations"
-    if ($RunId) { $env:SANDCASTLE_RUN_ID = $RunId }
-    if ($Model) { $env:OLLAMA_MODEL      = $Model }
+    if ($RunId)       { $env:SANDCASTLE_RUN_ID           = $RunId }
+    if ($Model)       { $env:SANDCASTLE_AGENT_MODEL      = $Model
+                        $env:OLLAMA_MODEL                = $Model }
+    if ($BaseUrl)     { $env:SANDCASTLE_AGENT_BASE_URL   = $BaseUrl }
+    if ($AuthToken)   { $env:SANDCASTLE_AGENT_AUTH_TOKEN = $AuthToken }
+    # TargetIssue: pass empty string verbatim so retries can clear it.
+    $env:SANDCASTLE_TARGET_ISSUE = "$TargetIssue"
 
     Push-Location -LiteralPath $RepoRoot
     $cmdNotFound = $false
@@ -202,10 +226,14 @@ function Invoke-Sandcastle {
         }
     } finally {
         Pop-Location
-        $env:SANDCASTLE_RESULT_FILE    = $prev.SANDCASTLE_RESULT_FILE
-        $env:SANDCASTLE_MAX_ITERATIONS = $prev.SANDCASTLE_MAX_ITERATIONS
-        $env:SANDCASTLE_RUN_ID         = $prev.SANDCASTLE_RUN_ID
-        $env:OLLAMA_MODEL              = $prev.OLLAMA_MODEL
+        $env:SANDCASTLE_RESULT_FILE      = $prev.SANDCASTLE_RESULT_FILE
+        $env:SANDCASTLE_MAX_ITERATIONS   = $prev.SANDCASTLE_MAX_ITERATIONS
+        $env:SANDCASTLE_RUN_ID           = $prev.SANDCASTLE_RUN_ID
+        $env:SANDCASTLE_AGENT_MODEL      = $prev.SANDCASTLE_AGENT_MODEL
+        $env:SANDCASTLE_AGENT_BASE_URL   = $prev.SANDCASTLE_AGENT_BASE_URL
+        $env:SANDCASTLE_AGENT_AUTH_TOKEN = $prev.SANDCASTLE_AGENT_AUTH_TOKEN
+        $env:SANDCASTLE_TARGET_ISSUE     = $prev.SANDCASTLE_TARGET_ISSUE
+        $env:OLLAMA_MODEL                = $prev.OLLAMA_MODEL
     }
 
     if ($cmdNotFound) {
@@ -223,6 +251,121 @@ function Invoke-Sandcastle {
         return [pscustomobject]@{ ok = $false; exitCode = $exitCode; result = $null; reason = "json-parse-error: $_" }
     }
     return [pscustomobject]@{ ok = $true; exitCode = 0; result = $json; reason = $null }
+}
+
+# ---------------------------------------------------------------------------
+# Tier escalation -- slice 5 (#543, decision f8e27d53)
+# ---------------------------------------------------------------------------
+#
+# Detects model-side resource exhaustion (OOM / model-load failure) so the
+# watchdog can retry on a smaller Ollama model (Tier 1) or escalate to a
+# remote API (Tier 2). False positives are cheap (one extra retry); false
+# negatives downgrade to a generic failure outcome, which is still safe.
+
+# Substrings (case-insensitive) that indicate the agent's model itself fell
+# over due to memory pressure rather than a logic / agent-side error.
+$script:OOMSignatures = @(
+    'out of memory',
+    'oom',
+    'cuda out of memory',
+    'model requires more system memory',
+    'model load failed',
+    'failed to load model',
+    'unable to allocate'
+)
+
+function Test-IsOOM {
+    [CmdletBinding()]
+    param(
+        [string]$Reason,
+        [string]$LogFile
+    )
+    if ($Reason -match '^exit=137$') { return $true }   # SIGKILL on Linux OOM
+    if ($Reason -like 'json-parse-error*') { return $false }  # malformed result, not OOM
+    if (-not $LogFile -or -not (Test-Path -LiteralPath $LogFile)) { return $false }
+    try {
+        $content = Get-Content -LiteralPath $LogFile -Raw -Encoding utf8 -ErrorAction Stop
+    } catch {
+        return $false
+    }
+    if (-not $content) { return $false }
+    foreach ($sig in $script:OOMSignatures) {
+        if ($content -match [regex]::Escape($sig)) { return $true }
+    }
+    return $false
+}
+
+function Get-IssueFromBranch {
+    [CmdletBinding()]
+    param([string]$Branch)
+    if (-not $Branch) { return $null }
+    if ($Branch -match '^(?:feat|fix|chore)/(\d+)\b') { return [int]$Matches[1] }
+    return $null
+}
+
+function Get-IssueLabels {
+    [CmdletBinding()]
+    param([int]$Issue, [string]$RepoSlug)
+    if (-not $Issue) { return @() }
+    try {
+        $args = @('issue', 'view', "$Issue", '--json', 'labels', '--jq', '[.labels[].name]')
+        if ($RepoSlug) { $args += @('--repo', $RepoSlug) }
+        $raw = & gh @args 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { return @() }
+        return ($raw | ConvertFrom-Json)
+    } catch {
+        return @()
+    }
+}
+
+function Add-IssueLabel {
+    [CmdletBinding()]
+    param([int]$Issue, [string]$Label, [string]$RepoSlug)
+    if (-not $Issue -or -not $Label) { return $false }
+    $args = @('issue', 'edit', "$Issue", '--add-label', $Label)
+    if ($RepoSlug) { $args += @('--repo', $RepoSlug) }
+    & gh @args 2>$null | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Resolve-Tier2Config {
+    [CmdletBinding()]
+    param(
+        [string]$Provider,        # 'deepseek' | 'claude' | ''
+        [int]$Issue,
+        [string]$RepoSlug,
+        [hashtable]$EnvVars       # parsed .sandcastle/.env
+    )
+    if (-not $Provider) { return $null }
+
+    # `use-claude-api` label flips Tier 2 from the configured default to
+    # Claude (AC: cron runs never auto-promote to Claude; the label is the
+    # explicit owner gate).
+    $labels = Get-IssueLabels -Issue $Issue -RepoSlug $RepoSlug
+    $effective = if ($labels -contains 'use-claude-api') { 'claude' } else { $Provider }
+
+    function Coalesce([string]$a, [string]$b) {
+        if ([string]::IsNullOrWhiteSpace($a)) { return $b } else { return $a }
+    }
+    switch ($effective) {
+        'deepseek' {
+            return @{
+                Provider  = 'deepseek'
+                Model     = (Coalesce $EnvVars['DEEPSEEK_MODEL']    'deepseek-coder')
+                BaseUrl   = (Coalesce $EnvVars['DEEPSEEK_BASE_URL'] 'https://api.deepseek.com/anthropic')
+                AuthToken = $EnvVars['DEEPSEEK_API_KEY']
+            }
+        }
+        'claude' {
+            return @{
+                Provider  = 'claude'
+                Model     = (Coalesce $EnvVars['CLAUDE_MODEL']    'claude-haiku-4-5-20251001')
+                BaseUrl   = (Coalesce $EnvVars['CLAUDE_BASE_URL'] 'https://api.anthropic.com')
+                AuthToken = $EnvVars['ANTHROPIC_API_KEY']
+            }
+        }
+        default { return $null }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -385,7 +528,10 @@ function Invoke-Watchdog {
         [string]$Model,
         [string]$WindowEnd,
         [int]$DockerTimeoutSec,
-        [int]$OllamaTimeoutSec
+        [int]$OllamaTimeoutSec,
+        # Slice 5 (#543) tier overrides; empty disables the corresponding tier.
+        [string]$Tier1Model,
+        [string]$Tier2Provider
     )
 
     $repoRoot = Get-RepoRoot -Repo $Repo
@@ -446,11 +592,13 @@ function Invoke-Watchdog {
     }
 
     # 3. Iterate (soft-stop on window expiry between iterations)
+    $repoSlug = if ($Repo -eq 'jarvis') { 'Osasuwu/jarvis' } else { '' }
     $totalUsage = @{ input_tokens = 0; output_tokens = 0; cache_read_input_tokens = 0; cache_creation_input_tokens = 0; model = $Model }
     $allCommits = @()
     $branch = $null
     $iter = 0
     $partialReason = $null
+    $tierCompleted = $null    # 'tier0' | 'tier1' | 'tier2:deepseek' | 'tier2:claude'
 
     while ($iter -lt $MaxIterations) {
         if (Test-WindowExpired -WindowEnd $windowEndDt) {
@@ -461,17 +609,70 @@ function Invoke-Watchdog {
         $iter++
         Write-Host "[watchdog] iteration $iter/$MaxIterations"
 
+        # ----- Tier 0: primary Ollama model -----
         $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $Model `
-            -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId
+            -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
+            -TargetIssue ''
+        $tierUsed = 'tier0'
+        $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+        $oomDetected = (-not $invocation.ok) -and (Test-IsOOM -Reason $invocation.reason -LogFile $logFile)
+
+        # ----- Tier 1: smaller Ollama model on OOM/crash -----
+        if (-not $invocation.ok -and $Tier1Model -and $oomDetected) {
+            Write-Host "[watchdog] Tier 0 OOM detected -- escalating to Tier 1 model: $Tier1Model"
+            $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $Tier1Model `
+                -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
+                -TargetIssue ([string]$targetIssue)
+            $tierUsed = 'tier1'
+            if (-not $targetIssue) {
+                $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+            }
+        }
+
+        # ----- Tier 2: remote API on persistent failure -----
+        # Reached when the chain saw a Tier-0 OOM (gate above set $oomDetected)
+        # and the chain still hasn't recovered. Tier 1 may have been skipped
+        # entirely (no $Tier1Model) or it may have run and failed for any
+        # reason -- both qualify per AC #3 ("persistent failure after Tier 1").
+        if (-not $invocation.ok -and $oomDetected -and $Tier2Provider) {
+            $tier2 = Resolve-Tier2Config -Provider $Tier2Provider -Issue $targetIssue `
+                -RepoSlug $repoSlug -EnvVars $envVars
+            if ($tier2 -and $tier2.AuthToken) {
+                Write-Host "[watchdog] Tier 1 failed -- escalating to Tier 2 ($($tier2.Provider): $($tier2.Model))"
+                $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $tier2.Model `
+                    -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
+                    -BaseUrl $tier2.BaseUrl -AuthToken $tier2.AuthToken `
+                    -TargetIssue ([string]$targetIssue)
+                $tierUsed = "tier2:$($tier2.Provider)"
+            } else {
+                Write-Warning "[watchdog] Tier 2 requested but config incomplete (provider=$Tier2Provider, key set=$([bool]$tier2.AuthToken)); skipping."
+            }
+        }
 
         if (-not $invocation.ok) {
             $reason = if ($invocation.reason) { $invocation.reason } else { "exit=$($invocation.exitCode)" }
-            Record 'failure' "sandcastle invocation failed: $reason" $totalUsage $reason
+            # Full chain failure: label the issue if we know which one was attempted.
+            $labelApplied = $false
+            if ($targetIssue -and $repoSlug) {
+                $labelApplied = Add-IssueLabel -Issue $targetIssue -Label 'too-large-for-local' -RepoSlug $repoSlug
+            }
+            $totalUsage.tier = $tierUsed
+            $totalUsage.too_large_for_local = $labelApplied
+            Record 'failure' "sandcastle invocation failed: $reason (tier=$tierUsed issue=$targetIssue label=$labelApplied)" $totalUsage $reason
             throw "sandcastle invocation failed: $reason"
         }
 
+        $tierCompleted = $tierUsed
         $r = $invocation.result
         $branch = $r.branch
+        $totalUsage.tier = $tierCompleted
+        if ($tierCompleted -ne 'tier0') {
+            $totalUsage.model = $r.model    # not always set; best-effort
+            if (-not $totalUsage.model) {
+                # Fall back to tier label so reviewers see which tier won.
+                $totalUsage.model = $tierCompleted
+            }
+        }
         if ($r.commits) { $allCommits += $r.commits }
         foreach ($it in $r.iterations) {
             if ($it.usage) {
@@ -500,5 +701,6 @@ function Invoke-Watchdog {
 if (-not $NoExecute -and $Repo) {
     Invoke-Watchdog -Repo $Repo -MaxIterations $MaxIterations -Model $Model `
         -WindowEnd $WindowEnd -DockerTimeoutSec $DockerTimeoutSec `
-        -OllamaTimeoutSec $OllamaTimeoutSec
+        -OllamaTimeoutSec $OllamaTimeoutSec `
+        -Tier1Model $Tier1Model -Tier2Provider $Tier2Provider
 }
