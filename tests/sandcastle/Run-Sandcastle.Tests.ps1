@@ -105,6 +105,70 @@ Describe 'Read-DotEnvFile' {
     Remove-Item -LiteralPath $tmp -ErrorAction SilentlyContinue
 }
 
+Describe 'Test-IsInfraDown' {
+    It 'returns true for whitelisted infra reasons' {
+        Test-IsInfraDown -Reason 'docker-down'    | Should Be $true
+        Test-IsInfraDown -Reason 'ollama-down'    | Should Be $true
+        Test-IsInfraDown -Reason 'npm-not-found'  | Should Be $true
+        Test-IsInfraDown -Reason 'no-result-file' | Should Be $true
+    }
+
+    It 'matches reasons with trailing detail (StartsWith)' {
+        Test-IsInfraDown -Reason 'docker-down: daemon timed out' | Should Be $true
+    }
+
+    It 'returns false for routine / agent-side reasons' {
+        Test-IsInfraDown -Reason ''                  | Should Be $false
+        Test-IsInfraDown -Reason 'exit=7'            | Should Be $false
+        Test-IsInfraDown -Reason 'window-expired'    | Should Be $false
+        Test-IsInfraDown -Reason 'json-parse-error'  | Should Be $false
+    }
+}
+
+Describe 'Send-TelegramAlert' {
+    It 'returns null without HTTP call when token/chat-id missing' {
+        Mock Invoke-RestMethod { 'should-not-be-called' }
+        Send-TelegramAlert -BotToken '' -ChatId '' -Message 'hello' | Should BeNullOrEmpty
+        Assert-MockCalled Invoke-RestMethod -Times 0 -Exactly -Scope It
+    }
+
+    It 'truncates messages over 200 chars' {
+        $script:captured = $null   # script-scoped; clear before mock so prior tests don't bleed in.
+        Mock Invoke-RestMethod -ParameterFilter { $true } -MockWith {
+            $script:captured = $Body
+            'ok'
+        }
+        $long = ('x' * 250)
+        Send-TelegramAlert -BotToken 't' -ChatId '1' -Message $long | Out-Null
+        # Body is JSON-encoded; parse to inspect the text field.
+        $parsed = $script:captured | ConvertFrom-Json
+        $parsed.text.Length | Should Be 200
+        $parsed.text        | Should Match '\.\.\.$'
+    }
+
+}
+
+Describe 'Format-RedactedError' {
+    It 'replaces every occurrence of the secret with TOKEN-REDACTED' {
+        $err = "Invoke-RestMethod : (404) https://api.telegram.org/botSECRET-TOKEN/sendMessage failed; SECRET-TOKEN exposed twice"
+        $out = Format-RedactedError -Message $err -Secret 'SECRET-TOKEN'
+        $out | Should Match '<TOKEN-REDACTED>'
+        $out | Should Not Match 'SECRET-TOKEN'
+    }
+
+    It 'returns input unchanged when secret is empty (no global wipe)' {
+        $err = 'boom'
+        Format-RedactedError -Message $err -Secret '' | Should Be 'boom'
+    }
+
+    It 'escapes regex metacharacters in the secret' {
+        $err = 'leaked: a.b+c'
+        $out = Format-RedactedError -Message $err -Secret 'a.b+c'
+        $out | Should Match '<TOKEN-REDACTED>'
+        $out | Should Not Match 'a\.b\+c'
+    }
+}
+
 Describe 'Invoke-Watchdog daemon-state matrix' {
     BeforeEach {
         Mock Start-DockerDesktop { }
@@ -131,12 +195,20 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         }
         Mock Write-OutcomeRecord { 'mocked-outcome-id' }
         Mock Get-RepoRoot { $env:TEMP }
-        Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k' } }
-        # No real .sandcastle/runtime/* directories during tests.
+        Mock Read-DotEnvFile {
+            @{
+                SUPABASE_URL       = 'https://x'
+                SUPABASE_KEY       = 'k'
+                TELEGRAM_BOT_TOKEN = 'test-token'
+                TELEGRAM_CHAT_ID   = '12345'
+            }
+        }
+        # No real .sandcastle/runtime/* directories or HTTP calls during tests.
         Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-test-$([guid]::NewGuid())" }
+        Mock Send-TelegramAlert { 'mocked-tg-response' }
     }
 
-    It 'records success when both daemons are up' {
+    It 'records success when both daemons are up (no Telegram alert)' {
         Mock Test-DockerRunning { $true }
         Mock Test-OllamaRunning { $true }
 
@@ -148,9 +220,10 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Invoke-Sandcastle   -Times 1 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'success' }
+        Assert-MockCalled Send-TelegramAlert  -Times 0 -Exactly -Scope It
     }
 
-    It 'records failure: docker-down when Docker never starts' {
+    It 'records failure: docker-down when Docker never starts (fires one Telegram alert)' {
         Mock Test-DockerRunning { $false }
         Mock Test-OllamaRunning { $true }
 
@@ -161,9 +234,19 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Invoke-Sandcastle   -Times 0 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'failure' -and $Summary -like '*docker-down*' }
+        # AC: Docker autostart timeout produces exactly one Telegram message
+        # with run id, repo, and (via log path) timestamp.
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Message -like '*docker-down*' -and
+                $Message -like '*sandcastle:jarvis*' -and
+                $Message -like '*run=jarvis-watchdog-*' -and
+                $Message -like '*log=*run.log*' -and
+                $Message.Length -le 200
+            }
     }
 
-    It 'records failure: ollama-down when Ollama never starts' {
+    It 'records failure: ollama-down when Ollama never starts (fires one Telegram alert)' {
         Mock Test-DockerRunning { $true }
         Mock Test-OllamaRunning { $false }
 
@@ -174,6 +257,8 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Invoke-Sandcastle   -Times 0 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'failure' -and $Summary -like '*ollama-down*' }
+        Assert-MockCalled Send-TelegramAlert  -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*ollama-down*' }
     }
 
     It 'records failure when both daemons time out (Docker fails first, fail-fast)' {
@@ -188,7 +273,7 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Invoke-Sandcastle   -Times 0 -Exactly -Scope It
     }
 
-    It 'soft-stops with partial:window-expired before iteration starts' {
+    It 'soft-stops with partial:window-expired before iteration starts (no Telegram)' {
         Mock Test-DockerRunning { $true }
         Mock Test-OllamaRunning { $true }
 
@@ -199,6 +284,64 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Invoke-Sandcastle   -Times 0 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'partial' -and $Summary -like '*window-expired*' }
+        Assert-MockCalled Send-TelegramAlert  -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC: 5-iteration AFK run with one OOM-escalated success produces zero Telegram calls' {
+        # Slice 5 self-recovers OOM via model fallback. From the watchdog's
+        # vantage point that iteration still returns ok=true. Routine
+        # iteration outcomes (success / partial) MUST stay silent.
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 5 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle  -Times 5 -Exactly -Scope It
+        Assert-MockCalled Send-TelegramAlert -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC: agent-side exit failure (non-infra reason) does NOT fire Telegram' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 7; result = $null; reason = 'exit=7' }
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' }
+        Assert-MockCalled Send-TelegramAlert -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC: no-result-file surfaces as infra-down and fires Telegram' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 0; result = $null; reason = 'no-result-file' }
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*no-result-file*' }
+    }
+
+    It 'AC: npm-not-found surfaces as infra-down and fires Telegram' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = -1; result = $null; reason = 'npm-not-found' }
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*npm-not-found*' }
     }
 
     It 'accumulates commits and usage across multiple successful iterations' {
