@@ -218,6 +218,59 @@ class TestRecordDecisionInsert:
         assert "confidence" not in payload
 
     @pytest.mark.asyncio
+    async def test_intentionally_empty_true_emits_into_payload(self, monkeypatch):
+        """#524 — flag is preserved on the episode payload for /learn rate tracking."""
+        client = _make_client_returning()
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "no recall data available",
+                "reversibility": "reversible",
+                "memories_used": [],
+                "intentionally_empty": True,
+            }
+        )
+
+        all_inserts = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        episode_inserts = [
+            p for p in all_inserts if "kind" in p and "trace_id" not in p
+        ]
+        payload = episode_inserts[0]["payload"]
+        assert payload.get("intentionally_empty") is True
+
+    @pytest.mark.asyncio
+    async def test_intentionally_empty_omitted_when_false(self, monkeypatch):
+        """Default path — flag absent from payload (keeps episodes lean)."""
+        client = _make_client_returning()
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "memories_used": [_UID_A],
+            }
+        )
+
+        all_inserts = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        episode_inserts = [
+            p for p in all_inserts if "kind" in p and "trace_id" not in p
+        ]
+        payload = episode_inserts[0]["payload"]
+        assert "intentionally_empty" not in payload
+
+    @pytest.mark.asyncio
     async def test_db_failure_returns_error_text(self, monkeypatch):
         client = MagicMock()
         client.table.return_value.insert.return_value.execute.side_effect = RuntimeError("boom")

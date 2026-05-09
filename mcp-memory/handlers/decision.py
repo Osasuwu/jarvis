@@ -232,6 +232,8 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
         payload["confidence"] = confidence
     if project:
         payload["project"] = project
+    if bool(args.get("intentionally_empty")):
+        payload["intentionally_empty"] = True
 
     try:
         result = (
