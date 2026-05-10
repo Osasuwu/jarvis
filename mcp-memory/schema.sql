@@ -2619,3 +2619,73 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_last_run_by_actor_mv_uniq
 -- pg_cron schedules registered in the migration file
 -- (cron.schedule(...) is idempotent on (jobname); not duplicated here to
 --  keep schema.sql declarative — the cron jobs live in cron.job).
+
+-- =====================================================================
+-- comm_patterns — communication-pattern instances (#580, ADR 0004)
+-- One row per detected pattern instance. Stop-hook extractor classifies
+-- user→assistant turns and writes here. Cross-device aggregate; no
+-- project pinning (global scope per ADR 0004 §3).
+-- =====================================================================
+
+create table if not exists comm_patterns (
+  id uuid default gen_random_uuid() primary key,
+
+  -- Origin
+  device text not null,
+  session_id text not null,
+  message_idx int not null,
+  captured_at timestamptz not null,
+
+  -- Classifier output
+  primary_label text not null check (primary_label in (
+    'correction_wrong_direction',
+    'correction_incomplete',
+    'affirmation',
+    'affirmation_with_redirect',
+    'preference_directive',
+    'meta_protocol'
+  )),
+  subtype text,
+  confidence numeric(3,2) not null check (confidence >= 0 and confidence <= 1),
+
+  -- Anchor (raw text + redaction marker; ADR 0004 §2)
+  anchor_quote text not null,
+  redacted boolean not null default false,
+
+  -- Day-1 embeddings (Voyage 512-dim, matches `memories.embedding`)
+  embedding vector(512),
+
+  -- Provenance + bookkeeping
+  source_provenance text not null,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_comm_patterns_label_captured
+  on comm_patterns (primary_label, captured_at desc);
+
+create unique index if not exists idx_comm_patterns_dedup
+  on comm_patterns (device, session_id, message_idx);
+
+create index if not exists idx_comm_patterns_no_embedding
+  on comm_patterns (id) where embedding is null;
+
+alter table comm_patterns enable row level security;
+
+create policy "Allow all for authenticated" on comm_patterns
+  for all using (true) with check (true);
+
+-- Per-(device, session) Stop-hook watermark for idempotent extraction.
+-- Extractor reads the watermark, only classifies messages with idx >
+-- last_message_idx, then bumps the watermark in the same transaction.
+create table if not exists comm_patterns_watermark (
+  device text not null,
+  session_id text not null,
+  last_message_idx int not null default -1,
+  updated_at timestamptz default now(),
+  primary key (device, session_id)
+);
+
+alter table comm_patterns_watermark enable row level security;
+
+create policy "Allow all for authenticated" on comm_patterns_watermark
+  for all using (true) with check (true);
