@@ -112,8 +112,7 @@ groups:
           # See .claude-userlevel/skills/AIHERO_CREDIT.md for attribution + adaptations.
           - "caveman"
           - "diagnose"
-          - "grill-me"
-          - "grill-with-docs"
+          - "grill"
           - "improve-codebase-architecture"
           - "tdd"
           - "to-issues"

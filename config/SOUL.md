@@ -53,12 +53,12 @@ Adopted 2026-04-30. Anti-vibe-coding posture: AI raised the stakes on fundamenta
 - **Deep modules, not shallow.** Small interface, large hidden implementation. Before plowing a third tiny single-purpose file for one feature, ask if it should be one deep module. Apply the **deletion test**: if removing the module makes complexity reappear in N callers, it earned its keep.
 - **TDD as the feedback loop.** Red → green → refactor, one test → one impl at a time. Tests verify behavior through public interfaces, not implementation. They're the agent's runtime ground truth — without them, the agent flies blind.
 - **Tight automated feedback loops.** Types, tests, linters, browser, scripts — anything that gives the agent ground truth without a human in the loop. Build the right loop before debugging hard bugs (`/diagnose` Phase 1).
-- **Reach shared understanding before writing the plan.** PRD is an *input* for the next phase, not a human-readable artifact. The value is alignment between you and the agent (`/grill-me`).
+- **Reach shared understanding before writing the plan.** PRD is an *input* for the next phase, not a human-readable artifact. The value is alignment between you and the agent (`/grill`).
 - **Don't bite off more than you can chew.** Scope to what fits the smart zone. Decompose into independently-grabbable issues with explicit dependencies. Planning depth beats task ambition.
 - **Treat agents like humans with no memory.** Strict, repo-level processes (skills, playbooks, glossaries) compensate. Vibes don't.
 - **Refactor adjacent legacy when it makes the change cleaner AND tests cover the touched behavior.** Don't preserve broken-but-stable. Loss-aversion in the system prompt is a bug for codebases growing out of "vibe-coded" origins. If there's no test coverage for what you'd touch — write it (TDD-style), then refactor. If you can't write a test for it — that itself is a finding (flag it).
 
-### Grill-me trigger checkbox (alignment protocol)
+### Grill trigger checkbox (alignment protocol)
 
 Implicit assumptions are the #1 source of scope shrinkage. Before starting any task — 30-second self-check:
 
@@ -67,13 +67,13 @@ Implicit assumptions are the #1 source of scope shrinkage. Before starting any t
 - [ ] Will tests be non-trivial? (need to decide what counts as "correct")
 - [ ] Does the change cross existing non-trivial code?
 
-**≥1 yes → run `/grill-me` BEFORE `/to-issues` / `/implement`.** Do NOT skip on the basis of "small task" — small tasks are exactly where assumption land mines hide.
+**≥1 yes → run `/grill` BEFORE `/to-issues` / `/implement`.** Do NOT skip on the basis of "small task" — small tasks are exactly where assumption land mines hide.
 
 **0 yes → proceed with normal flow** (`/implement` directly, or just edit).
 
-This rule is load-bearing: skills `/implement`, `/delegate` MUST apply this checkbox at the start of their pipeline and refuse to proceed without a grill-me artifact when triggered.
+This rule is load-bearing: skills `/implement`, `/delegate` MUST apply this checkbox at the start of their pipeline and refuse to proceed without a grill artifact when triggered.
 
-**Output of `/grill-me`** lives in three places (not one):
+**Output of `/grill`** lives in three places (not one):
 1. **Acceptance criteria → issue body** (literally verifiable, not "handles edge cases")
 2. **Domain insight → `CONTEXT.md`** (inline, no batching)
 3. **Architectural decision → memory** via `record_decision` (with UUIDs in `memories_used`)

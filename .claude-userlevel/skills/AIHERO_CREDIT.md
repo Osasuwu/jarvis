@@ -1,16 +1,17 @@
 # AI Hero skills — attribution
 
-The following skills are imported from **Matt Pocock's** [`mattpocock/skills`](https://github.com/mattpocock/skills) repository (MIT, 2026):
+The following skills are imported from **Matt Pocock's** [`mattpocock/skills`](https://github.com/mattpocock/skills) repository (MIT, 2026).
+
+**Last upstream sync:** SHA `733d312884b3878a9a9cff693c5886943753a741` (2026-05-10, M37 / #528).
 
 | Skill | Original path | Adaptation |
 |---|---|---|
 | `caveman` | `productivity/caveman` | as-is |
 | `diagnose` | `engineering/diagnose` | as-is |
-| `grill-me` | `productivity/grill-me` | as-is |
-| `grill-with-docs` | `engineering/grill-with-docs` | as-is |
+| `grill` | `engineering/grill-with-docs` | renamed to `grill` (M37 — single grill skill, with-docs flavor; ADR 0001) |
 | `improve-codebase-architecture` | `engineering/improve-codebase-architecture` | as-is (refs CONTEXT.md / docs/adr/ — create lazily) |
 | `tdd` | `engineering/tdd` | as-is (full bundle: deep-modules, interface-design, mocking, refactoring, tests) |
-| `to-issues` | `engineering/to-issues` | replaced `/setup-matt-pocock-skills` ref → "see project CLAUDE.md" |
+| `to-issues` | `engineering/to-issues` | replaced `/setup-matt-pocock-skills` ref → "defined in the project's CLAUDE.md" |
 | `to-prd` | `engineering/to-prd` | same |
 | `triage` | `engineering/triage` | same |
 | `write-a-skill` | `productivity/write-a-skill` | as-is |

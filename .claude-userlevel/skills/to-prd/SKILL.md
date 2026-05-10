@@ -3,18 +3,11 @@ name: to-prd
 description: Turn the current conversation context into a PRD and publish it to the project issue tracker. Use when user wants to create a PRD from the current context.
 ---
 
-This skill takes the current conversation context and codebase understanding and produces a PRD. **Do NOT run a full grill-me here** — that's a separate phase that should already have happened (`/grill-me` upstream). Targeted clarifying questions on specific points (e.g. confirming a module boundary, picking among already-discussed alternatives) are fine and expected — see step 2.
+This skill takes the current conversation context and codebase understanding and produces a PRD. Do NOT interview the user — just synthesize what you already know.
 
-**Decision references are mandatory when a grill preceded.** If the upstream `/grill-me` produced `decision_uuids[]` (in conversation context or `working_state_<project>`), the PRD body MUST list them under a `## Decisions` section. If the conversation looks like a grill but no UUIDs exist, run the grill-me completeness gate first — do not paper over missing `record_decision` calls by burying the *why* in PRD prose. PRD prose decays; queryable decisions don't.
-
-Issue tracker conventions and triage label vocabulary should be defined in the project's CLAUDE.md or context docs (e.g. `CONTEXT.md`, `docs/`). If unclear, ask the user about: which tracker (GitHub Issues, Linear, etc.), which labels exist, and the project's PR/issue process before publishing anything.
+The issue tracker and triage label vocabulary should be defined in the project's CLAUDE.md.
 
 ## Process
-
-0. **Memory & context load.** Before drafting:
-   - Apply the recall protocol from user-level CLAUDE.md `### 1. Recall before deciding` with `<skill-name>=to-prd` and `<topic>=<PRD topic + entities>`. The brief-mode UUIDs feed the `## Decisions` section below.
-   - Read `CONTEXT.md` (full). Glob `docs/adr/*.md` filenames; full-Read only ADRs matching the topic area. PRD vocabulary must align with these.
-   - Apply the staleness rules from user-level CLAUDE.md `### Memory staleness` (auto-flag dead refs, show-and-continue inline `(leaning on: ...)`).
 
 1. Explore the repo to understand the current state of the codebase, if you haven't already. Use the project's domain glossary vocabulary throughout the PRD, and respect any ADRs in the area you're touching.
 
@@ -24,7 +17,7 @@ A deep module (as opposed to a shallow module) is one which encapsulates a lot o
 
 Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
 
-3. Write the PRD using the template below, then publish it to the project issue tracker. Apply the project's **triage-entry label** (the label that signals "needs triage"; commonly `needs-triage`, but use whatever the project's CLAUDE.md / context docs define). If no such mapping exists, ask the user before applying any label.
+3. Write the PRD using the template below, then publish it to the project issue tracker. Apply the `ready-for-agent` triage label - no need for additional triage.
 
 <prd-template>
 
@@ -48,10 +41,6 @@ A LONG, numbered list of user stories. Each user story should be in the format o
 
 This list of user stories should be extremely extensive and cover all aspects of the feature.
 
-## Decisions
-
-References to `decision_made` episode UUIDs from the upstream grill. Format: `- <uuid> — one-line summary`. Omit this section ONLY if no grill preceded. The Implementation Decisions section below describes *what* will be built; this section points to *why it was chosen* in the queryable decision log.
-
 ## Implementation Decisions
 
 A list of implementation decisions that were made. This can include:
@@ -65,6 +54,8 @@ A list of implementation decisions that were made. This can include:
 - Specific interactions
 
 Do NOT include specific file paths or code snippets. They may end up being outdated very quickly.
+
+Exception: if a prototype produced a snippet that encodes a decision more precisely than prose can (state machine, reducer, schema, type shape), inline it within the relevant decision and note briefly that it came from a prototype. Trim to the decision-rich parts — not a working demo, just the important bits.
 
 ## Testing Decisions
 

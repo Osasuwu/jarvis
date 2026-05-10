@@ -2,7 +2,7 @@
 
 **Purpose:** the "what is" of this repo, separate from the "what to do" (`CLAUDE.md`) and "who Jarvis is" (`config/SOUL.md`). Glossary, domain invariants, architectural shape.
 
-This file **grows organically** through `/grill-me` and `/grill-with-docs` sessions — every time an implicit assumption surfaces, it lands here inline. Don't batch updates.
+This file **grows organically** through `/grill` sessions — every time an implicit assumption surfaces, it lands here inline. Don't batch updates.
 
 **Read order at session start:** `CLAUDE.md` (rules) → `config/SOUL.md` (identity) → `CONTEXT.md` (domain). Any ADRs in `docs/adr/` override conflicting glossary entries.
 
@@ -44,7 +44,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Plan / Execute / Clear** — long-session rhythm: write plan, execute against it, dump state to memory, start fresh window for next phase.
 - **Deep module** — small interface, large hidden implementation. Caller knows minimum, gets maximum behavior. Anti-pattern: shallow modules where interface ≈ implementation complexity.
 - **Deletion test** — diagnostic for module depth: imagine deleting it. If complexity vanishes, it was a pass-through (shallow). If complexity reappears across N callers, it earned its keep (deep).
-- **Implicit assumption** — domain rule that's "obvious" to the human but not in writing. Source of scope shrinkage. Surfaced via `/grill-me`, fixed by adding to this file or to AC.
+- **Implicit assumption** — domain rule that's "obvious" to the human but not in writing. Source of scope shrinkage. Surfaced via `/grill`, fixed by adding to this file or to AC.
 
 ### Skill trigger model (ADR-0001)
 
@@ -70,7 +70,7 @@ Where load-bearing rules live, in order of preference:
 
 ## Invariants (domain rules that must always hold)
 
-These are the "obvious" assumptions that previously bit because they weren't written down. Add to this list every time a `/grill-me` session surfaces one.
+These are the "obvious" assumptions that previously bit because they weren't written down. Add to this list every time a `/grill` session surfaces one.
 
 - **Threat-model duality** — defence layers must match the threat model, not stack defensively for "more is better". Sandcastle is already process-isolated by Docker + sterile image; piling host-grade defences on top adds friction without adding security. Cross-link memory `enforcement_layer_matches_threat_model`.
 
@@ -119,7 +119,7 @@ jarvis/
 │   ├── device.json            ← per-device overrides
 │   └── repos.conf             ← list of tracked repos
 ├── .claude-userlevel/         ← canonical source for user-level install
-│   ├── skills/                ← universal skills (grill-me, tdd, implement, ...)
+│   ├── skills/                ← universal skills (grill, tdd, implement, ...)
 │   ├── settings.json          ← hooks pointing at jarvis scripts
 │   └── .mcp.json              ← MCP server registrations
 ├── .claude/                   ← project-scoped only (currently /sprint-report for redrobot)
@@ -148,7 +148,7 @@ jarvis/
 ## How to grow this file
 
 1. **Don't write anything you can't ground in a real session.** Theorising glossary entries upfront produces a stale document.
-2. **Inline updates from `/grill-me`.** When a session surfaces an implicit assumption, add it here in the same session, not "later".
+2. **Inline updates from `/grill`.** When a session surfaces an implicit assumption, add it here in the same session, not "later".
 3. **No state.** This file is for what's *true*, not for what's *current*. Sprint numbers, % done, dates — all in GitHub.
 4. **Trim aggressively.** If a glossary entry hasn't been cited in 3 months and isn't load-bearing — delete it.
 5. **ADRs override.** A specific ADR in `docs/adr/` always beats the generic glossary entry for that area.
@@ -157,6 +157,6 @@ jarvis/
 
 ## Initial seeding rationale (2026-04-30)
 
-This file was seeded from the `/grill-me` session that diagnosed scope shrinkage via implicit assumptions (see decision: `record_decision` episode + memory `grill_me_protocol_session_2026_04_30`). The glossary is **deliberately incomplete** — it covers terms already cited in CLAUDE.md/SOUL.md/memories, plus the workflow vocabulary newly introduced by AI Hero skills. Domain-specific terms (memory subsystem internals, autonomous-loop event taxonomy, etc.) will be added inline as `/grill-me` sessions surface them.
+This file was seeded from the `/grill-me` session (now `/grill` post-#528) that diagnosed scope shrinkage via implicit assumptions (see decision: `record_decision` episode + memory `grill_me_protocol_session_2026_04_30`). The glossary is **deliberately incomplete** — it covers terms already cited in CLAUDE.md/SOUL.md/memories, plus the workflow vocabulary newly introduced by AI Hero skills. Domain-specific terms (memory subsystem internals, autonomous-loop event taxonomy, etc.) will be added inline as `/grill` sessions surface them.
 
 If you find yourself fighting the glossary mid-session — that's the signal to update it, not to override it.

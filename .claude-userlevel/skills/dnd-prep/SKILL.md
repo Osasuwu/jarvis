@@ -1,6 +1,6 @@
 ---
 name: dnd-prep
-description: Prepare D&D 5e worlds, oneshots, and campaign segments using Lazy DM + Fronts/Clocks methodology, with mandatory grill-me causal audit and scaffolding into Petr's Obsidian vault. Use when the user says "подготовь мир/ваншот", "новый сегмент кампейна", "придумай BBEG", "проработай мир X", "/dnd-prep", or describes prepping a D&D session that does not yet exist. Do NOT use for in-session play (that is /dnd), rules questions, character sheets, or generic GM advice (that is /gm-craft).
+description: Prepare D&D 5e worlds, oneshots, and campaign segments using Lazy DM + Fronts/Clocks methodology, with mandatory grill causal audit and scaffolding into Petr's Obsidian vault. Use when the user says "подготовь мир/ваншот", "новый сегмент кампейна", "придумай BBEG", "проработай мир X", "/dnd-prep", or describes prepping a D&D session that does not yet exist. Do NOT use for in-session play (that is /dnd), rules questions, character sheets, or generic GM advice (that is /gm-craft).
 ---
 
 # /dnd-prep — D&D world & oneshot preparation
@@ -11,7 +11,7 @@ Companion to `/dnd` (in-session) and `/gm-craft` (storytelling reference). This 
 
 1. **Meta-setting is invisible to players.** The campaign frame is "worlds inside the Червь parasite." Output that goes to players (handouts, in-fiction text, NPC dialogue) NEVER references this directly. Hints only as world-reactions ("вселенная недовольна", echoes on ascent like Бездна's Depth Strain).
 2. **Causal chain, not "and then".** Every major event must answer: *"why now? why here? what would happen without PCs?"* "Because DM wrote it" → rewrite. Run the audit in Phase 4.
-3. **Grill-me is mandatory** before scaffolding (Phase 1) AND after (Phase 5). Do not skip on "small task" — see SOUL.md grill-me checkbox.
+3. **Grill is mandatory** before scaffolding (Phase 1) AND after (Phase 5). Do not skip on "small task" — see SOUL.md grill trigger checkbox.
 4. **Vault path:** `C:/Users/petrk/OneDrive/Документы/Obsidian Vault/DnD/` (Cyrillic `Документы`, space in `Obsidian Vault`). New worlds go to `DnD/Сюжет/<Имя>/`.
 5. **Petr's DM philosophy** (memory: `dnd_dm_philosophy`): short notes with colour keywords, NPC personality > scripted lines, flexible combat, homebrew-but-accessible. Never produce wall-of-text NPCs.
 6. **Don't rewrite 5e mechanics.** PHB/DMG live in `DnD/Мануалы/`. Reference page numbers when needed.
@@ -36,11 +36,11 @@ Ask only what's missing from the user's prompt:
 
 Do NOT ask everything. Read the prompt; ask only gaps.
 
-### Phase 1 — WHY (grill-me on premise)
+### Phase 1 — WHY (grill on premise)
 
 **Gate: do not proceed without resolved answers to all four.**
 
-Invoke `/grill-me` with these questions (or run the equivalent inline if grill-me is unavailable):
+Invoke `/grill` with these questions (or run the equivalent inline if grill is unavailable):
 
 1. **Why this world?** What does it offer thematically that another wouldn't? What's the *experience* the players walk away with?
 2. **Why this BBEG?** (if any) Their motive must intersect with PCs, not be cosmic-ambient. What do they *want*, what's their *plan*, what's *blocking* them?
@@ -104,9 +104,9 @@ Unacceptable:
 
 Save audit notes inline in `13_Причинная_карта.md`.
 
-### Phase 5 — Final grill-me pass
+### Phase 5 — Final grill pass
 
-Re-invoke `/grill-me` on the written scaffold. Focus areas:
+Re-invoke `/grill` on the written scaffold. Focus areas:
 
 - Are clues redundant or load-bearing on a single roll?
 - Can PCs reach the goal without ever encountering BBEG? (Often a feature, not bug — but be intentional.)
@@ -114,7 +114,7 @@ Re-invoke `/grill-me` on the written scaffold. Focus areas:
 - Does each location pull its weight (≥1 secret OR ≥1 NPC OR ≥1 front-tick)?
 - Strong start passes the "would I want to play this opening?" test?
 
-Patch findings inline. Done when grill-me returns no critical gaps.
+Patch findings inline. Done when grill returns no critical gaps.
 
 ## Output to user
 

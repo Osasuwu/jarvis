@@ -294,7 +294,7 @@ Per stale memory:
 The following files reference `/reflect` as a skill trigger or output consumer. They will need re-routing after #515 and #516 are grilled:
 
 1. **`.claude-userlevel/skills/implement/SKILL.md`** — references `/reflect` as post-implementation checkpoint
-2. **`.claude-userlevel/skills/grill-me/SKILL.md:36`** — line 36 mentions `/reflect` output in decision grilling
+2. **`.claude-userlevel/skills/grill-me/SKILL.md:36`** — line 36 mentions `/reflect` output in decision grilling (skill deleted in #528 — Pocock grill restored to upstream form has no `/reflect` ref; entry preserved here as historical inventory)
 3. **`.claude-userlevel/skills/to-issues/SKILL.md:22`** — line 22 routes outcome verification to `/reflect`
 4. **`.claude-userlevel/skills/to-prd/SKILL.md:18`** — line 18 mentions `/reflect` for lessons extraction
 5. **`scripts/recall-audit.py`** — multiple references to `/reflect` in docstrings + cli help text
