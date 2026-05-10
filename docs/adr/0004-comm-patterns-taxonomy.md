@@ -19,7 +19,7 @@ Six values, with `subtype text` carrying particulars:
 | `affirmation` | Pure approval, no change requested. ("правильно", "perfect".) |
 | `affirmation_with_redirect` | Approval plus nuance or scope adjustment. ("правильно, но изменений не 20, а 3".) |
 | `preference_directive` | Persistent rule the user wants applied going forward — style, terminology, format, cadence, process. (e.g. "называй меня user, не owner".) |
-| `meta_protocol` | A protocol step was skipped, applied wrong, or needs to be applied differently. (e.g. recall missed; `record_decision` not emitted; grill-me trigger ignored; "память может быть неактуальной — лучше переспроси".) |
+| `meta_protocol` | A protocol step was skipped, applied wrong, or needs to be applied differently. (e.g. recall missed; `record_decision` not emitted; grill trigger ignored; "память может быть неактуальной — лучше переспроси".) |
 
 `subtype` is free text and carries the specific subspecies — examples: `repeat_mistake`, `terminology`, `cross_device_miss`, `hallucination`, `scope_shrink`, `recall_missed`, `decision_unrecorded`. `repeat_mistake` is treated as a *modifier* on whichever substantive label fits, not a label of its own — the same correction can recur, and conflating "what kind" with "how-many-th time" inflates the enum.
 

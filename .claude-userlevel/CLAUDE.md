@@ -13,7 +13,7 @@ Skills consume this section instead of restating it. Three load-bearing rules: *
 This is the **Tier 1** layer (soft prompt rule). Backstops:
 
 - **Tier 2 — hooks.** Mechanical enforcement that can't be skipped (e.g. `PreToolUse` on `record_decision` blocks calls with empty `memories_used`).
-- **Tier 3 — skill-specific gates.** Things that genuinely belong to one skill (e.g. `/grill-me`'s completeness gate, `/implement`'s already-done audit). Stay in the skill file.
+- **Tier 3 — skill-specific gates.** Things that genuinely belong to one skill (e.g. `/grill`'s completeness gate, `/implement`'s already-done audit). Stay in the skill file.
 
 If the empty-`memories_used` rate rises after centralising here, the relevant rule escalates Tier 1 → Tier 2 (issue #532 tracks this).
 

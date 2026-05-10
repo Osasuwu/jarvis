@@ -132,7 +132,7 @@ Jarvis is built and operated under the AI Hero / Pocock stance: AI raised the st
 - **Deep modules.** Small interface, large hidden implementation. Apply the deletion test before adding a third small adjacent file.
 - **TDD as the agent's runtime ground truth.** Tests verify behavior through public interfaces. Without them, the agent flies blind.
 - **Tight automated feedback loops.** Types, tests, linters, scripts — anything that gives the agent ground truth without a human in the loop.
-- **Reach shared understanding before writing the plan.** PRD is an *input* for the next phase, not a human-readable artifact (`/grill-me`).
+- **Reach shared understanding before writing the plan.** PRD is an *input* for the next phase, not a human-readable artifact (`/grill`).
 - **Don't bite off more than you can chew.** Decompose into independently-grabbable issues. Planning depth beats task ambition.
 - **Treat agents like humans with no memory.** Strict, repo-level processes (skills, playbooks, glossaries) compensate. Vibes don't.
 

@@ -3,7 +3,7 @@
 Three-way split:
 - **`CLAUDE.md`** (this file) — *rules*: process, conventions, skill routing, what to do, what NOT to do.
 - **`config/SOUL.md`** — *identity*: personality, behavior, judgment calibration. Loaded by SessionStart hook. Per-agent at multi-agent rollout (currently single).
-- **`CONTEXT.md`** — *domain model*: glossary, invariants, architectural shape. Grows inline through `/grill-me`. Loaded by SessionStart hook.
+- **`CONTEXT.md`** — *domain model*: glossary, invariants, architectural shape. Grows inline through `/grill`. Loaded by SessionStart hook.
 
 ## Who you work for
 
@@ -83,7 +83,7 @@ Use skills — don't reinvent with raw tools.
 | Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
 | End of sprint in redrobot | `/sprint-report` |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
-| Stress-test plan / "grill me" / before non-trivial implementation | `/grill-me` (or `/grill-with-docs` if project has CONTEXT.md / ADRs) |
+| Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
 | Conversation context → PRD on issue tracker | `/to-prd` |
 | Plan / PRD → vertical-slice issues | `/to-issues` |
 | Build feature / fix bug test-first ("red-green-refactor") | `/tdd` |
@@ -97,8 +97,8 @@ Use skills — don't reinvent with raw tools.
 Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
-- **Grill-me trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill-me` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
-- **`/grill-me` → `/to-prd` → `/to-issues` → `/tdd`** is the canonical chain for new features. Each phase in a fresh session if context is heavy.
+- **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
+- **`/grill` → `/to-prd` → `/to-issues` → `/tdd`** is the canonical chain for new features. Each phase in a fresh session if context is heavy.
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
 ## Autonomous work
@@ -128,7 +128,7 @@ After a milestone (sprint) closes, run `/improve-codebase-architecture` in a **f
 
 **Cadence:** semantic, not temporal. If you don't close a milestone for 3 weeks, the sweep waits — that's correct.
 
-**Output discipline:** 1–2 actionable refactors → child issues attached to the next milestone via grill-me chain. Rest goes to `.out-of-scope/<topic>.md` with reason. Don't try to action everything.
+**Output discipline:** 1–2 actionable refactors → child issues attached to the next milestone via grill chain. Rest goes to `.out-of-scope/<topic>.md` with reason. Don't try to action everything.
 
 ### Fix > track for trivial reversible (#428)
 

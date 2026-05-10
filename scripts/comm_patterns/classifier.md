@@ -31,7 +31,7 @@ non-null label; low-confidence noise wastes budget downstream.
 | `affirmation` | Pure approval, no change requested. ("правильно", "perfect".) |
 | `affirmation_with_redirect` | Approval plus nuance or scope adjustment. ("правильно, но изменений не 20, а 3".) |
 | `preference_directive` | Persistent rule the user wants applied going forward — style, terminology, format, cadence, process. (e.g. "называй меня user, не owner".) |
-| `meta_protocol` | A protocol step was skipped, applied wrong, or needs to be applied differently. (e.g. recall missed; `record_decision` not emitted; grill-me trigger ignored.) |
+| `meta_protocol` | A protocol step was skipped, applied wrong, or needs to be applied differently. (e.g. recall missed; `record_decision` not emitted; grill trigger ignored.) |
 
 `subtype` is free text. Useful examples (not exhaustive): `repeat_mistake`,
 `terminology`, `cross_device_miss`, `hallucination`, `scope_shrink`,
