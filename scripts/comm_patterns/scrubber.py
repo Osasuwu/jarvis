@@ -22,11 +22,15 @@ _SECRET_PATTERNS: list[tuple[str, str]] = [
     (r"sk-ant-[a-zA-Z0-9_-]{20,}", "anthropic-key"),
     (r"gh[ps]_[A-Za-z0-9_]{36,}", "github-token"),
     (r"github_pat_[A-Za-z0-9_]{22,}", "github-pat"),
-    (r"eyJ[A-Za-z0-9_-]{30,}\.[A-Za-z0-9_-]{10,}", "jwt"),
+    # JWT: three dot-separated base64url segments. Two-segment shape leaks
+    # the signature (review #584 finding 8).
+    (r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "jwt"),
     (r"pa-[A-Za-z0-9_-]{30,}", "voyage-key"),
     (r"\d{8,10}:[A-Za-z0-9_-]{35}", "telegram-token"),
     (r"fc-[A-Za-z0-9]{30,}", "firecrawl-key"),
-    (r"sk-[A-Za-z0-9]{20,}", "openai-key"),
+    # Negative lookahead avoids mis-labelling Anthropic keys when patterns
+    # are reordered (review #584 finding 11).
+    (r"sk-(?!ant-)[A-Za-z0-9]{20,}", "openai-key"),
     (r"xox[bpras]-[A-Za-z0-9-]{10,}", "slack-token"),
     (r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----", "private-key"),
     # Generic credential assignment — same shape as secret-scanner.py.
@@ -52,10 +56,12 @@ _USER_PATH_RE = re.compile(
 )
 
 # Bare ENV_VAR=value (e.g. dotenv leak that didn't match the credential
-# regex above because the value is short). Matches assignments where the
-# value looks tokenish — we don't substitute random shell scripts.
+# regex above because the value is short). Char class is permissive on the
+# value side so connection strings like ``DATABASE_URL=postgres://u:p@h/db``
+# are caught — anything non-whitespace + non-comment counts (review #584
+# finding 9).
 _DOTENV_RE = re.compile(
-    r"(?m)^(?P<key>[A-Z][A-Z0-9_]{2,})=(?P<val>[A-Za-z0-9_/+.\-=]{12,})\s*$",
+    r"(?m)^(?P<key>[A-Z][A-Z0-9_]{2,})=(?P<val>[^\s#]{12,})\s*$",
 )
 
 _COMPILED_SECRETS: list[tuple[re.Pattern[str], str]] = [

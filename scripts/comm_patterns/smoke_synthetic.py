@@ -21,13 +21,6 @@ from .extractor import extract_session
 from .store import InMemoryStore
 
 
-SAMPLE_TURNS = [
-    ("did X for you", "user"),
-    ("hi, can you help with this", None),  # bootstrap user (will be the first 'user')
-    ("done", "asst"),
-]
-
-
 def _build_transcript(tmp: Path) -> Path:
     fp = tmp / "synthetic.jsonl"
     rows = [

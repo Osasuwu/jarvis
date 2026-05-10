@@ -69,11 +69,32 @@ def test_planted_api_key_shape_is_redacted_github_token():
 
 
 def test_planted_jwt_is_redacted():
-    fake_jwt = "eyJ" + "A" * 40 + "." + "B" * 20
+    # Real JWTs have three segments. Two-segment shape leaks the signature
+    # so the scrubber explicitly requires the third segment to match.
+    fake_jwt = "eyJ" + "A" * 40 + "." + "B" * 20 + "." + "C" * 30
     text = f"Authorization: Bearer {fake_jwt}"
     out, redacted = scrub(text)
     assert redacted is True
     assert fake_jwt not in out
+
+
+def test_two_segment_jwt_is_not_redacted():
+    """Sentinel: only three-segment shape matches. If this ever flips
+    silently, real JWTs lose their signature segment."""
+    two_segment = "eyJ" + "A" * 40 + "." + "B" * 20
+    out, redacted = scrub(two_segment)
+    assert redacted is False
+    assert out == two_segment
+
+
+def test_sk_ant_key_is_labeled_anthropic_not_openai():
+    """Negative-lookahead guard against the openai pattern stealing
+    Anthropic keys when the list is reordered."""
+    fake_key = "sk-ant-" + "a" * 40
+    out, redacted = scrub(fake_key)
+    assert redacted is True
+    assert "[REDACTED:secret:anthropic-key]" in out
+    assert "openai-key" not in out
 
 
 def test_dotenv_shaped_value_is_redacted():

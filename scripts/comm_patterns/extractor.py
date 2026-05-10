@@ -82,7 +82,10 @@ def extract_session(
         "turns_classified": 0,
         "rows_written": 0,
         "low_confidence_skipped": 0,
+        # Definitive "model says no pattern" — watermark advances.
         "no_pattern_skipped": 0,
+        # Transient classifier failure (network, parse) — watermark stays put.
+        "classifier_errors": 0,
         "watermark_before": -1,
         "watermark_after": -1,
     }
@@ -112,7 +115,7 @@ def extract_session(
         #   * result["primary_label"] is None — definitive "no pattern".
         #     Advance the watermark; the model gave its answer.
         if result is None:
-            stats["no_pattern_skipped"] += 1
+            stats["classifier_errors"] += 1
             continue
         if turn.message_idx > new_watermark:
             new_watermark = turn.message_idx

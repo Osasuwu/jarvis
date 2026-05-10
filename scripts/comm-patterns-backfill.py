@@ -76,10 +76,13 @@ def _synth_session_id(file_path: Path, category: str, idx: int) -> str:
 def _captured_at_from_file(payload: dict) -> str:
     rng = payload.get("date_range") or []
     if rng and rng[0]:
-        # store as midnight UTC of the start date.
+        # Validate the date — old cache files may have free-form strings or
+        # null in slot 0; an f-string would silently emit "NoneT00:00:00..."
+        # (review #584 finding 6).
         try:
+            datetime.fromisoformat(str(rng[0]))
             return f"{rng[0]}T00:00:00+00:00"
-        except Exception:
+        except (TypeError, ValueError):
             pass
     return datetime.now(timezone.utc).isoformat()
 

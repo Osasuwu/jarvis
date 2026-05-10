@@ -36,10 +36,16 @@ DEFAULT_TIMEOUT_S = 60
 
 _PROMPT_PATH = Path(__file__).parent / "classifier.md"
 _JSON_OBJ_RE = re.compile(r"\{[^{}]*\}", re.S)
+_PROMPT_CACHE: str | None = None
 
 
 def _load_prompt_template() -> str:
-    return _PROMPT_PATH.read_text(encoding="utf-8")
+    """Read classifier.md once per process. The Stop hook is a fresh process
+    each time so the cache only matters for backfill / smoke runs."""
+    global _PROMPT_CACHE
+    if _PROMPT_CACHE is None:
+        _PROMPT_CACHE = _PROMPT_PATH.read_text(encoding="utf-8")
+    return _PROMPT_CACHE
 
 
 def _render_prompt(user_text: str, prev_assistant_text: str) -> str:

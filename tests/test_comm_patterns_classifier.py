@@ -70,14 +70,23 @@ def test_normalize_result_handles_null_label():
     assert out["primary_label"] is None
 
 
-def test_valid_labels_match_adr_0004_enum():
+def test_valid_labels_match_schema_check_constraint():
     """Sentinel: the enum on the Python side has to track schema.sql.
-    If this fails, ADR 0004 / schema / classifier are out of sync."""
-    assert VALID_LABELS == {
-        "correction_wrong_direction",
-        "correction_incomplete",
-        "affirmation",
-        "affirmation_with_redirect",
-        "preference_directive",
-        "meta_protocol",
-    }
+    If this fails, ADR 0004 / schema / classifier are out of sync.
+    Reads schema.sql directly so the test can't drift from the table
+    definition."""
+    schema = (Path(__file__).resolve().parent.parent / "mcp-memory" / "schema.sql").read_text(
+        encoding="utf-8"
+    )
+    # Walk the comm_patterns CREATE TABLE block.
+    block_start = schema.index("create table if not exists comm_patterns")
+    block = schema[block_start : block_start + 2000]
+    # primary_label CHECK has the six allowed values quoted.
+    schema_labels = set(re.findall(r"'([a-z_]+)'", block))
+    assert VALID_LABELS == schema_labels
+
+
+# Imports needed by the schema sentinel — keep at the bottom so the
+# top-of-file remains a simple "test the public API" view.
+import re  # noqa: E402
+from pathlib import Path  # noqa: E402

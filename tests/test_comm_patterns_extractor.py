@@ -234,6 +234,43 @@ def test_extractor_skips_sandcastle_cwd(tmp_path: Path):
     assert store.rows == []
 
 
+def test_parse_turns_filters_sidechain_rows(tmp_path: Path):
+    """Sidechain rows are subagent traffic — they must not contaminate
+    pattern aggregates (review #584 finding 12). Highest data-corruption
+    risk because subagent prompts often contain user-style strings."""
+    fp = tmp_path / "session.jsonl"
+    _write_jsonl(
+        fp,
+        [
+            _asst_msg("hi"),
+            {**_user_msg("subagent inner prompt"), "isSidechain": True},
+            _user_msg("real user reply"),
+        ],
+    )
+    turns = parse_turns(fp)
+    assert [t.user_text for t in turns] == ["real user reply"]
+
+
+def test_parse_turns_filters_filter_variants(tmp_path: Path):
+    """Each filter variant in _is_real_user_message has its own bypass risk
+    (review #584 finding 14). Cover all four shapes."""
+    fp = tmp_path / "session.jsonl"
+    _write_jsonl(
+        fp,
+        [
+            _asst_msg("a"),
+            _user_msg("<command-name>/foo</command-name>"),
+            _user_msg("<scheduled-task>x</scheduled-task>"),
+            _user_msg("[Request interrupted by user]"),
+            _user_msg("Base directory for this skill: C:\\foo"),
+            _user_msg("This session is being continued from a previous conversation"),
+            _user_msg("real question"),
+        ],
+    )
+    turns = parse_turns(fp)
+    assert [t.user_text for t in turns] == ["real question"]
+
+
 def test_extractor_skips_session_with_no_user_messages(tmp_path: Path):
     """Headless / scripted runs may have only assistant text + tool results."""
     fp = tmp_path / "s.jsonl"
@@ -313,6 +350,26 @@ def test_low_confidence_is_skipped_but_watermark_advances(tmp_path: Path):
     assert store.get_watermark("dev1", "low") == 1
 
 
+def test_confidence_boundary_at_threshold_writes_row(tmp_path: Path):
+    """Boundary: confidence == 0.5 should pass — the threshold is strict <
+    (review #584 finding 15). Without an explicit test, a refactor to ≤
+    silently flips the contract."""
+    fp = tmp_path / "s.jsonl"
+    _write_jsonl(fp, [_asst_msg("a"), _user_msg("ладно")])
+    store = InMemoryStore()
+    stats = extract_session(
+        device="dev1",
+        session_id="boundary",
+        transcript_path=fp,
+        cwd="/Users/petrk/GitHub/jarvis",
+        store=store,
+        classify_fn=_make_classifier(label="affirmation", confidence=0.5),
+        source_provenance="extractor:stop-hook",
+    )
+    assert stats["rows_written"] == 1
+    assert stats["low_confidence_skipped"] == 0
+
+
 def test_null_label_is_skipped_but_watermark_advances(tmp_path: Path):
     fp = tmp_path / "s.jsonl"
     _write_jsonl(fp, [_asst_msg("a"), _user_msg("just a question")])
@@ -340,7 +397,7 @@ def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
     treated as transient — the watermark stays put so the next run retries.
     Distinct from a result with primary_label=None, which is definitive."""
     fp = tmp_path / "s.jsonl"
-    _write_jsonl(fp, [_asst_msg("a"), _user_msg("x")])
+    _write_jsonl(fp, [_asst_msg("a"), _user_msg("xx")])
     store = InMemoryStore()
     stats = extract_session(
         device="dev1",
@@ -352,5 +409,9 @@ def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
         source_provenance="extractor:stop-hook",
     )
     assert stats["rows_written"] == 0
+    # Counters distinguish transient (classifier_errors) from definitive
+    # (no_pattern_skipped) — same shape as backfill.
+    assert stats["classifier_errors"] == 1
+    assert stats["no_pattern_skipped"] == 0
     # Watermark stays at -1 (the initial value) so the next run retries.
     assert store.get_watermark("dev1", "netfail") == -1

@@ -23,16 +23,20 @@ from .classifier import call_ollama
 from .extractor import extract_session
 from .store import InMemoryStore
 
-DEFAULT_PROJECT_DIR = (
-    Path.home() / ".claude" / "projects" / "C--Users-petrk-GitHub-jarvis"
-)
+PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 
 
 def _pick_default_transcript() -> Path | None:
-    if not DEFAULT_PROJECT_DIR.exists():
+    """Pick the most-recent jsonl across all CCD project dirs on this device.
+
+    The directory slug differs per device (Windows vs Linux paths produce
+    different mangled names), so glob across all of them by mtime instead
+    of hardcoding one (review #584 finding 5).
+    """
+    if not PROJECTS_ROOT.exists():
         return None
     files = sorted(
-        DEFAULT_PROJECT_DIR.glob("*.jsonl"),
+        PROJECTS_ROOT.glob("*/*.jsonl"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )

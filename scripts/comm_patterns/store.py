@@ -96,6 +96,9 @@ class InMemoryStore:
     def __init__(self) -> None:
         self.rows: list[dict[str, Any]] = []
         self.watermarks: dict[tuple[str, str], int] = {}
+        # Mirror the live unique-index for O(1) dedup checks; the linear
+        # scan was fine per session but quadratic on backfill --dry-run.
+        self._row_keys: set[tuple[str, str, int]] = set()
 
     def get_watermark(self, device: str, session_id: str) -> int:
         return self.watermarks.get((device, session_id), -1)
@@ -104,9 +107,8 @@ class InMemoryStore:
         self.watermarks[(device, session_id)] = last_message_idx
 
     def insert_row(self, row: dict[str, Any]) -> None:
-        # Mirror the live unique-index dedup so tests catch double-inserts.
         key = (row["device"], row["session_id"], row["message_idx"])
-        for existing in self.rows:
-            if (existing["device"], existing["session_id"], existing["message_idx"]) == key:
-                return
+        if key in self._row_keys:
+            return
+        self._row_keys.add(key)
         self.rows.append(dict(row))
