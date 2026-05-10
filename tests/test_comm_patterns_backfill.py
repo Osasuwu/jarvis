@@ -131,3 +131,48 @@ def test_example_to_user_text_falls_back_to_snippet():
 def test_example_to_user_text_empty_when_neither_present():
     user, prev = _mod._example_to_user_text({"trigger": "t"})
     assert user == ""
+
+
+def test_run_uses_shared_confidence_threshold():
+    """Backfill must use the same threshold as the live extractor — drift
+    silently changes which historical patterns get re-classified into
+    the table."""
+    from comm_patterns.extractor import CONFIDENCE_THRESHOLD as live_threshold
+    # backfill imports it from extractor; if anyone hardcodes a different
+    # number, this assertion catches the drift.
+    assert _mod.CONFIDENCE_THRESHOLD == live_threshold
+
+
+def test_run_max_examples_caps_processing(tmp_path: Path, monkeypatch):
+    """--max-examples bounds the total Ollama-call budget across all files."""
+    cache_root = tmp_path / "cache"
+    sub = cache_root / "2026-04-30_X"
+    sub.mkdir(parents=True)
+    payload = {
+        "device": "X",
+        "date_range": ["2026-04-01", "2026-04-30"],
+        "correctives": {
+            "perm": {"examples": [
+                {"trigger": "t", "correction": f"c{i}"} for i in range(10)
+            ]}
+        },
+    }
+    (sub / "X_patterns.json").write_text(_dumps_json(payload), encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def fake_classify(user_text, prev):
+        calls["n"] += 1
+        return {"primary_label": "affirmation", "subtype": None,
+                "confidence": 0.9, "anchor_quote": user_text}
+
+    monkeypatch.setattr(_mod, "call_ollama", fake_classify)
+    stats = _mod.run(dry_run=True, cache_root=cache_root, max_examples=3)
+    assert calls["n"] == 3
+    assert stats["rows_written"] == 3
+
+
+# Helper kept here so the import block stays stable.
+def _dumps_json(obj) -> str:
+    import json as _json
+    return _json.dumps(obj, ensure_ascii=False)

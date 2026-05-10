@@ -22,14 +22,14 @@ _SECRET_PATTERNS: list[tuple[str, str]] = [
     (r"sk-ant-[a-zA-Z0-9_-]{20,}", "anthropic-key"),
     (r"gh[ps]_[A-Za-z0-9_]{36,}", "github-token"),
     (r"github_pat_[A-Za-z0-9_]{22,}", "github-pat"),
-    # JWT: three dot-separated base64url segments. Two-segment shape leaks
-    # the signature (review #584 finding 8).
+    # JWT — must match all three dot-separated segments; two-segment shape
+    # would leave the signature plaintext.
     (r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+", "jwt"),
     (r"pa-[A-Za-z0-9_-]{30,}", "voyage-key"),
     (r"\d{8,10}:[A-Za-z0-9_-]{35}", "telegram-token"),
     (r"fc-[A-Za-z0-9]{30,}", "firecrawl-key"),
-    # Negative lookahead avoids mis-labelling Anthropic keys when patterns
-    # are reordered (review #584 finding 11).
+    # Negative lookahead so this can't swallow ``sk-ant-*`` Anthropic keys
+    # if the list is ever reordered alphabetically.
     (r"sk-(?!ant-)[A-Za-z0-9]{20,}", "openai-key"),
     (r"xox[bpras]-[A-Za-z0-9-]{10,}", "slack-token"),
     (r"-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----", "private-key"),
@@ -55,13 +55,16 @@ _USER_PATH_RE = re.compile(
     r"(?P<prefix>(?:[A-Za-z]:[\\/]Users[\\/])|(?:/Users/)|(?:/home/))(?P<user>[A-Za-z0-9_.][A-Za-z0-9_.-]*)",
 )
 
-# Bare ENV_VAR=value (e.g. dotenv leak that didn't match the credential
-# regex above because the value is short). Char class is permissive on the
-# value side so connection strings like ``DATABASE_URL=postgres://u:p@h/db``
-# are caught — anything non-whitespace + non-comment counts (review #584
-# finding 9).
+# Bare ENV_VAR=value — catches dotenv leaks that the credential-named
+# regex above misses (var name is generic). Permissive char class on the
+# value so connection strings like ``DATABASE_URL=postgres://u:p@h/db``
+# get scrubbed.
+#
+# Threshold: 20 chars on the value. Lower threshold (12) was a false-
+# positive trap — it ate ``VERSION=1.2.3.4.5.6.7.8`` and ``BUILD=20260510``
+# in CI transcripts, degrading anchor quality with no security gain.
 _DOTENV_RE = re.compile(
-    r"(?m)^(?P<key>[A-Z][A-Z0-9_]{2,})=(?P<val>[^\s#]{12,})\s*$",
+    r"(?m)^(?P<key>[A-Z][A-Z0-9_]{2,})=(?P<val>[^\s#]{20,})\s*$",
 )
 
 _COMPILED_SECRETS: list[tuple[re.Pattern[str], str]] = [

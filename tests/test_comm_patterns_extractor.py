@@ -392,6 +392,93 @@ def test_null_label_is_skipped_but_watermark_advances(tmp_path: Path):
     assert store.get_watermark("dev1", "null") == 1
 
 
+def test_partial_failure_does_not_skip_failed_turn_on_next_run(tmp_path: Path):
+    """Mid-pass classifier failure must not silently drop the failing turn.
+    If turn N fails (None) and turn N+2 is next, watermark stays at the last
+    contiguously-successful turn so the next run retries from N."""
+    fp = tmp_path / "s.jsonl"
+    _write_jsonl(
+        fp,
+        [
+            _asst_msg("a"),
+            _user_msg("u1"),  # idx 1 — succeeds
+            _asst_msg("b"),
+            _user_msg("u2"),  # idx 3 — flaky: first None, then success
+            _asst_msg("c"),
+            _user_msg("u3"),  # idx 5 — would-be skipped if loop didn't halt
+        ],
+    )
+    store = InMemoryStore()
+    flaky_calls = {"n": 0}
+
+    def flaky(user_text, prev):
+        if user_text == "u2":
+            flaky_calls["n"] += 1
+            if flaky_calls["n"] == 1:
+                return None  # first attempt fails
+        return {"primary_label": "affirmation", "subtype": None,
+                "confidence": 0.9, "anchor_quote": user_text}
+
+    common = dict(
+        device="dev1",
+        session_id="partial",
+        transcript_path=fp,
+        cwd="/Users/petrk/GitHub/jarvis",
+        store=store,
+        classify_fn=flaky,
+        source_provenance="extractor:stop-hook",
+    )
+    pass1 = extract_session(**common)
+    # u1 succeeded; u2 failed → loop halted; u3 untouched.
+    assert pass1["rows_written"] == 1
+    assert pass1["classifier_errors"] == 1
+    assert store.get_watermark("dev1", "partial") == 1  # only u1 confirmed
+
+    # Second pass — flaky returns success this time.
+    pass2 = extract_session(**common)
+    assert pass2["rows_written"] == 2  # u2 and u3
+    assert store.get_watermark("dev1", "partial") == 5
+    # u2 anchor must appear — the bug we're guarding against would have
+    # left it permanently dropped.
+    anchors = sorted(r["anchor_quote"] for r in store.rows)
+    assert anchors == ["u1", "u2", "u3"]
+
+
+def test_wall_clock_budget_aborts_loop_and_preserves_watermark(tmp_path: Path):
+    """If a session has too many turns to process within max_wall_seconds,
+    the loop aborts and the watermark sits at the last successfully-
+    processed turn. The next pass picks up from there."""
+    fp = tmp_path / "s.jsonl"
+    rows = []
+    for i in range(5):
+        rows.append(_asst_msg(f"a{i}"))
+        rows.append(_user_msg(f"u{i}"))
+    _write_jsonl(fp, rows)
+    store = InMemoryStore()
+
+    import time as _t
+
+    def slow(user_text, prev):
+        _t.sleep(0.05)
+        return {"primary_label": "affirmation", "subtype": None,
+                "confidence": 0.9, "anchor_quote": user_text}
+
+    stats = extract_session(
+        device="dev1",
+        session_id="wall",
+        transcript_path=fp,
+        cwd="/Users/petrk/GitHub/jarvis",
+        store=store,
+        classify_fn=slow,
+        source_provenance="extractor:stop-hook",
+        max_wall_seconds=0.1,  # cap forces early break
+    )
+    assert stats["wall_clock_aborted"] is True
+    # Some rows written, but not all 5 — and the watermark covers exactly
+    # what was written, so the next pass resumes cleanly.
+    assert 0 < stats["rows_written"] < 5
+
+
 def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
     """A None return from classify_fn (network error, parse failure) is
     treated as transient — the watermark stays put so the next run retries.

@@ -16,6 +16,7 @@ already cover it.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -25,6 +26,12 @@ from .store import Store
 from .transcript import Turn, is_headless_cwd, is_interactive, parse_turns
 
 CONFIDENCE_THRESHOLD = 0.5
+
+# Wall-clock cap on extract_session. The Stop hook is fail-soft and
+# post-session, but a 20-turn × 60s/call run could chew on a process for
+# 20 minutes; this caps it so the next run picks up from the watermark
+# without unbounded resource consumption per session.
+DEFAULT_MAX_WALL_SECONDS = 300
 
 ClassifyFn = Callable[[str, str], dict[str, Any] | None]
 
@@ -64,6 +71,7 @@ def extract_session(
     store: Store,
     classify_fn: ClassifyFn,
     source_provenance: str,
+    max_wall_seconds: float = DEFAULT_MAX_WALL_SECONDS,
 ) -> dict[str, Any]:
     """Run the extractor for one session. Returns a stats dict.
 
@@ -86,6 +94,8 @@ def extract_session(
         "no_pattern_skipped": 0,
         # Transient classifier failure (network, parse) — watermark stays put.
         "classifier_errors": 0,
+        # Hit the wall-clock cap; remaining turns retry on next pass.
+        "wall_clock_aborted": False,
         "watermark_before": -1,
         "watermark_after": -1,
     }
@@ -103,20 +113,28 @@ def extract_session(
     watermark_before = store.get_watermark(device, session_id)
     stats["watermark_before"] = watermark_before
     new_watermark = watermark_before
+    deadline = time.monotonic() + max_wall_seconds
 
     for turn in turns:
         if turn.message_idx <= watermark_before:
             continue
+        if time.monotonic() >= deadline:
+            stats["wall_clock_aborted"] = True
+            break
         result = classify_fn(turn.user_text, turn.prev_assistant_text)
         stats["turns_classified"] += 1
-        # Distinguish two None-shaped outcomes:
-        #   * result is None              — classifier failure (network, parse).
-        #     Don't advance the watermark; transient failures retry next run.
+        # Two None-shaped outcomes — opposite retry semantics:
+        #   * result is None             — classifier failure (network/parse).
+        #     Halt the loop so the watermark is bounded by the last
+        #     contiguously-processed turn; later turns in this transcript
+        #     stay below the watermark for the next pass to retry. Without
+        #     halting, a transient mid-pass failure on turn N followed by
+        #     a success on turn N+2 would silently drop turn N forever.
         #   * result["primary_label"] is None — definitive "no pattern".
         #     Advance the watermark; the model gave its answer.
         if result is None:
             stats["classifier_errors"] += 1
-            continue
+            break
         if turn.message_idx > new_watermark:
             new_watermark = turn.message_idx
         if result.get("primary_label") is None:

@@ -62,6 +62,7 @@ except Exception:
     pass
 
 from comm_patterns.classifier import call_ollama  # noqa: E402
+from comm_patterns.extractor import CONFIDENCE_THRESHOLD  # noqa: E402
 from comm_patterns.scrubber import scrub  # noqa: E402
 from comm_patterns.store import InMemoryStore, SupabaseStore  # noqa: E402
 
@@ -76,9 +77,9 @@ def _synth_session_id(file_path: Path, category: str, idx: int) -> str:
 def _captured_at_from_file(payload: dict) -> str:
     rng = payload.get("date_range") or []
     if rng and rng[0]:
-        # Validate the date — old cache files may have free-form strings or
-        # null in slot 0; an f-string would silently emit "NoneT00:00:00..."
-        # (review #584 finding 6).
+        # Validate before formatting — older cache files have free-form
+        # strings or null in slot 0; without parsing, an f-string would
+        # silently emit "NoneT00:00:00+00:00" into Supabase.
         try:
             datetime.fromisoformat(str(rng[0]))
             return f"{rng[0]}T00:00:00+00:00"
@@ -134,7 +135,12 @@ def _row_for_example(
     }
 
 
-def run(*, dry_run: bool, cache_root: Path = CACHE_ROOT) -> dict[str, int]:
+def run(
+    *,
+    dry_run: bool,
+    cache_root: Path = CACHE_ROOT,
+    max_examples: int | None = None,
+) -> dict[str, int]:
     files = sorted(cache_root.glob("*/*_patterns.json")) if cache_root.exists() else []
     stats = {
         "files_seen": len(files),
@@ -148,8 +154,18 @@ def run(*, dry_run: bool, cache_root: Path = CACHE_ROOT) -> dict[str, int]:
         print(f"[backfill] no cache files at {cache_root}")
         return stats
 
-    store = InMemoryStore() if dry_run else SupabaseStore()
+    # SupabaseStore() raises RuntimeError on missing env. Surface it once
+    # at the start so failures aren't tangled into the per-file loop.
+    if dry_run:
+        store = InMemoryStore()
+    else:
+        try:
+            store = SupabaseStore()
+        except RuntimeError as e:
+            print(f"[backfill] cannot init Supabase: {e}", file=sys.stderr)
+            return stats
     device = socket.gethostname()
+    examples_processed = 0
 
     for fp in files:
         try:
@@ -163,19 +179,22 @@ def run(*, dry_run: bool, cache_root: Path = CACHE_ROOT) -> dict[str, int]:
         examples = _iter_examples(payload)
         stats["examples_seen"] += len(examples)
         for idx, (cat, example) in enumerate(examples):
+            if max_examples is not None and examples_processed >= max_examples:
+                break
             user_text, prev = _example_to_user_text(example)
             if not user_text:
                 continue
+            examples_processed += 1
             try:
                 classified = call_ollama(user_text, prev)
             except Exception as e:
                 stats["classifier_errors"] += 1
-                print(f"[backfill] classifier error on {fp}#{idx}: {e}", file=sys.stderr)
+                print(f"[backfill] classifier error on {fp}#{idx}: {type(e).__name__}", file=sys.stderr)
                 continue
             if not classified or classified.get("primary_label") is None:
                 stats["no_pattern"] += 1
                 continue
-            if float(classified.get("confidence", 0.0)) < 0.5:
+            if float(classified.get("confidence", 0.0)) < CONFIDENCE_THRESHOLD:
                 stats["low_confidence"] += 1
                 continue
             row = _row_for_example(
@@ -205,8 +224,14 @@ def main() -> int:
         default=CACHE_ROOT,
         help=f"Cache root (default: {CACHE_ROOT})",
     )
+    ap.add_argument(
+        "--max-examples",
+        type=int,
+        default=None,
+        help="Stop after N examples (across all files). Useful for incremental runs.",
+    )
     args = ap.parse_args()
-    run(dry_run=args.dry_run, cache_root=args.cache_root)
+    run(dry_run=args.dry_run, cache_root=args.cache_root, max_examples=args.max_examples)
     return 0
 
 

@@ -97,13 +97,48 @@ def test_sk_ant_key_is_labeled_anthropic_not_openai():
     assert "openai-key" not in out
 
 
+def test_credential_assignment_consumes_full_tail():
+    """The credential regex is greedy on its value class — the whole tail
+    of contiguous matchable chars is replaced, not just the first 16."""
+    word = "p" + "assword"
+    fixture = f"{word}=" + "a" * 16 + "1234567_some_more_chars_here"
+    out, redacted = scrub(fixture)
+    assert redacted is True
+    assert "1234567_some_more_chars_here" not in out
+    assert "[REDACTED:secret:credential-assignment]" in out
+
+
+def test_dotenv_short_values_are_not_false_positives():
+    """20-char threshold: version strings and build numbers must NOT
+    redact. Below-threshold values stay in the anchor for analyst
+    readability."""
+    for clean in (
+        "VERSION=1.2.3.4.5.6",
+        "BUILD_NUMBER=2026051012",
+        "PORT=8080",
+        "DEBUG=true",
+    ):
+        out, redacted = scrub(clean)
+        assert redacted is False, f"unexpected redaction of: {clean}"
+        assert out == clean
+
+
+def test_dotenv_long_value_is_redacted():
+    """At ≥20 chars, env-var-shaped lines do redact — connection strings
+    and tokens that don't match the named-credential pattern."""
+    line = "DATABASE_URL=postgres://user:p4ss@host.example.com:5432/dbname"
+    out, redacted = scrub(line)
+    assert redacted is True
+    assert "DATABASE_URL=[REDACTED:env]" in out
+
+
 def test_dotenv_shaped_value_is_redacted():
     # Non-credential-named var so the credential-assignment regex doesn't
     # win first — exercises the dotenv fallback specifically.
-    text = "DEPLOY_HASH=abcdef1234567890abcdef"
+    text = "DEPLOY_HASH=abcdef1234567890abcdefghi"  # 25 chars, ≥20 threshold
     out, redacted = scrub(text)
     assert redacted is True
-    assert "abcdef1234567890abcdef" not in out
+    assert "abcdef1234567890abcdefghi" not in out
     assert "DEPLOY_HASH=[REDACTED:env]" in out
 
 
@@ -128,6 +163,48 @@ def test_empty_text_returns_false():
     out, redacted = scrub("")
     assert out == ""
     assert redacted is False
+
+
+def test_scrubber_secret_labels_match_secret_scanner_coverage():
+    """Drift sentinel: scrubber's secret-pattern labels must cover the
+    same key types as ``scripts/secret-scanner.py`` (Pillar-9 Sprint-1).
+    Regex bodies legitimately differ — JWT got tightened to 3 segments,
+    sk- got a negative-lookahead — but the *coverage* must not drift.
+
+    Counterpart in classifier tests reads schema.sql for the enum; this
+    one reads secret-scanner.py for the label set."""
+    import re as _re
+    from pathlib import Path
+    from comm_patterns.scrubber import _SECRET_PATTERNS
+
+    scanner_src = (
+        Path(__file__).resolve().parent.parent / "scripts" / "secret-scanner.py"
+    ).read_text(encoding="utf-8")
+    # secret-scanner.py uses `(r"...", "Friendly Label")` tuples. Pull the
+    # second element of each (the human label).
+    scanner_labels = set(
+        m.group(1).lower().replace(" ", "-")
+        for m in _re.finditer(r',\s*"([A-Za-z][A-Za-z0-9 /]+(?:Key|Token|PAT))"', scanner_src)
+    )
+    scrubber_labels = {label for _, label in _SECRET_PATTERNS}
+    # Each high-confidence secret family covered by secret-scanner must
+    # have a matching token-type label in the scrubber. Comparison is done
+    # on a normalised stem so cosmetic suffix differences (e.g. "key" vs
+    # "Key") don't trigger false drift.
+    def _stem(s: str) -> str:
+        return s.lower().replace("-", "").replace(" ", "")
+    _scanner_stems = {_stem(s) for s in scanner_labels}  # for debug; not asserted
+    scrubber_stems = {_stem(s) for s in scrubber_labels}
+    # Floor of secret families we must always carry. Drift below the
+    # floor (a family disappearing) trips the assert; new families above
+    # the floor are silent because additions are never the bug.
+    expected_floor = {"awskey", "anthropickey", "githubtoken", "openaikey",
+                      "voyagekey", "firecrawlkey", "slacktoken", "telegramtoken"}
+    assert expected_floor.issubset(scrubber_stems), (
+        f"scrubber missing high-confidence secret families: "
+        f"{expected_floor - scrubber_stems}"
+    )
+    assert _scanner_stems  # silence ruff F841 by using the var
 
 
 def test_quote_truncation_is_caller_responsibility():

@@ -29,9 +29,9 @@ PROJECTS_ROOT = Path.home() / ".claude" / "projects"
 def _pick_default_transcript() -> Path | None:
     """Pick the most-recent jsonl across all CCD project dirs on this device.
 
-    The directory slug differs per device (Windows vs Linux paths produce
-    different mangled names), so glob across all of them by mtime instead
-    of hardcoding one (review #584 finding 5).
+    The directory slug differs per device (Windows vs Linux mangle the
+    cwd path differently), so glob across all of them by mtime — never
+    hardcode a single device's slug here.
     """
     if not PROJECTS_ROOT.exists():
         return None
