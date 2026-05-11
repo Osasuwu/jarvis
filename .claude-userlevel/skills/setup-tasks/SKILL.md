@@ -28,7 +28,7 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 
 | Task ID | Cron | Prompt |
 |---------|------|--------|
-| nightly-research | `17 7 * * *` | Run `/research` in `--mode=autonomous` |
+| nightly-research | `17 7 * * *` | Run `/research` — no topic argument; the skill auto-selects discovery mode from arg shape. |
 | status-record | `0 7 * * *` | Run `/status-record` — write daily snapshot of repo/CI/PR/issue/milestone state to memory under tag `status-snapshot`. |
 | risk-radar | `7 9,14,19 * * *` | Quick risk scan: check CI status, stale issues, security alerts across repos in `config/repos.conf` |
 | autonomous-loop | `3 9 * * *` | Run `/autonomous-loop` |

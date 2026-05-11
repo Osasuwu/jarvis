@@ -34,14 +34,22 @@ Memory recall and the `record_decision` contract come from user-level CLAUDE.md 
 
 ## Contract: `grill_required` exit status (per issue)
 
-Per ADR-0001, no Type 3 self-trigger. For **each** issue in the batch, apply the SOUL.md `### Grill trigger checkbox` against the issue body:
+Per ADR-0001, no Type 3 self-trigger. For **each** issue in the batch, fetch the issue body and apply the SOUL.md `### Grill trigger checkbox`:
+
+```bash
+for N in <N1> <N2> ...; do
+  gh issue view $N --repo <owner/repo> --json title,body --jq '.title + "\n\n" + .body'
+done
+```
+
+Then answer per issue:
 
 - Touches user-visible behavior?
-- Touches domain logic / algorithmics?
+- Touches domain logic / algorithmics / physics?
 - Tests will be non-trivial?
 - Crosses existing non-trivial code?
 
-**Per-issue ≥1 yes → that issue is NOT delegate-ready.** Do not run `/grill` inline. Emit a structured `grill_required` line per affected issue and exclude them from the dispatch:
+**Per-issue ≥1 yes → that issue is NOT delegate-ready.** Do not run `/grill` inline. Emit the structured `grill_required` block below per affected issue and exclude them from the dispatch (they are also not claimed in §2 — claim happens after this exclusion):
 
 ```
 EXIT: grill_required
@@ -55,6 +63,8 @@ Continue dispatching the rest of the batch in the same call — partial dispatch
 **Subagents never run `/grill` themselves.** Their dispatch prompt carries the grill-refined AC verbatim. First subagent action is to confirm the AC is verifiable from the issue body alone — if not, post a comment and stop, escalating back to the main session.
 
 **0 yes → delegatable as-is.** Continue.
+
+**No "skip grill" override at the batch level.** Unlike `/implement` (where the principal can say "skip grill, just implement" for a single issue), `/delegate` does not offer a one-shot override. Per-issue grilling is the gate that keeps subagents from drifting on under-specified AC, and silently overriding it for an entire batch is exactly the failure mode this contract prevents. If the principal wants a triggered issue dispatched anyway, route it through `/implement` with the explicit single-issue override.
 
 ## Pipeline
 
@@ -74,9 +84,9 @@ Produce a short split plan for the principal before acting. Example:
 > - #613 (swept path) → **inline** — safety-adjacent, `planning/`.
 > - #617 (docs tweak) → **delegate** — trivial.
 
-### 2. Claim all issues
+### 2. Claim all dispatchable issues
 
-Claim *everything* in the batch up front (label `status:in-progress` + comment), even the ones staying inline. Prevents race with other Jarvis instances or principal forgetting to route.
+Claim every issue that survived the per-issue `grill_required` check (label `status:in-progress` + comment), including the ones staying inline. Issues that exited `grill_required` are NOT claimed — they go back to the orchestrator for `/grill` + re-dispatch in a fresh session, which will run its own pre-flight and claim then. Claiming up front prevents races between concurrent Jarvis instances and the principal forgetting to route delegatable issues.
 
 ```bash
 for N in <N1> <N2> ...; do

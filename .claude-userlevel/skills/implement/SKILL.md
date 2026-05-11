@@ -23,14 +23,20 @@ Target repo: determined from context (CWD, recent conversation, user mention). I
 
 Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). When the SOUL.md `### Grill trigger checkbox` fires (≥1 yes against the issue body), `/implement` does **not** run `/grill` inline. It exits with a structured status and the orchestrator (or principal) re-dispatches.
 
-Apply the checkbox at the very start of the pipeline, against the issue body:
+Apply the checkbox at the very start of the pipeline. The issue body is the input — fetch it before the checkbox runs:
+
+```bash
+gh issue view <N> --repo <owner/repo> --json title,body --jq '.title + "\n\n" + .body'
+```
+
+Then answer:
 
 - Touches user-visible behavior? (not cosmetic / refactor / doc-fix)
 - Touches domain logic / algorithmics / physics?
 - Will tests be non-trivial?
 - Crosses existing non-trivial code?
 
-**≥1 yes → exit `grill_required`.** Emit a single structured line and stop the pipeline. No claim, no branch, no decision recorded:
+**≥1 yes → exit `grill_required`.** Emit the structured block below and stop the pipeline. No claim, no branch, no decision recorded:
 
 ```
 EXIT: grill_required
