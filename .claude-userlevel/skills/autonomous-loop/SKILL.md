@@ -106,7 +106,7 @@ Detect via `gh repo view <R> --json owner --jq .owner.login`:
 | Rung | Threshold | Foreign-owner repo | Own repo (Osasuwu/*) |
 |----|----|----|----|
 | 1 | N ≥ 1 | Memory exists | Memory exists |
-| 2 | N ≥ 2 or days_unaddressed ≥ 1 | `/status` surfaces `STALE FLAG` badge | Same |
+| 2 | N ≥ 2 or days_unaddressed ≥ 1 | Surfaced via `memory_recall(query="status-snapshot ... hygiene")` (post-#529: `/status` is deleted; reads happen inline over `/status-record` events) | Same |
 | 3 | N ≥ 3 | Emit `events` row, `severity=high`, `event_type=hygiene_stale` | Same |
 | 4 | N ≥ 5 | Create jarvis-side tracking issue (visibility on GitHub) | Emit `events` row, `severity=critical`, `event_type=hygiene_unaddressed_critical` — principal-facing nudge that auto-actionable findings are still untouched after 5 days; **no tracking issue** (would be paperwork) |
 
@@ -302,7 +302,7 @@ If any action advances a goal → `goal_update(slug=..., progress=[...])` — ap
 
 ## Step 7.5 — Drain high-severity events to Telegram (#327)
 
-Any `severity=high` events emitted this run (including Step 2b escalations) need to reach the principal outside of `/status`. Run the notifier as the final durable side effect:
+Any `severity=high` events emitted this run (including Step 2b escalations) need to reach the principal out-of-band (no human-facing dashboard skill — `/status` is deleted post-#529). Run the notifier as the final durable side effect:
 
 ```bash
 python scripts/telegram-notify-hook.py --min-severity high

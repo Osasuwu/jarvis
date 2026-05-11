@@ -75,7 +75,6 @@ Use skills — don't reinvent with raw tools.
 | "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` |
 | "проверь результаты" / scheduled post-delegation | `/verify` |
 | "что я делаю не так", "проанализируй сессии", "паттерны общения", weekly behavioral audit | `/reflect` (cross-session comms audit; old outcome-verification scope migrated to `/verify` + `/self-improve` per #510) |
-| Project overview, "статус", start of work session | `/status` |
 | "исследуй", "research", "сравни" | `/research` |
 | "улучши себя", self-improvement | `/self-improve` |
 | "цели", "приоритеты" | `/goals` |
