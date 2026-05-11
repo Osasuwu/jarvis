@@ -79,7 +79,7 @@ The four open questions in the parent issue body were called out specifically be
 ## Sample size and method (for §1)
 
 - **Sources:** `~/.claude/projects/C--Users-petrk-GitHub-jarvis/*.jsonl` and `~/.claude/projects/C--Users-petrk-GitHub-redrobot/*.jsonl`, files modified within 14 days (cutoff: 2026-04-26 → 2026-05-10).
-- **Filter:** sessions with ≥3 user messages after stripping tool results, `<system-reminder>` blocks, hook injections, and `<command-…>` echoes (same filter as [`extract_comms.py`](../../.claude-userlevel/skills/reflect/extract_comms.py)).
+- **Filter:** sessions with ≥3 user messages after stripping tool results, `<system-reminder>` blocks, hook injections, and `<command-…>` echoes (same filter as [`extract_comms.py`](../../scripts/analyze-comms/extract_comms.py)).
 - **Pool:** 69 interactive sessions, 676 user messages.
 - **Regex prefilter** (kept identical to old `/reflect` for continuity with prior-art baseline):
   - NEG: 176 hits.
