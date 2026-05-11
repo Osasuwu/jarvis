@@ -1,7 +1,7 @@
 ---
 name: delegate
 description: This skill should be used when the principal asks Jarvis to dispatch one or more GitHub issues to coding subagents (typically multiple issues in parallel), or says "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z". Also used by autonomous-loop to hand off a single subagent-scoped job (e.g. CI debug). For a single issue the main session will do itself, use /implement instead. Jarvis's own judgment on task complexity OVERRIDES blind delegation — if a task is unfit for a subagent (needs session context, cross-cutting reasoning, safety review), keep it inline even if principal said "раскидай".
-version: 1.0.0
+version: 2.0.0
 ---
 
 # Delegate Skill
@@ -9,6 +9,8 @@ version: 1.0.0
 Dispatch **multiple** GitHub issues to coding subagents running in parallel.
 
 The main session stays as orchestrator: it reviews each subagent's diff, resolves scope drift, and decides merges. **Subagents NEVER merge.** They push the PR and stop.
+
+Memory recall and the `record_decision` contract come from user-level CLAUDE.md `### Memory & decision protocol`. The skill-specific gates below are what `/delegate` adds on top.
 
 ## When to /delegate vs /implement
 
@@ -30,35 +32,35 @@ The main session stays as orchestrator: it reviews each subagent's diff, resolve
 
 **Jarvis judgment overrides the principal's "параллельно":** The principal has explicitly delegated this call to Jarvis (memory: this decision). If a task looks deceptively complex or a subagent will struggle (needs memory context, cross-file reasoning, recent-decisions awareness), keep it inline even if asked to delegate. Don't silently downgrade — tell the principal "keeping #X inline because <reason>".
 
-## Pipeline
+## Contract: `grill_required` exit status (per issue)
 
-### 0a. Grill-me trigger checkbox per issue (alignment protocol — SOUL.md)
-
-For **each** issue in the batch — apply the SOUL.md `### Grill-me trigger checkbox`:
+Per ADR-0001, no Type 3 self-trigger. For **each** issue in the batch, apply the SOUL.md `### Grill trigger checkbox` against the issue body:
 
 - Touches user-visible behavior?
 - Touches domain logic / algorithmics?
 - Tests will be non-trivial?
 - Crosses existing non-trivial code?
 
-**≥1 yes on an issue:**
-- That issue is **NOT delegate-ready**. Acceptance criteria need `/grill-me` first.
-- Two paths:
-  - **Inline grill** — main session runs `/grill-me` against the issue, updates AC + CONTEXT.md + memory, *then* the issue becomes delegatable. Use this when the issue is otherwise subagent-suitable, just under-specified.
-  - **Keep inline for /implement** — if grill-me reveals the work is also context-heavy or safety-adjacent, route through `/implement` instead.
-- Report to the principal: "issues #X, #Y need grill-me before dispatch — running it inline now / routing to /implement".
+**Per-issue ≥1 yes → that issue is NOT delegate-ready.** Do not run `/grill` inline. Emit a structured `grill_required` line per affected issue and exclude them from the dispatch:
 
-**0 yes on an issue:** delegatable as-is. Continue.
+```
+EXIT: grill_required
+issue: <owner/repo>#<N>
+reason: trigger-checkbox-fired (<count>/4 yes)
+next: run /grill against #<N>, then re-dispatch /delegate (or /implement) #<N>
+```
 
-**Subagents do NOT run grill-me on their own.** They consume already-grilled AC via the issue body. Their dispatch prompt must include the literal AC list, and their first action is to confirm the AC is verifiable from the issue body alone — if not, they post a comment and stop, escalating back to main session.
+Continue dispatching the rest of the batch in the same call — partial dispatch is fine. Report to the principal: "issues #X, #Y exited `grill_required`; #A, #B, #C dispatched". The orchestrator handles re-dispatch in fresh sessions after `/grill`.
 
-### 0b. Load context from memory
+**Subagents never run `/grill` themselves.** Their dispatch prompt carries the grill-refined AC verbatim. First subagent action is to confirm the AC is verifiable from the issue body alone — if not, post a comment and stop, escalating back to the main session.
 
-Apply the memory recall protocol from user-level CLAUDE.md `### 1. Recall before deciding`, with `<skill-name>=delegate` and `<topic>=<batch-topic + per-issue entities>`. Brief-mode hits feed the `name → uuid` map used in §3 below.
+**0 yes → delegatable as-is.** Continue.
+
+## Pipeline
 
 ### 1. Classify each issue: delegatable or inline
 
-For each issue in the batch:
+For each delegatable issue (passed the checkbox above):
 
 1. Run pre-flight (5 checks — same as /implement §1).
 2. Classify:
@@ -85,18 +87,7 @@ done
 
 ### 3. Record decision
 
-Apply the `record_decision` contract from user-level CLAUDE.md `### 3. record_decision contract`. One call covers the batch — which went to subagents, which stayed inline, why. Skeleton:
-
-```
-mcp__memory__record_decision(
-  decision="delegate batch #<N1> #<N2> ... (split <inline>/<delegated>)",
-  rationale="<why this split — subagent fitness, session-context dependency, safety zones>",
-  memories_used=[<UUIDs from §0b recall>],
-  confidence=<0.0-1.0>,
-  alternatives_considered=["all inline", "all delegated", "sequential"],
-  reversibility="reversible"
-)
-```
+Apply the `record_decision` contract from user-level CLAUDE.md. One call covers the batch — which went to subagents, which stayed inline, which exited `grill_required`, why. Issue dispatch satisfies trigger #1 (issue implementation) — non-optional.
 
 ### 4. Dispatch subagents
 

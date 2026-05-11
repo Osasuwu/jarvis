@@ -1,7 +1,7 @@
 ---
 name: implement
 description: This skill should be used when the principal asks Jarvis to implement a SINGLE GitHub issue directly in the current session, or says "реализуй #42", "сделай #42", "implement #X". For MULTIPLE issues that can run in parallel use /delegate instead. Do NOT trigger for viewing, triaging, or discussing issues — only for actual implementation requests.
-version: 1.0.0
+version: 2.0.0
 ---
 
 # Implement Skill
@@ -10,6 +10,8 @@ Autonomously implement a GitHub issue **inline, in the current session** — no 
 
 Use this when the work benefits from the full session context (memories just loaded, recent decisions, cross-cutting awareness) or when the issue is safety-adjacent and you can't afford a context-blind coding agent.
 
+Memory recall and the `record_decision` contract come from user-level CLAUDE.md `### Memory & decision protocol` — they are session-wide and don't need restating here. The skill-specific gates below are what `/implement` adds on top.
+
 ## Usage
 
 Invoke when principal says "реализуй #42", "сделай #42", "implement #X".
@@ -17,33 +19,33 @@ Single-issue by default. If multiple issues arrive but only one needs session co
 
 Target repo: determined from context (CWD, recent conversation, user mention). If ambiguous, ask. Read `config/repos.conf` for the full list of tracked repos.
 
-## Pipeline
+## Contract: `grill_required` exit status
 
-### 0a. Grill-me trigger checkbox (alignment protocol — SOUL.md)
+Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). When the SOUL.md `### Grill trigger checkbox` fires (≥1 yes against the issue body), `/implement` does **not** run `/grill` inline. It exits with a structured status and the orchestrator (or principal) re-dispatches.
 
-**Before anything else** — apply the 4-question checkbox from SOUL.md `### Grill-me trigger checkbox`. Read the issue body and answer:
+Apply the checkbox at the very start of the pipeline, against the issue body:
 
-- Does it touch user-visible behavior? (not cosmetic / refactor / doc-fix)
-- Does it touch domain logic / algorithmics / physics?
+- Touches user-visible behavior? (not cosmetic / refactor / doc-fix)
+- Touches domain logic / algorithmics / physics?
 - Will tests be non-trivial?
-- Does the change cross existing non-trivial code?
+- Crosses existing non-trivial code?
 
-**≥1 yes:** **STOP this pipeline**. Run `/grill-me` first against the issue. Output:
-- Refined acceptance criteria (literally verifiable) → `gh issue edit <N> --body` to update the AC section
-- Domain insight → inline `CONTEXT.md` update
-- Architectural decision → `record_decision` with UUIDs in `memories_used`
+**≥1 yes → exit `grill_required`.** Emit a single structured line and stop the pipeline. No claim, no branch, no decision recorded:
 
-After grill-me, re-enter `/implement` — the AC will now drive the rest of the pipeline.
+```
+EXIT: grill_required
+issue: <owner/repo>#<N>
+reason: trigger-checkbox-fired (<count>/4 yes)
+next: run /grill against #<N>, then re-dispatch /implement #<N>
+```
 
-**Exception**: if the principal explicitly says "skip grill-me, just implement" — proceed, but log it as a `decision_made` with `confidence` lowered and rationale "user override of grill-me checkbox".
+The orchestrator parses this, runs `/grill` in a fresh session (so the smart-zone budget is intact), updates the issue AC + CONTEXT.md + memory, then re-dispatches `/implement #<N>`. On the second run the AC is now grill-refined and the checkbox typically passes.
 
-**0 yes:** continue to step 0b. Most "fix typo / bump dep / move file" issues land here.
+**Override**: if the principal explicitly says "skip grill, just implement", proceed — but record the override in the §3 decision rationale with lowered confidence.
 
-### 0b. Load context from memory
+**0 yes → continue to §1.** Most "fix typo / bump dep / move file" issues land here.
 
-Apply the memory recall protocol from user-level CLAUDE.md `### 1. Recall before deciding`, with `<skill-name>=implement` and `<topic>=<issue-area + acceptance-criteria entities>`. The brief-mode hits feed the `name → uuid` map used in §3.5 below.
-
-Skip subsequent steps gracefully when memories are empty.
+## Pipeline
 
 ### 1. Pre-flight checks (parallel work protocol)
 
@@ -70,7 +72,7 @@ Identify: files to change, acceptance criteria, safety implications.
 - Wait for principal approval before implementing
 - Do NOT dispatch to subagents (keep inline — this skill is the right tool)
 
-### 3. Claim & branch
+### 3. Claim, branch, record decision
 
 ```bash
 gh issue edit <N> --add-label "status:in-progress"
@@ -79,23 +81,7 @@ git checkout master && git pull
 git checkout -b feat/<N>-<slug>
 ```
 
-### 3.5. Record decision (reasoning trace, #252, #334)
-
-After claim, before implementation — emit a `decision_made` episode so `/reflect` can later attribute outcomes to reasoning (missing memory / wrong memory / wrong reasoning).
-
-Apply the `record_decision` contract from user-level CLAUDE.md `### 3. record_decision contract`. Issue implementation always satisfies trigger #1, so the call is non-optional. Skeleton:
-
-```
-mcp__memory__record_decision(
-  decision="implement <issue title> (#<N>)",
-  rationale="<one paragraph: why this issue matters now, what approach is planned, what non-obvious choices were made at claim time>",
-  memories_used=[<UUIDs from §0b recall>],
-  outcomes_referenced=[],
-  confidence=<0.0-1.0>,
-  alternatives_considered=["<rejected options — e.g. 'defer to next sprint', 'delegate to subagent'>"],
-  reversibility="reversible"
-)
-```
+Then emit `mcp__memory__record_decision` per the contract in user-level CLAUDE.md `### 3. record_decision contract`. Issue implementation always satisfies trigger #1 — the call is non-optional. `memories_used` carries UUIDs from the session-start recall map.
 
 ### 4. Implement
 
@@ -214,7 +200,7 @@ outcome_record(
 )
 ```
 
-**Rule — primary informing memory**: pass `memory_id = memories_used[0]` from the `record_decision` call at §3.5 (first element is the dominant basis). If `memories_used` was empty, omit `memory_id`. Never pass multiple — the FK is a single UUID and `memory_calibration` joins on one memory per outcome; richer attribution belongs at the view layer, not the row.
+**Rule — primary informing memory**: pass `memory_id = memories_used[0]` from the §3 `record_decision` call (first element is the dominant basis). If `memories_used` was empty, omit `memory_id`. Never pass multiple — the FK is a single UUID and `memory_calibration` joins on one memory per outcome; richer attribution belongs at the view layer, not the row.
 
 **Always record**, even on failure — failed outcomes are the most valuable for learning.
 
