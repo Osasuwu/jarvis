@@ -96,6 +96,9 @@ groups:
         # scratch note under .claude-userlevel/skills/) doesn't leak into
         # every user's ~/.claude/. Update when adding/removing a core skill.
         include:
+          # Shared reference material consumed by other skills (e.g. _shared/tdd/
+          # is read by /implement and /delegate in TDD-mode). Not a skill itself.
+          - "_shared"
           - "autonomous-loop"
           - "delegate"
           - "end"

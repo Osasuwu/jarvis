@@ -45,6 +45,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Deep module** — small interface, large hidden implementation. Caller knows minimum, gets maximum behavior. Anti-pattern: shallow modules where interface ≈ implementation complexity.
 - **Deletion test** — diagnostic for module depth: imagine deleting it. If complexity vanishes, it was a pass-through (shallow). If complexity reappears across N callers, it earned its keep (deep).
 - **Implicit assumption** — domain rule that's "obvious" to the human but not in writing. Source of scope shrinkage. Surfaced via `/grill`, fixed by adding to this file or to AC.
+- **TDD-mode** — operating mode of `/implement` and `/delegate` that runs the red→green→refactor loop one acceptance-criterion at a time. Engaged after the SOUL.md grill-me checkbox fires and a `/grill` has resolved the AC. Reference material in `.claude-userlevel/skills/_shared/tdd/`.
 
 ### Skill trigger model (ADR-0001)
 

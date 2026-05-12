@@ -812,7 +812,14 @@ def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None
 
 
 def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
-    """Source-of-truth directory must exist with every whitelisted skill."""
+    """Source-of-truth directory must exist with every whitelisted skill.
+
+    Convention: entries beginning with ``_`` are shared reference material
+    (e.g. ``_shared/tdd/`` consumed by /implement and /delegate in TDD-mode,
+    #593), not skills. They live under the skills tree so install-time
+    orphan-prune keeps them, but they have no ``SKILL.md`` — the directory
+    must exist and be non-empty.
+    """
     repo_root = Path(__file__).resolve().parents[1]
     src = repo_root / ".claude-userlevel" / "skills"
     assert src.is_dir(), f"{src} must exist — M2 source of truth"
@@ -822,7 +829,12 @@ def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
         d["include"] for g in m["groups"] if g["id"] == "skills" for d in g["directories"]
     )
     for name in include:
-        skill_md = src / name / "SKILL.md"
+        entry_dir = src / name
+        if name.startswith("_"):
+            assert entry_dir.is_dir(), f"whitelisted shared resource missing: {entry_dir}"
+            assert any(entry_dir.iterdir()), f"shared resource is empty: {entry_dir}"
+            continue
+        skill_md = entry_dir / "SKILL.md"
         assert skill_md.exists(), f"whitelisted skill missing: {skill_md}"
 
 
