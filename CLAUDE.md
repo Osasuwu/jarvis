@@ -71,8 +71,8 @@ Use skills — don't reinvent with raw tools.
 
 | Trigger | Skill |
 |---|---|
-| "реализуй #42" — implement single issue inline | `/implement` |
-| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` |
+| "реализуй #42" — implement single issue inline | `/implement` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
+| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
 | "проверь результаты" / scheduled post-delegation | `/verify` |
 | "что я делаю не так", "проанализируй сессии", "паттерны общения", weekly behavioral audit | `/reflect` (cross-session comms audit; old outcome-verification scope migrated to `/verify` + `/self-improve` per #510) |
 | "исследуй", "research", "сравни" | `/research` |
@@ -85,7 +85,6 @@ Use skills — don't reinvent with raw tools.
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
 | Conversation context → PRD on issue tracker | `/to-prd` |
 | Plan / PRD → vertical-slice issues | `/to-issues` |
-| Build feature / fix bug test-first ("red-green-refactor") | `/tdd` |
 | "diagnose this", bug repro, perf regression | `/diagnose` |
 | "improve architecture", find shallow modules, refactoring opportunities | `/improve-codebase-architecture` |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
@@ -97,7 +96,7 @@ Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
 - **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
-- **`/grill` → `/to-prd` → `/to-issues` → `/tdd`** is the canonical chain for new features. Each phase in a fresh session if context is heavy.
+- **`/grill` → `/to-prd` → `/to-issues` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy.
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
 ## Autonomous work

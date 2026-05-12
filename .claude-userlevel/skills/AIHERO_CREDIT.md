@@ -10,7 +10,7 @@ The following skills are imported from **Matt Pocock's** [`mattpocock/skills`](h
 | `diagnose` | `engineering/diagnose` | as-is |
 | `grill` | `engineering/grill-with-docs` | renamed to `grill` (M37 — single grill skill, with-docs flavor; ADR 0001) |
 | `improve-codebase-architecture` | `engineering/improve-codebase-architecture` | as-is (refs CONTEXT.md / docs/adr/ — create lazily) |
-| `tdd` | `engineering/tdd` | as-is (full bundle: deep-modules, interface-design, mocking, refactoring, tests) |
+| `_shared/tdd/` reference docs | `engineering/tdd` | unbundled (#593/#596): standalone `/tdd` skill dropped; `tdd-loop.md`, `mocking.md`, `refactoring.md`, `tests.md` migrated to `skills/_shared/tdd/` as reference docs loaded by `/implement` and `/delegate` in TDD-mode. `deep-modules.md` and `interface-design.md` folded into `CONTEXT.md` glossary (Deep module / Deletion test / Testable interface entries) |
 | `to-issues` | `engineering/to-issues` | replaced `/setup-matt-pocock-skills` ref → "defined in the project's CLAUDE.md" |
 | `to-prd` | `engineering/to-prd` | same |
 | `triage` | `engineering/triage` | same |

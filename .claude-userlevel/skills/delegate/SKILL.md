@@ -34,7 +34,7 @@ Memory recall and the `record_decision` contract come from user-level CLAUDE.md 
 
 ## Contract: dispatch routing (per issue: mechanical / TDD-mode / `grill_required`)
 
-Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/delegate` does **not** run `/grill` or `/tdd` inline. For **each** issue in the batch it inspects two inputs and routes to one of three branches. Routing is per-issue: a single batch can mix mechanical-mode and TDD-mode dispatches (and exclude grill-failing issues).
+Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/delegate` does **not** run `/grill` inline (and there is no standalone `/tdd` skill — TDD-mode is dispatched as inline operating discipline carrying `_shared/tdd/` reference docs). For **each** issue in the batch it inspects two inputs and routes to one of three branches. Routing is per-issue: a single batch can mix mechanical-mode and TDD-mode dispatches (and exclude grill-failing issues).
 
 **Inputs** (per issue — fetch the body first):
 
@@ -87,7 +87,7 @@ Subagent prompt template (§4) gains an additional AC-completeness clause direct
 
 The TDD-mode clause is **/delegate-specific** — it is not present in `/implement`'s TDD-mode (which relies on Operating discipline in the skill body) because the failure mode it targets (subagent AC-dodging via "out of scope" relabeling, per memories `subagent_acceptance_criteria_dodged_as_out_of_scope` and `subagent_test_coverage_overclaim`) only manifests in subagent dispatch.
 
-### Subagents never run `/grill` or `/tdd` themselves
+### Subagents never run `/grill` themselves (and there is no `/tdd` skill to invoke)
 
 Their dispatch prompt carries the grill-refined AC verbatim and (in TDD-mode) the TDD operating clause inline. First subagent action is to confirm the AC is verifiable from the issue body alone — if not, post a comment and stop, escalating back to the main session.
 
@@ -195,7 +195,7 @@ Operating discipline:
   session. Code without test coverage is NOT in your refactor scope.
 ```
 
-ADR-0001 compliance: the TDD-mode block is **inline operating discipline**, not a `/tdd` skill invocation. The subagent does not call `/tdd`, `/grill`, or any other skill mid-task — the reference doc `_shared/tdd/tdd-loop.md` is read as a file.
+ADR-0001 compliance: the TDD-mode block is **inline operating discipline**. There is no standalone `/tdd` skill (dropped in #596). The subagent does not call `/grill` or any other skill mid-task — the reference doc `_shared/tdd/tdd-loop.md` is read as a file.
 
 **Principal env propagation note (#426)**: The Agent tool inherits parent env, so `JARVIS_PRINCIPAL` set in the parent session carries to the subagent. Auto-injection of `JARVIS_PRINCIPAL=subagent` is deferred — the parent is `live` (principal-driven dispatch), and subagents are already constrained by the worktree isolation and skill-level rules above. If a future code path runs `/delegate` autonomously (e.g. dispatcher hands work to a subagent), revisit and inject `JARVIS_PRINCIPAL=subagent` explicitly via the spawn wrapper.
 
