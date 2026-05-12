@@ -19,37 +19,60 @@ Single-issue by default. If multiple issues arrive but only one needs session co
 
 Target repo: determined from context (CWD, recent conversation, user mention). If ambiguous, ask. Read `config/repos.conf` for the full list of tracked repos.
 
-## Contract: `grill_required` exit status
+## Contract: dispatch routing (mechanical / TDD-mode / `grill_required`)
 
-Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). When the SOUL.md `### Grill trigger checkbox` fires (≥1 yes against the issue body), `/implement` does **not** run `/grill` inline. It exits with a structured status and the orchestrator (or principal) re-dispatches.
+Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/implement` does **not** run `/grill` or `/tdd` inline. Instead it inspects two inputs at the very start of the pipeline and routes to one of three branches.
 
-Apply the checkbox at the very start of the pipeline. The issue body is the input — fetch it before the checkbox runs:
+**Inputs** (run both before the dispatch table):
 
-```bash
-gh issue view <N> --repo <owner/repo> --json title,body --jq '.title + "\n\n" + .body'
-```
+1. **SOUL.md `### Grill trigger checkbox`** against the issue body — fetch the body first:
 
-Then answer:
+   ```bash
+   gh issue view <N> --repo <owner/repo> --json title,body --jq '.title + "\n\n" + .body'
+   ```
 
-- Touches user-visible behavior? (not cosmetic / refactor / doc-fix)
-- Touches domain logic / algorithmics / physics?
-- Will tests be non-trivial?
-- Crosses existing non-trivial code?
+   Answer:
+   - Touches user-visible behavior? (not cosmetic / refactor / doc-fix)
+   - Touches domain logic / algorithmics / physics?
+   - Will tests be non-trivial?
+   - Crosses existing non-trivial code?
 
-**≥1 yes → exit `grill_required`.** Emit the structured block below and stop the pipeline. No claim, no branch, no decision recorded:
+2. **`working_state_jarvis` decision_uuids for this issue** — `memory_get(name="working_state_jarvis", project="<repo>")`. The record (if present) carries a `decision_uuids[]` map keyed by issue. Treat the issue as grilled if there is at least one decision UUID tagged with this issue number, OR the issue body literally cites a decision UUID under its `## Decisions` section (the grill output is also embedded in the issue body when `/grill` resolves architectural Qs — both are valid grill artifacts).
+
+**Dispatch table** — pick exactly one branch:
+
+| checkbox | grill artifact present for this issue? | route |
+|---|---|---|
+| 0 yes | n/a | **mechanical-mode** → continue to §1 |
+| ≥1 yes | yes (UUIDs in working_state OR cited in issue body) | **TDD-mode** → §4-TDD instead of §4 (rest of pipeline unchanged) |
+| ≥1 yes | no | **exit `grill_required`** |
+
+### Branch: `grill_required` exit
+
+Emit the structured block below and stop the pipeline. No claim, no branch, no decision recorded:
 
 ```
 EXIT: grill_required
 issue: <owner/repo>#<N>
-reason: trigger-checkbox-fired (<count>/4 yes)
+reason: trigger-checkbox-fired (<count>/4 yes); no grill artifact in working_state or issue body
 next: run /grill against #<N>, then re-dispatch /implement #<N>
 ```
 
-The orchestrator parses this, runs `/grill` in a fresh session (so the smart-zone budget is intact), updates the issue AC + CONTEXT.md + memory, then re-dispatches `/implement #<N>`. On the second run the AC is now grill-refined and the checkbox typically passes.
+The orchestrator parses this, runs `/grill` in a fresh session (so the smart-zone budget is intact), updates the issue AC + CONTEXT.md + memory, then re-dispatches `/implement #<N>`. On the second run the grill artifact is present and the dispatch routes to TDD-mode.
 
-**Override**: if the principal explicitly says "skip grill, just implement", proceed — but record the override in the §3 decision rationale with lowered confidence.
+### Branch: TDD-mode
 
-**0 yes → continue to §1.** Most "fix typo / bump dep / move file" issues land here.
+Continue through §1–§3 (pre-flight, fetch, claim+branch+record_decision) as in mechanical-mode. Then take **§4-TDD** in place of §4. §5–§8 (commit/PR/outcome/cleanup) are shared.
+
+### Branch: mechanical-mode
+
+The original flow. Most "fix typo / bump dep / move file" issues land here. Continue to §1.
+
+**Override**: if the principal explicitly says "skip grill, just implement" on a checkbox-fired issue with no artifact, proceed via mechanical-mode — but record the override in the §3 decision rationale with lowered confidence.
+
+### Re-entry is stateless
+
+Every `/implement` entry re-runs the checkbox and re-reads `working_state_jarvis`. There is no `tdd_mode` flag carried in from the orchestrator. This means: when `/grill` finishes and the orchestrator re-dispatches `/implement #N`, the route flips from `grill_required` → TDD-mode automatically because the grill populated the artifact. Same code path, different input state.
 
 ## Pipeline
 
@@ -137,6 +160,23 @@ Rule: if the change touches any of the above, run one real-input smoke **before*
 - Subprocess/scheduler — run in a separate shell long enough to confirm restart / pickle behavior
 
 If unit tests green but smoke fails → outcome is `partial`, and the `lessons` field must describe the gap so a future session knows what the unit tests did not catch.
+
+### 4-TDD. Implement in TDD-mode
+
+Engaged when the §0 dispatch routes here. Replaces §4 (4a/4b/4c still apply — see below).
+
+**Procedural source: [`.claude-userlevel/skills/_shared/tdd/tdd-loop.md`](../_shared/tdd/tdd-loop.md).** Load it as your operating procedure for this issue. Do not duplicate the loop here — read the file and follow it. Related references in the same directory: [tests.md](../_shared/tdd/tests.md), [mocking.md](../_shared/tdd/mocking.md), [refactoring.md](../_shared/tdd/refactoring.md).
+
+**Operating discipline:**
+
+- §4a (already-done audit) still runs first — TDD-mode is no excuse to skip it. Symbols from the issue AC drive the grep; if the behavior already exists with tests, stop and close as `not-planned`.
+- Iterate one acceptance-criterion bullet at a time. Per AC item: write a failing test → confirm RED → write the minimal implementation → confirm GREEN → refactor only what is now under green coverage → next AC item. Do **not** write all tests first then all code (the anti-horizontal-slicing rule in `tdd-loop.md` is binding).
+- Every test must trace back to an AC bullet. If a test does not, the test is either out of scope or evidence the AC is incomplete — in the latter case stop and escalate (re-grill, do not invent AC inline).
+- Refactor permission is scoped to code freshly covered by a passing test in this session. Adjacent untested code is not in refactor scope — either write a characterization test first (then it is in scope) or flag a follow-up issue and leave it.
+- §4c (E2E smoke) still applies before marking the outcome `success` when the change touches I/O / schema / hooks / subprocess areas.
+- ADR-0001 compliance: do not invoke `/tdd`, `/grill`, or any other skill mid-task. The reference docs are read as files, not as skill invocations.
+
+Final pass before §5: run the full test suite for the touched module(s), not just the AC-tied tests. Green suite is the precondition for opening the PR.
 
 ### 5. Commit & PR
 
