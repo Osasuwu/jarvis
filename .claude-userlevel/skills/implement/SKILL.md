@@ -37,7 +37,10 @@ Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/impl
    - Will tests be non-trivial?
    - Crosses existing non-trivial code?
 
-2. **`working_state_jarvis` decision_uuids for this issue** — `memory_get(name="working_state_jarvis", project="<repo>")`. The record (if present) carries a `decision_uuids[]` map keyed by issue. Treat the issue as grilled if there is at least one decision UUID tagged with this issue number, OR the issue body literally cites a decision UUID under its `## Decisions` section (the grill output is also embedded in the issue body when `/grill` resolves architectural Qs — both are valid grill artifacts).
+2. **Grill artifact for this issue** — present iff *either* of the following holds:
+
+   - **(a) working_state** — `memory_get(name="working_state_<project>", project="<project>")` where `<project>` is the short project slug (`jarvis`, `redrobot`), matching the convention in `scripts/session-context.py`. If the returned record references this issue number alongside one or more decision UUIDs, the artifact is present. The exact key shape inside the record (`decision_uuids[]` keyed by issue, an episodes list, free-form notes) is project-controlled — accept any structure where a decision UUID is reachable from the issue number; if `/grill` populated working_state for this issue, the link will be there. If working_state has no entry for this issue, fall through to (b).
+   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies (e.g. #593/#594/#595/#596 in the TDD-wiring chain). The automated `/to-issues` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
 
 **Dispatch table** — pick exactly one branch:
 
@@ -63,6 +66,8 @@ The orchestrator parses this, runs `/grill` in a fresh session (so the smart-zon
 ### Branch: TDD-mode
 
 Continue through §1–§3 (pre-flight, fetch, claim+branch+record_decision) as in mechanical-mode. Then take **§4-TDD** in place of §4. §5–§8 (commit/PR/outcome/cleanup) are shared.
+
+No symmetric "skip TDD" override: a grill artifact is a positive commitment to red→green→refactor for this issue. If the principal disagrees with TDD-mode for a specific grilled issue, the right move is to re-grill (which may resolve to a different approach) rather than bypass the loop.
 
 ### Branch: mechanical-mode
 
@@ -163,7 +168,7 @@ If unit tests green but smoke fails → outcome is `partial`, and the `lessons` 
 
 ### 4-TDD. Implement in TDD-mode
 
-Engaged when the §0 dispatch routes here. Replaces §4 (4a/4b/4c still apply — see below).
+Engaged when the §Contract dispatch table routes here. Replaces §4 — but §4a (already-done audit), §4b (per-change hygiene), and §4c (E2E smoke) above all still apply; the constraints they impose are restated in Operating discipline below.
 
 **Procedural source: [`.claude-userlevel/skills/_shared/tdd/tdd-loop.md`](../_shared/tdd/tdd-loop.md).** Load it as your operating procedure for this issue. Do not duplicate the loop here — read the file and follow it. Related references in the same directory: [tests.md](../_shared/tdd/tests.md), [mocking.md](../_shared/tdd/mocking.md), [refactoring.md](../_shared/tdd/refactoring.md).
 
