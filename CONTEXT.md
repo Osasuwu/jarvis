@@ -45,6 +45,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Deep module** — small interface, large hidden implementation. Caller knows minimum, gets maximum behavior. Anti-pattern: shallow modules where interface ≈ implementation complexity.
 - **Deletion test** — diagnostic for module depth: imagine deleting it. If complexity vanishes, it was a pass-through (shallow). If complexity reappears across N callers, it earned its keep (deep).
 - **Implicit assumption** — domain rule that's "obvious" to the human but not in writing. Source of scope shrinkage. Surfaced via `/grill`, fixed by adding to this file or to AC.
+- **TDD-mode** — runtime mode of `/implement` and `/delegate` engaged when the SOUL.md grill-me trigger checkbox fires (≥1 yes) AND `working_state_jarvis` contains `decision_uuids[]` from a completed `/grill`. Operates as one-AC-at-a-time red→green→refactor loop. Reference material in `.claude-userlevel/skills/_shared/tdd/`. Selected via stateless pre-flight re-derivation, not orchestrator flag. ADR-0001 compliant (entered at session start, not mid-task).
 
 ### Skill trigger model (ADR-0001)
 
