@@ -61,7 +61,7 @@ Implementation: invoke the registration script directly (idempotent, replaces ex
 
 ```powershell
 .\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo jarvis
-.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo redrobot -RepoRoot D:\Github\redrobot\redrobot
+.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo redrobot
 ```
 
 On non-Workshop devices the script refuses unless `-Force` (dev rehearsal). Full setup + troubleshooting: [`docs/agents/sandcastle-setup.md`](../../../docs/agents/sandcastle-setup.md).

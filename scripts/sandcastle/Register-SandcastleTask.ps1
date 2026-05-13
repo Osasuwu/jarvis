@@ -116,28 +116,40 @@ if (-not $StartTime) { $StartTime = $defaults[$Repo].Start }
 if (-not $WindowEnd) { $WindowEnd = $defaults[$Repo].End }
 $taskName = $defaults[$Repo].TaskName
 
+# Watchdog always lives in the jarvis repo (same dir as this script). Both
+# jarvis and redrobot loops invoke the same parameterised watchdog -- it
+# handles per-repo dispatch internally via Get-RepoRoot. This avoids
+# duplicating the script across repos (epic #534 architectural commitment:
+# "config identical between jarvis and redrobot").
+$watchdog = Join-Path $PSScriptRoot 'Run-Sandcastle.ps1'
+if (-not (Test-Path $watchdog)) {
+    throw "Watchdog not found at '$watchdog'. Register-SandcastleTask must run from the jarvis repo's scripts/sandcastle directory."
+}
+
+# Working directory for the scheduled task -- cosmetic only (the watchdog
+# does its own Push-Location to the resolved repo root). Default to the
+# jarvis repo so logs / cwd-relative output land somewhere sane.
 if (-not $RepoRoot) {
-    if ($Repo -eq 'jarvis') {
-        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-    } else {
-        throw "For -Repo redrobot you must pass -RepoRoot explicitly (the redrobot worktree is outside the jarvis repo)."
-    }
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 
 if (-not (Test-Path $RepoRoot)) {
     throw "RepoRoot '$RepoRoot' does not exist."
 }
 
-$watchdog = Join-Path $RepoRoot 'scripts\sandcastle\Run-Sandcastle.ps1'
-if ($Repo -eq 'jarvis' -and -not (Test-Path $watchdog)) {
-    throw "Watchdog not found at '$watchdog' -- wrong RepoRoot?"
-}
-# For redrobot, the watchdog ships with jarvis; redrobot uses the same file
-# under its own sandcastle scaffolding (lands as part of slice #546 prep).
-# We still validate that the path exists at registration time so a missing
-# file surfaces immediately instead of at 02:00.
-if ($Repo -eq 'redrobot' -and -not (Test-Path $watchdog)) {
-    Write-Warning "Watchdog not yet present at '$watchdog'. Register-SandcastleTask will create the task, but the first run will fail until the watchdog file is copied in (#546 scope)."
+# For redrobot, the watchdog uses REDROBOT_REPO_ROOT to find the redrobot
+# worktree at runtime. Surface a missing var loudly here rather than at 02:00.
+if ($Repo -eq 'redrobot') {
+    $machineEnv = [System.Environment]::GetEnvironmentVariable('REDROBOT_REPO_ROOT', 'Machine')
+    $userEnv    = [System.Environment]::GetEnvironmentVariable('REDROBOT_REPO_ROOT', 'User')
+    $envVal     = if ($machineEnv) { $machineEnv } elseif ($userEnv) { $userEnv } else { $null }
+    if (-not $envVal) {
+        Write-Warning "REDROBOT_REPO_ROOT machine env var not set. The scheduled task will fail at runtime. Set it once:  setx /M REDROBOT_REPO_ROOT D:\Github\redrobot"
+    } elseif (-not (Test-Path $envVal)) {
+        Write-Warning "REDROBOT_REPO_ROOT='$envVal' does not exist on disk. Fix before 02:00."
+    } else {
+        Write-Host "[register] REDROBOT_REPO_ROOT='$envVal' resolves to a real path."
+    }
 }
 
 # ---------------------------------------------------------------------------
