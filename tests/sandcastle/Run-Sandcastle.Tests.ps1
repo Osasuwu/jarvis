@@ -269,6 +269,7 @@ Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
             }
         }
         Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-tier-test-$([guid]::NewGuid())" }
+        Mock Invoke-RuntimeSweep { @() }   # #572: keep sweep no-op in matrix tests
         Mock Write-OutcomeRecord { 'mocked' }
         Mock Send-TelegramAlert  { 'mocked' }
         Mock Add-IssueLabel      { $true }
@@ -488,6 +489,7 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         }
         # No real .sandcastle/runtime/* directories or HTTP calls during tests.
         Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-test-$([guid]::NewGuid())" }
+        Mock Invoke-RuntimeSweep { @() }   # #572: keep sweep no-op in matrix tests
         Mock Send-TelegramAlert { 'mocked-tg-response' }
     }
 
@@ -700,5 +702,220 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
                 $Summary -like '*window-expired*' -and
                 $Summary -like '*iterations=1*'
             }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Invoke-Sandcastle internals (#572) -- previously only tested via the daemon
+# matrix wholesale-mock. Cover env save/restore, stale-file cleanup,
+# json-parse-error, exit-vs-no-result paths directly.
+# ---------------------------------------------------------------------------
+
+Describe 'Invoke-Sandcastle' {
+    BeforeEach {
+        $script:tmpRoot = Join-Path $env:TEMP "sandcastle-inv-$([guid]::NewGuid())"
+        New-Item -ItemType Directory -Path $script:tmpRoot | Out-Null
+        $script:resultFile = Join-Path $script:tmpRoot 'result.json'
+        $script:logFile    = Join-Path $script:tmpRoot 'run.log'
+    }
+    AfterEach {
+        if (Test-Path -LiteralPath $script:tmpRoot) {
+            Remove-Item -LiteralPath $script:tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'removes a stale result.json before invoking npm' {
+        '{"stale":true}' | Out-File -FilePath $script:resultFile -Encoding utf8
+        # npm exits cleanly but writes nothing -> ok=false, reason=no-result-file,
+        # AND the stale file must be gone (proving the pre-clean ran).
+        Mock Invoke-NpmSandcastle { [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 } }
+        $r = Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'm' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'run1' -TargetIssue ''
+        $r.ok     | Should Be $false
+        $r.reason | Should Be 'no-result-file'
+        Test-Path -LiteralPath $script:resultFile | Should Be $false
+    }
+
+    It 'restores env vars after the call (save-and-restore symmetry)' {
+        $env:SANDCASTLE_RESULT_FILE      = 'prev-result'
+        $env:SANDCASTLE_MAX_ITERATIONS   = 'prev-max'
+        $env:SANDCASTLE_RUN_ID           = 'prev-run'
+        $env:SANDCASTLE_AGENT_MODEL      = 'prev-model'
+        $env:SANDCASTLE_AGENT_BASE_URL   = 'prev-url'
+        $env:SANDCASTLE_AGENT_AUTH_TOKEN = 'prev-token'
+        $env:SANDCASTLE_TARGET_ISSUE     = 'prev-target'
+        $env:OLLAMA_MODEL                = 'prev-ollama'
+        Mock Invoke-NpmSandcastle { [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 } }
+        Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'new-m' -MaxIterations 5 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'new-run' `
+            -BaseUrl 'http://new' -AuthToken 'new-tok' -TargetIssue '42' | Out-Null
+        $env:SANDCASTLE_RESULT_FILE      | Should Be 'prev-result'
+        $env:SANDCASTLE_MAX_ITERATIONS   | Should Be 'prev-max'
+        $env:SANDCASTLE_RUN_ID           | Should Be 'prev-run'
+        $env:SANDCASTLE_AGENT_MODEL      | Should Be 'prev-model'
+        $env:SANDCASTLE_AGENT_BASE_URL   | Should Be 'prev-url'
+        $env:SANDCASTLE_AGENT_AUTH_TOKEN | Should Be 'prev-token'
+        $env:SANDCASTLE_TARGET_ISSUE     | Should Be 'prev-target'
+        $env:OLLAMA_MODEL                | Should Be 'prev-ollama'
+    }
+
+    It 'returns json-parse-error when result.json is malformed' {
+        Mock Invoke-NpmSandcastle {
+            # Simulate npm writing a bad result.json before exiting 0.
+            'not json {' | Out-File -FilePath $script:resultFile -Encoding utf8
+            [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 }
+        }
+        $r = Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'm' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'run1' -TargetIssue ''
+        $r.ok     | Should Be $false
+        $r.reason | Should Match '^json-parse-error'
+    }
+
+    It 'distinguishes exit!=0 (reason=exit=N) from missing result file (reason=no-result-file)' {
+        Mock Invoke-NpmSandcastle { [pscustomobject]@{ cmdNotFound = $false; exitCode = 137 } }
+        $r1 = Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'm' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'r1' -TargetIssue ''
+        $r1.ok       | Should Be $false
+        $r1.exitCode | Should Be 137
+        $r1.reason   | Should Be 'exit=137'
+
+        Mock Invoke-NpmSandcastle { [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 } }
+        $r2 = Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'm' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'r2' -TargetIssue ''
+        $r2.ok     | Should Be $false
+        $r2.reason | Should Be 'no-result-file'
+    }
+
+    It 'returns npm-not-found when npm is absent' {
+        Mock Invoke-NpmSandcastle { [pscustomobject]@{ cmdNotFound = $true; exitCode = -1 } }
+        $r = Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'm' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'r' -TargetIssue ''
+        $r.ok     | Should Be $false
+        $r.reason | Should Be 'npm-not-found'
+    }
+
+    It 'returns ok with parsed result on success' {
+        Mock Invoke-NpmSandcastle {
+            '{"branch":"feat/1-x","commits":[],"iterations":[]}' | Out-File -FilePath $script:resultFile -Encoding utf8
+            [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 }
+        }
+        $r = Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'm' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'r' -TargetIssue ''
+        $r.ok            | Should Be $true
+        $r.result.branch | Should Be 'feat/1-x'
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Runtime-dir retention sweep (#572). Default keeps 30 most-recent dirs.
+# ---------------------------------------------------------------------------
+
+Describe 'Invoke-RuntimeSweep' {
+    BeforeEach {
+        $script:rootSweep = Join-Path $env:TEMP "sandcastle-sweep-$([guid]::NewGuid())"
+        New-Item -ItemType Directory -Path $script:rootSweep | Out-Null
+    }
+    AfterEach {
+        if (Test-Path -LiteralPath $script:rootSweep) {
+            Remove-Item -LiteralPath $script:rootSweep -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    function New-StampDir([string]$Stamp) {
+        $d = Join-Path $script:rootSweep $Stamp
+        New-Item -ItemType Directory -Path $d | Out-Null
+        return $d
+    }
+
+    It 'returns empty array when runtime root does not exist' {
+        Invoke-RuntimeSweep -RuntimeRoot (Join-Path $script:rootSweep 'nope') -Keep 3 | Should BeNullOrEmpty
+    }
+
+    It 'returns empty array when count <= Keep' {
+        New-StampDir '20260101-000000' | Out-Null
+        New-StampDir '20260102-000000' | Out-Null
+        Invoke-RuntimeSweep -RuntimeRoot $script:rootSweep -Keep 5 | Should BeNullOrEmpty
+        (Get-ChildItem -LiteralPath $script:rootSweep -Directory).Count | Should Be 2
+    }
+
+    It 'prunes oldest dirs and keeps the N most recent (lexicographic by name)' {
+        $stamps = @(
+            '20260101-000000','20260102-000000','20260103-000000',
+            '20260104-000000','20260105-000000'
+        )
+        foreach ($s in $stamps) { New-StampDir $s | Out-Null }
+        $pruned = Invoke-RuntimeSweep -RuntimeRoot $script:rootSweep -Keep 2
+        $pruned.Count | Should Be 3
+        ($pruned -contains '20260101-000000') | Should Be $true
+        ($pruned -contains '20260102-000000') | Should Be $true
+        ($pruned -contains '20260103-000000') | Should Be $true
+        $kept = Get-ChildItem -LiteralPath $script:rootSweep -Directory | Select-Object -ExpandProperty Name
+        ($kept -contains '20260104-000000') | Should Be $true
+        ($kept -contains '20260105-000000') | Should Be $true
+        $kept.Count | Should Be 2
+    }
+
+    It 'disables sweep when Keep is negative' {
+        New-StampDir '20260101-000000' | Out-Null
+        New-StampDir '20260102-000000' | Out-Null
+        Invoke-RuntimeSweep -RuntimeRoot $script:rootSweep -Keep -1 | Should BeNullOrEmpty
+        (Get-ChildItem -LiteralPath $script:rootSweep -Directory).Count | Should Be 2
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Write-OutcomeRecord HTTP path (#572). Asserts URL, headers, and body shape
+# against a mocked Invoke-RestMethod so endpoint/auth regressions are caught
+# in CI rather than at the first AFK run.
+# ---------------------------------------------------------------------------
+
+Describe 'Write-OutcomeRecord HTTP path' {
+    It 'posts to <SupabaseUrl>/rest/v1/task_outcomes with apikey + Bearer headers and required body keys' {
+        $script:captured = $null
+        Mock Invoke-RestMethod {
+            $script:captured = @{
+                Uri     = $Uri
+                Method  = $Method
+                Headers = $Headers
+                Body    = ($Body | ConvertFrom-Json)
+            }
+            return [pscustomobject]@{ id = 'rec-1' }
+        }
+
+        $r = Write-OutcomeRecord -SupabaseUrl 'https://example.supabase.co/' `
+            -SupabaseKey 'sk-test' -Repo 'jarvis' -Status 'success' `
+            -Summary 'all green' `
+            -LlmMetrics @{ input_tokens = 10; output_tokens = 20; model = 'm' } `
+            -RunId 'run-xyz'
+
+        Assert-MockCalled Invoke-RestMethod -Times 1 -Exactly -Scope It
+        $script:captured.Uri    | Should Be 'https://example.supabase.co/rest/v1/task_outcomes'
+        $script:captured.Method | Should Be 'Post'
+        $script:captured.Headers['apikey']        | Should Be 'sk-test'
+        $script:captured.Headers['Authorization'] | Should Be 'Bearer sk-test'
+        $script:captured.Headers['Content-Type']  | Should Be 'application/json'
+
+        $body = $script:captured.Body
+        $body.task_type         | Should Be 'autonomous'
+        $body.outcome_status    | Should Be 'success'
+        $body.project           | Should Be 'jarvis'
+        $body.source_provenance | Should Be 'sandcastle:watchdog:run-xyz'
+        # pattern_tags must include the baseline sandcastle/afk tags.
+        ($body.pattern_tags -contains 'sandcastle') | Should Be $true
+        ($body.pattern_tags -contains 'afk')        | Should Be $true
+        # lessons carries serialised LLM metrics (JSON string for now, until
+        # task_outcomes gains a dedicated llm jsonb column).
+        $body.lessons | Should Not BeNullOrEmpty
+        $lessons = $body.lessons | ConvertFrom-Json
+        $lessons.input_tokens  | Should Be 10
+        $lessons.output_tokens | Should Be 20
+    }
+
+    It 'short-circuits without calling Invoke-RestMethod when credentials are missing' {
+        Mock Invoke-RestMethod { throw 'should not be called' }
+        $r = Write-OutcomeRecord -SupabaseUrl '' -SupabaseKey '' -Repo 'jarvis' `
+            -Status 'success' -Summary 's' -LlmMetrics @{} -RunId 'r'
+        $r | Should BeNullOrEmpty
+        Assert-MockCalled Invoke-RestMethod -Times 0 -Exactly -Scope It
     }
 }

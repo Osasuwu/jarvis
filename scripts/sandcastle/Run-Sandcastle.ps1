@@ -5,12 +5,17 @@
 # Responsibilities:
 #  1. Ensure Docker daemon is up (autostart + poll, fail fast on timeout).
 #  2. Ensure Ollama is up (autostart + poll, fail fast on timeout).
-#  3. Run sandcastle one or more iterations via tsx/npm.
-#  4. Parse the result JSON dumped by main.mts.
-#  5. Write outcome_record to Supabase via PostgREST anon insert.
-#  6. Honor a safe-hours window -- soft-stop between iterations only.
+#  3. Prune stale .sandcastle/runtime/<stamp>/ dirs (keep N most recent).
+#  4. Run sandcastle one or more iterations via tsx/npm.
+#  5. Parse the result JSON dumped by main.mts.
+#  6. Write outcome_record to Supabase via PostgREST anon insert.
+#  7. Honor a safe-hours window -- soft-stop between iterations only.
 #
 # Telegram (slice 6) and multi-tier escalation (slice 5) are layered later.
+#
+# -RuntimeRetention <N> (default 30) controls the runtime-dir sweep at the
+# start of each watchdog run. Env var SANDCASTLE_RUNTIME_RETENTION overrides.
+# Pass -RuntimeRetention -1 to disable sweep. (#572)
 
 [CmdletBinding()]
 param(
@@ -37,6 +42,11 @@ param(
 
     [ValidateSet('', 'deepseek', 'claude')]
     [string]$Tier2Provider = '',
+
+    # Runtime-dir retention: keep the N most-recent .sandcastle/runtime/<stamp>/
+    # directories on watchdog entry, prune older ones. -1 disables the sweep.
+    # Env var SANDCASTLE_RUNTIME_RETENTION overrides this if set (#572).
+    [int]$RuntimeRetention = 30,
 
     # Skip the actual sandcastle invocation -- for dry runs and Pester.
     [switch]$NoExecute
@@ -172,6 +182,55 @@ function New-RuntimeDir {
     return $dir
 }
 
+function Invoke-RuntimeSweep {
+    # Prune .sandcastle/runtime/<stamp>/ to the most recent $Keep directories.
+    # Used by Invoke-Watchdog before each run so nightly AFK loops don't fill
+    # disk with stale per-iteration runtime dirs. $Keep -lt 0 disables sweep.
+    [CmdletBinding()]
+    param(
+        [string]$RuntimeRoot,
+        [int]$Keep = 30
+    )
+    if ($Keep -lt 0) { return @() }
+    if (-not (Test-Path -LiteralPath $RuntimeRoot)) { return @() }
+    $dirs = Get-ChildItem -LiteralPath $RuntimeRoot -Directory -ErrorAction SilentlyContinue |
+        Sort-Object -Property Name -Descending
+    if ($dirs.Count -le $Keep) { return @() }
+    $toPrune = $dirs | Select-Object -Skip $Keep
+    $pruned = @()
+    foreach ($d in $toPrune) {
+        try {
+            Remove-Item -LiteralPath $d.FullName -Recurse -Force -ErrorAction Stop
+            $pruned += $d.Name
+        } catch {
+            Write-Warning "runtime-sweep: failed to remove $($d.FullName): $_"
+        }
+    }
+    return $pruned
+}
+
+function Invoke-NpmSandcastle {
+    # Thin wrapper around `npm run sandcastle` extracted from Invoke-Sandcastle
+    # so the npm call can be mocked in tests (#572). The PS 5.1 stderr-wrapping
+    # workaround (#608) lives here.
+    [CmdletBinding()]
+    param([string]$LogFile)
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        return [pscustomobject]@{ cmdNotFound = $true; exitCode = -1 }
+    }
+    # PS 5.1 wraps every native-command stderr line as a NativeCommandError
+    # under EAP=Stop, killing the watchdog on npm's first stderr line
+    # (any warning). Delegate the 2>&1 merge to cmd.exe so PS only sees
+    # a single stdout stream -- no wrapping, no terminating exception.
+    # See issue #608.
+    $combined = & cmd.exe /c 'npm run --silent sandcastle 2>&1'
+    $exitCode = $LASTEXITCODE
+    if ($LogFile) {
+        $combined | Out-File -FilePath $LogFile -Encoding utf8 -Append
+    }
+    return [pscustomobject]@{ cmdNotFound = $false; exitCode = $exitCode }
+}
+
 function Invoke-Sandcastle {
     [CmdletBinding()]
     param(
@@ -217,18 +276,9 @@ function Invoke-Sandcastle {
     Push-Location -LiteralPath $RepoRoot
     $cmdNotFound = $false
     try {
-        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
-            $cmdNotFound = $true
-        } else {
-            # PS 5.1 wraps every native-command stderr line as a NativeCommandError
-            # under EAP=Stop, killing the watchdog on npm's first stderr line
-            # (any warning). Delegate the 2>&1 merge to cmd.exe so PS only sees
-            # a single stdout stream — no wrapping, no terminating exception.
-            # See issue #608.
-            $combined = & cmd.exe /c 'npm run --silent sandcastle 2>&1'
-            $exitCode = $LASTEXITCODE
-            $combined | Out-File -FilePath $LogFile -Encoding utf8 -Append
-        }
+        $npmResult = Invoke-NpmSandcastle -LogFile $LogFile
+        $cmdNotFound = $npmResult.cmdNotFound
+        $exitCode = $npmResult.exitCode
     } finally {
         Pop-Location
         $env:SANDCASTLE_RESULT_FILE      = $prev.SANDCASTLE_RESULT_FILE
@@ -536,11 +586,27 @@ function Invoke-Watchdog {
         [int]$OllamaTimeoutSec,
         # Slice 5 (#543) tier overrides; empty disables the corresponding tier.
         [string]$Tier1Model,
-        [string]$Tier2Provider
+        [string]$Tier2Provider,
+        # #572: runtime-dir retention; env var SANDCASTLE_RUNTIME_RETENTION wins.
+        [int]$RuntimeRetention = 30
     )
 
     $repoRoot = Get-RepoRoot -Repo $Repo
     $stamp = (Get-Date).ToString('yyyyMMdd-HHmmss')
+
+    $retention = $RuntimeRetention
+    if ($env:SANDCASTLE_RUNTIME_RETENTION) {
+        $parsed = 0
+        if ([int]::TryParse($env:SANDCASTLE_RUNTIME_RETENTION, [ref]$parsed)) {
+            $retention = $parsed
+        }
+    }
+    $runtimeRoot = Join-Path $repoRoot '.sandcastle/runtime'
+    $pruned = Invoke-RuntimeSweep -RuntimeRoot $runtimeRoot -Keep $retention
+    if ($pruned.Count -gt 0) {
+        Write-Host "[watchdog] runtime-sweep: pruned $($pruned.Count) stale dirs (kept $retention)"
+    }
+
     $runtimeDir = New-RuntimeDir -RepoRoot $repoRoot -Stamp $stamp
     $logFile = Join-Path $runtimeDir 'run.log'
     $resultFile = Join-Path $runtimeDir 'result.json'
@@ -707,5 +773,6 @@ if (-not $NoExecute -and $Repo) {
     Invoke-Watchdog -Repo $Repo -MaxIterations $MaxIterations -Model $Model `
         -WindowEnd $WindowEnd -DockerTimeoutSec $DockerTimeoutSec `
         -OllamaTimeoutSec $OllamaTimeoutSec `
-        -Tier1Model $Tier1Model -Tier2Provider $Tier2Provider
+        -Tier1Model $Tier1Model -Tier2Provider $Tier2Provider `
+        -RuntimeRetention $RuntimeRetention
 }
