@@ -25,12 +25,12 @@ Raw logs: `.sandcastle/runtime/bench-538/` (gitignored).
 
 | Model | Quant | Disk size | Cold wall | Warm wall | **Warm tok/s** | Eval tokens |
 |---|---|---|---|---|---|---|
-| `qwen2.5-coder:14b` | Q4_K_M | 9.0 GB | 15.6 s | 5.0 s | **94.6** | 400 |
-| `qwen2.5-coder:32b` | Q4_K_M | 19 GB | 88.5 s | 77.3 s | **5.2** | 400 |
-| `qwen3-coder:30b` | — | — | — | — | *(pending pull)* | — |
-| `qwen2.5-coder:7b` | — | — | — | — | *(pending pull, downgrade-tier candidate)* | — |
+| `qwen2.5-coder:7b`  | Q4_K_M | 4.7 GB | 5.1 s  | 2.6 s  | **227.3** | 400 |
+| `qwen2.5-coder:14b` | Q4_K_M | 9.0 GB | 15.6 s | 5.0 s  | **94.6**  | 400 |
+| `qwen2.5-coder:32b` | Q4_K_M | 19 GB  | 88.5 s | 77.3 s | **5.2**   | 400 |
+| `qwen3-coder:30b`   | —      | —      | —      | —      | *(pending pull — 30B-class hits the same 16 GB VRAM ceiling regardless of MoE)* | — |
 
-GPU mem after 14b warm run: **14.2 GB / 16.3 GB used**. Headroom is tight on 14b but it fits cleanly in VRAM. Higher tok/s on warm runs (94.6) than typical RTX 5080 baseline because eval is fully GPU-resident.
+GPU mem during runs: **14.2 GB / 16.3 GB used** on 14b (tight headroom but fits), **7.5 GB used** on 7b (large headroom). 7b clears the threshold by ~7×, leaving room for very small parallel agents or longer-context iterations.
 
 `qwen2.5-coder:32b` Q4_K_M at 19 GB exceeds the 16 GB VRAM budget — Ollama spills layers to CPU. Result is **~18× slower** than 14b. Effectively unusable for an AFK loop.
 
@@ -56,7 +56,7 @@ Observed `qwen2.5-coder:14b` at **94 tok/s** is comfortably above the threshold 
 | Tier | Model | Reason |
 |---|---|---|
 | **Production primary (Tier 0)** | `qwen2.5-coder:14b` | Fits 16 GB VRAM, 94 tok/s warm, real-task quality acceptable. |
-| **Downgrade tier (Tier 1, on OOM)** | `qwen2.5-coder:7b` *(pull in progress)* | Smaller footprint, same family for prompt-format consistency. Benchmark to follow when pull completes. |
+| **Downgrade tier (Tier 1, on OOM)** | `qwen2.5-coder:7b` | 227 tok/s warm, 4.7 GB on disk, 7.5 GB VRAM use. Same `qwen2.5-coder` family as Tier 0 → prompt-format compatible. |
 | **Disqualified on this hardware** | `qwen2.5-coder:32b`, `qwen3-coder:30b` | At 19 GB Q4 they spill VRAM on a 16 GB card. 32b measured at 5 tok/s. 30b expected similar (MoE may help but won't bring weights below VRAM). |
 
 `qwen3-coder:30b` MoE will be benchmarked when the pull lands; if it returns ≥ 30 tok/s sustained on this hardware (i.e. MoE active-params keep VRAM use under the budget) the primary decision is revisited. Until then, 14b is locked in.
