@@ -43,3 +43,27 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 - Times are in local timezone (not UTC)
 - Cron dedup via Supabase memory: scheduled tasks check `*_last_run` markers to prevent duplicate runs across devices
 - Prompts reference skill files so updates to skills automatically update scheduled task behavior
+
+## Workshop-only: Sandcastle AFK loops (Windows Task Scheduler)
+
+Sandcastle is a **local** Docker-based AFK loop, not a remote scheduled agent — it runs `Run-Sandcastle.ps1` inside Windows Task Scheduler against an Ollama-backed Claude Code container. Different infra from the six tasks above (those use `create_scheduled_task` MCP; sandcastle uses `Register-ScheduledTask`).
+
+When invoked on the Workshop PC (`config/device.json` name = `VividFormsPC4Workshop`), `/setup-tasks` also registers:
+
+| Task name | Schedule | Window end | Slice |
+|---|---|---|---|
+| `Sandcastle-Jarvis` | Daily 22:00 | 02:00 | [#545](https://github.com/Osasuwu/jarvis/issues/545) |
+| `Sandcastle-Redrobot` | Daily 02:00 | 08:00 | [#546](https://github.com/Osasuwu/jarvis/issues/546) |
+
+Non-overlapping by design — prevents two Ollama jobs contending for VRAM.
+
+Implementation: invoke the registration script directly (idempotent, replaces existing entry):
+
+```powershell
+.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo jarvis
+.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo redrobot -RepoRoot D:\Github\redrobot\redrobot
+```
+
+On non-Workshop devices the script refuses unless `-Force` (dev rehearsal). Full setup + troubleshooting: [`docs/agents/sandcastle-setup.md`](../../../docs/agents/sandcastle-setup.md).
+
+Decisions: `4890aa35` (Workshop = prod), `0c3017c6` (failure modes), `f8e27d53` (escalation), `58670ea5` (model tier).
