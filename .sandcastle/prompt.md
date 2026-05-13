@@ -20,7 +20,7 @@ never merging**.
 
 ## Workflow per iteration
 
-The `!` shell blocks at the top of this prompt (issue list + git log) run before
+The "!" shell blocks at the top of this prompt (issue list + git log) run before
 the agent's first turn — they are context, not the agent's tool calls. The
 "recall first" rule below applies to **the first MCP tool call the agent
 issues**, not to the prompt-level context blocks.
