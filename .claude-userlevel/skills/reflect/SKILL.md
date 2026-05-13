@@ -23,7 +23,7 @@ Two-phase skill. Phase A on each device produces a per-device patterns file in `
 - **Per-device staging**: `~/.cache/jarvis-comms-analysis/{DATE}_{DEVICE}/` — holds `comms_extract.jsonl`, `{DEVICE}_patterns.json`
 - **Cross-device merge dir**: `~/.cache/jarvis-comms-analysis/merge_{DATE}/` — user manually copies each device's `{DEVICE}_patterns.json` here before running Phase B
 - **Sessions source**: `~/.claude/projects/*/*.jsonl` (Path.home() resolves correctly on all OSes)
-- **Skill scripts**: installed at `~/.claude/skills/reflect/` on every device
+- **Scripts location**: `$JARVIS_HOME/scripts/analyze-comms/` (set by installer; same dir on every device)
 
 ---
 
@@ -45,9 +45,9 @@ If directory already exists from a same-day run, append `_2`, `_3`, etc.
 ### Step A2 — Run extraction + stats
 
 ```bash
-SKILL_DIR="$HOME/.claude/skills/reflect"
-python "$SKILL_DIR/extract_comms.py"  "$STAGE/comms_extract.jsonl"
-python "$SKILL_DIR/analyze_comms.py"  "$STAGE/comms_extract.jsonl"
+SCRIPTS="$JARVIS_HOME/scripts/analyze-comms"
+python "$SCRIPTS/extract_comms.py"  "$STAGE/comms_extract.jsonl"
+python "$SCRIPTS/analyze_comms.py"  "$STAGE/comms_extract.jsonl"
 ```
 
 Print `analyze_comms.py` output inline — aggregate stats only, no quotes, safe to show.
@@ -57,7 +57,7 @@ If `interactive sessions: 0` → stop. Nothing to analyze.
 ### Step A3 — Compress to patterns file
 
 ```bash
-python "$SKILL_DIR/compress_patterns.py" \
+python "$SCRIPTS/compress_patterns.py" \
   "$STAGE/comms_extract.jsonl" \
   "$STAGE/${DEVICE}_patterns.json"
 ```
@@ -97,8 +97,8 @@ If empty or fewer than 2 files → ask the user where the patterns.json files ar
 ### Step B2 — Run cross-device merge
 
 ```bash
-SKILL_DIR="$HOME/.claude/skills/reflect"
-python "$SKILL_DIR/analyze_cross_device.py" \
+SCRIPTS="$JARVIS_HOME/scripts/analyze-comms"
+python "$SCRIPTS/analyze_cross_device.py" \
   "$STAGE_MERGE/"*_patterns.json \
   "$STAGE_MERGE/merged_patterns.json"
 ```
