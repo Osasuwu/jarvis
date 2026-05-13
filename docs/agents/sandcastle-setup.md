@@ -50,7 +50,7 @@ invoking tools.
 
 The jarvis repo lives at `D:\Github\jarvis` (this device's `config/device.json`
 sets `repos_path` to `D:\Github`). The redrobot repo lives at
-`D:\Github\redrobot\redrobot` (the inner directory is the actual repo). Both
+`D:\Github\redrobot` (the inner directory is the actual repo). Both
 must be cloned and on `main`/`master` before scheduling.
 
 ### 4. `.sandcastle/.env`
@@ -91,13 +91,18 @@ Once the prerequisites above are in place, the Task Scheduler entries are
 **fully automated**:
 
 ```powershell
+# One-time machine env so the redrobot watchdog finds the worktree at 02:00.
+setx /M REDROBOT_REPO_ROOT D:\Github\redrobot
+# (open a fresh shell after setx — Machine vars don't refresh in the current one)
+
 # jarvis loop — 22:00 nightly, soft-stop at 02:00
 .\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo jarvis
 
 # redrobot loop — 02:00 nightly, soft-stop at 08:00 (non-overlapping)
-.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo redrobot `
-    -RepoRoot D:\Github\redrobot\redrobot
+.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo redrobot
 ```
+
+Both repos share the **same** `Run-Sandcastle.ps1` watchdog (it lives in jarvis and is `-Repo`-aware) — no duplication into the redrobot repo. Redrobot only carries its own `.sandcastle/` (Dockerfile, prompt, .env), not the scheduler scripts.
 
 The script is idempotent — running again replaces the existing task. It
 refuses to register on non-Workshop devices unless `-Force` is passed.

@@ -663,7 +663,11 @@ function Invoke-Watchdog {
     }
 
     # 3. Iterate (soft-stop on window expiry between iterations)
-    $repoSlug = if ($Repo -eq 'jarvis') { 'Osasuwu/jarvis' } else { '' }
+    $repoSlug = switch ($Repo) {
+        'jarvis'   { 'Osasuwu/jarvis' }
+        'redrobot' { 'SergazyNarynov/redrobot' }
+        default    { '' }
+    }
     $totalUsage = @{ input_tokens = 0; output_tokens = 0; cache_read_input_tokens = 0; cache_creation_input_tokens = 0; model = $Model }
     $allCommits = @()
     $branch = $null
