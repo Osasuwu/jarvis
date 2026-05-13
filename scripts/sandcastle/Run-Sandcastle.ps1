@@ -217,12 +217,17 @@ function Invoke-Sandcastle {
     Push-Location -LiteralPath $RepoRoot
     $cmdNotFound = $false
     try {
-        try {
-            $combined = & npm run --silent sandcastle 2>&1
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            $cmdNotFound = $true
+        } else {
+            # PS 5.1 wraps every native-command stderr line as a NativeCommandError
+            # under EAP=Stop, killing the watchdog on npm's first stderr line
+            # (any warning). Delegate the 2>&1 merge to cmd.exe so PS only sees
+            # a single stdout stream — no wrapping, no terminating exception.
+            # See issue #608.
+            $combined = & cmd.exe /c 'npm run --silent sandcastle 2>&1'
             $exitCode = $LASTEXITCODE
             $combined | Out-File -FilePath $LogFile -Encoding utf8 -Append
-        } catch [System.Management.Automation.CommandNotFoundException] {
-            $cmdNotFound = $true
         }
     } finally {
         Pop-Location

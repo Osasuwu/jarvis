@@ -107,9 +107,15 @@ const result = await run({
         // (memory MCP only). The host .mcp.json registers many host-only
         // servers that would fail inside the sterile container. Sandcastle
         // uses copy-on-write worktrees so this never touches the host repo.
-        // Adding the path to .git/info/exclude first ensures `git add -A`
-        // inside the agent loop cannot accidentally stage the override.
-        { command: "echo /.mcp.json >> .git/info/exclude" },
+        // Adding the path to info/exclude first ensures `git add -A` inside
+        // the agent loop cannot accidentally stage the override.
+        //
+        // `.git` in a worktree is a *file* (gitdir pointer), not a directory,
+        // so `>> .git/info/exclude` opens via the shell and fails with ENOTDIR.
+        // `git rev-parse --git-path info/exclude` resolves the actual shared
+        // info/exclude path inside the parent .git directory (#607).
+        { command: "mkdir -p $(git rev-parse --git-path info)" },
+        { command: "echo /.mcp.json >> $(git rev-parse --git-path info/exclude)" },
         { command: "cp /opt/sandcastle/container-mcp.json .mcp.json" },
       ],
     },
