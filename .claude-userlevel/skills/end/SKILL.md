@@ -117,6 +117,7 @@ Save `working_state_jarvis` (type=project) to Supabase. Always. Content:
 - What was done this session
 - Open items: unfinished work, things to fix, deferred tasks
 - Key context for next session (blockers, decisions pending review)
+- **Suggested next skills** — explicit chain hint for the next session, e.g. `/status → /implement #532 → /verify`. One line, ordered. Omit only if truly nothing pending (rare; usually at least `/status`). Lets the next session skip the "what should I run first" decision; mirrors the one useful idea from Pocock's `/handoff` skill without forking durable storage out of Supabase.
 
 This is the handoff to the next session. If open items exist in Step 8 output, they MUST be in this memory too — output is ephemeral, memory persists.
 
