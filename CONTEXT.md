@@ -83,6 +83,7 @@ These are the "obvious" assumptions that previously bit because they weren't wri
 
 - **Memory is cross-device source of truth.** Anything important goes through Supabase. File-based memory (`~/.claude/projects/.../memory/`) is device-local and does NOT sync.
 - **Every `memory_store` carries `source_provenance`.** No exceptions. Server rejects unattributed writes (JTMS attribution requirement).
+- **Sandcastle provenance gate is table-level + op-level, not agent-level.** RLS on `memories` / `task_outcomes` / `episodes` / `events_canonical` requires `source_provenance` (or `actor`, on episodes/events) `LIKE 'sandcastle:%'` for **every** anon INSERT/UPDATE/DELETE — not just INSERT. Slice 3 (#542) gated INSERT; slice 3.5 (#565) extended to UPDATE+DELETE so anon can neither wipe rows nor forge/erase the provenance column. Service-role bypasses RLS — host MCP must use `SUPABASE_SERVICE_KEY` (#564, #569) to write any non-sandcastle provenance.
 - **State is never in static files or memory.** Status %, dates, PR markers, "current sprint" — all of these live in GitHub. Static storage is for stable knowledge, not state.
 - **`record_decision` always passes `memories_used=[<UUIDs>]`.** Names, not UUIDs, break attribution.
 
