@@ -55,22 +55,19 @@ For each repo `R` in `config/repos.conf`, query in parallel:
 
 ```bash
 # Milestones
-gh api "repos/<R>/milestones?state=open&per_page=50" --jq '.[] | {number,title,state,open_issues,closed_issues,due_on}'
-# Epics without milestone
-gh issue list --repo <R> --label epic --state open --json number,title,milestone,labels --limit 30
+gh api "repos/<R>/milestones?state=open&per_page=50" --jq '.[] | {number,title,state,open_issues,closed_issues,description}'
 # CI runs for failure rate
 gh run list --repo <R> --json conclusion,name,createdAt --limit 20
 ```
 
-Generate candidates:
+Generate candidates (see `milestone_hierarchy_v3` for the model):
 
 | Signal | Detection | Risk | Action |
 |--------|-----------|------|--------|
 | **Orphan milestone** | `state==open && open_issues==0` | Low | `gh api repos/<R>/milestones/<N> -X PATCH -F state=closed` |
-| **Orphan sprint** | `label==epic && /Sprint/i.test(title) && milestone==null` | Medium | Create milestone from epic title + attach epic + merged-PRs that reference it |
+| **Date-anchored milestone** | Title matches `/— ?\d{4}-\d{2}/` (e.g. "— 2026-05") | Low | Flag + propose rename to drop the date; new model is capability-shipping, not date-boxed |
 | **CI workflow broken** | Same-name workflow ≥50% fail rate in last 10 runs AND ≥24h old | Medium | Spawn debug task via `/delegate` pointing at the workflow file |
-| **Milestone deadline risk** | `due_on within 3 days && open_issues > 0` | — (flag only) | Add to `## Alerts` in output; don't auto-act |
-| **Epic missing Children heading** | body fails `/##+\s*Children/i` regex | Low | Flag + record proposal (don't auto-rewrite body — content judgment) |
+| **Empty milestone description** | `description == "" or null && open_issues > 0` | Low | Flag + propose adding a PRD/intent to milestone description (PRDs live in milestone description, not separate epic-issues) |
 
 **Write-action permissions (enforced here):**
 - Repos under `Osasuwu/*` → all Low/Medium actions execute normally.
@@ -247,21 +244,20 @@ Process the selected actions in order. Track results as `{action, status, detail
 ### Low-risk batch (up to 5)
 Execute each independently:
 - Create GitHub issue: `gh issue create --repo <R> --title "..." --body "..."`
-  - **Epics** (`--label epic`) MUST use the `.github/ISSUE_TEMPLATE/epic.yml` structure: body requires `### Children` heading with `- [ ]` checkbox items, else `Issue Checks` CI fails. No `Parent: #NNN` — epics use milestones, not parent links.
-  - **Tasks/bugs**: link parent via GitHub sub-issue relationship or `Parent: #NNN` at top of body.
+  - **Tasks/bugs/slices**: link parent via GitHub sub-issue relationship or `Parent: #NNN` at top of body. Group related slices under a milestone (no separate epic-issue layer — see `milestone_hierarchy_v3`).
 - Memory operations: `memory_store(..., source_provenance="skill:autonomous-loop")`, `goal_update(...)`
 - Tag or label work: `gh issue edit`, `gh pr edit`
 - Triage events: `events_mark_processed(...)`
 - Memory consolidation: run `find_consolidation_clusters()` via `execute_sql`, for each cluster: read all memories, merge content into one authoritative memory via `memory_store(..., source_provenance="skill:autonomous-loop")`, archive originals via `archive_memories(ids)`
 - **Hygiene: close orphan milestone** (only on `Osasuwu/*` repos): `gh api repos/<R>/milestones/<N> -X PATCH -F state=closed` — for each milestone with `state=open && open_issues==0`.
-- **Hygiene: flag epic missing Children heading**: record proposal via `memory_store(type="project", name="hygiene_epic_<N>_needs_children", ..., source_provenance="skill:autonomous-loop")`. Don't auto-rewrite bodies.
+- **Hygiene: flag empty milestone description**: record proposal via `memory_store(type="project", name="hygiene_milestone_<N>_needs_description", ..., source_provenance="skill:autonomous-loop")`. Don't auto-write descriptions — content judgment.
 
 ### Medium-risk (at most 1)
 Execute after Low-risk batch completes:
 - Invoke skill: `/self-improve`, `/research`, `/verify`
 - Create PR: delegate via `/delegate` or `gh pr create`
 - Update goal: `goal_update(slug=..., progress=...)`
-- **Hygiene: retroactive milestone** for orphan sprint — `gh api repos/<R>/milestones -X POST` with title from epic, attach epic + linked merged PRs, close milestone. Only on `Osasuwu/*`.
+- **Hygiene: retroactive milestone** for an orphan grouping (≥3 related slices shipped without milestone) — `gh api repos/<R>/milestones -X POST` with title derived from common theme, set description to a brief PRD, attach the slices+merged PRs, close if all are merged. Only on `Osasuwu/*`.
 - **Hygiene: broken CI debug** — `/delegate` a task to investigate the failing workflow, pointing at the specific workflow file and failure rate. Only on `Osasuwu/*`.
 
 ### High-risk (proposals only)

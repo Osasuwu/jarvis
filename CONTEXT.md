@@ -14,8 +14,9 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 
 ### Core entities
 
-- **Pillar** — a multi-sprint capability area. Lives forever in memory, never closes. Examples: Memory, Autonomy, Identity, Multi-agent. **A pillar is not a task** — closing one sprint of pillar work doesn't close the pillar.
-- **Sprint** — a time-boxed unit of work, == one GitHub milestone. Concrete, must close cleanly (0 open issues + state=open is a bug).
+- **Pillar** — a multi-milestone capability area. Lives forever in memory, never closes. Narrative grouping only; not a structural unit. Examples: Memory, Autonomy, Identity, Multi-agent. **A pillar is not a task** — closing one milestone within a pillar doesn't close the pillar.
+- **Milestone** — GitHub milestone grouping ≥2 capability-coherent slices that share a goal or have inter-dependencies. Description carries the PRD or PRD-equivalent (output of `/grill-me` + `/to-prd`). Closes when capability ships, not on a date — no date in title; 0 open issues + state=open is a bug. Term "epic" is **not** used; milestone is the single grouping primitive (`milestone_hierarchy_v3`).
+- **Slice** — one PR, vertical (schema → service → API → UI → tests). A single independent slice with no inter-deps ships **without** a milestone — no ceremony for one-offs.
 - **Skill** — atomic, reusable agent capability defined in `.claude-userlevel/skills/<name>/SKILL.md`. Universal (not project-specific). Loaded by Claude Code at session start.
 - **Subagent** — agent dispatched via the `Agent` tool from a parent session. Runs in isolation (own context, own worktree if requested), reports back. Not the same as "skill".
 - **Memory** — durable cross-session knowledge in Supabase. Types: `user`, `project`, `decision`, `feedback`, `reference`. Always carries `source_provenance`.
@@ -73,6 +74,8 @@ Where load-bearing rules live, in order of preference:
 ## Invariants (domain rules that must always hold)
 
 These are the "obvious" assumptions that previously bit because they weren't written down. Add to this list every time a `/grill` session surfaces one.
+
+- **Threat-model duality** — defence layers must match the threat model, not stack defensively for "more is better". Sandcastle is already process-isolated by Docker + sterile image; piling host-grade defences on top adds friction without adding security. Cross-link memory `enforcement_layer_matches_threat_model`.
 
 - **Threat-model duality** — defence layers must match the threat model, not stack defensively for "more is better". Sandcastle is already process-isolated by Docker + sterile image; piling host-grade defences on top adds friction without adding security. Cross-link memory `enforcement_layer_matches_threat_model`.
 
