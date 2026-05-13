@@ -28,9 +28,11 @@ Raw logs: `.sandcastle/runtime/bench-538/` (gitignored).
 | `qwen2.5-coder:7b`  | Q4_K_M | 4.7 GB | 5.1 s  | 2.6 s  | **227.3** | 400 |
 | `qwen2.5-coder:14b` | Q4_K_M | 9.0 GB | 15.6 s | 5.0 s  | **94.6**  | 400 |
 | `qwen2.5-coder:32b` | Q4_K_M | 19 GB  | 88.5 s | 77.3 s | **5.2**   | 400 |
-| `qwen3-coder:30b`   | —      | —      | —      | —      | *(pending pull — 30B-class hits the same 16 GB VRAM ceiling regardless of MoE)* | — |
+| `qwen3-coder:30b`   | Q4 MoE A3B | 18 GB  | 32.1 s | 9.5 s  | **42.9**  | 400 |
 
-GPU mem during runs: **14.2 GB / 16.3 GB used** on 14b (tight headroom but fits), **7.5 GB used** on 7b (large headroom). 7b clears the threshold by ~7×, leaving room for very small parallel agents or longer-context iterations.
+GPU mem during runs: **14.2 GB / 16.3 GB used** on 14b (tight headroom), **7.5 GB used** on 7b (large headroom), **14.9 GB used** on qwen3-coder:30b MoE (just fits — MoE active-params keep weight residency under the budget).
+
+**qwen3-coder:30b surprise:** the MoE A3B architecture (3B active params per token) lets the model fit in 16 GB VRAM despite 30B total params. Result: 42.9 tok/s — **above** the 30 tok/s threshold. Not the production primary because (a) 14b runs 2.2× faster, leaving more headroom for retry loops, and (b) qwen2.5-coder family consistency between Tier 0 (14b) and Tier 1 (7b) keeps prompt format predictable.
 
 `qwen2.5-coder:32b` Q4_K_M at 19 GB exceeds the 16 GB VRAM budget — Ollama spills layers to CPU. Result is **~18× slower** than 14b. Effectively unusable for an AFK loop.
 
@@ -57,9 +59,8 @@ Observed `qwen2.5-coder:14b` at **94 tok/s** is comfortably above the threshold 
 |---|---|---|
 | **Production primary (Tier 0)** | `qwen2.5-coder:14b` | Fits 16 GB VRAM, 94 tok/s warm, real-task quality acceptable. |
 | **Downgrade tier (Tier 1, on OOM)** | `qwen2.5-coder:7b` | 227 tok/s warm, 4.7 GB on disk, 7.5 GB VRAM use. Same `qwen2.5-coder` family as Tier 0 → prompt-format compatible. |
-| **Disqualified on this hardware** | `qwen2.5-coder:32b`, `qwen3-coder:30b` | At 19 GB Q4 they spill VRAM on a 16 GB card. 32b measured at 5 tok/s. 30b expected similar (MoE may help but won't bring weights below VRAM). |
-
-`qwen3-coder:30b` MoE will be benchmarked when the pull lands; if it returns ≥ 30 tok/s sustained on this hardware (i.e. MoE active-params keep VRAM use under the budget) the primary decision is revisited. Until then, 14b is locked in.
+| **Viable alternative (revisit if 14b output quality insufficient)** | `qwen3-coder:30b` (MoE A3B) | 42.9 tok/s, 14.9 GB VRAM, above threshold. Different family from 7b Tier 1 — pairing it with a Tier 1 of the same qwen3-coder line would be cleaner if promoted. |
+| **Disqualified on this hardware** | `qwen2.5-coder:32b` | 19 GB Q4 dense exceeds 16 GB VRAM, spills to CPU, 5 tok/s. |
 
 ## Tier 2 escalation (DeepSeek API) — unchanged
 
