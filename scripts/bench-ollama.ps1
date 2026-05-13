@@ -1,20 +1,25 @@
-# Quick local Ollama benchmark — Main PC (RTX 3050 6GB) baseline before Workshop run.
-# Not committed (intentionally ad-hoc; promote later if useful).
+# Local Ollama benchmark — per-model cold/warm latency + sustained tok/s.
+# Baselines used: Main PC (RTX 3050 6GB) 2026-05-10; Workshop PC (RTX 5080 16GB) 2026-05-13 (#538).
 #
-# For each installed model:
+# For each model:
 #   1. Unload (POST /api/generate with keep_alive=0)
 #   2. Cold call → measure total + load_duration
 #   3. Warm call → measure total + tok/s (eval_count / eval_duration)
 #
-# Output: TSV-ish table to console.
+# Output: console table + (optional) JSON file via -OutJson.
+
+param(
+    [string[]]$Models = @('qwen3:4b', 'qwen2.5-coder:7b', 'qwen3:8b'),
+    [string]$Prompt = "List 5 differences between TCP and UDP. Respond as a numbered list, no preamble.",
+    [int]$NumPredict = 200,
+    [string]$OutJson
+)
 
 $ErrorActionPreference = 'Stop'
 $base = 'http://localhost:11434'
-
-$prompt = "List 5 differences between TCP and UDP. Respond as a numbered list, no preamble."
-$opts = @{ temperature = 0; num_predict = 200 }
-
-$models = @('qwen3:4b', 'qwen2.5-coder:7b', 'qwen3:8b', 'qwen3:8b-4k')
+$opts = @{ temperature = 0; num_predict = $NumPredict }
+$prompt = $Prompt
+$models = $Models
 
 function Invoke-Gen($model, $keepAlive) {
     $body = @{
