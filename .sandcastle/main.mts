@@ -101,8 +101,12 @@ const result = await run({
   hooks: {
     sandbox: {
       onSandboxReady: [
-        { command: "git config user.email agent@jarvis.local" },
-        { command: "git config user.name 'Jarvis Agent'" },
+        // Sandcastle's own SandboxLifecycle already propagates host git
+        // user.name/user.email via `git config --global` before user hooks
+        // run, so explicit overrides here are redundant. Repo-local
+        // `git config` (without --global) would write to the worktree's
+        // parent .git/config which on Windows bind-mounts races on the
+        // .lock file (#607 v2 / Workshop PC4 repro 2026-05-13).
         // Override the worktree's .mcp.json with the container-scoped version
         // (memory MCP only). The host .mcp.json registers many host-only
         // servers that would fail inside the sterile container. Sandcastle
