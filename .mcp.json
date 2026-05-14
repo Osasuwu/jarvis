@@ -50,6 +50,15 @@
         "BAMBU_TOKEN": "${BAMBU_TOKEN}",
         "BAMBU_SERIAL": "${BAMBU_SERIAL}"
       }
+    },
+    "uml": {
+      "command": "python",
+      "args": ["${UML_MCP_HOME}/server.py"],
+      "cwd": "${UML_MCP_HOME}",
+      "env": {
+        "KROKI_SERVER": "http://localhost:8000",
+        "USE_LOCAL_KROKI": "true"
+      }
     }
   }
 }
