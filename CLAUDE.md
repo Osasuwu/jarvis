@@ -34,7 +34,15 @@ Before marking any task complete:
 4. **Tooling**: manual step that should be automated → propose or record.
 5. **Tests**: end-to-end, not just in isolation.
 
-Recall + sibling-grep before implementing come from always_load (`always_recall_before_action`, `feedback_symmetric_fixes`). Don't duplicate here.
+## Engineering posture
+
+Non-negotiable for every decision in this repo. Not in memory — these are how work happens here, not "things to recall sometimes".
+
+- **Recall before action.** Before any non-trivial action (delegate, implement, research, save) — `memory_recall` on the topic. SessionStart context is the baseline; topic-specific lookups are required, not optional. Skill name must appear in the query so skill-contract memories surface (`memory_recall` is keyword-sensitive). If brief-mode recall surfaces a memory on-topic, `memory_get` it before building defaults from your own head.
+- **Verify before assuming implemented.** Never say "this is already done" without `grep` for the actual symbol, reading the code path end-to-end, and where feasible a test that would fail if the feature were missing. Tool-width Z was missing for a month because everyone assumed otherwise — one bad foundation invalidated a month of downstream work.
+- **No state in static storage.** State (% done, ✅/❌ markers, "shipped in PR #X", sprint dates, "last audit YYYY-MM-DD") belongs in GitHub Issues/Projects/PRs/commit history — NOT in markdown files, NOT in memory. Static storage may hold: evergreen lessons, decisions+rationale, reference info (API shapes, config locations), target architecture, pointers ("see #633 for current status"). If a field would be wrong in 2 weeks → GH, not here.
+- **Sibling-grep on fixes.** When a reviewer flags a bug in one helper/pattern, grep for sibling patterns across the whole file AND related files before declaring the fix done. A second-round review with the same class of finding = the first fix was partial. 30 seconds of grep beats a full CI cycle of rework.
+- **Skills are a contract, not a trigger.** `/implement`, `/grill`, `/end`, `/delegate` are owed when the action matches the contract — not only when the owner types the magic word. After PR merge: explicit `/implement` for next slice or `/end`, not silent continuation. Repo not having local skill files is not an exemption — skills are global at `~/.claude/skills/`.
 
 ## Project-specific rules
 
@@ -100,7 +108,7 @@ Rules:
 
 ## Autonomous work
 
-User often leaves Jarvis to work alone. Core loop comes from always_load (`quality_over_speed`, `always_recall_before_action`, `verify_before_assuming_implemented`, `autonomous_long_sessions`) + SOUL §Goal awareness.
+User often leaves Jarvis to work alone. Core loop comes from §Engineering posture above (recall before action, verify before assuming implemented) + SOUL §Personality (quality over speed) + SOUL §Goal awareness. "Aligned plans = standing orders" — when a multi-step plan was discussed and signed off, the alignment IS the approval; don't re-confirm at each checkpoint.
 
 Project-specific addition — **transform tasks into verifiable goals**: "Fix bug" → write failing test → make it pass. "Add validation" → tests for invalid inputs → make them pass. "Refactor X" → tests pass before and after.
 
