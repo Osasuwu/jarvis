@@ -2706,3 +2706,58 @@ alter table comm_patterns_watermark enable row level security;
 
 create policy "Allow all for authenticated" on comm_patterns_watermark
   for all using (true) with check (true);
+
+
+-- =========================================================================
+-- Implicit memory derivation: Deriver/Dreamer columns (issue #552, Slice 1)
+--
+-- Adds the storage columns the derivation subsystem depends on. Existing
+-- columns relied on by the subsystem:
+--   - confidence real default 0.5   (added Phase 1, line 592)
+--   - superseded_by uuid            (added Phase 1, line 585)
+--   - source_provenance text        (added Phase 1, line 599)
+--
+-- Pre-migration collision check (scripts/check-memory-deriver-schema.py)
+-- must run before applying this migration, asserting superseded_by has
+-- compatible semantics. See AC: "superseded_by either does not exist OR
+-- has compatible semantics; aborts otherwise".
+-- =========================================================================
+
+-- requires_review: always-gate review flag. Every Deriver/Dreamer write
+-- lands requires_review=true regardless of confidence.  Recall hides these
+-- by default; opt-in via include_unreviewed=true.  Owner accept via
+-- memory_review_decide is the only path to live memory in v1.
+-- Decision: 31ebba19-adb6-4ad0-ac33-ceac5bc5cea2 (ADR-0003 §Q4).
+alter table memories add column if not exists requires_review bool
+    not null default false;
+
+-- derivation_run_id: provenance pointer linking the memory back to the
+-- specific Deriver/Dreamer run that created it.  Used for auditing and
+-- for the Dreamer's "re-derive if superseded" skip logic.  NULL for
+-- pre-derivation rows.
+alter table memories add column if not exists derivation_run_id uuid;
+
+-- merge_targets: non-NULL + non-empty signals a merge proposal.  Recall
+-- must skip rows where merge_targets is not null and not empty (showing
+-- them only via a dedicated review endpoint).  Decision d162cca4-25ba-4342-
+-- b6e2-c1c92bd2ba78 (ADR-0003 §Q3).
+alter table memories add column if not exists merge_targets uuid[];
+
+-- Backfill: existing rows are owner-produced, implicitly trusted, review
+-- not required.  merge_targets NULL (not a proposal) by definition.
+-- derivation_run_id NULL (pre-dates derivation subsystem).
+update memories set requires_review = false where requires_review is null;
+update memories set derivation_run_id = null where derivation_run_id is null;
+
+-- Index: Deriver/Dreamer scan for rows needing review (SessionStart hook
+-- surfaces pending count).  Also covers the review-decision flow where
+-- the owner fetches candidates.
+create index if not exists idx_memories_requires_review
+    on memories(requires_review)
+    where requires_review = true;
+
+-- Index: recall filter — rows with non-empty merge_targets are proposals,
+-- skipped by default recall.  GIN index for array containment checks.
+create index if not exists idx_memories_merge_targets
+    on memories using gin (merge_targets)
+    where merge_targets is not null;
