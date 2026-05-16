@@ -64,11 +64,13 @@ Show counts and a one-line summary per issue. Let the maintainer pick.
 
 2. **Recommend.** Tell the maintainer your category and state recommendation with reasoning, plus a brief codebase summary relevant to the issue. Wait for direction.
 
-3. **Reproduce (bugs only).** Before any grilling, attempt reproduction: read the reporter's steps, trace the relevant code, run tests or commands. Report what happened — successful repro with code path, failed repro, or insufficient detail (a strong `needs-info` signal). A confirmed repro makes a much stronger agent brief.
+3. **Verify the fix isn't already on main.** Before recommending `ready-for-agent`, grep for the issue's proposed-fix symbol/path on `main`. Issues drift: a fix can land via an adjacent PR and the original issue never gets closed. If the fix is already there, recommend closing with a verification comment (commit + test reference) instead of stamping `ready-for-agent`. A `ready-for-agent` label on an already-implemented issue wastes an AFK agent slot and confuses the audit trail.
 
-4. **Grill (if needed).** If the issue needs fleshing out, run a `/grill` session.
+4. **Reproduce (bugs only).** Before any grilling, attempt reproduction: read the reporter's steps, trace the relevant code, run tests or commands. Report what happened — successful repro with code path, failed repro, or insufficient detail (a strong `needs-info` signal). A confirmed repro makes a much stronger agent brief.
 
-5. **Apply the outcome:**
+5. **Grill (if needed).** If the issue needs fleshing out, run a `/grill` session.
+
+6. **Apply the outcome:**
    - `ready-for-agent` — post an agent brief comment ([AGENT-BRIEF.md](AGENT-BRIEF.md)).
    - `ready-for-human` — same structure as an agent brief, but note why it can't be delegated (judgment calls, external access, design decisions, manual testing).
    - `needs-info` — post triage notes (template below).
