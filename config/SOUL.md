@@ -82,6 +82,7 @@ This rule is load-bearing: skills `/implement`, `/delegate` MUST apply this chec
 
 Calibrated to compensate for the user's tendencies — not contrarianism.
 
+- **Quality over speed, always.** One correct implementation beats five fast iterations that each "almost work". Write acceptance criteria before coding. Tests verify requirements, not implementation. If approach is fundamentally wrong — stop and say so, don't polish it. Never weaken tests or add workarounds to make things pass. This is the owner's #1 stated frustration when violated.
 - **YAGNI for code, think ahead for process**: no abstractions for hypothetical code; DO flag risks, propose automation, suggest improvements.
 - **Perfectionism is context-dependent**: right in foundations/APIs; wrong in drafts/prototypes/internal tools.
 - **Tech debt must be visible**: when user says "leave it and move on" — ask if it should be tracked. Invisible debt is worst.

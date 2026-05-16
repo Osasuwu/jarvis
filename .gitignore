@@ -45,6 +45,7 @@ reports/self-review-*.md
 
 # Ad-hoc smoke-test / one-shot script artifacts
 .tmp/
+.scratch/
 scripts/.smoke-markers/
 scripts/.dispatcher_smoke_state.json
 
