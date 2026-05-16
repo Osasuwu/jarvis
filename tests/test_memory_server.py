@@ -995,6 +995,182 @@ class TestHandleStoreProvenance:
         assert data_arg["source_provenance"] == "skill:test"
 
 
+class TestHandleStoreStructuredResponse:
+    """#658: success-path returns JSON, not prose.
+
+    Iter:13 of an AFK chain reported a fabricated "dup-detector ≥0.75 sim
+    block" against a same-name upsert and gave up after 4 retries. The
+    diagnosis (issue #658 comment) showed the store call never landed —
+    some other failure mode surfaced as prose the agent rationalised into
+    a plausible-sounding semantic-similarity rejection. The fix is making
+    success unambiguous: callers parse a JSON envelope with a `stored`
+    boolean instead of inferring from a sentence.
+
+    Invariants these tests pin:
+    - `(project, name)` is the only identity. Same-name writes are
+      idempotent — no similarity threshold ever blocks.
+    - `consolidation_candidates` and `classifier_pending` are advisory
+      fields — they describe the post-store landscape, never gate it.
+    - Consolidation phrasing is neutral (no `⚠`, no "hint" framing) so
+      the LLM doesn't mistake it for a rejection signal.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _patch_client(self, monkeypatch):
+        self.client = MagicMock()
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+        # Default: no embedding (skip sim-search path). Tests that need
+        # consolidation override this with a non-None vector.
+        async def _no_embed(_text):
+            return {}
+
+        monkeypatch.setattr(server_module, "_compute_write_embeddings", _no_embed)
+
+        # Neutralise fire-and-forget classifier dispatch so the test event
+        # loop doesn't surface unawaited-coroutine warnings from real calls.
+        async def _noop_links(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(server_module, "_create_auto_links", _noop_links)
+
+    @pytest.mark.asyncio
+    async def test_project_scoped_upsert_returns_structured_json(self):
+        tbl = MagicMock()
+        tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "mem-uuid-1"}])
+        self.client.table.return_value = tbl
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_struct_project",
+                "content": "test content",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+            }
+        )
+
+        assert len(result) == 1
+        body = json.loads(result[0].text)
+        assert body["stored"] is True
+        assert body["action"] == "saved"
+        assert body["memory_id"] == "mem-uuid-1"
+        assert body["project"] == "jarvis"
+        # No embedding ⇒ no sim search ran ⇒ both advisory fields are empty.
+        assert body["consolidation_candidates"] == []
+        assert body["classifier_pending"] is False
+        # Human-readable summary still present for LLM readers.
+        assert "test_struct_project" in body["message"]
+        assert "saved" in body["message"]
+
+    @pytest.mark.asyncio
+    async def test_global_new_returns_action_created(self):
+        tbl = MagicMock()
+        # SELECT branch: row does not exist yet.
+        select_chain = tbl.select.return_value.eq.return_value.is_.return_value
+        select_chain.limit.return_value.execute.return_value = MagicMock(data=[])
+        # INSERT returns the new id.
+        tbl.insert.return_value.execute.return_value = MagicMock(data=[{"id": "mem-new"}])
+        self.client.table.return_value = tbl
+
+        result = await _handle_store(
+            {
+                "type": "feedback",
+                "name": "test_struct_global_new",
+                "content": "x",
+                "source_provenance": "session:test",
+            }
+        )
+
+        body = json.loads(result[0].text)
+        assert body["stored"] is True
+        assert body["action"] == "created"
+        assert body["memory_id"] == "mem-new"
+        assert body["project"] == "global"
+
+    @pytest.mark.asyncio
+    async def test_global_existing_returns_action_updated(self):
+        tbl = MagicMock()
+        select_chain = tbl.select.return_value.eq.return_value.is_.return_value
+        select_chain.limit.return_value.execute.return_value = MagicMock(
+            data=[{"id": "mem-existing"}]
+        )
+        tbl.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+        self.client.table.return_value = tbl
+
+        result = await _handle_store(
+            {
+                "type": "feedback",
+                "name": "test_struct_global_update",
+                "content": "x",
+                "source_provenance": "session:test",
+            }
+        )
+
+        body = json.loads(result[0].text)
+        assert body["stored"] is True
+        assert body["action"] == "updated"
+        assert body["memory_id"] == "mem-existing"
+        assert body["project"] == "global"
+
+    @pytest.mark.asyncio
+    async def test_consolidation_uses_neutral_phrasing(self, monkeypatch):
+        """No `⚠` glyph and no 'hint' framing — the field is advisory.
+
+        iter:13's confabulation was prompted by `⚠ Consolidation hint:` —
+        the warning glyph reads as a rejection signal to a tired LLM.
+        Drop the glyph, drop the word 'hint'; prefix with `info:` so the
+        framing is purely descriptive.
+        """
+        # Real-ish embedding so the sim-search block runs.
+        async def _real_embed(_text):
+            return {"embedding": [0.1] * 512}
+
+        monkeypatch.setattr(server_module, "_compute_write_embeddings", _real_embed)
+
+        tbl = MagicMock()
+        tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "mem-uuid-2"}])
+        self.client.table.return_value = tbl
+
+        # RPC returns ≥CONSOLIDATION_COUNT candidates above
+        # CONSOLIDATION_SIM_THRESHOLD (=0.80) so the hint fires.
+        self.client.rpc.return_value.execute.return_value = MagicMock(
+            data=[
+                {"id": "sib-1", "name": "sibling_a", "similarity": 0.85},
+                {"id": "sib-2", "name": "sibling_b", "similarity": 0.82},
+                {"id": "sib-3", "name": "sibling_c", "similarity": 0.81},
+            ]
+        )
+
+        result = await _handle_store(
+            {
+                "type": "feedback",
+                "name": "test_struct_consolidation",
+                "content": "content",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+            }
+        )
+
+        body = json.loads(result[0].text)
+        # Store succeeded — never blocked.
+        assert body["stored"] is True
+        assert body["action"] == "saved"
+        # Neutral phrasing — no warning glyph, no "hint" framing.
+        assert "⚠" not in body["message"]
+        assert "hint" not in body["message"].lower()
+        assert "info:" in body["message"].lower()
+        # Structured field carries the candidate names for programmatic
+        # consumers; prose message is for human/LLM readers only.
+        assert body["consolidation_candidates"] == [
+            "sibling_a",
+            "sibling_b",
+            "sibling_c",
+        ]
+        # similar_rows was non-empty ⇒ classifier task dispatched.
+        assert body["classifier_pending"] is True
+
+
 # ---------------------------------------------------------------------------
 # #242: dual-embedding machinery — column/RPC mapping + dual-write
 # ---------------------------------------------------------------------------
