@@ -94,6 +94,7 @@ Use skills — don't reinvent with raw tools.
 | Plan / PRD → vertical-slice issues | `/to-issues` |
 | "diagnose this", bug repro, perf regression | `/diagnose` |
 | "improve architecture", find shallow modules, refactoring opportunities | `/improve-codebase-architecture` |
+| "last sprint report", "what did we ship", "milestone closeout", pre-sweep brief | `/last-work-report` (skeleton — #606) |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
 | Author/edit a skill | `/write-a-skill` |
