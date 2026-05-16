@@ -417,6 +417,10 @@ def build_plan(
                 for child in sorted(dest.iterdir()):
                     if child.name in allowed:
                         continue
+                    if ".bak." in child.name:
+                        # Already quarantined by a prior run — skip to prevent
+                        # `.bak.orphan.bak.orphan` nesting on every re-apply (#659).
+                        continue
                     actions.append(
                         Action(
                             kind="prune_orphan",
