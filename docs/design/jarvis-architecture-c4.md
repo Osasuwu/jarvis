@@ -1,6 +1,8 @@
 # Jarvis Architecture — C4 Views (revised 2026-04-29)
 
-Four views: Context (system in environment), Container (runtime + storage), Component (18 capabilities in 5 layers + cross-cutting), Event-substrate dataflow (the load-bearing edge: `everything → C17`). Companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md). C18 (Proactive challenger) added in Phase C (2026-04-29) per `audit_3_main_changes_lock_2026_04_28`; mermaid sources below include c18, SVG outputs need re-render. Reflects L3 concrete adoptions folded in 2026-04-27/28 — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md).
+Four views: Context (system in environment), Container (runtime + storage), Component (18 capabilities in 5 layers + cross-cutting), Event-substrate dataflow (the load-bearing edge: `everything → C17`). Companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md). C18 (Proactive challenger) added in Phase C (2026-04-29) per `audit_3_main_changes_lock_2026_04_28`; mermaid sources below include c18, SVG outputs need re-render.
+
+**Status (2026-05-17):** the diagrams below mix target architecture and current deployment. Specific known mismatches: (a) Container view shows **Plan MCP (LangGraph carveout)** and **Research MCP (GPT Researcher + others)** as deployed MCPs — both are *planned*, not in `.mcp.json` yet; (b) Level 4 sequence diagram lists `decisions_by_trace_mv` among refreshed projections — only `events_cost_by_day_mv` and `events_last_run_by_actor_mv` exist in the canonical migration (`supabase/migrations/20260429145000_create_events_canonical.sql`); `decisions_by_trace_mv` is a planned projection. Treat the diagrams as the design target; cross-check `mcp-memory/schema.sql` + `.mcp.json` for actual deployment. Reflects L3 concrete adoptions folded in 2026-04-27/28 — see [`jarvis-build-vs-buy.md`](jarvis-build-vs-buy.md).
 
 Rendered SVGs alongside each block: [c4-1.svg](c4-1.svg) Context · [c4-2.svg](c4-2.svg) Container · [c4-3.svg](c4-3.svg) Component · [c4-4.svg](c4-4.svg) Event dataflow. Re-render: `npx -p @mermaid-js/mermaid-cli mmdc -i jarvis-architecture-c4.md -o c4.svg` (writes `c4-1.svg`…`c4-4.svg`).
 
@@ -218,6 +220,8 @@ sequenceDiagram
 
     Note over Pg: Single canonical events table. OTel GenAI columns verbatim. trace_id via contextvars + uuid. Best-effort write semantics - NOTIFY plus row insert. Recall and write never block on event-row failure.
 ```
+
+**Deployment status for the projection refresh sequence (Level 4):** as of 2026-05-17, `events_cost_by_day_mv` and `events_last_run_by_actor_mv` are deployed with `pg_cron` schedules; `decisions_by_trace_mv` shown in the sequence above is planned (no migration yet).
 
 ## Reading guide
 

@@ -1,6 +1,6 @@
 # Compression Resilience
 
-**Status:** Sprint 1 in flight (milestone #25, epic #277)
+**Status:** Sprint 1 SHIPPED — milestone #25 closed 2026-04-21 (all three phases: #278 PreCompact hook, #279 session-context resume injection, #280 /end reads Supabase). Parent: #277 (CLOSED). This doc was the PRD; live behaviour reflects the shipped Phase 1/2/3 below. Inline `Status (#N): shipped` markers annotate per-phase ship state.
 **Owner directive (2026-04-21):** "Jarvis needs to run autonomously for many
 hours and still produce a high-quality session close after one or more
 compactions."
@@ -32,6 +32,8 @@ into vague "the owner gave feedback on X".
 
 ### Phase 1 — capture pre-compact snapshot (issue #278)
 
+**Status (#278): shipped** (closed 2026-04-21).
+
 Register a `PreCompact` hook that runs **before** compaction.
 
 1. Read hook input from stdin (`session_id`, `transcript_path`, `trigger`).
@@ -57,6 +59,8 @@ Sized to ship without schema changes — snapshots live in the existing
 
 ### Phase 2 — inject snapshot on resume (issue #279)
 
+**Status (#279): shipped** (closed 2026-04-21).
+
 Extend `scripts/session-context.py` (the `SessionStart:compact` hook
 loader): when running in the `compact` matcher, look up
 `session_snapshot_<session_id>` and emit it under a
@@ -75,6 +79,8 @@ array into two entries (prelude + `session-context.py`) so each gets
 hook-input stdin from Claude Code directly. Output order is preserved.
 
 ### Phase 3 — /end reads from Supabase (issue #280)
+
+**Status (#280): shipped** (closed 2026-04-21).
 
 Rework `.claude-userlevel/skills/end/SKILL.md` (installs to `~/.claude/skills/end/`) so the primary source of truth for
 decisions, behavioural notes, and action log is Supabase (via

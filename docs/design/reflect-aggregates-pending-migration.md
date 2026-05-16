@@ -2,6 +2,8 @@
 
 **DO NOT DELETE until /self-improve and /verify grills resolve destinations. See follow-up issues #515, #516.**
 
+**Status (2026-05-17):** this doc was the migration PRD captured after #510 closed (`/reflect` rename, 2026-05-07). Live state: `/verify` and `/self-improve` exist as installed skills and have absorbed some steps; #515 (grill /self-improve and /verify before migration) and #516 (re-route cross-skill refs) remain OPEN. The Known-dangling-refs section at the bottom carries inline `Status (post-#510)` annotations for entries whose refs have since been cleaned — preserved here as historical inventory of what needed routing.
+
 This document captures the OLD `/reflect` skill (Steps 1–8) that was replaced by the new `/reflect` (cross-session comms audit) in #510. Each step below documents what it did, its output shape, data sources, known issues, and a candidate destination for migration.
 
 ---
@@ -293,11 +295,11 @@ Per stale memory:
 
 The following files reference `/reflect` as a skill trigger or output consumer. They will need re-routing after #515 and #516 are grilled:
 
-1. **`.claude-userlevel/skills/implement/SKILL.md`** — references `/reflect` as post-implementation checkpoint
+1. **`.claude-userlevel/skills/implement/SKILL.md`** — references `/reflect` as post-implementation checkpoint. **Status (post-#510, verified 2026-05-17):** no `/reflect` refs remain in the file — cleaned during skill restructuring. Entry preserved as historical inventory.
 2. **`.claude-userlevel/skills/grill-me/SKILL.md:36`** — line 36 mentions `/reflect` output in decision grilling (skill deleted in #528 — Pocock grill restored to upstream form has no `/reflect` ref; entry preserved here as historical inventory)
-3. **`.claude-userlevel/skills/to-issues/SKILL.md:22`** — line 22 routes outcome verification to `/reflect`
-4. **`.claude-userlevel/skills/to-prd/SKILL.md:18`** — line 18 mentions `/reflect` for lessons extraction
-5. **`scripts/recall-audit.py`** — multiple references to `/reflect` in docstrings + cli help text
+3. **`.claude-userlevel/skills/to-issues/SKILL.md:22`** — line 22 routes outcome verification to `/reflect`. **Status (post-#510, verified 2026-05-17):** no `/reflect` refs remain in the file — cleaned during skill restructuring. Entry preserved as historical inventory.
+4. **`.claude-userlevel/skills/to-prd/SKILL.md:18`** — line 18 mentions `/reflect` for lessons extraction. **Status (post-#510, verified 2026-05-17):** no `/reflect` refs remain in the file — cleaned during skill restructuring. Entry preserved as historical inventory.
+5. **`scripts/recall-audit.py`** — multiple references to `/reflect` in docstrings + cli help text. **Status (verified 2026-05-17):** refs still present (the file's L3 NOTE explicitly flags them as transitional pending #516 resolution); cleanup blocked until `/self-improve` absorbs the aggregate consumer surface.
 
 These references will be re-routed to `/verify` and/or `/self-improve` in follow-up issue #516 after those skills are grilled for scope acceptance.
 
