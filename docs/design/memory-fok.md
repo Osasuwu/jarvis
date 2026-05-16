@@ -1,8 +1,8 @@
 # Feeling-of-Knowing (Memory Phase 5.3) — Design
 
-**Status:** 5.3-α approved — six decisions ratified via Discussion [#439](https://github.com/Osasuwu/jarvis/discussions/439) (2026-04-27). 5.3-β/γ/δ may proceed.
+**Status:** 5.3-α approved — six decisions ratified via Discussion [#439](https://github.com/Osasuwu/jarvis/discussions/439) (2026-04-27). 5.3-β/γ/δ shipped via milestone #34 (CLOSED 2026-04-29). This doc was the PRD; live behaviour reflects shipped state — the §2 "what's already in the tree" table captured the pre-5.3 baseline (some "shipped" rows describe pre-#444 inline-upsert state, retained as historical context). Inline `Status (#N)` annotations below mark where descriptions changed post-shipment.
 **Closes:** #420.
-**Parent epic:** #185.
+**Parent issue:** #185.
 **Sprint:** Milestone #34 (Pillar 4 Sprint: feeling-of-knowing 2026-04-26).
 
 This doc is **gap-analysis from #250**, not a clean-slate design. #250 (closed) shipped the recall-event emit and a working `scripts/fok-batch.py`. The work is now (a) reaffirm what's still right, (b) revise what drifted or didn't account for downstream substrate, (c) add the calibration loop that's genuinely new for 5.3.
@@ -35,7 +35,7 @@ What FOK gives:
 | Batch judge | shipped | `scripts/fok-batch.py` — Haiku judges last-24h unfudged events, writes verdict back to `events.payload` |
 | Known-unknowns table | shipped | `known_unknowns` (#249) |
 | Known-unknowns from FOK | shipped (batch) | `try_insert_known_unknown` in `fok-batch.py` — `verdict=insufficient AND confidence<0.7 AND top_sim<0.6` triggers insert |
-| Known-unknowns from recall | shipped (sync) | `_hybrid_recall` itself upserts `known_unknowns` at `top_sim < GAP_THRESHOLD=0.45` (memory.py:374) **and again** at `top_sim < 0.45` hardcoded (memory.py:397) — duplicate path |
+| Known-unknowns from recall | shipped (sync) | `_hybrid_recall` itself upserts `known_unknowns` at `top_sim < GAP_THRESHOLD=0.45` (memory.py:374) **and again** at `top_sim < 0.45` hardcoded (memory.py:397) — duplicate path. **Status (#444):** both inline upserts removed in Phase 5.3-γ; gap detection now lives in the batch FOK judge (per D5 plan below) |
 | Calibration substrate | shipped | `memory_calibration` view (#251), `decision_made` episode (#252), `task_outcomes.memory_id` FK |
 
 | Gap | Why it matters |
@@ -45,7 +45,7 @@ What FOK gives:
 | Verdict stored in `events.payload` JSONB | Hard to FK to outcomes for calibration; awkward `WHERE payload->>'fok_verdict'` queries; no model/version columns |
 | UserPromptSubmit hook calls match RPCs directly | `scripts/memory-recall-hook.py` bypasses `_handle_recall`, so its (high-volume) recalls are NOT in `events` and therefore NOT judged |
 | No calibration of the judge | Verdicts written, never compared to whether the downstream task actually succeeded |
-| Two redundant inline gap-detect paths | `_hybrid_recall` upserts `known_unknowns` twice in the same function call on the same condition |
+| Two redundant inline gap-detect paths | `_hybrid_recall` upserts `known_unknowns` twice in the same function call on the same condition. **Status (#444):** removed in Phase 5.3-γ |
 
 ---
 
@@ -144,7 +144,7 @@ CREATE INDEX idx_fok_judgments_outcome ON fok_judgments(outcome_id) WHERE outcom
 | partial | any | any | `pass_through` (count for /reflect aggregation) |
 | sufficient | any | any | `pass_through` |
 
-**REMOVE the two inline `_upsert_known_unknown` calls inside `_hybrid_recall`** (memory.py:374 and :397). Reason: they fire on every recall regardless of whether the returned set is genuinely insufficient. The batch FOK judge subsumes both — judge sees content, threshold doesn't. Net: fewer false-positive gap entries, correct sample only.
+**REMOVE the two inline `_upsert_known_unknown` calls inside `_hybrid_recall`** (memory.py:374 and :397). Reason: they fire on every recall regardless of whether the returned set is genuinely insufficient. The batch FOK judge subsumes both — judge sees content, threshold doesn't. Net: fewer false-positive gap entries, correct sample only. **Status (#444):** done in Phase 5.3-γ; the inline calls no longer exist in `_hybrid_recall`.
 
 **Auto-widen recall (re-run with relaxed filters):** **DEFER to 5.3-ε / future.** Justification:
 - Hot-path-side action; wrong threshold loops or worsens recall.
@@ -245,7 +245,7 @@ brier = mean((verdict_score - outcome_score)^2) over rows where both sides are n
 Out of scope (deferred):
 - Auto-widen on insufficient (5.3-ε / future).
 - Pre-recall FOK ("do I know X before retrieving?").
-- Cross-encoder rerank (#185 epic, gated separately).
+- Cross-encoder rerank (#185 parent issue, gated separately).
 
 ---
 

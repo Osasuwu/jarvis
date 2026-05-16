@@ -1,7 +1,7 @@
 # Autonomous Work Loop — Architecture
 
 > Source of truth for the Jarvis Autonomous Work Loop pillar.
-> Created: 2026-04-08. Status: implementing.
+> Created: 2026-04-08. **Status (2026-05-17):** Phase 1 (time-based perception + daily orchestrator) and Phase 2 (event-driven GitHub Actions → Supabase events) SHIPPED — see §Evolution at the bottom. Skill/task tables below describe the originally-planned layout; several perception skills have been absorbed or renamed (`/intel` and `/nightly-research` → `/research`; `/morning-brief` and `/risk-radar` → `/status` family — `/status` itself was orphaned, replaced by Type 1 `status-record` cron task; old `/reflect` weekly outcome review was repurposed into the cross-session comms audit in #510). Treat the schedule and Files tables as PRD baseline; canonical list of currently-registered scheduled tasks is the `~/.claude/scheduled-tasks/` directory contents.
 
 ## Overview
 
@@ -106,6 +106,8 @@ Weekly reflect closes the loop: checks decision outcomes, extracts lessons, upda
 
 ## Schedule
 
+**Status (PRD baseline):** the table below is the originally-planned schedule; current registered tasks live under `~/.claude/scheduled-tasks/` (see header framing line). `nightly-research` survives; `morning-brief` / `risk-radar` / `intel` / weekly `reflect` were absorbed or renamed per the header note.
+
 | Task | Schedule | Type | Dedup |
 |------|----------|------|-------|
 | nightly-research | Daily 03:00 | Local scheduled task | `nightly_last_run` date check |
@@ -184,6 +186,8 @@ Scheduled tasks are local (per-device). Three approaches:
 3. **Future: Remote triggers** — cloud-based scheduling (requires skills rewrite for execute_sql)
 
 ## Files
+
+**Status (PRD baseline):** `.claude-userlevel/skills/status/SKILL.md` was orphaned (status-record Type 1 cron task replaced its scheduled role); the other entries below remain accurate.
 
 | File | Purpose |
 |------|---------|
