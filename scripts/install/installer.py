@@ -420,7 +420,7 @@ def build_plan(
                 for child in sorted(dest.iterdir()):
                     if child.name in allowed:
                         continue
-                    if ".bak.orphan" in child.name:
+                    if ".bak." in child.name:
                         continue
                     actions.append(
                         Action(
