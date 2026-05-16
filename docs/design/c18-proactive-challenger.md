@@ -322,5 +322,5 @@ Auto-disable would silently remove a signal class without owner awareness — ex
 - [`jarvis-v2-redesign.md` §C18 L3 leans (lines 1763–1767)](jarvis-v2-redesign.md#c18--proactive-challenger-1) — SQL detection, YAML thresholds, Haiku surfacing renderer, C12 routing.
 - [`c17-events-substrate.md`](c17-events-substrate.md) — events table contract; C18 is the second writer (after `record_decision` in #477).
 - [`c17-events-substrate.md` §5](c17-events-substrate.md) — action vocabulary; C18 extends with `recalibration_proposed` + `surfacing_outcome`.
-- [`jarvis-v2-redesign.md` §Tier-A migration order (line 243)](jarvis-v2-redesign.md#tier-a-deep) — C18 sequenced after C5/C16; this design 1-pager is forward-locking and ships ahead, but #C18.2 implementation respects the dependency by gating `calibration_drift` and `principal_override` signals behind `enabled: false` until C5/C16 land.
+- [`jarvis-v2-redesign.md` §Methodology (line 243, Tier-A migration order)](jarvis-v2-redesign.md#methodology) — C18 sequenced after C5/C16; this design 1-pager is forward-locking and ships ahead, but #C18.2 implementation respects the dependency by gating `calibration_drift` and `principal_override` signals behind `enabled: false` until C5/C16 land.
 - Memory `c18_proactive_challenger_2026_04_28` (decision/jarvis) — owner-stated motivation and L1 framing.

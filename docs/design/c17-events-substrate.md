@@ -2,7 +2,7 @@
 
 **Status:** design-locked 2026-04-29 (Sprint #35, [#475](https://github.com/Osasuwu/jarvis/issues/475)). Migration → [#476](https://github.com/Osasuwu/jarvis/issues/476). First writer → [#477](https://github.com/Osasuwu/jarvis/issues/477).
 **Parent:** [`jarvis-v2-redesign.md` § C17](jarvis-v2-redesign.md#c17--observability--audit) (lines 408–518, L3 leans 1728–1737).
-**Migration order:** position #1 — nothing else has somewhere to write until this ships ([line 1553](jarvis-v2-redesign.md#migration-order-what-ships-first)).
+**Migration order:** position #1 — nothing else has somewhere to write until this ships ([line 1553](jarvis-v2-redesign.md#bootstrap-protocol--migration-order)).
 
 This doc locks the schema, column naming, propagation rules, write semantics, and initial action vocabulary so #476 (SQL) and #477 (first writer) can land without re-design. SQL is **not** in this doc.
 
@@ -144,7 +144,7 @@ Sprint 35 creates a **new** table named `events_canonical` (NOT an `ALTER` of th
 
 1. The existing `events` table (current [`mcp-memory/schema.sql:151`](../../mcp-memory/schema.sql#L151)) is GH-Actions-perception-shaped: `event_type` enum, `severity` check constraint, `repo`, `source`, `processed`/`processed_at`/`processed_by`/`action_taken` workflow fields. None of these fit the canonical actor/action/trace_id shape, and the columns have NOT-NULL constraints that an in-place ALTER cannot retrofit safely.
 2. `fok_judgments.recall_event_id` references `events(id) ON DELETE CASCADE` (Sprint #34 [#443](https://github.com/Osasuwu/jarvis/issues/443)). An in-place rename or schema-rewrite breaks the FK.
-3. Two-mode coexistence per [`jarvis-v2-redesign.md:1566`](jarvis-v2-redesign.md#migration-order-what-ships-first) explicitly calls for new and legacy paths running in parallel until C3 path-parity proves cutover safety.
+3. Two-mode coexistence per [`jarvis-v2-redesign.md:1566`](jarvis-v2-redesign.md#bootstrap-protocol--migration-order) explicitly calls for new and legacy paths running in parallel until C3 path-parity proves cutover safety.
 
 **Final state (cutover wave, post-Sprint 35):** legacy `events` rows migrate into `events_canonical`; FK on `fok_judgments` rewires; legacy table drops; canonical renames to `events`. Single canonical name restored.
 
@@ -196,6 +196,6 @@ Sprint 35 creates a **new** table named `events_canonical` (NOT an `ALTER` of th
 - [`jarvis-v2-redesign.md` §C17 (lines 408–518)](jarvis-v2-redesign.md#c17--observability--audit) — full design rationale.
 - [`jarvis-v2-redesign.md` §C17 L3 leans (lines 1728–1737)](jarvis-v2-redesign.md#c17--observability--audit-1) — OTel verbatim, materialized views from day one, contextvars + uuid, traceloop-sdk deferred.
 - [`jarvis-v2-redesign.md` §C3 write semantics (line 308)](jarvis-v2-redesign.md#c3--memory) — `degraded=true` fallback.
-- [`jarvis-v2-redesign.md` §Migration order (lines 1549–1564)](jarvis-v2-redesign.md#migration-order-what-ships-first) — substrate ships first.
-- [`jarvis-v2-redesign.md` §Two-mode coexistence (line 1566)](jarvis-v2-redesign.md#migration-order-what-ships-first) — cutover gate is C3-defined path-parity test.
+- [`jarvis-v2-redesign.md` §Migration order (lines 1549–1564)](jarvis-v2-redesign.md#bootstrap-protocol--migration-order) — substrate ships first.
+- [`jarvis-v2-redesign.md` §Two-mode coexistence (line 1566)](jarvis-v2-redesign.md#bootstrap-protocol--migration-order) — cutover gate is C3-defined path-parity test.
 - [OTel GenAI semantic conventions](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/) — column-name source of truth.
