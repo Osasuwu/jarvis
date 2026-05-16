@@ -48,6 +48,7 @@ reports/self-review-*.md
 .scratch/
 scripts/.smoke-markers/
 scripts/.dispatcher_smoke_state.json
+.smoke-recall-baseline.json
 
 # Legacy Python (may remain locally)
 __pycache__/

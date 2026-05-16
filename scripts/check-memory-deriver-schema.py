@@ -40,6 +40,12 @@ def check_columns(rows: list[dict]) -> None:
         "derivation_run_id": {"type": "uuid", "nullable": True},
         "merge_targets": {"type": "ARRAY", "nullable": True, "element_type": "uuid"},
     }
+    # Numeric-family types acceptable for the `confidence` column. Hoisted
+    # to function scope so the new-column compatibility loop below can
+    # reference it even when `confidence` is absent from the existing
+    # schema.
+    numeric_types = {"real", "numeric", "double precision", "float4", "float8"}
+
     # Existing columns we check compatibility against
     existing = {}
 
@@ -85,7 +91,6 @@ def check_columns(rows: list[dict]) -> None:
     # ---- confidence compatibility (optional, informational) ----
     if "confidence" in existing:
         c = existing["confidence"]
-        numeric_types = {"real", "numeric", "double precision", "float4", "float8"}
         if c["type"] not in numeric_types:
             print(
                 f"\nWARNING: confidence exists as {c['type']}, expected numeric type. "
@@ -117,7 +122,6 @@ def main():
 
     if supabase_url and supabase_key:
         # Direct Supabase REST query
-        import httplib  # unused fallback to keep it simple
         import urllib.request
 
         sql = """

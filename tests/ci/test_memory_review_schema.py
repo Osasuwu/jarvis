@@ -139,12 +139,57 @@ class TestDeriverColumns:
             re.I,
         ), "merge_targets must be nullable."
 
-    def test_backfill_requires_review(self):
-        """Backfill must set requires_review=false for existing rows."""
+    def test_no_no_op_backfill_updates(self):
+        """The migration must NOT contain backfill UPDATEs.
+
+        `ADD COLUMN ... NOT NULL DEFAULT false` on PG 11+ is a catalog-only
+        operation; existing rows pick up the default at zero I/O cost. A
+        follow-up `UPDATE memories SET requires_review = false WHERE ...`
+        is a full seqscan + ROW EXCLUSIVE lock for zero effect on the live
+        shared table. Same logic for `derivation_run_id` (added nullable,
+        no default — all existing rows are already NULL).
+        """
         body = _deriver_block()
         assert body is not None
-        assert "requires_review = false where requires_review is null" in body, (
-            "Missing backfill: `update memories set requires_review = false where requires_review is null`."
+        assert not re.search(
+            r"^\s*update\s+memories\s+set\s+requires_review",
+            body,
+            re.I | re.M,
+        ), "Drop the requires_review backfill UPDATE — DEFAULT covers existing rows."
+        assert not re.search(
+            r"^\s*update\s+memories\s+set\s+derivation_run_id",
+            body,
+            re.I | re.M,
+        ), "Drop the derivation_run_id backfill UPDATE — column is already NULL."
+
+    def test_index_derivation_run_id(self):
+        """Partial index on derivation_run_id for Dreamer skip-logic lookups."""
+        body = _deriver_block()
+        assert body is not None
+        assert "idx_memories_derivation_run_id" in body, (
+            "Missing partial index `idx_memories_derivation_run_id` for "
+            "Dreamer's `derivation_run_id = $1` equality lookups."
+        )
+
+    def test_merge_targets_check_constraint(self):
+        """CHECK forbids empty arrays so NULL is the only `not a proposal` state.
+
+        Required to keep the GIN partial predicate
+        `WHERE merge_targets IS NOT NULL` aligned with the recall filter
+        `merge_targets IS NULL`. Without the constraint, an empty array
+        (`'{}'`) is non-null, enters the index, and is treated by recall
+        as `not a proposal` — boundary inconsistency between the index
+        and the query.
+        """
+        body = _deriver_block()
+        assert body is not None
+        assert re.search(
+            r"check\s*\(\s*merge_targets\s+is\s+null\s+or\s+array_length\(\s*merge_targets",
+            body,
+            re.I,
+        ), (
+            "Missing CHECK constraint forbidding empty merge_targets arrays. "
+            "Expected: `check (merge_targets is null or array_length(merge_targets, 1) > 0)`."
         )
 
     def test_index_requires_review(self):
@@ -166,15 +211,20 @@ class TestDeriverColumns:
 
 class TestDeriverDocumentation:
     def test_provenance_namespaces_documented(self):
-        """The migration block must document the new provenance namespaces."""
+        """The migration block must document the new provenance namespaces.
+
+        Requires at least one of `hook:deriver` or `task:dreamer` to appear
+        verbatim in the block. The previous `or "deriver" in body.lower()`
+        fallback was tautological — every `add column ... derivation_run_id`
+        line satisfied it, so the test could never fail.
+        """
         body = _deriver_block()
         assert body is not None
-        # Check for documentation of the actor/provenance pattern
         has_hook_deriver = "hook:deriver" in body
         has_task_dreamer = "task:dreamer" in body
-        assert has_hook_deriver or has_task_dreamer or "deriver" in body.lower(), (
-            "Deriver migration block should document provenance namespace conventions "
-            "(hook:deriver, task:dreamer) so readers know the naming pattern."
+        assert has_hook_deriver or has_task_dreamer, (
+            "Deriver migration block must document provenance namespace conventions. "
+            "Expected verbatim `hook:deriver` or `task:dreamer` in the block."
         )
 
     def test_links_to_decisions(self):
@@ -184,6 +234,25 @@ class TestDeriverDocumentation:
         assert "31ebba19" in body and "d162cca4" in body, (
             "Expected decision ID references: 31ebba19 (always-gate) and d162cca4 "
             "(merge_proposal_shape). These link the DDL to ADR-0003."
+        )
+
+
+class TestExistingDeriverColumns:
+    """Assert the existing columns the deriver subsystem depends on really
+    exist in `mcp-memory/schema.sql`. Without these, the precheck claim
+    `verified by precheck` is unverified by anything in this repo.
+    """
+
+    @pytest.mark.parametrize("col", sorted(EXISTING_DERIVER_COLUMNS))
+    def test_existing_column_present(self, col):
+        text = _schema()
+        # Match `add column [if not exists] <col> ` or `<col>  <type>` in
+        # the canonical create-table statement.
+        pat = rf"\b{re.escape(col)}\s+(uuid|real|numeric|text|boolean|bool|float)\b"
+        assert re.search(pat, text, re.I), (
+            f"Column `{col}` (relied on by deriver subsystem) not found in "
+            f"{SCHEMA_PATH.relative_to(REPO_ROOT)}. EXISTING_DERIVER_COLUMNS docstring "
+            f"says `verified by precheck` — this test verifies the column actually exists."
         )
 
 

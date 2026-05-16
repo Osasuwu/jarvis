@@ -27,13 +27,13 @@ BASELINE_PATH = ".smoke-recall-baseline.json"
 # live (non-superseded, non-expired, non-merge-proposal) memories.
 RECALL_QUERY = """
 SELECT id, type, project, content, created_at, source_provenance,
-       confidence, requires_review
+       confidence, requires_review, derivation_run_id, merge_targets
 FROM memories
 WHERE expired_at IS NULL
   AND superseded_by IS NULL
   AND deleted_at IS NULL
   AND (valid_to IS NULL OR valid_to > now())
-  AND (merge_targets IS NULL OR merge_targets = '{}')
+  AND merge_targets IS NULL
   AND requires_review = false
 ORDER BY created_at DESC
 LIMIT 50;
@@ -46,6 +46,7 @@ WHERE expired_at IS NULL
   AND superseded_by IS NULL
   AND deleted_at IS NULL
   AND (valid_to IS NULL OR valid_to > now())
+  AND merge_targets IS NULL
   AND requires_review = false;
 """
 
@@ -69,22 +70,31 @@ def _query_supabase(sql: str) -> list[dict]:
 
 
 def _check_required_cols(rows: list[dict]) -> None:
-    """Ensure the new deriver columns exist and have expected default values."""
+    """Ensure the new deriver columns exist and have expected default values.
+
+    Uses explicit raise instead of `assert` so that running under
+    PYTHONOPTIMIZE=1 (common in hardened images) still enforces the
+    invariants. `assert` is stripped by -O / -OO and would silently
+    no-op these guards.
+    """
     if not rows:
         return
     sample = rows[0]
     for col in ("requires_review", "derivation_run_id", "merge_targets"):
-        assert col in sample, (
-            f"Column `{col}` missing from recall results — "
-            f"migration may not have been applied."
-        )
+        if col not in sample:
+            raise RuntimeError(
+                f"Column `{col}` missing from recall results — "
+                f"migration may not have been applied."
+            )
 
     # Check requires_review default — all existing rows should be false
     for row in rows:
-        assert row.get("requires_review") is False or row.get("requires_review") is None, (
-            f"Row {row['id']} has requires_review={row['requires_review']}, "
-            f"expected false after backfill."
-        )
+        rr = row.get("requires_review")
+        if rr is not False and rr is not None:
+            raise RuntimeError(
+                f"Row {row['id']} has requires_review={rr}, "
+                f"expected false after backfill."
+            )
 
 
 def baseline() -> None:

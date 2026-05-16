@@ -1986,6 +1986,9 @@ language sql stable as $$
            or (m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
+      -- Deriver review-gate (issue #552): see match_memories.
+      and m.requires_review = false
+      and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by m.embedding_v2 <=> query_embedding
     limit match_limit;
 $$;
@@ -2281,6 +2284,12 @@ language sql stable as $$
                and m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
+      -- Deriver review-gate (issue #552): hide rows pending owner review
+      -- and merge-proposal candidates from default recall regardless of
+      -- show_history. These are not "history" — they are unverified writes
+      -- that must not surface to redrobot or other consumers.
+      and m.requires_review = false
+      and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by m.embedding <=> query_embedding
     limit match_limit;
 $$;
@@ -2314,6 +2323,9 @@ language sql stable as $$
                and m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
+      -- Deriver review-gate (issue #552): see match_memories above.
+      and m.requires_review = false
+      and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by rank desc
     limit match_limit;
 $$;
@@ -2356,6 +2368,9 @@ language sql stable as $$
                        and m.expired_at is null
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
+              -- Deriver review-gate (issue #552): see match_memories above.
+              and m.requires_review = false
+              and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
             union all
             -- Incoming edges: target ∈ memory_ids, source resolved to head.
             select m.id, m.name, m.type, m.project, m.description, m.content,
@@ -2374,6 +2389,9 @@ language sql stable as $$
                        and m.expired_at is null
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
+              -- Deriver review-gate (issue #552): see match_memories above.
+              and m.requires_review = false
+              and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
         ) sub
         order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
     ) deduped
@@ -2723,31 +2741,45 @@ create policy "Allow all for authenticated" on comm_patterns_watermark
 -- has compatible semantics; aborts otherwise".
 -- =========================================================================
 
+-- Provenance namespaces for rows added via this subsystem:
+--   * source_provenance = 'hook:deriver'  — synchronous Deriver hook writes
+--   * source_provenance = 'task:dreamer'  — async Dreamer batch writes
+-- Both land with requires_review=true; owner accept via memory_review_decide
+-- is the only path to live memory in v1.
+
 -- requires_review: always-gate review flag. Every Deriver/Dreamer write
 -- lands requires_review=true regardless of confidence.  Recall hides these
 -- by default; opt-in via include_unreviewed=true.  Owner accept via
 -- memory_review_decide is the only path to live memory in v1.
 -- Decision: 31ebba19-adb6-4ad0-ac33-ceac5bc5cea2 (ADR-0003 §Q4).
+-- Default covers existing rows at zero I/O cost (PG 11+ catalog-only ADD COLUMN).
 alter table memories add column if not exists requires_review bool
     not null default false;
 
 -- derivation_run_id: provenance pointer linking the memory back to the
 -- specific Deriver/Dreamer run that created it.  Used for auditing and
 -- for the Dreamer's "re-derive if superseded" skip logic.  NULL for
--- pre-derivation rows.
+-- pre-derivation rows (catalog-only metadata; no backfill needed).
 alter table memories add column if not exists derivation_run_id uuid;
 
 -- merge_targets: non-NULL + non-empty signals a merge proposal.  Recall
--- must skip rows where merge_targets is not null and not empty (showing
--- them only via a dedicated review endpoint).  Decision d162cca4-25ba-4342-
--- b6e2-c1c92bd2ba78 (ADR-0003 §Q3).
+-- must skip rows where merge_targets is non-null AND non-empty (showing
+-- them only via a dedicated review endpoint).  CHECK forbids the empty
+-- array so the boundary is binary (NULL = not a proposal, non-NULL = is
+-- a proposal) and the GIN partial predicate stays aligned with the recall
+-- filter.  Decision d162cca4-25ba-4342-b6e2-c1c92bd2ba78 (ADR-0003 §Q3).
 alter table memories add column if not exists merge_targets uuid[];
 
--- Backfill: existing rows are owner-produced, implicitly trusted, review
--- not required.  merge_targets NULL (not a proposal) by definition.
--- derivation_run_id NULL (pre-dates derivation subsystem).
-update memories set requires_review = false where requires_review is null;
-update memories set derivation_run_id = null where derivation_run_id is null;
+do $$
+begin
+    if not exists (
+        select 1 from pg_constraint
+        where conname = 'memories_merge_targets_non_empty'
+    ) then
+        alter table memories add constraint memories_merge_targets_non_empty
+            check (merge_targets is null or array_length(merge_targets, 1) > 0);
+    end if;
+end $$;
 
 -- Index: Deriver/Dreamer scan for rows needing review (SessionStart hook
 -- surfaces pending count).  Also covers the review-decision flow where
@@ -2758,6 +2790,15 @@ create index if not exists idx_memories_requires_review
 
 -- Index: recall filter — rows with non-empty merge_targets are proposals,
 -- skipped by default recall.  GIN index for array containment checks.
+-- Partial predicate aligned with the CHECK constraint above (NULL is the
+-- only "not a proposal" state; non-NULL implies non-empty).
 create index if not exists idx_memories_merge_targets
     on memories using gin (merge_targets)
     where merge_targets is not null;
+
+-- Index: derivation_run_id equality lookups for the Dreamer's "re-derive
+-- if superseded" skip logic.  Partial predicate keeps the index small —
+-- pre-derivation rows have NULL run_id and are not queried here.
+create index if not exists idx_memories_derivation_run_id
+    on memories(derivation_run_id)
+    where derivation_run_id is not null;
