@@ -30,8 +30,8 @@ What FOK gives:
 
 | Component | Status | File / Object |
 |---|---|---|
-| Recall event emit (fire-and-forget) | shipped | `_emit_recall_event` in `mcp-memory/handlers/memory.py:588`; payload: `{query, returned_ids, returned_similarities, returned_count, top_sim, threshold, project, type_filter, show_history}` |
-| Events table | shipped | `events` (mcp-memory/schema.sql:151), `event_type='memory_recall'` |
+| Recall event emit (fire-and-forget) | shipped | `_emit_recall_event` in `mcp-memory/handlers/memory.py`; payload: `{query, returned_ids, returned_similarities, returned_count, top_sim, threshold, project, type_filter, show_history}` |
+| Events table | shipped | `events` (`mcp-memory/schema.sql`), `event_type='memory_recall'` |
 | Batch judge | shipped | `scripts/fok-batch.py` — Haiku judges last-24h unfudged events, writes verdict back to `events.payload` |
 | Known-unknowns table | shipped | `known_unknowns` (#249) |
 | Known-unknowns from FOK | shipped (batch) | `try_insert_known_unknown` in `fok-batch.py` — `verdict=insufficient AND confidence<0.7 AND top_sim<0.6` triggers insert |
