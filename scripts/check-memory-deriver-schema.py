@@ -14,7 +14,7 @@ Usage:
     # or direct SQL copy in Supabase SQL Editor:
     #   SELECT column_name, data_type, is_nullable, column_default
     #   FROM information_schema.columns
-    #   WHERE table_name = 'memories';
+    #   WHERE table_name = 'memories' AND table_schema = 'public';
 """
 
 import json
@@ -112,7 +112,7 @@ def check_columns(rows: list[dict]) -> None:
                     file=sys.stderr,
                 )
 
-    print("\nAll checks passed.")
+    print("\nPrecheck complete (see warnings above if any).")
 
 
 def main():
@@ -128,6 +128,7 @@ def main():
             SELECT column_name, data_type, is_nullable, column_default
             FROM information_schema.columns
             WHERE table_name = 'memories'
+              AND table_schema = 'public'
             ORDER BY ordinal_position;
         """
         url = f"{supabase_url}/rest/v1/rpc/execute_sql"
@@ -153,6 +154,7 @@ def main():
                     SELECT column_name, data_type, is_nullable, column_default
                     FROM information_schema.columns
                     WHERE table_name = 'memories'
+                      AND table_schema = 'public'
                     ORDER BY ordinal_position;
                 """
             })
@@ -165,6 +167,7 @@ def main():
                 "  SELECT column_name, data_type, is_nullable, column_default\n"
                 "  FROM information_schema.columns\n"
                 "  WHERE table_name = 'memories'\n"
+                "    AND table_schema = 'public'\n"
                 "  ORDER BY ordinal_position;\n",
                 file=sys.stderr,
             )

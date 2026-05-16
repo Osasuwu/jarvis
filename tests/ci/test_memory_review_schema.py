@@ -103,10 +103,10 @@ class TestDeriverColumns:
         body = _deriver_block()
         assert body is not None
         assert re.search(
-            r"requires_review\s+bool\s+not\s+null\s+default\s+false",
+            r"requires_review\s+bool(?:ean)?\s+not\s+null\s+default\s+false",
             body,
             re.I,
-        ), "requires_review must be `bool NOT NULL DEFAULT false`."
+        ), "requires_review must be `boolean NOT NULL DEFAULT false` (bool alias accepted)."
 
     def test_derivation_run_id_nullable(self):
         """derivation_run_id must be UUID and nullable (NULL = pre-derivation)."""

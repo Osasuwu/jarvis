@@ -25,7 +25,7 @@
 -- requires_review: always-gate review flag (ADR-0003 §Q4,
 -- decision 31ebba19-adb6-4ad0-ac33-ceac5bc5cea2).
 -- Default covers existing rows at zero I/O cost (PG 11+ catalog-only ADD COLUMN).
-alter table memories add column if not exists requires_review bool
+alter table memories add column if not exists requires_review boolean
     not null default false;
 
 -- derivation_run_id: pointer to the Deriver/Dreamer run that wrote the row.
@@ -42,6 +42,7 @@ begin
     if not exists (
         select 1 from pg_constraint
         where conname = 'memories_merge_targets_non_empty'
+          and conrelid = 'memories'::regclass
     ) then
         alter table memories add constraint memories_merge_targets_non_empty
             check (merge_targets is null or array_length(merge_targets, 1) > 0);
@@ -73,6 +74,14 @@ create index if not exists idx_memories_derivation_run_id
 -- rows surface in every recall path including redrobot's shared instance.
 -- Filters are unconditional (independent of show_history) — review-pending
 -- rows are not "history", they are unverified writes.
+--
+-- Note on the `array_length(m.merge_targets, 1) = 0` branch below: the
+-- CHECK constraint `memories_merge_targets_non_empty` already forbids empty
+-- arrays, and `array_length('{}'::uuid[], 1)` returns NULL in PostgreSQL
+-- (not 0) anyway — so the `= 0` predicate is technically unreachable.
+-- Kept as a belt-and-braces guard against future constraint relaxation;
+-- the runtime cost is negligible and `merge_targets is null` short-circuits
+-- via the partial GIN index.
 -- =========================================================================
 
 drop function if exists match_memories(vector, int, float, text, text, boolean);

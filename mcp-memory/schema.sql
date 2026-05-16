@@ -2288,6 +2288,12 @@ language sql stable as $$
       -- and merge-proposal candidates from default recall regardless of
       -- show_history. These are not "history" — they are unverified writes
       -- that must not surface to redrobot or other consumers.
+      --
+      -- The `array_length(..., 1) = 0` branch is technically unreachable —
+      -- the `memories_merge_targets_non_empty` CHECK forbids empty arrays
+      -- and `array_length('{}'::uuid[], 1)` returns NULL, not 0. Kept as a
+      -- belt-and-braces guard; cost is negligible and `is null` is the
+      -- short-circuit path via the partial GIN index.
       and m.requires_review = false
       and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by m.embedding <=> query_embedding
@@ -2753,7 +2759,7 @@ create policy "Allow all for authenticated" on comm_patterns_watermark
 -- memory_review_decide is the only path to live memory in v1.
 -- Decision: 31ebba19-adb6-4ad0-ac33-ceac5bc5cea2 (ADR-0003 §Q4).
 -- Default covers existing rows at zero I/O cost (PG 11+ catalog-only ADD COLUMN).
-alter table memories add column if not exists requires_review bool
+alter table memories add column if not exists requires_review boolean
     not null default false;
 
 -- derivation_run_id: provenance pointer linking the memory back to the
@@ -2775,6 +2781,7 @@ begin
     if not exists (
         select 1 from pg_constraint
         where conname = 'memories_merge_targets_non_empty'
+          and conrelid = 'memories'::regclass
     ) then
         alter table memories add constraint memories_merge_targets_non_empty
             check (merge_targets is null or array_length(merge_targets, 1) > 0);
