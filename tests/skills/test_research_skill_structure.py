@@ -20,9 +20,10 @@ class TestResearchSkillStructure:
     @classmethod
     def setup_class(cls):
         """Load the research SKILL.md file once for all tests."""
-        # Prefer canonical source in repo, then check home dir
+        # Canonical source is the repo (tests/skills/test_X.py -> repo_root/.claude-userlevel/...)
+        repo_root = Path(__file__).resolve().parent.parent.parent
         candidates = [
-            Path(r"C:\Users\petrk\GitHub\jarvis\.claude-userlevel\skills\research\SKILL.md"),
+            repo_root / ".claude-userlevel" / "skills" / "research" / "SKILL.md",
             Path.home() / ".claude" / "skills" / "research" / "SKILL.md",
         ]
 
