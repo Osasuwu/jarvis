@@ -2,7 +2,9 @@
 
 Used by `/reason` when a hinge-point question in the debate cannot be answered from head by either side. The point of dispatching a sub-agent (instead of searching from the main session) is **bias elimination**: the searcher must not know which side is hoping for which answer.
 
-This mirrors the **anonymization mitigation** validated in multi-agent debate research: removing identity markers ("self" vs "peer") forces agents to weigh evidence on merit instead of source-affiliation (Wang et al., arxiv 2510.07517 — "Measuring and Mitigating Identity Bias in Multi-Agent Debate via Anonymization"). The dispatching agent here plays the role of the anonymizing layer.
+This mirrors the **anonymization mitigation** validated in multi-agent debate research: removing identity markers ("self" vs "peer") forces agents to weigh evidence on merit instead of source-affiliation (Choi, Zhu & Li, arxiv 2510.07517 — "When Identity Skews Debate: Anonymization for Bias-Reduced Multi-Agent Reasoning", ACL 2026). The dispatching agent here plays the role of the anonymizing layer.
+
+**Isolation is behavioural, not structural.** The sub-agent is dispatched via the `Agent` tool without context-isolation flags, so the parent session's conversation history (including the debate, your position, and the user's intuition) is in principle reachable. The instructions below — "do NOT pre-comment", "you do not know what answer is expected", strict output format — are a **behavioural nudge** that biases the sub-agent away from reading the debate as a prior. They are not a hard wall. Real isolation would require `isolation: "worktree"` or a fresh-context dispatch pattern, which we have not adopted (would lose access to project memory/codebase, which the researcher needs). Treat this as a known limitation; the nudge is sufficient for routine bias prevention, not for adversarial scenarios.
 
 ## Usage from /reason
 
@@ -64,8 +66,8 @@ Output format:
 ## Gaps
 <questions you could not answer, and why>
 
-## Reframing suggestions
-<if the original question is malformed, propose better ones>
+## Structural concerns with the question as posed
+<only logical/empirical malformation: false dichotomy, undefined term, unstated assumption, missing scope. Do NOT propose alternative answers or steer the question to a preferred frame.>
 
 Keep findings to evidence. No conclusions, no recommendations, no "based on this I think...".
 ```

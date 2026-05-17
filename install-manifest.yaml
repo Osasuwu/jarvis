@@ -116,6 +116,7 @@ groups:
           - "diagnose"
           - "grill"
           - "improve-codebase-architecture"
+          - "reason"
           - "to-issues"
           - "to-prd"
           - "triage"
