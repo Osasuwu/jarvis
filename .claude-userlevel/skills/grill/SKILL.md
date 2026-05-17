@@ -75,6 +75,16 @@ When a term is resolved, update `CONTEXT.md` right there. Don't batch these up â
 
 Don't couple `CONTEXT.md` to implementation details. Only include terms that are meaningful to domain experts.
 
+### Remove `needs-grill` on success
+
+When `/grill` resolves an issue's open questions and the AC is updated with verifiable bullets + decision UUIDs (whether inline or via working_state), remove the issue's `needs-grill` label as the final terminal step:
+
+```bash
+gh issue edit <N> --repo <owner/repo> --remove-label "needs-grill"
+```
+
+This is the contract that lets `/delegate`'s pre-dispatch gate (issue #642) trust that an unlabelled issue is genuinely grill-clean. Skipping the removal leaves the issue stuck in `status:owner-queue` forever. If `/grill` exits without resolution (owner walks away mid-session), leave the label in place â€” the issue still needs work.
+
 ### Offer ADRs sparingly
 
 Only offer to create an ADR when all three are true:

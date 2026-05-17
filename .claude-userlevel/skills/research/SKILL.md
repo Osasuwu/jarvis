@@ -106,6 +106,16 @@ memory_store(type="project", name="research_last_run", content="{date} — topic
 
 Check for duplicate research-spawned issues before creating new ones.
 
+### 6. Remove `needs-research` on success
+
+When `/research` was triggered against a specific issue carrying the `needs-research` label and the research produces an actionable answer (recommendation written into the issue, decision recorded, or follow-up issue created), remove the label as the final terminal step:
+
+```bash
+gh issue edit <N> --repo <owner/repo> --remove-label "needs-research"
+```
+
+This is the contract that lets `/delegate`'s pre-dispatch gate (issue #642) trust that an unlabelled issue is genuinely research-clean. Skipping the removal leaves the issue stuck in `status:owner-queue` forever. If `/research` exits without a confident answer (confidence <50), leave the label in place — the issue still needs work.
+
 ## Quality rules
 
 - Non-trivial claims: 3+ independent sources when available
