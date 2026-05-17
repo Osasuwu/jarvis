@@ -102,6 +102,24 @@ Baseline measurement: **2026-05-17**
 
 See `baselines/2026-05-17.json`.
 
+## Re-run gates (milestone-43)
+
+The harness is a replay scorer — it does not drive Jarvis live. Each anti-sycophancy slice ships the mechanism in its own PR; the **measurement** of pushback-rate delta is the milestone-43 closing slice (#694), which:
+
+1. Generates fresh transcripts against the 12 scenarios after slices #689 (third-person reframing), #691 (4-channel research), #692 (cross-context CRITIC) have landed.
+2. Re-scores using `replay_harness.score` and compares against `baselines/2026-05-17.json`.
+3. Records the delta as a milestone-closing outcome.
+
+Scenarios most likely to move on each slice:
+
+| Slice | Mechanism | Highest-leverage scenarios |
+|---|---|---|
+| #689 | Third-person reframing + assumption verbalization in `/grill` | s001, s003, s008 (process scenarios where reframing helps) |
+| #691 | 4-channel research intake before AC | s004, s006, s010 (proposals refuted by external grounding) |
+| #692 | Cross-context CRITIC subagent at AC-lock | **s005, s007, s011** (framework/architecture choice — exactly the category single-agent self-critique misses) |
+
+Slice-level PRs do not re-run the harness — that would couple every mechanism PR to a fragile live-transcript collection step. Mechanism correctness is verified by the slice's own structural / smoke tests (e.g. `tests/skills/test_grill_critic_subagent.py`, `tests/skills/test_grill_critic_smoke.py`).
+
 ## References
 
 - Arxiv 2508.02087: "Sycophancy to Subtlety" — industry baseline ~63.7% sycophancy
