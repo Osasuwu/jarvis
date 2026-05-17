@@ -1,0 +1,27 @@
+{
+  "_comment": "Per-repo path-list consumed by /to-issues AFK-fit checklist (#642). Adding a new repo MUST NOT require editing any SKILL.md — only this file. Paths are gitignore-style globs evaluated against an issue's declared-changed file list; an intersection ⇒ AFK-no ⇒ slice does NOT receive the `sandcastle` label and routes via interactive /implement. For jarvis the list mirrors docs/security/agent-boundaries.md (canonical Tier-2 surface) — sync manually when that file changes; a future task may automate. For redrobot the list captures the safety-critical zones called out in jarvis CLAUDE.md (driver/, planning/, mujoco/).",
+  "Osasuwu/jarvis": [
+    ".mcp.json",
+    "config/SOUL.md",
+    "CLAUDE.md",
+    "mcp-memory/server.py",
+    "mcp-memory/client.py",
+    "mcp-memory/embeddings.py",
+    "mcp-memory/tools_schema.py",
+    "mcp-memory/classifier.py",
+    "mcp-memory/episode_extractor.py",
+    "mcp-memory/handlers/**",
+    ".claude/settings.json",
+    ".gitleaks.toml",
+    ".pre-commit-config.yaml",
+    ".claude-userlevel/settings.json",
+    ".claude-userlevel/.mcp.json",
+    ".claude-userlevel/CLAUDE.md",
+    ".claude-userlevel/SOUL.md"
+  ],
+  "SergazyNarynov/redrobot": [
+    "driver/**",
+    "planning/**",
+    "mujoco/**"
+  ]
+}

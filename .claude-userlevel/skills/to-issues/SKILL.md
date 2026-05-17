@@ -31,6 +31,24 @@ Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an
 - Prefer many thin slices over few thick ones
 </vertical-slice-rules>
 
+### 3a. AFK-fit checklist (apply per slice, decides `sandcastle` label)
+
+For each slice, answer four questions. Any "yes" ⇒ slice is **NOT** AFK-safe ⇒ do **NOT** apply the `sandcastle` label ⇒ the slice routes through interactive `/implement` rather than `/delegate`. All four "no" ⇒ apply `sandcastle`.
+
+This checklist is the upstream pair of the `/delegate` pre-dispatch gate. The gate refuses dispatch when `sandcastle` is missing — `/to-issues` is the canonical place where the label gets applied (decision `6e753417`). Sandcastle label is **never applied manually** and **never applied by `/grill`** (slice issues don't exist at grill time).
+
+**Q1 — protected-zone intersection (static)**: do this slice's declared-changed files intersect any glob in the per-repo path-list at [`config/protected-paths.json`](../../../config/protected-paths.json)? Mechanical check via [`scripts/to_issues_afk_fit.py`](../../../scripts/to_issues_afk_fit.py) — call `intersects_protected(declared_files, repo, config)`. If yes → AFK-no, q2-4 are moot. Unknown repo ⇒ no static match ⇒ fall through to LLM judgement below; flag "unknown repo, judge manually" in the slice notes.
+
+**Q2 — session-context dependency (LLM)**: does the slice require memory or session context beyond what the issue AC literally carries — e.g. "we already decided X in last week's grill" — to be implementable? If a fresh coding session reading only the AC would diverge from intent, AFK-no.
+
+**Q3 — mid-execution judgement call (LLM)**: does the slice need a human judgement mid-implementation that no programmatic test can verify — e.g. "pick a sensible default timeout", "match the existing visual style"? AFK-yes only when the AC fully constrains the answer.
+
+**Q4 — cross-cutting / multi-repo / external-state (LLM)**: does the slice touch multiple repos, external services that need credentials beyond what the sandcastle image carries, or side effects (Telegram send, prod DB write, Stripe charge) that need owner confirmation? AFK-no.
+
+**Hard constraint** (issue #642): adding a **new** repo to the system means appending one entry to `config/protected-paths.json` — never editing this SKILL.md and never editing `scripts/to_issues_afk_fit.py`. The lookup is keyed by `owner/repo`.
+
+Record the AFK decision per slice (yes/no + the one question that flipped it, when applicable) so the quiz in §4 can show the owner *why* a slice is HITL.
+
 ### 4. Quiz the user
 
 Present the proposed breakdown as a numbered list. For each slice, show:
@@ -51,7 +69,13 @@ Iterate until the user approves the breakdown.
 
 ### 5. Publish the issues to the issue tracker
 
-For each approved slice, publish a new issue to the issue tracker. Use the issue body template below. These issues are considered ready for AFK agents, so publish them with the correct triage label unless instructed otherwise.
+For each approved slice, publish a new issue to the issue tracker. Use the issue body template below.
+
+**Label application at publish time**:
+
+- Slice passed AFK-fit checklist (all four "no") → apply the `sandcastle` label. This is the canonical place the label is set — see §3a, decision `6e753417`.
+- Slice failed AFK-fit (any "yes") → do **NOT** apply `sandcastle`. The slice routes via interactive `/implement` instead of `/delegate`.
+- Slice carries unresolved scope or unclear AC discovered during §3a → apply the matching `needs-*` label (`needs-grill`, `needs-research`, `needs-prd`). The requesting skill removes its own `needs-*` label at terminal success — `/grill` removes `needs-grill`, `/research` removes `needs-research`, `/to-prd` removes `needs-prd`. `/delegate`'s pre-dispatch gate refuses any issue carrying a `needs-*` label.
 
 Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
 
