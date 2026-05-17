@@ -422,6 +422,37 @@ def test_directory_without_include_skips_orphan_check(
     assert not any(a.kind == "prune_orphan" for a in plan.actions)
 
 
+def test_existing_bak_orphan_is_not_re_quarantined(
+    manifest: Path, fake_repo: Path, tmp_path: Path
+) -> None:
+    """`.bak.orphan` leftovers from prior runs must not be re-detected as orphans (#659).
+
+    Without the skip, every subsequent install would nest the suffix one level
+    deeper: `dnd.bak.orphan` → `dnd.bak.orphan.bak.orphan` → ...
+    """
+    m = installer.load_manifest(manifest)
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    # Synthesize the state left by a previous quarantine pass.
+    leftover = target / "skills" / "dnd.bak.orphan"
+    leftover.mkdir()
+    (leftover / "SKILL.md").write_text("# previously quarantined\n", encoding="utf-8")
+    # Also a timestamped variant (same-day collision case from `_backup_dest`).
+    leftover_stamped = target / "skills" / "dnd-prep.bak.orphan-20260516-120000"
+    leftover_stamped.mkdir()
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)
+    orphans = [a for a in plan.actions if a.kind == "prune_orphan"]
+    orphan_sources = {Path(a.source).name for a in orphans}
+    assert "dnd.bak.orphan" not in orphan_sources, (
+        "prior-run quarantine must not be re-quarantined into .bak.orphan.bak.orphan"
+    )
+    assert "dnd-prep.bak.orphan-20260516-120000" not in orphan_sources, (
+        "timestamped quarantine variant must also be skipped"
+    )
+
+
 def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
     data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
     for g in data["groups"]:
