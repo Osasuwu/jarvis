@@ -5,11 +5,33 @@ description: Grilling session that challenges your plan against the existing dom
 
 <what-to-do>
 
-Interview me relentlessly about every aspect of this plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+Conduct this grill session in two phases:
+
+### Phase 1: Assumption Verbalization
+
+Before asking any WHY/HOW questions, calibrate expectations by writing out your assumptions about the user:
+
+- **Expertise level**: What's your estimate of the user's experience in this domain?
+- **Time budget**: How much time do you think the user has available for this discussion?
+- **Context familiarity**: How much relevant context do you assume the user already has?
+- **Decision stage**: Are they exploring options, or do they have a preferred direction they want pressure-tested?
+- **Scope constraints**: Are there organizational, technical, or deadline constraints you should assume?
+
+Ask the user: **"Are these assumptions right, or should I adjust? Anything I'm off base about?"**
+
+Only proceed to Phase 2 after getting feedback.
+
+### Phase 2: Third-Person Reviewer Grilling
+
+Interview the user relentlessly about every aspect of their plan until we reach a shared understanding. Walk down each branch of the design tree, resolving dependencies between decisions one-by-one. For each question, provide your recommended answer.
+
+**Framing approach**: Instead of "You proposed X, let me ask about Y," use third-person reviewer framing. Example: *"The user proposed X. As a senior engineer reviewing this proposal, what would I push back on? The choice seems to assume Y, but I'm not sure that's warranted because Z."*
 
 Ask the questions one at a time, waiting for feedback on each question before continuing.
 
 If a question can be answered by exploring the codebase, explore the codebase instead.
+
+**Anti-sycophancy note** (decision 316c5911-9f06-44de-8f99-20fe3e9fa448): This third-person reviewer framing (based on arxiv 2505.23840) reduces agreement-bias in LLM responses to user proposals by ~64% in multi-turn dialogues. The goal is crisp pushback, not reflexive agreement.
 
 </what-to-do>
 
