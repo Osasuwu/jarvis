@@ -33,6 +33,37 @@ If a question can be answered by exploring the codebase, explore the codebase in
 
 **Anti-sycophancy note** (decision 316c5911-9f06-44de-8f99-20fe3e9fa448): This third-person reviewer framing (based on arxiv 2505.23840) reduces agreement-bias in LLM responses to user proposals by ~64% in multi-turn dialogues. The goal is crisp pushback, not reflexive agreement.
 
+### Phase 3: Cross-context review (CRITIC subagent)
+
+Single-agent self-critique grades its own exam. Personalisation measurably increases sycophancy (MIT 2026, ICLR 2026). Phase 3 dispatches a sibling subagent — operating as a **role-isolated critic** without SOUL.md, always_load memory, or project calibration in its prompt — to critique the proposal cold. The prompt template lives in [CRITIC.md](./CRITIC.md) and is pasted verbatim into the subagent dispatch.
+
+#### Triggers — exactly two
+
+CRITIC runs when **either** of these fires (decision c29c2b00-e9e1-43d1-93ff-ada5820c434c):
+
+1. **AC-lock gate** — immediately before the grill session would commit acceptance criteria to the issue body / CONTEXT.md / record_decision chain. This is the highest-leverage gate; most critique value lands here.
+2. **`record_decision` with `reversibility ∈ {hard, irreversible}`** — every hard or irreversible decision the grill is about to emit. Catches architectural calls the AC-lock gate alone would miss when the decision precedes AC formation.
+
+WHY→HOW and HOW→AC mid-session checkpoints were considered and **rejected as ceremony** in the same decision — they add critique cost without distinct leverage past the two triggers above. Do not add them as triggers.
+
+#### Context scrubbing — behavioural, not structural
+
+Dispatch the critic via the `Agent` tool with `subagent_type: general-purpose`. **Do not** pass `isolation: "worktree"` — that would block the codebase + memory tools the critic needs to ground its critique. Instead, scrub by **what you put in the prompt**, mirroring the precedent in [`reason/NEUTRAL-RESEARCHER.md`](../reason/NEUTRAL-RESEARCHER.md):
+
+- Forward: the problem statement, the owner's proposed direction (verbatim), the acceptance criteria as drafted.
+- Omit: which side of any disagreement the operator favours, prior memory hits used to shape the proposal, SOUL.md / CLAUDE.md / CONTEXT.md content, any "I think…" framing.
+- The behavioural nudge in CRITIC.md's system block does the rest. Isolation here is **behavioural, not structural** — a known limitation, sufficient for routine bias prevention (same trade-off as NEUTRAL-RESEARCHER; worktree isolation would lose access to project memory the critic still needs for grounded critique).
+
+#### Loopback — forced per-item disposition blocks AC-lock
+
+The critic returns a fixed-schema verdict (≤3 risks with severity, ≤3 unmentioned alternatives, 1 challenged assumption — see CRITIC.md). For **each** returned item, the operator surfaces the item to the owner and records one of three dispositions:
+
+- **accept** — owner agrees the critique lands; the proposal/AC changes to address it before lock.
+- **reject** — owner explicitly disagrees with the critique; rationale captured inline.
+- **defer** — owner acknowledges the critique is valid but out of scope for this slice; a follow-up issue is filed before lock.
+
+Per-item disposition is **mandatory** and **blocks AC-lock**: the grill cannot proceed to commit AC, write CONTEXT.md updates, or emit `record_decision` until every returned item has a recorded disposition. Bulk "accept all" / "reject all" sweeps are not permitted — the per-item discipline is what keeps the loopback from collapsing back into sycophancy at the wording layer.
+
 </what-to-do>
 
 <supporting-info>
