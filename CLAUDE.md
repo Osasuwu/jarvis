@@ -90,6 +90,7 @@ Use skills — don't reinvent with raw tools.
 | Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
+| Vague intuition / "у меня ощущение что", "может быть лучше но не знаю как", обсудить концепт | `/reason` |
 | Conversation context → PRD on issue tracker | `/to-prd` |
 | Plan / PRD → vertical-slice issues | `/to-issues` |
 | "diagnose this", bug repro, perf regression | `/diagnose` |
@@ -104,6 +105,7 @@ Rules:
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
 - **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
 - **`/grill` → `/to-prd` → `/to-issues` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy.
+- **`/reason` is the optional prefix** when the work starts from a vague intuition rather than a formed plan ("оркестратор можно лучше — не знаю как"). Full chain: `/reason` → (plan crystallises) → `/grill` → `/to-prd` → `/to-issues` → `/implement`. Skip `/reason` when you already have a plan to validate.
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
 ## Autonomous work
