@@ -28,7 +28,11 @@
         redrobot = 08:00
 
 .PARAMETER Model
-    Tier 0 Ollama model. Defaults from #538 decision 58670ea5: qwen2.5-coder:14b.
+    Tier 0 Ollama model. Default flipped from qwen2.5-coder:14b → qwen3-coder:30b
+    on 2026-05-14: 14b failed the tool_use fidelity probe (emits skill dispatch as
+    markdown JSON text through Ollama's Anthropic shim — see memory
+    ollama_bench_must_measure_tool_use_fidelity). 30b passes the probe with
+    structured tool_use blocks at 43 tok/s warm.
 
 .PARAMETER Tier1Model
     Tier 1 OOM-downgrade Ollama model. Defaults from #538: qwen2.5-coder:7b.
@@ -66,12 +70,12 @@ param(
 
     [string]$WindowEnd,
 
-    [string]$Model = 'qwen2.5-coder:14b',
+    [string]$Model = 'qwen3-coder:30b',
 
     [string]$Tier1Model = 'qwen2.5-coder:7b',
 
     [ValidateSet('', 'deepseek', 'claude')]
-    [string]$Tier2Provider = '',
+    [string]$Tier2Provider = 'deepseek',
 
     [string]$RepoRoot,
 
@@ -172,7 +176,13 @@ $argParts = @(
     '-WindowEnd', $WindowEnd
 )
 if ($Tier1Model)    { $argParts += @('-Tier1Model', $Tier1Model) }
-if ($Tier2Provider) { $argParts += @('-Tier2Provider', $Tier2Provider) }
+if ($Tier2Provider) {
+    $argParts += @('-Tier2Provider', $Tier2Provider)
+    # 2026-05-14: Tier 2 runs as primary for AFK scheduled tasks. Local Ollama
+    # tiers fail the real-Claude-Code tool_use fidelity check on qwen2.5-coder:14b
+    # and qwen3-coder:30b — see memory ollama_bench_must_measure_tool_use_fidelity.
+    $argParts += '-Tier2AsPrimary'
+}
 
 $action = New-ScheduledTaskAction -Execute $pwshExe `
     -Argument ($argParts -join ' ') `
