@@ -412,10 +412,15 @@ def build_plan(
             # and the destination already exists, anything under dest not in
             # the whitelist is a leftover from a previous install whose
             # source/manifest no longer lists it. Quarantine each leftover.
+            # Skip names containing `.bak.orphan` — they're already quarantined
+            # from a prior install; re-quarantining grows the suffix chain
+            # unboundedly (foo.bak.orphan → foo.bak.orphan.bak.orphan → ...).
             if include and dest.exists() and dest.is_dir():
                 allowed = set(include)
                 for child in sorted(dest.iterdir()):
                     if child.name in allowed:
+                        continue
+                    if ".bak.orphan" in child.name:
                         continue
                     actions.append(
                         Action(
