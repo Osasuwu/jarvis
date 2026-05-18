@@ -399,6 +399,32 @@ def test_fresh_install_emits_no_orphan_actions(manifest: Path, fake_repo: Path) 
     assert not any(a.kind == "prune_orphan" for a in plan.actions)
 
 
+def test_orphan_scan_skips_already_quarantined_dirs(
+    manifest: Path, fake_repo: Path, tmp_path: Path
+) -> None:
+    """Already-quarantined `.bak.orphan` dirs must not be re-quarantined on next install.
+
+    Regression: without this filter, `foo.bak.orphan` becomes
+    `foo.bak.orphan.bak.orphan` on every outdated-state apply, growing
+    unboundedly. See issue/PR linked in the body.
+    """
+    m = installer.load_manifest(manifest)
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    # Two flavours of quarantine name: bare label and label-with-timestamp.
+    (target / "skills" / "deprecated-skill.bak.orphan").mkdir()
+    (target / "skills" / "deprecated-skill.bak.orphan" / "SKILL.md").write_text(
+        "# already quarantined\n", encoding="utf-8"
+    )
+    (target / "skills" / "other.bak.orphan-20260101-120000").mkdir()
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)
+    orphan_sources = [Path(a.source).name for a in plan.actions if a.kind == "prune_orphan"]
+    assert "deprecated-skill.bak.orphan" not in orphan_sources
+    assert "other.bak.orphan-20260101-120000" not in orphan_sources
+
+
 def test_directory_without_include_skips_orphan_check(
     manifest: Path, fake_repo: Path, tmp_path: Path
 ) -> None:
