@@ -1,7 +1,7 @@
 ---
 name: delegate
 description: This skill should be used when the principal asks Jarvis to dispatch one or more GitHub issues to coding subagents (typically multiple issues in parallel), or says "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z". Also used by autonomous-loop to hand off a single subagent-scoped job (e.g. CI debug). For a single issue the main session will do itself, use /implement instead. Jarvis's own judgment on task complexity OVERRIDES blind delegation — if a task is unfit for a subagent (needs session context, cross-cutting reasoning, safety review), keep it inline even if principal said "раскидай".
-version: 1.0.0
+version: 2.0.0
 ---
 
 # Delegate Skill
@@ -9,6 +9,8 @@ version: 1.0.0
 Dispatch **multiple** GitHub issues to coding subagents running in parallel.
 
 The main session stays as orchestrator: it reviews each subagent's diff, resolves scope drift, and decides merges. **Subagents NEVER merge.** They push the PR and stop.
+
+Memory recall and the `record_decision` contract come from user-level CLAUDE.md `### Memory & decision protocol`. The skill-specific gates below are what `/delegate` adds on top.
 
 ## When to /delegate vs /implement
 
@@ -30,43 +32,83 @@ The main session stays as orchestrator: it reviews each subagent's diff, resolve
 
 **Jarvis judgment overrides the principal's "параллельно":** The principal has explicitly delegated this call to Jarvis (memory: this decision). If a task looks deceptively complex or a subagent will struggle (needs memory context, cross-file reasoning, recent-decisions awareness), keep it inline even if asked to delegate. Don't silently downgrade — tell the principal "keeping #X inline because <reason>".
 
+## Contract: dispatch routing (per issue: mechanical / TDD-mode / `grill_required`)
+
+Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/delegate` does **not** run `/grill` inline (and there is no standalone `/tdd` skill — TDD-mode is dispatched as inline operating discipline carrying `_shared/tdd/` reference docs). For **each** issue in the batch it inspects two inputs and routes to one of three branches. Routing is per-issue: a single batch can mix mechanical-mode and TDD-mode dispatches (and exclude grill-failing issues).
+
+**Inputs** (per issue — fetch the body first):
+
+```bash
+for N in <N1> <N2> ...; do
+  gh issue view $N --repo <owner/repo> --json title,body --jq '.title + "\n\n" + .body'
+done
+```
+
+1. **SOUL.md `### Grill trigger checkbox`** — answer per issue:
+
+   - Touches user-visible behavior? (not cosmetic / refactor / doc-fix)
+   - Touches domain logic / algorithmics / physics?
+   - Will tests be non-trivial?
+   - Crosses existing non-trivial code?
+
+2. **Grill artifact for this issue** — present iff *either* of the following holds:
+
+   - **(a) working_state** — `memory_get(name="working_state_<project>", project="<project>")` where `<project>` is the short project slug (`jarvis`, `redrobot`), matching the convention in `scripts/session-context.py`. If the returned record references this issue number alongside one or more decision UUIDs, the artifact is present. The exact key shape inside the record is project-controlled — accept any structure where a decision UUID is reachable from the issue number. If working_state has no entry for this issue, fall through to (b).
+   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies. The automated `/to-issues` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
+
+**Dispatch table** — per issue, pick exactly one branch:
+
+| checkbox | grill artifact present for this issue? | route |
+|---|---|---|
+| 0 yes | n/a | **mechanical-mode** dispatch (current flow, no AC-completeness clause) |
+| ≥1 yes | yes (UUIDs in working_state OR cited in issue body) | **TDD-mode** dispatch (subagent prompt gains AC-completeness clause; see §4) |
+| ≥1 yes | no | **exit `grill_required`** (issue excluded from batch) |
+
+### Branch: `grill_required` exit (per issue)
+
+Emit the structured block below per affected issue and exclude them from dispatch. They are NOT claimed in §2 — claim happens after this exclusion:
+
+```
+EXIT: grill_required
+issue: <owner/repo>#<N>
+reason: trigger-checkbox-fired (<count>/4 yes); no grill artifact in working_state or issue body
+next: run /grill against #<N>, then re-dispatch /delegate (or /implement) #<N>
+```
+
+Continue dispatching the rest of the batch in the same call — partial dispatch is fine. Report to the principal: "issues #X, #Y exited `grill_required`; #A dispatched mechanical, #B dispatched TDD-mode". The orchestrator handles re-dispatch in fresh sessions after `/grill`.
+
+### Branch: mechanical-mode
+
+Most "fix typo / bump dep / move file" issues land here. Subagent prompt template (§4) is the canonical form **without** the AC-completeness clause.
+
+### Branch: TDD-mode
+
+Subagent prompt template (§4) gains an additional AC-completeness clause directing the subagent to follow `_shared/tdd/tdd-loop.md`, cover every AC bullet with at least one test, and escalate (not silently drop) any AC that does not fit.
+
+The TDD-mode clause is **/delegate-specific** — it is not present in `/implement`'s TDD-mode (which relies on Operating discipline in the skill body) because the failure mode it targets (subagent AC-dodging via "out of scope" relabeling, per memories `subagent_acceptance_criteria_dodged_as_out_of_scope` and `subagent_test_coverage_overclaim`) only manifests in subagent dispatch.
+
+### Subagents never run `/grill` themselves (and there is no `/tdd` skill to invoke)
+
+Their dispatch prompt carries the grill-refined AC verbatim and (in TDD-mode) the TDD operating clause inline. First subagent action is to confirm the AC is verifiable from the issue body alone — if not, post a comment and stop, escalating back to the main session.
+
+### Re-entry is stateless
+
+Every `/delegate` entry re-runs the checkbox and re-reads `working_state_<project>` per issue. There is no `tdd_mode` flag carried in from the orchestrator. When `/grill` finishes and the orchestrator re-dispatches `/delegate <N>`, the route flips from `grill_required` → TDD-mode automatically because the grill populated the artifact. Same code path, different input state.
+
+### No "skip grill" override at the batch level
+
+Unlike `/implement` (where the principal can say "skip grill, just implement" for a single issue), `/delegate` does not offer a one-shot override. Per-issue grilling is the gate that keeps subagents from drifting on under-specified AC, and silently overriding it for an entire batch is exactly the failure mode this contract prevents. If the principal wants a triggered issue dispatched anyway, route it through `/implement` with the explicit single-issue override.
+
 ## Pipeline
-
-### 0a. Grill-me trigger checkbox per issue (alignment protocol — SOUL.md)
-
-For **each** issue in the batch — apply the SOUL.md `### Grill-me trigger checkbox`:
-
-- Touches user-visible behavior?
-- Touches domain logic / algorithmics?
-- Tests will be non-trivial?
-- Crosses existing non-trivial code?
-
-**≥1 yes on an issue:**
-- That issue is **NOT delegate-ready**. Acceptance criteria need `/grill-me` first.
-- Two paths:
-  - **Inline grill** — main session runs `/grill-me` against the issue, updates AC + CONTEXT.md + memory, *then* the issue becomes delegatable. Use this when the issue is otherwise subagent-suitable, just under-specified.
-  - **Keep inline for /implement** — if grill-me reveals the work is also context-heavy or safety-adjacent, route through `/implement` instead.
-- Report to the principal: "issues #X, #Y need grill-me before dispatch — running it inline now / routing to /implement".
-
-**0 yes on an issue:** delegatable as-is. Continue.
-
-**Subagents do NOT run grill-me on their own.** They consume already-grilled AC via the issue body. Their dispatch prompt must include the literal AC list, and their first action is to confirm the AC is verifiable from the issue body alone — if not, they post a comment and stop, escalating back to main session.
-
-### 0b. Load context from memory (parallel)
-
-Same as /implement §0b:
-- `memory_recall(query="delegation", limit=3)` — past delegation rules and feedback
-- `memory_recall(query=<batch topic>, limit=3)` — decisions about this area
-- `memory_recall(type="feedback", project="global", limit=3)` — behavioral rules
 
 ### 1. Classify each issue: delegatable or inline
 
-For each issue in the batch:
+For each issue routed to **mechanical-mode** or **TDD-mode** by the §Contract dispatch table (issues that exited `grill_required` are already excluded):
 
 1. Run pre-flight (5 checks — same as /implement §1).
 2. Classify:
-   - **Delegatable** → fresh subagent can handle it from the issue body alone
-   - **Inline** → needs session context / safety review / cross-cutting peripheral vision
+   - **Delegatable** → fresh subagent can handle it from the issue body alone (subagent prompt = template + TDD-mode block if route == TDD-mode)
+   - **Inline** → needs session context / safety review / cross-cutting peripheral vision (route through /implement, which re-runs its own dispatch)
 
 Produce a short split plan for the principal before acting. Example:
 
@@ -75,9 +117,9 @@ Produce a short split plan for the principal before acting. Example:
 > - #613 (swept path) → **inline** — safety-adjacent, `planning/`.
 > - #617 (docs tweak) → **delegate** — trivial.
 
-### 2. Claim all issues
+### 2. Claim all dispatchable issues
 
-Claim *everything* in the batch up front (label `status:in-progress` + comment), even the ones staying inline. Prevents race with other Jarvis instances or principal forgetting to route.
+Claim every issue that survived the per-issue `grill_required` check (label `status:in-progress` + comment), including the ones staying inline. Issues that exited `grill_required` are NOT claimed — they go back to the orchestrator for `/grill` + re-dispatch in a fresh session, which will run its own pre-flight and claim then. Claiming up front prevents races between concurrent Jarvis instances and the principal forgetting to route delegatable issues.
 
 ```bash
 for N in <N1> <N2> ...; do
@@ -88,18 +130,7 @@ done
 
 ### 3. Record decision
 
-Emit one `record_decision` covering the batch — which went to subagents, which stayed inline, why.
-
-```
-mcp__memory__record_decision(
-  decision="delegate batch #<N1> #<N2> ... (split <inline>/<delegated>)",
-  rationale="<why this split — subagent fitness, session-context dependency, safety zones>",
-  memories_used=[<ids>],
-  confidence=<0.0-1.0>,
-  alternatives_considered=["all inline", "all delegated", "sequential"],
-  reversibility="reversible"
-)
-```
+Apply the `record_decision` contract from user-level CLAUDE.md. One call covers the batch — which went to subagents, which stayed inline, which exited `grill_required`, why. Issue dispatch satisfies trigger #1 (issue implementation) — non-optional.
 
 ### 4. Dispatch subagents
 
@@ -115,7 +146,10 @@ Agent(
 )
 ```
 
-**Subagent prompt template** (self-contained — subagent does NOT share main-session memory):
+**Subagent prompt template** (self-contained — subagent does NOT share main-session memory). The `<TDD-mode block>` placeholder below is filled differently depending on the per-issue dispatch routing (§Contract):
+
+- **mechanical-mode** → omit the block entirely (no AC-completeness clause; trivial issues stay terse).
+- **TDD-mode** → insert the AC-completeness clause verbatim, exactly as specified in [issue #595](https://github.com/Osasuwu/jarvis/issues/595).
 
 ```
 Implement GitHub issue #<N> in repo <owner/repo>.
@@ -127,6 +161,8 @@ Files likely to change: <list>
 
 Branch name: feat/<N>-<slug>   (MUST use exactly this — branch-name race mitigation)
 Target repo CWD: <absolute path to worktree>
+
+<TDD-mode block — present iff per-issue route == TDD-mode, see §Contract>
 
 Follow the /implement skill pipeline (loaded in your session). Specifically:
 - §4 Implement — read existing code first, check if already done, lint, test
@@ -143,6 +179,23 @@ HARD RULES for you (subagent):
 
 Report back: PR URL + 2-line summary of what you did.
 ```
+
+**TDD-mode block (insert verbatim when the per-issue route is TDD-mode):**
+
+```
+TDD-mode active for this issue.
+
+Operating discipline:
+- Follow .claude-userlevel/skills/_shared/tdd/tdd-loop.md: pick one AC, write failing
+  test, confirm red, write minimal impl, confirm green, refactor if useful, next AC.
+- Every item in the issue's acceptance criteria MUST have at least one corresponding
+  test. Marking an AC item as "out of scope" is a delivery defect, not a scope
+  decision — escalate to the orchestrator instead of dropping the item.
+- Refactor permission extends to code freshly covered by a passing test in this
+  session. Code without test coverage is NOT in your refactor scope.
+```
+
+ADR-0001 compliance: the TDD-mode block is **inline operating discipline**. There is no standalone `/tdd` skill (dropped in #596). The subagent does not call `/grill` or any other skill mid-task — the reference doc `_shared/tdd/tdd-loop.md` is read as a file.
 
 **Principal env propagation note (#426)**: The Agent tool inherits parent env, so `JARVIS_PRINCIPAL` set in the parent session carries to the subagent. Auto-injection of `JARVIS_PRINCIPAL=subagent` is deferred — the parent is `live` (principal-driven dispatch), and subagents are already constrained by the worktree isolation and skill-level rules above. If a future code path runs `/delegate` autonomously (e.g. dispatcher hands work to a subagent), revisit and inject `JARVIS_PRINCIPAL=subagent` explicitly via the spawn wrapper.
 

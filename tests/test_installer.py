@@ -112,9 +112,7 @@ def manifest(tmp_path: Path, fake_repo: Path) -> Path:
             {
                 "id": "mcp_config",
                 "enabled": True,
-                "files": [
-                    {"source": ".mcp.json", "dest": ".mcp.json", "template": True}
-                ],
+                "files": [{"source": ".mcp.json", "dest": ".mcp.json", "template": True}],
             },
             {
                 "id": "skills",
@@ -129,7 +127,9 @@ def manifest(tmp_path: Path, fake_repo: Path) -> Path:
                 ],
             },
         ],
-        "env_vars": [{"name": "JARVIS_HOME", "value": "{repo_root}", "platforms": ["windows", "posix"]}],
+        "env_vars": [
+            {"name": "JARVIS_HOME", "value": "{repo_root}", "platforms": ["windows", "posix"]}
+        ],
         "health_check": {"enabled": False},
         "backup": {"prefix": ".claude.backup-", "retain": 3},
     }
@@ -203,9 +203,7 @@ def test_build_plan_state_fresh_has_writes_no_backup(manifest: Path, fake_repo: 
     assert kinds.count("set_env") == 1
 
 
-def test_apply_plan_creates_files_and_version_marker(
-    manifest: Path, fake_repo: Path
-) -> None:
+def test_apply_plan_creates_files_and_version_marker(manifest: Path, fake_repo: Path) -> None:
     m = installer.load_manifest(manifest)
     plan = installer.build_plan(m, fake_repo)
     installer.apply_plan(plan, m, run_env=None)
@@ -255,6 +253,7 @@ def test_rollback_restores_target(manifest: Path, fake_repo: Path) -> None:
 
     backup = plan.target_root.parent / ".claude.backup-manual"
     import shutil
+
     shutil.copytree(plan.target_root, backup)
 
     # Corrupt the target.
@@ -266,8 +265,12 @@ def test_rollback_restores_target(manifest: Path, fake_repo: Path) -> None:
 def test_prune_backups_keeps_latest_n(fake_repo: Path, tmp_path: Path) -> None:
     target_root = tmp_path / "claude_home"
     parent = target_root.parent
-    for name in [".claude.backup-20260401-000000", ".claude.backup-20260402-000000",
-                 ".claude.backup-20260403-000000", ".claude.backup-20260404-000000"]:
+    for name in [
+        ".claude.backup-20260401-000000",
+        ".claude.backup-20260402-000000",
+        ".claude.backup-20260403-000000",
+        ".claude.backup-20260404-000000",
+    ]:
         (parent / name).mkdir()
     dropped = installer.prune_backups(target_root, ".claude.backup-", retain=2)
     assert len(dropped) == 2
@@ -292,7 +295,7 @@ def test_health_check_failed_command_reports_failure(fake_repo: Path) -> None:
     _sys.platform != "win32",
     reason=(
         "Regression #352 is specific to non-UTF-8 Windows consoles (cp1251/"
-        "cp866). The inline `python -c \"...\"` quoting also relies on cmd.exe "
+        'cp866). The inline `python -c "..."` quoting also relies on cmd.exe '
         "parsing — bash terminates the outer string on the first inner quote."
     ),
 )
@@ -312,6 +315,111 @@ def test_health_check_handles_utf8_output(fake_repo: Path) -> None:
     ok, logs = installer.run_health_check(m, fake_repo)
     assert ok is True, logs
     assert any("OK" in line for line in logs)
+
+
+# ---------- orphan-skill cleanup (#576) ----------
+
+
+def test_build_plan_emits_prune_orphan_for_stale_skill_dir(
+    manifest: Path, fake_repo: Path, tmp_path: Path
+) -> None:
+    """Stale skill dir absent from `include` whitelist produces a prune_orphan action."""
+    m = installer.load_manifest(manifest)
+    # First apply: target gets `implement` skill from whitelist.
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    # Simulate a deprecated skill left behind from a prior install.
+    (target / "skills" / "deprecated-skill").mkdir()
+    (target / "skills" / "deprecated-skill" / "SKILL.md").write_text("# stale\n", encoding="utf-8")
+    # Bump SHA so state goes outdated and actions are re-emitted.
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)
+    orphans = [a for a in plan.actions if a.kind == "prune_orphan"]
+    assert len(orphans) == 1
+    assert Path(orphans[0].source).name == "deprecated-skill"
+    assert ".bak.orphan" in orphans[0].dest
+
+
+def test_apply_plan_quarantines_orphan_skill(
+    manifest: Path, fake_repo: Path, tmp_path: Path
+) -> None:
+    """apply_plan moves orphan dir to a quarantine sibling, doesn't delete."""
+    m = installer.load_manifest(manifest)
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    orphan_dir = target / "skills" / "deprecated-skill"
+    orphan_dir.mkdir()
+    (orphan_dir / "SKILL.md").write_text("# stale\n", encoding="utf-8")
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan, m, run_env=None)
+
+    assert not orphan_dir.exists(), "orphan should have been moved out of skills/"
+    quarantined = list((target / "skills").glob("deprecated-skill.bak.orphan*"))
+    assert len(quarantined) == 1
+    assert (quarantined[0] / "SKILL.md").read_text(encoding="utf-8") == "# stale\n"
+    # Whitelisted skill still present.
+    assert (target / "skills" / "implement" / "SKILL.md").exists()
+
+
+def test_dry_run_does_not_remove_orphan(manifest: Path, fake_repo: Path, tmp_path: Path) -> None:
+    """Building the plan must not touch orphans — only apply does."""
+    m = installer.load_manifest(manifest)
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    orphan_dir = target / "skills" / "deprecated-skill"
+    orphan_dir.mkdir()
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)  # plan-only, no apply
+    assert any(a.kind == "prune_orphan" for a in plan.actions)
+    assert orphan_dir.exists(), "dry-run must not move the orphan"
+
+
+def test_no_orphan_actions_when_all_in_whitelist(
+    manifest: Path, fake_repo: Path, tmp_path: Path
+) -> None:
+    """When every dest child is in the whitelist, no prune actions are planned."""
+    m = installer.load_manifest(manifest)
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)
+    assert not any(a.kind == "prune_orphan" for a in plan.actions)
+
+
+def test_fresh_install_emits_no_orphan_actions(manifest: Path, fake_repo: Path) -> None:
+    """Fresh state (target absent) cannot have orphans by definition."""
+    m = installer.load_manifest(manifest)
+    plan = installer.build_plan(m, fake_repo)
+    assert plan.state == "fresh"
+    assert not any(a.kind == "prune_orphan" for a in plan.actions)
+
+
+def test_directory_without_include_skips_orphan_check(
+    manifest: Path, fake_repo: Path, tmp_path: Path
+) -> None:
+    """An entry without `include` copies everything → orphan-detection must skip it."""
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    for g in data["groups"]:
+        if g["id"] == "skills":
+            for d in g["directories"]:
+                d.pop("include", None)
+    manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    m = installer.load_manifest(manifest)
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    # Without include, the source dir is copied wholesale (both implement +
+    # niche). A child not in source/manifest is just a user file — leave it.
+    (target / "skills" / "user-extra").mkdir()
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)
+    assert not any(a.kind == "prune_orphan" for a in plan.actions)
 
 
 def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
@@ -373,9 +481,7 @@ def test_userlevel_settings_points_soul_at_user_level(fake_repo: Path) -> None:
     repo_root = Path(__file__).resolve().parents[1]
     settings_src = repo_root / ".claude-userlevel" / "settings.json"
     claude_home = Path("/opt/fakehome/.claude")
-    rendered = installer.template_content(
-        settings_src, repo_root, claude_home
-    ).decode("utf-8")
+    rendered = installer.template_content(settings_src, repo_root, claude_home).decode("utf-8")
     data = json.loads(rendered)
     # Every SessionStart cat must reference the user-level SOUL, not
     # <JARVIS_HOME>/config/SOUL.md.
@@ -467,9 +573,7 @@ def test_fresh_install_rollback_on_apply_failure(
 
     # Now invoke the rollback helper directly (what main() does in the except).
     installer._rollback_failed_apply(plan)
-    assert not plan.target_root.exists(), (
-        "fresh install failure must remove target_root entirely"
-    )
+    assert not plan.target_root.exists(), "fresh install failure must remove target_root entirely"
 
 
 def test_health_check_uses_shlex_for_argv_parsing(
@@ -516,19 +620,39 @@ def test_deep_merge_preserves_user_hook_events(tmp_path: Path) -> None:
     """User events jarvis doesn't own (e.g. Stop) must survive merge."""
     existing = {
         "hooks": {
-            "SessionStart": [{"matcher": "startup", "hooks": [
-                {"type": "command", "command": "user-custom-session.sh"}
-            ]}],
+            "SessionStart": [
+                {
+                    "matcher": "startup",
+                    "hooks": [{"type": "command", "command": "user-custom-session.sh"}],
+                }
+            ],
             "Stop": [{"hooks": [{"type": "command", "command": "user-cleanup.sh"}]}],
         },
         "theme": "dark",  # top-level user key
     }
     source = {
         "hooks": {
-            "SessionStart": [{"matcher": "startup", "hooks": [
-                {"type": "command", "command": "python /abs/jarvis/scripts/session-context.py"}
-            ]}],
-            "PreCompact": [{"hooks": [{"type": "command", "command": "python /abs/jarvis/scripts/pre-compact-backup.py"}]}],
+            "SessionStart": [
+                {
+                    "matcher": "startup",
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python /abs/jarvis/scripts/session-context.py",
+                        }
+                    ],
+                }
+            ],
+            "PreCompact": [
+                {
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": "python /abs/jarvis/scripts/pre-compact-backup.py",
+                        }
+                    ]
+                }
+            ],
         }
     }
     merged = installer._deep_merge_jarvis_json(existing, source)
@@ -576,11 +700,9 @@ def test_deep_merge_preserves_user_mcp_servers(tmp_path: Path) -> None:
 def test_merge_json_file_fresh_write_when_dest_missing(tmp_path: Path) -> None:
     """No existing target → write source as-is (still templated)."""
     src = tmp_path / "src.json"
-    src.write_text(json.dumps({"hooks": {"SessionStart": [{"command": "x"}]}}),
-                   encoding="utf-8")
+    src.write_text(json.dumps({"hooks": {"SessionStart": [{"command": "x"}]}}), encoding="utf-8")
     dest = tmp_path / "out" / "settings.json"
-    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path,
-                               claude_home=tmp_path)
+    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path, claude_home=tmp_path)
     assert dest.exists()
     loaded = json.loads(dest.read_text(encoding="utf-8"))
     assert loaded["hooks"]["SessionStart"][0]["command"] == "x"
@@ -589,14 +711,13 @@ def test_merge_json_file_fresh_write_when_dest_missing(tmp_path: Path) -> None:
 def test_merge_json_file_merges_onto_existing(tmp_path: Path) -> None:
     """Existing dest → deep-merge (user keys preserved)."""
     dest = tmp_path / "settings.json"
-    dest.write_text(json.dumps({"hooks": {"Stop": [{"c": "user"}]}, "theme": "dark"}),
-                    encoding="utf-8")
+    dest.write_text(
+        json.dumps({"hooks": {"Stop": [{"c": "user"}]}, "theme": "dark"}), encoding="utf-8"
+    )
     src = tmp_path / "src.json"
-    src.write_text(json.dumps({"hooks": {"SessionStart": [{"c": "jarvis"}]}}),
-                   encoding="utf-8")
+    src.write_text(json.dumps({"hooks": {"SessionStart": [{"c": "jarvis"}]}}), encoding="utf-8")
 
-    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path,
-                               claude_home=tmp_path)
+    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path, claude_home=tmp_path)
     merged = json.loads(dest.read_text(encoding="utf-8"))
     assert merged["hooks"]["Stop"][0]["c"] == "user"  # survived
     assert merged["hooks"]["SessionStart"][0]["c"] == "jarvis"  # added
@@ -608,18 +729,14 @@ def test_merge_json_file_corrupt_existing_falls_back_to_source(tmp_path: Path) -
     dest = tmp_path / "settings.json"
     dest.write_text("{not valid json", encoding="utf-8")
     src = tmp_path / "src.json"
-    src.write_text(json.dumps({"hooks": {"SessionStart": [{"c": "new"}]}}),
-                   encoding="utf-8")
+    src.write_text(json.dumps({"hooks": {"SessionStart": [{"c": "new"}]}}), encoding="utf-8")
 
-    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path,
-                               claude_home=tmp_path)
+    installer._merge_json_file(src, dest, template=False, repo_root=tmp_path, claude_home=tmp_path)
     merged = json.loads(dest.read_text(encoding="utf-8"))
     assert merged["hooks"]["SessionStart"][0]["c"] == "new"
 
 
-def test_merge_json_preserves_user_mcp_on_reapply(
-    manifest: Path, fake_repo: Path
-) -> None:
+def test_merge_json_preserves_user_mcp_on_reapply(manifest: Path, fake_repo: Path) -> None:
     """Full flow: apply once, user adds a custom mcpServer, re-apply,
     jarvis-owned server updates while custom server survives.
     Idempotency for jarvis keys: re-apply doesn't duplicate."""
@@ -682,9 +799,9 @@ def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None
     settings_rendered = installer.template_content(
         settings_src, repo_root, Path("/opt/fake/.claude")
     ).decode("utf-8")
-    mcp_rendered = installer.template_content(
-        mcp_src, repo_root, Path("/opt/fake/.claude")
-    ).decode("utf-8")
+    mcp_rendered = installer.template_content(mcp_src, repo_root, Path("/opt/fake/.claude")).decode(
+        "utf-8"
+    )
 
     repo_posix = repo_root.as_posix()
     # Every `scripts/` reference in the rendered output is absolute-rooted.
@@ -695,19 +812,29 @@ def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None
 
 
 def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
-    """Source-of-truth directory must exist with every whitelisted skill."""
+    """Source-of-truth directory must exist with every whitelisted skill.
+
+    Convention: entries beginning with ``_`` are shared reference material
+    (e.g. ``_shared/tdd/`` consumed by /implement and /delegate in TDD-mode,
+    #593), not skills. They live under the skills tree so install-time
+    orphan-prune keeps them, but they have no ``SKILL.md`` — the directory
+    must exist and be non-empty.
+    """
     repo_root = Path(__file__).resolve().parents[1]
     src = repo_root / ".claude-userlevel" / "skills"
     assert src.is_dir(), f"{src} must exist — M2 source of truth"
 
     m = installer.load_manifest(repo_root / "install-manifest.yaml")
     include = next(
-        d["include"]
-        for g in m["groups"] if g["id"] == "skills"
-        for d in g["directories"]
+        d["include"] for g in m["groups"] if g["id"] == "skills" for d in g["directories"]
     )
     for name in include:
-        skill_md = src / name / "SKILL.md"
+        entry_dir = src / name
+        if name.startswith("_"):
+            assert entry_dir.is_dir(), f"whitelisted shared resource missing: {entry_dir}"
+            assert any(entry_dir.iterdir()), f"shared resource is empty: {entry_dir}"
+            continue
+        skill_md = entry_dir / "SKILL.md"
         assert skill_md.exists(), f"whitelisted skill missing: {skill_md}"
 
 
@@ -755,9 +882,7 @@ def test_backup_tolerates_vanished_file(
     assert "unreadable" in stderr and "latest" in stderr
 
 
-def test_backup_tolerates_locked_file(
-    manifest: Path, fake_repo: Path, monkeypatch, capsys
-) -> None:
+def test_backup_tolerates_locked_file(manifest: Path, fake_repo: Path, monkeypatch, capsys) -> None:
     """Windows log rotation can hold a PermissionError on the file being appended to.
     Same tolerance applies (#350 review nit)."""
     m = installer.load_manifest(manifest)
@@ -829,9 +954,7 @@ def test_find_legacy_parent_mcp_ignores_unrelated_mcp_configs(tmp_path: Path) ->
     assert installer.find_legacy_parent_mcp(repo) == []
 
 
-def test_apply_plan_quarantines_legacy_parent_mcp(
-    manifest: Path, fake_repo: Path
-) -> None:
+def test_apply_plan_quarantines_legacy_parent_mcp(manifest: Path, fake_repo: Path) -> None:
     legacy = fake_repo.parent / ".mcp.json"
     legacy.write_text(_legacy_mcp_payload(), encoding="utf-8")
 
@@ -922,9 +1045,7 @@ def test_plan_user_mcp_registrations_quarantines_stale_target_file(
     assert any(Path(a.source).resolve() == stale.resolve() for a in quarantine)
 
 
-def test_apply_register_mcp_user_calls_injected_runner(
-    fake_repo: Path, tmp_path: Path
-) -> None:
+def test_apply_register_mcp_user_calls_injected_runner(fake_repo: Path, tmp_path: Path) -> None:
     target = tmp_path / "claude_home"
     manifest_path = _user_mcp_manifest(fake_repo, target)
     m = installer.load_manifest(manifest_path)
@@ -946,10 +1067,12 @@ def test_register_mcp_user_stdio_command_shape(monkeypatch) -> None:
 
     def fake_run(cmd, **kwargs):
         captured.append(list(cmd))
+
         class R:
             returncode = 0
             stdout = ""
             stderr = ""
+
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
@@ -981,10 +1104,12 @@ def test_register_mcp_user_stdio_command_shape_no_env(monkeypatch) -> None:
 
     def fake_run(cmd, **kwargs):
         captured.append(list(cmd))
+
         class R:
             returncode = 0
             stdout = ""
             stderr = ""
+
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
@@ -1005,10 +1130,12 @@ def test_register_mcp_user_http_command_shape(monkeypatch) -> None:
 
     def fake_run(cmd, **kwargs):
         captured.append(list(cmd))
+
         class R:
             returncode = 0
             stdout = ""
             stderr = ""
+
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
@@ -1039,10 +1166,12 @@ def test_register_mcp_user_http_no_headers(monkeypatch) -> None:
 
     def fake_run(cmd, **kwargs):
         captured.append(list(cmd))
+
         class R:
             returncode = 0
             stdout = ""
             stderr = ""
+
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
@@ -1065,6 +1194,7 @@ def test_register_mcp_user_raises_on_add_failure(monkeypatch) -> None:
             returncode = next(seq)
             stdout = ""
             stderr = "boom"
+
         return R()
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
@@ -1080,7 +1210,9 @@ def test_resolve_claude_cli_uses_pathext_when_available(monkeypatch, tmp_path) -
     """
     fake = tmp_path / "claude.CMD"
     fake.write_text("@echo off\n")
-    monkeypatch.setattr(installer.shutil, "which", lambda name: str(fake) if name == "claude" else None)
+    monkeypatch.setattr(
+        installer.shutil, "which", lambda name: str(fake) if name == "claude" else None
+    )
     assert installer._resolve_claude_cli() == str(fake)
 
 
@@ -1099,9 +1231,7 @@ def test_unknown_install_as_raises(fake_repo: Path, tmp_path: Path) -> None:
             {
                 "id": "mcp_config",
                 "enabled": True,
-                "files": [
-                    {"source": ".mcp.json", "install_as": "bogus", "template": True}
-                ],
+                "files": [{"source": ".mcp.json", "install_as": "bogus", "template": True}],
             }
         ],
     }

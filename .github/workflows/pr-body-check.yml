@@ -19,6 +19,13 @@ jobs:
             const body = pr.body || '';
             const labels = (pr.labels || []).map(l => l.name);
 
+            // Bot bypass: dependabot/renovate cannot author linked issues. Paperwork-only — pytest, gitleaks, meta-tests still gate.
+            const author = (pr.user && pr.user.login) || '';
+            if (author === 'dependabot[bot]' || author === 'renovate[bot]') {
+              console.log(`bot author (${author}) — skipping linked-issue requirement.`);
+              return;
+            }
+
             // Hotfix escape: priority:critical label bypasses the linked-issue requirement.
             // Aligns with issue-checks.yml which treats priority:critical as hotfix.
             if (labels.includes('priority:critical')) {

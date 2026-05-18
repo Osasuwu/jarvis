@@ -77,6 +77,6 @@ Skills are designed to work in both environments:
 
 Task prompts should invoke skills via slash command — resolves against whichever Claude Code home (`~/.claude/` after federation) is loaded:
 ```
-Run /research in --mode=autonomous
+Run /research
 ```
-This way updating the skill in the repo (via `.claude-userlevel/skills/<name>/` → re-apply the installer) automatically updates task behaviour.
+`/research` selects discovery mode automatically when no topic argument is supplied (post-#529). Updating the skill in the repo (via `.claude-userlevel/skills/<name>/` → re-apply the installer) automatically updates task behaviour.

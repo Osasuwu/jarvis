@@ -82,7 +82,6 @@ jobs:
             const repo = { owner: context.repo.owner, repo: context.repo.repo };
 
             const isTask = labels.includes('task');
-            const isEpic = labels.includes('epic');
             const isBug = labels.includes('bug');
             const isHotfix = labels.includes('priority:critical');
 
@@ -95,25 +94,15 @@ jobs:
               errors.push(`Unable to validate issue linkage via API: ${e.message}`);
             }
 
-            // Parent link is recommended but not enforced — agile workflow allows standalone tasks.
+            // Parent link is recommended but not enforced — agile workflow allows standalone slices.
+            // Grouping primitive is the milestone (see milestone_hierarchy_v3); slices link to the
+            // milestone directly, no separate epic-issue layer.
             if (isTask && !isHotfix && !freshIssue.has_parent_issue) {
-              console.log('Note: Task #' + issue.number + ' has no parent epic. Consider linking for traceability.');
-            }
-
-            if (isEpic) {
-              if (!/##\s*Children/i.test(body) && !/###\s*Children/i.test(body)) {
-                errors.push('Epic issues must include a Children section.');
-              }
-              if (!/-\s*\[[ xX]\]/.test(body)) {
-                errors.push('Epic issues should list children as checkbox items (- [ ] #NNN description).');
-              }
-              if (extractParentNumber(body)) {
-                errors.push('Epic issues must not have a parent epic reference. Use milestone + sub-issues with task/bug children.');
-              }
+              console.log('Note: Task #' + issue.number + ' has no parent. Consider linking for traceability.');
             }
 
             if ((isTask || isBug) && !isHotfix && !issue.milestone) {
-              console.log('Note: Task/bug #' + issue.number + ' has no milestone.');
+              console.log('Note: Task/bug #' + issue.number + ' has no milestone (fine for single independent slices).');
             }
 
             if (errors.length > 0) {

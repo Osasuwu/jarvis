@@ -17,21 +17,25 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 ## Implementation
 
 1. Call `list_scheduled_tasks` to see what's already registered
-2. For each of the 6 required tasks:
+2. **Deregister obsolete tasks** before adding new ones:
+   - If `morning-brief` exists → call `delete_scheduled_task` (or the MCP equivalent). On success, count it under `removed`. **On failure, do NOT count it as removed** — print `warn: failed to remove morning-brief (<error>) — check manually` instead. A silent-fail would leave both `morning-brief` (07:43) and `status-record` (07:00) firing, defeating the migration.
+3. For each of the 6 required tasks:
    - If exists with matching name → skip ("already registered")
    - If missing → `create_scheduled_task` with cron + prompt
-3. Print summary: N created, N skipped (already existed)
+4. Print summary: N created, N skipped, N removed.
 
 ## Tasks to Register
 
 | Task ID | Cron | Prompt |
 |---------|------|--------|
-| nightly-research | `17 7 * * *` | Run `/research` in `--mode=autonomous` |
-| morning-brief | `43 7 * * *` | Run `/status` |
+| nightly-research | `17 7 * * *` | Run `/research` — no topic argument; the skill auto-selects discovery mode from arg shape. |
+| status-record | `0 7 * * *` | Run `/status-record` — write daily snapshot of repo/CI/PR/issue/milestone state to memory under tag `status-snapshot`. |
 | risk-radar | `7 9,14,19 * * *` | Quick risk scan: check CI status, stale issues, security alerts across repos in `config/repos.conf` |
 | autonomous-loop | `3 9 * * *` | Run `/autonomous-loop` |
 | intel | `12 10 * * 1` | Weekly tech intelligence: search for new Claude Code features, MCP servers, AI agent patterns. Save findings to memory. |
 | verify | `47 16 * * 5` | Run `/verify` — verify pending outcomes, detect patterns, save lessons. |
+
+> `status-record` supersedes the old `morning-brief`/`/status` slot — the skill records state only, owner reads inline via `memory_recall(query="status-snapshot")`. Decisions/actions on findings belong to the sandcastle orchestrator (#531).
 
 ## Notes
 
@@ -39,3 +43,27 @@ This skill idempotently registers all scheduled tasks. If a task already exists,
 - Times are in local timezone (not UTC)
 - Cron dedup via Supabase memory: scheduled tasks check `*_last_run` markers to prevent duplicate runs across devices
 - Prompts reference skill files so updates to skills automatically update scheduled task behavior
+
+## Workshop-only: Sandcastle AFK loops (Windows Task Scheduler)
+
+Sandcastle is a **local** Docker-based AFK loop, not a remote scheduled agent — it runs `Run-Sandcastle.ps1` inside Windows Task Scheduler against an Ollama-backed Claude Code container. Different infra from the six tasks above (those use `create_scheduled_task` MCP; sandcastle uses `Register-ScheduledTask`).
+
+When invoked on the Workshop PC (`config/device.json` name = `VividFormsPC4Workshop`), `/setup-tasks` also registers:
+
+| Task name | Schedule | Window end | Slice |
+|---|---|---|---|
+| `Sandcastle-Jarvis` | Daily 22:00 | 02:00 | [#545](https://github.com/Osasuwu/jarvis/issues/545) |
+| `Sandcastle-Redrobot` | Daily 02:00 | 08:00 | [#546](https://github.com/Osasuwu/jarvis/issues/546) |
+
+Non-overlapping by design — prevents two Ollama jobs contending for VRAM.
+
+Implementation: invoke the registration script directly (idempotent, replaces existing entry):
+
+```powershell
+.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo jarvis
+.\scripts\sandcastle\Register-SandcastleTask.ps1 -Repo redrobot
+```
+
+On non-Workshop devices the script refuses unless `-Force` (dev rehearsal). Full setup + troubleshooting: [`docs/agents/sandcastle-setup.md`](../../../docs/agents/sandcastle-setup.md).
+
+Decisions: `4890aa35` (Workshop = prod), `0c3017c6` (failure modes), `f8e27d53` (escalation), `58670ea5` (model tier).

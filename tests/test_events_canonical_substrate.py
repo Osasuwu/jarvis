@@ -231,7 +231,12 @@ def test_pg_cron_extension_enabled(migration_sql: str) -> None:
 def test_rls_enabled_with_allow_all_policies(
     request: pytest.FixtureRequest, source_attr: str
 ) -> None:
-    """Match existing convention (fok_judgments, task_queue, etc.)."""
+    """Match existing convention (fok_judgments, task_queue, etc.).
+
+    schema_sql carries the post-#542 split-anon shape (SELECT/UPDATE/DELETE
+    open, INSERT gated on actor LIKE 'sandcastle:%'); migration_sql is the
+    original create migration which still has the broad `Allow all for anon`.
+    """
     source = request.getfixturevalue(source_attr)
     if source_attr == "schema_sql":
         source = _extract_events_canonical_block(source)
@@ -241,9 +246,21 @@ def test_rls_enabled_with_allow_all_policies(
     assert (
         '"Allow all for authenticated" ON events_canonical' in source
     ), f"authenticated policy missing in {source_attr}"
-    assert (
-        '"Allow all for anon" ON events_canonical' in source
-    ), f"anon policy missing in {source_attr}"
+    if source_attr == "migration_sql":
+        assert (
+            '"Allow all for anon" ON events_canonical' in source
+        ), "anon policy missing in migration_sql"
+    else:
+        # post-#542 split-anon shape in schema.sql
+        assert (
+            '"Anon select" ON events_canonical' in source
+        ), "anon SELECT policy missing in schema_sql"
+        assert (
+            '"Anon sandcastle insert" ON events_canonical' in source
+        ), "anon sandcastle INSERT policy missing in schema_sql"
+        assert (
+            "actor LIKE 'sandcastle:%'" in source
+        ), "anon INSERT must be gated on sandcastle: provenance"
 
 
 # ---------------------------------------------------------------------------

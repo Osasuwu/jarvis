@@ -4,6 +4,8 @@ Critical-review companion to [`jarvis-v2-redesign.md`](jarvis-v2-redesign.md) an
 
 External SOTA validation in flight (2 parallel research agents, 2026-04-27) on memory architectures, event-substrate contracts, reviewer calibration, sparse-N calibration, self-modification recursion, Claude Code 2026 changes. This file gets updated when they return.
 
+**Status (2026-05-17):** this doc is the review snapshot; Q7 already carries an inline `Resolved 2026-04-29 (Phase C)` marker. The §"External SOTA findings" `→ Action:` items (materialized projections discipline, hierarchical CP calibration, per-reviewer FP/FN sequencing, self-modification safeguards, Letta sleep-time consideration, alignment-check-per-promotion, harness-design framing) were folded into `jarvis-v2-redesign.md` during Phase B/C (2026-04-28/29) without individual resolution markers being back-stamped here. Verify each Action's adoption status via `git log docs/design/jarvis-v2-redesign.md` or grep for the keyword (e.g. "materialized projection", "Hierarchical CP", "harness coupling") in the redesign doc. The Net-effect table near the end is the most reliable summary; the inline `Action:` lines should be read as proposals, not open work.
+
 ---
 
 ## Pass-3 — design-level open questions (architecture-altering)

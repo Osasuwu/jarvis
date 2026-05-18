@@ -1,5 +1,9 @@
 {
+  "autoMode": {
+    "environment": ["$defaults"]
+  },
   "permissions": {
+    "defaultMode": "auto",
     "allow": [
       "Bash(git status)",
       "Bash(git status:*)",
@@ -27,7 +31,11 @@
       "Bash(gh milestone:*)",
       "Bash(gh repo view:*)",
       "Bash(gh release view:*)",
-      "Bash(gh run view:*)"
+      "Bash(gh run view:*)",
+      "WebFetch",
+      "WebSearch",
+      "mcp__firecrawl__firecrawl_search",
+      "mcp__firecrawl__firecrawl_scrape"
     ]
   },
   "hooks": {
@@ -69,6 +77,16 @@
           {
             "type": "command",
             "command": "python scripts/session-context.py"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/comm-patterns-extract.py"
           }
         ]
       }
@@ -138,6 +156,10 @@
       {
         "matcher": "mcp__memory__record_decision",
         "hooks": [
+          {
+            "type": "command",
+            "command": "python scripts/record-decision-gate.py"
+          },
           {
             "type": "command",
             "command": "python scripts/pretooluse-recall-hook.py"

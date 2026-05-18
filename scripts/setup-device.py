@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 IS_WINDOWS = platform.system() == "Windows"
+CLAUDE_BIN = "claude"  # resolved to absolute path in check_prerequisites()
 
 # ── Formatting helpers ──────────────────────────────────────────────────────
 
@@ -97,8 +98,12 @@ def check_prerequisites():
             print(f"    {DIM}Install: https://cli.github.com{RESET}")
 
     # Claude Code CLI
-    claude_ok = shutil.which("claude") is not None
-    if claude_ok:
+    # On Windows the executable is `claude.cmd` (npm shim); subprocess.run
+    # with a list does NOT expand PATHEXT, so we resolve the absolute path
+    # once via shutil.which (which DOES) and reuse it everywhere below.
+    global CLAUDE_BIN
+    CLAUDE_BIN = shutil.which("claude")
+    if CLAUDE_BIN:
         ok("Claude Code CLI")
     else:
         fail("Claude Code CLI not found -- this is required")
@@ -482,7 +487,7 @@ def install_claude_plugins():
         # ("already on disk"). Absolute path required so claude doesn't
         # mis-treat it as a Git source.
         add_result = subprocess.run(
-            ["claude", "plugins", "marketplace", "add", str(mp_path.resolve())],
+            [CLAUDE_BIN, "plugins", "marketplace", "add", str(mp_path.resolve())],
             capture_output=True, text=True,
         )
         if add_result.returncode != 0:
@@ -495,7 +500,7 @@ def install_claude_plugins():
         # to an already-registered marketplace would be invisible until the
         # user manually ran `claude plugins marketplace update`.
         update_result = subprocess.run(
-            ["claude", "plugins", "marketplace", "update", mp_name],
+            [CLAUDE_BIN, "plugins", "marketplace", "update", mp_name],
             capture_output=True, text=True,
         )
         if update_result.returncode != 0:
@@ -507,7 +512,7 @@ def install_claude_plugins():
         for entry in entries:
             install_result = subprocess.run(
                 [
-                    "claude", "plugins", "install",
+                    CLAUDE_BIN, "plugins", "install",
                     f"{entry['plugin']}@{mp_name}",
                     "--scope", "user",
                 ],

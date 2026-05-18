@@ -1,9 +1,11 @@
 # Memory overhaul — research synthesis + design proposal
 
-**Status:** research complete, design pending principal review.
+**Status:** this doc was the PRD; live state has moved on. Phase 0 (schema foundation) + Phase 1 (recall correctness) + Phase 2 (write-side correctness) + Phase 5.1d-α/β consolidation (#226) + Phase 5.2-α/β/γ A-MEM evolution (#230/#231/#232/#234) + Phase 5.3 feeling-of-knowing (#250/#251/#252/#444, milestone #34 closed 2026-04-29) + dual-embedding readiness (#242) have shipped. Parent: #185 (open, Pillar 4 umbrella). Section 1 below is the original gap inventory — read it as the *PRD baseline*, not current state; sections that have moved on carry inline `Status (#N)` pointers where known.
 **Context:** Memory pillar. Current system has measurable lifecycle bugs; before fixing ad-hoc, principal asked for research on (a) how production LLM agent systems solve the same problems, (b) theory of agent memory. Two parallel research agents ran; this doc consolidates findings with our local audit.
 
 ## 1. Local audit — what's actually broken
+
+**Status (PRD baseline, 2026-04-18):** the table below is the original 10-gap inventory that motivated Phases 0–5. Gaps 1–10 are largely addressed by the shipped phases listed in the doc header; specific per-gap ship-PR mapping lives in the Phase-N sections + #185 sub-issue thread. Do not read this table as live state.
 
 Verified against live Supabase state (2026-04-18):
 

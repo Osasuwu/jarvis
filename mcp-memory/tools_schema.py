@@ -603,6 +603,16 @@ def tool_definitions() -> list[Tool]:
                         "items": {"type": "string"},
                         "description": "Memory IDs that informed this decision (from recall).",
                     },
+                    "intentionally_empty": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Set true to acknowledge that no memory informed this "
+                            "decision. The Tier 2 PreToolUse hook (#524) blocks "
+                            "calls with empty memories_used unless this is true. "
+                            "Sustained >10% rate is a flag for human review."
+                        ),
+                    },
                     "outcomes_referenced": {
                         "type": "array",
                         "items": {"type": "string"},

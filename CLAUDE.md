@@ -3,7 +3,7 @@
 Three-way split:
 - **`CLAUDE.md`** (this file) — *rules*: process, conventions, skill routing, what to do, what NOT to do.
 - **`config/SOUL.md`** — *identity*: personality, behavior, judgment calibration. Loaded by SessionStart hook. Per-agent at multi-agent rollout (currently single).
-- **`CONTEXT.md`** — *domain model*: glossary, invariants, architectural shape. Grows inline through `/grill-me`. Loaded by SessionStart hook.
+- **`CONTEXT.md`** — *domain model*: glossary, invariants, architectural shape. Grows inline through `/grill`. Loaded by SessionStart hook.
 
 ## Who you work for
 
@@ -21,7 +21,7 @@ SessionStart hook (`.claude/settings.json` → `scripts/session-context.py`) inj
 
 ## Project
 
-**Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active sprint scope = GitHub milestones; `docs/PROJECT_PLAN.md` is a pointer index.
+**Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active scope = open GitHub milestones (capability-shipping units, see `milestone_hierarchy_v3`); `docs/PROJECT_PLAN.md` is a pointer index.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory + SOUL.md identity.
 
@@ -34,7 +34,15 @@ Before marking any task complete:
 4. **Tooling**: manual step that should be automated → propose or record.
 5. **Tests**: end-to-end, not just in isolation.
 
-Recall + sibling-grep before implementing come from always_load (`always_recall_before_action`, `feedback_symmetric_fixes`). Don't duplicate here.
+## Engineering posture
+
+Non-negotiable for every decision in this repo. Not in memory — these are how work happens here, not "things to recall sometimes".
+
+- **Recall before action.** Before any non-trivial action (delegate, implement, research, save) — `memory_recall` on the topic. SessionStart context is the baseline; topic-specific lookups are required, not optional. Skill name must appear in the query so skill-contract memories surface (`memory_recall` is keyword-sensitive). If brief-mode recall surfaces a memory on-topic, `memory_get` it before building defaults from your own head.
+- **Verify before assuming implemented.** Never say "this is already done" without `grep` for the actual symbol, reading the code path end-to-end, and where feasible a test that would fail if the feature were missing. Tool-width Z was missing for a month because everyone assumed otherwise — one bad foundation invalidated a month of downstream work.
+- **No state in static storage.** State (% done, ✅/❌ markers, "shipped in PR #X", sprint dates, "last audit YYYY-MM-DD") belongs in GitHub Issues/Projects/PRs/commit history — NOT in markdown files, NOT in memory. Static storage may hold: evergreen lessons, decisions+rationale, reference info (API shapes, config locations), target architecture, pointers ("see #633 for current status"). If a field would be wrong in 2 weeks → GH, not here.
+- **Sibling-grep on fixes.** When a reviewer flags a bug in one helper/pattern, grep for sibling patterns across the whole file AND related files before declaring the fix done. A second-round review with the same class of finding = the first fix was partial. 30 seconds of grep beats a full CI cycle of rework.
+- **Skills are a contract, not a trigger.** `/implement`, `/grill`, `/end`, `/delegate` are owed when the action matches the contract — not only when the owner types the magic word. After PR merge: explicit `/implement` for next slice or `/end`, not silent continuation. Repo not having local skill files is not an exemption — skills are global at `~/.claude/skills/`.
 
 ## Project-specific rules
 
@@ -71,22 +79,20 @@ Use skills — don't reinvent with raw tools.
 
 | Trigger | Skill |
 |---|---|
-| "реализуй #42" — implement single issue inline | `/implement` |
-| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` |
+| "реализуй #42" — implement single issue inline | `/implement` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
+| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
 | "проверь результаты" / scheduled post-delegation | `/verify` |
-| "что сработало", "reflect", "уроки" | `/reflect` |
-| Project overview, "статус", start of work session | `/status` |
+| "что я делаю не так", "проанализируй сессии", "паттерны общения", weekly behavioral audit | `/reflect` (cross-session comms audit; old outcome-verification scope migrated to `/verify` + `/self-improve` per #510) |
 | "исследуй", "research", "сравни" | `/research` |
 | "улучши себя", self-improvement | `/self-improve` |
 | "цели", "приоритеты" | `/goals` |
 | New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
 | Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
-| End of sprint in redrobot | `/sprint-report` |
-| "end" / "end quick" | `/end` / `/end-quick` |
-| Stress-test plan / "grill me" / before non-trivial implementation | `/grill-me` (or `/grill-with-docs` if project has CONTEXT.md / ADRs) |
+| "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
+| Vague intuition (no written plan yet) / "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт"; subsumes /research for in-debate factual grounding | `/reason` |
+| Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
 | Conversation context → PRD on issue tracker | `/to-prd` |
 | Plan / PRD → vertical-slice issues | `/to-issues` |
-| Build feature / fix bug test-first ("red-green-refactor") | `/tdd` |
 | "diagnose this", bug repro, perf regression | `/diagnose` |
 | "improve architecture", find shallow modules, refactoring opportunities | `/improve-codebase-architecture` |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
@@ -97,13 +103,13 @@ Use skills — don't reinvent with raw tools.
 Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
-- **Grill-me trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill-me` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
-- **`/grill-me` → `/to-prd` → `/to-issues` → `/tdd`** is the canonical chain for new features. Each phase in a fresh session if context is heavy.
+- **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
+- **`/reason` (optional, intuition-stage) → `/grill` → `/to-prd` → `/to-issues` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
 ## Autonomous work
 
-User often leaves Jarvis to work alone. Core loop comes from always_load (`quality_over_speed`, `always_recall_before_action`, `verify_before_assuming_implemented`, `autonomous_long_sessions`) + SOUL §Goal awareness.
+User often leaves Jarvis to work alone. Core loop comes from §Engineering posture above (recall before action, verify before assuming implemented) + SOUL §Personality (quality over speed) + SOUL §Goal awareness. "Aligned plans = standing orders" — when a multi-step plan was discussed and signed off, the alignment IS the approval; don't re-confirm at each checkpoint.
 
 Project-specific addition — **transform tasks into verifiable goals**: "Fix bug" → write failing test → make it pass. "Add validation" → tests for invalid inputs → make them pass. "Refactor X" → tests pass before and after.
 
@@ -116,19 +122,19 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
 - Check GitHub Copilot auto-review before merging.
 
-### Architecture sweep at sprint close
+### Architecture sweep at milestone close
 
-After a milestone (sprint) closes, run `/improve-codebase-architecture` in a **fresh session** (not the one that closed the sprint — that's already in dumb zone). The skill:
+After a milestone closes (capability shipped), run `/improve-codebase-architecture` in a **fresh session** (not the one that closed the milestone — that's already in dumb zone). The skill:
 
 1. Reads `CONTEXT.md` + ADRs + repo state.
 2. Surfaces numbered list of *deepening opportunities* (shallow → deep modules, friction points, untested seams).
-3. Grills you on selected candidates → architectural decisions → child issues for the next sprint.
+3. Grills you on selected candidates → architectural decisions → child issues attached to a follow-up milestone (or as standalone slices).
 
-**Trigger mechanism (current):** `scripts/session-context.py` will surface "Sprint N closed N days ago — sweep recommended" in SessionStart context once that issue lands (separate issue). Until then — manually after each milestone close.
+**Trigger mechanism:** `scripts/session-context.py` surfaces "Milestone N closed — architecture sweep recommended" in SessionStart context when a milestone closed with **≥3 closed slices** AND no sweep has run since `closed_at`. Small milestones (1–2 slices) skip the sweep.
 
-**Cadence:** semantic, not temporal. If you don't close a milestone for 3 weeks, the sweep waits — that's correct.
+**Cadence:** semantic, not temporal. The sweep follows capability shipping, never a date.
 
-**Output discipline:** 1–2 actionable refactors → child issues attached to the next milestone via grill-me chain. Rest goes to `.out-of-scope/<topic>.md` with reason. Don't try to action everything.
+**Output discipline:** 1–2 actionable refactors → child issues attached to a follow-up milestone via grill chain. Rest goes to `.out-of-scope/<topic>.md` with reason. Don't try to action everything.
 
 ### Fix > track for trivial reversible (#428)
 
@@ -149,16 +155,26 @@ The test covers two dimensions:
 
 The meta-test suite runs via `.github/workflows/ci-meta.yml` on every PR (not itself path-filtered — that would be self-undermining).
 
-### Sprint vs pillar hygiene
+### Milestone vs pillar hygiene
 
-**Pillars** live in memory, never close — multi-sprint capability areas. Don't treat a pillar as done after one sprint (memory: `pillar_is_not_one_task`).
+Authoritative model lives in memory: `milestone_hierarchy_v3` (always_load). Summary:
 
-**Sprints = GitHub milestones.** Concrete, time-boxed, close cleanly.
+```
+pillar (narrative only) → goal (Type A) → milestone (capability + PRD) → slice (one PR)
+```
 
-1. Start of sprint — create milestone *before* any sprint issue. Every issue attached at creation.
-2. End of sprint — close milestone in the same action as closing the last issue. 0 open + state=open is a bug.
-3. Retroactive — if a sprint shipped without milestone, create it, attach issues+PRs, close it. History must be recoverable for `/sprint-report`.
-4. When user rushes and skips steps — catch it: "milestone for this sprint?" before creating issues; "close M<N>?" when the last item closes. Don't be a silent executor.
+- **Pillars** live in memory, never close — multi-milestone capability areas. Don't treat a pillar as done after one milestone closes (memory: `pillar_is_not_one_task`).
+- **Milestones** group ≥2 capability-coherent slices. Description carries the PRD. Close on capability shipping — **no date in title**, no time-boxing. 0 open issues + state=open is a bug.
+- **Slices** = one PR each. A single independent slice (no inter-deps) ships **without** a milestone. No ceremony for one-offs.
+- **No numerical WIP limit.** Self-throttle by HITL/grill/review attention load. AFK milestones (running through subagents/sandcastle) cost ~0 attention — opening another unrelated milestone is fine when prior ones are AFK.
+
+Mechanics:
+1. New work needing grouping → create milestone *first*, write description (PRD), then attach slices. `/to-prd` writes to milestone description.
+2. Capability shipped → close milestone in the same action as closing the last slice.
+3. Retroactive — if related slices shipped without a milestone, create it, attach the issues+PRs, close it. History must be recoverable.
+4. When user rushes and skips the milestone for grouped work — catch it: "milestone for these N slices?" before creating issues. Don't be a silent executor.
+
+Term **"epic"** is **not used** — milestone is the only grouping primitive (decision: `2a7ae10e-afc3-4523-b0bc-c4b90ddbe1a5`).
 
 ## Token economy
 

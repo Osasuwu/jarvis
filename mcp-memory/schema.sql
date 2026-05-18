@@ -72,9 +72,23 @@ alter table memories enable row level security;
 create policy "Allow all for authenticated" on memories
   for all using (true) with check (true);
 
--- Allow anonymous access (using anon key from MCP server)
-create policy "Allow all for anon" on memories
-  for all to anon using (true) with check (true);
+-- Anon access (sandcastle agent path) — INSERT/UPDATE/DELETE all gated by
+-- source_provenance prefix. Slice 3 (#542) gated INSERT; slice 3.5 (#565)
+-- extended the gate to UPDATE+DELETE so anon cannot wipe rows or forge the
+-- provenance column. Decisions 228a2d9b (slice 3), f3b85eeb (slice 3.5).
+-- Service-role bypasses RLS automatically; host orchestrator unaffected.
+create policy "Anon select" on memories
+  for select to anon using (true);
+create policy "Anon sandcastle update" on memories
+  for update to anon
+  using (source_provenance like 'sandcastle:%')
+  with check (source_provenance like 'sandcastle:%');
+create policy "Anon sandcastle delete" on memories
+  for delete to anon
+  using (source_provenance like 'sandcastle:%');
+create policy "Anon sandcastle insert" on memories
+  for insert to anon
+  with check (source_provenance like 'sandcastle:%');
 
 
 -- =========================================================================
@@ -362,7 +376,12 @@ create table if not exists task_outcomes (
   verified_at timestamptz,  -- when outcome was verified (e.g. PR merged check)
 
   -- Timestamps
-  created_at timestamptz default now()
+  created_at timestamptz default now(),
+
+  -- Provenance prefix used by RLS to gate anon INSERT (slice 3, #542,
+  -- decision 228a2d9b). Nullable for legacy rows; new sandcastle-agent
+  -- writes must set 'sandcastle:<...>' to be accepted via anon key.
+  source_provenance text
 );
 
 create index if not exists idx_task_outcomes_project on task_outcomes(project);
@@ -377,8 +396,20 @@ alter table task_outcomes enable row level security;
 create policy "Allow all for authenticated" on task_outcomes
   for all using (true) with check (true);
 
-create policy "Allow all for anon" on task_outcomes
-  for all to anon using (true) with check (true);
+-- Anon access — INSERT/UPDATE/DELETE gated by source_provenance prefix
+-- (slices 3 + 3.5, #542 + #565).
+create policy "Anon select" on task_outcomes
+  for select to anon using (true);
+create policy "Anon sandcastle update" on task_outcomes
+  for update to anon
+  using (source_provenance like 'sandcastle:%')
+  with check (source_provenance like 'sandcastle:%');
+create policy "Anon sandcastle delete" on task_outcomes
+  for delete to anon
+  using (source_provenance like 'sandcastle:%');
+create policy "Anon sandcastle insert" on task_outcomes
+  for insert to anon
+  with check (source_provenance like 'sandcastle:%');
 
 
 -- =========================================================================
@@ -891,8 +922,21 @@ alter table episodes enable row level security;
 create policy "Allow all for authenticated" on episodes
   for all using (true) with check (true);
 
-create policy "Allow all for anon" on episodes
-  for all to anon using (true) with check (true);
+-- Anon access — INSERT/UPDATE/DELETE gated on `actor` (the column already
+-- used as the provenance field per the convention comment above).
+-- Slices 3 + 3.5, #542 + #565.
+create policy "Anon select" on episodes
+  for select to anon using (true);
+create policy "Anon sandcastle update" on episodes
+  for update to anon
+  using (actor like 'sandcastle:%')
+  with check (actor like 'sandcastle:%');
+create policy "Anon sandcastle delete" on episodes
+  for delete to anon
+  using (actor like 'sandcastle:%');
+create policy "Anon sandcastle insert" on episodes
+  for insert to anon
+  with check (actor like 'sandcastle:%');
 
 
 -- =========================================================================
@@ -2543,8 +2587,20 @@ ALTER TABLE events_canonical ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY "Allow all for authenticated" ON events_canonical
   FOR ALL USING (true) WITH CHECK (true);
-CREATE POLICY "Allow all for anon" ON events_canonical
-  FOR ALL TO anon USING (true) WITH CHECK (true);
+-- Anon access — INSERT/UPDATE/DELETE gated on `actor` (provenance field).
+-- Slices 3 + 3.5, #542 + #565.
+CREATE POLICY "Anon select" ON events_canonical
+  FOR SELECT TO anon USING (true);
+CREATE POLICY "Anon sandcastle update" ON events_canonical
+  FOR UPDATE TO anon
+  USING (actor LIKE 'sandcastle:%')
+  WITH CHECK (actor LIKE 'sandcastle:%');
+CREATE POLICY "Anon sandcastle delete" ON events_canonical
+  FOR DELETE TO anon
+  USING (actor LIKE 'sandcastle:%');
+CREATE POLICY "Anon sandcastle insert" ON events_canonical
+  FOR INSERT TO anon
+  WITH CHECK (actor LIKE 'sandcastle:%');
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS events_cost_by_day_mv AS
 SELECT
@@ -2580,3 +2636,73 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_last_run_by_actor_mv_uniq
 -- pg_cron schedules registered in the migration file
 -- (cron.schedule(...) is idempotent on (jobname); not duplicated here to
 --  keep schema.sql declarative — the cron jobs live in cron.job).
+
+-- =====================================================================
+-- comm_patterns — communication-pattern instances (#580, ADR 0004)
+-- One row per detected pattern instance. Stop-hook extractor classifies
+-- user→assistant turns and writes here. Cross-device aggregate; no
+-- project pinning (global scope per ADR 0004 §3).
+-- =====================================================================
+
+create table if not exists comm_patterns (
+  id uuid default gen_random_uuid() primary key,
+
+  -- Origin
+  device text not null,
+  session_id text not null,
+  message_idx int not null,
+  captured_at timestamptz not null,
+
+  -- Classifier output
+  primary_label text not null check (primary_label in (
+    'correction_wrong_direction',
+    'correction_incomplete',
+    'affirmation',
+    'affirmation_with_redirect',
+    'preference_directive',
+    'meta_protocol'
+  )),
+  subtype text,
+  confidence numeric(3,2) not null check (confidence >= 0 and confidence <= 1),
+
+  -- Anchor (raw text + redaction marker; ADR 0004 §2)
+  anchor_quote text not null,
+  redacted boolean not null default false,
+
+  -- Day-1 embeddings (Voyage 512-dim, matches `memories.embedding`)
+  embedding vector(512),
+
+  -- Provenance + bookkeeping
+  source_provenance text not null,
+  created_at timestamptz default now()
+);
+
+create index if not exists idx_comm_patterns_label_captured
+  on comm_patterns (primary_label, captured_at desc);
+
+create unique index if not exists idx_comm_patterns_dedup
+  on comm_patterns (device, session_id, message_idx);
+
+create index if not exists idx_comm_patterns_no_embedding
+  on comm_patterns (id) where embedding is null;
+
+alter table comm_patterns enable row level security;
+
+create policy "Allow all for authenticated" on comm_patterns
+  for all using (true) with check (true);
+
+-- Per-(device, session) Stop-hook watermark for idempotent extraction.
+-- Extractor reads the watermark, only classifies messages with idx >
+-- last_message_idx, then bumps the watermark in the same transaction.
+create table if not exists comm_patterns_watermark (
+  device text not null,
+  session_id text not null,
+  last_message_idx int not null default -1,
+  updated_at timestamptz default now(),
+  primary key (device, session_id)
+);
+
+alter table comm_patterns_watermark enable row level security;
+
+create policy "Allow all for authenticated" on comm_patterns_watermark
+  for all using (true) with check (true);

@@ -1,11 +1,28 @@
 ---
 name: end
-description: "Full session close: decision log, CONTEXT gap check, outcome enrichment, memory save, commit, handoff. ~5 min."
+description: "Session close. Default: full reconciliation (decision log, CONTEXT gap check, outcome enrichment, memory save, commit, handoff, ~5 min). With --quick: checkpoint + commit only (~30 sec). Triggers: 'end', 'end session', 'end quick', 'быстро закончим'."
 ---
 
-# End Session (Full)
+# End Session
 
-Closes the session with decision reconciliation, gap detection, and outcome enrichment. For quick exit, use `/end-quick`.
+Closes the session. Two modes:
+
+- **Default** (`/end`) — full reconciliation. Run Steps 0 → 8 below.
+- **`--quick`** (`/end --quick`) — fast exit. Run only Step 5 (working state, if meaningful) and Step 7 (commit), then emit the one-liner from the "Quick output" section. Skip Steps 0–4, 6, and 8.
+
+The compaction-safety note from the old `/end-quick`: skipping Steps 0–4 in quick mode is safe because the PreCompact hook (`scripts/pre-compact-backup.py`) persists a pre-compact snapshot to Supabase under `session_snapshot_<session_id>` on every compaction, and `record_decision` writes decisions in real time. That's enough durable handoff. Run without `--quick` when you want reflection + decision reconciliation.
+
+## Quick output (`--quick` only)
+
+One-liner:
+
+```
+Session saved. <committed: hash | no commit: reason>. <working state: saved | nothing to save>.
+```
+
+That's it. Go.
+
+## Full mode
 
 **Mindset — survives compaction:** *Supabase is the session journal. The conversation is working memory.* The post-compact conversation is a lossy summary; the journal (pre-compact snapshot + real-time `record_decision` entries) is the authoritative record. `/end` consolidates the journal and enriches it. Don't rely on scanning the conversation alone — anything older than the last summary may already be gone from your window.
 
@@ -100,6 +117,7 @@ Save `working_state_jarvis` (type=project) to Supabase. Always. Content:
 - What was done this session
 - Open items: unfinished work, things to fix, deferred tasks
 - Key context for next session (blockers, decisions pending review)
+- **Suggested next skills** — explicit chain hint for the next session, e.g. `/status → /implement #532 → /verify`. One line, ordered. Omit only if truly nothing pending (rare; usually at least `/status`). Lets the next session skip the "what should I run first" decision; mirrors the one useful idea from Pocock's `/handoff` skill without forking durable storage out of Supabase.
 
 This is the handoff to the next session. If open items exist in Step 8 output, they MUST be in this memory too — output is ephemeral, memory persists.
 

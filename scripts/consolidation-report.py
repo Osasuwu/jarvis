@@ -278,9 +278,11 @@ def main() -> int:
     args = p.parse_args()
 
     url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
+    # Prefer service-role: writes memories with skill:consolidation provenance,
+    # which the #542 RLS gate rejects for anon. See mcp-memory/client.py.
+    key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
     if not url or not key:
-        print("SUPABASE_URL / SUPABASE_KEY missing from env", file=sys.stderr)
+        print("SUPABASE_URL / SUPABASE_KEY (or SUPABASE_SERVICE_KEY) missing from env", file=sys.stderr)
         return 2
 
     client = create_client(url, key)
