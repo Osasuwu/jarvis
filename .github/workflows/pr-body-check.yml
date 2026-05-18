@@ -33,11 +33,20 @@ jobs:
               return;
             }
 
+            // Fix-inline escape: [no-issue] body marker bypasses the requirement.
+            // Mirrors the commit-msg convention in .pre-commit-config.yaml (#329) and
+            // matches CLAUDE.md "Fix > track for trivial reversible (#428)" — drive-by
+            // fixes shouldn't require filing a tracker just to satisfy paperwork.
+            if (/\[no-issue\]/i.test(body)) {
+              console.log('[no-issue] marker present — skipping linked-issue requirement (fix-inline per #428).');
+              return;
+            }
+
             const issueMatches = [...body.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi)];
             const issueNumbers = [...new Set(issueMatches.map(m => parseInt(m[1], 10)))];
 
             if (issueNumbers.length === 0) {
-              core.setFailed('PR body must include a linked issue reference, e.g. "Closes #123". For hotfixes, apply the priority:critical label instead.');
+              core.setFailed('PR body must include a linked issue reference (e.g. "Closes #123"), the [no-issue] marker for trivial fix-inline drive-bys (#428), or the priority:critical label for hotfixes.');
               return;
             }
 
