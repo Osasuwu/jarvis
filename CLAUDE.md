@@ -130,7 +130,7 @@ After a milestone closes (capability shipped), run `/improve-codebase-architectu
 2. Surfaces numbered list of *deepening opportunities* (shallow → deep modules, friction points, untested seams).
 3. Grills you on selected candidates → architectural decisions → child issues attached to a follow-up milestone (or as standalone slices).
 
-**Trigger mechanism:** `scripts/session-context.py` surfaces "Milestone N closed — architecture sweep recommended" in SessionStart context when a milestone closed with **≥3 closed slices** AND no sweep has run since `closed_at`. Small milestones (1–2 slices) skip the sweep.
+**Trigger mechanism (planned — see #605):** intent is for `scripts/session-context.py` to surface "Milestone N closed — architecture sweep recommended" in SessionStart context when a milestone closed with **≥3 closed slices** AND no sweep has run since `closed_at`. Until #605 lands, the trigger is **manual** — run `/improve-codebase-architecture` in a fresh session after a capability-shipping milestone closes. Small milestones (1–2 slices) skip the sweep.
 
 **Cadence:** semantic, not temporal. The sweep follows capability shipping, never a date.
 
