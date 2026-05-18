@@ -2637,6 +2637,161 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_events_last_run_by_actor_mv_uniq
 -- (cron.schedule(...) is idempotent on (jobname); not duplicated here to
 --  keep schema.sql declarative — the cron jobs live in cron.job).
 
+
+-- =========================================================================
+-- Milestone #42 — /learn skill — always-gate review surface (issue #681)
+--
+-- Adds requires_review and merge_targets columns to the memories table so
+-- deriver/dreamer candidates land in a "pending review" state. Also ships
+-- memory_review_decide (single dispatcher for all review actions) and
+-- memory_review_list (fetch pending rows in queue order).
+--
+-- See supabase/migrations/20260518000001_add_memory_review_columns.sql
+-- for the deployable migration. This section keeps schema.sql in sync.
+-- =========================================================================
+
+ALTER TABLE memories
+  ADD COLUMN IF NOT EXISTS requires_review BOOLEAN NOT NULL DEFAULT false;
+
+CREATE INDEX IF NOT EXISTS idx_memories_requires_review
+  ON memories(id) WHERE requires_review;
+
+ALTER TABLE memories
+  ADD COLUMN IF NOT EXISTS merge_targets UUID[];
+
+CREATE INDEX IF NOT EXISTS idx_memories_merge_targets
+  ON memories(id) WHERE merge_targets IS NOT NULL;
+
+ALTER TABLE memories
+  ADD COLUMN IF NOT EXISTS reject_reason TEXT;
+
+CREATE OR REPLACE FUNCTION memory_review_decide(
+    action TEXT,
+    candidate_id UUID,
+    edited_name TEXT DEFAULT NULL,
+    edited_description TEXT DEFAULT NULL,
+    edited_content TEXT DEFAULT NULL,
+    edited_tags TEXT[] DEFAULT NULL,
+    reject_reason TEXT DEFAULT NULL,
+    reviewer TEXT DEFAULT 'owner'
+)
+RETURNS JSONB
+LANGUAGE plpgsql VOLATILE
+AS $$
+DECLARE
+    v_candidate RECORD;
+    v_result JSONB;
+    v_new_id UUID;
+    v_superseded_count INT;
+BEGIN
+    SELECT * INTO v_candidate FROM memories WHERE id = candidate_id;
+    IF NOT FOUND THEN
+        RETURN jsonb_build_object('status', 'error', 'error', 'candidate_not_found');
+    END IF;
+
+    IF NOT v_candidate.requires_review THEN
+        RETURN jsonb_build_object('status', 'already_reviewed', 'candidate_id', candidate_id);
+    END IF;
+
+    IF action NOT IN ('accept', 'accept_with_edit', 'reject', 'merge', 'approve', 'reject_classifier') THEN
+        RAISE EXCEPTION 'Unknown action: %. Valid actions: accept, accept_with_edit, reject, merge, approve, reject_classifier', action;
+    END IF;
+
+    CASE action
+        WHEN 'accept' THEN
+            UPDATE memories SET requires_review = false WHERE id = candidate_id;
+            v_result := jsonb_build_object('status', 'ok', 'action', 'accept', 'candidate_id', candidate_id);
+
+        WHEN 'accept_with_edit' THEN
+            IF edited_content IS NULL AND edited_name IS NULL AND edited_description IS NULL AND edited_tags IS NULL THEN
+                RAISE EXCEPTION 'accept_with_edit requires at least one edited_* field';
+            END IF;
+            UPDATE memories
+            SET requires_review = false,
+                name = COALESCE(edited_name, name),
+                description = COALESCE(edited_description, description),
+                content = COALESCE(edited_content, content),
+                tags = COALESCE(edited_tags, tags)
+            WHERE id = candidate_id;
+            v_result := jsonb_build_object('status', 'ok', 'action', 'accept_with_edit', 'candidate_id', candidate_id);
+
+        WHEN 'reject' THEN
+            UPDATE memories
+            SET requires_review = false,
+                reject_reason = COALESCE(memory_review_decide.reject_reason, 'no reason given')
+            WHERE id = candidate_id;
+            v_result := jsonb_build_object('status', 'ok', 'action', 'reject', 'candidate_id', candidate_id,
+                'reject_reason', COALESCE(memory_review_decide.reject_reason, 'no reason given'));
+
+        WHEN 'merge' THEN
+            IF v_candidate.merge_targets IS NULL OR array_length(v_candidate.merge_targets, 1) IS NULL THEN
+                RAISE EXCEPTION 'merge action requires candidate with non-empty merge_targets';
+            END IF;
+            INSERT INTO memories (project, name, type, description, content, tags, source_provenance, requires_review)
+            VALUES (v_candidate.project, v_candidate.name, v_candidate.type,
+                    v_candidate.description, v_candidate.content, v_candidate.tags,
+                    v_candidate.source_provenance, false)
+            RETURNING id INTO v_new_id;
+            UPDATE memories
+            SET superseded_by = v_new_id, valid_to = now(), expired_at = now()
+            WHERE id = ANY(v_candidate.merge_targets) AND superseded_by IS NULL;
+            GET DIAGNOSTICS v_superseded_count = ROW_COUNT;
+            INSERT INTO memory_links (source_id, target_id, link_type, strength)
+            SELECT v_new_id, unnest_id, 'supersedes', 1.0
+            FROM unnest(v_candidate.merge_targets) AS unnest_id
+            ON CONFLICT (source_id, target_id, link_type) DO NOTHING;
+            UPDATE memories SET requires_review = false WHERE id = candidate_id;
+            v_result := jsonb_build_object('status', 'ok', 'action', 'merge', 'candidate_id', candidate_id,
+                'canonical_id', v_new_id, 'superseded_count', v_superseded_count);
+
+        WHEN 'approve' THEN
+            UPDATE memories SET requires_review = false WHERE id = candidate_id;
+            v_result := jsonb_build_object('status', 'ok', 'action', 'approve', 'candidate_id', candidate_id);
+
+        WHEN 'reject_classifier' THEN
+            UPDATE memories
+            SET requires_review = false,
+                reject_reason = COALESCE(memory_review_decide.reject_reason, 'rejected by classifier review')
+            WHERE id = candidate_id;
+            v_result := jsonb_build_object('status', 'ok', 'action', 'reject_classifier', 'candidate_id', candidate_id,
+                'reject_reason', COALESCE(memory_review_decide.reject_reason, 'rejected by classifier review'));
+    END CASE;
+    RETURN v_result;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION memory_review_list(
+    queue TEXT DEFAULT 'candidate',
+    project_filter TEXT DEFAULT NULL,
+    limit_count INT DEFAULT 20
+)
+RETURNS TABLE(
+    id UUID, name TEXT, type TEXT, project TEXT,
+    description TEXT, content TEXT, tags TEXT[],
+    source_provenance TEXT, requires_review BOOLEAN,
+    merge_targets UUID[], reject_reason TEXT, created_at TIMESTAMPTZ
+)
+LANGUAGE sql STABLE
+AS $$
+    SELECT m.id, m.name, m.type, m.project,
+           m.description, m.content, m.tags,
+           m.source_provenance, m.requires_review,
+           m.merge_targets, m.reject_reason, m.created_at
+    FROM memories m
+    WHERE m.requires_review
+      AND m.deleted_at IS NULL
+      AND (project_filter IS NULL OR m.project = project_filter OR (m.project IS NULL AND project_filter = ''))
+      AND (CASE queue
+        WHEN 'candidate' THEN m.source_provenance NOT LIKE 'classifier:%'
+        WHEN 'classifier' THEN m.source_provenance LIKE 'classifier:%'
+        ELSE TRUE
+      END)
+    ORDER BY
+      CASE WHEN m.merge_targets IS NOT NULL THEN 0 ELSE 1 END,
+      m.created_at ASC
+    LIMIT limit_count;
+$$;
+
 -- =====================================================================
 -- comm_patterns — communication-pattern instances (#580, ADR 0004)
 -- One row per detected pattern instance. Stop-hook extractor classifies
