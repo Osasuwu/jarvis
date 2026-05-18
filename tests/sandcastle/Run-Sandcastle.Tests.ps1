@@ -453,6 +453,182 @@ Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
     }
 }
 
+Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
+    # When -Tier2AsPrimary is set with a Tier 2 provider, the watchdog must
+    # skip Tier 0/1 Ollama entirely and dispatch the first iteration straight
+    # to the remote endpoint. Rationale: local Ollama models fail real-Claude-
+    # Code tool_use fidelity probes (memory ollama_bench_must_measure_tool_use_fidelity)
+    # and the upcoming Anthropic interactive/automatic quota split makes
+    # subscription-first AFK strategically expensive. DeepSeek is the cheapest
+    # tier that emits structured tool_use blocks reliably.
+    BeforeEach {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }       # default; overridden where relevant
+        Mock Start-DockerDesktop { }
+        Mock Start-OllamaServer  { }
+        Mock Get-RepoRoot { $env:TEMP }
+        Mock Read-DotEnvFile {
+            @{
+                SUPABASE_URL       = 'https://x'
+                SUPABASE_KEY       = 'k'
+                TELEGRAM_BOT_TOKEN = 't'
+                TELEGRAM_CHAT_ID   = '1'
+                DEEPSEEK_API_KEY   = 'ds-key'
+                ANTHROPIC_API_KEY  = 'cl-key'
+            }
+        }
+        Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-tier2primary-$([guid]::NewGuid())" }
+        Mock Invoke-RuntimeSweep { @() }
+        Mock Write-OutcomeRecord { 'mocked' }
+        Mock Send-TelegramAlert  { 'mocked' }
+        Mock Add-IssueLabel      { $true }
+        Mock Get-IssueLabels     { @() }
+    }
+
+    It 'AC: Tier 2 as primary -> first call hits deepseek directly, no Tier 0/1 invocation' {
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model; BaseUrl = $BaseUrl; Token = $AuthToken }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/700-deepseek-primary'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 1 -Exactly -Scope It
+        $script:calls[0].Token | Should Be 'ds-key'
+        $script:calls[0].BaseUrl | Should Be 'https://api.deepseek.com/anthropic'
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'tier2:deepseek' }
+    }
+
+    It 'AC: Tier 2 as primary skips Ollama daemon check (does not autostart, does not throw on ollama-down)' {
+        Mock Test-OllamaRunning { $false }   # Ollama is down -- must NOT matter
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/710-no-ollama'; commits = @(); iterations = @() }
+            }
+        }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Start-OllamaServer -Times 0 -Exactly -Scope It
+        Assert-MockCalled Invoke-Sandcastle  -Times 1 -Exactly -Scope It
+    }
+
+    It 'AC: Tier 2 as primary failure does NOT cascade to Tier 0/1 (no escalation when primary itself is remote)' {
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model; Token = $AuthToken }
+            [pscustomobject]@{
+                ok = $false; exitCode = 1; reason = 'exit=1'
+                result = [pscustomobject]@{ branch = 'feat/720-tier2-fail' }
+            }
+        }
+        Mock Test-IsOOM { $true }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Invoke-Sandcastle -Times 1 -Exactly -Scope It
+        $script:calls[0].Token | Should Be 'ds-key'
+    }
+
+    It 'AC: Tier 2 as primary but DEEPSEEK_API_KEY missing -> warning + falls back to Ollama chain' {
+        Mock Read-DotEnvFile {
+            @{
+                SUPABASE_URL       = 'https://x'
+                SUPABASE_KEY       = 'k'
+                TELEGRAM_BOT_TOKEN = 't'
+                TELEGRAM_CHAT_ID   = '1'
+                # No DEEPSEEK_API_KEY -- Tier 2 primary resolution fails open
+                # to the Ollama chain (warn + downgrade, not throw) so a
+                # mis-provisioned .env still produces work via local models.
+            }
+        }
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model; Token = $AuthToken }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/730-fallback'; commits = @(); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        # When primary resolution fails, Ollama chain takes over -> first call is Tier 0
+        $script:calls[0].Model | Should Be 'qwen-large'
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $LlmMetrics.tier -eq 'tier0' }
+    }
+
+    It 'AC: -Tier2AsPrimary without -Tier2Provider stays on Ollama chain (no-op switch)' {
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/740-noop'; commits = @(); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider '' -Tier2AsPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        $script:calls[0].Model | Should Be 'qwen-large'
+    }
+
+    It 'AC: Tier 2 as primary ignores use-claude-api label because no issue is known yet' {
+        # Real Get-IssueLabels short-circuits to @() when Issue is 0/empty (the
+        # state at primary-resolution time, before an issue is picked from the
+        # queue). Mirror that here so the test exercises production behavior
+        # and not the test harness's blanket mock.
+        Mock Get-IssueLabels {
+            param([int]$Issue, [string]$RepoSlug)
+            if (-not $Issue) { return @() }
+            return @('use-claude-api')
+        }
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model; Token = $AuthToken; BaseUrl = $BaseUrl }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/750-claude-primary'; commits = @(); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        # Documents the invariant: the use-claude-api label flip is issue-scoped
+        # and only fires on Tier 2 *escalation* (where a target issue is known),
+        # not on Tier 2 *primary* (where Issue=0 by construction). Owner must
+        # set CLAUDE_MODEL/CLAUDE_BASE_URL/ANTHROPIC_API_KEY env vars to make
+        # Claude the configured provider when Tier 2 primary is desired with
+        # Anthropic instead of DeepSeek.
+        $script:calls[0].Token | Should Be 'ds-key'
+    }
+}
+
 Describe 'Invoke-Watchdog daemon-state matrix' {
     BeforeEach {
         Mock Start-DockerDesktop { }

@@ -7,9 +7,12 @@
 .DESCRIPTION
     Slices #545 (jarvis) and #546 (redrobot). The task fires Run-Sandcastle.ps1
     nightly inside the chosen safe-hours window:
-        jarvis   : 22:00 → soft-stop at 02:00
-        redrobot : 02:00 → soft-stop at 08:00
-    Non-overlapping schedule prevents two Ollama jobs from contending for VRAM.
+        jarvis   : 18:00 → soft-stop at 01:00  (7h)
+        redrobot : 01:00 → soft-stop at 08:00  (7h)
+    Non-overlapping schedule covers all non-working hours (18 → 08) end-to-end.
+    Earlier 22:00 / 02:00 defaults were Ollama-VRAM-contention-driven; with
+    Tier 2-as-primary (#711) the local Ollama is bypassed in AFK runs, so the
+    contention constraint no longer applies and the windows can grow.
 
     The script must run on the Workshop PC (decision 4890aa35 -- Workshop = prod,
     Main = dev/test bench). On other devices the script refuses unless -Force.
@@ -19,23 +22,33 @@
 
 .PARAMETER StartTime
     Override the default start time. Default per-repo:
-        jarvis   = 22:00
-        redrobot = 02:00
+        jarvis   = 18:00
+        redrobot = 01:00
 
 .PARAMETER WindowEnd
     Override the soft-stop boundary passed to Run-Sandcastle.ps1. Default per-repo:
-        jarvis   = 02:00
+        jarvis   = 01:00
         redrobot = 08:00
 
 .PARAMETER Model
-    Tier 0 Ollama model. Defaults from #538 decision 58670ea5: qwen2.5-coder:14b.
+    Tier 0 Ollama model. Default flipped from qwen2.5-coder:14b → qwen3-coder:30b
+    on 2026-05-14 to track the #538 benchmark winner. Both models still fail the
+    real-Claude-Code tool_use fidelity probe (14b: markdown JSON fence;
+    30b: Hermes-XML — see memory ollama_bench_must_measure_tool_use_fidelity),
+    which is why AFK scheduled tasks use -Tier2AsPrimary to bypass the Ollama
+    chain entirely; this parameter only matters for interactive smoke runs
+    that opt back into the local chain.
 
 .PARAMETER Tier1Model
     Tier 1 OOM-downgrade Ollama model. Defaults from #538: qwen2.5-coder:7b.
 
 .PARAMETER Tier2Provider
-    Empty (default) = no remote-API escalation in cron context. Set to
-    deepseek or claude only when explicitly enabling Tier 2 for AFK runs.
+    deepseek (default) routes AFK runs through DeepSeek's Anthropic-compatible
+    endpoint as Tier 2 primary (paired with the auto-appended -Tier2AsPrimary
+    on Run-Sandcastle.ps1). Pass an empty string to disable Tier 2 entirely
+    (interactive Ollama-only smoke runs). Set to claude to use the Anthropic
+    API key from .env instead (carries Max-subscription quota risk -- prefer
+    deepseek for unattended cron).
 
 .PARAMETER RepoRoot
     Filesystem path to the target repo. Defaults to the jarvis repo discovered
@@ -50,11 +63,11 @@
 
 .EXAMPLE
     .\Register-SandcastleTask.ps1 -Repo jarvis
-    # Registers Sandcastle-Jarvis daily at 22:00.
+    # Registers Sandcastle-Jarvis daily at 18:00, soft-stop 01:00.
 
 .EXAMPLE
     .\Register-SandcastleTask.ps1 -Repo redrobot -RepoRoot D:\Github\redrobot\redrobot
-    # Registers Sandcastle-Redrobot daily at 02:00 (non-overlapping).
+    # Registers Sandcastle-Redrobot daily at 01:00, soft-stop 08:00 (non-overlapping).
 #>
 [CmdletBinding()]
 param(
@@ -66,12 +79,12 @@ param(
 
     [string]$WindowEnd,
 
-    [string]$Model = 'qwen2.5-coder:14b',
+    [string]$Model = 'qwen3-coder:30b',
 
     [string]$Tier1Model = 'qwen2.5-coder:7b',
 
     [ValidateSet('', 'deepseek', 'claude')]
-    [string]$Tier2Provider = '',
+    [string]$Tier2Provider = 'deepseek',
 
     [string]$RepoRoot,
 
@@ -108,8 +121,8 @@ if (-not $Force -and $currentDevice -ne $expectedDevice) {
 # ---------------------------------------------------------------------------
 
 $defaults = @{
-    jarvis   = @{ Start = '22:00'; End = '02:00'; TaskName = 'Sandcastle-Jarvis' }
-    redrobot = @{ Start = '02:00'; End = '08:00'; TaskName = 'Sandcastle-Redrobot' }
+    jarvis   = @{ Start = '18:00'; End = '01:00'; TaskName = 'Sandcastle-Jarvis' }
+    redrobot = @{ Start = '01:00'; End = '08:00'; TaskName = 'Sandcastle-Redrobot' }
 }
 
 if (-not $StartTime) { $StartTime = $defaults[$Repo].Start }
@@ -172,7 +185,13 @@ $argParts = @(
     '-WindowEnd', $WindowEnd
 )
 if ($Tier1Model)    { $argParts += @('-Tier1Model', $Tier1Model) }
-if ($Tier2Provider) { $argParts += @('-Tier2Provider', $Tier2Provider) }
+if ($Tier2Provider) {
+    $argParts += @('-Tier2Provider', $Tier2Provider)
+    # 2026-05-14: Tier 2 runs as primary for AFK scheduled tasks. Local Ollama
+    # tiers fail the real-Claude-Code tool_use fidelity check on qwen2.5-coder:14b
+    # and qwen3-coder:30b — see memory ollama_bench_must_measure_tool_use_fidelity.
+    $argParts += '-Tier2AsPrimary'
+}
 
 $action = New-ScheduledTaskAction -Execute $pwshExe `
     -Argument ($argParts -join ' ') `
@@ -200,7 +219,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit ([timespan]::FromHours(6))
+    -ExecutionTimeLimit ([timespan]::FromHours(8))
 
 # ---------------------------------------------------------------------------
 # Register (idempotent).

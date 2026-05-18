@@ -19,7 +19,7 @@ import { dirname } from "node:path";
 const agentModel =
   process.env.SANDCASTLE_AGENT_MODEL ??
   process.env.OLLAMA_MODEL ??
-  "qwen2.5-coder:14b";
+  "qwen3-coder:30b";
 const agentBaseUrl =
   process.env.SANDCASTLE_AGENT_BASE_URL ??
   process.env.OLLAMA_BASE_URL ??

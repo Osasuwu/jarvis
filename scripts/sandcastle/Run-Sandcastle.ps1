@@ -43,6 +43,12 @@ param(
     [ValidateSet('', 'deepseek', 'claude')]
     [string]$Tier2Provider = '',
 
+    # 2026-05-14: skip Tier 0/1 Ollama and run Tier 2 as primary. Local Ollama
+    # models fail the real-Claude-Code tool_use fidelity check (memory
+    # ollama_bench_must_measure_tool_use_fidelity). Recommended for AFK runs;
+    # the OOM-escalation chain stays available when this flag is off.
+    [switch]$Tier2AsPrimary,
+
     # Runtime-dir retention: keep the N most-recent .sandcastle/runtime/<stamp>/
     # directories on watchdog entry, prune older ones. -1 disables the sweep.
     # Env var SANDCASTLE_RUNTIME_RETENTION overrides this if set (#572).
@@ -587,6 +593,12 @@ function Invoke-Watchdog {
         # Slice 5 (#543) tier overrides; empty disables the corresponding tier.
         [string]$Tier1Model,
         [string]$Tier2Provider,
+        # 2026-05-14: when set, skip Tier 0/1 Ollama entirely and run Tier 2
+        # (DeepSeek / Anthropic API) as the primary invocation. Local Ollama
+        # models fail the real-Claude-Code tool_use fidelity check — see memory
+        # ollama_bench_must_measure_tool_use_fidelity. Default $false preserves
+        # the original OOM-escalation chain used by existing tests.
+        [switch]$Tier2AsPrimary,
         # #572: runtime-dir retention; env var SANDCASTLE_RUNTIME_RETENTION wins.
         [int]$RuntimeRetention = 30
     )
@@ -652,22 +664,47 @@ function Invoke-Watchdog {
         }
     }
 
-    # 2. Ollama
-    if (-not (Test-OllamaRunning)) {
-        Write-Host "[watchdog] Ollama not running -- autostarting."
-        Start-OllamaServer
-        if (-not (Wait-OllamaReady -TimeoutSec $OllamaTimeoutSec)) {
-            Record 'failure' "ollama-down: server not ready within ${OllamaTimeoutSec}s" @{} 'ollama-down'
-            throw "ollama-down: server did not come up within ${OllamaTimeoutSec}s"
-        }
-    }
-
-    # 3. Iterate (soft-stop on window expiry between iterations)
+    # 2. Resolve Tier 2 primary (DeepSeek / Anthropic API) — when set, the
+    #    watchdog skips local Ollama tiers entirely. Local Ollama failed the
+    #    real-Claude-Code tool_use fidelity check on qwen2.5-coder:14b (markdown
+    #    JSON fence) and qwen3-coder:30b (Hermes-XML) — see memory
+    #    ollama_bench_must_measure_tool_use_fidelity + smoke 2026-05-14. Remote
+    #    Anthropic-compat endpoints (DeepSeek native, Anthropic itself) emit
+    #    structured tool_use blocks reliably.
     $repoSlug = switch ($Repo) {
         'jarvis'   { 'Osasuwu/jarvis' }
         'redrobot' { 'SergazyNarynov/redrobot' }
         default    { '' }
     }
+    $tier2Primary = $null
+    if ($Tier2AsPrimary -and $Tier2Provider) {
+        # -Issue 0 == "no issue picked yet" -- Get-IssueLabels short-circuits to
+        # @() in that case, so the use-claude-api flip stays issue-scoped.
+        # Using 0 (explicit int) avoids the parser quirk of empty-string-to-int
+        # coercion that varies across PowerShell versions.
+        $tier2Primary = Resolve-Tier2Config -Provider $Tier2Provider -Issue 0 `
+            -RepoSlug $repoSlug -EnvVars $envVars
+        if (-not ($tier2Primary -and $tier2Primary.AuthToken)) {
+            Write-Warning "[watchdog] Tier 2 ($Tier2Provider) requested as primary but config incomplete (key missing) — falling back to local Ollama tiers."
+            $tier2Primary = $null
+        } else {
+            Write-Host "[watchdog] Tier 2 ($($tier2Primary.Provider): $($tier2Primary.Model)) is primary — Tier 0/1 Ollama disabled for this run."
+        }
+    }
+
+    # 3. Ollama (skipped when Tier 2 is primary — no local model will be invoked)
+    if (-not $tier2Primary) {
+        if (-not (Test-OllamaRunning)) {
+            Write-Host "[watchdog] Ollama not running -- autostarting."
+            Start-OllamaServer
+            if (-not (Wait-OllamaReady -TimeoutSec $OllamaTimeoutSec)) {
+                Record 'failure' "ollama-down: server not ready within ${OllamaTimeoutSec}s" @{} 'ollama-down'
+                throw "ollama-down: server did not come up within ${OllamaTimeoutSec}s"
+            }
+        }
+    }
+
+    # 4. Iterate (soft-stop on window expiry between iterations)
     $totalUsage = @{ input_tokens = 0; output_tokens = 0; cache_read_input_tokens = 0; cache_creation_input_tokens = 0; model = $Model }
     $allCommits = @()
     $branch = $null
@@ -684,16 +721,27 @@ function Invoke-Watchdog {
         $iter++
         Write-Host "[watchdog] iteration $iter/$MaxIterations"
 
-        # ----- Tier 0: primary Ollama model -----
-        $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $Model `
-            -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
-            -TargetIssue ''
-        $tierUsed = 'tier0'
-        $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
-        $oomDetected = (-not $invocation.ok) -and (Test-IsOOM -Reason $invocation.reason -LogFile $logFile)
+        if ($tier2Primary) {
+            # ----- Tier 2 primary: remote Anthropic-compat endpoint (DeepSeek / Anthropic API) -----
+            $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $tier2Primary.Model `
+                -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
+                -BaseUrl $tier2Primary.BaseUrl -AuthToken $tier2Primary.AuthToken `
+                -TargetIssue ''
+            $tierUsed = "tier2:$($tier2Primary.Provider)"
+            $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+            $oomDetected = $false
+        } else {
+            # ----- Tier 0: primary Ollama model -----
+            $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $Model `
+                -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
+                -TargetIssue ''
+            $tierUsed = 'tier0'
+            $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+            $oomDetected = (-not $invocation.ok) -and (Test-IsOOM -Reason $invocation.reason -LogFile $logFile)
+        }
 
-        # ----- Tier 1: smaller Ollama model on OOM/crash -----
-        if (-not $invocation.ok -and $Tier1Model -and $oomDetected) {
+        # ----- Tier 1: smaller Ollama model on OOM/crash (only when Tier 2 is NOT primary) -----
+        if (-not $tier2Primary -and -not $invocation.ok -and $Tier1Model -and $oomDetected) {
             Write-Host "[watchdog] Tier 0 OOM detected -- escalating to Tier 1 model: $Tier1Model"
             $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $Tier1Model `
                 -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
@@ -709,7 +757,7 @@ function Invoke-Watchdog {
         # and the chain still hasn't recovered. Tier 1 may have been skipped
         # entirely (no $Tier1Model) or it may have run and failed for any
         # reason -- both qualify per AC #3 ("persistent failure after Tier 1").
-        if (-not $invocation.ok -and $oomDetected -and $Tier2Provider) {
+        if (-not $tier2Primary -and -not $invocation.ok -and $oomDetected -and $Tier2Provider) {
             $tier2 = Resolve-Tier2Config -Provider $Tier2Provider -Issue $targetIssue `
                 -RepoSlug $repoSlug -EnvVars $envVars
             if ($tier2 -and $tier2.AuthToken) {
@@ -778,5 +826,6 @@ if (-not $NoExecute -and $Repo) {
         -WindowEnd $WindowEnd -DockerTimeoutSec $DockerTimeoutSec `
         -OllamaTimeoutSec $OllamaTimeoutSec `
         -Tier1Model $Tier1Model -Tier2Provider $Tier2Provider `
+        -Tier2AsPrimary:$Tier2AsPrimary `
         -RuntimeRetention $RuntimeRetention
 }
