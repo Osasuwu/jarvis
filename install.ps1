@@ -18,7 +18,13 @@ param(
     [switch]$SkipHealthCheck
 )
 
-$ErrorActionPreference = "Stop"
+# Note: NOT setting $ErrorActionPreference = "Stop" globally.
+# Under "Stop", a native exe writing to stderr (e.g. installer.py's
+# "quarantined orphan ..." messages) triggers a NativeCommandError that
+# terminates the script *before* `exit $LASTEXITCODE` runs — leaving the
+# install half-applied (.jarvis-version not written). The python child
+# process owns its own exit code; we propagate it explicitly below.
+# Get-Command calls below pass -ErrorAction Stop locally where needed.
 
 # Guard: detect GNU-style double-dash args (e.g. --apply) which PowerShell won't
 # bind correctly and will silently mis-route to $Target as a positional string.
