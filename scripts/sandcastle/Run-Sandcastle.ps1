@@ -678,7 +678,11 @@ function Invoke-Watchdog {
     }
     $tier2Primary = $null
     if ($Tier2AsPrimary -and $Tier2Provider) {
-        $tier2Primary = Resolve-Tier2Config -Provider $Tier2Provider -Issue '' `
+        # -Issue 0 == "no issue picked yet" -- Get-IssueLabels short-circuits to
+        # @() in that case, so the use-claude-api flip stays issue-scoped.
+        # Using 0 (explicit int) avoids the parser quirk of empty-string-to-int
+        # coercion that varies across PowerShell versions.
+        $tier2Primary = Resolve-Tier2Config -Provider $Tier2Provider -Issue 0 `
             -RepoSlug $repoSlug -EnvVars $envVars
         if (-not ($tier2Primary -and $tier2Primary.AuthToken)) {
             Write-Warning "[watchdog] Tier 2 ($Tier2Provider) requested as primary but config incomplete (key missing) — falling back to local Ollama tiers."

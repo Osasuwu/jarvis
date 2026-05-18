@@ -552,7 +552,9 @@ Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
                 SUPABASE_KEY       = 'k'
                 TELEGRAM_BOT_TOKEN = 't'
                 TELEGRAM_CHAT_ID   = '1'
-                # No DEEPSEEK_API_KEY -- Tier 2 primary resolution must fail closed
+                # No DEEPSEEK_API_KEY -- Tier 2 primary resolution fails open
+                # to the Ollama chain (warn + downgrade, not throw) so a
+                # mis-provisioned .env still produces work via local models.
             }
         }
         $script:calls = @()

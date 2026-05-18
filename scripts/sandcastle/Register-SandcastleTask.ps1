@@ -32,17 +32,23 @@
 
 .PARAMETER Model
     Tier 0 Ollama model. Default flipped from qwen2.5-coder:14b → qwen3-coder:30b
-    on 2026-05-14: 14b failed the tool_use fidelity probe (emits skill dispatch as
-    markdown JSON text through Ollama's Anthropic shim — see memory
-    ollama_bench_must_measure_tool_use_fidelity). 30b passes the probe with
-    structured tool_use blocks at 43 tok/s warm.
+    on 2026-05-14 to track the #538 benchmark winner. Both models still fail the
+    real-Claude-Code tool_use fidelity probe (14b: markdown JSON fence;
+    30b: Hermes-XML — see memory ollama_bench_must_measure_tool_use_fidelity),
+    which is why AFK scheduled tasks use -Tier2AsPrimary to bypass the Ollama
+    chain entirely; this parameter only matters for interactive smoke runs
+    that opt back into the local chain.
 
 .PARAMETER Tier1Model
     Tier 1 OOM-downgrade Ollama model. Defaults from #538: qwen2.5-coder:7b.
 
 .PARAMETER Tier2Provider
-    Empty (default) = no remote-API escalation in cron context. Set to
-    deepseek or claude only when explicitly enabling Tier 2 for AFK runs.
+    deepseek (default) routes AFK runs through DeepSeek's Anthropic-compatible
+    endpoint as Tier 2 primary (paired with the auto-appended -Tier2AsPrimary
+    on Run-Sandcastle.ps1). Pass an empty string to disable Tier 2 entirely
+    (interactive Ollama-only smoke runs). Set to claude to use the Anthropic
+    API key from .env instead (carries Max-subscription quota risk -- prefer
+    deepseek for unattended cron).
 
 .PARAMETER RepoRoot
     Filesystem path to the target repo. Defaults to the jarvis repo discovered
