@@ -7,9 +7,12 @@
 .DESCRIPTION
     Slices #545 (jarvis) and #546 (redrobot). The task fires Run-Sandcastle.ps1
     nightly inside the chosen safe-hours window:
-        jarvis   : 22:00 → soft-stop at 02:00
-        redrobot : 02:00 → soft-stop at 08:00
-    Non-overlapping schedule prevents two Ollama jobs from contending for VRAM.
+        jarvis   : 18:00 → soft-stop at 01:00  (7h)
+        redrobot : 01:00 → soft-stop at 08:00  (7h)
+    Non-overlapping schedule covers all non-working hours (18 → 08) end-to-end.
+    Earlier 22:00 / 02:00 defaults were Ollama-VRAM-contention-driven; with
+    Tier 2-as-primary (#711) the local Ollama is bypassed in AFK runs, so the
+    contention constraint no longer applies and the windows can grow.
 
     The script must run on the Workshop PC (decision 4890aa35 -- Workshop = prod,
     Main = dev/test bench). On other devices the script refuses unless -Force.
@@ -19,12 +22,12 @@
 
 .PARAMETER StartTime
     Override the default start time. Default per-repo:
-        jarvis   = 22:00
-        redrobot = 02:00
+        jarvis   = 18:00
+        redrobot = 01:00
 
 .PARAMETER WindowEnd
     Override the soft-stop boundary passed to Run-Sandcastle.ps1. Default per-repo:
-        jarvis   = 02:00
+        jarvis   = 01:00
         redrobot = 08:00
 
 .PARAMETER Model
@@ -54,11 +57,11 @@
 
 .EXAMPLE
     .\Register-SandcastleTask.ps1 -Repo jarvis
-    # Registers Sandcastle-Jarvis daily at 22:00.
+    # Registers Sandcastle-Jarvis daily at 18:00, soft-stop 01:00.
 
 .EXAMPLE
     .\Register-SandcastleTask.ps1 -Repo redrobot -RepoRoot D:\Github\redrobot\redrobot
-    # Registers Sandcastle-Redrobot daily at 02:00 (non-overlapping).
+    # Registers Sandcastle-Redrobot daily at 01:00, soft-stop 08:00 (non-overlapping).
 #>
 [CmdletBinding()]
 param(
@@ -112,8 +115,8 @@ if (-not $Force -and $currentDevice -ne $expectedDevice) {
 # ---------------------------------------------------------------------------
 
 $defaults = @{
-    jarvis   = @{ Start = '22:00'; End = '02:00'; TaskName = 'Sandcastle-Jarvis' }
-    redrobot = @{ Start = '02:00'; End = '08:00'; TaskName = 'Sandcastle-Redrobot' }
+    jarvis   = @{ Start = '18:00'; End = '01:00'; TaskName = 'Sandcastle-Jarvis' }
+    redrobot = @{ Start = '01:00'; End = '08:00'; TaskName = 'Sandcastle-Redrobot' }
 }
 
 if (-not $StartTime) { $StartTime = $defaults[$Repo].Start }
@@ -210,7 +213,7 @@ $settings = New-ScheduledTaskSettingsSet `
     -DontStopIfGoingOnBatteries `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit ([timespan]::FromHours(6))
+    -ExecutionTimeLimit ([timespan]::FromHours(8))
 
 # ---------------------------------------------------------------------------
 # Register (idempotent).
