@@ -139,9 +139,14 @@ function Resolve-WindowEnd {
     if ($WindowEnd -match '^\d{2}:\d{2}$') {
         $today = (Get-Date).Date
         $end = $today.Add([TimeSpan]::Parse($WindowEnd + ':00'))
-        # If the wall clock has already passed HH:mm today, the window is
-        # already closed -- we treat it as "now" so the watchdog records
-        # window-expired before doing any work.
+        # AFK windows commonly straddle midnight (e.g. jarvis fires at 18:00
+        # with WindowEnd=01:00 meaning 01:00 *tomorrow*). If the resolved
+        # boundary is already in the past, roll it forward 24h. This also
+        # fixes the same-day case where the scheduled task is launched after
+        # WindowEnd has technically elapsed for today -- on-call manual runs
+        # should still get a fresh window, not record window-expired before
+        # any work begins.
+        if ($end -lt (Get-Date)) { $end = $end.AddDays(1) }
         return $end
     }
     return [datetime]::Parse($WindowEnd)

@@ -16,11 +16,29 @@ Describe 'Resolve-WindowEnd' {
         Resolve-WindowEnd -WindowEnd '' | Should BeNullOrEmpty
     }
 
-    It 'parses HH:mm as today' {
-        $end = Resolve-WindowEnd -WindowEnd '23:30'
-        $end.Hour   | Should Be 23
-        $end.Minute | Should Be 30
-        $end.Date   | Should Be (Get-Date).Date
+    It 'parses HH:mm in the future of today and keeps today date' {
+        # Pick a time guaranteed to be at least 1 minute in the future of the
+        # current wall clock so the roll-forward logic doesn't apply.
+        $future = (Get-Date).AddMinutes(15)
+        $hhmm = "{0:D2}:{1:D2}" -f $future.Hour, $future.Minute
+        $end = Resolve-WindowEnd -WindowEnd $hhmm
+        # End may equal (Get-Date).Date OR (Get-Date).Date.AddDays(1) if the
+        # 15-min offset crossed midnight; assert hour/minute round-trip only.
+        $end.Hour   | Should Be $future.Hour
+        $end.Minute | Should Be $future.Minute
+    }
+
+    It 'rolls HH:mm forward 24h when the boundary already passed today' {
+        # AFK regression (#711 follow-up): jarvis fires at 18:00 with
+        # WindowEnd=01:00 meaning 01:00 tomorrow. Without roll-forward the
+        # watchdog records partial:window-expired and exits without work.
+        $past = (Get-Date).AddHours(-2)
+        $hhmm = "{0:D2}:{1:D2}" -f $past.Hour, $past.Minute
+        $end = Resolve-WindowEnd -WindowEnd $hhmm
+        $end | Should Not BeNullOrEmpty
+        ($end -gt (Get-Date)) | Should Be $true
+        # Must NOT be in today's past; rolled to tomorrow.
+        $end.Date | Should Be (Get-Date).Date.AddDays(1)
     }
 
     It 'parses ISO datetime' {
