@@ -17,6 +17,7 @@ preserved.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from datetime import datetime, timezone
 
@@ -910,6 +911,11 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
     msg = f"Memory '{mem_name}' {action} ({proj_label}){embed_note}"
 
+    # #658: structured response fields. Advisory only — the store has already
+    # landed atomically above; nothing below this point can block or undo it.
+    consolidation_names: list[str] = []
+    classifier_pending = False
+
     server._audit_log(
         client, "memory_store", action, mem_name, {"project": project or "global", "type": mem_type}
     )
@@ -928,14 +934,21 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 },
             ).execute()
             similar_rows = similar.data or []
+            classifier_pending = bool(similar_rows)
 
-            # Consolidation hint: 3+ memories above 0.80 similarity
+            # Consolidation candidates: 3+ memories above 0.80 similarity.
+            # Phrased as `info:` (no warning glyph, no "hint" framing) so the
+            # LLM reader doesn't mistake an advisory note for a rejection —
+            # see #658 for the iter:13 confabulation that prompted this.
             consolidation_candidates = [
                 r for r in similar_rows if r.get("similarity", 0) >= CONSOLIDATION_SIM_THRESHOLD
             ]
             if len(consolidation_candidates) >= CONSOLIDATION_COUNT:
-                names = [r["name"] for r in consolidation_candidates[:5]]
-                msg += f"\n\n⚠ Consolidation hint: {len(consolidation_candidates)} similar memories found: {', '.join(names)}"
+                consolidation_names = [r["name"] for r in consolidation_candidates[:5]]
+                msg += (
+                    f"\n\ninfo: {len(consolidation_candidates)} similar memories nearby "
+                    f"(not blocking): {', '.join(consolidation_names)}"
+                )
 
             # Fire-and-forget: classify (Phase 2b) + create links.
             # We pass the candidate so the classifier has full context;
@@ -987,7 +1000,21 @@ async def _handle_store(args: dict) -> list[TextContent]:
         # mark as resolved (fire-and-forget, best-effort)
         asyncio.create_task(_resolve_known_unknowns(client, embedding, stored_id))
 
-    return [TextContent(type="text", text=msg)]
+    # #658: structured envelope. `stored=True` is the unambiguous success
+    # signal; callers must not infer success/failure from `message` prose.
+    # `(project, name)` is the identity — same-name writes are idempotent
+    # by atomic upsert (project-scoped) or explicit SELECT-then-write
+    # (global-scoped). No similarity threshold gates this code path.
+    response = {
+        "stored": True,
+        "action": action,
+        "memory_id": stored_id,
+        "project": project if project is not None else "global",
+        "consolidation_candidates": consolidation_names,
+        "classifier_pending": classifier_pending,
+        "message": msg,
+    }
+    return [TextContent(type="text", text=json.dumps(response))]
 
 
 async def _handle_get(args: dict) -> list[TextContent]:
