@@ -1,7 +1,7 @@
 # C18 — Proactive Challenger (Design 1-pager)
 
 **Status:** design-locked 2026-04-29 (Sprint #36, [#483](https://github.com/Osasuwu/jarvis/issues/483)). Detection engine → #C18.2 (TBD). Surfacing renderer → #C18.3 (TBD).
-**Parent:** [`jarvis-v2-redesign.md` § C18](jarvis-v2-redesign.md#c18--proactive-challenger) (lines 657–717, L3 leans 1763–1767).
+**Parent:** [`jarvis-v2-redesign.md` § C18](jarvis-v2-redesign.md#c18--proactive-challenger) (L2), with L3 leans at [§C18 L3](jarvis-v2-redesign.md#c18--proactive-challenger-1).
 **Substrate dependency:** reads from C17 [`events_canonical`](c17-events-substrate.md), C2 `goals`, C3 `memories`. Emits `recalibration_proposed` events back to C17.
 
 This doc locks the drift-signal taxonomy, threshold-config schema, emit shape, surfacing routing, bootstrap protocol, and false-positive calibration loop so #C18.2 (detection engine) and #C18.3 (surfacing renderer) can land without re-design. **No SQL** in this doc — query shapes are logical only.
@@ -191,7 +191,7 @@ If detection produces more than 5 candidates after cooldown filter:
 
 ### No real-time interrupt
 
-Per [redesign §C18 rejected list](jarvis-v2-redesign.md#rejected) — "real-time interrupt on first signal — drowns the principal in noise". C18 detection writes to `events_canonical`; **C12 batched brief is the only delivery path.** No webhook, no Telegram push, no PreToolUse interrupt.
+Per [redesign §C18 rejected list](jarvis-v2-redesign.md#rejected-2) — "real-time interrupt on first signal — drowns the principal in noise". C18 detection writes to `events_canonical`; **C12 batched brief is the only delivery path.** No webhook, no Telegram push, no PreToolUse interrupt.
 
 If a future signal class requires real-time delivery, that's a redesign change, not a YAML edit.
 
@@ -236,7 +236,7 @@ Auto-flip removes the principal's calibration step. The exact failure mode of "a
 
 ## 6. False-positive calibration loop
 
-Per [redesign §C18 measurement (lines 705–707)](jarvis-v2-redesign.md#how-measured-7) — surfacing acceptance rate is C18's primary success metric. Below-target acceptance is a signal that thresholds are wrong, not that the principal is ignoring a real problem.
+Per [redesign §C18 measurement](jarvis-v2-redesign.md#how-measured-2) — surfacing acceptance rate is C18's primary success metric. Below-target acceptance is a signal that thresholds are wrong, not that the principal is ignoring a real problem.
 
 ### Outcome events
 
@@ -318,9 +318,9 @@ Auto-disable would silently remove a signal class without owner awareness — ex
 
 ## References
 
-- [`jarvis-v2-redesign.md` §C18 (lines 657–717)](jarvis-v2-redesign.md#c18--proactive-challenger) — full L1+L2 spec.
-- [`jarvis-v2-redesign.md` §C18 L3 leans (lines 1763–1767)](jarvis-v2-redesign.md#c18--proactive-challenger-1) — SQL detection, YAML thresholds, Haiku surfacing renderer, C12 routing.
+- [`jarvis-v2-redesign.md` §C18](jarvis-v2-redesign.md#c18--proactive-challenger) — full L1+L2 spec.
+- [`jarvis-v2-redesign.md` §C18 L3 leans](jarvis-v2-redesign.md#c18--proactive-challenger-1) — SQL detection, YAML thresholds, Haiku surfacing renderer, C12 routing.
 - [`c17-events-substrate.md`](c17-events-substrate.md) — events table contract; C18 is the second writer (after `record_decision` in #477).
 - [`c17-events-substrate.md` §5](c17-events-substrate.md) — action vocabulary; C18 extends with `recalibration_proposed` + `surfacing_outcome`.
-- [`jarvis-v2-redesign.md` §Tier-A migration order (line 243)](jarvis-v2-redesign.md#tier-a-deep) — C18 sequenced after C5/C16; this design 1-pager is forward-locking and ships ahead, but #C18.2 implementation respects the dependency by gating `calibration_drift` and `principal_override` signals behind `enabled: false` until C5/C16 land.
+- [`jarvis-v2-redesign.md` §Methodology — Tier-A migration order](jarvis-v2-redesign.md#methodology) — C18 sequenced after C5/C16; this design 1-pager is forward-locking and ships ahead, but #C18.2 implementation respects the dependency by gating `calibration_drift` and `principal_override` signals behind `enabled: false` until C5/C16 land.
 - Memory `c18_proactive_challenger_2026_04_28` (decision/jarvis) — owner-stated motivation and L1 framing.
