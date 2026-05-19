@@ -32,9 +32,72 @@ Memory recall and the `record_decision` contract come from user-level CLAUDE.md 
 
 **Jarvis judgment overrides the principal's "параллельно":** The principal has explicitly delegated this call to Jarvis (memory: this decision). If a task looks deceptively complex or a subagent will struggle (needs memory context, cross-file reasoning, recent-decisions awareness), keep it inline even if asked to delegate. Don't silently downgrade — tell the principal "keeping #X inline because <reason>".
 
+## Contract: pre-dispatch gate (binary AFK-readiness check, runs FIRST)
+
+Before any other routing, every issue in the batch passes through the
+pre-dispatch gate. The gate is a binary AFK-readiness check whose failure
+modes are mechanical (label present / absent, heading present / absent,
+regex match) — not judgement calls. Issue #642 introduced it because
+headless `/delegate` has no operator to grill the AC in real time, so the
+work of verifying AFK-readiness must happen *at* dispatch entry, not
+inside the dispatched sandcastle agent.
+
+**Four conditions, all required** (canonical implementation:
+[`scripts/delegate_predispatch_gate.py`](../../../scripts/delegate_predispatch_gate.py)):
+
+1. Issue has label `sandcastle` (applied by `/to-issues` per the AFK-fit
+   checklist at slice creation — never manually, never at grill time).
+2. Issue has **no** `needs-*` label (`needs-grill`, `needs-research`,
+   `needs-prd`, `needs-refactor`, …). Each requesting skill removes its own
+   label at terminal success.
+3. Issue body contains an `## Acceptance criteria` heading (case-insensitive
+   prefix match — `## Acceptance criteria`, `## ACCEPTANCE CRITERIA (brief)`,
+   etc. all match).
+4. Issue body cites at least one decision UUID (regex
+   `\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`).
+
+**Invocation** (per issue, before classification or claim):
+
+```bash
+gh issue view <N> --repo <owner/repo> --json number,body,labels \
+  | python scripts/delegate_predispatch_gate.py
+# exit 0 ⇒ allow; exit 1 ⇒ refuse, message on stdout names each missing element
+```
+
+**On refusal** (any one or more of the four conditions fail):
+
+1. `mcp__memory__outcome_record(task_type="delegation", outcome_status="failure", outcome_summary="pre-dispatch gate refused: <message>", project="<repo>", issue_url=...)` — recorded so `/reflect` and `/self-improve` can spot patterns.
+2. `gh issue edit <N> --add-label "status:owner-queue"` — surfaces in next `/status` run so the owner sees the backlog of issues needing a manual touch.
+3. Report to the principal in the batch summary: `#N refused — <verbatim gate message>`. The message names each missing element so the owner knows exactly what to fix.
+4. The issue is **not** claimed (no `status:in-progress`, no branch). `/grill` / `/research` / sandcastle-label-add are the unblock paths — once fixed, re-dispatch flips the route.
+
+**No Telegram escalation** even on repeat refuses — last-resort rule (decision `e9b9cfb8`). Owner discovers via `/status`.
+
+**Interactive `/implement` is NOT pre-dispatch-gated.** The gate guards
+*subagent* dispatch where no operator is present. Inline `/implement` keeps
+the SOUL.md grill-checkbox as its in-skill backstop and can run on any
+issue (including `status:owner-queue`-tagged ones) — the operator IS the
+gate. This is intentional asymmetry, not an oversight.
+
+**Known fragility** (decision `6b0a5bf7`): the gate runs once at
+`/delegate` entry and is **not re-validated** inside the sandcastle
+container. Pipeline changes that bypass `/delegate` entry (e.g. a future
+shortcut that hands work directly to a subagent) would silently bypass
+the gate. Re-surface this risk in any architectural change that restructures
+the dispatch chain.
+
 ## Contract: dispatch routing (per issue: mechanical / TDD-mode / `grill_required`)
 
-Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/delegate` does **not** run `/grill` inline (and there is no standalone `/tdd` skill — TDD-mode is dispatched as inline operating discipline carrying `_shared/tdd/` reference docs). For **each** issue in the batch it inspects two inputs and routes to one of three branches. Routing is per-issue: a single batch can mix mechanical-mode and TDD-mode dispatches (and exclude grill-failing issues).
+Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/delegate` does **not** run `/grill` inline (and there is no standalone `/tdd` skill — TDD-mode is dispatched as inline operating discipline carrying `_shared/tdd/` reference docs). For **each** issue that **passed** the pre-dispatch gate above, inspect two inputs and route to one of three branches. Routing is per-issue: a single batch can mix mechanical-mode and TDD-mode dispatches (and exclude grill-failing issues).
+
+**Pre-dispatch gate dominance**: when the gate's four artefacts are present
+(sandcastle label + no needs-* + `## Acceptance criteria` heading + decision
+UUID), the SOUL.md grill-checkbox below is **skipped** — the artefacts'
+presence is itself evidence the issue has been grilled and refined. The
+checkbox runs only as a **legacy backstop** for pre-#642 issues that have
+no artefacts and no `needs-grill` label (e.g. early milestones whose slices
+were authored before the AFK-fit checklist). New issues from `/to-issues`
+land with artefacts in place and bypass the checkbox entirely.
 
 **Inputs** (per issue — fetch the body first):
 
@@ -119,7 +182,7 @@ Produce a short split plan for the principal before acting. Example:
 
 ### 2. Claim all dispatchable issues
 
-Claim every issue that survived the per-issue `grill_required` check (label `status:in-progress` + comment), including the ones staying inline. Issues that exited `grill_required` are NOT claimed — they go back to the orchestrator for `/grill` + re-dispatch in a fresh session, which will run its own pre-flight and claim then. Claiming up front prevents races between concurrent Jarvis instances and the principal forgetting to route delegatable issues.
+Claim every issue that survived **both** the pre-dispatch gate (§Contract: pre-dispatch gate) **and** the per-issue `grill_required` check (label `status:in-progress` + comment), including the ones staying inline. Issues refused by the pre-dispatch gate are NOT claimed — they receive `status:owner-queue` and exit immediately. Issues that exited `grill_required` are also NOT claimed — they go back to the orchestrator for `/grill` + re-dispatch in a fresh session, which will run its own pre-flight and claim then. Claiming up front prevents races between concurrent Jarvis instances and the principal forgetting to route delegatable issues.
 
 ```bash
 for N in <N1> <N2> ...; do
