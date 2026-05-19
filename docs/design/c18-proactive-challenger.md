@@ -42,7 +42,7 @@ Lives at `config/recalibration_thresholds.yaml`. Loaded at C18 detector startup.
 ```yaml
 # recalibration_thresholds.yaml
 # C18 Proactive Challenger detection thresholds.
-# Edit class: M2-strong — reviewer + smoke required (per redesign §C18 L3 line 1765).
+# Edit class: M2-strong — reviewer + smoke required (per redesign §C18 L3).
 # Wrong thresholds = surfacing storm; protect against bypass.
 
 surfacing_enabled: false   # bootstrap gate, see §5
@@ -77,7 +77,7 @@ signals:
 
 ### Edit class: M2-strong
 
-Per [redesign L3 line 1765](jarvis-v2-redesign.md#c18--proactive-challenger-1) — **wrong thresholds cause a surfacing storm**, which trains the principal to dismiss without reading (the exact failure mode #C18 is meant to prevent). Treat threshold edits as M2-strong:
+Per [redesign §C18 L3](jarvis-v2-redesign.md#c18--proactive-challenger-1) — **wrong thresholds cause a surfacing storm**, which trains the principal to dismiss without reading (the exact failure mode #C18 is meant to prevent). Treat threshold edits as M2-strong:
 
 - PR with reviewer (Copilot or human) + smoke run (#C18.2 ships smoke as `scripts/c18-dryrun.py` — replays last 30 days of events through current YAML, prints surfacing count by class).
 - One-line owner override allowed via direct commit if a surfacing storm is already in progress (incident-response, not steady state).
@@ -182,7 +182,7 @@ Cooldown reset on `surfacing_outcome.action='acted'` — once principal acts, th
 
 ### Cap per brief
 
-**Max 5 surfacings per batched brief** (per [redesign L3 line 1766](jarvis-v2-redesign.md#c18--proactive-challenger-1) — Haiku call budget under C13).
+**Max 5 surfacings per batched brief** (per [redesign §C18 L3](jarvis-v2-redesign.md#c18--proactive-challenger-1) — Haiku call budget under C13).
 
 If detection produces more than 5 candidates after cooldown filter:
 1. Sort by `severity` desc.

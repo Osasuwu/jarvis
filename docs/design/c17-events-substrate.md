@@ -27,7 +27,7 @@ Single canonical `events_canonical` table. All observability writes go through i
 | `redacted` | `bool NOT NULL DEFAULT false` | True when secret-redaction was applied to `payload`. |
 | `degraded` | `bool NOT NULL DEFAULT false` | True for events replayed from in-memory buffer after a transient pg outage (§4). |
 
-**Why one table not many:** views are cheap; tables drift. Past pain (`audit_log` declared in code but not in schema; `*_last_run` memories abusing `memories` as task-heartbeat store) was the cost of denormalizing observability. Per [`jarvis-v2-redesign.md:439`](jarvis-v2-redesign.md#substrate).
+**Why one table not many:** views are cheap; tables drift. Past pain (`audit_log` declared in code but not in schema; `*_last_run` memories abusing `memories` as task-heartbeat store) was the cost of denormalizing observability. Per [`jarvis-v2-redesign.md` §substrate](jarvis-v2-redesign.md#substrate).
 
 **Why `degraded` is a column not just a payload key:** it must be queryable as a first-class filter (e.g., "exclude degraded replays from cost reconciliation").
 
@@ -35,7 +35,7 @@ Single canonical `events_canonical` table. All observability writes go through i
 
 ## 2. OTel column naming convention
 
-When `payload` carries GenAI attributes, use **OpenTelemetry GenAI semantic conventions verbatim** — no abbreviations, no rename to camelCase. Per [`jarvis-v2-redesign.md:1730`](jarvis-v2-redesign.md#c17--observability--audit-1).
+When `payload` carries GenAI attributes, use **OpenTelemetry GenAI semantic conventions verbatim** — no abbreviations, no rename to camelCase. Per [`jarvis-v2-redesign.md` §C17 L3](jarvis-v2-redesign.md#c17--observability--audit-1).
 
 | OTel key | Type | When |
 |---|---|---|
@@ -53,13 +53,13 @@ When `payload` carries GenAI attributes, use **OpenTelemetry GenAI semantic conv
 | `gen_ai.operation.name` | text | `chat`, `tool_call`, `embedding`, `generate_content`. |
 | `gen_ai.operation.duration_ms` | int | Wall-clock duration; from `PostToolUse` hook `duration_ms` field. |
 
-**Why verbatim:** future-proofs against OTel ecosystem tooling (Honeycomb, Grafana Tempo, OpenLLMetry exporters) reading our events table without column-rename middleware. Per [L3 lean 1733](jarvis-v2-redesign.md#c17--observability--audit-1) — `traceloop-sdk` with custom Supabase exporter is the deferred-but-planned path; it expects OTel-shaped attributes.
+**Why verbatim:** future-proofs against OTel ecosystem tooling (Honeycomb, Grafana Tempo, OpenLLMetry exporters) reading our events table without column-rename middleware. Per [§C17 L3](jarvis-v2-redesign.md#c17--observability--audit-1) — `traceloop-sdk` with custom Supabase exporter is the deferred-but-planned path; it expects OTel-shaped attributes.
 
 ---
 
 ## 3. Trace propagation contract
 
-Every initiating context creates a `trace_id`; downstream actors inherit. Implementation: `contextvars.ContextVar[str]` + `uuid.uuid4().hex`. Per [`jarvis-v2-redesign.md:1732`](jarvis-v2-redesign.md#c17--observability--audit-1).
+Every initiating context creates a `trace_id`; downstream actors inherit. Implementation: `contextvars.ContextVar[str]` + `uuid.uuid4().hex`. Per [`jarvis-v2-redesign.md` §C17 L3](jarvis-v2-redesign.md#c17--observability--audit-1).
 
 ### Four rules
 
@@ -80,7 +80,7 @@ If a caller of `record_decision` (or any future writer) doesn't set the ContextV
 
 ## 4. Write semantics
 
-Per [`jarvis-v2-redesign.md:308`](jarvis-v2-redesign.md#c3--memory) — **observability MUST NOT block C3**.
+Per [`jarvis-v2-redesign.md` §C3](jarvis-v2-redesign.md#c3--memory) — **observability MUST NOT block C3**.
 
 ### Happy path
 
@@ -130,7 +130,7 @@ Open vocabulary; new values added by PR. Reserved values for the first wave (Spr
 | `episode_started` / `episode_ended` | session lifecycle | Folds existing `episodes` table |
 | `signal_dropped` | substrate buffer overflow | Sprint 35 (#477) |
 
-**Why explicit reserved values:** owner-facing dashboards and reflection (C5) query failure modes by category, not text-search payloads. Per [`jarvis-v2-redesign.md:479`](jarvis-v2-redesign.md#self-detection).
+**Why explicit reserved values:** owner-facing dashboards and reflection (C5) query failure modes by category, not text-search payloads. Per [`jarvis-v2-redesign.md` §self-detection](jarvis-v2-redesign.md#self-detection).
 
 ---
 
@@ -142,7 +142,7 @@ Not implemented in Sprint 35. Listed here so #476 implementer doesn't accidental
 
 Sprint 35 creates a **new** table named `events_canonical` (NOT an `ALTER` of the existing `events` table). Reasons:
 
-1. The existing `events` table (current [`mcp-memory/schema.sql:151`](../../mcp-memory/schema.sql#L151)) is GH-Actions-perception-shaped: `event_type` enum, `severity` check constraint, `repo`, `source`, `processed`/`processed_at`/`processed_by`/`action_taken` workflow fields. None of these fit the canonical actor/action/trace_id shape, and the columns have NOT-NULL constraints that an in-place ALTER cannot retrofit safely.
+1. The existing `events` table (current [`mcp-memory/schema.sql`](../../mcp-memory/schema.sql)) is GH-Actions-perception-shaped: `event_type` enum, `severity` check constraint, `repo`, `source`, `processed`/`processed_at`/`processed_by`/`action_taken` workflow fields. None of these fit the canonical actor/action/trace_id shape, and the columns have NOT-NULL constraints that an in-place ALTER cannot retrofit safely.
 2. `fok_judgments.recall_event_id` references `events(id) ON DELETE CASCADE` (Sprint #34 [#443](https://github.com/Osasuwu/jarvis/issues/443)). An in-place rename or schema-rewrite breaks the FK.
 3. Two-mode coexistence per [`jarvis-v2-redesign.md` §Bootstrap protocol & migration order](jarvis-v2-redesign.md#bootstrap-protocol--migration-order) explicitly calls for new and legacy paths running in parallel until C3 path-parity proves cutover safety.
 
@@ -174,7 +174,7 @@ Sprint 35 creates a **new** table named `events_canonical` (NOT an `ALTER` of th
 - **`pg_cron` refresh schedule** — covered by #476.
 - **Subagent / hook propagation implementation** — substrate-consumer wave (Sprint 38+).
 - **Other writers beyond `record_decision`** — substrate-consumer wave.
-- **OTel exporter library** (`traceloop-sdk` per [L3 lean 1733](jarvis-v2-redesign.md#c17--observability--audit-1)) — deferred until volume justifies; bespoke `events_insert()` is fine for cold-start.
+- **OTel exporter library** (`traceloop-sdk` per [§C17 L3](jarvis-v2-redesign.md#c17--observability--audit-1)) — deferred until volume justifies; bespoke `events_insert()` is fine for cold-start.
 
 ---
 
