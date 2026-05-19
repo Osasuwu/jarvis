@@ -195,7 +195,7 @@ foreach ($f in $hits) {
             Write-Host "  [REMOVED] $path (file deleted — was only ANTHROPIC_API_KEY)" -ForegroundColor Green
         } else {
             $newLines | Set-Content -Path $path -NoNewline -Encoding UTF8
-            # Add trailing newline that Set-Content -NoNewline strips
+            # Restore trailing newline stripped by -NoNewline above
             Add-Content -Path $path -Value ''
             Write-Host "  [CLEANED] $path — ANTHROPIC_API_KEY line removed" -ForegroundColor Green
         }
