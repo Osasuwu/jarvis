@@ -3,9 +3,10 @@
 Reimplements the workflow's decision rule in Python and asserts the
 escape hatches behave as the workflow promises:
 
-  - Closes #NNN in body                → allowed
+  - Closes #NNN in body                → allowed (linked)
   - priority:critical label             → allowed (hotfix bypass)
-  - neither                             → blocked
+  - [no-issue] marker in body           → allowed (fix-inline per #428/#459)
+  - none of the above                   → blocked
 
 Convention from CLAUDE.md §326 (path-filtered guards need meta-tests).
 PR Body Check isn't path-filtered, but the escape logic is non-trivial
@@ -32,6 +33,9 @@ def evaluate(body: str, labels: list[str]) -> tuple[bool, str]:
     """Mirror the workflow's decision rule. Returns (allowed, reason)."""
     if "priority:critical" in labels:
         return True, "hotfix"
+
+    if re.search(r"\[no-issue\]", body, re.IGNORECASE):
+        return True, "no-issue"
 
     matches = re.findall(r"(?:closes|fixes|resolves)\s+#(\d+)", body, re.IGNORECASE)
     if matches:
@@ -89,6 +93,41 @@ def test_workflow_yaml_keeps_closes_regex():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "closes|fixes|resolves" in text.lower(), (
         "PR Body Check regex changed shape — update this test to match."
+    )
+
+
+def test_no_issue_marker_allows():
+    allowed, reason = evaluate("Drive-by docs fix.\n\n[no-issue]", [])
+    assert allowed
+    assert reason == "no-issue"
+
+
+def test_no_issue_marker_case_insensitive():
+    for marker in ("[no-issue]", "[NO-ISSUE]", "[No-Issue]"):
+        body = f"trivial fix\n\n{marker}"
+        allowed, reason = evaluate(body, [])
+        assert allowed, f"{marker} should be accepted"
+        assert reason == "no-issue"
+
+
+def test_no_issue_marker_with_unrelated_label():
+    allowed, reason = evaluate("[no-issue] inline doc fix", ["documentation"])
+    assert allowed
+    assert reason == "no-issue"
+
+
+def test_no_issue_phrase_without_brackets_blocked():
+    # Plain prose "no issue" must not satisfy the escape — only the bracketed token.
+    allowed, _ = evaluate("There is no issue with this change.", [])
+    assert not allowed
+
+
+def test_workflow_yaml_keeps_no_issue_escape():
+    """Config dimension: the workflow must still honor the [no-issue] marker."""
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "[no-issue]" in text, (
+        "PR Body Check workflow no longer references the [no-issue] escape; "
+        "this test (and CLAUDE.md fix>track rule #428) is now stale."
     )
 
 
