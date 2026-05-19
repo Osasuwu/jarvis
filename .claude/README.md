@@ -15,9 +15,6 @@ to `~/.claude/` by [`scripts/install/installer.py`](../scripts/install/installer
 Only jarvis-project-specific Claude Code config:
 
 - [`agents/`](agents/) — project-scoped subagent definitions
-  (e.g. `coding.md`). These moved to user-level in M5 (#340) but may
-  return if jarvis needs project-specific agent variants.
-- [`agents/`](agents/) — project-scoped subagent definitions
   (e.g. `coding.md`).
 - `settings.json` — intentionally empty (`{}`); project-local hooks go
   here if jarvis ever needs them. The federation-wide hooks live in
