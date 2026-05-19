@@ -14,9 +14,6 @@ to `~/.claude/` by [`scripts/install/installer.py`](../scripts/install/installer
 
 Only jarvis-project-specific Claude Code config:
 
-- [`skills/sprint-report/`](skills/sprint-report/) — redrobot sprint
-  report + GitHub release flow. Project-specific (references the redrobot
-  repo directly), not a universal Jarvis capability.
 - [`agents/`](agents/) — project-scoped subagent definitions
   (e.g. `coding.md`).
 - `settings.json` — intentionally empty (`{}`); project-local hooks go
