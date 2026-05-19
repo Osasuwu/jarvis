@@ -104,6 +104,7 @@ groups:
           - "end"
           - "goals"
           - "implement"
+          - "last-work-report"
           - "reflect"
           - "research"
           - "self-improve"
