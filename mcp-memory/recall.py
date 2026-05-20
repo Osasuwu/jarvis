@@ -270,6 +270,7 @@ def expand_links(
     link_types: list[str] | None = None,
     top_k: int = LINK_EXPAND_TOP_K,
     decay: float = LINK_DECAY,
+    include_unreviewed: bool = False,
 ) -> list[dict]:
     """Fetch 1-hop linked neighbors of the top-K rows via ``get_linked_memories``.
 
@@ -287,6 +288,7 @@ def expand_links(
                 "memory_ids": seed_ids,
                 "link_types": link_types,
                 "show_history": False,
+                "include_unreviewed": include_unreviewed,
             },
         ).execute()
         linked_rows = result.data or []
@@ -442,6 +444,7 @@ class RecallConfig:
     rrf_k: int = RRF_K
     temporal_half_lives: dict[str, float] = field(default_factory=lambda: dict(TEMPORAL_HALF_LIVES))
     excluded_tags: frozenset[str] = EXCLUDE_TAGS_FROM_RECALL
+    include_unreviewed: bool = False
     limit: int = 10
 
 
@@ -599,6 +602,7 @@ async def recall(
                 "filter_project": project,
                 "filter_type": type_filter,
                 "show_history": show_history,
+                "include_unreviewed": config.include_unreviewed,
             },
         ).execute()
         semantic_rows = filter_excluded_tags(sem_result.data or [])
@@ -611,6 +615,7 @@ async def recall(
                 "filter_project": project,
                 "filter_type": type_filter,
                 "show_history": show_history,
+                "include_unreviewed": config.include_unreviewed,
             },
         ).execute()
         keyword_rows = filter_excluded_tags(kw_result.data or [])
@@ -634,7 +639,7 @@ async def recall(
         return []
 
     if config.use_links:
-        linked = expand_links(client, merged)
+        linked = expand_links(client, merged, include_unreviewed=config.include_unreviewed)
         if linked:
             merged = merge_with_links(merged, linked)
         merged = merged[: config.limit]

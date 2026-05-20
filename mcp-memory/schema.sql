@@ -2086,13 +2086,15 @@ create index if not exists idx_memories_embedding_v2_hnsw
 -- can swap by name. NO CASE expression in ORDER BY — pgvector HNSW requires
 -- a direct column reference to use the index.
 drop function if exists match_memories_v2(vector, int, float, text, text, boolean);
+drop function if exists match_memories_v2(vector, int, float, text, text, boolean, boolean);
 create or replace function match_memories_v2(
     query_embedding vector,
     match_limit int default 10,
     similarity_threshold float default 0.3,
     filter_project text default null,
     filter_type text default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
@@ -2117,7 +2119,7 @@ language sql stable as $$
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       -- Deriver review-gate (issue #552): see match_memories.
-      and m.requires_review = false
+      and (include_unreviewed or m.requires_review = false)
       and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by m.embedding_v2 <=> query_embedding
     limit match_limit;
@@ -2384,13 +2386,15 @@ $$;
 -- =========================================================================
 
 drop function if exists match_memories(vector, int, float, text, text, boolean);
+drop function if exists match_memories(vector, int, float, text, text, boolean, boolean);
 create or replace function match_memories(
     query_embedding vector,
     match_limit int default 10,
     similarity_threshold float default 0.3,
     filter_project text default null,
     filter_type text default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
@@ -2424,19 +2428,21 @@ language sql stable as $$
       -- and `array_length('{}'::uuid[], 1)` returns NULL, not 0. Kept as a
       -- belt-and-braces guard; cost is negligible and `is null` is the
       -- short-circuit path via the partial GIN index.
-      and m.requires_review = false
+      and (include_unreviewed or m.requires_review = false)
       and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by m.embedding <=> query_embedding
     limit match_limit;
 $$;
 
 drop function if exists keyword_search_memories(text, int, text, text, boolean);
+drop function if exists keyword_search_memories(text, int, text, text, boolean, boolean);
 create or replace function keyword_search_memories(
     search_query text,
     match_limit int default 10,
     filter_project text default null,
     filter_type text default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
@@ -2460,17 +2466,19 @@ language sql stable as $$
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       -- Deriver review-gate (issue #552): see match_memories above.
-      and m.requires_review = false
+      and (include_unreviewed or m.requires_review = false)
       and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by rank desc
     limit match_limit;
 $$;
 
 drop function if exists get_linked_memories(uuid[], text[], boolean);
+drop function if exists get_linked_memories(uuid[], text[], boolean, boolean);
 create or replace function get_linked_memories(
     memory_ids uuid[],
     link_types text[] default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
@@ -2505,7 +2513,7 @@ language sql stable as $$
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
               -- Deriver review-gate (issue #552): see match_memories above.
-              and m.requires_review = false
+              and (include_unreviewed or m.requires_review = false)
               and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
             union all
             -- Incoming edges: target ∈ memory_ids, source resolved to head.
@@ -2526,7 +2534,7 @@ language sql stable as $$
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
               -- Deriver review-gate (issue #552): see match_memories above.
-              and m.requires_review = false
+              and (include_unreviewed or m.requires_review = false)
               and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
         ) sub
         order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from
