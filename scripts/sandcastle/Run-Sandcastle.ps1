@@ -506,6 +506,166 @@ function Send-TelegramAlert {
 }
 
 # ---------------------------------------------------------------------------
+# Pytest gate (redrobot only, #630)
+#
+# Test-surface discovery strategy: for each changed .py file, look for a
+# co-located test_<name>.py in the same directory or in tests/. Falls back
+# to full `pytest` suite when no targeted test files are found.
+#
+# Decision: touched-file-mapped test discovery with full-suite fallback.
+# Rationale: agent may refactor files whose test coverage lives outside
+# the co-located pattern (e.g. a tests/ directory mirror). Full suite
+# has ~30s overhead on redrobot's small test corpus -- acceptable.
+# Reversibility: reversible (strategy is config at the function level).
+# Alternatives:
+#   1. pytest --lf (last-failed) -- rejected, first run has no history.
+#   2. Full suite always -- rejected, agent changes are typically small
+#      and targeted; full suite is a safety net, not the primary gate.
+# Confidence: 0.8.
+# ---------------------------------------------------------------------------
+
+function Get-RelatedTestFiles {
+    [CmdletBinding()]
+    param(
+        [string[]]$ChangedFiles,
+        [string]$RepoRoot
+    )
+    $testFiles = @()
+    foreach ($f in $ChangedFiles) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($f)
+        $dir  = [System.IO.Path]::GetDirectoryName($f)
+        # Co-located: src/module.py -> src/test_module.py
+        $colocated = Join-Path $RepoRoot $dir "test_$name.py"
+        if (Test-Path -LiteralPath $colocated -PathType Leaf) {
+            $testFiles += $colocated
+            continue
+        }
+        # Tests mirror: src/module.py -> tests/test_module.py
+        $inTests = Join-Path $RepoRoot 'tests' "test_$name.py"
+        if (Test-Path -LiteralPath $inTests -PathType Leaf) {
+            $testFiles += $inTests
+            continue
+        }
+    }
+    return ($testFiles | Select-Object -Unique)
+}
+
+function Invoke-PytestGate {
+    [CmdletBinding()]
+    param(
+        [string]$RepoRoot,
+        [string]$Branch,
+        [string]$RepoSlug
+    )
+
+    if (-not (Test-Path -LiteralPath $RepoRoot)) {
+        return [pscustomobject]@{
+            passed          = $false
+            collectionError = $true
+            summary         = "redrobot repo root not found: $RepoRoot"
+            testsRun        = 0
+        }
+    }
+
+    # Get changed .py files against the base branch
+    Push-Location -LiteralPath $RepoRoot
+    $changedRaw = & git diff origin/main...$Branch --name-only 2>$null
+    $gitExit = $LASTEXITCODE
+    Pop-Location
+
+    if ($gitExit -ne 0 -or [string]::IsNullOrWhiteSpace($changedRaw)) {
+        # No base branch to diff or no changes -- run full suite as safety net.
+        $changedFiles = @()
+    } else {
+        $changedFiles = ($changedRaw -split "`n") | Where-Object { $_ -match '\.py$' -and $_ -match '\S' }
+    }
+
+    $testTargets = @()
+    if ($changedFiles.Count -gt 0) {
+        $testTargets = Get-RelatedTestFiles -ChangedFiles $changedFiles -RepoRoot $RepoRoot
+    }
+
+    # Run pytest
+    Push-Location -LiteralPath $RepoRoot
+    try {
+        if ($testTargets.Count -gt 0) {
+            Write-Host "[pytest-gate] running $($testTargets.Count) test files for $($changedFiles.Count) changed .py files"
+            $output = & pytest $testTargets --tb=short -q 2>&1
+        } else {
+            Write-Host "[pytest-gate] no targeted tests found -- running full suite"
+            $output = & pytest --tb=short -q 2>&1
+        }
+        $exitCode = $LASTEXITCODE
+    } catch {
+        Pop-Location
+        return [pscustomobject]@{
+            passed          = $false
+            collectionError = $true
+            summary         = "pytest invocation failed: $_"
+            testsRun        = 0
+        }
+    }
+    Pop-Location
+
+    # Parse output for test count
+    $testsRun = 0
+    if ($output -match '(\d+) passed') { $testsRun = [int]$Matches[1] }
+    if ($output -match '(\d+) failed') { $testsRun += [int]$Matches[1] }
+
+    # Extract failing test names
+    $failedLines = $output | Select-String '^FAILED ' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }
+    $failureNames = $failedLines -replace '^FAILED ', ''
+
+    if ($exitCode -eq -1 -or $exitCode -eq 2) {
+        return [pscustomobject]@{
+            passed          = $false
+            collectionError = $true
+            exitCode        = $exitCode
+            summary         = "pytest collection error (exit=$exitCode)"
+            testsRun        = $testsRun
+        }
+    }
+
+    $passed = ($exitCode -eq 0)
+    $summary = if ($passed) {
+        "${testsRun} passed"
+    } else {
+        "${testsRun} total, $($failureNames.Count) failed: $($failureNames -join ', ')"
+    }
+
+    return [pscustomobject]@{
+        passed          = $passed
+        collectionError = $false
+        exitCode        = $exitCode
+        summary         = $summary
+        testsRun        = $testsRun
+        failures        = $failureNames
+    }
+}
+
+function Close-AgentPR {
+    [CmdletBinding()]
+    param(
+        [string]$Branch,
+        [string]$RepoSlug
+    )
+    if ([string]::IsNullOrWhiteSpace($Branch) -or [string]::IsNullOrWhiteSpace($RepoSlug)) {
+        return $false
+    }
+    try {
+        # Find the PR for this branch
+        $prNum = & gh pr list --repo $RepoSlug --head $Branch --state open --json number --jq '.[0].number' 2>$null
+        if ($prNum -and $prNum -gt 0) {
+            & gh pr close $prNum --repo $RepoSlug --comment "Closed by sandcastle watchdog -- pytest gate failed." 2>$null
+            return ($LASTEXITCODE -eq 0)
+        }
+    } catch {
+        Write-Warning "Close-AgentPR: $_"
+    }
+    return $false
+}
+
+# ---------------------------------------------------------------------------
 # Outcome recording -- direct PostgREST insert (anon, RLS-gated by source_provenance)
 # ---------------------------------------------------------------------------
 
@@ -810,6 +970,37 @@ function Invoke-Watchdog {
                 $totalUsage.cache_creation_input_tokens+= [int]$it.usage.cacheCreationInputTokens
             }
         }
+    }
+
+    # ---- 5. Pytest gate (redrobot only) ----
+    $pytestResult = $null
+    if (-not $partialReason -and $Repo -eq 'redrobot') {
+        $pytestResult = Invoke-PytestGate -RepoRoot $repoRoot -Branch $branch -RepoSlug $repoSlug
+        $totalUsage.gates = @{ pytest = $pytestResult }
+
+        if (-not $pytestResult.passed) {
+            $pytestReason = if ($pytestResult.collectionError) { 'tests-broken' } else { 'tests-failing' }
+            $pytestLabel = $pytestReason
+
+            # Close the PR if one was opened
+            if ($branch) {
+                Close-AgentPR -Branch $branch -RepoSlug $repoSlug
+            }
+
+            # Label the issue
+            if ($targetIssue -and $repoSlug) {
+                Add-IssueLabel -Issue $targetIssue -Label $pytestLabel -RepoSlug $repoSlug | Out-Null
+                # Drop status:in-progress (can't apply after Add-IssueLabel directly -- use gh)
+                & gh issue edit $targetIssue --repo $repoSlug --remove-label 'status:in-progress' 2>$null
+            }
+
+            $summary = "pytest-gate:$pytestReason -- branch=$branch $($pytestResult.summary)"
+            Record 'partial' $summary $totalUsage ''
+            Write-Host "[watchdog] $summary"
+            return
+        }
+
+        Write-Host "[watchdog] pytest gate passed ($($pytestResult.testsRun) tests)"
     }
 
     if ($partialReason) {
