@@ -63,6 +63,12 @@ Do NOT propose interfaces yet. Ask the user: "Which of these would you like to e
 
 Once the user picks a candidate, drop into a grilling conversation. Walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
 
+**Before creating any child issues** from a deepening opportunity, load and execute the research-pass gate:
+
+**Procedural source: [`../_shared/research-pass-gate.md`](../_shared/research-pass-gate.md).**
+
+This gate is **unconditional** — publishing child issues always requires a research artifact. If the gate blocks, do not create the child issue; propose `/research` on the topic first.
+
 Side effects happen inline as decisions crystallize:
 
 - **Naming a deepened module after a concept not in `CONTEXT.md`?** Add the term to `CONTEXT.md` — same discipline as `/grill` (see [CONTEXT-FORMAT.md](../grill/CONTEXT-FORMAT.md)). Create the file lazily if it doesn't exist.
