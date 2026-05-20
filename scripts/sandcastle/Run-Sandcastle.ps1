@@ -535,13 +535,13 @@ function Get-RelatedTestFiles {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($f)
         $dir  = [System.IO.Path]::GetDirectoryName($f)
         # Co-located: src/module.py -> src/test_module.py
-        $colocated = Join-Path $RepoRoot $dir "test_$name.py"
+        $colocated = Join-Path (Join-Path $RepoRoot $dir) "test_$name.py"
         if (Test-Path -LiteralPath $colocated -PathType Leaf) {
             $testFiles += $colocated
             continue
         }
         # Tests mirror: src/module.py -> tests/test_module.py
-        $inTests = Join-Path $RepoRoot 'tests' "test_$name.py"
+        $inTests = Join-Path (Join-Path $RepoRoot 'tests') "test_$name.py"
         if (Test-Path -LiteralPath $inTests -PathType Leaf) {
             $testFiles += $inTests
             continue
