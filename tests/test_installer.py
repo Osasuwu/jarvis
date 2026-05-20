@@ -1297,3 +1297,108 @@ def test_unknown_install_as_raises(fake_repo: Path, tmp_path: Path) -> None:
     m = installer.load_manifest(path)
     with pytest.raises(ValueError, match="unknown install_as"):
         installer.build_plan(m, fake_repo)
+
+
+# ── #706: BOM/CRLF .env encoding scan ──────────────────────────────
+
+
+class TestEnvEncodingScan:
+    """Tests for .env BOM/CRLF detection and fix."""
+
+    def test_detect_bom(self, tmp_path: Path) -> None:
+        """BOM-prefixed .env is flagged."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc123\n")
+        assert installer._detect_env_issues(env_file) == "BOM"
+
+    def test_detect_crlf(self, tmp_path: Path) -> None:
+        """CRLF line endings in .env are flagged."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"TOKEN=abc123\r\nKEY=val\r\n")
+        assert installer._detect_env_issues(env_file) == "CRLF"
+
+    def test_detect_bom_and_crlf(self, tmp_path: Path) -> None:
+        """Both BOM and CRLF in same file are flagged."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc123\r\n")
+        issues = installer._detect_env_issues(env_file)
+        assert "BOM" in issues
+        assert "CRLF" in issues
+        assert "+" in issues
+
+    def test_clean_file_unflagged(self, tmp_path: Path) -> None:
+        """UTF-8-no-BOM + LF file returns empty string."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"TOKEN=abc123\nKEY=val\n")
+        assert installer._detect_env_issues(env_file) == ""
+
+    def test_scan_finds_bom_and_crlf(self, tmp_path: Path) -> None:
+        """_scan_env_encoding flags both BOM and CRLF .env files."""
+        claude_home = tmp_path / ".claude"
+        claude_home.mkdir()
+        # BOM file under .claude/
+        bom_env = claude_home / "plugins" / "cache"
+        bom_env.mkdir(parents=True)
+        (bom_env / ".env").write_bytes(b"\xef\xbb\xbfTOKEN=abc\n")
+        # CRLF file under .claude/**/
+        crlf_env = claude_home / "debug"
+        crlf_env.mkdir()
+        (crlf_env / "test.env").write_bytes(b"KEY=val\r\n")
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        # Clean repo-root .env (should not appear in findings).
+        (repo_root / ".env").write_bytes(b"CLEAN=ok\n")
+
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert len(findings) == 2
+        paths = {str(p) for p, _, _ in findings}
+        assert str(bom_env / ".env") in paths
+        assert str(crlf_env / "test.env") in paths
+        # All findings are fixable (is_user_env=True)
+        assert all(u for _, _, u in findings)
+
+    def test_repo_root_env_is_warn_only(self, tmp_path: Path) -> None:
+        """Repo-root .env with issues is flagged as is_user_env=False."""
+        claude_home = tmp_path / ".claude"
+        claude_home.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".env").write_bytes(b"\xef\xbb\xbfTOKEN=abc\n")
+
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert len(findings) == 1
+        assert not findings[0][2]  # is_user_env=False
+
+    def test_fix_strips_bom(self, tmp_path: Path) -> None:
+        """_fix_env_encoding strips UTF-8 BOM."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc\n")
+        installer._fix_env_encoding(env_file, "BOM")
+        assert env_file.read_bytes() == b"TOKEN=abc\n"
+
+    def test_fix_converts_crlf(self, tmp_path: Path) -> None:
+        """_fix_env_encoding converts CRLF to LF."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"TOKEN=abc\r\nKEY=val\r\n")
+        installer._fix_env_encoding(env_file, "CRLF")
+        assert env_file.read_bytes() == b"TOKEN=abc\nKEY=val\n"
+
+    def test_fix_bom_and_crlf(self, tmp_path: Path) -> None:
+        """_fix_env_encoding handles both BOM and CRLF."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc\r\n")
+        installer._fix_env_encoding(env_file, "BOM+CRLF")
+        assert env_file.read_bytes() == b"TOKEN=abc\n"
+
+    def test_scan_skips_directories(self, tmp_path: Path) -> None:
+        """rglob("*.env") may match dir names; _scan_env_encoding skips them."""
+        claude_home = tmp_path / ".claude"
+        claude_home.mkdir()
+        # Create a directory named .env (unusual but possible).
+        (claude_home / "some.env").mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert findings == []  # no crash, no false positive

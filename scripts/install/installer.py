@@ -133,6 +133,55 @@ _POSIX_PATH_PATTERN = re.compile(r"(?<!\S)(scripts|config)/")
 # not just filename, so we don't quarantine unrelated parent-dir MCP configs.
 _LEGACY_RELATIVE_JARVIS_PATTERN = re.compile(r"^jarvis[\\/]")
 
+_BOM_PREFIX = b"\xef\xbb\xbf"
+_CRLF_PATTERN = b"\r\n"
+_ENV_WARN_MSG = "WARN: {} has {}; MCP servers using naive regex may silently drop env vars."
+
+
+def _detect_env_issues(path: Path) -> str:
+    """Check a single .env file for BOM and/or CRLF. Returns '' if clean."""
+    raw = path.read_bytes()
+    parts = []
+    if raw[:3] == _BOM_PREFIX:
+        parts.append("BOM")
+    if _CRLF_PATTERN in raw:
+        parts.append("CRLF")
+    return "+".join(parts) if parts else ""
+
+
+def _scan_env_encoding(claude_home: Path, repo_root: Path) -> list[tuple[Path, str, bool]]:
+    """Scan .env files for BOM/CRLF issues under claude_home and repo root.
+
+    Returns list of (path, issues_summary, is_user_env).
+    is_user_env=True for files under claude_home (fixable).
+    is_user_env=False for repo-root .env (warn-only — gitignored, may be intentional).
+    """
+    findings: list[tuple[Path, str, bool]] = []
+    for env_file in claude_home.rglob("*.env"):
+        if not env_file.is_file():
+            continue
+        issues = _detect_env_issues(env_file)
+        if issues:
+            findings.append((env_file, issues, True))
+
+    repo_env = repo_root / ".env"
+    if repo_env.is_file():
+        issues = _detect_env_issues(repo_env)
+        if issues:
+            findings.append((repo_env, issues, False))
+
+    return findings
+
+
+def _fix_env_encoding(path: Path, issues: str) -> None:
+    """Rewrite a single .env file to UTF-8-no-BOM + LF line endings."""
+    raw = path.read_bytes()
+    if "BOM" in issues and raw[:3] == _BOM_PREFIX:
+        raw = raw[3:]
+    if "CRLF" in issues:
+        raw = raw.replace(_CRLF_PATTERN, b"\n")
+    path.write_bytes(raw)
+
 
 def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
     """Rewrite relative `scripts/...` and `config/...` references to
@@ -916,6 +965,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip post-install health check (not recommended).",
     )
+    parser.add_argument(
+        "--fix-env-encoding",
+        action="store_true",
+        help="Rewrite .env files with BOM/CRLF to UTF-8-no-BOM + LF (only with --apply).",
+    )
     args = parser.parse_args(argv)
 
     repo_root = Path(__file__).resolve().parents[2]
@@ -930,6 +984,12 @@ def main(argv: list[str] | None = None) -> int:
 
     plan = build_plan(manifest, repo_root, args.target)
     print(format_plan(plan))
+
+    # Scan .env files for BOM/CRLF (always runs — warns on issues).
+    env_findings = _scan_env_encoding(plan.target_root, repo_root)
+    for env_path, issues, is_user in env_findings:
+        note = " (warn-only — repo-root .env, not fixable)" if not is_user else ""
+        print(_ENV_WARN_MSG.format(env_path, issues) + note, file=sys.stderr)
 
     if not args.apply:
         print("\n(dry-run — re-run with --apply to execute)")
@@ -946,6 +1006,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"\napply failed: {exc}", file=sys.stderr)
         _rollback_failed_apply(plan)
         return 2
+
+    if args.fix_env_encoding:
+        user_envs = [(p, i) for p, i, u in env_findings if u]
+        if user_envs:
+            print(f"fixing {len(user_envs)} .env file(s) (BOM/CRLF → UTF-8-no-BOM + LF)", file=sys.stderr)
+            for env_path, issues in user_envs:
+                _fix_env_encoding(env_path, issues)
+        else:
+            print("no fixable .env files found", file=sys.stderr)
 
     if not args.skip_health_check:
         ok, logs = run_health_check(manifest, repo_root)
