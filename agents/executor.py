@@ -211,7 +211,7 @@ def spawn(
         log_dir,
         f"spawn-{_now_iso().replace(':', '-')}.stderr.log",
     )
-    stderr_file = open(stderr_path, "w", encoding="utf-8")  # noqa: SIM115 — needs to survive Popen lifetime
+    stderr_file = open(stderr_path, "w", encoding="utf-8")  # noqa: SIM115 — closed below after Popen dup2
 
     spawn_fn = popen or subprocess.Popen
     proc = spawn_fn(
@@ -221,6 +221,9 @@ def spawn(
         stderr=stderr_file,
         close_fds=True,
     )
+    # Popen dup2'd the fd into the child; the parent handle is no longer
+    # needed. Without this, a long-running scheduler leaks one fd per spawn.
+    stderr_file.close()
 
     logger.info(
         "spawned claude -p (pid=%d) stderr=%s argv=%r",

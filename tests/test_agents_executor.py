@@ -293,3 +293,6 @@ def test_spawn_captures_stderr_to_file(
     assert os.path.basename(stderr_arg.name).startswith("spawn-"), (
         f"stderr file should follow spawn-<ts> convention, got {stderr_arg.name}"
     )
+    # The parent file handle must be closed after Popen dup2's the fd —
+    # otherwise a long-running scheduler leaks one fd per spawn.
+    assert stderr_arg.closed, "parent stderr handle must be closed after spawn"

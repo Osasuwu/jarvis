@@ -280,12 +280,12 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Dispatcher traverses full graph but does not spawn 'claude -p'.",
+        help="Kept for backwards compatibility; no longer has effect (dispatcher retired per #741).",
     )
     parser.add_argument(
         "--placeholder",
         action="store_true",
-        help="(Dev only) Register the canary tick alongside the dispatcher.",
+        help="(Dev only) Register the canary tick.",
     )
     args = parser.parse_args()
     return run(
