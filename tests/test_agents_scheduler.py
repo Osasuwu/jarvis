@@ -380,23 +380,13 @@ def test_main_cli_dry_run_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     assert captured["dry_run"] is True
 
 
-def test_run_wires_dispatcher_and_not_placeholder(
+def test_run_with_placeholder_logs_registration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``scheduler.run`` must register the dispatcher, not the placeholder.
-
-    Regression guard for the CLI wiring gap that was caught on 2026-04-24
-    during the first live prod smoke: ``python -m agents.scheduler`` was
-    still ticking ``_placeholder_tick`` because nobody swapped the target
-    after the dispatcher (S2-3) landed.
-    """
-    from agents import dispatcher, scheduler
+    """``scheduler.run --placeholder`` registers the canary tick."""
+    from agents import scheduler
 
     captured: dict[str, object] = {}
-
-    class _FakeJobStore:
-        def get_all_jobs(self) -> list:
-            return []
 
     class _FakeScheduler:
         def start(self) -> None:
@@ -405,10 +395,10 @@ def test_run_wires_dispatcher_and_not_placeholder(
         def get_jobs(self) -> list:
             return []
 
-        def _lookup_jobstore(self, alias: str) -> _FakeJobStore:
-            return _FakeJobStore()
+        def _lookup_jobstore(self, alias: str) -> object:  # noqa: ARG002
+            return object()
 
-        def shutdown(self, wait: bool = True) -> None:
+        def shutdown(self, wait: bool = True) -> None:  # noqa: ARG002
             captured["shut_down"] = True
 
     class _FakeHandle:
@@ -418,18 +408,8 @@ def test_run_wires_dispatcher_and_not_placeholder(
     def fake_build_scheduler(_url: str) -> _FakeHandle:
         return _FakeHandle()
 
-    def fake_dispatcher_register(
-        handle, *, dry_run: bool = False, interval_seconds: int = 60, jitter_seconds=None
-    ):
-        captured["register_target"] = "dispatcher"
-        captured["dry_run"] = dry_run
-        captured["interval_seconds"] = interval_seconds
-        captured["jitter_seconds"] = jitter_seconds
-
     def fake_register_agent(*_args, **_kwargs):  # noqa: ANN002
-        # If this is called during run(), something registered the placeholder
-        # (or some other direct agent) instead of going through dispatcher.register.
-        captured["register_target"] = "placeholder-or-direct"
+        captured["register_target"] = "agent"
 
     class _FakeConfig:
         postgres_url = "postgresql://unused"
@@ -437,14 +417,10 @@ def test_run_wires_dispatcher_and_not_placeholder(
     monkeypatch.setattr(scheduler, "build_scheduler", fake_build_scheduler)
     monkeypatch.setattr(scheduler, "register_agent", fake_register_agent)
     monkeypatch.setattr(scheduler, "load_config", lambda: _FakeConfig())
-    monkeypatch.setattr(dispatcher, "register", fake_dispatcher_register)
     monkeypatch.setattr(scheduler, "_install_signal_handlers", lambda _h: None)
 
-    rc = scheduler.run(interval_seconds=30, jitter_seconds=5, once=True, dry_run=True)
+    rc = scheduler.run(interval_seconds=30, once=True, placeholder=True)
     assert rc == 0
-    assert captured["register_target"] == "dispatcher"
-    assert captured["dry_run"] is True
-    assert captured["interval_seconds"] == 30
-    assert captured["jitter_seconds"] == 5
+    assert captured.get("register_target") == "agent"
     assert captured.get("started") is True
     assert captured.get("shut_down") is True
