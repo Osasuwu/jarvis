@@ -410,6 +410,91 @@ def tool_definitions() -> list[Tool]:
                 "required": ["event_ids", "processed_by"],
             },
         ),
+        # ---- Event queue FSM tools (#739) ----
+        Tool(
+            name="event_claim_next",
+            description=(
+                "Claim the highest-priority pending event for processing. "
+                "Atomically transitions a 'pending' event to 'claimed' and returns it."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "claimer": {
+                        "type": "string",
+                        "description": "Who is claiming the event (e.g. 'orchestrator', 'wake_driver')",
+                    },
+                },
+                "required": ["claimer"],
+            },
+        ),
+        Tool(
+            name="event_mark_processed_fsm",
+            description=(
+                "Transition a claimed event to 'processed' via the event queue FSM. "
+                "Returns error if event is not in 'claimed' state."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "UUID of the event to mark as processed",
+                    },
+                    "processor": {
+                        "type": "string",
+                        "description": "Who processed it (e.g. 'orchestrator', 'wake_driver')",
+                    },
+                    "action_taken": {
+                        "type": "string",
+                        "description": "What was done in response",
+                    },
+                },
+                "required": ["event_id", "processor"],
+            },
+        ),
+        Tool(
+            name="event_park",
+            description=(
+                "Park a claimed event that is blocked on a dependency. "
+                "Transitions 'claimed' → 'parked'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "UUID of the event to park",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why the event is being parked",
+                    },
+                },
+                "required": ["event_id"],
+            },
+        ),
+        Tool(
+            name="event_requeue",
+            description=(
+                "Re-queue a parked or claimed event back to 'pending'. "
+                "Use when a blocked dependency resolves or a claim times out."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "UUID of the event to requeue",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why the event is being requeued",
+                    },
+                },
+                "required": ["event_id"],
+            },
+        ),
         # ---- Outcome tracking tools (Pillar 3) ----
         Tool(
             name="outcome_record",
