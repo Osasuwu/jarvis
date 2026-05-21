@@ -46,7 +46,7 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 ## Project-specific rules
 
-- **Only justified Python: `mcp-memory/server.py`**. Everything else is Claude Code native — check skills, MCP, hooks, subagents before writing Python.
+- **Native-first priority, not a ban.** Before writing a custom script/service (any language), check skills/MCP/hooks/subagents first; if native covers it cleanly, use native. Custom code is permitted on merit — when the native solution is awkward or incomplete. (Relaxed 2026-05-20 from the prior near-prohibition; decision `d9be0390`.) Existing justified custom code: `mcp-memory/server.py`, `src/risk_radar.py`.
 - **Check native capabilities first**: Telegram → Channels; scheduling → `/loop` or scheduled tasks; background → desktop agents.
 - **Cross-project impact**: `mcp-memory/server.py`, `.mcp.json`, and Supabase schema are shared with redrobot. Changes here can break redrobot.
 - **MCP config portability**: `.mcp.json` must work on all 3 devices. No hardcoded usernames/absolute paths/device-specific values. Use relative paths or env vars.
