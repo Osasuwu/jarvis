@@ -290,6 +290,6 @@ def test_spawn_captures_stderr_to_file(
     assert len(captured.calls) == 1
     stderr_arg = captured.calls[0].get("stderr")
     assert stderr_arg is not None, "stderr must not be DEVNULL"
-    assert stderr_arg.name.startswith("spawn-"), (
+    assert os.path.basename(stderr_arg.name).startswith("spawn-"), (
         f"stderr file should follow spawn-<ts> convention, got {stderr_arg.name}"
     )

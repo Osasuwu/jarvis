@@ -396,7 +396,14 @@ def test_run_with_placeholder_logs_registration(
             return []
 
         def _lookup_jobstore(self, alias: str) -> object:  # noqa: ARG002
-            return object()
+            class _FakeJobstore:
+                def get_all_jobs(self) -> list:
+                    return []
+
+                def remove_job(self, job_id: str) -> None:  # noqa: ARG002
+                    pass
+
+            return _FakeJobstore()
 
         def shutdown(self, wait: bool = True) -> None:  # noqa: ARG002
             captured["shut_down"] = True
@@ -419,7 +426,7 @@ def test_run_with_placeholder_logs_registration(
     monkeypatch.setattr(scheduler, "load_config", lambda: _FakeConfig())
     monkeypatch.setattr(scheduler, "_install_signal_handlers", lambda _h: None)
 
-    rc = scheduler.run(interval_seconds=30, once=True, placeholder=True)
+    rc = scheduler.run(interval_seconds=30, jitter_seconds=0, once=True, placeholder=True)
     assert rc == 0
     assert captured.get("register_target") == "agent"
     assert captured.get("started") is True
