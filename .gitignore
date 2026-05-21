@@ -19,6 +19,7 @@ yarn-error.log*
 .sandcastle/.env
 .sandcastle/runtime/
 .sandcastle/worktrees/
+.sandcastle/hfcache/
 docs/research/
 
 # Logs
