@@ -2,7 +2,7 @@
 
 **Purpose.** This document is the queryable architectural narrative for the Sandcastle subsystem. It points at the load-bearing decisions; rationale lives in the `decision_made` episodes referenced by UUID. When a future session asks "why does sandcastle work this way?" — `memory_get` the cited episode.
 
-**Scope.** Docker-isolated AFK coding-agent loop that picks `sandcastle`-labelled issues, works one at a time on local Ollama inside a sterile container, and opens PRs without ever merging. Production target is the always-on Workshop PC.
+**Scope.** Docker-isolated AFK coding-agent loop that picks `sandcastle`-labelled issues, works one at a time on local Ollama inside a sterile container, and opens PRs without ever merging. Production target is the Workshop PC (always-on physical host; AFK loop runs inside safe-hours window — no persistent software daemon).
 
 **Read order.** `CONTEXT.md` glossary (Sandcastle / Watchdog / Safe-hours window / Threat-model duality) → this doc → cited decision episodes for rationale.
 
@@ -32,7 +32,7 @@ These are the non-negotiable invariants that shape every other slice. Each commi
 6. **Failure modes are observable, not silenced.** Every iteration writes an `outcome_record` row (success / partial / failure). Telegram fires only when infrastructure cannot come up — not for agent failures, which are signal, not noise.
    - Decision: `0c3017c6-01ec-4392-86a1-6a1522e4c5ef` (Failure modes).
 
-7. **Workshop PC is the production target; Main PC is the dev/test bench.** The always-on Workshop host runs the safe-hours-bound AFK loop; the developer bench reproduces the runtime for iteration without touching prod data.
+7. **Workshop PC is the production target; Main PC is the dev/test bench.** The Workshop host (always-on physical machine; no persistent software daemon) runs the safe-hours-bound AFK loop; the developer bench reproduces the runtime for iteration without touching prod data.
    - Decision: `4890aa35-07ae-4e4c-8c4b-ec37e749d751` (Deployment shape).
 
 8. **Model escalation chain, Ollama-first.** Default model is local Ollama; the escalation chain (per-iteration retry on a stronger model on parse/hard-failure, with API/Sonnet as the final escape hatch) preserves the cost profile of the AFK loop while keeping a path through hard issues.
