@@ -13,8 +13,10 @@ __all__ = [
     "executor",
     "github_client",
     "ollama_client",
+    "perception_github",
     "safety",
     "scheduler",
     "supabase_client",
+    "task_queue",
     "usage_probe",
 ]

@@ -1,15 +1,13 @@
 """Unit tests for GitHub perception module (issue #388, Sprint 4).
 
 Tests the row-building logic, idempotency, allowlist enforcement, and
-tier mapping without live GitHub or Supabase. Uses the _StubClient pattern
-from test_agents_dispatcher.py.
+tier mapping without live GitHub or Supabase. Uses the _StubClient pattern.
 """
 
 from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -190,28 +188,6 @@ def test_parse_scope_files_dedup() -> None:
     assert files == ["path/to/file.py"]
 
 
-def test_hash_scope_files() -> None:
-    """Hash scope files deterministically."""
-    files1 = ["a.py", "b.py"]
-    files2 = ["b.py", "a.py"]  # Different order
-    assert perception_github._hash_scope_files(files1) == perception_github._hash_scope_files(
-        files2
-    )
-
-
-def test_hash_scope_files_different() -> None:
-    """Different file sets produce different hashes."""
-    h1 = perception_github._hash_scope_files(["a.py"])
-    h2 = perception_github._hash_scope_files(["b.py"])
-    assert h1 != h2
-
-
-def test_hash_scope_files_empty() -> None:
-    """Empty file list produces consistent hash."""
-    h = perception_github._hash_scope_files([])
-    assert len(h) == 64  # SHA256 hex
-
-
 def test_idempotency_key() -> None:
     """Idempotency key formula matches perception.md."""
     key1 = perception_github._idempotency_key(
@@ -250,8 +226,7 @@ def test_extract_tier_label_missing() -> None:
 
 
 def test_build_row_tier1() -> None:
-    """Build row with tier:1-auto → auto_dispatch=true."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
+    """Build row with tier:1-auto → priority=1, assignee=github:issue:..."""
     issue = {
         "number": 388,
         "title": "Sprint 4 — GitHub ingest",
@@ -261,11 +236,11 @@ def test_build_row_tier1() -> None:
             {"name": "tier:1-auto"},
         ],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
 
     assert row is not None
-    assert row["auto_dispatch"] is True
-    assert row["approved_by"] == "github:issue:Osasuwu/jarvis#388"
+    assert row["priority"] == 1
+    assert row["assignee"] == "github:issue:Osasuwu/jarvis#388"
     assert row["scope_files"] == ["agents/perception_github.py"]
     assert row["status"] == "pending"
     assert "idempotency_key" in row
@@ -273,8 +248,7 @@ def test_build_row_tier1() -> None:
 
 
 def test_build_row_tier2() -> None:
-    """Build row with tier:2-review → auto_dispatch=false."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
+    """Build row with tier:2-review → priority=2."""
     issue = {
         "number": 389,
         "title": "Self-perception via morning_check",
@@ -284,15 +258,14 @@ def test_build_row_tier2() -> None:
             {"name": "tier:2-review"},
         ],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
 
     assert row is not None
-    assert row["auto_dispatch"] is False
+    assert row["priority"] == 2
 
 
 def test_build_row_tier3() -> None:
-    """Build row with tier:3-human → auto_dispatch=false."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
+    """Build row with tier:3-human → priority=3."""
     issue = {
         "number": 390,
         "title": "Manual task",
@@ -302,28 +275,26 @@ def test_build_row_tier3() -> None:
             {"name": "tier:3-human"},
         ],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
 
     assert row is not None
-    assert row["auto_dispatch"] is False
+    assert row["priority"] == 3
 
 
 def test_build_row_missing_tier() -> None:
     """Return None if tier label is missing."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
     issue = {
         "number": 391,
         "title": "No tier",
         "body": "This issue is missing a tier label.",
         "labels": [{"name": "status:ready"}],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
     assert row is None
 
 
 def test_build_row_goal_capped() -> None:
     """Cap goal text at _GOAL_MAX_CHARS."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
     long_body = "x" * 10000
     issue = {
         "number": 392,
@@ -331,7 +302,7 @@ def test_build_row_goal_capped() -> None:
         "body": long_body,
         "labels": [{"name": "status:ready"}, {"name": "tier:1-auto"}],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
 
     assert row is not None
     assert len(row["goal"]) <= perception_github._GOAL_MAX_CHARS
@@ -339,14 +310,13 @@ def test_build_row_goal_capped() -> None:
 
 def test_build_row_scope_files_sorted() -> None:
     """Scope files should be sorted."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
     issue = {
         "number": 393,
         "title": "Test",
         "body": "See `z.py` and `a.py` and `m.py`.",
         "labels": [{"name": "status:ready"}, {"name": "tier:1-auto"}],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
 
     assert row is not None
     assert row["scope_files"] == ["a.py", "m.py", "z.py"]
@@ -354,16 +324,12 @@ def test_build_row_scope_files_sorted() -> None:
 
 def test_poll_tick_idempotent() -> None:
     """Running poll_tick twice with same input produces zero new rows on second run."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
-
     # Build a row manually (simulating what poll_tick would create).
     row1 = {
         "goal": "Test issue",
         "scope_files": ["test.py"],
-        "approved_by": "github:issue:Osasuwu/jarvis#400",
-        "approved_at": now.isoformat(),
-        "approved_scope_hash": perception_github._hash_scope_files(["test.py"]),
-        "auto_dispatch": True,
+        "priority": 1,
+        "assignee": "github:issue:Osasuwu/jarvis#400",
         "idempotency_key": perception_github._idempotency_key(
             "Osasuwu/jarvis", 400, ["tier:1-auto", "status:ready"]
         ),
@@ -392,25 +358,21 @@ def test_poll_tick_idempotent() -> None:
 
 
 def test_poll_tick_row_shape() -> None:
-    """Verify upserted rows have correct columns per perception.md."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
+    """Verify upserted rows have correct columns."""
     issue = {
         "number": 401,
         "title": "Test issue for row shape",
         "body": "Verify `test.py` is captured.",
         "labels": [{"name": "status:ready"}, {"name": "tier:2-review"}],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
 
     assert row is not None
-    # Check all required columns per perception.md table.
     required = {
         "goal",
         "scope_files",
-        "approved_by",
-        "approved_at",
-        "approved_scope_hash",
-        "auto_dispatch",
+        "priority",
+        "assignee",
         "idempotency_key",
         "status",
     }
@@ -418,13 +380,11 @@ def test_poll_tick_row_shape() -> None:
 
 
 def test_tier_mapping() -> None:
-    """Verify tier → auto_dispatch mapping is correct."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
-
-    for tier_label, expected_auto in [
-        ("tier:1-auto", True),
-        ("tier:2-review", False),
-        ("tier:3-human", False),
+    """Verify tier → priority mapping is correct."""
+    for tier_label, expected_priority in [
+        ("tier:1-auto", 1),
+        ("tier:2-review", 2),
+        ("tier:3-human", 3),
     ]:
         issue = {
             "number": 500 + hash(tier_label) % 100,
@@ -432,24 +392,23 @@ def test_tier_mapping() -> None:
             "body": "",
             "labels": [{"name": "status:ready"}, {"name": tier_label}],
         }
-        row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+        row = perception_github._build_row(issue, "Osasuwu/jarvis")
         assert row is not None
-        assert row["auto_dispatch"] == expected_auto, f"Mismatch for {tier_label}"
+        assert row["priority"] == expected_priority, f"Mismatch for {tier_label}"
 
 
-def test_approved_by_format() -> None:
-    """Verify approved_by follows exact format: github:issue:<owner>/<repo>#<N>."""
-    now = datetime(2026, 4, 25, 10, 0, 0, tzinfo=UTC)
+def test_assignee_format() -> None:
+    """Verify assignee follows format: github:issue:<owner>/<repo>#<N>."""
     issue = {
         "number": 388,
         "title": "Test",
         "body": "",
         "labels": [{"name": "status:ready"}, {"name": "tier:1-auto"}],
     }
-    row = perception_github._build_row(issue, "Osasuwu/jarvis", now)
+    row = perception_github._build_row(issue, "Osasuwu/jarvis")
 
     assert row is not None
-    assert row["approved_by"] == "github:issue:Osasuwu/jarvis#388"
+    assert row["assignee"] == "github:issue:Osasuwu/jarvis#388"
 
 
 def test_fetch_ready_issues_one_query_per_tier(monkeypatch: pytest.MonkeyPatch) -> None:

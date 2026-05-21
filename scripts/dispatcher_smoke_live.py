@@ -16,7 +16,6 @@ import hashlib
 import json
 import sys
 import uuid
-from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -46,7 +45,6 @@ def seed() -> int:
     )
 
     scope_files: list[str] = []
-    scope_hash = hashlib.sha256("\n".join(sorted(scope_files)).encode("utf-8")).hexdigest()
     idem_key = hashlib.sha256(f"dispatcher-smoke-live-{marker}".encode("utf-8")).hexdigest()
 
     cli = get_client()
@@ -56,10 +54,8 @@ def seed() -> int:
             {
                 "goal": goal,
                 "scope_files": scope_files,
-                "approved_at": datetime.now(UTC).isoformat(),
-                "approved_by": "dispatcher-smoke-operator",
-                "approved_scope_hash": scope_hash,
-                "auto_dispatch": True,
+                "priority": 1,
+                "assignee": "dispatcher-smoke-operator",
                 "idempotency_key": idem_key,
                 "status": "pending",
             }
@@ -105,7 +101,7 @@ def check() -> int:
 
     row = (
         cli.table("task_queue")
-        .select("id, status, goal, dispatched_at, escalated_reason")
+        .select("id, status, goal, claimed_at, outcome_note")
         .eq("id", row_id)
         .limit(1)
         .execute()

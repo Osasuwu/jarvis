@@ -218,14 +218,14 @@ def test_enqueue_on_alarm_flag_set_adds_rows() -> None:
         upserts = [c for c in stub.calls if c[0] == "upsert"]
         assert len(upserts) == 1
 
-        # Inspect the row shape
+        # Verify the row shape
         upsert_call = upserts[0]
         assert upsert_call[1] == "task_queue"
         payload = upsert_call[2]["payload"]
 
         # Verify tier:3-human shape
-        assert payload["auto_dispatch"] is False
-        assert payload["approved_by"] == "cron:morning_check"
+        assert payload["assignee"] == "cron:morning_check"
+        assert payload["priority"] == 0
         assert payload["scope_files"] == []
         assert "my-agent" in payload["goal"]
         assert payload["status"] == "pending"
@@ -285,7 +285,7 @@ def test_no_audit_rows_enqueues_alarm() -> None:
         assert len(upserts) == 1
 
         payload = upserts[0][2]["payload"]
-        assert payload["approved_by"] == "cron:morning_check"
+        assert payload["assignee"] == "cron:morning_check"
         assert "No audit_log rows" in payload["goal"]
 
 
@@ -392,9 +392,8 @@ def test_upsert_failure_does_not_crash() -> None:
         assert exit_code == 1
 
 
-def test_approved_scope_hash_matches_empty_list_hash() -> None:
-    """approved_scope_hash is sha256 of empty list."""
-    from agents.executor import _hash_scope_files
+def test_upsert_row_has_assignee_and_priority() -> None:
+    """Enqueued alarm row has assignee and priority fields."""
     from scripts.observability.morning_check import main
 
     stub = _StubClient()
@@ -417,6 +416,6 @@ def test_approved_scope_hash_matches_empty_list_hash() -> None:
         upserts = [c for c in stub.calls if c[0] == "upsert"]
         payload = upserts[0][2]["payload"]
 
-        # Verify it matches the empty-list hash
-        expected_hash = _hash_scope_files([])
-        assert payload["approved_scope_hash"] == expected_hash
+        assert payload["assignee"] == "cron:morning_check"
+        assert payload["priority"] == 0
+        assert payload["scope_files"] == []

@@ -1,4 +1,4 @@
-"""Unit tests for dispatcher escalation triggers (issue #299, S2-4).
+"""Unit tests for dispatcher escalation triggers (issue #299, S2-4, refactored #740).
 
 Pure-check tests use hand-rolled dict rows; DB-write tests use a stub
 Supabase client that records the insert/update call shape. No live DB.
@@ -17,7 +17,6 @@ from agents.escalation import (
     ESCALATION_EVENT_TYPE,
     ESCALATION_SEVERITY,
     PATTERN_REPEAT_THRESHOLD,
-    STALE_APPROVAL_MAX_DAYS,
     EscalationCheck,
     EscalationContext,
     Trigger,
@@ -25,8 +24,6 @@ from agents.escalation import (
     check_cross_task_conflict,
     check_limit_near_exhaustion,
     check_pattern_repeat,
-    check_scope_drift,
-    check_stale_approval,
     escalate,
 )
 from agents.usage_probe import UsageReading
@@ -37,26 +34,13 @@ from agents.usage_probe import UsageReading
 # ---------------------------------------------------------------------------
 
 
-# Module-load snapshot — gives every test in this file a single,
-# stable "current time" while still tracking real wall-clock so the
-# production code's datetime.now(UTC) (called in check_all paths
-# without explicit now= injection) sees a fresh approved_at.
-_NOW = datetime.now(UTC)
-
-
-def _now() -> datetime:
-    return _NOW
-
-
 def _queue_row(**overrides: Any) -> dict[str, Any]:
     base = {
         "id": "00000000-0000-0000-0000-000000000001",
         "goal": "refactor: split usage_probe tests",
         "scope_files": ["tests/test_agents_usage_probe.py"],
-        "approved_at": _now().isoformat(),
-        "approved_by": "owner",
-        "approved_scope_hash": "abc123",
-        "auto_dispatch": True,
+        "priority": 1,
+        "assignee": "owner",
         "status": "pending",
         "idempotency_key": "deadbeef",
     }
@@ -69,126 +53,9 @@ def _reading(near: bool, used: int = 20, total: int = 100) -> UsageReading:
         limit_window=timedelta(hours=5),
         used=used,
         total=total,
-        reset_at=_now(),
+        reset_at=datetime.now(UTC),
         near_exhaustion=near,
     )
-
-
-# ---------------------------------------------------------------------------
-# check_stale_approval
-# ---------------------------------------------------------------------------
-
-
-def test_stale_approval_fresh_does_not_escalate() -> None:
-    row = _queue_row(approved_at=(_now() - timedelta(days=1)).isoformat())
-    result = check_stale_approval(row, now=_now())
-    assert result.should_escalate is False
-
-
-def test_stale_approval_exact_threshold_does_not_escalate() -> None:
-    """Strictly >max_age_days escalates; == does not (conservative, honors owner's approval)."""
-    row = _queue_row(approved_at=(_now() - timedelta(days=STALE_APPROVAL_MAX_DAYS)).isoformat())
-    result = check_stale_approval(row, now=_now())
-    assert result.should_escalate is False
-
-
-def test_stale_approval_past_threshold_escalates() -> None:
-    row = _queue_row(approved_at=(_now() - timedelta(days=STALE_APPROVAL_MAX_DAYS + 1)).isoformat())
-    result = check_stale_approval(row, now=_now())
-    assert result.should_escalate is True
-    assert result.trigger == Trigger.STALE_APPROVAL
-    assert result.context["age_days"] == STALE_APPROVAL_MAX_DAYS + 1
-    assert result.context["max_age_days"] == STALE_APPROVAL_MAX_DAYS
-
-
-def test_stale_approval_missing_approved_at_does_not_escalate() -> None:
-    """No evidence to escalate from — don't fabricate one."""
-    row = _queue_row()
-    row.pop("approved_at")
-    result = check_stale_approval(row, now=_now())
-    assert result.should_escalate is False
-
-
-def test_stale_approval_accepts_datetime_value() -> None:
-    """Supabase sometimes returns already-parsed datetimes."""
-    row = _queue_row(approved_at=_now() - timedelta(days=STALE_APPROVAL_MAX_DAYS + 1))
-    result = check_stale_approval(row, now=_now())
-    assert result.should_escalate is True
-
-
-def test_stale_approval_bad_timestamp_does_not_escalate() -> None:
-    row = _queue_row(approved_at="not-a-date")
-    result = check_stale_approval(row, now=_now())
-    assert result.should_escalate is False
-
-
-def test_stale_approval_z_suffix_parses() -> None:
-    """ISO string with 'Z' suffix (old-style UTC) must parse on 3.11+."""
-    row = _queue_row(
-        approved_at=(_now() - timedelta(days=STALE_APPROVAL_MAX_DAYS + 1))
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
-    result = check_stale_approval(row, now=_now())
-    assert result.should_escalate is True
-
-
-def test_stale_approval_max_age_days_is_configurable() -> None:
-    row = _queue_row(approved_at=(_now() - timedelta(days=2)).isoformat())
-    result = check_stale_approval(row, max_age_days=1, now=_now())
-    assert result.should_escalate is True
-    assert result.context["max_age_days"] == 1
-
-
-# ---------------------------------------------------------------------------
-# check_scope_drift
-# ---------------------------------------------------------------------------
-
-
-def test_scope_drift_same_hash_does_not_escalate() -> None:
-    row = _queue_row(approved_scope_hash="abc123")
-    result = check_scope_drift(row, current_scope_hash="abc123")
-    assert result.should_escalate is False
-
-
-def test_scope_drift_different_hash_escalates() -> None:
-    row = _queue_row(approved_scope_hash="abc123")
-    result = check_scope_drift(row, current_scope_hash="zzz999")
-    assert result.should_escalate is True
-    assert result.trigger == Trigger.SCOPE_DRIFT
-    assert result.context == {"approved_scope_hash": "abc123", "current_scope_hash": "zzz999"}
-
-
-def test_scope_drift_callable_hasher_is_invoked_with_scope_files() -> None:
-    row = _queue_row(approved_scope_hash="abc123", scope_files=["a.py", "b.py"])
-    seen: list[list[str]] = []
-
-    def hasher(files: Any) -> str:
-        seen.append(list(files))
-        return "abc123"  # same -> no drift
-
-    result = check_scope_drift(row, current_scope_hash=hasher)
-    assert result.should_escalate is False
-    assert seen == [["a.py", "b.py"]]
-
-
-def test_scope_drift_hasher_exception_escalates_safely() -> None:
-    """A broken hasher should escalate (treat as drift) rather than blowing up."""
-    row = _queue_row(approved_scope_hash="abc123")
-
-    def hasher(_files: Any) -> str:
-        raise IOError("file vanished mid-scan")
-
-    result = check_scope_drift(row, current_scope_hash=hasher)
-    assert result.should_escalate is True
-    assert result.trigger == Trigger.SCOPE_DRIFT
-    assert "file vanished mid-scan" in result.context["error"]
-
-
-def test_scope_drift_missing_approved_hash_does_not_escalate() -> None:
-    row = _queue_row(approved_scope_hash="")
-    result = check_scope_drift(row, current_scope_hash="zzz")
-    assert result.should_escalate is False
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +102,7 @@ def test_cross_task_conflict_disjoint_does_not_escalate() -> None:
 
 
 def test_cross_task_conflict_same_id_is_ignored() -> None:
-    """Defensive: even if dispatcher forgot to exclude this row, we do."""
+    """Defensive: even if caller forgot to exclude this row, we do."""
     row = _queue_row(id="me", scope_files=["a.py"])
     result = check_cross_task_conflict(
         row, active_dispatched_rows=[{"id": "me", "scope_files": ["a.py"]}]
@@ -318,35 +185,19 @@ def test_pattern_repeat_custom_threshold() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_check_all_returns_first_match_in_priority_order() -> None:
-    """Stale approval is first; if both stale and scope drift fire, stale wins."""
-    row = _queue_row(
-        approved_at=(_now() - timedelta(days=STALE_APPROVAL_MAX_DAYS + 1)).isoformat(),
-        approved_scope_hash="abc",
-    )
-    ctx = EscalationContext(
-        current_scope_hash="different",  # drift would also fire
-        usage_reading=_reading(near=False),
-    )
-    result = check_all(row, ctx)
-    assert result.trigger == Trigger.STALE_APPROVAL
-
-
 def test_check_all_no_triggers_returns_no_action() -> None:
     row = _queue_row()
     ctx = EscalationContext(
-        current_scope_hash=row["approved_scope_hash"],
         usage_reading=_reading(near=False),
     )
     result = check_all(row, ctx)
     assert result.should_escalate is False
 
 
-def test_check_all_runs_later_checks_when_earlier_pass() -> None:
+def test_check_all_limit_fires() -> None:
     row = _queue_row()
     ctx = EscalationContext(
-        current_scope_hash=row["approved_scope_hash"],  # no drift
-        usage_reading=_reading(near=True, used=90, total=100),  # limit fires
+        usage_reading=_reading(near=True, used=90, total=100),
     )
     result = check_all(row, ctx)
     assert result.trigger == Trigger.LIMIT_NEAR_EXHAUSTION
@@ -418,8 +269,8 @@ def test_escalate_writes_event_with_expected_shape() -> None:
     row = _queue_row(id="11111111-1111-1111-1111-111111111111", goal="cleanup")
     check = EscalationCheck(
         should_escalate=True,
-        trigger=Trigger.STALE_APPROVAL,
-        context={"age_days": 9, "max_age_days": 7},
+        trigger=Trigger.LIMIT_NEAR_EXHAUSTION,
+        context={"used": 90, "total": 100, "headroom_ratio": 0.1},
     )
     result = escalate(row, check, client=client)
     insert_calls = [c for c in client.calls if c[0] == "insert"]
@@ -430,22 +281,22 @@ def test_escalate_writes_event_with_expected_shape() -> None:
     assert payload["severity"] == ESCALATION_SEVERITY
     assert payload["source"] == DISPATCHER_AGENT_ID
     assert payload["payload"]["queue_id"] == row["id"]
-    assert payload["payload"]["trigger"] == Trigger.STALE_APPROVAL.value
+    assert payload["payload"]["trigger"] == Trigger.LIMIT_NEAR_EXHAUSTION.value
     assert payload["payload"]["context"] == check.context
     # Title should carry both id and trigger for quick scanning.
     assert row["id"] in payload["title"]
-    assert Trigger.STALE_APPROVAL.value in payload["title"]
+    assert Trigger.LIMIT_NEAR_EXHAUSTION.value in payload["title"]
     # And the returned event should have the stubbed id.
     assert "id" in result
 
 
-def test_escalate_updates_queue_row_to_escalated() -> None:
+def test_escalate_updates_queue_row_to_parked() -> None:
     client = _StubClient()
     row = _queue_row(id="11111111-1111-1111-1111-111111111111")
     check = EscalationCheck(
         should_escalate=True,
-        trigger=Trigger.SCOPE_DRIFT,
-        context={"approved_scope_hash": "a", "current_scope_hash": "b"},
+        trigger=Trigger.CROSS_TASK_CONFLICT,
+        context={"conflicting_task_id": "peer", "overlapping_files": ["a.py"]},
     )
     escalate(row, check, client=client)
     update_calls = [c for c in client.calls if c[0] == "update"]
@@ -453,8 +304,8 @@ def test_escalate_updates_queue_row_to_escalated() -> None:
     _, table, payload = update_calls[0]
     assert table == "task_queue"
     assert payload["match"] == {"id": row["id"]}
-    assert payload["set"]["status"] == "escalated"
-    assert "scope_drift" in payload["set"]["escalated_reason"]
+    assert payload["set"]["status"] == "parked"
+    assert "cross_task_conflict" in payload["set"]["outcome_note"]
 
 
 def test_escalate_rejects_non_escalating_check() -> None:

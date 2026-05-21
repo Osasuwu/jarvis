@@ -244,8 +244,8 @@ def idempotency_key(
     store the key on the action row (audit, action queue, or queue_row)
     and skip a live-run if the key already exists.
 
-    ``scope_hash`` changes with repo state (``approved_scope_hash`` on
-    ``task_queue``); feeding it in means post-drift re-attempts produce
+    ``scope_hash`` changes with repo state; feeding it in means post-drift
+    re-attempts produce
     a different key — no silent coalescing with the pre-drift attempt.
     """
     raw = "|".join([agent_id or "", action or "", target or "", scope_hash or ""])

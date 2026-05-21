@@ -31,7 +31,6 @@ import logging
 import re
 import subprocess
 import time
-from datetime import UTC, datetime
 from typing import Any
 
 from supabase import Client
@@ -40,7 +39,7 @@ from agents import supabase_client
 
 logger = logging.getLogger(__name__)
 
-# Source identifier for approved_by column (GitHub ingest → "github:issue:<owner>/<repo>#<N>")
+# Source identifier prefix for task_queue rows from GitHub ingest.
 SOURCE = "github"
 
 # Per-repo allowlist. Only repos in this set will be polled.
@@ -50,11 +49,12 @@ _ALLOWED_REPOS: frozenset[str] = frozenset({"Osasuwu/jarvis"})
 # A single sane number to avoid loading huge issues into task_queue.
 _GOAL_MAX_CHARS = 8000
 
-# Tier labels and their auto_dispatch mappings.
-_TIER_AUTO_DISPATCH = {
-    "tier:1-auto": True,
-    "tier:2-review": False,
-    "tier:3-human": False,
+# Tier labels and their priority mapping (lower number = higher priority).
+# Used for task_queue.claim_next() ordering.
+_TIER_PRIORITY = {
+    "tier:1-auto": 1,
+    "tier:2-review": 2,
+    "tier:3-human": 3,
 }
 
 
@@ -87,16 +87,6 @@ def _parse_scope_files(body: str) -> list[str]:
     return sorted(files)
 
 
-def _hash_scope_files(scope_files: list[str]) -> str:
-    """Deterministic scope-files hash.
-
-    Matches dispatcher._hash_scope_files: sort + newline-join + sha256.
-    Used for approved_scope_hash and idempotency key computation.
-    """
-    normalized = "\n".join(sorted(scope_files or []))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-
-
 def _idempotency_key(repo: str, issue_number: int, labels: list[str]) -> str:
     """Deterministic idempotency key: sha256(repo | issue_number | sorted_label_set).
 
@@ -120,19 +110,17 @@ def _extract_tier_label(labels: list[str]) -> str | None:
     return None
 
 
-def _build_row(issue: dict[str, Any], repo: str, now: datetime) -> dict[str, Any] | None:
+def _build_row(issue: dict[str, Any], repo: str) -> dict[str, Any] | None:
     """Build a task_queue row from a GitHub issue.
 
     Returns None if the issue is malformed or missing required components
     (e.g., no tier label). Otherwise returns a complete row ready for upsert.
 
-    Row shape per perception.md:
+    Row shape:
       - goal: title + "\n\n" + body (capped at _GOAL_MAX_CHARS)
       - scope_files: extracted file paths (empty list if none)
-      - approved_by: "github:issue:<owner>/<repo>#<N>"
-      - approved_at: ISO format timestamp (poll-tick time, best-effort)
-      - approved_scope_hash: sha256 of sorted scope_files
-      - auto_dispatch: true iff tier:1-auto label present
+      - priority: from tier label (1=auto, 2=review, 3=human)
+      - assignee: "github:issue:<owner>/<repo>#<N>" for traceability
       - idempotency_key: sha256(repo | number | sorted_labels)
     """
     number = issue.get("number")
@@ -159,14 +147,11 @@ def _build_row(issue: dict[str, Any], repo: str, now: datetime) -> dict[str, Any
     # Extract scope files from body.
     scope_files = _parse_scope_files(body)
 
-    # Build approved_by with full owner/repo path.
-    approved_by = f"github:issue:{repo}#{number}"
+    # Priority from tier mapping (lower number = higher priority).
+    priority = _TIER_PRIORITY.get(tier_label, 0)
 
-    # approved_scope_hash matches dispatcher hash style.
-    scope_hash = _hash_scope_files(scope_files)
-
-    # auto_dispatch from tier mapping.
-    auto_dispatch = _TIER_AUTO_DISPATCH.get(tier_label, False)
+    # Assignee encodes the GitHub source for notify_completed_issues.
+    assignee = f"github:issue:{repo}#{number}"
 
     # idempotency_key from formula.
     key = _idempotency_key(repo, number, labels)
@@ -174,10 +159,8 @@ def _build_row(issue: dict[str, Any], repo: str, now: datetime) -> dict[str, Any
     return {
         "goal": goal,
         "scope_files": scope_files,
-        "approved_by": approved_by,
-        "approved_at": now.isoformat(),
-        "approved_scope_hash": scope_hash,
-        "auto_dispatch": auto_dispatch,
+        "priority": priority,
+        "assignee": assignee,
         "idempotency_key": key,
         "status": "pending",
     }
@@ -241,7 +224,6 @@ def poll_tick(client: Client | None = None) -> None:
         client: Supabase client. If None, a new one is created.
     """
     cli = client or supabase_client.get_client()
-    now = datetime.now(UTC)
 
     for repo in _ALLOWED_REPOS:
         try:
@@ -253,7 +235,7 @@ def poll_tick(client: Client | None = None) -> None:
         inserted_count = 0
         for issue in issues:
             try:
-                row = _build_row(issue, repo, now)
+                row = _build_row(issue, repo)
                 if row is None:
                     continue
 
@@ -285,7 +267,7 @@ def notify_completed_issues(client: Client | None = None) -> None:
 
     Watches task_queue for rows where:
       - status = 'done'
-      - approved_by starts with 'github:issue:'
+      - assignee starts with 'github:issue:'
       - not yet notified (checked via audit_log marker)
 
     Posts a comment on each issue with the PR link, then records the
@@ -301,8 +283,8 @@ def notify_completed_issues(client: Client | None = None) -> None:
     done_rows = cli.table("task_queue").select("*").eq("status", "done").execute().data or []
 
     for row in done_rows:
-        approved_by = row.get("approved_by", "")
-        if not approved_by.startswith("github:issue:"):
+        assignee = row.get("assignee", "")
+        if not assignee.startswith("github:issue:"):
             continue
 
         idempotency_key = row.get("idempotency_key", "")
@@ -324,17 +306,17 @@ def notify_completed_issues(client: Client | None = None) -> None:
             logger.debug(f"Row {idempotency_key} already notified, skipping")
             continue
 
-        # Parse approved_by to extract repo and issue number.
+        # Parse assignee to extract repo and issue number.
         # Format: "github:issue:<owner>/<repo>#<N>"
         try:
-            parts = approved_by.replace("github:issue:", "").split("#")
+            parts = assignee.replace("github:issue:", "").split("#")
             if len(parts) != 2:
-                logger.error(f"Malformed approved_by format: {approved_by}")
+                logger.error(f"Malformed assignee format: {assignee}")
                 continue
             repo = parts[0]
             issue_number = int(parts[1])
         except (ValueError, IndexError) as e:
-            logger.error(f"Failed to parse approved_by {approved_by}: {e}")
+            logger.error(f"Failed to parse assignee {assignee}: {e}")
             continue
 
         # Get the PR link from the row (or from related audit logs).

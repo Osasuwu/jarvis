@@ -20,7 +20,6 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from agents.executor import _hash_scope_files, _now_iso
 from agents.supabase_client import get_client
 
 # Alarm categories for stable idempotency key generation
@@ -62,15 +61,12 @@ def _enqueue_alarm(
     If the upsert fails (network, auth), log and continue — enqueue is best-effort.
     """
     key = _idempotency_key(category, details_summary)
-    now = _now_iso()
 
     row = {
         "goal": goal,
         "scope_files": [],
-        "approved_by": "cron:morning_check",
-        "approved_at": now,
-        "approved_scope_hash": _hash_scope_files([]),  # sha256 of empty list
-        "auto_dispatch": False,
+        "priority": 0,
+        "assignee": "cron:morning_check",
         "idempotency_key": key,
         "status": "pending",
     }
