@@ -90,6 +90,12 @@ gh pr diff <N> -- <initial_diff_files>
 - Save the initial PR diff file set and LOC count — these feed the scope-creep guard.
 - Count existing `## Rework history` sections in the PR body to determine the attempt
   number. Attempt 1 has zero existing sections.
+  - **Ordering contract:** the orchestrator MUST append attempt *k*'s `## Rework history`
+    section (issue #638) *before* it emits the next `review_negative` dispatch — otherwise
+    the count under-reads and the STUCK_ATTEMPTS / STUCK_NO_CONVERGENCE guards silently
+    fail to fire, letting the loop run past its maximum. As a cross-check, also count this
+    branch's `fix(rework): attempt`/`converged` commits on `headRefName` and take the max
+    of the two.
 
 Fetch structured Claude code-review verdict (the most recent review comment
 with a structured finding list). Parse findings per reviewer. Expected format:
@@ -111,11 +117,18 @@ with a structured finding list). Parse findings per reviewer. Expected format:
 - **Description**: ...
 ```
 
-If no structured verdict exists on the PR, there is nothing to rework — push a
-comment explaining that and exit with `rework_stuck` (as `stuck_no_findings`).
+If no structured verdict exists on the PR, there is nothing to rework. Do **not**
+exit ad-hoc here — go to **§9d (Edge: no structured findings)**, which removes the
+`status:rework-in-progress` label, releases the per-PR lock, and records the
+`no-findings` outcome. Exiting without 9d leaks the lock + label acquired in step 2,
+blocking re-dispatch for the full 2h TTL.
 
 Classify each finding into CRITICAL / MAJOR / MINOR. Count totals:
 `n_critical`, `n_major`, `n_minor`.
+
+Also record `reviewer_kind` — the login of the review-comment author (e.g.
+`claude` for `claude[bot]`). This populates the `reviewer_kind` field in the
+stuck-event payload (§9c); without it that field carries a junk literal.
 
 ### 4. Reactive TDD per CRITICAL finding
 
@@ -146,11 +159,12 @@ For each MAJOR finding:
 
 ### 6. Flag out-of-scope findings
 
-Any CRITICAL or HIGH finding that the skill judges outside the scope of the
-original PR diff:
+Any CRITICAL or MAJOR finding that the skill judges outside the scope of the
+original PR diff (step 3 only produces CRITICAL / MAJOR / MINOR — there is no
+"HIGH" tier):
 
 ```bash
-gh issue comment <N> --body "Out-of-scope finding flagged: <description> — not addressed in this rework loop."
+gh pr comment <N> --body "Out-of-scope finding flagged: <description> — not addressed in this rework loop."
 ```
 
 Do not silently drop non-obvious findings. A MINOR suggestion about naming or
@@ -210,15 +224,32 @@ git commit -m "fix(rework): attempt <N> — <brief summary>"
 git push origin <headRefName>
 ```
 
-Remove `status:rework-in-progress` label. Leave the PR open for the next
-rework dispatch (orchestrator will re-dispatch on next `review_negative` event).
+Remove `status:rework-in-progress` label. **Release the per-PR lock** by updating
+the `in_flight` outcome record (status → `partial`, drop the `in_flight` tag) — the
+orchestrator checks `in_flight` before re-dispatching, so leaving the lock live
+blocks the next attempt for the full 2h TTL and stalls the loop. CONTINUE is the
+expected multi-attempt path, so this release is load-bearing. Leave the PR open for
+the next rework dispatch (orchestrator re-dispatches on the next `review_negative`
+event).
 
 Exit cleanly.
 
 #### 9b. CONVERGED
 
-Converged means the findings targets are met. The caller (sandcastle / orchestrator)
-handles the `## Rework history` PR body append (see issue #638 for the format).
+Converged means the findings targets are met (`n_critical==0, n_major≤2`).
+
+**Commit and push the fixes first** — steps 4–5 changed the working tree; without
+this block those fixes are abandoned on exit and the next review re-flags the same
+unfixed code:
+
+```bash
+git add <specific files>
+git commit -m "fix(rework): converged — <brief summary>"
+git push origin <headRefName>
+```
+
+The caller (sandcastle / orchestrator) handles the `## Rework history` PR body
+append (see issue #638 for the format).
 
 The skill records the outcome:
 
@@ -227,14 +258,19 @@ outcome_record(
   task_type: "fix",
   task_description: "Rework PR #<N> — converged",
   outcome_status: "success",
-  outcome_summary: "Loop converged: n_critical=0, n_major≤2 after <N> attempts",
+  outcome_summary: "Loop converged: n_critical=0, n_major=<count> after <attempt_count> attempts",
   project: "<repo>",
   issue_url: "<PR URL>",
   pr_url: "<PR URL>",
-  tests_passed: true,
+  tests_passed: <true only if every CRITICAL fix has a green test AND no MAJOR fix was left untested; else false>,
   pattern_tags: ["pr-<N>", "rework", "terminal"],
 )
 ```
+
+`tests_passed` must reflect reality: CONVERGED can fire with up to 2 MAJOR fixes,
+and MAJOR fixes carry no test mandate (§5). Set it `false` whenever any applied fix
+lacks green coverage, so downstream `/verify` and calibration do not over-trust the
+row as fully test-validated.
 
 Remove `status:rework-in-progress` label.
 Do NOT merge. The PR stays open for human merge.
@@ -254,8 +290,8 @@ VALUES (
     'pr', <N>,
     'verdict', '<loop_decision>',
     'reason', '<policy_reason>',
-    'attempts', <N>,
-    'reviewer_kind', '<reviewer_kind from verdict>'
+    'attempts', <attempt_count>,
+    'reviewer_kind', '<reviewer_kind from step 3>'
   )
 );
 ```
@@ -279,7 +315,7 @@ Apply terminal labels and comment:
 
 ```bash
 gh pr edit <N> --add-label "status:needs-human"
-gh pr comment <N> --body "## Rework loop terminated\n\n**Verdict**: <decision>\n**Reason**: <policy_reason>\n\n### Attempts\n\n| Attempt | CRITICAL | MAJOR | Verdict |\n|---|---|---|---|\n| 1 | <N> | <N> | <verdict> |\n| 2 | <N> | <N> | <verdict> |\n| 3 | <N> | <N> | <verdict> |\n\nThis PR needs human review."
+gh pr comment <N> --body "## Rework loop terminated\n\n**Verdict**: <decision>\n**Reason**: <policy_reason>\n\n### Attempts\n\n| Attempt | CRITICAL | MAJOR | Verdict |\n|---|---|---|---|\n| 1 | <crit> | <major> | <verdict> |\n| 2 | <crit> | <major> | <verdict> |\n| 3 | <crit> | <major> | <verdict> |\n\nThis PR needs human review."
 ```
 
 Record the outcome:
