@@ -94,6 +94,7 @@ Use skills — don't reinvent with raw tools.
 | Conversation context → PRD on issue tracker | `/to-prd` |
 | Plan / PRD → vertical-slice issues | `/to-issues` |
 | "diagnose this", bug repro, perf regression | `/diagnose` |
+| PR rework needed / negative review received | `/rework` (skips grill-me checkbox; reactive TDD per CRITICAL finding, MAJOR fixes, loop-stop guard policy) |
 | "improve architecture", find shallow modules, refactoring opportunities | `/improve-codebase-architecture` |
 | "last sprint report", "what did we ship", "milestone closeout", pre-sweep brief | `/last-work-report` (skeleton — #606) |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
