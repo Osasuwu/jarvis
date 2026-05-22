@@ -110,6 +110,24 @@ this section replaces it entirely.
      Add `status:needs-human` label via
      `gh issue edit $SANDCASTLE_TARGET_PR --add-label status:needs-human`.
      Remove `status:rework-in-progress` label.
+   - **Both paths — final action before exit**: append a rework history entry to
+     the PR body. Use the exact verdict name (`converged`, `stuck_attempts`,
+     `stuck_scope`, `stuck_no_convergence`, or `stuck_conflict`) in the header.
+     Procedure:
+     a. Fetch fresh body — `gh pr view $SANDCASTLE_TARGET_PR --json body |
+        jq -r '.body'` so any owner edits between AFK runs survive.
+     b. Write the body + new entry to a temp file via the Write tool (avoids shell
+        quoting issues). Determine attempt number N by counting existing
+        `### Attempt` headers in the body + 1; if none exist, N=1.
+     c. If `## Rework history` section already exists in the body, append:
+        ```
+        ### Attempt N (<UTC_YYYY-MM-DD HH:MM>) — <verdict>
+        <1-2 lines: what changed, what's still outstanding>
+        ```
+        under the existing section. If it does NOT exist, create it at the end of
+        the body separated by `\n\n---\n\n`.
+     d. Update PR body — `gh pr edit $SANDCASTLE_TARGET_PR --body "$(cat <tempfile>)"`
+     e. Container exits after this step (no further actions).
 7. **Do NOT touch**: PR title, `Closes` line in body, or any label other than
    `status:rework-in-progress` and `status:needs-human`.
 8. **Record iteration outcome** — one `outcome_record` (separate from the lock)
