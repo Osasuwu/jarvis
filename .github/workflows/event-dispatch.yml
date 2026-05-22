@@ -16,7 +16,6 @@ on:
   workflow_run:
     workflows:
       - "Gitleaks Secret Scanning"
-      - "Copilot Review Response"
       - "PR Body Check"
       - "PR Merged"
       - "Project Sync"
