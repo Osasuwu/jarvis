@@ -167,11 +167,17 @@ if ($QuotaProbe) {
     $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
     $pwshExe = if ($pwshCmd) { $pwshCmd.Source } else { (Get-Command powershell -ErrorAction Stop).Source }
 
+    # Keep the cache TTL just over the probe interval so a probe is not served a
+    # stale cache from the previous run (m2: at -QuotaProbeInterval 15 the 35-min
+    # default meant nearly every run hit cache instead of re-probing).
+    $cacheTtl = $QuotaProbeInterval + 5
+
     $probeQuoted = '"' + $probeScript + '"'
     $argParts = @(
         '-NoProfile',
         '-ExecutionPolicy', 'Bypass',
-        '-File', $probeQuoted
+        '-File', $probeQuoted,
+        '-CacheTTLMinutes', $cacheTtl
     )
 
     $action = New-ScheduledTaskAction -Execute $pwshExe `
@@ -183,11 +189,17 @@ if ($QuotaProbe) {
     if ($startDt -lt (Get-Date)) { $startDt = $startDt.AddDays(1) }
 
     $trigger = New-ScheduledTaskTrigger -Daily -At $startDt
+    # [timespan]::MaxValue (~10.6M days) overflows Task Scheduler's COM layer
+    # (max ~49,710 days from Int32 seconds) -> COMException at register time or a
+    # silent wrap that stops the repetition immediately (C8). 100 years is well
+    # within range and is effectively indefinite for a daily-retriggered task.
     $trigger.Repetition = New-ScheduledTaskTriggerRepetition `
         -Interval ([timespan]::FromMinutes($QuotaProbeInterval)) `
-        -Duration ([timespan]::MaxValue)  # indefinite
+        -Duration (New-TimeSpan -Days 36500)
 
-    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+    # S4U: run whether or not the user is logged on, and fire even when the screen
+    # is locked (m1: LogonType Interactive skips the run on a locked workstation).
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U -RunLevel Limited
 
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `

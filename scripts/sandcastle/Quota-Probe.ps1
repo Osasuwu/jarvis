@@ -6,7 +6,7 @@
     Standalone scheduled job for the Workshop PC. Runs `claude -p "/usage"`,
     parses the weekly% consumption, caches the result, and applies hysteresis
     to broadcast pressure state via `gh variable set CLAUDE_QUOTA_PRESSURE`
-    and a `quota_pressure` row in `events_canonical`.
+    and a `quota_pressure` row in the legacy `events` table (see Event sink below).
 
     Hysteresis:
         weekly% >= 80  → trip  (CLAUDE_QUOTA_PRESSURE=true)
@@ -17,7 +17,15 @@
     Reuses cached value on parse failure so transient Claude-CLI glitches don't
     flip the pressure variable.
 
-    Realizes decisions d5b3fdd3 (initial 90% gate) and 46830b4e (80%/70% hysteresis).
+    Event sink: writes a `quota_pressure` row to the legacy `events` table
+    (mcp-memory/schema.sql), NOT `events_canonical`. The `events` table is what
+    the #327 escalation hook (scripts/telegram-notify-hook.py) reads -- it is the
+    only consumer that turns a pressure trip into an owner notification. The C17
+    `events_canonical` substrate (#476) has no application writers wired yet
+    (#477 cutover incomplete), so a row there would reach no consumer.
+
+    Realizes decision 46830b4e (80%/70% hysteresis), which SUPERSEDES the initial
+    90% single-gate decision d5b3fdd3 -- do not re-introduce a 90% threshold.
 
 .PARAMETER CacheDir
     Directory for the usage cache file. Default: ~/.jarvis/orchestrator.
@@ -33,11 +41,11 @@
     weekly% below which pressure is released. Default 70.
 
 .PARAMETER NoBroadcast
-    Dry-run switch: log what would happen but don't call gh or events_canonical.
+    Dry-run switch: log what would happen but don't call gh or write the event.
 
 .PARAMETER DotEnvPath
     Path to a .env file with SUPABASE_URL and SUPABASE_KEY for writing
-    events_canonical rows. Default: $PSScriptRoot\..\..\.sandcastle\.env
+    `events` rows. Default: $PSScriptRoot\..\..\.sandcastle\.env
     (the sandcastle env, which also carries these creds).
 
 .PARAMETER ClaudeCli
@@ -56,17 +64,28 @@
 param(
     [string]$CacheDir,
 
+    [ValidateRange(1, 1440)]
     [int]$CacheTTLMinutes = 35,
 
+    [ValidateRange(1, 99)]
     [int]$TripThreshold = 80,
 
+    [ValidateRange(0, 98)]
     [int]$ReleaseThreshold = 70,
 
     [switch]$NoBroadcast,
 
     [string]$DotEnvPath,
 
-    [string]$ClaudeCli
+    [string]$ClaudeCli,
+
+    [string]$PressureVar = 'CLAUDE_QUOTA_PRESSURE',
+
+    # Dot-source guard: when set, the script defines its functions but does NOT
+    # auto-discover the claude CLI or run the entry point. Tests dot-source with
+    # -NoExecute so loading the module never fires the live probe (would exit 2
+    # / call the real CLI and kill the Pester runner).
+    [switch]$NoExecute
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,20 +97,13 @@ $ErrorActionPreference = 'Stop'
 if (-not $CacheDir) {
     $CacheDir = Join-Path $env:USERPROFILE '.jarvis\orchestrator'
 }
-$stateFile = Join-Path $CacheDir 'usage.json'
-$pressureVar = 'CLAUDE_QUOTA_PRESSURE'
 
 if (-not $DotEnvPath) {
     $DotEnvPath = Join-Path $PSScriptRoot '..\..\.sandcastle\.env'
 }
 
-if (-not $ClaudeCli) {
-    $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
-    if (-not $claudeCmd) {
-        Write-Error "claude CLI not found on PATH."
-        exit 2
-    }
-    $ClaudeCli = $claudeCmd.Source
+if ($ReleaseThreshold -ge $TripThreshold) {
+    throw "ReleaseThreshold ($ReleaseThreshold) must be < TripThreshold ($TripThreshold)."
 }
 
 # ---------------------------------------------------------------------------
@@ -191,10 +203,13 @@ function Get-UsagePercentFromOutput {
     param([string]$Output)
     if ([string]::IsNullOrWhiteSpace($Output)) { return $null }
 
-    # Match patterns like:
-    #   "Weekly usage: 45%"   "weekly%: 45"   "Weekly: 72%"   "weekly = 80"
-    # Capture group 1 = the percentage number.
-    if ($Output -match 'weekly[:\s]*%?[:\s]*(\d+)\s*%?') {
+    # Match the first integer that follows the word "weekly", whatever separators
+    # sit between them. Covers the live pipe-delimited table
+    #   "Weekly       | 45%      | 100%"
+    # as well as "Weekly usage: 45%", "weekly%: 72" (no trailing %), "weekly = 80".
+    # [^\d]* skips pipes/colons/spaces/% so the pipe in the table no longer breaks
+    # the match (the previous [:\s]* stopped at the '|'). -match is case-insensitive.
+    if ($Output -match 'weekly[^\d]*(\d+)') {
         $val = [int]$Matches[1]
         if ($val -ge 0 -and $val -le 100) {
             return $val
@@ -204,17 +219,22 @@ function Get-UsagePercentFromOutput {
 }
 
 function Get-PressureState {
+    # Returns $true / $false for the current pressure state, or $null when the
+    # state could NOT be read (gh failure). Callers MUST treat $null as "unknown"
+    # and skip the hysteresis decision -- defaulting an unreadable state to $false
+    # makes every probe at >=trip% re-emit a trip event (M1: event spam on gh
+    # connectivity loss).
     [CmdletBinding()]
-    param([string]$VarName)
+    param([string]$VarName, [string]$Repo = 'Osasuwu/jarvis')
     try {
-        $list = & gh variable list --json name,value 2>$null
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($list)) { return $false }
+        $list = & gh variable list --repo $Repo --json name,value 2>$null
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($list)) { return $null }
         $entry = $list | ConvertFrom-Json | Where-Object { $_.name -eq $VarName }
-        if (-not $entry) { return $false }
+        if (-not $entry) { return $false }  # variable absent => not pressed (readable)
         return ($entry[0].value -eq 'true')
     } catch {
         Write-Warning "Failed to read gh variable $VarName`: $_"
-        return $false
+        return $null
     }
 }
 
@@ -222,11 +242,12 @@ function Write-GhVariable {
     [CmdletBinding()]
     param(
         [string]$VarName,
-        [bool]$Value
+        [bool]$Value,
+        [string]$Repo = 'Osasuwu/jarvis'
     )
     $strVal = if ($Value) { 'true' } else { 'false' }
     try {
-        & gh variable set $VarName --body $strVal 2>$null
+        & gh variable set $VarName --repo $Repo --body $strVal 2>$null
         if ($LASTEXITCODE -ne 0) {
             Write-Warning "gh variable set $VarName=$strVal exited with code $LASTEXITCODE"
             return $false
@@ -239,7 +260,10 @@ function Write-GhVariable {
     }
 }
 
-function Write-EventsCanonical {
+function Write-PressureEvent {
+    # Writes a quota_pressure row to the legacy `events` table (NOT
+    # events_canonical -- see synopsis). The body matches the `events` schema
+    # (mcp-memory/schema.sql) and the columns the #327 telegram hook reads.
     [CmdletBinding()]
     param(
         [string]$SupabaseUrl,
@@ -249,14 +273,14 @@ function Write-EventsCanonical {
         [string]$State
     )
     if (-not $SupabaseUrl -or -not $SupabaseKey) {
-        Write-Warning "Supabase credentials missing — skipping events_canonical write."
+        Write-Warning "Supabase credentials missing -- skipping events write."
         return $null
     }
 
     $title = if ($State -eq 'tripped') {
-        "Claude Max weekly at ${Percent}% — pressure tripped"
+        "Claude Max weekly at ${Percent}% -- pressure tripped"
     } else {
-        "Claude Max weekly at ${Percent}% — pressure released"
+        "Claude Max weekly at ${Percent}% -- pressure released"
     }
 
     $body = @{
@@ -277,13 +301,13 @@ function Write-EventsCanonical {
         'Content-Type'  = 'application/json'
     }
 
-    $url = "$($SupabaseUrl.TrimEnd('/'))/rest/v1/events_canonical"
+    $url = "$($SupabaseUrl.TrimEnd('/'))/rest/v1/events"
     try {
         $resp = Invoke-RestMethod -Uri $url -Method Post -Headers $headers -Body $body -ErrorAction Stop
-        Write-Host "[quota] events_canonical row written (state=$State, percent=$Percent)"
+        Write-Host "[quota] events row written (state=$State, percent=$Percent)"
         return $resp
     } catch {
-        Write-Warning "events_canonical write failed: $_"
+        Write-Warning "events write failed: $_"
         return $null
     }
 }
@@ -301,46 +325,54 @@ function Invoke-QuotaProbe {
         [int]$ReleaseThreshold,
         [switch]$NoBroadcast,
         [string]$DotEnvPath,
-        [string]$ClaudeCli
+        [string]$ClaudeCli,
+        [string]$PressureVar = 'CLAUDE_QUOTA_PRESSURE'
     )
 
     $stateFile = Join-Path $CacheDir 'usage.json'
-    [int?]$percent = $null
+    # $percent stays $null until a value is obtained. PowerShell 5.1 has no
+    # [int?] literal (it is a parse error), and plain [int]/[bool] have no
+    # .HasValue/.Value members -- so we use $null + ($null -ne $percent) checks
+    # rather than Nullable semantics (C1).
+    $percent = $null
     $cacheHit = $false
 
     # ---- Phase 1: Probe ----
     if (Test-CacheFresh -Path $stateFile -MaxAgeMinutes $CacheTTLMinutes) {
         $cached = Read-Cache -Path $stateFile
         if ($cached -and $cached.percent -ge 0) {
-            $percent = $cached.percent
+            $percent = [int]$cached.percent
             $cacheHit = $true
             Write-Host "[quota] cache hit: ${percent}% (age < ${CacheTTLMinutes}m)"
         }
     }
 
-    if (-not $percent.HasValue) {
+    if ($null -eq $percent) {
         $raw = Invoke-UsageProbe -CliPath $ClaudeCli
         if ($raw) {
             $parsed = Get-UsagePercentFromOutput -Output $raw
-            if ($parsed.HasValue) {
-                $percent = $parsed.Value
-                Write-Cache -Path $stateFile -Percent $percent.Value
+            if ($null -ne $parsed) {
+                $percent = [int]$parsed
+                Write-Cache -Path $stateFile -Percent $percent
                 Write-Host "[quota] probe: ${percent}% (cached)"
             }
         }
 
         # Fallback: if probe failed and we have stale cached data, use it
-        if (-not $percent.HasValue) {
+        if ($null -eq $percent) {
             $cached = Read-Cache -Path $stateFile
             if ($cached -and $cached.percent -ge 0) {
-                $percent = $cached.percent
-                Write-Warning "[quota] probe failed — using stale cached value ${percent}%"
+                $percent = [int]$cached.percent
+                Write-Warning "[quota] probe failed -- using stale cached value ${percent}%"
             }
         }
     }
 
-    if (-not $percent.HasValue) {
-        Write-Error "[quota] no usage data available — skipping hysteresis check."
+    if ($null -eq $percent) {
+        # Write-Warning, not Write-Error: ErrorActionPreference='Stop' would make
+        # Write-Error terminating and break this function's contract of RETURNING
+        # an action='error' result for the entry point to act on (exit 2).
+        Write-Warning "[quota] no usage data available -- skipping hysteresis check."
         return [pscustomobject]@{
             action     = 'error'
             reason     = 'no-usage-data'
@@ -349,31 +381,42 @@ function Invoke-QuotaProbe {
     }
 
     # ---- Phase 2: Hysteresis ----
-    $currentlyPressed = Get-PressureState -VarName $pressureVar
+    # Get-PressureState returns $null when the gh state is unreadable. Treating
+    # that as "not pressed" would re-fire a trip event every probe while gh is
+    # down (M1), so we skip the decision instead.
+    $currentlyPressed = Get-PressureState -VarName $PressureVar
+    if ($null -eq $currentlyPressed) {
+        Write-Warning "[quota] pressure state unreadable (gh failure) -- skipping hysteresis to avoid event spam."
+        return [pscustomobject]@{
+            action     = 'skipped'
+            reason     = 'pressure-state-unreadable'
+            percent    = $percent
+        }
+    }
     Write-Host "[quota] percent=${percent}% pressed=$currentlyPressed trip=$TripThreshold release=$ReleaseThreshold"
 
     $action = 'none'
     $reason = ''
     $newState = $null
 
-    if ($percent.Value -ge $TripThreshold) {
+    if ($percent -ge $TripThreshold) {
         if (-not $currentlyPressed) {
             $action = 'trip'
             $newState = $true
-            $reason = "weekly ${percent}% >= ${TripThreshold}% — tripping pressure"
+            $reason = "weekly ${percent}% >= ${TripThreshold}% -- tripping pressure"
         } else {
             $reason = "weekly ${percent}% >= ${TripThreshold}% but already pressed (no change)"
         }
-    } elseif ($percent.Value -lt $ReleaseThreshold) {
+    } elseif ($percent -lt $ReleaseThreshold) {
         if ($currentlyPressed) {
             $action = 'release'
             $newState = $false
-            $reason = "weekly ${percent}% < ${ReleaseThreshold}% — releasing pressure"
+            $reason = "weekly ${percent}% < ${ReleaseThreshold}% -- releasing pressure"
         } else {
             $reason = "weekly ${percent}% < ${ReleaseThreshold}% but already released (no change)"
         }
     } else {
-        $reason = "weekly ${percent}% in hysteresis band (${ReleaseThreshold}-$($TripThreshold - 1)%) — no change"
+        $reason = "weekly ${percent}% in hysteresis band (${ReleaseThreshold}-$($TripThreshold - 1)%) -- no change"
     }
 
     # ---- Phase 3: Broadcast ----
@@ -385,41 +428,60 @@ function Invoke-QuotaProbe {
     } elseif ($NoBroadcast) {
         Write-Host "[quota] dry-run: would $action ($reason)"
     } else {
-        Write-Host "[quota] $action: $reason"
+        Write-Host "[quota] ${action}: $reason"
 
-        # 1. gh variable
-        $ghOk = Write-GhVariable -VarName $pressureVar -Value $newState.Value
+        # Map the action verb ('trip'/'release') to the past-tense state the
+        # event sink expects ('tripped'/'released') (C3 -- passing 'trip' to a
+        # [ValidateSet('tripped','released')] param threw on every broadcast).
+        $eventState = if ($action -eq 'trip') { 'tripped' } else { 'released' }
 
-        # 2. events_canonical
+        # 1. gh variable ($newState is a plain [bool] -- no .Value member, C2)
+        $ghOk = Write-GhVariable -VarName $PressureVar -Value $newState
+
+        # 2. events row (legacy `events` table -- the telegram hook's source)
         $envVars = Read-DotEnvFile -Path $DotEnvPath
         $sbUrl = $envVars['SUPABASE_URL']
         $sbKey = $envVars['SUPABASE_KEY']
         if ($env:SUPABASE_URL) { $sbUrl = $env:SUPABASE_URL }
         if ($env:SUPABASE_KEY) { $sbKey = $env:SUPABASE_KEY }
-        $eventOk = Write-EventsCanonical -SupabaseUrl $sbUrl -SupabaseKey $sbKey `
-            -Percent $percent.Value -State $action
+        $eventOk = Write-PressureEvent -SupabaseUrl $sbUrl -SupabaseKey $sbKey `
+            -Percent $percent -State $eventState
     }
 
     return [pscustomobject]@{
         action           = $action
         reason           = $reason
-        percent          = $percent.Value
+        percent          = $percent
         cacheHit         = $cacheHit
         currentlyPressed = $currentlyPressed
         ghVariableSet    = $ghOk
-        eventWritten     = ($eventOk -ne $null)
+        eventWritten     = ($null -ne $eventOk)
     }
 }
 
 # ---------------------------------------------------------------------------
-# Entry
+# Entry -- skipped entirely when dot-sourced with -NoExecute (tests). The claude
+# CLI auto-discovery lives here so loading the module never calls Get-Command /
+# exit 2 (C5).
 # ---------------------------------------------------------------------------
 
-$result = Invoke-QuotaProbe -CacheDir $CacheDir -CacheTTLMinutes $CacheTTLMinutes `
-    -TripThreshold $TripThreshold -ReleaseThreshold $ReleaseThreshold `
-    -NoBroadcast:$NoBroadcast -DotEnvPath $DotEnvPath -ClaudeCli $ClaudeCli
+if (-not $NoExecute) {
+    if (-not $ClaudeCli) {
+        $claudeCmd = Get-Command claude -ErrorAction SilentlyContinue
+        if (-not $claudeCmd) {
+            Write-Error "claude CLI not found on PATH."
+            exit 2
+        }
+        $ClaudeCli = $claudeCmd.Source
+    }
 
-$result | ConvertTo-Json -Depth 4 | Out-Host
+    $result = Invoke-QuotaProbe -CacheDir $CacheDir -CacheTTLMinutes $CacheTTLMinutes `
+        -TripThreshold $TripThreshold -ReleaseThreshold $ReleaseThreshold `
+        -NoBroadcast:$NoBroadcast -DotEnvPath $DotEnvPath -ClaudeCli $ClaudeCli `
+        -PressureVar $PressureVar
 
-if ($result.action -eq 'error') { exit 2 }
-exit 0
+    $result | ConvertTo-Json -Depth 4 | Out-Host
+
+    if ($result.action -eq 'error') { exit 2 }
+    exit 0
+}

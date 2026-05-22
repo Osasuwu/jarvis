@@ -52,10 +52,10 @@ When invoked on the Workshop PC (`config/device.json` name = `VividFormsPC4Works
 
 | Task name | Schedule | Window end | Slice |
 |---|---|---|---|
-| `Sandcastle-Jarvis` | Daily 22:00 | 02:00 | [#545](https://github.com/Osasuwu/jarvis/issues/545) |
-| `Sandcastle-Redrobot` | Daily 02:00 | 08:00 | [#546](https://github.com/Osasuwu/jarvis/issues/546) |
+| `Sandcastle-Jarvis` | Daily 18:00 | 01:00 | [#545](https://github.com/Osasuwu/jarvis/issues/545) |
+| `Sandcastle-Redrobot` | Daily 01:00 | 08:00 | [#546](https://github.com/Osasuwu/jarvis/issues/546) |
 
-Non-overlapping by design — prevents two Ollama jobs contending for VRAM.
+Non-overlapping by design. (The earlier 22:00/02:00 start times were driven by Ollama VRAM contention; that constraint was relaxed in [#711](https://github.com/Osasuwu/jarvis/issues/711), and the script defaults moved to 18:00/01:00 — these are the source of truth.)
 
 Implementation: invoke the registration script directly (idempotent, replaces existing entry):
 
@@ -70,7 +70,9 @@ Implementation: invoke the registration script directly (idempotent, replaces ex
 |---|---|---|
 | `Quota-Probe` | Daily (repeating) | Every 30 min |
 
-Polls `claude -p "/usage"` and broadcasts `CLAUDE_QUOTA_PRESSURE` repo variable with hysteresis (trip ≥80%, release <70%). See issue #635.
+Polls `claude -p "/usage"` and broadcasts the `CLAUDE_QUOTA_PRESSURE` repo variable with hysteresis (trip ≥80%, release <70%), and writes a `quota_pressure` row to the `events` table so the #327 telegram escalation hook can notify the owner. See issue #635.
+
+**Prerequisite:** `.sandcastle/.env` must carry `SUPABASE_URL` + `SUPABASE_KEY` (the probe reads it via `-DotEnvPath`, default `.sandcastle/.env`) — without them the `events` write is skipped and a pressure trip never reaches Telegram. The `gh variable` broadcast still works (uses the gh auth, not the .env).
 
 ```powershell
 .\scripts\sandcastle\Register-SandcastleTask.ps1 -QuotaProbe
@@ -78,4 +80,4 @@ Polls `claude -p "/usage"` and broadcasts `CLAUDE_QUOTA_PRESSURE` repo variable 
 
 On non-Workshop devices the script refuses unless `-Force` (dev rehearsal). Full setup + troubleshooting: [`docs/agents/sandcastle-setup.md`](../../../docs/agents/sandcastle-setup.md).
 
-Decisions: `4890aa35` (Workshop = prod), `0c3017c6` (failure modes), `f8e27d53` (escalation), `58670ea5` (model tier), `46830b4e` (80/70 hysteresis), `d5b3fdd3` (initial 90% gate).
+Decisions: `4890aa35` (Workshop = prod), `0c3017c6` (failure modes), `f8e27d53` (escalation), `58670ea5` (model tier), `46830b4e` (80/70 hysteresis, SUPERSEDES `d5b3fdd3` initial 90% gate).

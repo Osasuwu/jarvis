@@ -9,7 +9,10 @@
 #   Invoke-Pester -Path tests/sandcastle/Quota-Probe.Tests.ps1
 
 $script:ProbePath = Join-Path $PSScriptRoot '..\..\scripts\sandcastle\Quota-Probe.ps1'
-. $script:ProbePath
+# -NoExecute defines the functions without running the entry point or
+# auto-discovering the claude CLI (which would exit 2 / call the real CLI and
+# kill the runner).
+. $script:ProbePath -NoExecute
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -128,21 +131,24 @@ Describe 'Test-CacheFresh' {
 
 Describe 'Invoke-QuotaProbe hysteresis' {
     BeforeEach {
+        # One temp dir per test, cleaned in AfterEach (m4: no %TEMP% leak).
+        $script:tmpDir = New-TempDir
         # Mock external calls so tests control the response.
         Mock Invoke-UsageProbe { return 'Weekly usage: 0%' }       # overridden per test
         Mock Test-CacheFresh { return $false }                     # always force probe
         Mock Read-Cache { return $null }                           # no stale fallback
         Mock Write-Cache { }                                       # no-op
         Mock Write-GhVariable { $true }
-        Mock Write-EventsCanonical { 'mocked-event' }
+        Mock Write-PressureEvent { 'mocked-event' }
         Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k' } }
     }
+    AfterEach { Remove-TempDir $script:tmpDir }
 
     It 'AC: 79% -> no flip (below trip, not pressed)' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 79%' }
         Mock Get-PressureState { return $false }
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70 -NoBroadcast
 
         $r.action | Should Be 'none'
@@ -153,7 +159,7 @@ Describe 'Invoke-QuotaProbe hysteresis' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 80%' }
         Mock Get-PressureState { return $false }
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70 -NoBroadcast
 
         $r.action | Should Be 'trip'
@@ -164,7 +170,7 @@ Describe 'Invoke-QuotaProbe hysteresis' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 75%' }
         Mock Get-PressureState { return $true }  # currently pressed
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70 -NoBroadcast
 
         $r.action | Should Be 'none'
@@ -175,7 +181,7 @@ Describe 'Invoke-QuotaProbe hysteresis' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 69%' }
         Mock Get-PressureState { return $true }  # currently pressed
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70 -NoBroadcast
 
         $r.action | Should Be 'release'
@@ -186,7 +192,7 @@ Describe 'Invoke-QuotaProbe hysteresis' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 71%' }
         Mock Get-PressureState { return $false }  # already released
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70 -NoBroadcast
 
         $r.action | Should Be 'none'
@@ -197,12 +203,12 @@ Describe 'Invoke-QuotaProbe hysteresis' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 85%' }
         Mock Get-PressureState { return $false }
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70
 
         Assert-MockCalled Write-GhVariable -Times 1 -Exactly -Scope It `
             -ParameterFilter { $VarName -eq 'CLAUDE_QUOTA_PRESSURE' -and $Value -eq $true }
-        Assert-MockCalled Write-EventsCanonical -Times 1 -Exactly -Scope It `
+        Assert-MockCalled Write-PressureEvent -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Percent -eq 85 -and $State -eq 'tripped' }
     }
 
@@ -210,12 +216,12 @@ Describe 'Invoke-QuotaProbe hysteresis' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 50%' }
         Mock Get-PressureState { return $true }
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70
 
         Assert-MockCalled Write-GhVariable -Times 1 -Exactly -Scope It `
             -ParameterFilter { $VarName -eq 'CLAUDE_QUOTA_PRESSURE' -and $Value -eq $false }
-        Assert-MockCalled Write-EventsCanonical -Times 1 -Exactly -Scope It `
+        Assert-MockCalled Write-PressureEvent -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Percent -eq 50 -and $State -eq 'released' }
     }
 
@@ -223,11 +229,25 @@ Describe 'Invoke-QuotaProbe hysteresis' {
         Mock Invoke-UsageProbe { return 'Weekly usage: 75%' }
         Mock Get-PressureState { return $false }
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70
 
         Assert-MockCalled Write-GhVariable -Times 0 -Exactly -Scope It
-        Assert-MockCalled Write-EventsCanonical -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-PressureEvent -Times 0 -Exactly -Scope It
+    }
+
+    It 'unreadable pressure state (gh failure) skips without emitting an event (M1)' {
+        # Get-PressureState returns $null when gh cannot be read. At 85% this must
+        # NOT default to "not pressed" and re-fire a trip event every probe.
+        Mock Invoke-UsageProbe { return 'Weekly usage: 85%' }
+        Mock Get-PressureState { return $null }
+
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
+            -TripThreshold 80 -ReleaseThreshold 70
+
+        $r.action | Should Be 'skipped'
+        Assert-MockCalled Write-GhVariable -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-PressureEvent -Times 0 -Exactly -Scope It
     }
 }
 
@@ -241,7 +261,7 @@ Describe 'Invoke-QuotaProbe parser fallback' {
         Mock Test-CacheFresh { return $false }   # force probe (no fresh cache)
         Mock Get-PressureState { return $false }
         Mock Write-GhVariable { $true }
-        Mock Write-EventsCanonical { 'mocked' }
+        Mock Write-PressureEvent { 'mocked' }
         Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k' } }
     }
     AfterEach {
@@ -287,7 +307,7 @@ Today  | 12%' }
         Mock Invoke-UsageProbe { return $null }
         Mock Read-Cache { return $null }   # no stale fallback
 
-        $r = Invoke-QuotaProbe -CacheDir (New-TempDir) -CacheTTLMinutes 35 `
+        $r = Invoke-QuotaProbe -CacheDir $script:tmpDir -CacheTTLMinutes 35 `
             -TripThreshold 80 -ReleaseThreshold 70 -NoBroadcast
 
         $r.action | Should Be 'error'
@@ -304,7 +324,7 @@ Describe 'Invoke-QuotaProbe cache TTL' {
         $script:tmpDir = New-TempDir
         Mock Get-PressureState { return $false }
         Mock Write-GhVariable { $true }
-        Mock Write-EventsCanonical { 'mocked' }
+        Mock Write-PressureEvent { 'mocked' }
         Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k' } }
     }
     AfterEach {
@@ -347,37 +367,42 @@ Describe 'Invoke-QuotaProbe cache TTL' {
 # ---------------------------------------------------------------------------
 
 Describe 'Invoke-QuotaProbe idempotency' {
-    It 'running twice within TTL emits no duplicate events' {
-        $dir = New-TempDir
-        try {
-            Mock Invoke-UsageProbe { return 'Weekly usage: 85%' }
-            Mock Write-GhVariable { $true }
-            Mock Write-EventsCanonical { 'mocked' }
-            Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k' } }
-
-            # First run: no state file exists, probe + trip
-            Mock Test-CacheFresh { return $false }  # no cache on first run
-            Mock Get-PressureState { return $false }
-            $r1 = Invoke-QuotaProbe -CacheDir $dir -CacheTTLMinutes 35 `
-                -TripThreshold 80 -ReleaseThreshold 70
-            $r1.action | Should Be 'trip'
-            Assert-MockCalled Write-EventsCanonical -Times 1 -Exactly -Scope It
-
-            # Second run: cache is fresh, reuses it. Same pressure state -> no broadcast.
-            # Re-mock so the previous calls don't bleed into the count.
-            Mock Test-CacheFresh { return $true }   # cache now fresh
-            Mock Get-PressureState { return $true }  # still pressed
-            # Reset call count for these mocks (Scope It = fresh per call)
-            Mock Write-EventsCanonical { 'mocked' }
-            Mock Write-GhVariable { $true }
-
-            $r2 = Invoke-QuotaProbe -CacheDir $dir -CacheTTLMinutes 35 `
-                -TripThreshold 80 -ReleaseThreshold 70
-            $r2.action   | Should Be 'none'
-            $r2.cacheHit | Should Be $true
-
-            Assert-MockCalled Write-EventsCanonical -Times 0 -Exactly -Scope It
-            Assert-MockCalled Write-GhVariable -Times 0 -Exactly -Scope It
-        } finally { Remove-TempDir $dir }
+    # Two runs share one cache dir (created once for this Describe) so the first
+    # run's cache file is visible to the second. They live in SEPARATE It blocks:
+    # in Pester 3.4 re-declaring a Mock mid-It does not reset the call counter,
+    # so `Assert-MockCalled -Scope It` after a second run would still count the
+    # first run's invocations (M3). One run per It keeps each count clean.
+    BeforeEach {
+        Mock Invoke-UsageProbe { return 'Weekly usage: 85%' }
+        Mock Write-GhVariable { $true }
+        Mock Write-PressureEvent { 'mocked' }
+        Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k' } }
     }
+
+    $script:idemDir = New-TempDir
+
+    It 'first run at 85% trips and emits exactly one event' {
+        Mock Test-CacheFresh { return $false }   # no cache on first run
+        Mock Get-PressureState { return $false }
+
+        $r1 = Invoke-QuotaProbe -CacheDir $script:idemDir -CacheTTLMinutes 35 `
+            -TripThreshold 80 -ReleaseThreshold 70
+        $r1.action | Should Be 'trip'
+        Assert-MockCalled Write-PressureEvent -Times 1 -Exactly -Scope It
+    }
+
+    It 'second run within TTL reuses cache and emits no duplicate event' {
+        Mock Test-CacheFresh { return $true }    # cache now fresh (written by run 1)
+        Mock Get-PressureState { return $true }  # still pressed
+
+        $r2 = Invoke-QuotaProbe -CacheDir $script:idemDir -CacheTTLMinutes 35 `
+            -TripThreshold 80 -ReleaseThreshold 70
+        $r2.action   | Should Be 'none'
+        $r2.cacheHit | Should Be $true
+
+        Assert-MockCalled Write-PressureEvent -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-GhVariable -Times 0 -Exactly -Scope It
+    }
+
+    AfterAll { Remove-TempDir $script:idemDir }
 }
