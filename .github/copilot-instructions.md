@@ -91,6 +91,6 @@ For process changes:
 ## PR Reviews
 
 The Claude code-review bot reviews every PR (via `code-review.yml`); Copilot is no longer used. Before merging:
-1. Check the review comment: `gh api repos/Osasuwu/jarvis/issues/NUMBER/comments`. The bot posts as an **issue-comment**, not a PR review, so it does NOT appear in the Reviews tab.
+1. Check the review comment: `gh api --paginate repos/Osasuwu/jarvis/issues/NUMBER/comments`. The bot posts as an **issue-comment**, not a PR review, so it does NOT appear in the Reviews tab (`--paginate` so it isn't missed past the first page).
 2. Address valid findings with code changes, or explain why no change is needed.
 3. Check ALL reviewers — don't assume the Reviews tab is the only place feedback lands.

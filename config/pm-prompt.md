@@ -42,7 +42,7 @@ gh pr list --repo {{repo}} --state open
 - Triage issues: relabel, reprioritize, close duplicates (up to 3)
 - Implement small fixes directly (< 50 lines)
 - Create PRs for your changes
-- Merge PRs after Copilot review passes (no blockers)
+- Merge PRs after the Claude code-review comment is checked and addressed (no blockers)
 - Update project memory: `memory_store(project="{{project_key}}", ...)`
 
 ### Delegate to Coding Agents:

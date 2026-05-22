@@ -59,8 +59,7 @@ Required secrets in GitHub repo settings (Settings → Secrets and variables →
 
 | Secret | Used by | Purpose |
 |--------|---------|---------|
-| `ANTHROPIC_API_KEY` | `copilot-review-response.yml` | Claude CLI for auto-fixing Copilot review suggestions |
-| `CLAUDE_CODE_OAUTH_TOKEN` | `review-response.yml` | `anthropics/claude-code-action` for PR review responses |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `code-review.yml`, `review-response.yml` | `anthropics/claude-code-action` for PR review + review-response |
 | `SUPABASE_URL` | `event-dispatch.yml` | Supabase project URL for event logging |
 | `SUPABASE_ANON_KEY` | `event-dispatch.yml` | Supabase publishable anon key for event logging |
 
