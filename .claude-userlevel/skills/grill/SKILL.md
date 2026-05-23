@@ -84,6 +84,25 @@ Per-item disposition is **mandatory** and **blocks AC-lock**: the grill cannot p
 
 Cross-critic hits (sampling and coverage both surface the same risk) are higher-confidence signal but are NOT automatically promoted in severity — owner's judgement applies. Dedup is the owner's job, not the critics'.
 
+When Phase 4 (Grounding pass) also fires on the same AC-lock, its non-MATCH rows fold into the same per-item disposition pass — see Phase 4 below.
+
+### Phase 4: Grounding pass (code-grounded verification)
+
+Critics in Phase 3 are spec-bound by construction: they ask *"what is structurally missing or unexamined in this design?"* They cannot reliably catch the second class of blind spot — drift between the design's mental model of the codebase and the codebase's current state. Owner framing: *"для code-grounded gap'ов нужен Read, не критика"* (see outcome `b995dd20-31ef-4bdc-bc43-194e9b0c4d89` — empirical test of Phase 3 alone on redrobot RL Phase 0 caught 15 structural gaps including 4 P0 + premortem narrative, but missed all code-level prereq drift: `reset()` absent in `warp_sand.py`, `seed=42` hardcoded, Warp 1162mm vs Sandbox 500mm geometry mismatch).
+
+Phase 4 dispatches a **separate Read-shaped subagent** (template: [`GROUNDING.md`](./GROUNDING.md)) that verifies the design's asserted and implied code-level prerequisites: for each, reports MATCH / DRIFT / MISSING / UNVERIFIABLE with `file:line` citation. Verification is a different work-shape from critique — the file is deliberately `GROUNDING.md`, not `CRITIC-*`, because mixing the two dilutes both.
+
+**Triggers** (decision `a5e76208-8636-4c80-9423-98e63981c903`) — same gating logic as Phase 3 coverage tier, on top of the base CRITIC.md triggers:
+
+1. **≥2 grill-checkbox yes**
+2. **Milestone-level** design (not lone slice)
+
+Owner may invoke explicitly ("grounding pass" / "ground this" / "check prereqs"); may NOT skip when the trigger fires. Same same-frame rationalization concern that gates coverage tier.
+
+**Dispatch**: parallel with Phase 3 critics, `subagent_type: general-purpose`, **without** `isolation: "worktree"` (Read access to the whole codebase is the entire point). Operator forwards the same stripped payload as the critics PLUS an enumerated list of asserted prerequisites (see GROUNDING.md "Prerequisite enumeration" section — this is the input-quality lever for Phase 4, mirroring node enumeration's role for coverage tier).
+
+**Loopback**: Grounding output (asserted-prereqs table + additional-prereqs-found-while-reading table) consolidates into the SAME owner disposition pass as Phase 3 verdicts. Each non-MATCH row (DRIFT, MISSING, UNVERIFIABLE) requires one of `accept` / `reject` / `defer` before AC-lock can proceed. MATCH rows are silent evidence the prereq was verified — no disposition required. Cross-axis hits (a coverage critic finding reinforced by a grounding DRIFT, or vice versa) are higher-confidence signal but NOT auto-promoted in severity — owner judgement, owner dedup.
+
 </what-to-do>
 
 <supporting-info>
