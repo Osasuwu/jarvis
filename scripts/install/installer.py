@@ -24,6 +24,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -134,7 +135,7 @@ _POSIX_PATH_PATTERN = re.compile(r"(?<!\S)(scripts|config)/")
 _LEGACY_RELATIVE_JARVIS_PATTERN = re.compile(r"^jarvis[\\/]")
 
 _BOM_PREFIX = b"\xef\xbb\xbf"
-_CRLF_PATTERN = b"\r\n"
+_CRLF_BYTES = b"\r\n"
 _ENV_WARN_MSG = "WARN: {} has {}; MCP servers using naive regex may silently drop env vars."
 
 
@@ -144,7 +145,7 @@ def _detect_env_issues(path: Path) -> str:
     parts = []
     if raw[:3] == _BOM_PREFIX:
         parts.append("BOM")
-    if _CRLF_PATTERN in raw:
+    if _CRLF_BYTES in raw:
         parts.append("CRLF")
     return "+".join(parts) if parts else ""
 
@@ -155,14 +156,31 @@ def _scan_env_encoding(claude_home: Path, repo_root: Path) -> list[tuple[Path, s
     Returns list of (path, issues_summary, is_user_env).
     is_user_env=True for files under claude_home (fixable).
     is_user_env=False for repo-root .env (warn-only — gitignored, may be intentional).
+
+    Behaviour notes:
+    - On fresh install ``claude_home`` may not exist yet; ``Path.rglob`` raises
+      ``FileNotFoundError`` on a missing base since Python 3.12 (gh-73435), so
+      we short-circuit before touching the iterator.
+    - ``Path.rglob`` follows symlinks. To prevent a malicious symlink under
+      ``claude_home`` from making the fixer rewrite an arbitrary credentials
+      file, each candidate's resolved path must stay within ``claude_home``.
     """
     findings: list[tuple[Path, str, bool]] = []
-    for env_file in claude_home.rglob("*.env"):
-        if not env_file.is_file():
-            continue
-        issues = _detect_env_issues(env_file)
-        if issues:
-            findings.append((env_file, issues, True))
+    if claude_home.is_dir():
+        claude_home_resolved = claude_home.resolve()
+        for env_file in claude_home.rglob("*.env"):
+            if not env_file.is_file():
+                continue
+            try:
+                resolved = env_file.resolve()
+                resolved.relative_to(claude_home_resolved)
+            except (OSError, ValueError):
+                # Symlink escapes claude_home (ValueError) or target is gone
+                # mid-scan (OSError). Either way, skip — don't read or fix it.
+                continue
+            issues = _detect_env_issues(env_file)
+            if issues:
+                findings.append((env_file, issues, True))
 
     repo_env = repo_root / ".env"
     if repo_env.is_file():
@@ -174,13 +192,50 @@ def _scan_env_encoding(claude_home: Path, repo_root: Path) -> list[tuple[Path, s
 
 
 def _fix_env_encoding(path: Path, issues: str) -> None:
-    """Rewrite a single .env file to UTF-8-no-BOM + LF line endings."""
+    """Rewrite a single .env file to UTF-8-no-BOM + LF line endings.
+
+    Atomic: writes to a sibling tempfile and ``os.replace`` it into place, so
+    a SIGKILL / Ctrl-C / disk-full between truncate and write can never leave
+    an empty ``.env`` (credentials unrecoverable). Original file mode is
+    preserved across the swap.
+    """
     raw = path.read_bytes()
-    if "BOM" in issues and raw[:3] == _BOM_PREFIX:
-        raw = raw[3:]
+    new_raw = raw
+    if "BOM" in issues and new_raw[:3] == _BOM_PREFIX:
+        new_raw = new_raw[3:]
     if "CRLF" in issues:
-        raw = raw.replace(_CRLF_PATTERN, b"\n")
-    path.write_bytes(raw)
+        new_raw = new_raw.replace(_CRLF_BYTES, b"\n")
+    if new_raw == raw:
+        return  # nothing to do — preserve mtime/perms exactly
+    try:
+        orig_mode = path.stat().st_mode
+    except OSError:
+        orig_mode = None
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=path.name + ".",
+        suffix=".tmp",
+        dir=str(path.parent),
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(new_raw)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if orig_mode is not None:
+            try:
+                os.chmod(tmp_path, orig_mode)
+            except OSError:
+                pass  # best-effort; Windows ACLs make this advisory anyway
+        os.replace(tmp_path, path)
+    except BaseException:
+        # Cleanup tempfile on any failure (incl. KeyboardInterrupt) so we
+        # don't leave detritus alongside the original .env.
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
@@ -501,7 +556,14 @@ def build_plan(
         )
     )
 
+    current_platform = _platform()
     for env in manifest.get("env_vars") or []:
+        # `platforms` is optional in the schema — omitted entries apply
+        # everywhere. When present, it must include the running platform
+        # or the action is skipped (silent platform-scoped opt-out).
+        platforms = env.get("platforms")
+        if platforms is not None and current_platform not in platforms:
+            continue
         value = env.get("value", "").format(repo_root=str(repo_root))
         actions.append(
             Action(
@@ -992,27 +1054,63 @@ def main(argv: list[str] | None = None) -> int:
         print(_ENV_WARN_MSG.format(env_path, issues) + note, file=sys.stderr)
 
     if not args.apply:
+        if args.fix_env_encoding:
+            print(
+                "WARN: --fix-env-encoding has no effect without --apply",
+                file=sys.stderr,
+            )
         print("\n(dry-run — re-run with --apply to execute)")
         return 0
 
-    if plan.state == "current":
+    # `state == "current"` short-circuit must NOT skip --fix-env-encoding:
+    # the common re-run case is a user with an installed-but-encoding-broken
+    # ~/.claude who runs `install.ps1 -Apply -FixEncoding` to repair it.
+    if plan.state != "current":
+        env_runner = None if args.skip_env else _set_env
+        try:
+            apply_plan(plan, manifest, run_env=env_runner)
+        except Exception as exc:  # noqa: BLE001
+            print(f"\napply failed: {exc}", file=sys.stderr)
+            _rollback_failed_apply(plan)
+            return 2
+    else:
         print("\nno-op — target already at current SHA")
-        return 0
 
-    env_runner = None if args.skip_env else _set_env
-    try:
-        apply_plan(plan, manifest, run_env=env_runner)
-    except Exception as exc:  # noqa: BLE001
-        print(f"\napply failed: {exc}", file=sys.stderr)
-        _rollback_failed_apply(plan)
-        return 2
+    # Re-scan after apply_plan: on fresh install the pre-apply scan ran
+    # against a non-existent target_root and returned nothing. The .env
+    # files were created by apply_plan, so only a post-apply scan sees
+    # them. Re-emit warnings for anything NEW (not already warned about
+    # pre-apply) so users on fresh installs aren't blindsided by silent
+    # encoding issues.
+    pre_paths = {str(p) for p, _, _ in env_findings}
+    post_findings = _scan_env_encoding(plan.target_root, repo_root)
+    new_findings = [(p, i, u) for p, i, u in post_findings if str(p) not in pre_paths]
+    for env_path, issues, is_user in new_findings:
+        note = " (warn-only — repo-root .env, not fixable)" if not is_user else ""
+        print(_ENV_WARN_MSG.format(env_path, issues) + note, file=sys.stderr)
 
     if args.fix_env_encoding:
-        user_envs = [(p, i) for p, i, u in env_findings if u]
+        user_envs = [(p, i) for p, i, u in post_findings if u]
         if user_envs:
-            print(f"fixing {len(user_envs)} .env file(s) (BOM/CRLF → UTF-8-no-BOM + LF)", file=sys.stderr)
+            print(
+                f"fixing {len(user_envs)} .env file(s) (BOM/CRLF → UTF-8-no-BOM + LF)",
+                file=sys.stderr,
+            )
+            failed = 0
             for env_path, issues in user_envs:
-                _fix_env_encoding(env_path, issues)
+                try:
+                    _fix_env_encoding(env_path, issues)
+                except OSError as exc:
+                    failed += 1
+                    print(
+                        f"WARN: could not fix {env_path}: {exc}",
+                        file=sys.stderr,
+                    )
+            if failed:
+                print(
+                    f"WARN: {failed}/{len(user_envs)} .env fix(es) failed (see above); other apply work succeeded",
+                    file=sys.stderr,
+                )
         else:
             print("no fixable .env files found", file=sys.stderr)
 

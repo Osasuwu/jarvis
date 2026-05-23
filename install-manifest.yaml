@@ -135,7 +135,12 @@ env_vars:
   - name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
     value: "65"
     platforms: ["windows", "posix"]
-  # Opus 1M context costs extra — disable per Max-only posture.
+  # Disable Opus 1M-context window. Rationale is latency / reasoning quality
+  # (NoLiMa: degradation past ~32K), NOT cost — Claude Max has no incremental
+  # per-token charge. Note: this env var is device-global; every Claude Code
+  # session on the box (including non-Jarvis projects like redrobot) inherits
+  # the 1M-disabled default. Accept that scope: the smart-zone argument
+  # applies to all CC sessions regardless of project.
   - name: "CLAUDE_CODE_DISABLE_1M_CONTEXT"
     value: "1"
     platforms: ["windows", "posix"]
