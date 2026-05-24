@@ -31,6 +31,12 @@ const agentAuthToken = process.env.SANDCASTLE_AGENT_AUTH_TOKEN ?? "ollama";
 // it sets SANDCASTLE_TARGET_ISSUE so prompt.md can pin the agent to that
 // issue instead of picking afresh from the queue.
 const targetIssue = process.env.SANDCASTLE_TARGET_ISSUE ?? "";
+
+// Rework mode: when SANDCASTLE_TARGET_PR=<N> is set, the container runs
+// /rework on the existing PR branch instead of a fresh pick+implement cycle.
+// The env var is forwarded into the container; prompt.md branches on its
+// presence (see issue #637, decision 69b7eddb).
+const targetPr = process.env.SANDCASTLE_TARGET_PR ?? "";
 const ghToken = process.env.GH_TOKEN;
 if (!ghToken) {
   throw new Error(
@@ -92,6 +98,9 @@ const result = await run({
       // Forced-target issue for slice-5 escalation retries. Empty string =
       // free pick from queue (default behavior).
       SANDCASTLE_TARGET_ISSUE: targetIssue,
+      // Rework mode: when non-empty, the container branches into rework path
+      // on this PR number instead of the fresh pick+implement cycle (#637).
+      SANDCASTLE_TARGET_PR: targetPr,
     },
   }),
   agent: claudeCode(agentModel),
