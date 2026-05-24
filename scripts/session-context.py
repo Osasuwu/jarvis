@@ -56,6 +56,11 @@ if sys.stderr.encoding != "utf-8":
 
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
+_PROJECT_REPO: dict[str, str] = {
+    "jarvis": "Osasuwu/jarvis",
+    "redrobot": "SergazyNarynov/redrobot",
+}
+
 # Pre-compact snapshots older than this are treated as stale. They most
 # likely belong to a different run that happened to reuse the same
 # session_id — Claude Code does reuse ids across `--resume` invocations.
@@ -362,7 +367,7 @@ def main():
     #     enough closed slices to warrant a /improve-codebase-architecture run.
     #     Only fires in a known project dir where the sweep is meaningful.
     if project:
-        sweep_section = _check_milestone_sweep()
+        sweep_section = _check_milestone_sweep(repo=_PROJECT_REPO.get(project))
         if sweep_section:
             sections.append(sweep_section)
 
@@ -667,15 +672,22 @@ def _fmt_goal(g):
 # ---------------------------------------------------------------------------
 
 # How far back (days) to consider a milestone "recently closed".
-_MILESTONE_SWEEP_DAYS = int(os.environ.get("MILESTONE_SWEEP_DAYS", "7"))
+try:
+    _MILESTONE_SWEEP_DAYS = int(os.environ.get("MILESTONE_SWEEP_DAYS", "7"))
+except (ValueError, TypeError):
+    _MILESTONE_SWEEP_DAYS = 7
 # Minimum closed issues to qualify as a "capability-shipping" milestone.
-_MILESTONE_SWEEP_MIN_SLICES = int(os.environ.get("MILESTONE_SWEEP_MIN_SLICES", "3"))
+try:
+    _MILESTONE_SWEEP_MIN_SLICES = int(os.environ.get("MILESTONE_SWEEP_MIN_SLICES", "3"))
+except (ValueError, TypeError):
+    _MILESTONE_SWEEP_MIN_SLICES = 3
 
 
 def _check_milestone_sweep(
-    repo: str = "Osasuwu/jarvis",
+    repo: str | None = None,
     days: int | None = None,
     min_slices: int | None = None,
+    _now=None,
 ) -> str | None:
     """Check if any GitHub milestones were recently closed with enough slices
     to warrant an architecture-sweep recommendation.
@@ -688,9 +700,12 @@ def _check_milestone_sweep(
     """
     from datetime import datetime, timedelta, timezone
 
+    if repo is None:
+        return None
+
+    now = _now if _now is not None else datetime.now(timezone.utc)
     window_days = days if days is not None else _MILESTONE_SWEEP_DAYS
     min_count = min_slices if min_slices is not None else _MILESTONE_SWEEP_MIN_SLICES
-    cutoff = datetime.now(timezone.utc) - timedelta(days=window_days)
 
     try:
         result = subprocess.run(
@@ -712,7 +727,7 @@ def _check_milestone_sweep(
         return None
 
     # Collect milestones qualifying for a sweep recommendation.
-    qualified: list[tuple[int, str, str, int, float]] = []
+    qualified: list[tuple[int, str, int, float]] = []
     for m in milestones:
         closed_at_str = m.get("closed_at")
         closed_issues = m.get("closed_issues", 0)
@@ -724,13 +739,12 @@ def _check_milestone_sweep(
             closed_at = datetime.fromisoformat(closed_at_str.replace("Z", "+00:00"))
         except (ValueError, TypeError):
             continue
-        age_days = (datetime.now(timezone.utc) - closed_at).total_seconds() / 86400
+        age_days = (now - closed_at).total_seconds() / 86400
         if age_days > window_days:
             continue
         qualified.append((
             m.get("number", 0),
             m.get("title", f"Milestone #{m.get('number', '?')}"),
-            closed_at_str,
             int(closed_issues),
             age_days,
         ))
@@ -739,14 +753,14 @@ def _check_milestone_sweep(
         return None
 
     # Sort by age (most recently closed first).
-    qualified.sort(key=lambda x: x[4])
+    qualified.sort(key=lambda x: x[3])
     lines: list[str] = []
-    for num, title, closed_at, count, age in qualified:
+    for num, title, count, age in qualified:
         age_str = f"{age:.0f}d"
         lines.append(
             f"- Milestone #{num} ({title}) closed {age_str} ago with "
             f"{count} closed slice{'s' if count != 1 else ''} — "
-            f"consider `{_root}/improve-codebase-architecture`"
+            f"consider `/improve-codebase-architecture`"
         )
     plural = "s" if len(qualified) > 1 else ""
     return (
