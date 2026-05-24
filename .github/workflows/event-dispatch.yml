@@ -31,6 +31,13 @@ on:
   pull_request_review:
     types: [submitted]
 
+  # ── For Claude code-review bot's issue-comment verdicts (#633) ────
+  # The bot posts review findings as a PR-issue comment (not via the
+  # pull_request_review surface). This trigger lets us parse the verdict
+  # and emit a canonical review_negative event from one place.
+  issue_comment:
+    types: [created]
+
 jobs:
   # ── CI Failure on default branch ──────────────────────────────────
   ci-failure:
@@ -190,6 +197,207 @@ jobs:
                 \"workflow\": \"${WORKFLOW}\",
                 \"branch\": \"${BRANCH}\",
                 \"url\": \"${URL}\"
+              },
+              \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+            }"
+
+  # ── Review Negative: Human ────────────────────────────────────────
+  # Emits a canonical review_negative row when a human reviewer requests
+  # changes on an internal PR. Consumed by the orchestrator watcher
+  # (scripts/orchestrator/watcher.py) — see PR #755 / issue #639 / PRD #41.
+  #
+  # Filter: state == 'changes_requested' only (the "request changes" signal).
+  # 'commented' state carries no verdict and intentionally does NOT fire here.
+  review-negative-human:
+    if: >
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.review.user.type == 'User' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch review_negative event (human)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          REPO="${{ github.repository }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          REVIEWER="${{ github.event.review.user.login }}"
+          REVIEW_ID="${{ github.event.review.id }}"
+          REVIEW_URL="${{ github.event.review.html_url }}"
+
+          PR_TITLE_ESCAPED=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
+
+          curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{
+              \"event_type\": \"review_negative\",
+              \"severity\": \"medium\",
+              \"repo\": \"${REPO}\",
+              \"source\": \"github_action\",
+              \"title\": \"PR #${PR_NUM} changes requested by ${REVIEWER}\",
+              \"payload\": {
+                \"pr_number\": ${PR_NUM},
+                \"pr_title\": \"${PR_TITLE_ESCAPED}\",
+                \"reviewer_kind\": \"human\",
+                \"reviewer\": \"${REVIEWER}\",
+                \"review_id\": ${REVIEW_ID},
+                \"review_url\": \"${REVIEW_URL}\"
+              },
+              \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+            }"
+
+  # ── Review Negative: Copilot ──────────────────────────────────────
+  # Same canonical event_type, reviewer_kind='copilot'. Per memory
+  # `copilot_review_role` (2026-05-22) Copilot is currently inactive in
+  # this repo, but the schema branch stays — orchestrator filter is
+  # event_type only; keeping the branch costs nothing and avoids workflow
+  # churn if Copilot returns.
+  review-negative-copilot:
+    if: >
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      github.event.review.user.type == 'Bot' &&
+      (github.event.review.user.login == 'github-copilot[bot]' ||
+       github.event.review.user.login == 'copilot-pull-request-reviewer[bot]') &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch review_negative event (copilot)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          REPO="${{ github.repository }}"
+          PR_NUM="${{ github.event.pull_request.number }}"
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          REVIEWER="${{ github.event.review.user.login }}"
+          REVIEW_ID="${{ github.event.review.id }}"
+          REVIEW_URL="${{ github.event.review.html_url }}"
+
+          PR_TITLE_ESCAPED=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
+
+          curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{
+              \"event_type\": \"review_negative\",
+              \"severity\": \"medium\",
+              \"repo\": \"${REPO}\",
+              \"source\": \"github_action\",
+              \"title\": \"PR #${PR_NUM} changes requested by ${REVIEWER}\",
+              \"payload\": {
+                \"pr_number\": ${PR_NUM},
+                \"pr_title\": \"${PR_TITLE_ESCAPED}\",
+                \"reviewer_kind\": \"copilot\",
+                \"reviewer\": \"${REVIEWER}\",
+                \"review_id\": ${REVIEW_ID},
+                \"review_url\": \"${REVIEW_URL}\"
+              },
+              \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+            }"
+
+  # ── Review Negative: Claude code-review bot ───────────────────────
+  # The Claude code-review plugin posts findings as an issue-comment
+  # (memory `feedback_check_all_pr_reviewers`), not via pull_request_review.
+  # This job parses the verdict here in CI — the only fragile string-match
+  # in the system per PRD #41 — so the orchestrator's filter stays
+  # `event_type = 'review_negative'`, one stable predicate.
+  #
+  # Negative threshold: ≥1 CRITICAL or MAJOR finding (matches /rework
+  # convergence target n_critical==0 AND n_major<=2). MINOR-only or
+  # clean reviews do NOT emit.
+  review-negative-claude-bot:
+    if: >
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      github.event.comment.user.login == 'claude[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Parse Claude verdict and dispatch event
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          # Read comment body from the event payload (safe — no shell expansion of comment content)
+          COMMENT_BODY="$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")"
+
+          # Bail if this isn't a Code Review comment (claude[bot] posts other
+          # comment kinds too — e.g. from review-response workflow)
+          if ! printf '%s' "$COMMENT_BODY" | head -1 | grep -qE '^##[[:space:]]+Code Review'; then
+            echo "Not a Code Review comment header; skipping"
+            exit 0
+          fi
+
+          # Count actionable findings. Two formats seen in production:
+          #   (A) ### CRITICAL / ### MAJOR / ### MINOR section headings, with
+          #       numbered ** N. ...** items beneath each section.
+          #   (B) Per-finding ** Severity: ** {CRITICAL,HIGH,MAJOR,MINOR} labels.
+          # awk tracks the current section so numbered items count toward the
+          # right bucket; per-finding Severity labels are tallied independently.
+          # The two never mix in a single comment, so no double-counting.
+          # This is the "fragile string-match" the PRD #41 calls out as the
+          # only one in the system; if the bot's format changes, fix here.
+          COUNTS=$(printf '%s\n' "$COMMENT_BODY" | awk '
+            BEGIN { section=""; crit=0; maj=0; min=0 }
+            /^### CRITICAL/ { section="C"; next }
+            /^### MAJOR/    { section="M"; next }
+            /^### MINOR/    { section="m"; next }
+            /^### /         { section=""; next }
+            /^\*\*[0-9]+\./ {
+              if      (section=="C") crit++
+              else if (section=="M") maj++
+              else if (section=="m") min++
+            }
+            /\*\*Severity:\*\* CRITICAL/      { crit++ }
+            /\*\*Severity:\*\* (HIGH|MAJOR)/  { maj++ }
+            /\*\*Severity:\*\* MINOR/         { min++ }
+            END { print crit, maj, min }
+          ')
+          N_CRITICAL=$(echo "$COUNTS" | awk '{print $1}')
+          N_MAJOR=$(echo "$COUNTS" | awk '{print $2}')
+          N_MINOR=$(echo "$COUNTS" | awk '{print $3}')
+
+          if [ "$N_CRITICAL" -eq 0 ] && [ "$N_MAJOR" -eq 0 ]; then
+            echo "No CRITICAL/MAJOR findings (minor=$N_MINOR); not emitting review_negative"
+            exit 0
+          fi
+
+          REPO="${{ github.repository }}"
+          PR_NUM="${{ github.event.issue.number }}"
+          PR_TITLE="${{ github.event.issue.title }}"
+          COMMENT_ID="${{ github.event.comment.id }}"
+          COMMENT_URL="${{ github.event.comment.html_url }}"
+
+          PR_TITLE_ESCAPED=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
+
+          curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            -H "Content-Type: application/json" \
+            -H "Prefer: return=minimal" \
+            -d "{
+              \"event_type\": \"review_negative\",
+              \"severity\": \"medium\",
+              \"repo\": \"${REPO}\",
+              \"source\": \"github_action\",
+              \"title\": \"PR #${PR_NUM} — Claude code-review: ${N_CRITICAL} CRITICAL, ${N_MAJOR} MAJOR\",
+              \"payload\": {
+                \"pr_number\": ${PR_NUM},
+                \"pr_title\": \"${PR_TITLE_ESCAPED}\",
+                \"reviewer_kind\": \"claude_bot\",
+                \"comment_id\": ${COMMENT_ID},
+                \"comment_url\": \"${COMMENT_URL}\",
+                \"n_critical\": ${N_CRITICAL},
+                \"n_major\": ${N_MAJOR},
+                \"n_minor\": ${N_MINOR}
               },
               \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
             }"
