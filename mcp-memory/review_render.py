@@ -234,6 +234,11 @@ def render_proposal_list(
     if contexts is None:
         contexts = [None] * len(rows)
 
+    if len(contexts) != len(rows):
+        raise ValueError(
+            f"render_proposal_list: contexts length {len(contexts)} != rows length {len(rows)}"
+        )
+
     blocks: list[str] = []
     for i, (row, ctx) in enumerate(zip(rows, contexts)):
         blocks.append(render_proposal(row, ctx))

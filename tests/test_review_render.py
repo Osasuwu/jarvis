@@ -234,3 +234,9 @@ class TestRenderList:
         assert "first" in result
         assert "second" in result
         assert "---" in result  # separator between items
+
+    def test_contexts_length_mismatch_raises(self):
+        import pytest
+        rows = [_row(name="only")]
+        with pytest.raises(ValueError, match="contexts length"):
+            review_render.render_proposal_list(rows, contexts=[None, None])

@@ -62,12 +62,13 @@ DEBOUNCE_HOURS = 24
 
 
 def count_pending(client) -> int:
-    """Count memories with ``requires_review=true`` and not deleted."""
+    """Count memories with ``requires_review=true`` and not deleted or superseded."""
     rows = (
         client.table("memories")
         .select("id", count="exact")
         .eq("requires_review", True)
         .is_("deleted_at", "null")
+        .is_("superseded_by", "null")
         .execute()
     )
     return rows.count if hasattr(rows, "count") and rows.count is not None else 0
@@ -101,7 +102,7 @@ def last_learn_run(client) -> dict | None:
     return data[0] if data else None
 
 
-def emit_event(client, *, pending_count: int, dry_run: bool = False) -> str | None:
+def emit_event(client, *, pending_count: int, state: str = "fired", dry_run: bool = False) -> str | None:
     """Emit a ``candidates_pending`` event. Best-effort."""
     if dry_run:
         return None
@@ -117,7 +118,7 @@ def emit_event(client, *, pending_count: int, dry_run: bool = False) -> str | No
                     "title": f"Pending review queue: {pending_count} items",
                     "payload": {
                         "pending_count": pending_count,
-                        "state": "fired",
+                        "state": state,
                     },
                 }
             )
@@ -130,49 +131,83 @@ def emit_event(client, *, pending_count: int, dry_run: bool = False) -> str | No
         return None
 
 
+def emit_learn_run(client) -> None:
+    """Emit a ``learn_run`` event to self-debounce subsequent watcher invocations."""
+    try:
+        client.table("events").insert(
+            {
+                "event_type": "learn_run",
+                "severity": "info",
+                "repo": "Osasuwu/jarvis",
+                "source": "volume_watcher",
+                "title": "Volume watcher fired — learn_run debounce marker",
+                "payload": {},
+            }
+        ).execute()
+    except Exception as e:
+        print(f"! learn_run event insert failed: {e}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Watcher logic
 # ---------------------------------------------------------------------------
 
 
-def check_and_fire(client, *, dry_run: bool = False) -> dict:
+def check_and_fire(client, *, dry_run: bool = False, _now=None) -> dict:
     """Run the volume watcher predicate.
 
     Returns a dict with the decision and metadata.
 
     Logic::
 
-        1. Count pending. If < FIRE_THRESHOLD → no action.
-        2. Check if already fired (last ``candidates_pending`` event has
-           ``payload.state='fired'`` and count >= REARM_THRESHOLD).
-           If still in the "fired" band → no action.
-        3. Check if a ``/learn`` run happened in the last
-           ``DEBOUNCE_HOURS`` → no action.
-        4. Otherwise → emit ``candidates_pending`` event.
+        1. Count pending.
+        2. Fetch last ``candidates_pending`` event (needed for hysteresis).
+        3. Re-arm: if state was ``fired`` and count dropped below
+           REARM_THRESHOLD, emit a ``rearmed`` event (resets the gate).
+        4. If pending < FIRE_THRESHOLD → no action.
+        5. If still in hysteresis band (state=fired, count >= REARM) → skip.
+        6. Check 24h debounce (``learn_run`` event) → skip if recent.
+        7. Otherwise → emit ``candidates_pending`` event + ``learn_run`` marker.
     """
+    if _now is None:
+        _now = lambda: datetime.now(timezone.utc)
+
     pending = count_pending(client)
 
+    # Fetch last event BEFORE fire-threshold early-exit so re-arm can run.
+    last_event = last_candidates_pending_event(client)
+    last_state = "rearmed"
+    if last_event:
+        payload = last_event.get("payload") or {}
+        last_state = payload.get("state", "rearmed")
+
+    # Re-arm: fired state but count dropped below rearm threshold.
+    rearmed = False
+    if last_state == "fired" and pending < REARM_THRESHOLD:
+        emit_event(client, pending_count=pending, state="rearmed", dry_run=dry_run)
+        last_state = "rearmed"
+        rearmed = True
+
     if pending < FIRE_THRESHOLD:
-        return {
+        result: dict = {
             "action": "none",
             "reason": f"pending={pending} < fire={FIRE_THRESHOLD}",
             "pending_count": pending,
         }
+        if rearmed:
+            result["rearmed"] = True
+        return result
 
-    # Check last fired event
-    last_event = last_candidates_pending_event(client)
-    if last_event:
-        payload = last_event.get("payload") or {}
-        last_state = payload.get("state", "rearmed")
-        if last_state == "fired" and pending >= REARM_THRESHOLD:
-            return {
-                "action": "none",
-                "reason": (
-                    f"already fired (pending={pending} >= rearm={REARM_THRESHOLD}), "
-                    f"still in hysteresis band"
-                ),
-                "pending_count": pending,
-            }
+    # Hysteresis: already fired, count still in band.
+    if last_state == "fired" and pending >= REARM_THRESHOLD:
+        return {
+            "action": "none",
+            "reason": (
+                f"already fired (pending={pending} >= rearm={REARM_THRESHOLD}), "
+                f"still in hysteresis band"
+            ),
+            "pending_count": pending,
+        }
 
     # Check 24h debounce
     last_learn = last_learn_run(client)
@@ -181,7 +216,7 @@ def check_and_fire(client, *, dry_run: bool = False) -> dict:
         if created:
             try:
                 last_ts = datetime.fromisoformat(str(created).replace("Z", "+00:00"))
-                age = datetime.now(timezone.utc) - last_ts
+                age = _now() - last_ts
                 if age < timedelta(hours=DEBOUNCE_HOURS):
                     return {
                         "action": "none",
@@ -195,7 +230,9 @@ def check_and_fire(client, *, dry_run: bool = False) -> dict:
                 pass
 
     # Fire!
-    event_id = emit_event(client, pending_count=pending, dry_run=dry_run)
+    event_id = emit_event(client, pending_count=pending, state="fired", dry_run=dry_run)
+    if not dry_run:
+        emit_learn_run(client)
     return {
         "action": "fired" if not dry_run else "would_fire",
         "event_id": event_id,
