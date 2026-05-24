@@ -16,5 +16,6 @@ __all__ = [
     "safety",
     "scheduler",
     "supabase_client",
+    "task_queue",
     "usage_probe",
 ]

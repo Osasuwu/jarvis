@@ -2537,22 +2537,19 @@ $$;
 
 
 -- =========================================================================
--- Pillar 7 Sprint 2: task_queue — dispatcher input surface (issue #296, S2-1)
+-- Issue #740: Reshaped task_queue — drop approval columns, add
+-- priority/assignee, new FSM.
 --
--- Owner inserts approved tasks; the task-dispatcher agent (S2-3) scans
--- status='pending' and transitions rows through the FSM below, logging
--- each transition to audit_log via the safety gate (agents/safety.py).
+-- FSM transitions (enforced in the interface; DB check guards the enum):
+--   pending  -> claimed
+--   claimed  -> running
+--   running  -> done | failed | parked
+--   done     -> (terminal)
+--   failed   -> (terminal)
+--   parked   -> (terminal)
 --
--- FSM transitions (enforced in the dispatcher; DB check guards the enum):
---   pending    -> dispatched | escalated | rejected
---   dispatched -> done | escalated
---   escalated  -> pending      (owner re-approves)
---   done       -> (terminal)
---   rejected   -> (terminal)
---
--- Drift detection uses `approved_scope_hash` + `scope_files`: if the repo
--- state at dispatch time disagrees with the approval-time hash/globs, the
--- dispatcher flips the row to `escalated` instead of firing.
+-- Interface: agents/task_queue.py exposes enqueue(), claim_next()
+-- (priority-ordered), and transition().
 -- =========================================================================
 
 create table if not exists task_queue (
@@ -2562,21 +2559,19 @@ create table if not exists task_queue (
   goal text not null,
   scope_files text[] not null default '{}',
 
-  -- Approval (inputs for drift detection + auto-dispatch gating)
-  approved_at timestamptz not null default now(),
-  approved_by text not null,
-  approved_scope_hash text not null,
-  auto_dispatch boolean not null default false,
+  -- Priority (higher = claimed first; FIFO ties) + optional worker assignee
+  priority int not null default 0,
+  assignee text,
 
   -- Lifecycle
   status text not null default 'pending'
-    check (status in ('pending', 'dispatched', 'done', 'escalated', 'rejected')),
-  dispatched_at timestamptz,
+    check (status in ('pending', 'claimed', 'running', 'done', 'failed', 'parked')),
+  claimed_at timestamptz,
   completed_at timestamptz,
   escalated_reason text,
 
-  -- Dedup. Matches the safety-gate idempotency_key shape (sha256 hex, 64
-  -- chars). Unique so a retrying dispatcher cannot double-enqueue.
+  -- Dedup. sha256 hex (64 chars). Unique so a retrying worker cannot
+  -- double-enqueue.
   idempotency_key text not null unique,
 
   -- Timestamps
@@ -2584,11 +2579,10 @@ create table if not exists task_queue (
   updated_at timestamptz not null default now()
 );
 
--- Dispatcher scan: oldest approved pending first. Also covers 'dispatched'
--- so a restarted dispatcher can find in-flight rows to reconcile.
+-- Dispatcher scan: highest-priority pending first, FIFO for ties.
 create index if not exists idx_task_queue_pending_scan
-  on task_queue(status, approved_at)
-  where status in ('pending', 'dispatched');
+  on task_queue(priority desc, created_at asc)
+  where status = 'pending';
 
 -- Dedicated updated_at trigger. The memories-shared update_updated_at()
 -- references last_accessed_at/fts/project_key -- columns task_queue does
@@ -2607,7 +2601,7 @@ create trigger task_queue_updated_at
   for each row execute function update_task_queue_updated_at();
 
 -- RLS -- matches the Pillar 7 convention (allow-all under service/anon
--- key; app-layer gatekeeping is the safety gate + dispatcher). Hardening
+-- key; app-layer gatekeeping is the interface functions). Hardening
 -- to per-role policies is its own sweep.
 alter table task_queue enable row level security;
 
