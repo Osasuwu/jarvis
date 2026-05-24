@@ -1160,30 +1160,36 @@ Describe 'Get-RelatedTestFiles' {
     }
 }
 
-Describe 'Close-AgentPR' {
+Describe 'Stop-AgentPR' {
     It 'returns false when branch is empty' {
-        Close-AgentPR -Branch '' -RepoSlug 'x/y' | Should Be $false
+        Stop-AgentPR -Branch '' -RepoSlug 'x/y' | Should Be $false
     }
 
     It 'returns false when repo slug is empty' {
-        Close-AgentPR -Branch 'feat/test' -RepoSlug '' | Should Be $false
+        Stop-AgentPR -Branch 'feat/test' -RepoSlug '' | Should Be $false
     }
 
-    It 'returns false when no PR exists for branch (gh returns null)' {
-        Mock gh { $null }
-        Close-AgentPR -Branch 'feat/test' -RepoSlug 'x/y' | Should Be $false
+    It 'returns false when no PR exists for branch (Invoke-Gh returns null)' {
+        # C2: mock Invoke-Gh wrapper instead of native gh exe (Pester 3.4 cannot intercept native exes)
+        Mock Invoke-Gh { $null }
+        Stop-AgentPR -Branch 'feat/test' -RepoSlug 'x/y' | Should Be $false
     }
 
     It 'calls gh pr close when PR exists' {
         $script:ghCalls = @()
-        Mock gh {
-            $script:ghCalls += $args
-            if ($args[0] -eq 'pr' -and $args[1] -eq 'list') { return '42' }
+        # C2: mock Invoke-Gh; use comma-prefix to capture each call's args as a sub-array
+        Mock Invoke-Gh {
+            $script:ghCalls += ,$args
+            if ($args[0] -eq 'pr' -and $args[1] -eq 'list') {
+                $global:LASTEXITCODE = 0
+                return '42'
+            }
+            $global:LASTEXITCODE = 0
             return $null
         }
-        $result = Close-AgentPR -Branch 'feat/630-test' -RepoSlug 'SergazyNarynov/redrobot'
+        $result = Stop-AgentPR -Branch 'feat/630-test' -RepoSlug 'SergazyNarynov/redrobot'
         $result | Should Be $true
-        # Verify close was called
+        # Verify close was called (each sub-array is one call's positional args)
         $closeCall = $script:ghCalls | Where-Object { $_[0] -eq 'pr' -and $_[1] -eq 'close' }
         $closeCall | Should Not BeNullOrEmpty
     }
@@ -1204,11 +1210,14 @@ Describe 'Invoke-PytestGate' {
     It 'AC: green path -- pytest exits 0 -> passed=true' {
         Mock Push-Location { }
         Mock Pop-Location { }
-        Mock git { 'src/module.py' }
+        # B4: set LASTEXITCODE so git diff appears to succeed
+        Mock git { $global:LASTEXITCODE = 0; 'src/module.py' }
         # Return test file exists
         New-Item -ItemType File -Path (Join-Path $script:tmpRoot 'src\test_module.py') | Out-Null
-        Mock pytest { '1 passed' }
-        Mock Test-Path { $true } -ParameterFilter { $Path -like '*test_module*' }
+        # B4: set LASTEXITCODE = 0 (green)
+        Mock pytest { $global:LASTEXITCODE = 0; '1 passed' }
+        # B3: filter on LiteralPath (callers use -LiteralPath, not -Path)
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like '*test_module*' }
 
         $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'SergazyNarynov/redrobot'
 
@@ -1219,9 +1228,10 @@ Describe 'Invoke-PytestGate' {
     It 'AC: red path -- pytest exits 1 -> passed=false' {
         Mock Push-Location { }
         Mock Pop-Location { }
-        Mock git { 'src/module.py' }
+        # B4: git diff succeeds, pytest exits 1
+        Mock git { $global:LASTEXITCODE = 0; 'src/module.py' }
         Mock Test-Path { $false }
-        Mock pytest { '1 failed' }
+        Mock pytest { $global:LASTEXITCODE = 1; '1 failed' }
         Mock Select-String { 'FAILED test_module.py::test_something' }
 
         $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'SergazyNarynov/redrobot'
@@ -1234,9 +1244,10 @@ Describe 'Invoke-PytestGate' {
     It 'AC: collection error -- pytest exits 2 -> collectionError=true' {
         Mock Push-Location { }
         Mock Pop-Location { }
-        Mock git { 'src/module.py' }
+        # B4: git diff succeeds, pytest exits 2 (collection error)
+        Mock git { $global:LASTEXITCODE = 0; 'src/module.py' }
         Mock Test-Path { $false }
-        Mock pytest { 'ERROR: could not collect test files' }
+        Mock pytest { $global:LASTEXITCODE = 2; 'ERROR: could not collect test files' }
 
         $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'SergazyNarynov/redrobot'
 
@@ -1255,8 +1266,9 @@ Describe 'Invoke-PytestGate' {
     It 'falls back to full suite when git diff fails (base branch missing)' {
         Mock Push-Location { }
         Mock Pop-Location { }
-        Mock git { $null }   # git diff fails
-        Mock pytest { '42 passed' }
+        # B4: git exits non-zero (diff fails), pytest exits 0 (full suite green)
+        Mock git { $global:LASTEXITCODE = 1; $null }
+        Mock pytest { $global:LASTEXITCODE = 0; '42 passed' }
 
         $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'x/y'
 
@@ -1279,8 +1291,13 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
         Mock Send-TelegramAlert  { 'mocked' }
         Mock Add-IssueLabel      { $true }
         Mock Get-IssueLabels     { @() }
-        Mock Close-AgentPR       { $true }
+        # M4: renamed Close-AgentPR -> Stop-AgentPR
+        Mock Stop-AgentPR        { $true }
         Mock Invoke-PytestGate   { $null }  # overridden per test
+        # M6: mock decision memory write so tests don't hit Supabase
+        Mock Write-SandcastleDecisionMemory { }
+        # C2: Invoke-Gh used for gh issue edit in watchdog; mock to no-op
+        Mock Invoke-Gh { }
     }
 
     It 'AC: redrobot green gate -> outcome=success, gates summary includes pytest' {
@@ -1305,7 +1322,10 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
         Assert-MockCalled Invoke-PytestGate -Times 1 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'success' }
-        Assert-MockCalled Close-AgentPR -Times 0 -Exactly -Scope It
+        # M4: renamed to Stop-AgentPR
+        Assert-MockCalled Stop-AgentPR -Times 0 -Exactly -Scope It
+        # M6: no decision memory write on green gate
+        Assert-MockCalled Write-SandcastleDecisionMemory -Times 0 -Exactly -Scope It
     }
 
     It 'AC: redrobot red gate -> outcome=partial, PR closed, tests-failing label' {
@@ -1328,11 +1348,14 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
             -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
 
         Assert-MockCalled Invoke-PytestGate -Times 1 -Exactly -Scope It
-        Assert-MockCalled Close-AgentPR -Times 1 -Exactly -Scope It
+        # M4: renamed to Stop-AgentPR
+        Assert-MockCalled Stop-AgentPR -Times 1 -Exactly -Scope It
         Assert-MockCalled Add-IssueLabel -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Label -eq 'tests-failing' }
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'partial' -and $Summary -like '*pytest-gate:tests-failing*' }
+        # M6: decision memory must be written on gate failure
+        Assert-MockCalled Write-SandcastleDecisionMemory -Times 1 -Exactly -Scope It
     }
 
     It 'AC: redrobot collection error -> outcome=partial, tests-broken label' {
@@ -1358,6 +1381,8 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
             -ParameterFilter { $Label -eq 'tests-broken' }
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'partial' -and $Summary -like '*pytest-gate:tests-broken*' }
+        # M6: decision memory must be written on gate failure
+        Assert-MockCalled Write-SandcastleDecisionMemory -Times 1 -Exactly -Scope It
     }
 
     It 'AC: jarvis repo skips pytest gate entirely' {

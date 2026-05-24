@@ -369,14 +369,18 @@ function Get-IssueFromBranch {
     return $null
 }
 
+function Invoke-Gh {
+    & gh @args 2>$null
+}
+
 function Get-IssueLabels {
     [CmdletBinding()]
     param([int]$Issue, [string]$RepoSlug)
     if (-not $Issue) { return @() }
     try {
-        $args = @('issue', 'view', "$Issue", '--json', 'labels', '--jq', '[.labels[].name]')
-        if ($RepoSlug) { $args += @('--repo', $RepoSlug) }
-        $raw = & gh @args 2>$null
+        $ghArgs = @('issue', 'view', "$Issue", '--json', 'labels', '--jq', '[.labels[].name]')
+        if ($RepoSlug) { $ghArgs += @('--repo', $RepoSlug) }
+        $raw = Invoke-Gh @ghArgs
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return @() }
         return ($raw | ConvertFrom-Json)
     } catch {
@@ -388,9 +392,9 @@ function Add-IssueLabel {
     [CmdletBinding()]
     param([int]$Issue, [string]$Label, [string]$RepoSlug)
     if (-not $Issue -or -not $Label) { return $false }
-    $args = @('issue', 'edit', "$Issue", '--add-label', $Label)
-    if ($RepoSlug) { $args += @('--repo', $RepoSlug) }
-    & gh @args 2>$null | Out-Null
+    $ghArgs = @('issue', 'edit', "$Issue", '--add-label', $Label)
+    if ($RepoSlug) { $ghArgs += @('--repo', $RepoSlug) }
+    Invoke-Gh @ghArgs | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -569,9 +573,12 @@ function Invoke-PytestGate {
 
     # Get changed .py files against the base branch
     Push-Location -LiteralPath $RepoRoot
-    $changedRaw = & git diff origin/main...$Branch --name-only 2>$null
-    $gitExit = $LASTEXITCODE
-    Pop-Location
+    try {
+        $changedRaw = & git diff origin/main...$Branch --name-only 2>$null
+        $gitExit = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
 
     if ($gitExit -ne 0 -or [string]::IsNullOrWhiteSpace($changedRaw)) {
         # No base branch to diff or no changes -- run full suite as safety net.
@@ -597,20 +604,21 @@ function Invoke-PytestGate {
         }
         $exitCode = $LASTEXITCODE
     } catch {
-        Pop-Location
         return [pscustomobject]@{
             passed          = $false
             collectionError = $true
             summary         = "pytest invocation failed: $_"
             testsRun        = 0
         }
+    } finally {
+        Pop-Location
     }
-    Pop-Location
 
-    # Parse output for test count
+    # Parse output for test count (B1: join array to scalar before -match so $Matches is populated)
     $testsRun = 0
-    if ($output -match '(\d+) passed') { $testsRun = [int]$Matches[1] }
-    if ($output -match '(\d+) failed') { $testsRun += [int]$Matches[1] }
+    $joined = $output -join "`n"
+    if ($joined -match '(\d+) passed') { $testsRun = [int]$Matches[1] }
+    if ($joined -match '(\d+) failed') { $testsRun += [int]$Matches[1] }
 
     # Extract failing test names
     $failedLines = $output | Select-String '^FAILED ' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }
@@ -643,7 +651,7 @@ function Invoke-PytestGate {
     }
 }
 
-function Close-AgentPR {
+function Stop-AgentPR {
     [CmdletBinding()]
     param(
         [string]$Branch,
@@ -654,15 +662,60 @@ function Close-AgentPR {
     }
     try {
         # Find the PR for this branch
-        $prNum = & gh pr list --repo $RepoSlug --head $Branch --state open --json number --jq '.[0].number' 2>$null
-        if ($prNum -and $prNum -gt 0) {
-            & gh pr close $prNum --repo $RepoSlug --comment "Closed by sandcastle watchdog -- pytest gate failed." 2>$null
+        $prNum = Invoke-Gh pr list --repo $RepoSlug --head $Branch --state open --json number --jq '.[0].number'
+        if ($prNum -and [int]$prNum.Trim() -gt 0) {
+            Invoke-Gh pr close $prNum --repo $RepoSlug --comment "Closed by sandcastle watchdog -- pytest gate failed." | Out-Null
             return ($LASTEXITCODE -eq 0)
         }
     } catch {
-        Write-Warning "Close-AgentPR: $_"
+        Write-Warning "Stop-AgentPR: $_"
     }
     return $false
+}
+
+# ---------------------------------------------------------------------------
+# Decision memory write -- records pytest-gate decisions in memories table
+# (M6/AC7: decision must be queryable by next session via memory_recall).
+# Anon INSERT allowed when source_provenance like 'sandcastle:%' (RLS policy).
+# ---------------------------------------------------------------------------
+
+function Write-SandcastleDecisionMemory {
+    [CmdletBinding()]
+    param(
+        [string]$SupabaseUrl,
+        [string]$SupabaseKey,
+        [string]$Project,
+        [string]$Name,
+        [string]$Description,
+        [string]$Content,
+        [string]$RunId
+    )
+    if (-not $SupabaseUrl -or -not $SupabaseKey) {
+        Write-Warning "SUPABASE_URL/SUPABASE_KEY missing -- skipping decision memory write."
+        return
+    }
+    $body = @{
+        type              = 'decision'
+        project           = $Project
+        name              = $Name
+        description       = $Description
+        content           = $Content
+        tags              = @('sandcastle', 'afk', 'pytest-gate')
+        source_provenance = "sandcastle:pytest-gate:$RunId"
+    }
+    $headers = @{
+        apikey         = $SupabaseKey
+        Authorization  = "Bearer $SupabaseKey"
+        'Content-Type' = 'application/json'
+        Prefer         = 'return=minimal,resolution=merge-duplicates'
+    }
+    $url = "$($SupabaseUrl.TrimEnd('/'))/rest/v1/memories"
+    try {
+        Invoke-RestMethod -Uri $url -Method Post -Headers $headers `
+            -Body ($body | ConvertTo-Json -Depth 4) -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Warning "decision memory write failed: $_"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -984,18 +1037,28 @@ function Invoke-Watchdog {
 
             # Close the PR if one was opened
             if ($branch) {
-                Close-AgentPR -Branch $branch -RepoSlug $repoSlug
+                Stop-AgentPR -Branch $branch -RepoSlug $repoSlug
             }
 
             # Label the issue
             if ($targetIssue -and $repoSlug) {
                 Add-IssueLabel -Issue $targetIssue -Label $pytestLabel -RepoSlug $repoSlug | Out-Null
-                # Drop status:in-progress (can't apply after Add-IssueLabel directly -- use gh)
-                & gh issue edit $targetIssue --repo $repoSlug --remove-label 'status:in-progress' 2>$null
+                # Drop status:in-progress
+                Invoke-Gh issue edit $targetIssue --repo $repoSlug --remove-label 'status:in-progress' | Out-Null
             }
 
             $summary = "pytest-gate:$pytestReason -- branch=$branch $($pytestResult.summary)"
             Record 'partial' $summary $totalUsage ''
+
+            # M6/AC7: record decision in Supabase memory for next-session recall
+            Write-SandcastleDecisionMemory `
+                -SupabaseUrl $supabaseUrl -SupabaseKey $supabaseKey `
+                -Project 'redrobot' `
+                -Name "pytest-gate:$pytestReason:$branch" `
+                -Description "pytest gate blocked sandcastle PR on $branch ($pytestReason)" `
+                -Content "Sandcastle run $runId blocked PR on branch $branch for redrobot. Reason: $pytestReason. $($pytestResult.summary)" `
+                -RunId $runId
+
             Write-Host "[watchdog] $summary"
             return
         }
