@@ -184,6 +184,13 @@ create table if not exists events (
   processed_by text,                 -- 'autonomous-loop', 'risk-radar', 'manual'
   action_taken text,                 -- what was done in response
 
+  -- Event queue FSM (#739)
+  state text not null default 'pending'
+    check (state in ('pending', 'claimed', 'processed', 'parked')),
+  dedup_key text,                    -- sha256 of identifying fields; unique when set
+  claimed_at timestamptz,
+  claimed_by text,                   -- who claimed it (e.g. 'orchestrator', 'wake_driver')
+
   -- Timestamps
   created_at timestamptz default now(),
   event_at timestamptz default now() -- when the event actually occurred (may differ from insert time)
@@ -194,6 +201,9 @@ create index if not exists idx_events_unprocessed on events(processed, severity)
 create index if not exists idx_events_repo on events(repo);
 create index if not exists idx_events_type on events(event_type);
 create index if not exists idx_events_created on events(created_at desc);
+create unique index if not exists idx_events_dedup_key on events(dedup_key) where dedup_key is not null;
+create index if not exists idx_events_pending on events(state, severity, created_at)
+  where state = 'pending';
 
 -- RLS
 alter table events enable row level security;
@@ -203,6 +213,126 @@ create policy "Allow all for authenticated" on events
 
 create policy "Allow all for anon" on events
   for all to anon using (true) with check (true);
+
+
+-- =========================================================================
+-- Event queue FSM: NOTIFY trigger + RPCs (#739)
+-- =========================================================================
+
+create or replace function notify_events_insert()
+returns trigger as $$
+begin
+  perform pg_notify(
+    'events',
+    json_build_object(
+      'id',         new.id,
+      'event_type', new.event_type,
+      'severity',   new.severity,
+      'title',      new.title,
+      'repo',       new.repo
+    )::text
+  );
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists events_notify on events;
+create trigger events_notify
+  after insert on events
+  for each row execute function notify_events_insert();
+
+-- claim_next: atomically claim the highest-priority pending event
+create or replace function claim_next(claimer text)
+returns setof events
+language plpgsql
+as $$
+declare
+  event_row events%ROWTYPE;
+begin
+  select * into event_row
+  from events
+  where state = 'pending'
+  order by
+    case severity
+      when 'critical' then 0
+      when 'high'     then 1
+      when 'medium'   then 2
+      when 'low'      then 3
+      when 'info'     then 4
+    end asc,
+    created_at asc
+  limit 1
+  for update skip locked;
+
+  if found then
+    update events
+    set state = 'claimed',
+        claimed_at = now(),
+        claimed_by = claimer
+    where id = event_row.id
+    returning * into event_row;
+    return next event_row;
+  end if;
+  return;
+end;
+$$;
+
+-- mark_processed: transition claimed → processed
+create or replace function mark_processed(
+  event_id uuid,
+  processor text,
+  action_taken text default ''
+)
+returns boolean
+language plpgsql
+as $$
+begin
+  update events
+  set state = 'processed',
+      processed = true,
+      processed_at = now(),
+      processed_by = processor,
+      action_taken = mark_processed.action_taken
+  where id = event_id and state = 'claimed';
+  return found;
+end;
+$$;
+
+-- park_event: transition claimed → parked (blocked on dependency)
+create or replace function park_event(
+  event_id uuid,
+  reason text default ''
+)
+returns boolean
+language plpgsql
+as $$
+begin
+  update events
+  set state = 'parked',
+      action_taken = park_event.reason
+  where id = event_id and state = 'claimed';
+  return found;
+end;
+$$;
+
+-- requeue_event: transition claimed/parked → pending (retry)
+create or replace function requeue_event(
+  event_id uuid,
+  reason text default ''
+)
+returns boolean
+language plpgsql
+as $$
+begin
+  update events
+  set state = 'pending',
+      claimed_at = null,
+      claimed_by = null,
+      action_taken = requeue_event.reason
+  where id = event_id and (state = 'claimed' or state = 'parked');
+  return found;
+end;
+$$;
 
 
 -- =========================================================================

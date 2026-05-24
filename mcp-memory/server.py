@@ -220,6 +220,10 @@ from handlers.memory import (  # noqa: E402, F401
 from handlers.events import (  # noqa: E402, F401
     _handle_events_list,
     _handle_events_mark_processed,
+    _handle_event_claim_next,
+    _handle_event_mark_processed,
+    _handle_event_park,
+    _handle_event_requeue,
 )
 from handlers.outcome import (  # noqa: E402, F401
     _handle_outcome_record,
@@ -293,6 +297,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return _big_result(await _handle_events_list(arguments))
         elif name == "events_mark_processed":
             return await _handle_events_mark_processed(arguments)
+        # Event queue FSM tools (#739)
+        elif name == "event_claim_next":
+            return await _handle_event_claim_next(arguments)
+        elif name == "event_mark_processed_fsm":
+            return await _handle_event_mark_processed(arguments)
+        elif name == "event_park":
+            return await _handle_event_park(arguments)
+        elif name == "event_requeue":
+            return await _handle_event_requeue(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as exc:
