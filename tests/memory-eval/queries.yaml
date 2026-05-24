@@ -1,19 +1,27 @@
 # Memory recall eval set
 #
-# 20 hand-curated queries against the live Supabase corpus. Each query lists
+# Hand-curated queries against the live Supabase corpus. Each query lists
 # the memory names that *should* appear in the top-k results. Metrics we score:
 #   - recall@5:  did at least one expected memory land in top 5?
 #   - recall@10: top 10?
 #   - mrr: reciprocal rank of the first expected hit (0 if none)
+#   - must_not@5:  memories that MUST NOT appear in top 5 (lifecycle signal)
+#   - must_not@10: memories that MUST NOT appear in top 10 (extended signal)
 #
 # The expected memories use `name` (not `id`) so the set survives ID churn. The
 # harness resolves names -> ids at runtime.
 #
+# AXIS field (new in Phase S0):
+#   - lifecycle: queries that stress stale/superseded handling (Phase 1+ targets)
+#   - lexical: slug-form queries testing exact-match retrieval (autonomous_chain_*)
+#   - hybrid: queries that blend lifecycle + lexical concerns
+#   - direct/topic/behavior/reference/user: query type (existing)
+#
 # Guidelines for adding queries:
 #   - Mix short (2-3 words) and long (natural-language) forms
 #   - Include both Russian and English
-#   - Tag `lifecycle: true` for queries that stress stale/superseded handling
-#     (these are the Phase 1+ improvement targets)
+#   - Use `axis: lifecycle` for stale/superseded memory detection tests
+#   - Use `axis: lexical` for namespace-driven slug searches
 #   - `expected` is a list; any match counts for recall. Use `must_not` for
 #     memories that *should not* surface (e.g. superseded).
 
@@ -114,14 +122,78 @@ queries:
     expected: [jarvis_v2_hybrid_agile]
     must_not: [jarvis_stays_goals_not_agile]  # superseded
     kind: lifecycle
+    axis: lifecycle
 
   - id: q19
     query: "как Jarvis планирует работу сейчас"
     expected: [jarvis_v2_hybrid_agile]
     must_not: [jarvis_stays_goals_not_agile]
     kind: lifecycle
+    axis: lifecycle
 
   - id: q20
     query: "cloud scheduled tasks remote MCP"
     expected: [lesson_cloud_mcp_limitations, local_scheduled_tasks_only]
     kind: topic
+
+  # --- NEW LIFECYCLE queries (S0 expansion) ---
+  # These target the staleness pattern: memories that have been superseded
+  # or finalized but may still surface in older retrievals. must_not@10 lens
+  # catches regressions at ranks 6-10 that must_not@5 misses.
+
+  - id: q21
+    query: "architecture final decision resolved"
+    expected: [architecture_final]
+    must_not: [jarvis_multiagent_exploration, jarvis_v1_monolithic]  # earlier drafts
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q22
+    query: "самопроверка улучшений редизайн"
+    expected: [self_improve_redesign]
+    must_not: [self_improve_v1_feedback, early_self_improve_failures]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q23
+    query: "service key verified primary PC"
+    expected: [pr569_service_key_verified_main_pc]
+    must_not: [pr569_service_key_initial_draft]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q24
+    query: "team agent v2 planning complete"
+    expected: [team_agent_v2_plan_complete]
+    must_not: [team_agent_v1_approach, team_agent_exploration_draft]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q25
+    query: "goal tracking system finalized"
+    expected: [goal_system_final_shape]
+    must_not: [goal_tracking_v1_iteration, goal_experiment_abandoned]
+    kind: lifecycle
+    axis: lifecycle
+
+  # --- LEXICAL-AXIS queries (S0 expansion) ---
+  # Slug-form queries testing namespace-specific retrieval: autonomous_chain_*
+  # These stress exact-match and keyword precision over semantic similarity.
+
+  - id: q26
+    query: "autonomous_chain_step_handler"
+    expected: [autonomous_chain_step_handler]
+    kind: reference
+    axis: lexical
+
+  - id: q27
+    query: "autonomous chain queue manager"
+    expected: [autonomous_chain_queue_manager]
+    kind: reference
+    axis: lexical
+
+  - id: q28
+    query: "autonomous chain error recovery protocol"
+    expected: [autonomous_chain_error_recovery]
+    kind: reference
+    axis: lexical
