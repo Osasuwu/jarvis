@@ -137,63 +137,81 @@ queries:
     kind: topic
 
   # --- NEW LIFECYCLE queries (S0 expansion) ---
-  # These target the staleness pattern: memories that have been superseded
-  # or finalized but may still surface in older retrievals. must_not@10 lens
-  # catches regressions at ranks 6-10 that must_not@5 misses.
+  # These target the staleness pattern from `memory_recall_staleness_pattern_2026_05_23`:
+  # the named memories below have all been superseded or downgraded but still
+  # surface in recall because temporal scoring + supersession are too gentle.
+  # Each query asks the CURRENT question; the stale memory is the must_not target.
+  # Verified existence + staleness via memory_get 2026-05-24.
 
   - id: q21
-    query: "architecture final decision resolved"
-    expected: [architecture_final]
-    must_not: [jarvis_multiagent_exploration, jarvis_v1_monolithic]  # earlier drafts
+    query: "current Jarvis architecture direction"
+    # architecture_final: STALE — RELAXED 2026-05-20, name "final" misleading.
+    # federated_architecture_direction: 2026-05-20 current decision.
+    expected: [federated_architecture_direction, jarvis_v2_vision]
+    must_not: [architecture_final]
     kind: lifecycle
     axis: lifecycle
 
   - id: q22
-    query: "самопроверка улучшений редизайн"
-    expected: [self_improve_redesign]
-    must_not: [self_improve_v1_feedback, early_self_improve_failures]
+    query: "self-improve skill current usefulness"
+    # self_improve_redesign carried outcome=works for ~7 weeks while skill abandoned;
+    # outcome flipped 2026-05-23. No clean successor memory exists.
+    expected: []
+    must_not: [self_improve_redesign]
     kind: lifecycle
     axis: lifecycle
 
   - id: q23
-    query: "service key verified primary PC"
-    expected: [pr569_service_key_verified_main_pc]
-    must_not: [pr569_service_key_initial_draft]
+    query: "Supabase service key configuration status"
+    # pr569_service_key_verified_main_pc: narrow PR-specific 2026-05-19 note,
+    # no longer informs current decisions per source memory.
+    expected: []
+    must_not: [pr569_service_key_verified_main_pc]
     kind: lifecycle
     axis: lifecycle
 
   - id: q24
-    query: "team agent v2 planning complete"
-    expected: [team_agent_v2_plan_complete]
-    must_not: [team_agent_v1_approach, team_agent_exploration_draft]
+    query: "how Jarvis relates to team agent project"
+    # team_agent_v2_plan_complete: stale per source; current framing is
+    # "Jarvis is personal only; team agent is separate" + complement-not-restrict.
+    expected: [jarvis_vs_team_agent, team_agent_complement_not_restrict]
+    must_not: [team_agent_v2_plan_complete]
     kind: lifecycle
     axis: lifecycle
 
   - id: q25
-    query: "goal tracking system finalized"
-    expected: [goal_system_final_shape]
-    must_not: [goal_tracking_v1_iteration, goal_experiment_abandoned]
+    query: "approach for improving codebase architecture"
+    # repo_improve_deferred: SUPERSEDED 2026-05-16 — replaced by per-repo deepening
+    # via /improve-codebase-architecture skill (no dedicated memory exists yet).
+    expected: []
+    must_not: [repo_improve_deferred]
     kind: lifecycle
     axis: lifecycle
 
   # --- LEXICAL-AXIS queries (S0 expansion) ---
-  # Slug-form queries testing namespace-specific retrieval: autonomous_chain_*
-  # These stress exact-match and keyword precision over semantic similarity.
+  # Three query forms for the SAME memory (autonomous_chain_synthesis_template)
+  # per #673 requirement: literal slug, distinctive-keyword, content-body terminology.
+  # This memory is the reproduction case for the slug-form rank miss bug — recall
+  # systematically fails to surface it via semantic queries despite memory_get working.
+  # Verified existence via memory_get 2026-05-24.
 
   - id: q26
-    query: "autonomous_chain_step_handler"
-    expected: [autonomous_chain_step_handler]
+    # Form 1: literal slug (underscores intact).
+    query: "autonomous_chain_synthesis_template"
+    expected: [autonomous_chain_synthesis_template]
     kind: reference
     axis: lexical
 
   - id: q27
-    query: "autonomous chain queue manager"
-    expected: [autonomous_chain_queue_manager]
+    # Form 2: distinctive-keyword (from description: "8-axis post-mortem", "harness-DX-fragility").
+    query: "8-axis post-mortem synthesis template harness-DX-fragility"
+    expected: [autonomous_chain_synthesis_template]
     kind: reference
     axis: lexical
 
   - id: q28
-    query: "autonomous chain error recovery protocol"
-    expected: [autonomous_chain_error_recovery]
+    # Form 3: content-body terminology (from content: "recurrence-via-outcome_record ledger principle").
+    query: "AFK chain recurrence outcome_record ledger principle"
+    expected: [autonomous_chain_synthesis_template]
     kind: reference
     axis: lexical
