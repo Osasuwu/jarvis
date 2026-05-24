@@ -339,7 +339,11 @@ def derive_from_session(
 
     # 6. Validate and insert (≤MAX_CANDIDATES)
     if insert_fn is None:
-        insert_fn = _build_supabase_insert_fn()
+        try:
+            insert_fn = _build_supabase_insert_fn()
+        except Exception as e:
+            print(f"[deriver-pipeline] failed to build Supabase insert fn: {e}", file=__import__("sys").stderr)
+            return []
 
     inserted: list[UUID] = []
     errors: list[str] = []
@@ -389,7 +393,7 @@ def _build_supabase_insert_fn() -> InsertFn:
 
     from dotenv import load_dotenv
 
-    _root = Path(__file__).resolve().parent.parent
+    _root = Path(__file__).resolve().parent.parent.parent  # scripts/deriver → scripts → repo root
     for _env in [_root / ".env", _root.parent / ".env"]:
         if _env.exists():
             load_dotenv(_env, override=True)
@@ -398,7 +402,12 @@ def _build_supabase_insert_fn() -> InsertFn:
     from supabase import create_client
 
     url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
+    key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY", "")
+    if not (url and key):
+        raise RuntimeError(
+            "Missing Supabase credentials: SUPABASE_URL and "
+            "SUPABASE_SERVICE_KEY (or SUPABASE_KEY) must be set"
+        )
     client = create_client(url, key)
 
     def _insert(row: dict[str, Any]) -> UUID:

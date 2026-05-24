@@ -2,7 +2,7 @@
 
 Patterns (not a library — too small to extract):
   - ``call_ollama(prompt, ...)`` — POST to ``/api/generate``.
-  - ``call_deepseek(prompt, ...)`` — POST to OpenAI-compatible ``/chat/completions``.
+  - ``call_deepseek(prompt, ...)`` — POST to OpenAI-compatible ``/v1/chat/completions``.
   - ``call_llm(prompt)`` — tries Ollama first, falls back to DeepSeek.
 
 All return the response text on success, or None on any error (timeout,

@@ -171,11 +171,11 @@ def test_derive_from_session_returns_at_most_5(tmp_path: Path):
 
 
 def test_derive_from_session_empty_buffer_returns_empty(tmp_path: Path):
-    """No buffer file → empty result, no error."""
+    """Buffer file exists but is empty (no user/assistant turns) → empty result."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    buffer_dir.mkdir(parents=True, exist_ok=True)
-    # Buffer exists but is empty (no user/assistant turns)
-    path = buffer_dir / f"{SESSION_ID}.jsonl"
+    proj_dir = buffer_dir / PROJECT_HASH
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    path = proj_dir / f"{SESSION_ID}.jsonl"
     path.write_text("", encoding="utf-8")
 
     insert_fn, captured = _make_fake_insert()
