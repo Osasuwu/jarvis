@@ -1,16 +1,17 @@
 {
-  "timestamp": "2026-04-25T19:02:37.709137+00:00",
+  "timestamp": "2026-05-24T11:15:23.274790+00:00",
   "mode": "with_rewriter+links",
-  "corpus_size": 412,
-  "total_queries": 20,
-  "recall_at_5": 0.85,
-  "recall_at_10": 0.95,
-  "mrr": 0.6288888888888888,
-  "must_not_violations": 0,
+  "corpus_size": 565,
+  "total_queries": 28,
+  "recall_at_5": 0.6071428571428571,
+  "recall_at_10": 0.75,
+  "mrr": 0.4539115646258503,
+  "must_not_violations": 3,
+  "must_not_violations_at_10": 3,
   "passed": 17,
-  "failed": 3,
-  "rewriter_fired_count": 15,
-  "links_added_total": 104,
+  "failed": 11,
+  "rewriter_fired_count": 22,
+  "links_added_total": 0,
   "results": [
     {
       "id": "q01",
@@ -23,14 +24,14 @@
       "top_names": [
         "feedback_voyage",
         "phase3_rewriter_type_narrowing_regression",
+        "working_state_redrobot_sv727",
+        "reality_sni_microsoft_burned_lovelive_works",
         "copilot_review_quota_exhausted",
-        "redrobot_billing_blocked_manual_merge_protocol",
-        "action_agent_safety_gate_model_v1",
         "scheduled_tasks_subscription_not_api",
-        "deposit_model_overflow_zones",
-        "max_20x_upgrade_available",
-        "anthropic_api_credit_empty_2026_04_21",
-        "phase_7_4_pass_a_skip_rate"
+        "research_aihero_principles",
+        "nightly_mcp_max_result_size",
+        "ci_failures_budget_limit",
+        "anthropic_api_credit_empty_2026_04_21"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -40,6 +41,7 @@
         "feedback_voyage"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "voyageai",
@@ -47,9 +49,11 @@
         "tier",
         "paid"
       ],
-      "rewriter_types": [],
+      "rewriter_types": [
+        "reference"
+      ],
       "rewriter_fired": true,
-      "links_added": 2
+      "links_added": 0
     },
     {
       "id": "q02",
@@ -60,16 +64,16 @@
       ],
       "must_not": [],
       "top_names": [
-        "scheduled_tasks_subscription_not_api",
+        "copilot_review_role",
         "claude_max_upgrade",
-        "research_pillar7_multi_agent_frameworks",
-        "owner_claude_code_setup",
+        "scheduled_tasks_subscription_not_api",
         "jarvis_event_driven_architecture",
-        "opus_1m_extra_billing",
-        "claude_code_capabilities",
+        "token_usage_stats_single_device",
+        "owner_claude_code_setup",
+        "research_pillar7_multi_agent_frameworks",
+        "claude_code_channels",
         "max_20x_upgrade_available",
-        "persistent_agent_patterns_sprint2",
-        "claude_code_channels"
+        "persistent_agent_patterns_sprint2"
       ],
       "first_hit_rank": 2,
       "hits_at_5": [
@@ -79,14 +83,15 @@
         "claude_max_upgrade"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
-        "claude max",
-        "subscription tokens"
+        "claude max subscription",
+        "tokens"
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 7
+      "links_added": 0
     },
     {
       "id": "q03",
@@ -99,14 +104,14 @@
       "top_names": [
         "pytest_scope",
         "bug_fix_reproduce_first",
+        "subagent_test_coverage_overclaim",
         "sand_direction_top_down",
         "lessons_sand_physics",
-        "verify_before_assuming_implemented",
+        "sv_branching_policy",
+        "research_aihero_principles",
+        "distribution_test_before_deletion",
         "use_playwright_for_testing",
-        "meeting_transcripts_google_meet",
-        "deficit_first_bulk_planner",
-        "redrobot_sergazy_feedback_apr8",
-        "redrobot_schedule_apr8"
+        "ux_ui_principles_always"
       ],
       "first_hit_rank": 2,
       "hits_at_5": [
@@ -116,6 +121,7 @@
         "bug_fix_reproduce_first"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "tdd",
@@ -125,7 +131,7 @@
         "feedback"
       ],
       "rewriter_fired": true,
-      "links_added": 5
+      "links_added": 0
     },
     {
       "id": "q04",
@@ -136,18 +142,18 @@
       ],
       "must_not": [],
       "top_names": [
+        "verify_pr_base_diff_before_merge",
         "always_commit_and_push",
-        "always_loaded_context_budget_principle",
-        "owner_profile",
-        "no_confirm_commits_pushes_merges",
         "schema_sql_requires_paired_migration",
-        "rebase_via_reset_and_apply_net_diff",
-        "jarvis_public_release_v020",
+        "sv_branching_policy",
+        "drive_by_branch_pull_main_first",
+        "no_confirm_commits_pushes_merges",
+        "always_loaded_context_budget_principle",
         "branching_strategy",
-        "redrobot_hygiene_remaining_2026_04_18",
+        "evolution_plan_2026-04-26",
         "reflect_apr10_full_day"
       ],
-      "first_hit_rank": 1,
+      "first_hit_rank": 2,
       "hits_at_5": [
         "always_commit_and_push"
       ],
@@ -155,11 +161,12 @@
         "always_commit_and_push"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [],
       "rewriter_types": [],
       "rewriter_fired": false,
-      "links_added": 10
+      "links_added": 0
     },
     {
       "id": "q05",
@@ -172,14 +179,14 @@
       "top_names": [
         "be_the_manager",
         "instructions_overhaul_2026_04_01",
-        "pm_methodology_and_delegation",
-        "quality_over_speed",
-        "pm_autonomy_redrobot",
-        "no_confirm_commits_pushes_merges",
+        "decision_calibration_audit_2026_05_18_90d",
         "owner_thinks_architecturally",
-        "skill_split_implement_vs_delegate_2026_04_21",
-        "redrobot_tech_debt_batch_2026_04_22",
-        "project_workflow_require_linked_issue"
+        "redrobot_is_owner_project_not_sergazy",
+        "pm_methodology_and_delegation",
+        "user_not_owner_framing_2026_04_28",
+        "pm_autonomy_redrobot",
+        "action_agent_safety_gate_model_v1",
+        "redrobot_tech_debt_batch_2026_04_22"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -189,15 +196,12 @@
         "be_the_manager"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
-      "rewriter_entities": [
-        "senior engineer"
-      ],
-      "rewriter_types": [
-        "feedback"
-      ],
-      "rewriter_fired": true,
-      "links_added": 8
+      "rewriter_entities": [],
+      "rewriter_types": [],
+      "rewriter_fired": false,
+      "links_added": 0
     },
     {
       "id": "q06",
@@ -211,17 +215,17 @@
       "must_not": [],
       "top_names": [
         "federated_architecture_direction",
+        "pillars_drop_structural_direction_2_2026_04_28",
         "jarvis_v2_vision",
         "jarvis_wrapping_direction",
         "jarvis_v2_hybrid_agile",
         "jarvis_v2_infra_flexibility",
-        "jarvis_scalable_agent_system",
-        "jarvis_public_release_v020",
-        "pillar7_personal_vs_company_separation",
+        "research_pillar7_multi_agent_frameworks",
         "docs_in_wiki",
-        "jarvis_open_source_framework"
+        "evolution_plan_2026-05-03",
+        "evolution_plan_2026-04-26"
       ],
-      "first_hit_rank": 3,
+      "first_hit_rank": 4,
       "hits_at_5": [
         "jarvis_wrapping_direction"
       ],
@@ -229,6 +233,7 @@
         "jarvis_wrapping_direction"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "jarvis architecture direction v2"
@@ -237,7 +242,7 @@
         "decision"
       ],
       "rewriter_fired": true,
-      "links_added": 5
+      "links_added": 0
     },
     {
       "id": "q07",
@@ -249,18 +254,18 @@
       ],
       "must_not": [],
       "top_names": [
-        "autonomous_loop_v1_architecture",
         "no_deterministic_pipelines",
+        "autonomous_loop_v1_architecture",
         "autonomous_loop_hygiene_sweep_v1",
-        "local_scheduled_tasks_only",
+        "jarvis_v2_vision",
         "autonomous_long_sessions",
-        "milestone_vs_pillar_hygiene",
         "autonomous_fixing_mode",
+        "evolution_plan_2026-05-03",
+        "evolution_plan_2026-04-26",
         "sprint_plan_pillar7_sprint3_2026_04_25",
-        "autonomous_loop_last_run",
         "autonomous_action_log"
       ],
-      "first_hit_rank": 1,
+      "first_hit_rank": 2,
       "hits_at_5": [
         "autonomous_loop_v1_architecture",
         "autonomous_loop_hygiene_sweep_v1"
@@ -270,11 +275,12 @@
         "autonomous_loop_hygiene_sweep_v1"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [],
       "rewriter_types": [],
       "rewriter_fired": false,
-      "links_added": 6
+      "links_added": 0
     },
     {
       "id": "q08",
@@ -287,15 +293,15 @@
       "must_not": [],
       "top_names": [
         "memory_server_v2_improvements",
-        "supabase_custom_mcp_preferred",
-        "schema_sql_requires_paired_migration",
-        "phase_2c_provenance_approach",
-        "memory_alternatives",
-        "pg_generated_cols_null_in_before_update",
+        "workshop_coldboot_tick_bound_738",
+        "explain_sql_before_tuning_recall",
         "postgres_function_signature_migration",
+        "pg_generated_cols_null_in_before_update",
+        "memory_alternatives",
+        "evolution_plan_2026-04-26",
         "pgvector_string_decode_bug",
-        "self_hosted_postgres_future_plan",
-        "memory_graph_tool_added"
+        "memory_graph_tool_added",
+        "self_hosted_postgres_future_plan"
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
@@ -305,6 +311,7 @@
         "memory_server_v2_improvements"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "memory server",
@@ -312,7 +319,7 @@
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 2
+      "links_added": 0
     },
     {
       "id": "q09",
@@ -325,32 +332,34 @@
       ],
       "must_not": [],
       "top_names": [
+        "delegate_subagent_pr_step_skipped_and_absolute_path_2026_05_17",
+        "subagent_acceptance_criteria_dodged_as_out_of_scope",
         "delegate_explicit_branch_origin_main",
         "subagent_misses_interaction_effects",
         "untracked_main_tree_leaks_into_subagent_worktree",
         "subagent_worktree_hijack_can_discard_uncommitted_local_edits",
         "lessons_agent_delegation",
-        "skill_split_implement_vs_delegate_2026_04_21",
         "delegate_frontend_to_subagents",
-        "prefer_agents_for_parallel_bugs",
         "agent_delegation_precision",
         "persistent_agent_patterns_sprint2"
       ],
-      "first_hit_rank": 5,
-      "hits_at_5": [
-        "lessons_agent_delegation"
-      ],
+      "first_hit_rank": 7,
+      "hits_at_5": [],
       "hits_at_10": [
         "lessons_agent_delegation",
         "delegate_frontend_to_subagents",
         "agent_delegation_precision"
       ],
       "must_not_violations_at_5": [],
-      "passed": true,
-      "rewriter_entities": [],
+      "must_not_violations_at_10": [],
+      "passed": false,
+      "rewriter_entities": [
+        "delegating to subagents",
+        "best practices"
+      ],
       "rewriter_types": [],
-      "rewriter_fired": false,
-      "links_added": 4
+      "rewriter_fired": true,
+      "links_added": 0
     },
     {
       "id": "q10",
@@ -361,33 +370,31 @@
       ],
       "must_not": [],
       "top_names": [
+        "claude_code_capabilities",
+        "feedback_cross_device_path_agnostic_codegen",
         "owner_prefers_mcp_over_skills",
+        "owner_claude_code_setup",
         "lessons_cloud_infrastructure",
         "lesson_cloud_mcp_limitations",
-        "architecture_final",
-        "checkpoint_skill_architecture",
-        "owner_claude_code_setup",
         "mcp_stack_2026_03_31",
         "intel_claude_code_w14_2026_04_04",
-        "claude_code_capabilities",
-        "competitive_landscape_multi_agent_2026"
+        "competitive_landscape_multi_agent_2026",
+        "evolution_plan_2026-05-03"
       ],
-      "first_hit_rank": 9,
-      "hits_at_5": [],
+      "first_hit_rank": 1,
+      "hits_at_5": [
+        "claude_code_capabilities"
+      ],
       "hits_at_10": [
         "claude_code_capabilities"
       ],
       "must_not_violations_at_5": [],
-      "passed": false,
-      "rewriter_entities": [
-        "claude code",
-        "mcp hooks",
-        "native capabilities",
-        "skills"
-      ],
+      "must_not_violations_at_10": [],
+      "passed": true,
+      "rewriter_entities": [],
       "rewriter_types": [],
-      "rewriter_fired": true,
-      "links_added": 2
+      "rewriter_fired": false,
+      "links_added": 0
     },
     {
       "id": "q11",
@@ -399,29 +406,26 @@
       "must_not": [],
       "top_names": [
         "verify_agent_findings_against_memory",
-        "memory_roadmap_stealable_ideas_2026_04_20",
-        "always_recall_before_action",
-        "unpack_brief_recall_before_guessing_defaults",
-        "record_decision_when_what",
-        "record_decision_always_pass_memories_used",
-        "memory_management_strategy_v1",
         "phase3_rewriter_type_narrowing_regression",
-        "pretooluse_action_triggers_idea",
-        "risk_radar_latest"
+        "memory_recall_staleness_pattern_2026_05_23",
+        "unpack_brief_recall_before_guessing_defaults",
+        "protocol_encoded_while_violated_recurrence",
+        "jarvis_v2_vision",
+        "memory_management_strategy_v1",
+        "evolution_plan_2026-04-26",
+        "memory_roadmap_stealable_ideas_2026_04_20",
+        "pretooluse_action_triggers_idea"
       ],
-      "first_hit_rank": 3,
-      "hits_at_5": [
-        "always_recall_before_action"
-      ],
-      "hits_at_10": [
-        "always_recall_before_action"
-      ],
+      "first_hit_rank": null,
+      "hits_at_5": [],
+      "hits_at_10": [],
       "must_not_violations_at_5": [],
-      "passed": true,
+      "must_not_violations_at_10": [],
+      "passed": false,
       "rewriter_entities": [],
       "rewriter_types": [],
       "rewriter_fired": false,
-      "links_added": 4
+      "links_added": 0
     },
     {
       "id": "q12",
@@ -432,18 +436,18 @@
       ],
       "must_not": [],
       "top_names": [
-        "verify_video_before_claiming_done",
         "dont_hallucinate_screenshots",
-        "debug_visualization_first",
         "create_diagnostic_tools_when_blind",
+        "debug_visualization_first",
         "pr_e2e_video_required",
-        "sprint_manual_triggers",
+        "verify_video_before_claiming_done",
         "use_playwright_for_testing",
-        "sprint_sizing_feedback",
+        "sprint_manual_triggers",
+        "svg_reading_method",
         "no_jarvis_in_team_docs",
         "teams_browser_inefficient"
       ],
-      "first_hit_rank": 2,
+      "first_hit_rank": 1,
       "hits_at_5": [
         "dont_hallucinate_screenshots"
       ],
@@ -451,13 +455,14 @@
         "dont_hallucinate_screenshots"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [],
       "rewriter_types": [
         "feedback"
       ],
       "rewriter_fired": true,
-      "links_added": 6
+      "links_added": 0
     },
     {
       "id": "q13",
@@ -471,13 +476,13 @@
       "top_names": [
         "autonomous_fixing_mode",
         "claude_dir_edits_need_manual_confirm",
-        "reflection_driven_sprint_2026_04_23",
+        "routine_medium_merge_is_autonomous",
         "autonomous_long_sessions",
-        "merge_without_confirmation",
-        "jarvis_v15_skill_final_plan",
+        "jarvis_v2_vision",
         "autonomous_loop_v1_architecture",
+        "research_pass_gate_693_critic_dispositions",
         "intel_claude_code_w14_2026_04_04",
-        "autonomous_loop_last_run",
+        "zigzag_status_apr10",
         "autonomous_action_log"
       ],
       "first_hit_rank": 1,
@@ -490,13 +495,14 @@
         "autonomous_long_sessions"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "autonomous mode"
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 8
+      "links_added": 0
     },
     {
       "id": "q14",
@@ -508,13 +514,13 @@
       "must_not": [],
       "top_names": [
         "check_diagnostics_diversity",
-        "check_pr_scope_fit_at_open_time",
+        "verify_pr_base_diff_before_merge",
         "smoke_test_catches_what_unit_tests_miss",
-        "pipeline_full_diagnostics_dump",
         "pipeline_verification_mandatory",
         "subagent_fabrication_commit_message_vs_diff",
         "acceptedits_scope_is_project_cwd",
         "llm_json_invariant_normalization",
+        "pipeline_full_diagnostics_dump",
         "warp_is_ground_truth",
         "risk_radar_last_run"
       ],
@@ -526,6 +532,7 @@
         "check_diagnostics_diversity"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "diagnostics",
@@ -533,7 +540,7 @@
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 6
+      "links_added": 0
     },
     {
       "id": "q15",
@@ -544,15 +551,15 @@
       ],
       "must_not": [],
       "top_names": [
-        "research_pillar7_multi_agent_frameworks",
         "federated_architecture_direction",
-        "multiagent_pm_architecture_vision",
         "pillar7_phase2_six_choices_2026_04_22",
-        "architecture_growth_two_dimensions",
         "team_ai_agent_project_initiated",
+        "architecture_growth_two_dimensions",
+        "research_agent_dev_practices_sweep_2026_05_06",
         "jarvis_scalable_agent_system",
-        "managed_agents_wait_and_see",
         "mcp_stack_2026_03_31",
+        "research_pillar7_multi_agent_frameworks",
+        "multiagent_pm_architecture_vision",
         "competitive_landscape_multi_agent_2026"
       ],
       "first_hit_rank": 10,
@@ -561,6 +568,7 @@
         "competitive_landscape_multi_agent_2026"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": false,
       "rewriter_entities": [
         "multi-agent frameworks",
@@ -568,7 +576,7 @@
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 3
+      "links_added": 0
     },
     {
       "id": "q16",
@@ -579,14 +587,14 @@
       ],
       "must_not": [],
       "top_names": [
-        "sprint_plan_pillar7_sprint4_2026_04_25",
+        "claude_code_capabilities",
         "claude_code_channels",
-        "telegram_mcp_integration",
         "jarvis_wrapping_direction",
-        "architecture_final",
+        "telegram_mcp_integration",
         "claudemd_consolidation_2026_04_08",
         "telegram_chat_ids",
-        "claude_code_capabilities",
+        "evolution_plan_2026-05-03",
+        "sprint_plan_pillar7_sprint4_2026_04_25",
         "telegram_integration_sergazy",
         "planned_integrations_digital_twin"
       ],
@@ -598,6 +606,7 @@
         "claude_code_channels"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "telegram",
@@ -607,7 +616,7 @@
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 1
+      "links_added": 0
     },
     {
       "id": "q17",
@@ -619,12 +628,12 @@
       ],
       "must_not": [],
       "top_names": [
-        "dnd_dm_philosophy",
         "dnd_dm_role",
         "owner_profile",
+        "dnd_dm_philosophy",
         "lessons_sand_physics",
-        "pm_methodology_and_delegation",
-        "research_jarvis_meta_agent",
+        "research_agent_dev_practices_sweep_2026_05_06",
+        "research_aihero_principles",
         "competitive_landscape_multi_agent_2026",
         "sand_physics_architecture_2026_04_06",
         "redrobot_sergazy_feedback_apr8",
@@ -632,14 +641,15 @@
       ],
       "first_hit_rank": 1,
       "hits_at_5": [
-        "dnd_dm_philosophy",
-        "dnd_dm_role"
+        "dnd_dm_role",
+        "dnd_dm_philosophy"
       ],
       "hits_at_10": [
-        "dnd_dm_philosophy",
-        "dnd_dm_role"
+        "dnd_dm_role",
+        "dnd_dm_philosophy"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [],
       "rewriter_types": [],
@@ -658,34 +668,33 @@
       ],
       "top_names": [
         "redrobot_agile_full_migration",
-        "jarvis_v2_hybrid_agile",
+        "goals_taxonomy_type_a_only",
         "no_deterministic_pipelines",
-        "goals_system_first_real_goals",
-        "proactive_goal_tracking",
         "jarvis_v2_vision",
-        "jarvis_wrapping_direction",
-        "goals_system_v1",
+        "proactive_goal_tracking",
+        "jarvis_v2_hybrid_agile",
         "team_ai_agent_project_initiated",
+        "evolution_plan_2026-05-03",
+        "evolution_plan_2026-04-26",
         "jarvis_vs_team_agent"
       ],
-      "first_hit_rank": 2,
-      "hits_at_5": [
-        "jarvis_v2_hybrid_agile"
-      ],
+      "first_hit_rank": 6,
+      "hits_at_5": [],
       "hits_at_10": [
         "jarvis_v2_hybrid_agile"
       ],
       "must_not_violations_at_5": [],
-      "passed": true,
+      "must_not_violations_at_10": [],
+      "passed": false,
       "rewriter_entities": [
-        "planning process",
         "jarvis",
+        "planning process",
         "agile",
         "goals"
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 7
+      "links_added": 0
     },
     {
       "id": "q19",
@@ -698,31 +707,35 @@
         "jarvis_stays_goals_not_agile"
       ],
       "top_names": [
-        "jarvis_wrapping_direction",
         "jarvis_v2_vision",
-        "jarvis_v15_skill_restructure",
-        "claude_native_memory_evaluation",
+        "no_jarvis_in_team_docs",
+        "no_deterministic_pipelines",
         "research_jarvis_meta_agent",
-        "owner_profile",
-        "university_student_cse8012",
-        "jarvis_v15_skill_final_plan",
+        "jarvis_v2_hybrid_agile",
+        "federation_phase_0_complete",
+        "claude_native_memory_evaluation",
         "jarvis_vs_team_agent",
+        "autonomous_action_log",
         "planned_integrations_digital_twin"
       ],
-      "first_hit_rank": null,
-      "hits_at_5": [],
-      "hits_at_10": [],
+      "first_hit_rank": 5,
+      "hits_at_5": [
+        "jarvis_v2_hybrid_agile"
+      ],
+      "hits_at_10": [
+        "jarvis_v2_hybrid_agile"
+      ],
       "must_not_violations_at_5": [],
-      "passed": false,
+      "must_not_violations_at_10": [],
+      "passed": true,
       "rewriter_entities": [
-        "jarvis",
-        "work planning"
+        "jarvis"
       ],
       "rewriter_types": [
         "reference"
       ],
       "rewriter_fired": true,
-      "links_added": 9
+      "links_added": 0
     },
     {
       "id": "q20",
@@ -734,27 +747,26 @@
       ],
       "must_not": [],
       "top_names": [
-        "lesson_cloud_mcp_limitations",
-        "local_scheduled_tasks_only",
-        "supabase_custom_mcp_preferred",
-        "lessons_cloud_infrastructure",
-        "event_driven_perception_v1",
         "nightly_research_sql_fallback",
-        "nightly_research_setup",
+        "cloud_vs_local_scheduled_tasks_routing",
+        "headless_claude_p_dies_under_bash_run_in_background",
+        "lesson_cloud_mcp_limitations",
+        "lessons_cloud_infrastructure",
+        "supabase_custom_mcp_preferred",
+        "event_driven_perception_v1",
         "memory_roadmap_stealable_ideas_2026_04_20",
         "sentry_mcp_pending",
         "supabase_connector_status"
       ],
-      "first_hit_rank": 1,
+      "first_hit_rank": 4,
       "hits_at_5": [
-        "lesson_cloud_mcp_limitations",
-        "local_scheduled_tasks_only"
+        "lesson_cloud_mcp_limitations"
       ],
       "hits_at_10": [
-        "lesson_cloud_mcp_limitations",
-        "local_scheduled_tasks_only"
+        "lesson_cloud_mcp_limitations"
       ],
       "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
       "passed": true,
       "rewriter_entities": [
         "cloud scheduled tasks",
@@ -762,7 +774,311 @@
       ],
       "rewriter_types": [],
       "rewriter_fired": true,
-      "links_added": 9
+      "links_added": 0
+    },
+    {
+      "id": "q21",
+      "query": "current Jarvis architecture direction",
+      "kind": "lifecycle",
+      "expected": [
+        "federated_architecture_direction",
+        "jarvis_v2_vision"
+      ],
+      "must_not": [
+        "architecture_final"
+      ],
+      "top_names": [
+        "federated_architecture_direction",
+        "pm_dispatch_v1_superseded_by_persistent_agents",
+        "pillars_drop_structural_direction_2_2026_04_28",
+        "team_ai_agent_project_initiated",
+        "jarvis_scalable_agent_system",
+        "jarvis_event_driven_architecture",
+        "event_driven_perception_v1",
+        "jarvis_v2_infra_flexibility",
+        "jarvis_open_source_framework",
+        "team_agent_complement_not_restrict"
+      ],
+      "first_hit_rank": 1,
+      "hits_at_5": [
+        "federated_architecture_direction"
+      ],
+      "hits_at_10": [
+        "federated_architecture_direction"
+      ],
+      "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
+      "passed": true,
+      "rewriter_entities": [
+        "jarvis",
+        "architecture"
+      ],
+      "rewriter_types": [
+        "decision"
+      ],
+      "rewriter_fired": true,
+      "links_added": 0
+    },
+    {
+      "id": "q22",
+      "query": "self-improve skill current usefulness",
+      "kind": "lifecycle",
+      "expected": [],
+      "must_not": [
+        "self_improve_redesign"
+      ],
+      "top_names": [
+        "self_improve_redesign",
+        "autonomous_loop_v1_architecture",
+        "memory_recall_staleness_pattern_2026_05_23",
+        "skill_proliferation_antipattern",
+        "feedback_tunnel_vision_research_check",
+        "repo_improve_deferred",
+        "research_jarvis_meta_agent",
+        "feedback_skill_prelude_no_reconfirm",
+        "naming_check_existing_vocabulary",
+        "design_for_extensibility"
+      ],
+      "first_hit_rank": null,
+      "hits_at_5": [],
+      "hits_at_10": [],
+      "must_not_violations_at_5": [
+        "self_improve_redesign"
+      ],
+      "must_not_violations_at_10": [
+        "self_improve_redesign"
+      ],
+      "passed": false,
+      "rewriter_entities": [
+        "self-improve",
+        "skill",
+        "usefulness"
+      ],
+      "rewriter_types": [],
+      "rewriter_fired": true,
+      "links_added": 0
+    },
+    {
+      "id": "q23",
+      "query": "Supabase service key configuration status",
+      "kind": "lifecycle",
+      "expected": [],
+      "must_not": [
+        "pr569_service_key_verified_main_pc"
+      ],
+      "top_names": [
+        "pr569_service_key_verified_main_pc",
+        "status_snapshot_2026-05-10",
+        "supabase_mocks_must_match_real_schema",
+        "supabase_custom_mcp_preferred",
+        "memory_server_test_pattern",
+        "memory_alternatives",
+        "workshop_pc_env_rotation_pending_2026_05_08",
+        "smoke_564_main_pc_2026_05_08",
+        "workshop_scheduler_logon_failure_real_cause",
+        "supabase_connector_status"
+      ],
+      "first_hit_rank": null,
+      "hits_at_5": [],
+      "hits_at_10": [],
+      "must_not_violations_at_5": [
+        "pr569_service_key_verified_main_pc"
+      ],
+      "must_not_violations_at_10": [
+        "pr569_service_key_verified_main_pc"
+      ],
+      "passed": false,
+      "rewriter_entities": [
+        "supabase",
+        "service key"
+      ],
+      "rewriter_types": [
+        "reference"
+      ],
+      "rewriter_fired": true,
+      "links_added": 0
+    },
+    {
+      "id": "q24",
+      "query": "how Jarvis relates to team agent project",
+      "kind": "lifecycle",
+      "expected": [
+        "jarvis_vs_team_agent",
+        "team_agent_complement_not_restrict"
+      ],
+      "must_not": [
+        "team_agent_v2_plan_complete"
+      ],
+      "top_names": [
+        "no_jarvis_in_team_docs",
+        "university_student_cse8012",
+        "team_ai_agent_project_initiated",
+        "claude_code_capabilities",
+        "research_jarvis_meta_agent",
+        "research_pillar7_multi_agent_frameworks",
+        "nightly_pillar3_outcome_tracking",
+        "team_knowledge_sharing_research_2026",
+        "evolution_plan_2026-05-03",
+        "jarvis_vs_team_agent"
+      ],
+      "first_hit_rank": 10,
+      "hits_at_5": [],
+      "hits_at_10": [
+        "jarvis_vs_team_agent"
+      ],
+      "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
+      "passed": false,
+      "rewriter_entities": [
+        "jarvis",
+        "team agent project"
+      ],
+      "rewriter_types": [
+        "reference"
+      ],
+      "rewriter_fired": true,
+      "links_added": 0
+    },
+    {
+      "id": "q25",
+      "query": "approach for improving codebase architecture",
+      "kind": "lifecycle",
+      "expected": [],
+      "must_not": [
+        "repo_improve_deferred"
+      ],
+      "top_names": [
+        "research_agent_dev_practices_sweep_2026_05_06",
+        "repo_improve_deferred",
+        "lessons_architecture_process",
+        "feedback_data_ownership_separation",
+        "team_agent_v2_plan_complete",
+        "jarvis_v2_infra_flexibility",
+        "team_knowledge_sharing_research_2026",
+        "jarvis_open_source_framework",
+        "federation_phase_0_complete",
+        "evolution_plan_2026-05-03"
+      ],
+      "first_hit_rank": null,
+      "hits_at_5": [],
+      "hits_at_10": [],
+      "must_not_violations_at_5": [
+        "repo_improve_deferred"
+      ],
+      "must_not_violations_at_10": [
+        "repo_improve_deferred"
+      ],
+      "passed": false,
+      "rewriter_entities": [
+        "codebase architecture"
+      ],
+      "rewriter_types": [],
+      "rewriter_fired": true,
+      "links_added": 0
+    },
+    {
+      "id": "q26",
+      "query": "autonomous_chain_synthesis_template",
+      "kind": "reference",
+      "expected": [
+        "autonomous_chain_synthesis_template"
+      ],
+      "must_not": [],
+      "top_names": [
+        "autonomous_long_sessions",
+        "autonomous_fixing_mode",
+        "no_deterministic_pipelines",
+        "delegate_frontend_to_subagents",
+        "issue_checks_schema_requires_children_heading",
+        "autonomous_loop_v1_architecture",
+        "github_project_board_structure",
+        "working_state_redrobot_slice737",
+        "redrobot_tech_debt_batch_2026_04_22",
+        "autonomous_action_log"
+      ],
+      "first_hit_rank": null,
+      "hits_at_5": [],
+      "hits_at_10": [],
+      "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
+      "passed": false,
+      "rewriter_entities": [
+        "autonomous_chain_synthesis_template"
+      ],
+      "rewriter_types": [],
+      "rewriter_fired": true,
+      "links_added": 0
+    },
+    {
+      "id": "q27",
+      "query": "8-axis post-mortem synthesis template harness-DX-fragility",
+      "kind": "reference",
+      "expected": [
+        "autonomous_chain_synthesis_template"
+      ],
+      "must_not": [],
+      "top_names": [
+        "issue-877-asset-skip-replacement",
+        "sand_direction_top_down",
+        "lessons_sand_physics",
+        "physics_engine_migration_warp",
+        "verify_video_before_claiming_done",
+        "working_state_sculpture_vision",
+        "fragile_code_inventory",
+        "sand_physics_architecture_2026_04_06",
+        "eye_test_apr10_results",
+        "reflect_apr10_full_day"
+      ],
+      "first_hit_rank": null,
+      "hits_at_5": [],
+      "hits_at_10": [],
+      "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
+      "passed": false,
+      "rewriter_entities": [
+        "8-axis post-mortem synthesis template",
+        "harness-dx-fragility"
+      ],
+      "rewriter_types": [],
+      "rewriter_fired": true,
+      "links_added": 0
+    },
+    {
+      "id": "q28",
+      "query": "AFK chain recurrence outcome_record ledger principle",
+      "kind": "reference",
+      "expected": [
+        "autonomous_chain_synthesis_template"
+      ],
+      "must_not": [],
+      "top_names": [
+        "protocol_encoded_while_violated_recurrence",
+        "outcome_record_verify_after_write",
+        "record_decision_during_refactors",
+        "outcome_lessons_are_backlog_leads",
+        "linked_dedup_fix",
+        "research_pass_gate_693_critic_dispositions",
+        "autonomous_loop_last_run",
+        "pillar_4_sprint_metacognition_loop_closure_done_2026_04_21",
+        "memory_v040_e2e_verification_2026_04_20",
+        "pretooluse_action_triggers_idea"
+      ],
+      "first_hit_rank": null,
+      "hits_at_5": [],
+      "hits_at_10": [],
+      "must_not_violations_at_5": [],
+      "must_not_violations_at_10": [],
+      "passed": false,
+      "rewriter_entities": [
+        "afk chain",
+        "recurrence",
+        "outcome_record",
+        "ledger",
+        "principle"
+      ],
+      "rewriter_types": [],
+      "rewriter_fired": true,
+      "links_added": 0
     }
   ]
 }

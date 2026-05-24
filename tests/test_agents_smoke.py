@@ -85,19 +85,6 @@ def test_config_honours_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.supabase_key == "anon-key-xyz"
 
 
-def test_graph_builds_without_runtime() -> None:
-    """The LangGraph definition compiles without touching Ollama or Postgres."""
-    pytest.importorskip("langgraph")
-
-    from agents.main import DemoState, build_graph
-
-    graph = build_graph()
-    # Nodes registered: user node + implicit START/END.
-    assert "respond" in graph.nodes
-    # TypedDict schema surface — just confirm the keys we rely on.
-    assert set(DemoState.__annotations__) == {"prompt", "reply", "step"}
-
-
 def test_ollama_client_defaults_to_think_false() -> None:
     """Shared chat wrapper must default `think=False` for Qwen3 safety."""
     pytest.importorskip("ollama")

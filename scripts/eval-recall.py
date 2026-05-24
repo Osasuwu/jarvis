@@ -137,6 +137,7 @@ class QueryResult:
     hits_at_5: list[str]  # expected names that appeared in top-5
     hits_at_10: list[str]
     must_not_violations_at_5: list[str]  # must_not names that appeared in top-5
+    must_not_violations_at_10: list[str]  # must_not names that appeared in top-10 (S0 expansion)
     passed: bool  # recall@5 >= 1 AND no must_not violations
     rewriter_entities: list[str] = field(default_factory=list)
     rewriter_types: list[str] = field(default_factory=list)
@@ -153,7 +154,8 @@ class EvalReport:
     recall_at_5: float
     recall_at_10: float
     mrr: float
-    must_not_violations: int
+    must_not_violations: int  # must_not violations at @5 (primary signal)
+    must_not_violations_at_10: int  # must_not violations at @10 (S0 expansion)
     passed: int
     failed: int
     rewriter_fired_count: int = 0  # queries where rewriter produced output
@@ -178,6 +180,8 @@ class ContextRotResult:
     context_first_hit_rank: int | None
     plain_must_not_viol: list[str]
     context_must_not_viol: list[str]
+    plain_must_not_viol_at_10: list[str]
+    context_must_not_viol_at_10: list[str]
     plain_passed: bool
     context_passed: bool
 
@@ -205,6 +209,8 @@ class ContextRotReport:
     delta_mrr: float
     plain_must_not_violations: int
     context_must_not_violations: int
+    plain_must_not_violations_at_10: int
+    context_must_not_violations_at_10: int
     only_plain_passed: list[str]  # query ids where plain passed but context didn't (= rot)
     only_context_passed: list[str]  # query ids where context passed but plain didn't (= helps)
     context_budget: dict  # chars, tokens, item counts
@@ -277,7 +283,8 @@ async def _run_query_direct(
     top10 = top_names[:10]
     hits_5 = [n for n in top5 if n in expected]
     hits_10 = [n for n in top10 if n in expected]
-    mn_viol = [n for n in top5 if n in must_not]
+    mn_viol_5 = [n for n in top5 if n in must_not]
+    mn_viol_10 = [n for n in top10 if n in must_not]
 
     first_hit_rank = None
     for i, name in enumerate(top10, start=1):
@@ -285,7 +292,7 @@ async def _run_query_direct(
             first_hit_rank = i
             break
 
-    passed = bool(hits_5) and not mn_viol
+    passed = bool(hits_5) and not mn_viol_5
 
     return QueryResult(
         id=q["id"],
@@ -297,7 +304,8 @@ async def _run_query_direct(
         first_hit_rank=first_hit_rank,
         hits_at_5=hits_5,
         hits_at_10=hits_10,
-        must_not_violations_at_5=mn_viol,
+        must_not_violations_at_5=mn_viol_5,
+        must_not_violations_at_10=mn_viol_10,
         passed=passed,
         rewriter_entities=[],
         rewriter_types=[],
@@ -368,7 +376,8 @@ async def run_query(
     top10 = top_names[:10]
     hits_5 = [n for n in top5 if n in expected]
     hits_10 = [n for n in top10 if n in expected]
-    mn_viol = [n for n in top5 if n in must_not]
+    mn_viol_5 = [n for n in top5 if n in must_not]
+    mn_viol_10 = [n for n in top10 if n in must_not]
 
     first_hit_rank = None
     for i, name in enumerate(top10, start=1):
@@ -376,7 +385,7 @@ async def run_query(
             first_hit_rank = i
             break
 
-    passed = bool(hits_5) and not mn_viol
+    passed = bool(hits_5) and not mn_viol_5
     links_added = sum(1 for h in hits if h.source == "linked")
 
     return QueryResult(
@@ -389,7 +398,8 @@ async def run_query(
         first_hit_rank=first_hit_rank,
         hits_at_5=hits_5,
         hits_at_10=hits_10,
-        must_not_violations_at_5=mn_viol,
+        must_not_violations_at_5=mn_viol_5,
+        must_not_violations_at_10=mn_viol_10,
         passed=passed,
         rewriter_entities=entities,
         rewriter_types=types,
@@ -412,7 +422,8 @@ async def run_all(
     r5 = sum(1 for r in results if r.hits_at_5) / total if total else 0.0
     r10 = sum(1 for r in results if r.hits_at_10) / total if total else 0.0
     mrr = sum(1.0 / r.first_hit_rank for r in results if r.first_hit_rank) / total if total else 0.0
-    mn_viol = sum(1 for r in results if r.must_not_violations_at_5)
+    mn_viol_5 = sum(1 for r in results if r.must_not_violations_at_5)
+    mn_viol_10 = sum(1 for r in results if r.must_not_violations_at_10)
     passed = sum(1 for r in results if r.passed)
     rw_fired = sum(1 for r in results if r.rewriter_fired)
     links_added_total = sum(r.links_added for r in results)
@@ -434,7 +445,8 @@ async def run_all(
         recall_at_5=r5,
         recall_at_10=r10,
         mrr=mrr,
-        must_not_violations=mn_viol,
+        must_not_violations=mn_viol_5,
+        must_not_violations_at_10=mn_viol_10,
         passed=passed,
         failed=total - passed,
         rewriter_fired_count=rw_fired,
@@ -621,6 +633,8 @@ async def run_context_rot_eval(
                     context_first_hit_rank=with_ctx.first_hit_rank,
                     plain_must_not_viol=plain.must_not_violations_at_5,
                     context_must_not_viol=with_ctx.must_not_violations_at_5,
+                    plain_must_not_viol_at_10=plain.must_not_violations_at_10,
+                    context_must_not_viol_at_10=with_ctx.must_not_violations_at_10,
                     plain_passed=plain.passed,
                     context_passed=with_ctx.passed,
                 )
@@ -630,6 +644,8 @@ async def run_context_rot_eval(
     total = len(queries)
     p_r5, p_r10, p_mrr, p_mn = _metrics_from_results(plain_results, total)
     c_r5, c_r10, c_mrr, c_mn = _metrics_from_results(context_results, total)
+    p_mn_10 = sum(1 for r in plain_results if r.must_not_violations_at_10)
+    c_mn_10 = sum(1 for r in context_results if r.must_not_violations_at_10)
 
     only_plain = [
         q["id"]
@@ -665,6 +681,8 @@ async def run_context_rot_eval(
         delta_mrr=c_mrr - p_mrr,
         plain_must_not_violations=p_mn,
         context_must_not_violations=c_mn,
+        plain_must_not_violations_at_10=p_mn_10,
+        context_must_not_violations_at_10=c_mn_10,
         only_plain_passed=only_plain,
         only_context_passed=only_context,
         context_budget=budget,
@@ -725,7 +743,10 @@ def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> N
     sign_mrr = "+" if report.delta_mrr >= 0 else ""
     print(f"delta MRR             : {sign_mrr}{report.delta_mrr:.3f}")
     print(
-        f"must_not (p/c)    : {report.plain_must_not_violations} / {report.context_must_not_violations}"
+        f"must_not @5 (p/c) : {report.plain_must_not_violations} / {report.context_must_not_violations}"
+    )
+    print(
+        f"must_not @10 (p/c): {report.plain_must_not_violations_at_10} / {report.context_must_not_violations_at_10}"
     )
     if report.only_plain_passed:
         print(
@@ -752,15 +773,16 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
         print(
             f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: {report.mode}\n"
         )
-        print(f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit5':>5}  {'viol':>5}  {'rw':>3}  query")
-        print("-" * 100)
+        print(f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit5':>5}  {'v5':>3}  {'v10':>3}  {'rw':>3}  query")
+        print("-" * 105)
         for r in report.results:
             rank_s = str(r["first_hit_rank"]) if r["first_hit_rank"] else "-"
             hit = "Y" if r["hits_at_5"] else " "
-            viol = "!" if r["must_not_violations_at_5"] else " "
+            v5 = "!" if r["must_not_violations_at_5"] else " "
+            v10 = "!" if r.get("must_not_violations_at_10") else " "
             rw = "*" if r.get("rewriter_fired") else " "
-            q = r["query"] if len(r["query"]) <= 60 else r["query"][:57] + "..."
-            print(f"{r['id']:<5} {r['kind']:<10} {rank_s:>5}  {hit:>5}  {viol:>5}  {rw:>3}  {q}")
+            q = r["query"] if len(r["query"]) <= 55 else r["query"][:52] + "..."
+            print(f"{r['id']:<5} {r['kind']:<10} {rank_s:>5}  {hit:>5}  {v5:>3}  {v10:>3}  {rw:>3}  {q}")
 
         # fail details
         fails = [r for r in report.results if not r["passed"]]
@@ -773,7 +795,9 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
                     print(f"    must_not:  {r['must_not']}")
                 print(f"    top-5:     {r['top_names'][:5]}")
                 if r["must_not_violations_at_5"]:
-                    print(f"    violated:  {r['must_not_violations_at_5']}")
+                    print(f"    violated@5:  {r['must_not_violations_at_5']}")
+                if r.get("must_not_violations_at_10"):
+                    print(f"    violated@10: {r.get('must_not_violations_at_10')}")
                 if r.get("rewriter_fired"):
                     print(
                         f"    rewriter:  entities={r.get('rewriter_entities') or []} types={r.get('rewriter_types') or []}"
@@ -787,7 +811,10 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
     print(f"recall@10          : {_fmt_pct(report.recall_at_10)}")
     print(f"MRR                : {report.mrr:.3f}")
     print(
-        f"must_not violations: {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)"
+        f"must_not @5        : {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)"
+    )
+    print(
+        f"must_not @10       : {report.must_not_violations_at_10}  (extended lifecycle signal — regressions at ranks 6-10)"
     )
     print(f"passed / failed    : {report.passed} / {report.failed}")
     if "with_rewriter" in report.mode:

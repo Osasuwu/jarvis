@@ -1,19 +1,27 @@
 # Memory recall eval set
 #
-# 20 hand-curated queries against the live Supabase corpus. Each query lists
+# Hand-curated queries against the live Supabase corpus. Each query lists
 # the memory names that *should* appear in the top-k results. Metrics we score:
 #   - recall@5:  did at least one expected memory land in top 5?
 #   - recall@10: top 10?
 #   - mrr: reciprocal rank of the first expected hit (0 if none)
+#   - must_not@5:  memories that MUST NOT appear in top 5 (lifecycle signal)
+#   - must_not@10: memories that MUST NOT appear in top 10 (extended signal)
 #
 # The expected memories use `name` (not `id`) so the set survives ID churn. The
 # harness resolves names -> ids at runtime.
 #
+# AXIS field (new in Phase S0):
+#   - lifecycle: queries that stress stale/superseded handling (Phase 1+ targets)
+#   - lexical: slug-form queries testing exact-match retrieval (autonomous_chain_*)
+#   - hybrid: queries that blend lifecycle + lexical concerns
+#   - direct/topic/behavior/reference/user: query type (existing)
+#
 # Guidelines for adding queries:
 #   - Mix short (2-3 words) and long (natural-language) forms
 #   - Include both Russian and English
-#   - Tag `lifecycle: true` for queries that stress stale/superseded handling
-#     (these are the Phase 1+ improvement targets)
+#   - Use `axis: lifecycle` for stale/superseded memory detection tests
+#   - Use `axis: lexical` for namespace-driven slug searches
 #   - `expected` is a list; any match counts for recall. Use `must_not` for
 #     memories that *should not* surface (e.g. superseded).
 
@@ -114,14 +122,96 @@ queries:
     expected: [jarvis_v2_hybrid_agile]
     must_not: [jarvis_stays_goals_not_agile]  # superseded
     kind: lifecycle
+    axis: lifecycle
 
   - id: q19
     query: "как Jarvis планирует работу сейчас"
     expected: [jarvis_v2_hybrid_agile]
     must_not: [jarvis_stays_goals_not_agile]
     kind: lifecycle
+    axis: lifecycle
 
   - id: q20
     query: "cloud scheduled tasks remote MCP"
     expected: [lesson_cloud_mcp_limitations, local_scheduled_tasks_only]
     kind: topic
+
+  # --- NEW LIFECYCLE queries (S0 expansion) ---
+  # These target the staleness pattern from `memory_recall_staleness_pattern_2026_05_23`:
+  # the named memories below have all been superseded or downgraded but still
+  # surface in recall because temporal scoring + supersession are too gentle.
+  # Each query asks the CURRENT question; the stale memory is the must_not target.
+  # Verified existence + staleness via memory_get 2026-05-24.
+
+  - id: q21
+    query: "current Jarvis architecture direction"
+    # architecture_final: STALE — RELAXED 2026-05-20, name "final" misleading.
+    # federated_architecture_direction: 2026-05-20 current decision.
+    expected: [federated_architecture_direction, jarvis_v2_vision]
+    must_not: [architecture_final]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q22
+    query: "self-improve skill current usefulness"
+    # self_improve_redesign carried outcome=works for ~7 weeks while skill abandoned;
+    # outcome flipped 2026-05-23. No clean successor memory exists.
+    expected: []
+    must_not: [self_improve_redesign]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q23
+    query: "Supabase service key configuration status"
+    # pr569_service_key_verified_main_pc: narrow PR-specific 2026-05-19 note,
+    # no longer informs current decisions per source memory.
+    expected: []
+    must_not: [pr569_service_key_verified_main_pc]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q24
+    query: "how Jarvis relates to team agent project"
+    # team_agent_v2_plan_complete: stale per source; current framing is
+    # "Jarvis is personal only; team agent is separate" + complement-not-restrict.
+    expected: [jarvis_vs_team_agent, team_agent_complement_not_restrict]
+    must_not: [team_agent_v2_plan_complete]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q25
+    query: "approach for improving codebase architecture"
+    # repo_improve_deferred: SUPERSEDED 2026-05-16 — replaced by per-repo deepening
+    # via /improve-codebase-architecture skill (no dedicated memory exists yet).
+    expected: []
+    must_not: [repo_improve_deferred]
+    kind: lifecycle
+    axis: lifecycle
+
+  # --- LEXICAL-AXIS queries (S0 expansion) ---
+  # Three query forms for the SAME memory (autonomous_chain_synthesis_template)
+  # per #673 requirement: literal slug, distinctive-keyword, content-body terminology.
+  # This memory is the reproduction case for the slug-form rank miss bug — recall
+  # systematically fails to surface it via semantic queries despite memory_get working.
+  # Verified existence via memory_get 2026-05-24.
+
+  - id: q26
+    # Form 1: literal slug (underscores intact).
+    query: "autonomous_chain_synthesis_template"
+    expected: [autonomous_chain_synthesis_template]
+    kind: reference
+    axis: lexical
+
+  - id: q27
+    # Form 2: distinctive-keyword (from description: "8-axis post-mortem", "harness-DX-fragility").
+    query: "8-axis post-mortem synthesis template harness-DX-fragility"
+    expected: [autonomous_chain_synthesis_template]
+    kind: reference
+    axis: lexical
+
+  - id: q28
+    # Form 3: content-body terminology (from content: "recurrence-via-outcome_record ledger principle").
+    query: "AFK chain recurrence outcome_record ledger principle"
+    expected: [autonomous_chain_synthesis_template]
+    kind: reference
+    axis: lexical

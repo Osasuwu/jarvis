@@ -235,6 +235,7 @@ Follow the /implement skill pipeline (loaded in your session). Specifically:
 HARD RULES for you (subagent):
 - You operate as `JARVIS_PRINCIPAL=subagent` (#426). Hooks classify your tool calls as constrained — protected-file edits and protected-file mirrors will block. Do not try to bypass.
 - Do NOT merge the PR. Open it, push it, record outcome, stop.
+- **"Open it" means YOU run `gh pr create` from this session.** Returning "PR creation will be handled by the orchestrator" or "I have pushed the branch and the PR is ready to be opened" violates the dispatch contract. The required call sequence is literal: `git push -u origin feat/<N>-<slug>` then `gh pr create --title "..." --body "..."` then capture the returned URL into the outcome record. No orchestrator handoff at this step. (Recurring lesson: `delegate_subagent_pr_step_skipped_and_absolute_path_2026_05_17` — 3+ recurrences as of 2026-05-19 tick).
 - Do NOT modify protected files (.mcp.json, CLAUDE.md, etc — see docs/security/agent-boundaries.md)
 - Do NOT send messages as the principal
 - Do NOT change values, defaults, or constants that are not explicitly named as targets in the issue body. Centralization / refactoring tasks are structural only — IK seeds, default timeouts, magic numbers, tuple constants must be preserved exactly unless the issue says to change them. If the issue is unclear, preserve the value and flag in the PR body.
@@ -256,6 +257,24 @@ Operating discipline:
   decision — escalate to the orchestrator instead of dropping the item.
 - Refactor permission extends to code freshly covered by a passing test in this
   session. Code without test coverage is NOT in your refactor scope.
+- **Deliberate divergences must be surfaced.** If you depart from the AC's literal
+  signature, parameter names, values, default constants, or interpretation for any
+  reason (cleaner interface, stricter rule, fewer args, renamed field) — add a
+  `## Deliberate divergences` section to the PR body listing each change as
+  `<what diverged> — <why> — <impact>`. Silent design drift is a delivery defect
+  even when the divergence is reasonable. The orchestrator must be able to weigh
+  it without re-reading the diff. (Lesson from #634 outcome 2026-05-19: subagent
+  silently reshaped `decide(...)` from 4 args to 3 and picked stricter
+  no_convergence rule than the AC suggested.)
+- **Drive-by edits: remove means remove, not replace.** When an issue or instruction
+  says "remove stale X" or "delete the line about Y", you DELETE — you do NOT
+  rewrite the line with new content. If a replacement is genuinely needed, that is
+  a separate scope question to escalate, not a drive-by reinterpretation. Before
+  inserting any text in a drive-by neighborhood, grep ±3 lines around the change
+  to confirm the addition isn't duplicating an existing nearby line. (Lesson from
+  #662 outcome 2026-05-19: subagent REPLACED a stale `skills/sprint-report/`
+  bullet with new `agents/` text that duplicated the next existing line;
+  orchestrator pushed a collapsing fix commit.)
 ```
 
 ADR-0001 compliance: the TDD-mode block is **inline operating discipline**. There is no standalone `/tdd` skill (dropped in #596). The subagent does not call `/grill` or any other skill mid-task — the reference doc `_shared/tdd/tdd-loop.md` is read as a file.
@@ -292,8 +311,10 @@ git diff origin/main...origin/feat/<N>-<slug>
 
 Run the following checks in order — do NOT short-circuit:
 
+- **PR exists?** `gh pr list --head feat/<N>-<slug> --state all --json number,url`. If the subagent reported "done" but no PR row comes back, the dispatch contract was violated (see HARD RULES "Open it means gh pr create"). Recover: orchestrator opens the PR manually from the pushed branch, and note the contract violation in the outcome `lessons` field so the recurrence count increments. Do NOT silently paper over — the lesson telemetry is what closes the loop.
 - **Scope fit**: file list matches issue scope? Unrelated files → revert
 - **Protected files** untouched?
+- **Deliberate divergences declared?** If the diff diverges from the AC's literal signature/values/interpretation and the PR body has no `## Deliberate divergences` section, treat as silent design drift: either revert the divergence or push the section yourself (with the subagent's reasoning if recoverable, else flagged as orchestrator-reconstructed). Recurrence increments the lesson telemetry the same way as a missed PR creation.
 - **Value-change audit**: grep the diff for numeric literals, default parameter values, seed arrays, tuple constants, timeouts, thresholds. For each value that changed, confirm the change is explicitly mandated by the issue body. Silent replacements are scope drift and must be reverted.
   - Lesson #648: subagent silently replaced IK seeds `[0,-30,30,0,-60,0]` with `ready_position` — same shape, different semantics (optimizer convergence inputs, not motion targets). Silent behavior change the subagent didn't flag.
 - **Interaction audit**: for every non-trivial edit, trace data flow outward — what callers depend on the pre-existing behavior? what fallbacks or post-processors run after the changed code? Ask "does this still compose correctly?" not just "does the code do what it says?"
@@ -311,9 +332,9 @@ If issues found:
 ### 7. Decide merge (orchestrator only)
 
 Per each PR (subagent's or your own):
-- Tests green + Copilot clean + LOW/MEDIUM risk → **merge** (see /implement §7.5)
+- Tests green + Claude code-review clean + LOW/MEDIUM risk → **merge** (see /implement §7.5)
 - HIGH/CRITICAL or safety-critical → wait for principal
-- CI infra-blocked (billing, not failing tests) → merge if local tests pass + Copilot clean
+- CI infra-blocked (billing, not failing tests) → merge if local tests pass + Claude code-review clean
 
 ### 8. Record outcomes
 
