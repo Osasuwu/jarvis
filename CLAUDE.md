@@ -87,7 +87,7 @@ Use skills — don't reinvent with raw tools.
 | "улучши себя", self-improvement | `/self-improve` |
 | "цели", "приоритеты" | `/goals` |
 | New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
-| Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
+| Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` (legacy cron baseline; reactive-core M44 `wake_driver` + `orchestrator` replace this once shipped — see CONTEXT.md) |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Vague intuition (no written plan yet) / "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт"; subsumes /research for in-debate factual grounding | `/reason` |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
@@ -107,6 +107,20 @@ Rules:
 - **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
 - **`/reason` (optional, intuition-stage) → `/grill` → `/to-prd` → `/to-issues` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
+
+### Responsibility split — interactive · `/delegate` · reactive-core orchestrator
+
+Three places work can land. Pick by **who's present** and **how the work was triggered**, not by what the work is.
+
+- **Interactive `/implement` (you, in this session).** Owner is present. One issue, judgment-heavy, working through together. Full SOUL loaded. SOUL.md grill-checkbox is the in-skill backstop for AFK-readiness.
+- **`/delegate` (you, dispatching subagents).** Owner is present and chose to fan out. Multiple AFK-eligible issues → parallel sandcastle subagents. The pre-dispatch gate (CONTEXT.md → *Pre-dispatch gate*) refuses dispatch if the `sandcastle` label, AC, decision-UUID, or a `needs-*` blocker is missing. `/delegate` is **not** the orchestrator — it's operator-driven parallel dispatch.
+- **Reactive-core orchestrator (M44, no operator).** Events arrive (`ci_failure`, `review_negative`, `quota_pressure`, etc.) → `wake_driver` `LISTEN/NOTIFY` cold-boots the orchestrator → it triages **one** event with **three dispositions**: (1) one-shot inline tool call, (2) emit a `task_queue` row → `executor.spawn(task)` runs `claude -p` in sandcastle, (3) enqueue a cloud decision-task. After spawn, the loop is closed by **external GitHub workflows** (Path A — open → CI → review → automerge → rework → escalate, results re-enter as fresh events), not by internal code.
+
+Boundaries:
+
+- **Orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-issues`'s checklist applies regardless of who emits the task. An AFK-unsafe TASK row gets routed for owner attention (no auto-spawn), same as the `status:owner-queue` landing zone for `/delegate` refuses.
+- **The orchestrator is a router, not the principal.** It runs routing-policy only (no full SOUL load). Full SOUL is for interactive `/implement` and for the `claude -p` subagents the executor spawns — both are the principal in their lane (CONTEXT.md → *SOUL is shared across interactive + autonomous lanes*).
+- **`/autonomous-loop` (legacy)** is the cron-based catch-up baseline pre-M44 and will be retired when reactive-core ships. New AFK paths should route through events + orchestrator, not through new `/autonomous-loop` invocations.
 
 ## Autonomous work
 
