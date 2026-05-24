@@ -394,7 +394,7 @@ def test_upsert_failure_does_not_crash() -> None:
 
 def test_approved_scope_hash_matches_empty_list_hash() -> None:
     """approved_scope_hash is sha256 of empty list."""
-    from agents.dispatcher import _hash_scope_files
+    from agents.executor import _hash_scope_files
     from scripts.observability.morning_check import main
 
     stub = _StubClient()

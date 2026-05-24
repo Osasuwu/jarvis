@@ -197,27 +197,19 @@ def run(
     dry_run: bool = False,
     placeholder: bool = False,
 ) -> int:
-    """CLI entry-point: start scheduler, register the dispatcher, block.
+    """CLI entry-point: start scheduler, register agents, block.
 
     ``--once`` forces one immediate run of every registered agent and exits.
     Useful for smoke tests that don't want to wait a full interval.
 
-    ``--dry-run`` makes the dispatcher tick traverse the full graph without
-    spawning ``claude -p``; audit rows are still written.
+    ``--dry-run`` is kept for backwards compatibility (no longer applies
+    since the LangGraph dispatcher was retired per #741).
 
-    ``--placeholder`` dev flag registers the canary tick alongside the
-    dispatcher (useful for testing the jobstore pickle contract).
+    ``--placeholder`` dev flag registers the canary tick (useful for testing
+    the jobstore pickle contract).
     """
-    from agents import dispatcher
-
     cfg = load_config()
     handle = build_scheduler(cfg.postgres_url)
-    dispatcher.register(
-        handle,
-        dry_run=dry_run,
-        interval_seconds=interval_seconds,
-        jitter_seconds=jitter_seconds,
-    )
     if placeholder:
         register_agent(
             handle,
@@ -288,12 +280,12 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Dispatcher traverses full graph but does not spawn 'claude -p'.",
+        help="Kept for backwards compatibility; no longer has effect (dispatcher retired per #741).",
     )
     parser.add_argument(
         "--placeholder",
         action="store_true",
-        help="(Dev only) Register the canary tick alongside the dispatcher.",
+        help="(Dev only) Register the canary tick.",
     )
     args = parser.parse_args()
     return run(
