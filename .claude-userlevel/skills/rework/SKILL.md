@@ -96,6 +96,10 @@ gh pr diff <N> -- <initial_diff_files>
     fail to fire, letting the loop run past its maximum. As a cross-check, also count this
     branch's `fix(rework): attempt`/`converged` commits on `headRefName` and take the max
     of the two.
+  - **Race fallback:** if `## Rework history` count is 0 but the per-PR lock (from step 2)
+    already exists, query `outcome_records` for rows with `pattern_tags LIKE '%rework%'`
+    and `issue_url = "<PR URL>"` to infer the attempt number. This handles the case where
+    attempt 2 is dispatched before attempt 1's history section was appended.
 
 Fetch structured Claude code-review verdict (the most recent review comment
 with a structured finding list). Parse findings per reviewer. Expected format:
@@ -117,18 +121,20 @@ with a structured finding list). Parse findings per reviewer. Expected format:
 - **Description**: ...
 ```
 
-If no structured verdict exists on the PR, there is nothing to rework. Do **not**
-exit ad-hoc here — go to **§9d (Edge: no structured findings)**, which removes the
-`status:rework-in-progress` label, releases the per-PR lock, and records the
-`no-findings` outcome. Exiting without 9d leaks the lock + label acquired in step 2,
-blocking re-dispatch for the full 2h TTL.
+If no structured verdict exists on the PR, there is nothing to rework. **Do NOT
+exit ad-hoc here.** Before exiting, execute the cleanup block from **§9d (Edge:
+no structured findings)** to remove the `status:rework-in-progress` label, release
+the per-PR lock, and record the `no-findings` outcome. Exiting without 9d cleanup
+leaks the lock + label acquired in step 2, blocking re-dispatch for the full 2h TTL.
 
 Classify each finding into CRITICAL / MAJOR / MINOR. Count totals:
 `n_critical`, `n_major`, `n_minor`.
 
-Also record `reviewer_kind` — the login of the review-comment author (e.g.
-`claude` for `claude[bot]`). This populates the `reviewer_kind` field in the
-stuck-event payload (§9c); without it that field carries a junk literal.
+Extract `reviewer_kind` from the review-comment author (e.g. `claude-code-review`
+for the Claude code review bot, or the login of the human reviewer). This populates
+the `reviewer_kind` field in the stuck-event payload (§9c); without it that field
+carries a junk literal. If the author is a bot account like `github-app[bot]`,
+use its app name; if a human user, use their login.
 
 ### 4. Reactive TDD per CRITICAL finding
 
@@ -160,8 +166,7 @@ For each MAJOR finding:
 ### 6. Flag out-of-scope findings
 
 Any CRITICAL or MAJOR finding that the skill judges outside the scope of the
-original PR diff (step 3 only produces CRITICAL / MAJOR / MINOR — there is no
-"HIGH" tier):
+original PR diff (step 3 only produces CRITICAL / MAJOR / MINOR):
 
 ```bash
 gh pr comment <N> --body "Out-of-scope finding flagged: <description> — not addressed in this rework loop."
@@ -224,13 +229,20 @@ git commit -m "fix(rework): attempt <N> — <brief summary>"
 git push origin <headRefName>
 ```
 
-Remove `status:rework-in-progress` label. **Release the per-PR lock** by updating
-the `in_flight` outcome record (status → `partial`, drop the `in_flight` tag) — the
-orchestrator checks `in_flight` before re-dispatching, so leaving the lock live
-blocks the next attempt for the full 2h TTL and stalls the loop. CONTINUE is the
-expected multi-attempt path, so this release is load-bearing. Leave the PR open for
-the next rework dispatch (orchestrator re-dispatches on the next `review_negative`
-event).
+Remove `status:rework-in-progress` label. **Release the per-PR lock** by calling:
+
+```
+outcome_update(
+  id: <lock_record_uuid>,
+  outcome_status: "success"
+)
+```
+
+This removes the `in_flight` tag from the per-PR lock. The orchestrator checks
+`in_flight` before re-dispatching — leaving the lock live blocks the next attempt
+for the full 2h TTL and stalls the loop. CONTINUE is the expected multi-attempt
+path, so this release is load-bearing. Leave the PR open for the next rework
+dispatch (orchestrator re-dispatches on the next `review_negative` event).
 
 Exit cleanly.
 
@@ -258,19 +270,21 @@ outcome_record(
   task_type: "fix",
   task_description: "Rework PR #<N> — converged",
   outcome_status: "success",
-  outcome_summary: "Loop converged: n_critical=0, n_major=<count> after <attempt_count> attempts",
+  outcome_summary: "Loop converged: n_critical=0, n_major=<count> after <ATTEMPT_COUNT> attempts",
   project: "<repo>",
   issue_url: "<PR URL>",
   pr_url: "<PR URL>",
-  tests_passed: <true only if every CRITICAL fix has a green test AND no MAJOR fix was left untested; else false>,
+  tests_passed: (n_major_remaining == 0),
   pattern_tags: ["pr-<N>", "rework", "terminal"],
 )
 ```
 
-`tests_passed` must reflect reality: CONVERGED can fire with up to 2 MAJOR fixes,
-and MAJOR fixes carry no test mandate (§5). Set it `false` whenever any applied fix
-lacks green coverage, so downstream `/verify` and calibration do not over-trust the
-row as fully test-validated.
+`tests_passed` reflects whether all remaining fixes (CRITICAL + allowed MAJOR)
+have green coverage. CONVERGED fires with n_major≤2, and MAJOR fixes carry no
+test mandate (§5). Set it `true` only when every CRITICAL fix has a green test
+AND all applied MAJOR fixes are tested or were zero; set it `false` whenever
+any fix lacks green coverage, so downstream `/verify` and calibration do not
+over-trust the row as fully test-validated.
 
 Remove `status:rework-in-progress` label.
 Do NOT merge. The PR stays open for human merge.
@@ -290,7 +304,7 @@ VALUES (
     'pr', <N>,
     'verdict', '<loop_decision>',
     'reason', '<policy_reason>',
-    'attempts', <attempt_count>,
+    'attempts', <ATTEMPT_COUNT>,
     'reviewer_kind', '<reviewer_kind from step 3>'
   )
 );
