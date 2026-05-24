@@ -194,6 +194,7 @@ def fetch_pending_count(client) -> int:
         .select("id", count="exact")
         .eq("requires_review", True)
         .is_("deleted_at", "null")
+        .limit(1)
         .execute()
     )
     return rows.count if hasattr(rows, "count") and rows.count is not None else 0
@@ -347,6 +348,7 @@ def _parse_response(text: str, corpus_ids: set[str]) -> tuple[list[dict], list[d
         name = c.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
+        name = name.strip()
         if name in seen_names:
             continue
         mtype = c.get("type")
@@ -370,6 +372,7 @@ def _parse_response(text: str, corpus_ids: set[str]) -> tuple[list[dict], list[d
         name = p.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
+        name = name.strip()
         if name in seen_names_p:
             continue
         mtype = p.get("type")
@@ -554,7 +557,7 @@ def write_event(
             .insert(
                 {
                     "event_type": "dreamer_run",
-                    "severity": "info" if status == "ok" else "medium",
+                    "severity": "info" if status in ("ok", "dry-run") else "medium",
                     "repo": "Osasuwu/jarvis",
                     "source": "scheduled_task",
                     "title": title,
@@ -587,7 +590,7 @@ def main() -> int:
         "--dry-run",
         action="store_true",
         help="Run the pipeline but skip all DB writes (inserts + event). "
-        "Prints what would be written to stderr.",
+        "Prints candidate/proposal details to stderr.",
     )
     p.add_argument(
         "--model",
@@ -700,7 +703,18 @@ def main() -> int:
             f"{len(merge_proposals)} merge proposal(s)",
             file=sys.stderr,
         )
-        # Still report IDs for recap
+        if new_candidates:
+            print("  New candidates:", file=sys.stderr)
+            for c in new_candidates:
+                print(f"    - {c.get('name')}: {c.get('description', '')}", file=sys.stderr)
+        if merge_proposals:
+            print("  Merge proposals:", file=sys.stderr)
+            for mp in merge_proposals:
+                targets = mp.get("merge_targets", [])
+                print(
+                    f"    - {mp.get('name')} (merge {targets}): {mp.get('description', '')}",
+                    file=sys.stderr,
+                )
         candidate_ids = [f"(dry-run) {c.get('name', '?')}" for c in new_candidates]
         proposal_ids = [f"(dry-run) {p.get('name', '?')}" for p in merge_proposals]
 

@@ -30,6 +30,20 @@ for name in ("httpx", "supabase", "dotenv"):
         __import__(name)
     except ImportError:
         mod = types.ModuleType(name)
+        if name == "httpx":
+            mod.HTTPError = type("HTTPError", (Exception,), {})  # type: ignore[attr-defined]
+
+            class _StubClient:
+                def __init__(self, *a, **k):
+                    pass
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    pass
+
+            mod.Client = _StubClient  # type: ignore[attr-defined]
         if name == "supabase":
             mod.create_client = lambda *a, **k: None  # type: ignore[attr-defined]
         if name == "dotenv":
@@ -420,18 +434,18 @@ class TestTrigger:
         """Build a client mock returning ``count`` pending candidates.
 
         Builds a proper chain so that::
-            client.table("memories").select().eq().is_().execute()
+            client.table("memories").select().eq().is_().limit().execute()
         returns a resp with ``.count = count``.
         """
         client = MagicMock()
         exec_resp = MagicMock()
         exec_resp.count = count
 
-        execute_mock = MagicMock()
-        execute_mock.execute.return_value = exec_resp
+        limit_result = MagicMock()
+        limit_result.execute.return_value = exec_resp
 
         is_mock = MagicMock()
-        is_mock.is_.return_value = execute_mock
+        is_mock.is_.return_value.limit.return_value = limit_result
 
         eq_mock = MagicMock()
         eq_mock.eq.return_value = is_mock
@@ -516,25 +530,33 @@ class TestTrigger:
 
 class TestFetchCorpus:
     def test_respects_max_rows(self):
-        """Corpus fetch caps at MAX_CORPUS_ROWS."""
+        """Corpus fetch passes MAX_CORPUS_ROWS to .limit()."""
         client = MagicMock()
+        expected_rows = [_make_corpus_memory(idx=i) for i in range(dreamer.MAX_CORPUS_ROWS)]
         execute_resp = MagicMock()
-        execute_resp.data = [_make_corpus_memory(idx=i) for i in range(250)]
-        query_mock = MagicMock()
-        query_mock.execute.return_value = execute_resp
+        execute_resp.data = expected_rows
 
-        (
-            client.table("memories")
-            .select()
-            .eq()
-            .gte()
-            .is_()
-            .order()
-            .limit()
-        ).return_value = query_mock
+        table_mock = MagicMock()
+        select_mock = MagicMock()
+        eq_mock = MagicMock()
+        gte_mock = MagicMock()
+        is__mock = MagicMock()
+        order_mock = MagicMock()
+        limit_result = MagicMock()
+        limit_result.execute.return_value = execute_resp
+
+        client.table.return_value = table_mock
+        table_mock.select.return_value = select_mock
+        select_mock.eq.return_value = eq_mock
+        eq_mock.gte.return_value = gte_mock
+        gte_mock.is_.return_value = is__mock
+        is__mock.order.return_value = order_mock
+        order_mock.limit.return_value = limit_result
 
         corpus = dreamer.fetch_corpus(client)
-        assert len(corpus) <= dreamer.MAX_CORPUS_ROWS
+
+        order_mock.limit.assert_called_once_with(dreamer.MAX_CORPUS_ROWS)
+        assert corpus == expected_rows
 
     def test_filters_to_feedback_type(self):
         """Only feedback-type memories are returned."""
@@ -550,6 +572,8 @@ class TestFetchCorpus:
         is__mock = MagicMock()
         order_mock = MagicMock()
         limit_mock = MagicMock()
+        limit_result = MagicMock()
+        limit_result.execute.return_value = execute_resp
 
         client.table.return_value = table_mock
         table_mock.select.return_value = eq_mock
@@ -557,11 +581,12 @@ class TestFetchCorpus:
         gte_mock.gte.return_value = is__mock
         is__mock.is_.return_value = order_mock
         order_mock.order.return_value = limit_mock
-        limit_mock.limit.return_value = execute_resp
+        limit_mock.limit.return_value = limit_result
 
         corpus = dreamer.fetch_corpus(client)
         # Verify eq("type", "feedback") was called
         eq_mock.eq.assert_called_once_with("type", "feedback")
+        assert corpus == execute_resp.data
 
 
 # ---------------------------------------------------------------------------
