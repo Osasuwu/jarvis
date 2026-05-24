@@ -36,7 +36,7 @@ This policy covers:
 
 - **Gitleaks** pre-commit hook and CI workflow for secret scanning
 - **Dependabot** for dependency updates (when enabled)
-- **GitHub Copilot** code review on PRs
+- **Claude code-review** on PRs (via `.github/workflows/code-review.yml`)
 - Secrets stored in GitHub Actions secrets, never in code
 
 ## Supported Versions

@@ -121,7 +121,7 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
   - Hotfix → label `priority:critical` (PR Body Check honors the label per #424; no linked issue required); commit-msg uses `[no-issue]` when there's no parent issue (per `.pre-commit-config.yaml` regex from #329).
   - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
-- Check GitHub Copilot auto-review before merging.
+- Check the Claude code-review comment before merging (forked `code-review` plugin via `code-review.yml`). Copilot is no longer used — the plan lapsed and Claude review supersedes it (decision 2026-05-22). Still check ALL reviewers, not just one (the Claude bot posts as an issue-comment, not a PR review).
 
 ### Architecture sweep at milestone close
 

@@ -332,9 +332,9 @@ If issues found:
 ### 7. Decide merge (orchestrator only)
 
 Per each PR (subagent's or your own):
-- Tests green + Copilot clean + LOW/MEDIUM risk → **merge** (see /implement §7.5)
+- Tests green + Claude code-review clean + LOW/MEDIUM risk → **merge** (see /implement §7.5)
 - HIGH/CRITICAL or safety-critical → wait for principal
-- CI infra-blocked (billing, not failing tests) → merge if local tests pass + Copilot clean
+- CI infra-blocked (billing, not failing tests) → merge if local tests pass + Claude code-review clean
 
 ### 8. Record outcomes
 
