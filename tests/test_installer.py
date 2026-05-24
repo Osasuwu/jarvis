@@ -78,7 +78,7 @@ def fake_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "init"],
         cwd=repo,
         check=True,
     )
@@ -1642,6 +1642,7 @@ class TestEnvEncodingScan:
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
         subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "-c", "commit.gpgsign=false",
                         "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
         plan = installer.build_plan(manifest, repo)
         set_env_names = {a.dest for a in plan.actions if a.kind == "set_env"}
