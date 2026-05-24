@@ -109,9 +109,9 @@ BEGIN
         claimed_by = claimer
     WHERE id = event_row.id
     RETURNING * INTO event_row;
+    RETURN NEXT event_row;
   END IF;
-
-  RETURN NEXT event_row;
+  RETURN;
 END;
 $$;
 

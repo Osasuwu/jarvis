@@ -210,6 +210,25 @@ def test_claim_next_uses_skip_locked() -> None:
         "claim_next must use FOR UPDATE SKIP LOCKED"
 
 
+@pytest.mark.parametrize("source", ["migration", "schema"])
+def test_claim_next_no_ghost_row_on_empty_queue(source: str) -> None:
+    """claim_next must not emit an all-NULL ghost row when nothing pending.
+
+    Regression: `RETURN NEXT event_row` placed outside the `IF FOUND` block
+    emits an uninitialised rowtype (all NULLs) as a one-row SETOF, which the
+    handler cannot distinguish from a real row and reports `Claimed event None`.
+    """
+    text = (MIGRATION if source == "migration" else SCHEMA_MIRROR).read_text(encoding="utf-8")
+    fn_block = _extract_function_body(text, "claim_next")
+    if_match = re.search(r"\bif\s+found\b", fn_block, re.IGNORECASE)
+    end_if_match = re.search(r"\bend\s+if\b", fn_block, re.IGNORECASE)
+    return_next_match = re.search(r"\breturn\s+next\s+event_row\b", fn_block, re.IGNORECASE)
+    assert if_match and end_if_match and return_next_match, \
+        f"claim_next ({source}) is missing IF FOUND / END IF / RETURN NEXT"
+    assert if_match.end() < return_next_match.start() < end_if_match.start(), \
+        f"claim_next ({source}) emits ghost row — RETURN NEXT must be inside IF FOUND"
+
+
 def test_mark_processed_requires_claimed_state() -> None:
     """mark_processed must only update rows WHERE state = 'claimed'."""
     text = MIGRATION.read_text(encoding="utf-8")
@@ -323,7 +342,7 @@ class TestEventMarkProcessedHandler:
         client = MagicMock()
         monkeypatch.setattr("handlers.events._get_client", lambda: client)
 
-        _mock_rpc(client, "mark_processed", [True])
+        _mock_rpc(client, "mark_processed", True)
 
         result = await_handler(
             _handle_event_mark_processed({
@@ -346,7 +365,7 @@ class TestEventMarkProcessedHandler:
         client = MagicMock()
         monkeypatch.setattr("handlers.events._get_client", lambda: client)
 
-        _mock_rpc(client, "mark_processed", [False])
+        _mock_rpc(client, "mark_processed", False)
 
         result = await_handler(
             _handle_event_mark_processed({
@@ -367,7 +386,7 @@ class TestEventParkHandler:
         client = MagicMock()
         monkeypatch.setattr("handlers.events._get_client", lambda: client)
 
-        _mock_rpc(client, "park_event", [True])
+        _mock_rpc(client, "park_event", True)
 
         result = await_handler(
             _handle_event_park({
@@ -389,7 +408,7 @@ class TestEventParkHandler:
         client = MagicMock()
         monkeypatch.setattr("handlers.events._get_client", lambda: client)
 
-        _mock_rpc(client, "park_event", [False])
+        _mock_rpc(client, "park_event", False)
 
         result = await_handler(_handle_event_park({"event_id": "evt-001"}))
         assert "not in 'claimed' state" in result
@@ -404,7 +423,7 @@ class TestEventRequeueHandler:
         client = MagicMock()
         monkeypatch.setattr("handlers.events._get_client", lambda: client)
 
-        _mock_rpc(client, "requeue_event", [True])
+        _mock_rpc(client, "requeue_event", True)
 
         result = await_handler(
             _handle_event_requeue({
@@ -426,7 +445,7 @@ class TestEventRequeueHandler:
         client = MagicMock()
         monkeypatch.setattr("handlers.events._get_client", lambda: client)
 
-        _mock_rpc(client, "requeue_event", [False])
+        _mock_rpc(client, "requeue_event", False)
 
         result = await_handler(_handle_event_requeue({"event_id": "evt-001"}))
         assert "not in 'claimed' or 'parked' state" in result

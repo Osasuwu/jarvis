@@ -271,9 +271,9 @@ begin
         claimed_by = claimer
     where id = event_row.id
     returning * into event_row;
+    return next event_row;
   end if;
-
-  return next event_row;
+  return;
 end;
 $$;
 

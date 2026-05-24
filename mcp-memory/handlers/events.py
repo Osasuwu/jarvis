@@ -168,7 +168,7 @@ async def _handle_event_mark_processed(args: dict) -> list[TextContent]:
         {"event_id": event_id, "processor": processor, "action_taken": action_taken},
     ).execute()
 
-    if result.data and result.data[0]:
+    if result.data:
         return [
             TextContent(
                 type="text",
@@ -191,7 +191,7 @@ async def _handle_event_park(args: dict) -> list[TextContent]:
 
     result = client.rpc("park_event", {"event_id": event_id, "reason": reason}).execute()
 
-    if result.data and result.data[0]:
+    if result.data:
         return [
             TextContent(
                 type="text",
@@ -214,7 +214,7 @@ async def _handle_event_requeue(args: dict) -> list[TextContent]:
 
     result = client.rpc("requeue_event", {"event_id": event_id, "reason": reason}).execute()
 
-    if result.data and result.data[0]:
+    if result.data:
         return [
             TextContent(
                 type="text",

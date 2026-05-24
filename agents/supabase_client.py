@@ -100,6 +100,11 @@ def list_events(
     q = cli.table("events").select("*").order("created_at", desc=True).limit(limit)
     if processed is not None:
         q = q.eq("processed", processed)
+        # FSM (#739): claim_next sets state='claimed' but leaves processed=false
+        # until mark_processed runs. Filtering on the flag alone surfaces in-
+        # flight rows; pin the "unprocessed inbox" to truly pending rows.
+        if processed is False:
+            q = q.eq("state", "pending")
     if repo is not None:
         q = q.eq("repo", repo)
     if event_type is not None:
