@@ -33,6 +33,21 @@ If a question can be answered by exploring the codebase, explore the codebase in
 
 **Anti-sycophancy note** (decision 316c5911-9f06-44de-8f99-20fe3e9fa448): This third-person reviewer framing (based on arxiv 2505.23840) reduces agreement-bias in LLM responses to user proposals by ~64% in multi-turn dialogues. The goal is crisp pushback, not reflexive agreement.
 
+### Research-pass gate (precondition to Phase 3)
+
+Before entering the CRITIC subagent phase, check whether a recent 4-channel
+research artifact exists for the current topic. The gate fires only for
+**high-stakes** decisions — those whose `reversibility` is `{hard, irreversible}`
+OR `confidence < 0.7`.
+
+**Procedural source: [`../_shared/research-pass-gate.md`](../_shared/research-pass-gate.md).**
+
+Load and execute the procedure there. If the gate blocks:
+- Propose running `/research` on the current topic first
+- Do not proceed to Phase 3 until research completes or owner explicitly waives
+
+Low-stakes decisions (reversible AND confidence >= 0.7) skip this gate entirely.
+
 ### Phase 3: Cross-context review (CRITIC subagents)
 
 Single-agent self-critique grades its own exam. Personalisation measurably increases sycophancy (MIT 2026, ICLR 2026); same-session self-review has a 64.5% blind-spot rate across 14 models (arXiv 2506.04907); fresh-context review measurably beats same-session (CCR F1 28.6 vs 24.6, arXiv 2603.12123). Phase 3 dispatches sibling subagent(s) — each operating as a **role-isolated critic** without SOUL.md, always_load memory, or project calibration in its prompt — to critique the proposal cold.
