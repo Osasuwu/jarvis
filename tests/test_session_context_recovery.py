@@ -24,18 +24,26 @@ from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Stub optional deps so module import succeeds on minimal CI
+#
+# Must handle the case where a local supabase/ directory (the repo's
+# migration folder) creates a namespace package, bypassing the ImportError
+# fallback. We always override with a proper stub.
 # ---------------------------------------------------------------------------
 for _stub in ("dotenv", "supabase"):
-    if _stub not in sys.modules:
-        try:
-            __import__(_stub)
-        except ImportError:
-            mod = types.ModuleType(_stub)
-            if _stub == "dotenv":
-                mod.load_dotenv = lambda *a, **k: None
-            if _stub == "supabase":
-                mod.create_client = lambda *a, **k: None
-            sys.modules[_stub] = mod
+    try:
+        __import__(_stub)
+    except ImportError:
+        pass
+    # Check whether the module is a real installed package or a namespace
+    # package / missing — in both cases we need a stub with the expected API.
+    mod = sys.modules.get(_stub)
+    if mod is None or getattr(mod, "__path__", None) is not None and not hasattr(mod, "__file__") or _stub == "supabase" and not hasattr(mod, "create_client"):
+        mod = types.ModuleType(_stub)
+        if _stub == "dotenv":
+            mod.load_dotenv = lambda *a, **k: None
+        if _stub == "supabase":
+            mod.create_client = lambda *a, **k: None
+        sys.modules[_stub] = mod
 
 
 _PATH = Path(__file__).resolve().parent.parent / "scripts" / "session-context.py"
@@ -443,3 +451,105 @@ def test_load_project_context_resolves_per_project_root(tmp_path):
     # proj_b deliberately has NO CONTEXT.md
     assert "Project A" in sc._load_project_context(proj_a)
     assert sc._load_project_context(proj_b) is None
+
+
+# ---------------------------------------------------------------------------
+# _query_pending_review_count — session-start review reminder (#556)
+# ---------------------------------------------------------------------------
+class _FakeRpcResponse:
+    """Mimics Supabase response with .execute() chaining."""
+
+    def __init__(self, data):
+        self.data = data
+
+    def execute(self):
+        return self
+
+
+class _FakeRpcClient:
+    """Fake Supabase client with .rpc() support for _query_pending_review_count."""
+
+    def __init__(self, rpc_data: dict | None = None):
+        # rpc_data: mapping from RPC name to list of result rows
+        self._rpc_data = dict(rpc_data or {})
+        self.call_log: list[tuple] = []
+        self.table_log: list[tuple] = []
+
+    def rpc(self, name: str, params: dict):
+        self.call_log.append((name, params))
+        rows = self._rpc_data.get(name, [])
+        return _FakeRpcResponse(rows)
+
+    def table(self, name: str):
+        self.table_log.append(name)
+        # Minimal table stub — not used by _query_pending_review_count
+        import types as _t
+        return _t.SimpleNamespace()
+
+
+class _FakeRpcClientError:
+    """Fake client that raises on any RPC call — simulates unreachable backend."""
+
+    def rpc(self, name: str, params: dict):
+        raise RuntimeError(f"RPC {name} failed")
+
+    def table(self, name: str):
+        return _FakeRpcClient().table(name)
+
+
+def test_pending_review_count_zero_when_no_data():
+    """No pending candidates → return 0."""
+    client = _FakeRpcClient({"memory_review_list": []})
+    assert sc._query_pending_review_count(client, "jarvis") == 0
+
+
+def test_pending_review_count_project_only():
+    """Only project-specific candidates → count them, global is empty."""
+    client = _FakeRpcClient({
+        "memory_review_list": [{"id": "a"}, {"id": "b"}],
+    })
+    # Two calls: one for project, one for global. Both return total 2 rows
+    # across both calls (4 total).
+    assert sc._query_pending_review_count(client, "jarvis") == 4
+
+
+def test_pending_review_count_no_project():
+    """When project is None, only query global scope (project_filter='')."""
+    client = _FakeRpcClient({
+        "memory_review_list": [{"id": "a"}, {"id": "b"}],
+    })
+    assert sc._query_pending_review_count(client, None) == 2
+
+
+def test_pending_review_count_no_project_calls_empty_string():
+    """Without a project, the global query uses project_filter='' (not None)."""
+    client = _FakeRpcClient({"memory_review_list": []})
+    sc._query_pending_review_count(client, None)
+    rpc_calls = client.call_log
+    assert len(rpc_calls) == 1
+    name, params = rpc_calls[0]
+    assert name == "memory_review_list"
+    assert params.get("project_filter") == ""
+
+
+def test_pending_review_count_with_project_calls_both_scopes():
+    """With a project, two queries: project-specific + global ('')."""
+    client = _FakeRpcClient({"memory_review_list": []})
+    sc._query_pending_review_count(client, "redrobot")
+    rpc_calls = client.call_log
+    assert len(rpc_calls) == 2
+    scopes = [c[1].get("project_filter") for c in rpc_calls]
+    assert "redrobot" in scopes
+    assert "" in scopes
+
+
+def test_pending_review_count_graceful_on_rpc_error():
+    """RPC failure → graceful degradation: returns 0, prints to stderr."""
+    client = _FakeRpcClientError()
+    assert sc._query_pending_review_count(client, "jarvis") == 0
+
+
+def test_pending_review_count_graceful_on_rpc_error_no_project():
+    """RPC failure with no active project → returns 0."""
+    client = _FakeRpcClientError()
+    assert sc._query_pending_review_count(client, None) == 0
