@@ -116,7 +116,7 @@ Where load-bearing rules live, in order of preference:
 ### Devices & paths
 
 - **3 devices** — owner runs Jarvis on Lenovo laptop, desktop, MacBook. Different usernames, different paths. Anything device-pinned is a bug.
-- **Workshop PC = AFK orchestrator host.** Robot connection became network-mediated, so Workshop is no longer pinned to mid-day robot work — runs 24/7 as the residency for the orchestrator watcher daemon and sandcastle launches. Other devices can run sandcastle ad-hoc but the watcher lives only on Workshop (single source of dispatch truth, no double-fire across devices).
+- **Workshop PC = sole routine host.** Robot connection became network-mediated, so Workshop runs 24/7 as the residency for **all** Jarvis routines: orchestrator watcher daemon, sandcastle AFK launches, quota probe, and all `create_scheduled_task` MCP routines (status-record, intel, verify, memory-consolidation-weekly, memory-evolve-weekly). Other devices can run sandcastle ad-hoc but no routine is registered there — `/setup-tasks` refuses on non-Workshop. Removes per-device cron-dedup, eliminates double-dispatch, centralises observability. SPOF tradeoff: Workshop offline = routines pause; `status-record` gap on next SessionStart is the canary. Decision `1b7ff8d1` (2026-05-26).
 - **JARVIS_HOME** — env var resolved at install time to the absolute repo root. Use this in templated configs, never hardcode `C:\Users\...`.
 - **`~/.claude/`** — user-level mirror of `.claude-userlevel/`. **Do not edit directly** — edit canonical source in `.claude-userlevel/` and run `install.ps1 -Apply`.
 
