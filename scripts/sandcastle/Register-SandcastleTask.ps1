@@ -188,14 +188,18 @@ if ($QuotaProbe) {
     $startDt = (Get-Date).Date.AddMinutes(5)  # start 5 min past midnight
     if ($startDt -lt (Get-Date)) { $startDt = $startDt.AddDays(1) }
 
-    $trigger = New-ScheduledTaskTrigger -Daily -At $startDt
+    # New-ScheduledTaskTriggerRepetition does not exist as a cmdlet on PS 5.1 / Win11
+    # (#792). The supported way to attach a repetition pattern is the -Once parameter
+    # set on New-ScheduledTaskTrigger, which builds the MSFT_TaskRepetitionPattern
+    # CIM instance internally.
+    #
     # [timespan]::MaxValue (~10.6M days) overflows Task Scheduler's COM layer
     # (max ~49,710 days from Int32 seconds) -> COMException at register time or a
     # silent wrap that stops the repetition immediately (C8). 100 years is well
-    # within range and is effectively indefinite for a daily-retriggered task.
-    $trigger.Repetition = New-ScheduledTaskTriggerRepetition `
-        -Interval ([timespan]::FromMinutes($QuotaProbeInterval)) `
-        -Duration (New-TimeSpan -Days 36500)
+    # within range and is effectively indefinite for a self-retriggered task.
+    $trigger = New-ScheduledTaskTrigger -Once -At $startDt `
+        -RepetitionInterval ([timespan]::FromMinutes($QuotaProbeInterval)) `
+        -RepetitionDuration (New-TimeSpan -Days 36500)
 
     # S4U: run whether or not the user is logged on, and fire even when the screen
     # is locked (m1: LogonType Interactive skips the run on a locked workstation).
