@@ -18,10 +18,9 @@ import json
 import sys
 import types
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 # Stub httpx / supabase / dotenv if not installed so the module import works
 # in minimal CI (same pattern as test_consolidation_review.py).
@@ -81,8 +80,8 @@ def _make_corpus_memory(
         "content": content,
         "tags": tags or ["feedback", "test"],
         "requires_review": False,
-        "created_at": f"2026-05-{10+idx:02d}T00:00:00Z",
-        "updated_at": f"2026-05-{10+idx:02d}T00:00:00Z",
+        "created_at": f"2026-05-{10 + idx:02d}T00:00:00Z",
+        "updated_at": f"2026-05-{10 + idx:02d}T00:00:00Z",
     }
 
 
@@ -135,20 +134,22 @@ class TestParseResponse:
         assert proposals == []
 
     def test_new_candidate_with_valid_type(self):
-        text = json.dumps({
-            "new_candidates": [
-                {
-                    "name": "test_insight",
-                    "type": "project",
-                    "project": "jarvis",
-                    "description": "A test insight",
-                    "content": "Test content here",
-                    "tags": ["dreamer", "test"],
-                    "reasoning": "This is a test",
-                }
-            ],
-            "merge_proposals": [],
-        })
+        text = json.dumps(
+            {
+                "new_candidates": [
+                    {
+                        "name": "test_insight",
+                        "type": "project",
+                        "project": "jarvis",
+                        "description": "A test insight",
+                        "content": "Test content here",
+                        "tags": ["dreamer", "test"],
+                        "reasoning": "This is a test",
+                    }
+                ],
+                "merge_proposals": [],
+            }
+        )
         result = dreamer._parse_response(text, set())
         assert result is not None
         candidates, proposals = result
@@ -158,17 +159,19 @@ class TestParseResponse:
         assert candidates[0]["project"] == "jarvis"
 
     def test_new_candidate_invalid_type_is_dropped(self):
-        text = json.dumps({
-            "new_candidates": [
-                {
-                    "name": "bad_type",
-                    "type": "invalid_type",
-                    "description": "bad",
-                    "content": "bad",
-                }
-            ],
-            "merge_proposals": [],
-        })
+        text = json.dumps(
+            {
+                "new_candidates": [
+                    {
+                        "name": "bad_type",
+                        "type": "invalid_type",
+                        "description": "bad",
+                        "content": "bad",
+                    }
+                ],
+                "merge_proposals": [],
+            }
+        )
         result = dreamer._parse_response(text, set())
         assert result is not None
         candidates, _ = result
@@ -176,38 +179,40 @@ class TestParseResponse:
 
     def test_merge_proposal_requires_two_or_more_targets(self):
         corpus_ids = {"id-1", "id-2", "id-3"}
-        text = json.dumps({
-            "new_candidates": [],
-            "merge_proposals": [
-                {
-                    "name": "valid_merge",
-                    "type": "feedback",
-                    "description": "Merged feedback",
-                    "content": "Merged content",
-                    "tags": ["dreamer"],
-                    "merge_targets": ["id-1", "id-2"],
-                    "reasoning": "These overlap",
-                },
-                {
-                    "name": "single_target",
-                    "type": "feedback",
-                    "description": "Only one target",
-                    "content": "Content",
-                    "tags": ["dreamer"],
-                    "merge_targets": ["id-1"],
-                    "reasoning": "Only one",
-                },
-                {
-                    "name": "nonexistent_target",
-                    "type": "feedback",
-                    "description": "Target not in corpus",
-                    "content": "Content",
-                    "tags": ["dreamer"],
-                    "merge_targets": ["id-1", "no-such-id"],
-                    "reasoning": "Bad target",
-                },
-            ],
-        })
+        text = json.dumps(
+            {
+                "new_candidates": [],
+                "merge_proposals": [
+                    {
+                        "name": "valid_merge",
+                        "type": "feedback",
+                        "description": "Merged feedback",
+                        "content": "Merged content",
+                        "tags": ["dreamer"],
+                        "merge_targets": ["id-1", "id-2"],
+                        "reasoning": "These overlap",
+                    },
+                    {
+                        "name": "single_target",
+                        "type": "feedback",
+                        "description": "Only one target",
+                        "content": "Content",
+                        "tags": ["dreamer"],
+                        "merge_targets": ["id-1"],
+                        "reasoning": "Only one",
+                    },
+                    {
+                        "name": "nonexistent_target",
+                        "type": "feedback",
+                        "description": "Target not in corpus",
+                        "content": "Content",
+                        "tags": ["dreamer"],
+                        "merge_targets": ["id-1", "no-such-id"],
+                        "reasoning": "Bad target",
+                    },
+                ],
+            }
+        )
         result = dreamer._parse_response(text, corpus_ids)
         assert result is not None
         _, proposals = result
@@ -217,20 +222,22 @@ class TestParseResponse:
 
     def test_merge_proposal_targets_filtered_to_corpus_ids(self):
         corpus_ids = {"real-uuid-1", "real-uuid-2"}
-        text = json.dumps({
-            "new_candidates": [],
-            "merge_proposals": [
-                {
-                    "name": "partial_filter",
-                    "type": "feedback",
-                    "description": "One real, one fake",
-                    "content": "Content",
-                    "tags": ["dreamer"],
-                    "merge_targets": ["real-uuid-1", "fake-uuid", "real-uuid-2"],
-                    "reasoning": "Mixed targets",
-                },
-            ],
-        })
+        text = json.dumps(
+            {
+                "new_candidates": [],
+                "merge_proposals": [
+                    {
+                        "name": "partial_filter",
+                        "type": "feedback",
+                        "description": "One real, one fake",
+                        "content": "Content",
+                        "tags": ["dreamer"],
+                        "merge_targets": ["real-uuid-1", "fake-uuid", "real-uuid-2"],
+                        "reasoning": "Mixed targets",
+                    },
+                ],
+            }
+        )
         result = dreamer._parse_response(text, corpus_ids)
         assert result is not None
         _, proposals = result
@@ -240,18 +247,20 @@ class TestParseResponse:
 
     def test_new_candidate_strips_merge_targets(self):
         """New candidates should not carry merge_targets even if LLM emits them."""
-        text = json.dumps({
-            "new_candidates": [
-                {
-                    "name": "should_not_have_targets",
-                    "type": "project",
-                    "description": "A candidate",
-                    "content": "Content",
-                    "merge_targets": ["some-uuid"],
-                }
-            ],
-            "merge_proposals": [],
-        })
+        text = json.dumps(
+            {
+                "new_candidates": [
+                    {
+                        "name": "should_not_have_targets",
+                        "type": "project",
+                        "description": "A candidate",
+                        "content": "Content",
+                        "merge_targets": ["some-uuid"],
+                    }
+                ],
+                "merge_proposals": [],
+            }
+        )
         result = dreamer._parse_response(text, {"some-uuid"})
         assert result is not None
         candidates, _ = result
@@ -259,23 +268,25 @@ class TestParseResponse:
         assert "merge_targets" not in candidates[0]
 
     def test_duplicate_names_deduplicated(self):
-        text = json.dumps({
-            "new_candidates": [
-                {
-                    "name": "duplicate_name",
-                    "type": "project",
-                    "description": "First",
-                    "content": "First content",
-                },
-                {
-                    "name": "duplicate_name",
-                    "type": "project",
-                    "description": "Second (duplicate)",
-                    "content": "Second content",
-                },
-            ],
-            "merge_proposals": [],
-        })
+        text = json.dumps(
+            {
+                "new_candidates": [
+                    {
+                        "name": "duplicate_name",
+                        "type": "project",
+                        "description": "First",
+                        "content": "First content",
+                    },
+                    {
+                        "name": "duplicate_name",
+                        "type": "project",
+                        "description": "Second (duplicate)",
+                        "content": "Second content",
+                    },
+                ],
+                "merge_proposals": [],
+            }
+        )
         result = dreamer._parse_response(text, set())
         assert result is not None
         candidates, _ = result
@@ -311,9 +322,7 @@ class TestConsolidate:
         """AC: given a sparse corpus, consolidate runs without error
         and returns empty lists."""
         corpus = []
-        candidates, proposals = dreamer.consolidate(
-            corpus, api_key="test-key"
-        )
+        candidates, proposals = dreamer.consolidate(corpus, api_key="test-key")
         assert candidates == []
         assert proposals == []
 
@@ -330,9 +339,7 @@ class TestConsolidate:
 
         with patch.object(dreamer.httpx, "Client") as mock_cls:
             mock_cls.return_value.__enter__.return_value = http
-            candidates, proposals = dreamer.consolidate(
-                corpus, api_key="test-key"
-            )
+            candidates, proposals = dreamer.consolidate(corpus, api_key="test-key")
 
         assert candidates == []
         assert proposals == []
@@ -342,7 +349,9 @@ class TestConsolidate:
         memories, consolidate returns at least one merge proposal whose
         merge_targets contains both UUIDs."""
         mem1 = _make_corpus_memory(idx=1, content="User prefers async workflows for code review")
-        mem2 = _make_corpus_memory(idx=2, content="User strongly prefers async code review workflows")
+        mem2 = _make_corpus_memory(
+            idx=2, content="User strongly prefers async code review workflows"
+        )
         corpus = [mem1, mem2]
 
         merge_proposals = [
@@ -363,14 +372,11 @@ class TestConsolidate:
 
         with patch.object(dreamer.httpx, "Client") as mock_cls:
             mock_cls.return_value.__enter__.return_value = http
-            candidates, proposals = dreamer.consolidate(
-                corpus, api_key="test-key"
-            )
+            candidates, proposals = dreamer.consolidate(corpus, api_key="test-key")
 
         assert len(proposals) >= 1
         found = any(
-            mem1["id"] in p["merge_targets"] and mem2["id"] in p["merge_targets"]
-            for p in proposals
+            mem1["id"] in p["merge_targets"] and mem2["id"] in p["merge_targets"] for p in proposals
         )
         assert found, (
             f"Expected a merge proposal referencing both {mem1['id']} "
@@ -387,9 +393,7 @@ class TestConsolidate:
 
         with patch.object(dreamer.httpx, "Client") as mock_cls:
             mock_cls.return_value.__enter__.return_value = http
-            candidates, proposals = dreamer.consolidate(
-                corpus, api_key="test-key"
-            )
+            candidates, proposals = dreamer.consolidate(corpus, api_key="test-key")
 
         assert candidates == []
         assert proposals == []
@@ -414,9 +418,7 @@ class TestConsolidate:
 
         with patch.object(dreamer.httpx, "Client") as mock_cls:
             mock_cls.return_value.__enter__.return_value = http
-            candidates, proposals = dreamer.consolidate(
-                corpus, api_key="test-key"
-            )
+            candidates, proposals = dreamer.consolidate(corpus, api_key="test-key")
 
         assert len(candidates) <= dreamer.MAX_NEW_CANDIDATES
 
@@ -434,8 +436,10 @@ class TestTrigger:
         """Build a client mock returning ``count`` pending candidates.
 
         Builds a proper chain so that::
-            client.table("memories").select().eq().is_().limit().execute()
+            client.table("memories").select().eq().eq().is_().limit().execute()
         returns a resp with ``.count = count``.
+        The double eq() reflects fetch_pending_count's two filters:
+        eq("requires_review", True) then eq("type", "feedback").
         """
         client = MagicMock()
         exec_resp = MagicMock()
@@ -447,8 +451,11 @@ class TestTrigger:
         is_mock = MagicMock()
         is_mock.is_.return_value.limit.return_value = limit_result
 
+        type_eq_mock = MagicMock()
+        type_eq_mock.eq.return_value = is_mock  # second eq("type", "feedback") → is_mock
+
         eq_mock = MagicMock()
-        eq_mock.eq.return_value = is_mock
+        eq_mock.eq.return_value = type_eq_mock  # first eq("requires_review", True) → type_eq_mock
 
         select_mock = MagicMock()
         select_mock.select.return_value = eq_mock
@@ -457,9 +464,7 @@ class TestTrigger:
         return client
 
     @staticmethod
-    def _mock_client_with_events(
-        client: MagicMock, last_event_dt: str | None
-    ) -> MagicMock:
+    def _mock_client_with_events(client: MagicMock, last_event_dt: str | None) -> MagicMock:
         """Add events-table mocks to an existing client stub.
 
         Builds a chain::
@@ -501,7 +506,8 @@ class TestTrigger:
 
     def test_pending_below_threshold_and_recent_run_skips(self):
         client = self._mock_client_with_pending(5)
-        client = self._mock_client_with_events(client, "2026-05-18T12:00:00Z")
+        recent = (datetime.now(timezone.utc) - timedelta(days=4)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        client = self._mock_client_with_events(client, recent)
         should_run, reason = dreamer.check_trigger(client)
         assert not should_run
         assert "pending_candidate_count=5" in reason
@@ -566,7 +572,6 @@ class TestFetchCorpus:
 
         # Track what eq filter was applied
         table_mock = MagicMock()
-        select_mock = MagicMock()
         eq_mock = MagicMock()
         gte_mock = MagicMock()
         is__mock = MagicMock()

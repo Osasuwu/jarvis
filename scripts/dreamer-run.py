@@ -45,7 +45,6 @@ import os
 import sys
 import time
 import uuid
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -188,11 +187,12 @@ def _llm_config() -> tuple[str, str, str]:
 
 
 def fetch_pending_count(client) -> int:
-    """Count memories with ``requires_review=true`` (unreviewed candidates)."""
+    """Count feedback memories with ``requires_review=true`` (unreviewed candidates)."""
     rows = (
         client.table("memories")
         .select("id", count="exact")
         .eq("requires_review", True)
+        .eq("type", "feedback")
         .is_("deleted_at", "null")
         .limit(1)
         .execute()
@@ -200,8 +200,8 @@ def fetch_pending_count(client) -> int:
     return rows.count if hasattr(rows, "count") and rows.count is not None else 0
 
 
-def fetch_days_since_last_run(client) -> int | None:
-    """Return days since the last ``dreamer_run`` event, or None if no prior run."""
+def fetch_days_since_last_run(client) -> timedelta | None:
+    """Return elapsed time since the last ``dreamer_run`` event, or None if no prior run."""
     rows = (
         client.table("events")
         .select("created_at")
@@ -218,7 +218,7 @@ def fetch_days_since_last_run(client) -> int | None:
         return None
     try:
         last = datetime.fromisoformat(str(last_ts).replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - last).days
+        return datetime.now(timezone.utc) - last
     except (TypeError, ValueError):
         return None
 
@@ -233,10 +233,11 @@ def check_trigger(client) -> tuple[bool, str]:
     if pending >= PENDING_THRESHOLD:
         return True, f"pending_candidate_count={pending} >= threshold={PENDING_THRESHOLD}"
 
-    days = fetch_days_since_last_run(client)
-    if days is None:
+    delta = fetch_days_since_last_run(client)
+    if delta is None:
         return True, "no prior dreamer_run found — first run"
-    if days >= DAYS_SINCE_LAST_RUN:
+    days = delta.days  # whole days for display; full timedelta used for comparison
+    if delta >= timedelta(days=DAYS_SINCE_LAST_RUN):
         return True, f"days_since_last_run={days} >= threshold={DAYS_SINCE_LAST_RUN}"
 
     return False, (
@@ -259,7 +260,9 @@ def fetch_corpus(client, *, max_rows: int = MAX_CORPUS_ROWS) -> list[dict]:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=CORPUS_LOOKBACK_DAYS)).isoformat()
     rows = (
         client.table("memories")
-        .select("id, name, type, description, content, tags, project, created_at, updated_at, requires_review")
+        .select(
+            "id, name, type, description, content, tags, project, created_at, updated_at, requires_review"
+        )
         .eq("type", "feedback")
         .gte("created_at", cutoff)
         .is_("deleted_at", "null")
@@ -291,7 +294,7 @@ def _build_corpus_prompt(corpus: list[dict]) -> str:
             f"  created_at: {m.get('created_at', '?')}",
         ]
         if m.get("tags"):
-            block.append(f"  tags: {', '.join(m['tags'])}")
+            block.append(f"  tags: {', '.join(str(t) for t in m['tags'])}")
         if m.get("description"):
             block.append(f"  description: {m['description']}")
         if m.get("content"):
@@ -515,7 +518,13 @@ def insert_candidates(client, candidates: list[dict], run_id: str) -> list[str]:
         try:
             resp = client.table("memories").insert(row).execute()
             data = resp.data or []
-            if data and data[0].get("id"):
+            if not data:
+                print(
+                    f"  ! candidate insert returned no data ({c.get('name')}) "
+                    "— possible RLS rejection (anon key lacks sandcastle provenance)",
+                    file=sys.stderr,
+                )
+            elif data[0].get("id"):
                 ids.append(data[0]["id"])
         except Exception as e:
             print(f"  ! candidate insert failed ({c.get('name')}): {e}", file=sys.stderr)
@@ -530,7 +539,13 @@ def insert_merge_proposals(client, proposals: list[dict], run_id: str) -> list[s
         try:
             resp = client.table("memories").insert(row).execute()
             data = resp.data or []
-            if data and data[0].get("id"):
+            if not data:
+                print(
+                    f"  ! merge_proposal insert returned no data ({p.get('name')}) "
+                    "— possible RLS rejection (anon key lacks sandcastle provenance)",
+                    file=sys.stderr,
+                )
+            elif data[0].get("id"):
                 ids.append(data[0]["id"])
         except Exception as e:
             print(f"  ! merge_proposal insert failed ({p.get('name')}): {e}", file=sys.stderr)
@@ -607,9 +622,25 @@ def main() -> int:
     args = p.parse_args()
 
     sb_url = os.environ.get("SUPABASE_URL")
-    sb_key = os.environ.get("SUPABASE_KEY")
+    # Mirror mcp-memory/client.py: prefer service-role key so host writes bypass
+    # the RLS policy (source_provenance LIKE 'sandcastle:%' for anon INSERTs).
+    # Dreamer writes 'dreamer:<run_id>' provenance — anon key gets 403 from RLS.
+    sb_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not sb_key:
+        sb_key = os.environ.get("SUPABASE_KEY")
+        if sb_key and not os.environ.get("SANDCASTLE_RUN_ID"):
+            print(
+                "WARNING: dreamer using SUPABASE_KEY (anon). RLS requires "
+                "source_provenance LIKE 'sandcastle:%' for anon INSERTs — "
+                "dreamer writes 'dreamer:...' provenance and inserts will be rejected. "
+                "Set SUPABASE_SERVICE_KEY in .env.",
+                file=sys.stderr,
+            )
     if not sb_url or not sb_key:
-        print("SUPABASE_URL / SUPABASE_KEY missing from env", file=sys.stderr)
+        print(
+            "SUPABASE_URL / SUPABASE_SERVICE_KEY (or SUPABASE_KEY) missing from env",
+            file=sys.stderr,
+        )
         return 2
 
     api_key, api_url, model = _llm_config()
@@ -656,13 +687,15 @@ def main() -> int:
             "new_candidates": 0,
             "merge_proposals": 0,
         }
-        event_id = write_event(
-            client,
-            run_id=run_id,
-            status="ok",
-            title="Dreamer run — corpus empty, no output",
-            payload={**recap, "event_id": None},
-        )
+        event_id = None
+        if not args.dry_run:
+            event_id = write_event(
+                client,
+                run_id=run_id,
+                status="ok",
+                title="Dreamer run — corpus empty, no output",
+                payload={**recap, "event_id": None},
+            )
         recap["event_id"] = event_id
         print(json.dumps(recap, indent=2, default=str))
         return 0
@@ -732,7 +765,6 @@ def main() -> int:
         "dry_run": args.dry_run,
         "force": args.force,
     }
-    total = len(new_candidates) + len(merge_proposals)
     total_inserted = len(candidate_ids) + len(proposal_ids)
     title_status = "dry-run" if args.dry_run else "ok"
     title = (
@@ -761,7 +793,7 @@ def main() -> int:
         "candidate_ids": candidate_ids,
         "proposal_ids": proposal_ids,
         "dry_run": args.dry_run,
-        "needs_review": total_inserted > 0,
+        "needs_review": (not args.dry_run) and total_inserted > 0,
     }
     print(json.dumps(recap, indent=2, default=str))
     return 0
