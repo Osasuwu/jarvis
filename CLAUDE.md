@@ -133,6 +133,7 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 - Branches from `main`. **PRs are for code, not for discussions.**
   - Code change → one issue, one PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
   - Hotfix → label `priority:critical` (PR Body Check honors the label per #424; no linked issue required); commit-msg uses `[no-issue]` when there's no parent issue (per `.pre-commit-config.yaml` regex from #329).
+  - Refactor → PR title with conventional-commit prefix `refactor:` / `refactor(scope):` auto-bypasses the PR Body Check linked-issue requirement (structural cleanup rarely has a parent issue; `[no-issue]` marker still works but isn't required).
   - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
 - Check the Claude code-review comment before merging (forked `code-review` plugin via `code-review.yml`). Copilot is no longer used — the plan lapsed and Claude review supersedes it (decision 2026-05-22). Still check ALL reviewers, not just one (the Claude bot posts as an issue-comment, not a PR review).
