@@ -233,7 +233,15 @@ async def _handle_recall(args: dict) -> list[TextContent]:
             # Track reads (fire-and-forget)
             ids = [r["id"] for r in rows if r.get("id")]
             if ids:
-                asyncio.create_task(_touch_memories(client, ids))
+                # CHANGE #767: Filter out always_load memories to de-bias access-boost.
+                # Don't bump last_accessed_at for evergreen rules; recency should not
+                # dominate semantic recall via ACT-R temporal scoring.
+                ids_to_touch = [
+                    rid for rid, row in zip(ids, rows)
+                    if "always_load" not in (row.get("tags") or [])
+                ]
+                if ids_to_touch:
+                    asyncio.create_task(_touch_memories(client, ids_to_touch))
             return results
 
     # Fallback: keyword-only search (embed failure or empty hybrid result)
