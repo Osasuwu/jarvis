@@ -12,7 +12,6 @@ the diff on every PR.
 from __future__ import annotations
 
 import importlib.util
-import sys
 import uuid
 from pathlib import Path
 
@@ -66,7 +65,11 @@ class TestClassifierUpdate:
             "content": "User prefers async workflows for code review.",
             "tags": ["workflow", "async"],
         }
-        ctx = {"decision": "UPDATE", "before_snapshot": before, "reasoning": "More specific preference detected"}
+        ctx = {
+            "decision": "UPDATE",
+            "before_snapshot": before,
+            "reasoning": "More specific preference detected",
+        }
         result = review_render.render_proposal(row, ctx)
         assert "### async_pref (feedback) — UPDATE" in result
         assert "Description:" in result
@@ -175,6 +178,27 @@ class TestMergeProposal:
         assert "uuid-b" in result
         assert "Consolidated feedback" in result
 
+    def test_classifier_with_merge_targets_renders_as_merge(self):
+        """Compound row (classifier:* provenance + non-empty merge_targets) must show targets.
+
+        Regression: round-2 routing checked `is_classifier` before `has_merge_targets`,
+        so a classifier:add:* row that also consolidates duplicates rendered as a
+        plain classifier compact card and the merge target UUIDs were silently
+        dropped from the reviewer's view.
+        """
+        row = _row(
+            name="consolidated_add",
+            description="New consolidated memory replacing duplicates",
+            merge_targets=["uuid-dup-1", "uuid-dup-2", "uuid-dup-3"],
+            source_provenance="classifier:add:2026-05-26",
+        )
+        ctx = {"decision": "ADD", "reasoning": "Consolidates 3 duplicates into one canonical"}
+        result = review_render.render_proposal(row, ctx)
+        assert "MERGE (3 targets)" in result
+        assert "uuid-dup-1" in result
+        assert "uuid-dup-2" in result
+        assert "uuid-dup-3" in result
+
 
 # ---------------------------------------------------------------------------
 # Candidate
@@ -237,6 +261,7 @@ class TestRenderList:
 
     def test_contexts_length_mismatch_raises(self):
         import pytest
+
         rows = [_row(name="only")]
         with pytest.raises(ValueError, match="contexts length"):
             review_render.render_proposal_list(rows, contexts=[None, None])

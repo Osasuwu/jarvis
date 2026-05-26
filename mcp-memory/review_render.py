@@ -46,12 +46,17 @@ def render_proposal(row: dict, context: dict | None = None) -> str:
     decision = (context or {}).get("decision", "")
     before = (context or {}).get("before_snapshot")
 
+    # merge_targets is a meta-row property — when present, the consolidation
+    # intent is the most important thing for the reviewer to see, regardless
+    # of whether the row also carries a classifier:* provenance. Route to the
+    # merge card before any classifier short-circuit so compound rows
+    # (e.g. classifier:add:* with merge_targets) don't silently drop the targets.
+    if has_merge_targets:
+        return _render_merge(row)
     if is_classifier and decision == "UPDATE" and before:
         return _render_diff_block(row, before, context)
     if is_classifier:
         return _render_compact(row, label=decision or "classifier", context=context)
-    if has_merge_targets:
-        return _render_merge(row)
     return _render_compact(row, label="candidate", context=context)
 
 

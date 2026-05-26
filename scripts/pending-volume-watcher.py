@@ -102,10 +102,20 @@ def last_learn_run(client) -> dict | None:
     return data[0] if data else None
 
 
+NO_ID_SENTINEL = "<no-id>"
+
+
 def emit_event(
     client, *, pending_count: int, state: str = "fired", dry_run: bool = False
 ) -> str | None:
-    """Emit a ``candidates_pending`` event. Best-effort."""
+    """Emit a ``candidates_pending`` event.
+
+    Returns the inserted row's ``id`` when PostgREST returns it in
+    ``resp.data`` (default). When ``Prefer: return=minimal`` or RLS hide the
+    row, returns ``NO_ID_SENTINEL`` to mark **success-without-id** so the
+    caller can still write the debounce marker. Returns ``None`` only when
+    the INSERT itself failed (exception caught).
+    """
     if dry_run:
         return None
     try:
@@ -127,14 +137,19 @@ def emit_event(
             .execute()
         )
         data = resp.data or []
-        return data[0]["id"] if data else None
+        return data[0]["id"] if data else NO_ID_SENTINEL
     except Exception as e:
         print(f"! event insert failed: {e}", file=sys.stderr)
         return None
 
 
-def emit_learn_run(client) -> None:
-    """Emit a ``learn_run`` event to self-debounce subsequent watcher invocations."""
+def emit_learn_run(client) -> bool:
+    """Emit a ``learn_run`` event to self-debounce subsequent watcher invocations.
+
+    Returns ``True`` if the marker was written, ``False`` on insert failure.
+    The caller surfaces this in the result dict so a transient DB error
+    doesn't silently produce a double-fire on the next queue oscillation.
+    """
     try:
         client.table("events").insert(
             {
@@ -146,8 +161,10 @@ def emit_learn_run(client) -> None:
                 "payload": {},
             }
         ).execute()
+        return True
     except Exception as e:
         print(f"! learn_run event insert failed: {e}", file=sys.stderr)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +200,9 @@ def check_and_fire(client, *, dry_run: bool = False, _now=None) -> dict:
     last_state = "rearmed"
     if last_event:
         payload = last_event.get("payload") or {}
-        last_state = payload.get("state", "fired")
+        # Fail open: a missing "state" key (manually-inserted event, alt emitter,
+        # future payload schema) must not lock the hysteresis guard permanently.
+        last_state = payload.get("state", "rearmed")
 
     # Re-arm: fired state but count dropped below rearm threshold.
     rearmed = False
@@ -235,11 +254,13 @@ def check_and_fire(client, *, dry_run: bool = False, _now=None) -> dict:
 
     # Fire!
     event_id = emit_event(client, pending_count=pending, state="fired", dry_run=dry_run)
+    debounce_marker_written: bool | None = None
     if not dry_run and event_id is not None:
-        emit_learn_run(client)
+        debounce_marker_written = emit_learn_run(client)
     return {
         "action": "fired" if not dry_run else "would_fire",
         "event_id": event_id,
+        "debounce_marker_written": debounce_marker_written,
         "pending_count": pending,
         "fire_threshold": FIRE_THRESHOLD,
         "rearm_threshold": REARM_THRESHOLD,
