@@ -29,32 +29,18 @@ try:
 finally:
     pass
 
-# Repo-level CANONICAL sources. Edits here flow to every device and project
-# via PR + installer. Live owner can approve one-off edits (harness asks);
-# autonomous / subagent / supervised must use the canonical PR flow.
+# Repo-level CANONICAL sources that are protected at the file level.
+#
+# Policy rationale: all code changes go through PRs with CI + code review,
+# which is the primary safety gate. File-level blocking is reserved for the
+# narrow surface where a bad subagent edit could leak secrets into git history
+# *before* review has a chance to catch it — weakening the scanners themselves.
+# Everything else (SOUL.md, CLAUDE.md, mcp-memory/*, .mcp.json, etc.) is
+# fine to edit in a feature branch; review rejects anything wrong.
 T2_CANONICAL = {
-    ".mcp.json",
-    "config/SOUL.md",
-    "CLAUDE.md",
-    # Memory MCP server — split across modules in #360 but the protection
-    # surface is unchanged: every file the server is built from requires
-    # owner review, since they're shared with redrobot via the MCP protocol.
-    "mcp-memory/server.py",
-    "mcp-memory/client.py",
-    "mcp-memory/embeddings.py",
-    "mcp-memory/tools_schema.py",
-    "mcp-memory/classifier.py",
-    "mcp-memory/episode_extractor.py",
-    "mcp-memory/handlers/__init__.py",
-    "mcp-memory/handlers/memory.py",
-    "mcp-memory/handlers/goal.py",
-    "mcp-memory/handlers/outcome.py",
-    "mcp-memory/handlers/credential.py",
-    "mcp-memory/handlers/events.py",
-    "mcp-memory/handlers/decision.py",
-    ".claude/settings.json",
     ".gitleaks.toml",
     ".pre-commit-config.yaml",
+    "scripts/secret-scanner.py",
 }
 
 # Backwards-compat alias — older imports / docs may still reference this.
