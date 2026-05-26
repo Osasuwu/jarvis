@@ -227,8 +227,11 @@ class TestMarkStaleWithSuccessor:
         assert update_call["payload"]["superseded_by"] == "00000000-0000-0000-0000-000000000099"
 
     @pytest.mark.asyncio
-    async def test_does_not_set_expired_at(self, fake_client):
-        """successor present means supersession, not expiration — they're orthogonal."""
+    async def test_clears_expired_at_explicitly(self, fake_client):
+        """Supersession is a stronger statement than expiration. When the owner
+        upgrades a previously-expired row to superseded (by re-curating with a
+        successor), expired_at must be explicitly cleared so the final
+        lifecycle state is unambiguous: superseded_by set, expired_at null."""
         _seed_memory(fake_client)
         await _handle_memory_mark_stale(
             {
@@ -239,7 +242,9 @@ class TestMarkStaleWithSuccessor:
             }
         )
         update_call = next(c for c in fake_client.table("memories").calls if c["op"] == "update")
-        assert "expired_at" not in update_call["payload"]
+        payload = update_call["payload"]
+        # expired_at is explicitly null (not just absent — the row may have had it set)
+        assert "expired_at" in payload and payload["expired_at"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +378,78 @@ class TestNotFound:
         fake_client.table("memories").next_data = []
         result = await _handle_memory_unmark_stale({"project": "jarvis", "name": "nope"})
         assert "not found" in result[0].text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Soft-deleted rows are excluded (matches _handle_get / _handle_delete default)
+# ---------------------------------------------------------------------------
+
+
+class TestDeletedAtExcluded:
+    @pytest.mark.asyncio
+    async def test_mark_stale_select_filters_deleted_at(self, fake_client):
+        _seed_memory(fake_client)
+        await _handle_memory_mark_stale(
+            {"project": "jarvis", "name": "stale-memory", "reason": "outdated"}
+        )
+        select_call = next(c for c in fake_client.table("memories").calls if c["op"] == "select")
+        assert ("is_", "deleted_at", "null") in select_call["filters"]
+
+    @pytest.mark.asyncio
+    async def test_mark_stale_update_filters_deleted_at(self, fake_client):
+        _seed_memory(fake_client)
+        await _handle_memory_mark_stale(
+            {"project": "jarvis", "name": "stale-memory", "reason": "outdated"}
+        )
+        update_call = next(c for c in fake_client.table("memories").calls if c["op"] == "update")
+        assert ("is_", "deleted_at", "null") in update_call["filters"]
+
+    @pytest.mark.asyncio
+    async def test_unmark_stale_filters_deleted_at(self, fake_client):
+        fake_client.table("memories").next_data = [
+            {
+                "id": "mem-uuid-2",
+                "name": "revived",
+                "project": "jarvis",
+                "expired_at": "2026-05-01T12:00:00Z",
+                "superseded_by": None,
+            }
+        ]
+        await _handle_memory_unmark_stale({"project": "jarvis", "name": "revived"})
+        select_call = next(c for c in fake_client.table("memories").calls if c["op"] == "select")
+        assert ("is_", "deleted_at", "null") in select_call["filters"]
+
+
+# ---------------------------------------------------------------------------
+# Response verbs: past-tense user-facing + field-changed annotation
+# ---------------------------------------------------------------------------
+
+
+class TestResponseFormat:
+    @pytest.mark.asyncio
+    async def test_mark_expire_uses_past_tense(self, fake_client):
+        _seed_memory(fake_client)
+        result = await _handle_memory_mark_stale(
+            {"project": "jarvis", "name": "stale-memory", "reason": "outdated"}
+        )
+        text = result[0].text
+        assert "Expired" in text
+        assert "expired_at set" in text
+
+    @pytest.mark.asyncio
+    async def test_mark_supersede_uses_past_tense(self, fake_client):
+        _seed_memory(fake_client)
+        result = await _handle_memory_mark_stale(
+            {
+                "project": "jarvis",
+                "name": "stale-memory",
+                "reason": "replaced",
+                "successor_uuid": "00000000-0000-0000-0000-000000000099",
+            }
+        )
+        text = result[0].text
+        assert "Superseded" in text
+        assert "superseded_by set" in text
 
 
 # ---------------------------------------------------------------------------

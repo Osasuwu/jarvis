@@ -353,9 +353,11 @@ def tool_definitions() -> list[Tool]:
             name="memory_mark_stale",
             description=(
                 "Hygiene: mark a memory as stale. Host-only (anon/sandcastle refused). "
-                "With successor_uuid → sets superseded_by (chain walks to replacement). "
-                "Without → sets expired_at (belief is wrong/outdated). Use /curate skill "
-                "for owner-invoked weekly hygiene passes; not for autonomous calls."
+                "With successor_uuid → stores the UUID in superseded_by; the recall "
+                "pipeline filters superseded rows and follows links to the successor. "
+                "Without → sets expired_at (belief is wrong/outdated, no replacement). "
+                "Use /curate skill for owner-invoked weekly hygiene passes; not for "
+                "autonomous calls."
             ),
             inputSchema={
                 "type": "object",

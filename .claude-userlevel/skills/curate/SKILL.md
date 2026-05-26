@@ -27,10 +27,20 @@ Three deterministic signals; assemble the union, dedup by memory ID. No model in
 
 1. **always_load + content drift** — memories tagged `always_load` whose `content_updated_at` (or `updated_at` if the former is null) is older than 30 days. Always-loaded rules that haven't been touched in a month are prime drift candidates.
 
-   ```python
-   memory_list(project=<scope>, type="feedback", always_load=true)
-   # Filter Python-side: updated_at < now() - 30d
+   `memory_list` does NOT accept an `always_load` filter and its output doesn't include `tags`, so this signal is fetched via Supabase MCP (`execute_sql`) — host-only, which matches the rest of the skill's host-only posture:
+
+   ```sql
+   SELECT id, name, project, type, tags, description,
+          content_updated_at, updated_at, last_accessed_at
+   FROM memories
+   WHERE 'always_load' = ANY(tags)
+     AND expired_at IS NULL AND superseded_by IS NULL AND deleted_at IS NULL
+     AND COALESCE(content_updated_at, updated_at) < now() - interval '30 days'
+   ORDER BY COALESCE(content_updated_at, updated_at) ASC
+   LIMIT 20;
    ```
+
+   If extending `memory_list` with an `always_load` filter + tags-in-output is preferred over raw SQL, that's a separate slice — file a follow-up issue.
 
 2. **Access-inflation** — memories with `last_accessed_at` within the last 14 days **AND** rank in the top-5% of recall-hit-count for their type. After M45 S2 lands, `always_load` rows no longer auto-bump `last_accessed_at`, so a high count here means real recall traffic — but disproportionate traffic relative to type peers is still a signal worth showing the owner.
 

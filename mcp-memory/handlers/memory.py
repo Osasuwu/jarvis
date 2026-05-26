@@ -237,7 +237,8 @@ async def _handle_recall(args: dict) -> list[TextContent]:
                 # Don't bump last_accessed_at for evergreen rules; recency should not
                 # dominate semantic recall via ACT-R temporal scoring.
                 ids_to_touch = [
-                    rid for rid, row in zip(ids, rows)
+                    rid
+                    for rid, row in zip(ids, rows)
                     if "always_load" not in (row.get("tags") or [])
                 ]
                 if ids_to_touch:
@@ -1200,7 +1201,14 @@ def _normalize_project(project):
 
 
 def _apply_name_project_filter(query, name: str, project):
-    query = query.eq("name", name)
+    """Scope to (name, project) — also excludes soft-deleted rows (`deleted_at` null).
+
+    Hygiene operations match `_handle_get` / `_handle_delete`'s default behavior:
+    soft-deleted rows are NOT visible to mark_stale / unmark_stale. The recall path
+    already filters them out, so editing their lifecycle fields here would be a
+    no-op at best and an audit-trail confusion at worst.
+    """
+    query = query.eq("name", name).is_("deleted_at", "null")
     if project is not None:
         return query.eq("project", project)
     return query.is_("project", "null")
@@ -1282,11 +1290,15 @@ async def _handle_memory_mark_stale(args: dict) -> list[TextContent]:
     }
 
     if successor_uuid:
-        update_payload = {"superseded_by": successor_uuid}
-        action = "supersede"
+        # Supersession is a stronger statement than expiration ("this row has a
+        # named replacement, recall should chain-walk there"). If the row was
+        # previously marked expired and the owner is now upgrading to a
+        # supersede, clear expired_at so the lifecycle state is unambiguous.
+        update_payload = {"superseded_by": successor_uuid, "expired_at": None}
+        action = "superseded"
     else:
         update_payload = {"expired_at": datetime.now(timezone.utc).isoformat()}
-        action = "expire"
+        action = "expired"
 
     update_q = _apply_name_project_filter(
         client.table("memories").update(update_payload), mem_name, project
@@ -1310,12 +1322,13 @@ async def _handle_memory_mark_stale(args: dict) -> list[TextContent]:
         reason=reason,
     )
 
+    field_changed = "superseded_by set" if successor_uuid else "expired_at set"
     return [
         TextContent(
             type="text",
             text=(
-                f"Marked '{mem_name}' as {action} "
-                f"(id={mem_id}, project={project or 'global'}). "
+                f"{action.capitalize()} '{mem_name}' ({field_changed}; "
+                f"id={mem_id}, project={project or 'global'}). "
                 f"Prior state: expired_at={prior_state['expired_at']}, "
                 f"superseded_by={prior_state['superseded_by']}. "
                 f"Inverse: memory_unmark_stale(project='{project or 'global'}', name='{mem_name}')."
