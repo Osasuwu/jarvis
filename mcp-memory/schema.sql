@@ -2410,12 +2410,17 @@ language sql stable as $$
            1 - (m.embedding <=> query_embedding) as similarity
     from memories m
     where m.embedding is not null
+      -- deleted_at is null is always required — soft-deleted rows must
+      -- never surface, even with show_history=true. Mirrors match_memories_v2
+      -- (line 2113) to eliminate the cross-RPC asymmetry where
+      -- show_history=true was surfacing soft-deleted rows here but not from
+      -- the primary embedding slot.
+      and m.deleted_at is null
       and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
       and (filter_project is null or m.project = filter_project or m.project is null)
       and (filter_type is null or m.type = filter_type)
       and (show_history
-           or (m.deleted_at is null
-               and m.expired_at is null
+           or (m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       -- Deriver review-gate (issue #552): hide rows pending owner review

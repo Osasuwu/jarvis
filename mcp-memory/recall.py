@@ -391,9 +391,16 @@ def apply_temporal_scoring(rows: list[dict]) -> list[dict]:
         recency = math.exp(-0.693 * days_since_update / half_life)
         access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
 
+        # Reviewed memories with no confidence column default to 1.0 (full
+        # entrenchment) — pre-PR behavior, calibrated against existing rows.
+        # Unreviewed Deriver/Dreamer candidates (requires_review=true) typically
+        # have confidence=NULL at write time; treating them as fully entrenched
+        # would rank a pending candidate above an established memory in
+        # include_unreviewed=true queries. Floor them at CONFIDENCE_FLOOR so
+        # entrenchment caps at 0.75 instead of 1.0 (#552 always-gate corollary).
         confidence_raw = row.get("confidence")
         if confidence_raw is None:
-            conf = 1.0
+            conf = CONFIDENCE_FLOOR if row.get("requires_review") else 1.0
         else:
             try:
                 conf = float(confidence_raw)
@@ -640,6 +647,11 @@ async def recall(
 
     if config.use_links:
         linked = expand_links(client, merged, include_unreviewed=config.include_unreviewed)
+        if linked:
+            # Linked rows are tag-filtered to match semantic/keyword legs —
+            # otherwise session-snapshot etc. can ride in as 1-hop neighbors of
+            # a seed row and bypass the same filter applied above on lines 608/621.
+            linked = filter_excluded_tags(linked)
         if linked:
             merged = merge_with_links(merged, linked)
         merged = merged[: config.limit]

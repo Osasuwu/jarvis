@@ -215,6 +215,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
     include_links = args.get("include_links", False)
     show_history = args.get("show_history", False)
+    include_unreviewed = args.get("include_unreviewed", False)
     brief = args.get("brief", False)
 
     # Hybrid search: combine semantic + keyword results via RRF + temporal scoring
@@ -228,6 +229,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
             include_links,
             show_history,
             brief,
+            include_unreviewed=include_unreviewed,
         )
         if rows:
             # Track reads (fire-and-forget)
@@ -245,8 +247,19 @@ async def _handle_recall(args: dict) -> list[TextContent]:
                     asyncio.create_task(_touch_memories(client, ids_to_touch))
             return results
 
-    # Fallback: keyword-only search (embed failure or empty hybrid result)
-    results = await server._keyword_recall(client, query_text, project, mem_type, limit, brief)
+    # Fallback: keyword-only search (embed failure or empty hybrid result).
+    # Pass include_unreviewed through so the always-gate is enforced on the
+    # fallback path too — the SQL RPCs do this server-side; this client-side
+    # path must mirror them.
+    results = await server._keyword_recall(
+        client,
+        query_text,
+        project,
+        mem_type,
+        limit,
+        brief,
+        include_unreviewed=include_unreviewed,
+    )
 
     # Lazily backfill embeddings for records missing them (fire-and-forget)
     if os.environ.get("VOYAGE_API_KEY"):
@@ -264,6 +277,8 @@ async def _hybrid_recall(
     include_links: bool = False,
     show_history: bool = False,
     brief: bool = False,
+    *,
+    include_unreviewed: bool = False,
 ) -> tuple[list[dict], list[TextContent]]:
     """Adapter wrapping the recall() pipeline for the MCP recall tool.
 
@@ -278,6 +293,7 @@ async def _hybrid_recall(
         PROD_RECALL_CONFIG,
         limit=limit,
         use_links=include_links,
+        include_unreviewed=include_unreviewed,
     )
     try:
         hits = await recall(
@@ -344,7 +360,14 @@ async def _hybrid_recall(
 
 
 async def _keyword_recall(
-    client, query_text: str, project, mem_type, limit: int, brief: bool = False
+    client,
+    query_text: str,
+    project,
+    mem_type,
+    limit: int,
+    brief: bool = False,
+    *,
+    include_unreviewed: bool = False,
 ) -> list[TextContent]:
     """ILIKE keyword search (fallback when semantic unavailable).
 
@@ -355,6 +378,13 @@ async def _keyword_recall(
     Lifecycle filters mirror the show_history=false branch of
     match_memories / keyword_search_memories: exclude soft-deleted,
     expired, superseded, and past-valid_to rows (#284).
+
+    Always-gate (#552): `requires_review=true` rows and merge-proposal rows
+    (`merge_targets` non-empty) are filtered to match the SQL RPCs. Without
+    this, a VoyageAI outage that routes traffic here would expose pending
+    review candidates to production callers. `include_unreviewed=True`
+    relaxes the requires_review gate; merge proposals are filtered
+    unconditionally (they are meta-rows, never knowledge).
 
     valid_to is filtered client-side (not via .or_()) because PostgREST
     accepts only one `or=` parameter per query, and this path already uses
@@ -373,7 +403,10 @@ async def _keyword_recall(
         .is_("deleted_at", "null")
         .is_("expired_at", "null")
         .is_("superseded_by", "null")
+        .is_("merge_targets", "null")  # always-gate: merge proposals never surface
     )
+    if not include_unreviewed:
+        q = q.eq("requires_review", False)
 
     if project is not None:
         q = q.or_(f"project.eq.{project},project.is.null")

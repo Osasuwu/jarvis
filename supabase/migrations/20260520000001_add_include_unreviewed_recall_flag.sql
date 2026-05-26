@@ -78,12 +78,16 @@ language sql stable as $$
            1 - (m.embedding <=> query_embedding) as similarity
     from memories m
     where m.embedding is not null
+      -- Align with match_memories_v2: soft-deleted rows are always hidden,
+      -- regardless of show_history. Pre-existing asymmetry corrected here so
+      -- the two embedding slots return the same row set under
+      -- show_history=true + include_unreviewed=true (RRF determinism).
+      and m.deleted_at is null
       and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
       and (filter_project is null or m.project = filter_project or m.project is null)
       and (filter_type is null or m.type = filter_type)
       and (show_history
-           or (m.deleted_at is null
-               and m.expired_at is null
+           or (m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       and (include_unreviewed or m.requires_review = false)

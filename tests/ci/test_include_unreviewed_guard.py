@@ -141,3 +141,113 @@ class TestSchemaFileInSync:
             f"Found {gated} instances where merge_targets filter is gated by "
             "include_unreviewed. merge_targets must ALWAYS be filtered."
         )
+
+    def test_match_memories_deleted_at_unconditional(self):
+        """match_memories must apply `m.deleted_at is null` outside the show_history branch.
+
+        Regression: round-2 had `deleted_at is null` INSIDE the show_history
+        branch of match_memories — show_history=true surfaced soft-deleted
+        rows from the fallback embedding slot while match_memories_v2
+        (primary slot) hid them, producing non-deterministic RRF fusion.
+        Fix mirrors match_memories_v2: deleted_at filtering is unconditional.
+        """
+        migration_text = (MIGRATION_DIR / EXPECTED_MIGRATION).read_text(encoding="utf-8")
+        # match_memories (not _v2) signature is unique to the migration body.
+        # Use a word-boundary regex so match_memories_v2 doesn't match.
+        mm_match = re.search(
+            r"create\s+or\s+replace\s+function\s+match_memories\s*\(",
+            migration_text,
+            re.IGNORECASE,
+        )
+        assert mm_match is not None, "match_memories not found in migration"
+        # The body extends until the next $$; terminator.
+        body_start = mm_match.end()
+        body_end = migration_text.find("$$;", body_start)
+        assert body_end != -1, "match_memories body not terminated by $$;"
+        mm_body = migration_text[body_start:body_end]
+        # Unconditional deleted_at clause must be at the same indent level
+        # as the other top-level `where` conjuncts (6 leading spaces).
+        assert "\n      and m.deleted_at is null\n" in mm_body, (
+            "match_memories must have `and m.deleted_at is null` outside the "
+            "show_history branch (asymmetry vs match_memories_v2)."
+        )
+        # The show_history `or (...)` clause must NOT mention deleted_at.
+        # Body for the show_history clause starts at the keyword and ends at
+        # the next top-level conjunct (the `and (include_unreviewed` line).
+        sh_start = mm_body.find("(show_history")
+        assert sh_start != -1, "show_history clause not found in match_memories"
+        sh_block_end = mm_body.find("\n      and (include_unreviewed", sh_start)
+        if sh_block_end == -1:
+            sh_block_end = len(mm_body)
+        sh_block = mm_body[sh_start:sh_block_end]
+        assert "deleted_at" not in sh_block, (
+            "show_history branch in match_memories must not mention deleted_at — "
+            "the unconditional filter above it covers soft-deletion."
+        )
+
+
+# ---------------------------------------------------------------------------
+# MCP surface guard — include_unreviewed must be reachable end-to-end.
+# ---------------------------------------------------------------------------
+
+
+class TestMcpSurfaceExposesFlag:
+    """Without these wirings the SQL flag is dead at the MCP boundary."""
+
+    def test_tools_schema_declares_include_unreviewed(self):
+        schema_py = (REPO_ROOT / "mcp-memory" / "tools_schema.py").read_text(encoding="utf-8")
+        # memory_recall tool block must declare include_unreviewed property.
+        recall_tool_idx = schema_py.find('name="memory_recall"')
+        assert recall_tool_idx != -1, "memory_recall tool block not found"
+        # Take the next ~3000 chars as the tool block extent (more than enough
+        # for the inputSchema).
+        block = schema_py[recall_tool_idx : recall_tool_idx + 3000]
+        assert '"include_unreviewed"' in block, (
+            "memory_recall tool schema must declare include_unreviewed property — "
+            "otherwise the recall.py flag is unreachable from MCP callers."
+        )
+
+    def test_handler_reads_and_threads_include_unreviewed(self):
+        handler_py = (REPO_ROOT / "mcp-memory" / "handlers" / "memory.py").read_text(
+            encoding="utf-8"
+        )
+        # _handle_recall must read it from args:
+        assert 'args.get("include_unreviewed"' in handler_py, (
+            "_handle_recall must read include_unreviewed from args"
+        )
+        # _hybrid_recall must thread it into dataclasses.replace(...):
+        # Heuristic: assert `include_unreviewed=` appears in the replace call.
+        replace_idx = handler_py.find("dataclasses.replace(")
+        assert replace_idx != -1
+        replace_block = handler_py[replace_idx : replace_idx + 500]
+        assert "include_unreviewed=" in replace_block, (
+            "_hybrid_recall must pass include_unreviewed to dataclasses.replace"
+        )
+
+    def test_keyword_recall_applies_always_gate(self):
+        """_keyword_recall (the embed-fallback) must enforce requires_review filter.
+
+        Regression: round-2 _keyword_recall queried `memories` without any
+        `requires_review` filter, so a VoyageAI outage surfaced pending review
+        candidates to production callers — bypassing the SQL-side always-gate.
+        """
+        handler_py = (REPO_ROOT / "mcp-memory" / "handlers" / "memory.py").read_text(
+            encoding="utf-8"
+        )
+        # Locate _keyword_recall body:
+        kw_start = handler_py.find("async def _keyword_recall(")
+        assert kw_start != -1, "_keyword_recall not found"
+        # Take body until next top-level `async def` or `def `:
+        next_def = handler_py.find("\nasync def ", kw_start + 1)
+        if next_def == -1:
+            next_def = len(handler_py)
+        kw_body = handler_py[kw_start:next_def]
+        assert 'eq("requires_review"' in kw_body or 'is_("requires_review"' in kw_body, (
+            "_keyword_recall body must apply a requires_review filter — "
+            "the always-gate is enforced server-side in the SQL RPCs and must "
+            "be mirrored on this fallback path."
+        )
+        assert 'is_("merge_targets"' in kw_body or 'eq("merge_targets"' in kw_body, (
+            "_keyword_recall body must filter out merge_targets rows "
+            "(merge proposals are meta-rows, never knowledge)."
+        )
