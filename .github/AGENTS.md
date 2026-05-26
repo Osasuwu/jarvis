@@ -1,6 +1,6 @@
 # Agents Configuration (Workspace)
 
-This repository is developed with agent-assisted tools (Claude Code, GitHub Copilot) under one human owner.
+This repository is developed with agent-assisted tools (Claude Code) under one human owner.
 
 Primary instructions: `.github/copilot-instructions.md`.
 

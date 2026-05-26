@@ -69,6 +69,21 @@ The bias prevention only holds if you don't tell the subagent which side you're 
 - Discussion reveals a code-level question that's bigger than this session → spin out an issue via `/triage` or `mcp__ccd_session__spawn_task`.
 - Domain term gets sharpened mid-discussion → append inline to `CONTEXT.md` (same rule as /grill — don't batch).
 
+## Research-pass gate (before resolution)
+
+Before emitting a final outcome — i.e. before you would call the discussion
+resolved and move to `record_decision` — check the high-stakes trigger:
+if the decision has `reversibility` in `{hard, irreversible}` OR
+`confidence < 0.7`, load and execute the shared research-pass gate:
+
+**Procedural source: [`../_shared/research-pass-gate.md`](../_shared/research-pass-gate.md).**
+
+Follow the procedure there. If the gate blocks, do not force the resolution;
+instead propose running `/research` with the 4-channel protocol on the
+open question first.
+
+Low-stakes resolutions (reversible AND confidence >= 0.7) skip the gate.
+
 ## Output discipline
 
 End-state depends on what the discussion produced:

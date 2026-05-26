@@ -17,7 +17,13 @@ A deep module (as opposed to a shallow module) is one which encapsulates a lot o
 
 Check with the user that these modules match their expectations. Check with the user which modules they want tests written for.
 
-3. Write the PRD using the template below, then publish it to the project issue tracker. Apply the `ready-for-agent` triage label - no need for additional triage.
+3. Write the PRD using the template below. Before publishing, load and execute the research-pass gate:
+
+**Procedural source: [`../_shared/research-pass-gate.md`](../_shared/research-pass-gate.md).**
+
+This gate is **unconditional** — publishing artifacts always requires a research artifact. If the gate blocks, do not publish; propose `/research` on the PRD topic first.
+
+Once the gate passes, publish to the project issue tracker. Apply the `ready-for-agent` triage label — no need for additional triage.
 
 <prd-template>
 
