@@ -246,3 +246,116 @@ def test_prod_recall_config_all_on_defaults():
     assert PROD_RECALL_CONFIG.use_links is True
     assert PROD_RECALL_CONFIG.use_classifier is True
     assert PROD_RECALL_CONFIG.use_temporal is True
+    assert PROD_RECALL_CONFIG.include_unreviewed is False
+
+
+@pytest.mark.asyncio
+async def test_recall_passes_include_unreviewed_to_rpcs(monkeypatch):
+    """Default recall passes include_unreviewed=False to both semantic and
+    keyword RPCs; True propagates to both when flipped."""
+    import server
+    from server import recall, PROD_RECALL_CONFIG
+
+    async def _stub_embed(_text):
+        return [0.0] * 512
+
+    monkeypatch.setattr(server, "_embed_query", _stub_embed)
+
+    rows = [
+        {"id": "a", "name": "alpha", "similarity": 0.50, "rank": 0.50, "type": "decision",
+         "project": None, "tags": [], "description": "", "content": "",
+         "updated_at": _iso_days_ago(1), "last_accessed_at": _iso_days_ago(1), "confidence": 1.0},
+    ]
+
+    # Default config: include_unreviewed=False
+    client_default = MagicMock()
+    rpc_calls_default = []
+
+    def _capture_rpc_default(name, args):
+        rpc_calls_default.append((name, args))
+        result = MagicMock()
+        result.execute.return_value = MagicMock(data=list(rows))
+        return result
+
+    client_default.rpc.side_effect = _capture_rpc_default
+    client_default.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(data=[])
+
+    await recall(client_default, "test", config=dataclasses.replace(PROD_RECALL_CONFIG, use_links=False, limit=10))
+
+    for name, args in rpc_calls_default:
+        assert "include_unreviewed" in args, f"{name} missing include_unreviewed"
+        assert args["include_unreviewed"] is False, f"{name} include_unreviewed should be False"
+
+    # Flipped config: include_unreviewed=True
+    client_flipped = MagicMock()
+    rpc_calls_flipped = []
+
+    def _capture_rpc_flipped(name, args):
+        rpc_calls_flipped.append((name, args))
+        result = MagicMock()
+        result.execute.return_value = MagicMock(data=list(rows))
+        return result
+
+    client_flipped.rpc.side_effect = _capture_rpc_flipped
+    client_flipped.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(data=[])
+
+    cfg = dataclasses.replace(PROD_RECALL_CONFIG, use_links=False, limit=10, include_unreviewed=True)
+    await recall(client_flipped, "test", config=cfg)
+
+    for name, args in rpc_calls_flipped:
+        assert "include_unreviewed" in args, f"{name} missing include_unreviewed"
+        assert args["include_unreviewed"] is True, f"{name} include_unreviewed should be True"
+
+
+@pytest.mark.asyncio
+async def test_recall_passes_include_unreviewed_to_get_linked_memories(monkeypatch):
+    """With use_links=True and include_unreviewed=True, the flag must reach
+    the get_linked_memories RPC — not just the semantic/keyword legs."""
+    import server
+    from server import recall, PROD_RECALL_CONFIG
+
+    async def _stub_embed(_text):
+        return [0.0] * 512
+
+    monkeypatch.setattr(server, "_embed_query", _stub_embed)
+
+    sem_row = {
+        "id": "a", "name": "alpha", "similarity": 0.80, "type": "decision",
+        "project": None, "tags": [], "description": "", "content": "",
+        "updated_at": _iso_days_ago(1), "last_accessed_at": _iso_days_ago(1),
+        "confidence": 1.0,
+    }
+    linked_row = {
+        **sem_row, "id": "z", "name": "zulu",
+        "linked_from": "a", "link_type": "related", "link_strength": 0.9,
+    }
+
+    client = MagicMock()
+    rpc_calls = []
+
+    def _capture_rpc(name, args):
+        rpc_calls.append((name, args))
+        result = MagicMock()
+        if name.startswith("match_memories"):
+            result.execute.return_value = MagicMock(data=[dict(sem_row)])
+        elif name == "keyword_search_memories":
+            result.execute.return_value = MagicMock(data=[])
+        elif name == "get_linked_memories":
+            result.execute.return_value = MagicMock(data=[dict(linked_row)])
+        else:
+            result.execute.return_value = MagicMock(data=[])
+        return result
+
+    client.rpc.side_effect = _capture_rpc
+    client.table.return_value.select.return_value.in_.return_value.execute.return_value = MagicMock(data=[])
+
+    cfg = dataclasses.replace(PROD_RECALL_CONFIG, use_links=True, include_unreviewed=True, limit=10)
+    await recall(client, "test", config=cfg)
+
+    linked_calls = [(n, a) for n, a in rpc_calls if n == "get_linked_memories"]
+    assert linked_calls, "get_linked_memories was never called (use_links=True must trigger it)"
+    for _name, args in linked_calls:
+        assert "include_unreviewed" in args, "get_linked_memories missing include_unreviewed arg"
+        assert args["include_unreviewed"] is True, (
+            "get_linked_memories include_unreviewed must be True when config.include_unreviewed=True"
+        )

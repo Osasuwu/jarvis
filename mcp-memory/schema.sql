@@ -2086,25 +2086,31 @@ create index if not exists idx_memories_embedding_v2_hnsw
 -- can swap by name. NO CASE expression in ORDER BY — pgvector HNSW requires
 -- a direct column reference to use the index.
 drop function if exists match_memories_v2(vector, int, float, text, text, boolean);
+drop function if exists match_memories_v2(vector, int, float, text, text, boolean, boolean);
 create or replace function match_memories_v2(
     query_embedding vector,
     match_limit int default 10,
     similarity_threshold float default 0.3,
     filter_project text default null,
     filter_type text default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    -- requires_review surfaced so Python-side temporal scoring can floor
+    -- entrenchment for unreviewed candidates (see apply_temporal_scoring).
+    requires_review boolean,
     similarity float
 )
 language sql stable as $$
     select m.id, m.name, m.type, m.project,
            m.description, m.content, m.tags,
            m.updated_at, m.content_updated_at, m.last_accessed_at,
+           m.requires_review,
            1 - (m.embedding_v2 <=> query_embedding) as similarity
     from memories m
     where m.embedding_v2 is not null
@@ -2117,7 +2123,7 @@ language sql stable as $$
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       -- Deriver review-gate (issue #552): see match_memories.
-      and m.requires_review = false
+      and (include_unreviewed or m.requires_review = false)
       and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by m.embedding_v2 <=> query_embedding
     limit match_limit;
@@ -2384,34 +2390,43 @@ $$;
 -- =========================================================================
 
 drop function if exists match_memories(vector, int, float, text, text, boolean);
+drop function if exists match_memories(vector, int, float, text, text, boolean, boolean);
 create or replace function match_memories(
     query_embedding vector,
     match_limit int default 10,
     similarity_threshold float default 0.3,
     filter_project text default null,
     filter_type text default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    requires_review boolean,
     similarity float
 )
 language sql stable as $$
     select m.id, m.name, m.type, m.project,
            m.description, m.content, m.tags,
            m.updated_at, m.content_updated_at, m.last_accessed_at,
+           m.requires_review,
            1 - (m.embedding <=> query_embedding) as similarity
     from memories m
     where m.embedding is not null
+      -- deleted_at is null is always required — soft-deleted rows must
+      -- never surface, even with show_history=true. Mirrors match_memories_v2
+      -- (line 2113) to eliminate the cross-RPC asymmetry where
+      -- show_history=true was surfacing soft-deleted rows here but not from
+      -- the primary embedding slot.
+      and m.deleted_at is null
       and 1 - (m.embedding <=> query_embedding) >= similarity_threshold
       and (filter_project is null or m.project = filter_project or m.project is null)
       and (filter_type is null or m.type = filter_type)
       and (show_history
-           or (m.deleted_at is null
-               and m.expired_at is null
+           or (m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       -- Deriver review-gate (issue #552): hide rows pending owner review
@@ -2424,59 +2439,69 @@ language sql stable as $$
       -- and `array_length('{}'::uuid[], 1)` returns NULL, not 0. Kept as a
       -- belt-and-braces guard; cost is negligible and `is null` is the
       -- short-circuit path via the partial GIN index.
-      and m.requires_review = false
+      and (include_unreviewed or m.requires_review = false)
       and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by m.embedding <=> query_embedding
     limit match_limit;
 $$;
 
 drop function if exists keyword_search_memories(text, int, text, text, boolean);
+drop function if exists keyword_search_memories(text, int, text, text, boolean, boolean);
 create or replace function keyword_search_memories(
     search_query text,
     match_limit int default 10,
     filter_project text default null,
     filter_type text default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    requires_review boolean,
     rank real
 )
 language sql stable as $$
     select m.id, m.name, m.type, m.project,
            m.description, m.content, m.tags,
            m.updated_at, m.content_updated_at, m.last_accessed_at,
+           m.requires_review,
            ts_rank(m.fts, websearch_to_tsquery('english', search_query)) as rank
     from memories m
     where m.fts @@ websearch_to_tsquery('english', search_query)
+      -- Soft-deleted rows must never surface, even with show_history=true.
+      -- Mirrors match_memories / match_memories_v2 — keeps the FTS leg
+      -- consistent with the vector legs under rrf_merge.
+      and m.deleted_at is null
       and (filter_project is null or m.project = filter_project or m.project is null)
       and (filter_type is null or m.type = filter_type)
       and (show_history
-           or (m.deleted_at is null
-               and m.expired_at is null
+           or (m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       -- Deriver review-gate (issue #552): see match_memories above.
-      and m.requires_review = false
+      and (include_unreviewed or m.requires_review = false)
       and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
     order by rank desc
     limit match_limit;
 $$;
 
 drop function if exists get_linked_memories(uuid[], text[], boolean);
+drop function if exists get_linked_memories(uuid[], text[], boolean, boolean);
 create or replace function get_linked_memories(
     memory_ids uuid[],
     link_types text[] default null,
-    show_history boolean default false
+    show_history boolean default false,
+    include_unreviewed boolean default false
 )
 returns table(
     id uuid, name text, type text, project text,
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    requires_review boolean,
     link_type text, link_strength float, linked_from uuid
 )
 language sql stable as $$
@@ -2485,11 +2510,13 @@ language sql stable as $$
             sub.id, sub.name, sub.type, sub.project, sub.description,
             sub.content, sub.tags,
             sub.updated_at, sub.content_updated_at, sub.last_accessed_at,
+            sub.requires_review,
             sub.link_type, sub.link_strength, sub.linked_from
         from (
             -- Outgoing edges: source ∈ memory_ids, target resolved to head.
             select m.id, m.name, m.type, m.project, m.description, m.content,
                    m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   m.requires_review,
                    l.link_type, l.strength as link_strength, l.source_id as linked_from
             from memory_links l
             join memories m on m.id = coalesce(
@@ -2499,18 +2526,20 @@ language sql stable as $$
             where l.source_id = any(memory_ids)
               and not (m.id = any(memory_ids))
               and (link_types is null or l.link_type = any(link_types))
+              -- Soft-deleted rows must never surface (mirrors match_memories).
+              and m.deleted_at is null
               and (show_history
-                   or (m.deleted_at is null
-                       and m.expired_at is null
+                   or (m.expired_at is null
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
               -- Deriver review-gate (issue #552): see match_memories above.
-              and m.requires_review = false
+              and (include_unreviewed or m.requires_review = false)
               and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
             union all
             -- Incoming edges: target ∈ memory_ids, source resolved to head.
             select m.id, m.name, m.type, m.project, m.description, m.content,
                    m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   m.requires_review,
                    l.link_type, l.strength as link_strength, l.target_id as linked_from
             from memory_links l
             join memories m on m.id = coalesce(
@@ -2520,13 +2549,14 @@ language sql stable as $$
             where l.target_id = any(memory_ids)
               and not (m.id = any(memory_ids))
               and (link_types is null or l.link_type = any(link_types))
+              -- Soft-deleted rows must never surface (mirrors match_memories).
+              and m.deleted_at is null
               and (show_history
-                   or (m.deleted_at is null
-                       and m.expired_at is null
+                   or (m.expired_at is null
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
               -- Deriver review-gate (issue #552): see match_memories above.
-              and m.requires_review = false
+              and (include_unreviewed or m.requires_review = false)
               and (m.merge_targets is null or array_length(m.merge_targets, 1) = 0)
         ) sub
         order by sub.id, sub.link_strength desc, sub.link_type, sub.linked_from

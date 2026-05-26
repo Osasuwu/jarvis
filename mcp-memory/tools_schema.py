@@ -261,6 +261,17 @@ def tool_definitions() -> list[Tool]:
                         ),
                         "default": False,
                     },
+                    "include_unreviewed": {
+                        "type": "boolean",
+                        "description": (
+                            "Include `requires_review=true` rows (Deriver/Dreamer "
+                            "candidates pending owner review). Default false — the "
+                            "always-gate (#552) hides them from production recall. "
+                            "Opt-in for the eval harness and `/learn --status`; "
+                            "merge-proposal rows are filtered regardless."
+                        ),
+                        "default": False,
+                    },
                     "brief": {
                         "type": "boolean",
                         "description": (
