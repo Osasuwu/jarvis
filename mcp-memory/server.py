@@ -172,6 +172,8 @@ from handlers.memory import (  # noqa: E402, F401
     _handle_list,
     _handle_delete,
     _handle_restore,
+    _handle_memory_mark_stale,
+    _handle_memory_unmark_stale,
     _handle_graph,
     _hybrid_recall,
     _keyword_recall,
@@ -269,6 +271,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return await _handle_delete(arguments)
         elif name == "memory_restore":
             return await _handle_restore(arguments)
+        elif name == "memory_mark_stale":
+            return await _handle_memory_mark_stale(arguments)
+        elif name == "memory_unmark_stale":
+            return await _handle_memory_unmark_stale(arguments)
         # Graph tools
         elif name == "memory_graph":
             return _big_result(await _handle_graph(arguments))
