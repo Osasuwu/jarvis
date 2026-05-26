@@ -7,7 +7,6 @@ client. See ``test_dreamer.py`` for same-pattern mock chain construction.
 from __future__ import annotations
 
 import importlib.util
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -52,6 +51,7 @@ def _mock_events(client: MagicMock, events_by_type: dict[str, list[dict]]):
     empty result.  Call this *after* ``_mock_pending_count`` so the memories
     mock (stored in ``client.table.return_value``) is already in place.
     """
+
     def _make_chain(rows: list[dict]) -> MagicMock:
         exec_resp = MagicMock()
         exec_resp.data = rows
@@ -107,12 +107,17 @@ class TestHysteresis:
         """Still in fired state and count >= rearm threshold → skip."""
         client = MagicMock()
         _mock_pending_count(client, 10)
-        _mock_events(client, {"candidates_pending": [
+        _mock_events(
+            client,
             {
-                "created_at": "2026-05-20T10:00:00Z",
-                "payload": {"state": "fired", "pending_count": 15},
-            }
-        ]})
+                "candidates_pending": [
+                    {
+                        "created_at": "2026-05-20T10:00:00Z",
+                        "payload": {"state": "fired", "pending_count": 15},
+                    }
+                ]
+            },
+        )
 
         result = watcher.check_and_fire(client, dry_run=True)
         assert result["action"] == "none"
@@ -122,12 +127,17 @@ class TestHysteresis:
         """After re-arm (<8), crossing >=10 fires again."""
         client = MagicMock()
         _mock_pending_count(client, 12)
-        _mock_events(client, {"candidates_pending": [
+        _mock_events(
+            client,
             {
-                "created_at": "2026-05-19T10:00:00Z",
-                "payload": {"state": "rearmed", "pending_count": 7},
-            }
-        ]})
+                "candidates_pending": [
+                    {
+                        "created_at": "2026-05-19T10:00:00Z",
+                        "payload": {"state": "rearmed", "pending_count": 7},
+                    }
+                ]
+            },
+        )
 
         result = watcher.check_and_fire(client, dry_run=True)
         assert result["action"] == "would_fire"
@@ -137,12 +147,17 @@ class TestHysteresis:
         """pending=9 is in the hysteresis band (8..9), no re-fire when last was fired."""
         client = MagicMock()
         _mock_pending_count(client, 9)
-        _mock_events(client, {"candidates_pending": [
+        _mock_events(
+            client,
             {
-                "created_at": "2026-05-20T10:00:00Z",
-                "payload": {"state": "fired", "pending_count": 15},
-            }
-        ]})
+                "candidates_pending": [
+                    {
+                        "created_at": "2026-05-20T10:00:00Z",
+                        "payload": {"state": "fired", "pending_count": 15},
+                    }
+                ]
+            },
+        )
 
         result = watcher.check_and_fire(client, dry_run=True)
         assert result["action"] == "none"
@@ -159,9 +174,18 @@ class TestHysteresis:
         # Phase 2: pending=6, last state=fired → re-arms, returns none (below FIRE)
         c2 = MagicMock()
         _mock_pending_count(c2, 6)
-        _mock_events(c2, {"candidates_pending": [
-            {"created_at": "2026-05-24T10:00:00Z", "payload": {"state": "fired", "pending_count": 12}}
-        ], "learn_run": []})
+        _mock_events(
+            c2,
+            {
+                "candidates_pending": [
+                    {
+                        "created_at": "2026-05-24T10:00:00Z",
+                        "payload": {"state": "fired", "pending_count": 12},
+                    }
+                ],
+                "learn_run": [],
+            },
+        )
         r2 = watcher.check_and_fire(c2, dry_run=True, _now=lambda: FROZEN_NOW)
         assert r2["action"] == "none"
         assert r2.get("rearmed") is True
@@ -169,9 +193,18 @@ class TestHysteresis:
         # Phase 3: pending=11, last state=rearmed → fires again
         c3 = MagicMock()
         _mock_pending_count(c3, 11)
-        _mock_events(c3, {"candidates_pending": [
-            {"created_at": "2026-05-24T11:00:00Z", "payload": {"state": "rearmed", "pending_count": 6}}
-        ], "learn_run": []})
+        _mock_events(
+            c3,
+            {
+                "candidates_pending": [
+                    {
+                        "created_at": "2026-05-24T11:00:00Z",
+                        "payload": {"state": "rearmed", "pending_count": 6},
+                    }
+                ],
+                "learn_run": [],
+            },
+        )
         r3 = watcher.check_and_fire(c3, dry_run=True, _now=lambda: FROZEN_NOW)
         assert r3["action"] == "would_fire"
 
@@ -182,17 +215,20 @@ class TestDebounce:
     def test_recent_learn_skips_fire(self):
         client = MagicMock()
         _mock_pending_count(client, 15)
-        _mock_events(client, {
-            "candidates_pending": [
-                {
-                    "created_at": "2026-05-23T12:00:00Z",
-                    "payload": {"state": "rearmed", "pending_count": 5},
-                }
-            ],
-            "learn_run": [
-                {"created_at": "2026-05-24T11:00:00Z"},  # 1h before FROZEN_NOW
-            ],
-        })
+        _mock_events(
+            client,
+            {
+                "candidates_pending": [
+                    {
+                        "created_at": "2026-05-23T12:00:00Z",
+                        "payload": {"state": "rearmed", "pending_count": 5},
+                    }
+                ],
+                "learn_run": [
+                    {"created_at": "2026-05-24T11:00:00Z"},  # 1h before FROZEN_NOW
+                ],
+            },
+        )
 
         result = watcher.check_and_fire(client, dry_run=True, _now=lambda: FROZEN_NOW)
         assert result["action"] == "none"
@@ -201,17 +237,20 @@ class TestDebounce:
     def test_old_learn_allows_fire(self):
         client = MagicMock()
         _mock_pending_count(client, 15)
-        _mock_events(client, {
-            "candidates_pending": [
-                {
-                    "created_at": "2026-05-22T12:00:00Z",
-                    "payload": {"state": "rearmed", "pending_count": 5},
-                }
-            ],
-            "learn_run": [
-                {"created_at": "2026-05-22T12:00:00Z"},  # 48h before FROZEN_NOW
-            ],
-        })
+        _mock_events(
+            client,
+            {
+                "candidates_pending": [
+                    {
+                        "created_at": "2026-05-22T12:00:00Z",
+                        "payload": {"state": "rearmed", "pending_count": 5},
+                    }
+                ],
+                "learn_run": [
+                    {"created_at": "2026-05-22T12:00:00Z"},  # 48h before FROZEN_NOW
+                ],
+            },
+        )
 
         result = watcher.check_and_fire(client, dry_run=True, _now=lambda: FROZEN_NOW)
         assert result["action"] == "would_fire"
@@ -220,18 +259,76 @@ class TestDebounce:
         """After watcher fires, re-invocation within 24h is suppressed via learn_run marker."""
         client = MagicMock()
         _mock_pending_count(client, 15)
-        _mock_events(client, {
-            "candidates_pending": [
-                {"created_at": "2026-05-24T11:55:00Z", "payload": {"state": "rearmed"}}
-            ],
-            "learn_run": [
-                {"created_at": "2026-05-24T11:59:00Z"},  # 1 min before FROZEN_NOW
-            ],
-        })
+        _mock_events(
+            client,
+            {
+                "candidates_pending": [
+                    {"created_at": "2026-05-24T11:55:00Z", "payload": {"state": "rearmed"}}
+                ],
+                "learn_run": [
+                    {"created_at": "2026-05-24T11:59:00Z"},  # 1 min before FROZEN_NOW
+                ],
+            },
+        )
 
         result = watcher.check_and_fire(client, dry_run=True, _now=lambda: FROZEN_NOW)
         assert result["action"] == "none"
         assert "debounce" in result["reason"]
+
+
+class TestEmitLearnRunGuard:
+    """Tests the guard: emit_learn_run must not fire when emit_event fails (#2)."""
+
+    def test_no_debounce_marker_when_emit_event_fails(self):
+        """emit_learn_run must NOT be called when emit_event returns None (DB error)."""
+        from unittest.mock import patch
+
+        client = MagicMock()
+        _mock_pending_count(client, 15)
+        _mock_events(client, {"candidates_pending": [], "learn_run": []})
+
+        with (
+            patch.object(watcher, "emit_event", return_value=None),
+            patch.object(watcher, "emit_learn_run") as mock_learn_run,
+        ):
+            result = watcher.check_and_fire(client, dry_run=False)
+
+        mock_learn_run.assert_not_called()
+        assert result.get("event_id") is None
+
+    def test_debounce_marker_written_when_emit_event_succeeds(self):
+        """emit_learn_run IS called when emit_event returns a valid event_id."""
+        from unittest.mock import patch
+
+        client = MagicMock()
+        _mock_pending_count(client, 15)
+        _mock_events(client, {"candidates_pending": [], "learn_run": []})
+
+        with (
+            patch.object(watcher, "emit_event", return_value="event-uuid-123"),
+            patch.object(watcher, "emit_learn_run") as mock_learn_run,
+        ):
+            result = watcher.check_and_fire(client, dry_run=False)
+
+        mock_learn_run.assert_called_once_with(client)
+        assert result["action"] == "fired"
+
+
+class TestLearnRunContract:
+    """Verify SKILL.md closes the /learn → learn_run event loop (#1)."""
+
+    def test_skill_md_contains_learn_run_emit_instruction(self):
+        """SKILL.md must instruct the skill to emit a learn_run event."""
+        skill_path = (
+            Path(__file__).resolve().parent.parent
+            / ".claude-userlevel"
+            / "skills"
+            / "learn"
+            / "SKILL.md"
+        )
+        content = skill_path.read_text(encoding="utf-8")
+        assert "learn_run" in content, "SKILL.md must instruct emitting learn_run event"
+        assert "learn_skill" in content, "SKILL.md must identify the source as learn_skill"
 
 
 class TestDryRun:

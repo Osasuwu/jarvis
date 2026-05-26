@@ -102,7 +102,9 @@ def last_learn_run(client) -> dict | None:
     return data[0] if data else None
 
 
-def emit_event(client, *, pending_count: int, state: str = "fired", dry_run: bool = False) -> str | None:
+def emit_event(
+    client, *, pending_count: int, state: str = "fired", dry_run: bool = False
+) -> str | None:
     """Emit a ``candidates_pending`` event. Best-effort."""
     if dry_run:
         return None
@@ -170,7 +172,9 @@ def check_and_fire(client, *, dry_run: bool = False, _now=None) -> dict:
         7. Otherwise → emit ``candidates_pending`` event + ``learn_run`` marker.
     """
     if _now is None:
-        _now = lambda: datetime.now(timezone.utc)
+
+        def _now():
+            return datetime.now(timezone.utc)
 
     pending = count_pending(client)
 
@@ -179,7 +183,7 @@ def check_and_fire(client, *, dry_run: bool = False, _now=None) -> dict:
     last_state = "rearmed"
     if last_event:
         payload = last_event.get("payload") or {}
-        last_state = payload.get("state", "rearmed")
+        last_state = payload.get("state", "fired")
 
     # Re-arm: fired state but count dropped below rearm threshold.
     rearmed = False
@@ -231,7 +235,7 @@ def check_and_fire(client, *, dry_run: bool = False, _now=None) -> dict:
 
     # Fire!
     event_id = emit_event(client, pending_count=pending, state="fired", dry_run=dry_run)
-    if not dry_run:
+    if not dry_run and event_id is not None:
         emit_learn_run(client)
     return {
         "action": "fired" if not dry_run else "would_fire",

@@ -34,19 +34,31 @@ are counted but rendered as no-op.
      with the owner's free-text reject reason.
    - `skip` — leave row pending, move to next.
 
-4. **Finalize** — emit one `outcome_record` with:
-   ```
-   {
-     accepted: N,
-     rejected: N,
-     merged: 0,          # reserved for future slices
-     classifier_drained: N,
-     top_reject_reasons: ["..."],
-     pending_remaining: N,
-     duration_s: N
-   }
-   ```
-   Always emitted, even for zero-row runs.
+4. **Finalize** — in order:
+
+   a. **Emit `learn_run` event** into the `events` table to close the
+      debounce loop (prevents watcher re-firing within 24 h):
+      ```sql
+      INSERT INTO events (event_type, severity, repo, source, title, payload)
+      VALUES ('learn_run', 'info', 'Osasuwu/jarvis', 'learn_skill',
+              '/learn session complete', '{}');
+      ```
+      Use the `execute_sql` MCP tool or the Supabase client. **Always
+      emitted** — even for zero-row runs — so the watcher debounce is
+      set after every `/learn` invocation, not only watcher-triggered ones.
+
+   b. Emit one `outcome_record` with:
+      ```
+      {
+        accepted: N,
+        rejected: N,
+        merged: 0,          # reserved for future slices
+        classifier_drained: N,
+        top_reject_reasons: ["..."],
+        pending_remaining: N,
+        duration_s: N
+      }
+      ```
 
 ## --status mode
 
@@ -86,11 +98,17 @@ The renderer lives at `mcp-memory/review_render.py` — import via
 
 ```python
 import importlib.util
+import subprocess
 from pathlib import Path
 
+_repo_root = Path(
+    subprocess.check_output(["git", "rev-parse", "--show-toplevel"])
+    .decode()
+    .strip()
+)
 spec = importlib.util.spec_from_file_location(
     "review_render",
-    Path("mcp-memory") / "review_render.py",
+    _repo_root / "mcp-memory" / "review_render.py",
 )
 render_mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(render_mod)
@@ -98,7 +116,10 @@ spec.loader.exec_module(render_mod)
 
 For each classifier row that looks like an UPDATE (has a same-named
 live memory in the DB), pre-fetch the current memory as the
-`before_snapshot` before calling `render_mod.render_proposal(row, ctx)`.
+`before_snapshot` and set `ctx['decision'] = 'UPDATE'` **before** calling
+`render_mod.render_proposal(row, ctx)`. Without the explicit `'UPDATE'`
+key the diff branch never fires — the row renders as a compact card
+instead of a before/after diff.
 
 RPCs (`memory_review_list`, `memory_review_decide`) are called via
 `execute_sql` or direct supabase client — whichever is available in the

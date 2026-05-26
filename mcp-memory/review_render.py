@@ -16,7 +16,6 @@ Display formats per row type:
 from __future__ import annotations
 
 import difflib
-from typing import Any
 
 
 def render_proposal(row: dict, context: dict | None = None) -> str:
@@ -40,7 +39,7 @@ def render_proposal(row: dict, context: dict | None = None) -> str:
           ``content``, ``tags`` keys at minimum.
         - ``reasoning`` (``str``) — classifier reasoning to display.
     """
-    source_prov = (row.get("source_provenance") or "")
+    source_prov = row.get("source_provenance") or ""
     is_classifier = source_prov.startswith("classifier:")
     has_merge_targets = bool(row.get("merge_targets"))
 
@@ -208,8 +207,9 @@ def _simple_diff(before: str, after: str, context: str = "") -> str:
     if not diff:
         return ""
 
-    # Skip --- and +++ header lines — they're noise in a compact card
-    body_lines = [l for l in diff[2:] if not l.startswith("@@" )]
+    # Skip --- and +++ header lines; keep @@ hunk headers so multi-hunk diffs
+    # don't silently concatenate disjoint sections.
+    body_lines = list(diff[2:])
     body = "".join(body_lines).strip()
     return f"```diff\n{body}\n```" if body else ""
 
