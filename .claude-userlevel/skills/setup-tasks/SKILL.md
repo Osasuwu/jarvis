@@ -74,6 +74,7 @@ Registered via `create_scheduled_task` MCP. All run on Workshop with full local 
 | verify | `47 16 * * 5` | Run `/verify` — verify pending outcomes, detect patterns, save lessons. |
 | memory-consolidation-weekly | `1 10 * * 0` | Run `/memory-consolidation-weekly` — weekly A-MEM Phase 5.1d-α consolidation apply (`scripts/consolidation-run.py`). |
 | memory-evolve-weekly | `0 11 * * 0` | Run `/memory-evolve-weekly` — weekly A-MEM Phase 5.2-γ neighbor-evolve apply (`scripts/evolve-run.py`, one hour after consolidation). |
+| learn | `0 10 * * 0` | Run `/learn` — drain the pending memory review queue (classifier, candidates, merge proposals). Weekly owner review cadence per ADR-0003. |
 
 ## Obsolete (disable)
 
