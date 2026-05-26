@@ -50,7 +50,17 @@ if (
 ):
     # Coerce any non-zero child exit to 0 — Stop hook must never block session
     # end. Child already prints diagnostics to stderr.
-    sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve())]) and 0)
+    #
+    # subprocess.call itself can raise OSError (PermissionError, ENOEXEC) if
+    # the venv binary exists but isn't executable — e.g. permissions stripped
+    # by a git checkout on a case-sensitive filesystem, or a botched reinstall.
+    # The docstring contract is "Never blocks the session end. Exits 0 on
+    # every path." — so we swallow OSError too.
+    try:
+        sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve())]) and 0)
+    except OSError as _e:
+        print(f"[deriver-sessionend] venv re-exec failed: {_e}", file=sys.stderr)
+        sys.exit(0)
 
 # ---------------------------------------------------------------------------
 # Under venv — import deps
@@ -129,8 +139,7 @@ def main() -> int:
         if count:
             ids = ",".join(str(u)[:8] for u in inserted)
             print(
-                f"[deriver-sessionend] session={session_id[:8]} "
-                f"candidates={count} ids={ids}",
+                f"[deriver-sessionend] session={session_id[:8]} candidates={count} ids={ids}",
                 file=sys.stderr,
             )
         else:

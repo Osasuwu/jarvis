@@ -19,7 +19,12 @@ from uuid import UUID, uuid4
 # Ensure the scripts package is importable before loading the module
 # under test.  conftest.py already inserts ``scripts/`` into sys.path.
 # --
-from deriver.pipeline import derive_from_session, _build_row, _validate_candidate, _parse_json_response
+from deriver.pipeline import (
+    derive_from_session,
+    _build_row,
+    _validate_candidate,
+    _parse_json_response,
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -53,8 +58,10 @@ def _asst_turn(text: str) -> dict:
 
 def _make_llm(candidates: list[dict]) -> callable:
     """Return a fake LLM callable that returns the given candidates as JSON."""
+
     def llm_fn(prompt: str) -> str:
         return json.dumps(candidates)
+
     return llm_fn
 
 
@@ -72,8 +79,10 @@ def _make_fake_insert() -> tuple[callable, list[dict]]:
 
 def _make_failing_llm() -> callable:
     """LLM that simulates an unreachable backend."""
+
     def llm_fn(prompt: str) -> None:
         return None
+
     return llm_fn
 
 
@@ -85,16 +94,26 @@ def _make_failing_llm() -> callable:
 def test_derive_from_session_returns_up_to_5_candidates(tmp_path: Path):
     """Given a buffer with content, the pipeline returns ≤5 candidate IDs."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("Hello, how can I help?"),
-        _user_turn("We should use early returns instead of nested ifs"),
-        _asst_turn("Good point, let me refactor that"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("Hello, how can I help?"),
+            _user_turn("We should use early returns instead of nested ifs"),
+            _asst_turn("Good point, let me refactor that"),
+        ],
+    )
 
     candidates = [
-        {"type": "feedback", "project": "jarvis", "name": "prefer-early-return",
-         "description": "Prefers early return pattern", "content": "User prefers early returns over nested if statements in Python code.",
-         "tags": ["coding-style", "python"]},
+        {
+            "type": "feedback",
+            "project": "jarvis",
+            "name": "prefer-early-return",
+            "description": "Prefers early return pattern",
+            "content": "User prefers early returns over nested if statements in Python code.",
+            "tags": ["coding-style", "python"],
+        },
     ]
     llm_fn = _make_llm(candidates)
     insert_fn, captured = _make_fake_insert()
@@ -120,33 +139,40 @@ def test_derive_from_session_returns_up_to_5_candidates(tmp_path: Path):
 def test_derive_from_session_returns_at_most_5(tmp_path: Path):
     """If LLM returns 7 candidates, the pipeline caps at 5."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("ok"),
-        _user_turn("Lesson 1"),
-        _asst_turn("ok"),
-        _user_turn("Lesson 2"),
-        _asst_turn("ok"),
-        _user_turn("Lesson 3"),
-        _asst_turn("ok"),
-        _user_turn("Lesson 4"),
-        _asst_turn("ok"),
-        _user_turn("Lesson 5"),
-        _asst_turn("ok"),
-        _user_turn("Lesson 6"),
-        _asst_turn("ok"),
-        _user_turn("Lesson 7"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("ok"),
+            _user_turn("Lesson 1"),
+            _asst_turn("ok"),
+            _user_turn("Lesson 2"),
+            _asst_turn("ok"),
+            _user_turn("Lesson 3"),
+            _asst_turn("ok"),
+            _user_turn("Lesson 4"),
+            _asst_turn("ok"),
+            _user_turn("Lesson 5"),
+            _asst_turn("ok"),
+            _user_turn("Lesson 6"),
+            _asst_turn("ok"),
+            _user_turn("Lesson 7"),
+        ],
+    )
 
     many_candidates = []
     for i in range(7):
-        many_candidates.append({
-            "type": "feedback" if i % 2 == 0 else "user",
-            "project": "jarvis" if i % 2 == 0 else None,
-            "name": f"insight-{i}",
-            "description": f"Insight {i}",
-            "content": f"Content for insight {i}.",
-            "tags": ["test"],
-        })
+        many_candidates.append(
+            {
+                "type": "feedback" if i % 2 == 0 else "user",
+                "project": "jarvis" if i % 2 == 0 else None,
+                "name": f"insight-{i}",
+                "description": f"Insight {i}",
+                "content": f"Content for insight {i}.",
+                "tags": ["test"],
+            }
+        )
 
     llm_fn = _make_llm(many_candidates)
     insert_fn, captured = _make_fake_insert()
@@ -222,17 +248,26 @@ def test_scrubber_wired_on_candidate_content(tmp_path: Path):
     candidate content does NOT contain the token — proves the scrubber
     is wired in the pipeline."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("Sure, I'll look into it"),
-        _user_turn("The AWS key is AKIAIOSFODNN7EXAMPLE, please fix the config"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("Sure, I'll look into it"),
+            _user_turn("The AWS key is AKIAIOSFODNN7EXAMPLE, please fix the config"),
+        ],
+    )
 
     # LLM echoes the key back in the candidate content
     candidates = [
-        {"type": "feedback", "project": "jarvis", "name": "fix-aws-config",
-         "description": "Fix AWS config",
-         "content": "User reported key AKIAIOSFODNN7EXAMPLE in config. Should rotate it.",
-         "tags": ["security"]},
+        {
+            "type": "feedback",
+            "project": "jarvis",
+            "name": "fix-aws-config",
+            "description": "Fix AWS config",
+            "content": "User reported key AKIAIOSFODNN7EXAMPLE in config. Should rotate it.",
+            "tags": ["security"],
+        },
     ]
     llm_fn = _make_llm(candidates)
     insert_fn, captured = _make_fake_insert()
@@ -256,16 +291,25 @@ def test_scrubber_wired_on_candidate_content(tmp_path: Path):
 def test_scrubber_wired_on_description_and_name(tmp_path: Path):
     """Description and content pass through the scrubber (path redaction)."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("ok"),
-        _user_turn("fix /home/alice/projects thing"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("ok"),
+            _user_turn("fix /home/alice/projects thing"),
+        ],
+    )
 
     candidates = [
-        {"type": "user", "project": None, "name": "alice-project",
-         "description": "User /home/alice/projects mentioned in context",
-         "content": "User referenced their home directory /home/alice/projects during the session.",
-         "tags": []},
+        {
+            "type": "user",
+            "project": None,
+            "name": "alice-project",
+            "description": "User /home/alice/projects mentioned in context",
+            "content": "User referenced their home directory /home/alice/projects during the session.",
+            "tags": [],
+        },
     ]
     llm_fn = _make_llm(candidates)
     insert_fn, captured = _make_fake_insert()
@@ -313,10 +357,13 @@ def test_validate_candidate_missing_content():
 
 
 def test_validate_candidate_accepts_valid():
-    err = _validate_candidate({
-        "type": "user", "name": "good-one",
-        "content": "This is valid content.",
-    })
+    err = _validate_candidate(
+        {
+            "type": "user",
+            "name": "good-one",
+            "content": "This is valid content.",
+        }
+    )
     assert err is None
 
 
@@ -337,8 +384,7 @@ def test_user_type_always_global_project():
 
 def test_feedback_type_preserves_valid_project():
     row = _build_row(
-        {"type": "feedback", "project": "jarvis", "name": "test",
-         "content": "test", "tags": []},
+        {"type": "feedback", "project": "jarvis", "name": "test", "content": "test", "tags": []},
         session_id=SESSION_ID,
     )
     assert not isinstance(row, str)
@@ -348,8 +394,13 @@ def test_feedback_type_preserves_valid_project():
 
 def test_feedback_type_rejects_invalid_project():
     row = _build_row(
-        {"type": "feedback", "project": "invalid-proj", "name": "test",
-         "content": "test", "tags": []},
+        {
+            "type": "feedback",
+            "project": "invalid-proj",
+            "name": "test",
+            "content": "test",
+            "tags": [],
+        },
         session_id=SESSION_ID,
     )
     assert not isinstance(row, str)
@@ -372,19 +423,42 @@ def test_parse_valid_json():
 
 
 def test_parse_json_with_code_fence():
-    raw = "```json\n[{\"type\":\"user\",\"name\":\"x\"}]\n```"
+    raw = '```json\n[{"type":"user","name":"x"}]\n```'
     result = _parse_json_response(raw)
     assert len(result) == 1
 
 
 def test_parse_json_with_surrounding_text():
-    raw = "Here are the insights:\n\n[{\"type\":\"user\",\"name\":\"x\",\"content\":\"hello\"}]\n\nEnd."
+    raw = 'Here are the insights:\n\n[{"type":"user","name":"x","content":"hello"}]\n\nEnd.'
     result = _parse_json_response(raw)
     assert len(result) == 1
 
 
 def test_parse_invalid_returns_empty():
     assert _parse_json_response("not json at all") == []
+
+
+def test_parse_json_with_nested_tags_arrays_greedy_match():
+    """Regex must match the OUTERMOST candidates array, not the inner tags array.
+
+    Regression: round-2 used non-greedy ``\\[[\\s\\S]*?\\]`` which stopped at
+    the first ``]`` — i.e. the nested ``"tags": [...]`` of the first candidate.
+    ``json.loads`` then succeeded on a list of tag strings; every
+    ``_validate_candidate`` failed; zero candidates inserted silently.
+    """
+    raw = (
+        "Here are the candidates I extracted:\n\n"
+        '[{"type":"user","name":"a","content":"x","tags":["t1","t2"]},'
+        '{"type":"feedback","name":"b","content":"y","tags":["t3"]}]\n'
+        "Hope this helps!"
+    )
+    result = _parse_json_response(raw)
+    assert len(result) == 2, (
+        "Greedy regex must capture the full outer array including both candidates; "
+        f"got {len(result)} result(s)"
+    )
+    assert result[0]["name"] == "a"
+    assert result[1]["name"] == "b"
 
 
 # ---------------------------------------------------------------------------
@@ -395,17 +469,27 @@ def test_parse_invalid_returns_empty():
 def test_cap_at_5_llm_returns_8(tmp_path: Path):
     """MAX_CANDIDATES=5 enforced even when LLM returns 8 valid candidates."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("hi"),
-        _user_turn("lots of insights here"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("hi"),
+            _user_turn("lots of insights here"),
+        ],
+    )
     many = []
     for i in range(8):
-        many.append({
-            "type": "user", "project": None,
-            "name": f"i-{i}", "description": f"d{i}",
-            "content": f"content {i}", "tags": [],
-        })
+        many.append(
+            {
+                "type": "user",
+                "project": None,
+                "name": f"i-{i}",
+                "description": f"d{i}",
+                "content": f"content {i}",
+                "tags": [],
+            }
+        )
     llm_fn = _make_llm(many)
     insert_fn, captured = _make_fake_insert()
 
@@ -420,6 +504,61 @@ def test_cap_at_5_llm_returns_8(tmp_path: Path):
     assert len(captured) == 5
 
 
+def test_cap_counts_valid_inserts_not_raw_indices(tmp_path: Path):
+    """MAX_CANDIDATES cap counts VALID candidates, not raw list indices.
+
+    Regression: round-2 indexed with ``enumerate`` and tripped ``i >= 5``;
+    leading invalid entries burned indices and silently dropped valid
+    candidates past position 4. With a list of two invalid + five valid +
+    one extra, the cap should yield 5 valid inserts (not 3).
+    """
+    buffer_dir = tmp_path / ".deriver-buffer"
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("hi"),
+            _user_turn("some content"),
+        ],
+    )
+    # Two leading invalids (missing required fields) + 5 valids + 1 extra.
+    candidates = [
+        {"type": "user"},  # missing name/content
+        {"type": "feedback"},  # missing name/content
+    ]
+    for i in range(6):
+        candidates.append(
+            {
+                "type": "user",
+                "project": None,
+                "name": f"valid-{i}",
+                "description": f"d{i}",
+                "content": f"valid content {i}",
+                "tags": [],
+            }
+        )
+    llm_fn = _make_llm(candidates)
+    insert_fn, captured = _make_fake_insert()
+
+    result = derive_from_session(
+        SESSION_ID,
+        project_hash=PROJECT_HASH,
+        llm_fn=llm_fn,
+        insert_fn=insert_fn,
+        buffer_root=buffer_dir,
+    )
+    assert len(result) == 5, f"Expected 5 valid inserts (cap counts valid_seen); got {len(result)}"
+    assert len(captured) == 5
+    # The first 5 VALID candidates (indexes 2..6 in the raw list) must land.
+    assert all(row["name"].startswith("valid-") for row in captured)
+    # The very last valid (valid-5) is dropped — that's the cap kicking in.
+    names = [row["name"] for row in captured]
+    assert "valid-0" in names
+    assert "valid-4" in names
+    assert "valid-5" not in names
+
+
 # ---------------------------------------------------------------------------
 # LLM failure / fallback
 # ---------------------------------------------------------------------------
@@ -429,10 +568,15 @@ def test_llm_failure_returns_empty_no_half_write(tmp_path: Path):
     """When the LLM returns None (both backends failed), no rows are
     inserted — no half-write to memories."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("hi"),
-        _user_turn("some text"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("hi"),
+            _user_turn("some text"),
+        ],
+    )
     llm_fn = _make_failing_llm()
     insert_fn, captured = _make_fake_insert()
 
@@ -456,20 +600,35 @@ def test_inserted_rows_have_required_shape(tmp_path: Path):
     """Every inserted candidate has requires_review=true,
     source_provenance='deriver:<session-id>', valid type."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("ok"),
-        _user_turn("Using fixtures for test data is cleaner"),
-        _asst_turn("agreed"),
-        _user_turn("We should add more type hints"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("ok"),
+            _user_turn("Using fixtures for test data is cleaner"),
+            _asst_turn("agreed"),
+            _user_turn("We should add more type hints"),
+        ],
+    )
 
     candidates = [
-        {"type": "feedback", "project": "jarvis", "name": "use-fixtures",
-         "description": "Prefer fixtures", "content": "Use fixtures for test data setup.",
-         "tags": ["testing"]},
-        {"type": "user", "project": None, "name": "likes-type-hints",
-         "description": "Type hints preference", "content": "User prefers adding type hints.",
-         "tags": ["coding-style"]},
+        {
+            "type": "feedback",
+            "project": "jarvis",
+            "name": "use-fixtures",
+            "description": "Prefer fixtures",
+            "content": "Use fixtures for test data setup.",
+            "tags": ["testing"],
+        },
+        {
+            "type": "user",
+            "project": None,
+            "name": "likes-type-hints",
+            "description": "Type hints preference",
+            "content": "User prefers adding type hints.",
+            "tags": ["coding-style"],
+        },
     ]
     llm_fn = _make_llm(candidates)
     insert_fn, captured = _make_fake_insert()
@@ -502,16 +661,25 @@ def test_pipeline_shape_enforces_scrub_before_insert(tmp_path: Path):
     the candidate content.  Verified structurally: _build_row always calls
     scrub() on content/description/name before returning the row dict."""
     buffer_dir = tmp_path / ".deriver-buffer"
-    _write_buffer(buffer_dir, PROJECT_HASH, SESSION_ID, [
-        _asst_turn("ok"),
-        _user_turn("secret is sk-AbCdEfGhIjKlMnOpQrStUvWxYz123456"),
-    ])
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("ok"),
+            _user_turn("secret is sk-AbCdEfGhIjKlMnOpQrStUvWxYz123456"),
+        ],
+    )
 
     candidates = [
-        {"type": "feedback", "project": "jarvis", "name": "found-secret",
-         "description": "There is a secret",
-         "content": "sk-AbCdEfGhIjKlMnOpQrStUvWxYz123456",
-         "tags": []},
+        {
+            "type": "feedback",
+            "project": "jarvis",
+            "name": "found-secret",
+            "description": "There is a secret",
+            "content": "sk-AbCdEfGhIjKlMnOpQrStUvWxYz123456",
+            "tags": [],
+        },
     ]
     llm_fn = _make_llm(candidates)
     insert_fn, captured = _make_fake_insert()

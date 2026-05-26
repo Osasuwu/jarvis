@@ -59,13 +59,23 @@ def project_hash(cwd: str) -> str:
     the buffer the accumulator wrote to.
     """
     import hashlib
+
     raw = os.path.realpath(cwd).encode("utf-8", errors="replace")
     return hashlib.sha256(raw).hexdigest()[:HASH_LENGTH]
+
+
 _PROMPT_CACHE: str | None = None
 
 # JSON array extraction regex (the LLM often wraps in code fences or
 # explanatory text around the JSON).
-_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*?\]")
+#
+# Greedy on purpose: when the LLM wraps the candidates array in prose, each
+# candidate has a nested `tags` array. Non-greedy `*?` stopped at the FIRST
+# `]` — i.e. an inner tags array — `json.loads` then succeeded on a list of
+# strings, every _validate_candidate failed, and zero candidates were
+# inserted silently. Greedy extends to the OUTERMOST `]`, capturing the
+# real candidates array.
+_JSON_ARRAY_RE = re.compile(r"\[[\s\S]*\]")
 
 # Allowed values
 VALID_TYPES = {"user", "feedback"}
@@ -237,9 +247,7 @@ def _build_row(candidate: dict[str, Any], *, session_id: str) -> dict[str, Any] 
     # Normalise tags
     if isinstance(raw_tags, list):
         cleaned_tags = [
-            str(t).strip().lower()[:50]
-            for t in raw_tags
-            if isinstance(t, (str, int, float))
+            str(t).strip().lower()[:50] for t in raw_tags if isinstance(t, (str, int, float))
         ]
         # Deduplicate, preserve order, cap at 15
         seen: set[str] = set()
@@ -305,7 +313,9 @@ def derive_from_session(
     # 1. Read buffer
     transcript = _read_buffer(session_id, project_hash, buffer_root=buffer_root)
     if transcript is None:
-        print(f"[deriver-pipeline] no buffer for session {session_id}", file=__import__("sys").stderr)
+        print(
+            f"[deriver-pipeline] no buffer for session {session_id}", file=__import__("sys").stderr
+        )
         return []
 
     # 2. Scrub input transcript before LLM sees it
@@ -328,13 +338,19 @@ def derive_from_session(
     prompt = _render_prompt(scrubbed_transcript)
     response = llm_fn(prompt)
     if response is None:
-        print("[deriver-pipeline] LLM returned None (both backends failed)", file=__import__("sys").stderr)
+        print(
+            "[deriver-pipeline] LLM returned None (both backends failed)",
+            file=__import__("sys").stderr,
+        )
         return []
 
     # 5. Parse response
     candidates = _parse_json_response(response)
     if not candidates:
-        print("[deriver-pipeline] LLM returned empty or unparseable response", file=__import__("sys").stderr)
+        print(
+            "[deriver-pipeline] LLM returned empty or unparseable response",
+            file=__import__("sys").stderr,
+        )
         return []
 
     # 6. Validate and insert (≤MAX_CANDIDATES)
@@ -342,14 +358,24 @@ def derive_from_session(
         try:
             insert_fn = _build_supabase_insert_fn()
         except Exception as e:
-            print(f"[deriver-pipeline] failed to build Supabase insert fn: {e}", file=__import__("sys").stderr)
+            print(
+                f"[deriver-pipeline] failed to build Supabase insert fn: {e}",
+                file=__import__("sys").stderr,
+            )
             return []
 
     inserted: list[UUID] = []
     errors: list[str] = []
 
+    # The cap counts VALID-and-INSERTED candidates, not raw list indices.
+    # If the LLM returns leading nulls or malformed entries, an index-based
+    # cap would silently drop valid candidates past index MAX_CANDIDATES-1
+    # even when fewer than MAX_CANDIDATES were inserted. Counting
+    # valid_seen mirrors the spirit of the cap ("at most N memories written
+    # per session").
+    valid_seen = 0
     for i, candidate in enumerate(candidates):
-        if i >= MAX_CANDIDATES:
+        if valid_seen >= MAX_CANDIDATES:
             break
         err = _validate_candidate(candidate)
         if err:
@@ -364,13 +390,17 @@ def derive_from_session(
         try:
             uid = insert_fn(row)
             inserted.append(uid)
+            valid_seen += 1
         except Exception as e:
             errors.append(f"candidate #{i}: insert failed: {e}")
             # Continue inserting remaining candidates
             continue
 
     if errors:
-        print(f"[deriver-pipeline] {len(errors)} error(s): {'; '.join(errors)}", file=__import__("sys").stderr)
+        print(
+            f"[deriver-pipeline] {len(errors)} error(s): {'; '.join(errors)}",
+            file=__import__("sys").stderr,
+        )
 
     return inserted
 
@@ -413,9 +443,21 @@ def _build_supabase_insert_fn() -> InsertFn:
     def _insert(row: dict[str, Any]) -> UUID:
         resp = client.table("memories").insert(row).execute()
         data = resp.data
-        if data and len(data) > 0:
-            return UUID(data[0]["id"])
-        raise RuntimeError(f"Supabase insert returned no data: {resp}")
+        if not (data and len(data) > 0):
+            raise RuntimeError(f"Supabase insert returned no data: {resp}")
+        # Defensive .get() instead of direct subscript: PostgREST
+        # `Prefer: return=minimal` (or an RLS policy stripping returned
+        # columns) yields a row dict without "id". Direct `data[0]["id"]`
+        # raised KeyError → outer except caught it → row reported as
+        # "insert failed" but the row WAS persisted → re-run created
+        # duplicates. Surface this explicitly as a deployment
+        # misconfiguration instead of as a silent dup-create.
+        row_id = data[0].get("id")
+        if not row_id:
+            raise RuntimeError(
+                f"Supabase insert succeeded but returned row without 'id': {data[0]!r}"
+            )
+        return UUID(row_id)
 
     _SUPABASE_INSERT_FN = _insert
     return _SUPABASE_INSERT_FN

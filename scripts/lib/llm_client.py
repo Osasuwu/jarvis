@@ -21,7 +21,9 @@ import urllib.request
 # ---------------------------------------------------------------------------
 
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
-DEFAULT_OLLAMA_MODEL = "qwen2.5-coder:14b"  # Workshop primary (docs/agents/ollama-workshop-bench-538.md)
+DEFAULT_OLLAMA_MODEL = (
+    "qwen2.5-coder:14b"  # Workshop primary (docs/agents/ollama-workshop-bench-538.md)
+)
 DEFAULT_OLLAMA_TIMEOUT_S = 120
 
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
@@ -95,11 +97,17 @@ def call_deepseek(
     api_key: str | None = None,
     timeout_s: int = DEFAULT_DEEPSEEK_TIMEOUT_S,
     system_prompt: str | None = None,
+    format_json: bool = True,
 ) -> str | None:
     """Call DeepSeek chat-completions API and return the response text.
 
     Returns None on any error.  Uses ``requests``-style JSON POST via
     stdlib ``urllib`` — no extra dependency.
+
+    When *format_json* is true (default), sets
+    ``"response_format": {"type": "json_object"}`` per the OpenAI-compatible
+    contract DeepSeek implements. Without it, DeepSeek wraps JSON output in
+    explanatory prose, which downstream parsers must strip.
     """
     base_url = base_url or os.environ.get("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_BASE_URL)
     model = model or os.environ.get("DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL)
@@ -113,12 +121,14 @@ def call_deepseek(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    body = {
+    body: dict = {
         "model": model,
         "messages": messages,
         "temperature": 0,
         "max_tokens": 1500,
     }
+    if format_json:
+        body["response_format"] = {"type": "json_object"}
     payload = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         f"{base_url.rstrip('/')}/v1/chat/completions",
@@ -164,5 +174,7 @@ def call_llm(
     result = call_ollama(prompt, system_prompt=system_prompt, format_json=format_json)
     if result is not None:
         return result
-    # Fallback
-    return call_deepseek(prompt, system_prompt=system_prompt)
+    # Fallback — forward format_json so DeepSeek also gets JSON-mode enforcement.
+    # Without this, DeepSeek's prose wrapping triggered the non-greedy regex
+    # bug in scripts/deriver/pipeline.py (now also fixed).
+    return call_deepseek(prompt, system_prompt=system_prompt, format_json=format_json)
