@@ -1,7 +1,7 @@
 ---
 name: rework
 description: Reactive TDD loop against PR review findings — parse structured verdict, fix CRITICAL/MAJOR issues via TDD, invoke loop-stop guard policy, emit terminal artifacts.
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Rework Skill
@@ -126,6 +126,49 @@ exit ad-hoc here.** Before exiting, execute the cleanup block from **§9d (Edge:
 no structured findings)** to remove the `status:rework-in-progress` label, release
 the per-PR lock, and record the `no-findings` outcome. Exiting without 9d cleanup
 leaks the lock + label acquired in step 2, blocking re-dispatch for the full 2h TTL.
+
+#### 3a. Reality-check prelude (before classification)
+
+A structured verdict can be internally consistent yet audit a *different tree
+snapshot* than the PR branch — most commonly because a salvage/rebase landed on
+`main` after the PR branch was cut, and the reviewer was pointed at `main`
+instead of `headRefName`. Applying such a verdict overwrites correct branch
+content with hallucinated findings (M41 smoke test on PR #784, 2026-05-26 —
+outcome `2c2a357a-957c-4998-aac8-91b404f050b6`, lesson: dispatcher-era branch
+audited as executor-era).
+
+After parsing findings into a list (with file/line metadata) but **before**
+classification and counting, verify each CRITICAL finding against the PR
+branch tree:
+
+```bash
+git fetch origin <headRefName>
+git checkout <headRefName>
+
+# Per claimed file in CRITICAL findings:
+for f in <files claimed by CRITICAL findings>; do
+  git ls-tree -r HEAD --name-only | grep -Fx "$f" || echo "MISSING: $f"
+  if [ -f "$f" ]; then wc -l "$f"; fi
+done
+```
+
+For each CRITICAL finding:
+
+- **File existence**: `git ls-tree -r HEAD --name-only` on `headRefName` MUST
+  contain the claimed path. Missing → mismatch.
+- **Cardinality**: if the finding cites LOC ("function at line 320 in a 500-line
+  file") or function count, check `wc -l` and `grep -c '^def\|^class\|^function'`
+  (or language-equivalent) on the actual file. Off by >2× → mismatch.
+- **Symbol presence**: if the finding cites a named symbol, `grep -nE
+  '\b<symbol>\b' <file>` on `headRefName`. Zero hits where the finding claims
+  presence (or vice versa) → mismatch.
+
+If **≥1 CRITICAL finding** contradicts reality on `headRefName` → trigger
+**§9e (VERDICT_MISALIGNED)** and exit. Do not proceed to classification, do
+not attempt fixes, do not push.
+
+If all CRITICAL findings pass the reality check (or there are zero CRITICAL
+findings), continue to classification.
 
 Classify each finding into CRITICAL / MAJOR / MINOR. Count totals:
 `n_critical`, `n_major`, `n_minor`.
@@ -369,6 +412,98 @@ outcome_record(
 
 Remove `status:rework-in-progress` label.
 Release lock.
+
+#### 9e. VERDICT_MISALIGNED (reality check failed)
+
+Triggered by **§3a**: ≥1 CRITICAL finding contradicts the PR's `headRefName`
+tree at the file-existence, cardinality, or symbol-presence level. The verdict
+may be internally consistent — it just doesn't describe this branch.
+
+The skill has been midway through reality-checking; the working tree may carry
+RED-test scratch from a partial step-4 attempt. **Hard-reset before any other
+action** so the diagnostic comment reflects the actual branch state, not a
+contaminated tree:
+
+```bash
+git reset --hard HEAD
+git clean -fd  # remove untracked scratch from RED test attempts
+```
+
+**Do NOT push commits.** This terminal path never produces a commit on the PR
+branch — the whole point of §9e is that the verdict was unsafe to apply.
+
+Post a diagnostic comment on the PR with a branch-vs-main divergence table.
+Template:
+
+```bash
+gh pr comment <N> --body "$(cat <<'EOF'
+## Rework loop terminated — verdict misaligned
+
+The most recent code-review verdict on this PR contradicts the actual tree on
+`<headRefName>`. The verdict appears internally consistent but audits a
+different snapshot — most commonly because a salvage/rebase landed on `main`
+after this branch was cut.
+
+### Reality check (on `<headRefName>`)
+
+| CRITICAL finding | Claimed file | On branch? | Cardinality match? | On `main`? |
+|---|---|---|---|---|
+| <one-line summary> | `<path>` | <yes/no> | <yes/no/n-a> | <yes/no> |
+| ... | ... | ... | ... | ... |
+
+### What this means
+
+Applying the verdict verbatim would overwrite correct branch content with
+fixes for code that does not exist on this branch. The `/rework` loop has
+refused to proceed; no commits have been made.
+
+### Recovery
+
+Pick one:
+
+1. **Rebase + re-review** — rebase `<headRefName>` onto current `main`, push,
+   re-trigger Claude code-review. The new verdict will audit the rebased tree.
+2. **Close PR** — if the work was superseded (e.g. salvaged into a different
+   PR that already merged), close this PR; track any remaining behavior in a
+   fresh issue.
+
+This PR has been labelled `status:needs-human`. The rework loop will not
+re-fire until the label is removed and a fresh review is posted.
+EOF
+)"
+```
+
+Apply the terminal label:
+
+```bash
+gh pr edit <N> --add-label "status:needs-human"
+```
+
+Record the outcome with `pattern_tags` including `verdict_misaligned`:
+
+```
+outcome_record(
+  task_type: "fix",
+  task_description: "Rework PR #<N> — verdict misaligned",
+  outcome_status: "partial",
+  outcome_summary: "Step-3 reality check found ≥1 CRITICAL finding contradicting headRefName tree. No commits pushed. Owner choice: rebase + re-review, or close PR.",
+  project: "<repo>",
+  issue_url: "<PR URL>",
+  pr_url: "<PR URL>",
+  tests_passed: false,
+  pattern_tags: ["pr-<N>", "rework", "terminal", "verdict_misaligned"]
+)
+```
+
+Remove `status:rework-in-progress` label.
+Release the per-PR lock by updating the `in_flight` outcome record.
+
+Why a separate terminal verdict (vs §9c STUCK_*): §9c requires loop iterations
+to have run; §9d requires step-3 to have found zero findings. The misaligned
+case is neither — findings exist and are internally consistent, but contradict
+observable branch reality. Routing it through §9c would falsify the `history`
+that the loop-stop guard policy decides on; routing it through §9d would lose
+the diagnostic signal the owner needs to choose between rebase and close.
 
 ## Safety rules
 
