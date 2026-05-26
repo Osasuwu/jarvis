@@ -1,7 +1,7 @@
 ---
 name: setup-tasks
 description: "Bootstrap all scheduled tasks on a new device. Idempotent — safe to re-run."
-version: 2.0.0
+version: 2.1.0
 ---
 
 # Setup Tasks
@@ -16,6 +16,17 @@ Rationale: removes per-device cron-dedup complexity, eliminates double-dispatch 
 
 Decision: `1b7ff8d1-bbca-4207-a7e4-4c1edddef67e`.
 
+## Cleanup semantics: disable, not delete (2026-05-26)
+
+`mcp__scheduled-tasks__*` exposes `create_scheduled_task`, `list_scheduled_tasks`, `update_scheduled_task` — **no delete tool**. The 2.0.0 spec referenced a non-existent `delete_scheduled_task`; v2.1.0 corrects this.
+
+**Canonical inert state = `update_scheduled_task(taskId, enabled=false)`.** Properties:
+- **Idempotent** — disabling an already-disabled task is a no-op.
+- **Reversible** — `enabled=true` re-arms (used by bootstrap to recover previously-disabled known routines).
+- **Observable** — `list_scheduled_tasks` still surfaces them, so accidental re-enable is visible.
+
+**Permanent removal is an owner-driven filesystem op**, not a skill action. Tasks live at `~/.claude/scheduled-tasks/<taskId>/` (per `create_scheduled_task` schema). To fully reap a disabled entry: stop Claude Code, `rm -rf` the directory, restart. Skill stays MCP-only — no filesystem writes outside its own SKILL.md.
+
 ## Usage
 
 `/setup-tasks`
@@ -28,23 +39,29 @@ Decision: `1b7ff8d1-bbca-4207-a7e4-4c1edddef67e`.
    To clean up legacy entries on this device, run:
      /setup-tasks --cleanup
    ```
-   and exit. The `--cleanup` flag (separate path below) deletes any MCP scheduled tasks this skill previously registered here.
-2. On Workshop: call `list_scheduled_tasks` to see what's already registered.
-3. **Deregister obsolete tasks** before adding new ones. For each entry in the *Obsolete* table below:
-   - If present → call `delete_scheduled_task`. On success count under `removed`. On failure print `warn: failed to remove <taskId> (<error>) — check manually` and DO NOT count it.
+   and exit. The `--cleanup` flag (separate path below) disables any MCP scheduled tasks this skill previously registered here. Permanent removal = manual `rm -rf ~/.claude/scheduled-tasks/<taskId>/` after Claude Code shutdown (see *Cleanup semantics* above).
+2. On Workshop: call `list_scheduled_tasks` to see what's already registered. Note each task's `enabled` field.
+3. **Disable obsolete tasks** before adding new ones. For each entry in the *Obsolete* table below:
+   - If present AND `enabled=true` → call `update_scheduled_task(taskId, enabled=false)`. On success count under `disabled`. On failure print `warn: failed to disable <taskId> (<error>) — check manually` and DO NOT count it.
+   - If present AND `enabled=false` → skip (already disabled).
+   - If absent → skip (never registered or owner-reaped).
 4. For each task in the *Routines (MCP)* table:
-   - If exists with matching name → skip ("already registered").
-   - If missing → `create_scheduled_task` with cron + prompt.
+   - If exists AND `enabled=true` → skip ("already registered").
+   - If exists AND `enabled=false` → call `update_scheduled_task(taskId, enabled=true)`, count under `re-enabled`. Recovers from prior `--cleanup` on the same host.
+   - If absent → `create_scheduled_task` with cron + prompt, count under `created`.
 5. Run the Workshop Task Scheduler registration commands in the *Workshop Task Scheduler* section below (each script is itself idempotent).
-6. Print summary: `N created, N skipped, N removed, N task-scheduler-entries`.
+6. Print summary: `N created, N re-enabled, N skipped, N disabled, N task-scheduler-entries`.
 
 ### `--cleanup` mode (non-Workshop devices)
 
-Pure removal. For each task in *Routines (MCP)* + *Obsolete*:
-- If present → `delete_scheduled_task`.
-Print summary: `N removed`.
+Disable-only. For each task in *Routines (MCP)* + *Obsolete*:
+- If present AND `enabled=true` → `update_scheduled_task(taskId, enabled=false)`, count under `disabled`.
+- If present AND `enabled=false` → skip (already disabled).
+- If absent → skip.
 
-Use after migrating off a device that previously hosted these routines.
+Print summary: `N disabled, N already-disabled, N absent`.
+
+Use after migrating off a device that previously hosted these routines. Tasks remain registered-but-inert; for permanent removal see *Cleanup semantics* above.
 
 ## Routines (MCP) — Workshop-only
 
@@ -58,7 +75,7 @@ Registered via `create_scheduled_task` MCP. All run on Workshop with full local 
 | memory-consolidation-weekly | `1 10 * * 0` | Run `/memory-consolidation-weekly` — weekly A-MEM Phase 5.1d-α consolidation apply (`scripts/consolidation-run.py`). |
 | memory-evolve-weekly | `0 11 * * 0` | Run `/memory-evolve-weekly` — weekly A-MEM Phase 5.2-γ neighbor-evolve apply (`scripts/evolve-run.py`, one hour after consolidation). |
 
-## Obsolete (deregister)
+## Obsolete (disable)
 
 | Task ID | Why removed |
 |---|---|
@@ -125,4 +142,4 @@ Prerequisites for the watcher to actually dispatch:
 - Prompts reference skill files; skill updates take effect on next run.
 - Source of truth for this file: `.claude-userlevel/skills/setup-tasks/SKILL.md`. Live mirror at `~/.claude/skills/setup-tasks/SKILL.md` is propagated by `install.ps1 -Apply`.
 
-Decisions: `4890aa35` (Workshop = prod), `0c3017c6` (failure modes), `f8e27d53` (escalation), `58670ea5` (model tier), `46830b4e` (80/70 hysteresis), `a70c4460` (autonomous-loop superseded), `1b7ff8d1` (Workshop = sole routine host).
+Decisions: `4890aa35` (Workshop = prod), `0c3017c6` (failure modes), `f8e27d53` (escalation), `58670ea5` (model tier), `46830b4e` (80/70 hysteresis), `a70c4460` (autonomous-loop superseded), `1b7ff8d1` (Workshop = sole routine host), `ec49f2ee` (v2.1.0 disable-as-cleanup; no delete tool in MCP).
