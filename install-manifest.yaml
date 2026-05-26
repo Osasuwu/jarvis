@@ -107,6 +107,7 @@ groups:
           - "last-work-report"
           - "reflect"
           - "research"
+          - "rework"
           - "self-improve"
           - "setup-tasks"
           - "status-record"
