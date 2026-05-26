@@ -60,7 +60,7 @@ You can launch multiple coding agents in parallel if tasks are independent.
 
 ### Report (MUST do at end):
 
-Save a structured report to memory. This format is machine-readable — Jarvis and autonomous-loop parse it.
+Save a structured report to memory. This format is machine-readable — Jarvis (and the future reactive-core orchestrator) parse it. (Pre-2026-05-26 also consumed by `/autonomous-loop`, now superseded.)
 
 ```
 memory_store(

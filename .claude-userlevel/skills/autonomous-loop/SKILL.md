@@ -1,10 +1,14 @@
 ---
 name: autonomous-loop
-description: "Autonomous orchestrator: perceive events, evaluate against goals, decide and act within safety bounds. Runs daily via scheduled task or manual invocation."
+description: "[SUPERSEDED 2026-05-26 — pre-M44 catch-up baseline ONLY; do not invoke for new flows.] Legacy autonomous orchestrator: perceive events, evaluate against goals, decide and act within safety bounds. Cron entry removed; opt-in manual invocation only."
 version: 1.2.0
 ---
 
 # Autonomous Loop Orchestrator
+
+> ⚠ **SUPERSEDED 2026-05-26** (decision `a70c4460`). This skill is the pre-M44 cron-based catch-up baseline. **Do not invoke for new flows. Do not reference it in routing as if alive.** New AFK paths route through the reactive-core orchestrator (M44 `wake_driver` + event-driven `task_queue`). When M44 ships, this skill file is deleted entirely.
+>
+> Cron registration is no longer bootstrapped by `/setup-tasks`. Existing cron jobs on prior devices must be unregistered manually. Skill is retained on disk only so that a manual `/autonomous-loop` invocation still works if owner needs a one-off catch-up sweep pre-M44.
 
 Daily orchestrator that perceives events and perception outputs (goals, risks, research findings), evaluates them against active goals, decides actions within safety bounds, and executes them autonomously. Batches multiple Low-risk actions per run; limits Medium-risk to one.
 
@@ -12,9 +16,9 @@ Implements the perceive→evaluate→decide→act→record loop from the Autonom
 
 ## Usage
 
-- `/autonomous-loop` — manual invocation (full run)
-- Scheduled: daily 09:00 (after morning-brief)
-- Part of: Jarvis Autonomous Work Loop pillar
+- `/autonomous-loop` — manual opt-in invocation (full run). Owner-initiated only post-2026-05-26.
+- ~~Scheduled: daily 09:00 (after morning-brief)~~ — removed 2026-05-26.
+- Part of: Jarvis Autonomous Work Loop pillar (legacy; superseded by reactive-core M44).
 
 ## Architecture
 

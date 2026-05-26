@@ -87,7 +87,7 @@ Use skills — don't reinvent with raw tools.
 | "улучши себя", self-improvement | `/self-improve` |
 | "цели", "приоритеты" | `/goals` |
 | New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
-| Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` (legacy cron baseline; reactive-core M44 `wake_driver` + `orchestrator` replace this once shipped — see CONTEXT.md) |
+| ~~Daily scheduled tick~~ | ~~`/autonomous-loop`~~ — **SUPERSEDED**, pre-M44 catch-up baseline only. **Do not invoke for new flows.** No live cron registration since Medium-scope cleanup 2026-05-26. Will be deleted when reactive-core M44 (`wake_driver` + `orchestrator`) ships. |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Vague intuition (no written plan yet) / "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт"; subsumes /research for in-debate factual grounding | `/reason` |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
@@ -121,7 +121,7 @@ Boundaries:
 
 - **Orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-issues`'s checklist applies regardless of who emits the task. An AFK-unsafe TASK row gets routed for owner attention (no auto-spawn), same as the `status:owner-queue` landing zone for `/delegate` refuses.
 - **The orchestrator is a router, not the principal.** It runs routing-policy only (no full SOUL load). Full SOUL is for interactive `/implement` and for the `claude -p` subagents the executor spawns — both are the principal in their lane (CONTEXT.md → *SOUL is shared across interactive + autonomous lanes*).
-- **`/autonomous-loop` (legacy)** is the cron-based catch-up baseline pre-M44 and will be retired when reactive-core ships. New AFK paths should route through events + orchestrator, not through new `/autonomous-loop` invocations.
+- **`/autonomous-loop` (SUPERSEDED 2026-05-26)** — cron entry removed from `setup-tasks` bootstrap; existing cron jobs on each device must be unregistered manually. The skill file is retained as an opt-in pre-M44 catch-up baseline ONLY. **Do not invoke for new flows; do not reference it in routing as if alive.** New AFK paths route through events + reactive-core orchestrator (M44). When M44 ships, the skill itself is deleted.
 
 ## Autonomous work
 
