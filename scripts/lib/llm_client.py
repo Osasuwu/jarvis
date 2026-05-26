@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.error
 import urllib.request
 
@@ -29,6 +30,12 @@ DEFAULT_OLLAMA_TIMEOUT_S = 120
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 DEFAULT_DEEPSEEK_TIMEOUT_S = 180
+
+# Max output tokens for both backends. 1500 was a Deriver-era heuristic but
+# triggered silent truncation on verbose sessions (5 candidates × 2-5 sentences
+# each easily exceeds 1500). 4096 is comfortably within both Ollama qwen2.5
+# and DeepSeek limits.
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
 
 # ---------------------------------------------------------------------------
 # Ollama
@@ -57,7 +64,7 @@ def call_ollama(
         "model": model,
         "prompt": prompt,
         "stream": False,
-        "options": {"temperature": 0, "num_predict": 1500},
+        "options": {"temperature": 0, "num_predict": DEFAULT_MAX_OUTPUT_TOKENS},
     }
     if system_prompt:
         body["system"] = system_prompt
@@ -81,7 +88,20 @@ def call_ollama(
         envelope = json.loads(raw)
     except Exception:
         return None
-    return envelope.get("response")
+    response_text = envelope.get("response")
+    # Distinguish "Ollama returned successfully but with empty/null content"
+    # from "connection failed". The former returns None too, but logging the
+    # difference helps debug silent quota burn on DeepSeek fallback when
+    # Ollama is the actual root cause (aborted generation, OOM, model
+    # producing an empty completion).
+    if not response_text and envelope.get("done"):
+        done_reason = envelope.get("done_reason", "unknown")
+        print(
+            f"[llm_client] Ollama returned done={envelope.get('done')!r} "
+            f"reason={done_reason!r} with empty response — falling back to DeepSeek",
+            file=sys.stderr,
+        )
+    return response_text
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +145,7 @@ def call_deepseek(
         "model": model,
         "messages": messages,
         "temperature": 0,
-        "max_tokens": 1500,
+        "max_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
     }
     if format_json:
         body["response_format"] = {"type": "json_object"}

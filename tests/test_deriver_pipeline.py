@@ -243,6 +243,111 @@ def test_derive_from_session_missing_buffer_returns_empty(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
+def test_scrubber_wired_on_tags(tmp_path: Path):
+    """Tags MUST pass through scrub() like name/content/description.
+
+    Regression: round-3 lowercased and length-capped tags but never called
+    scrub() on them. An LLM-fabricated tag like `aws-AKIAIOSFODNN7EXAMPLE`
+    would land in memories.tags unredacted, leaking a credential through a
+    column the privacy invariant claims to cover.
+    """
+    buffer_dir = tmp_path / ".deriver-buffer"
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("ok"),
+            _user_turn("some content"),
+        ],
+    )
+    # The literal AWS-key example MUST be redacted by the scrubber.
+    candidates = [
+        {
+            "type": "feedback",
+            "project": "jarvis",
+            "name": "test",
+            "description": "test",
+            "content": "test",
+            "tags": ["normal-tag", "leaked-AKIAIOSFODNN7EXAMPLE"],
+        },
+    ]
+    llm_fn = _make_llm(candidates)
+    insert_fn, captured = _make_fake_insert()
+
+    result = derive_from_session(
+        SESSION_ID,
+        project_hash=PROJECT_HASH,
+        llm_fn=llm_fn,
+        insert_fn=insert_fn,
+        buffer_root=buffer_dir,
+    )
+
+    assert len(result) == 1
+    row = captured[0]
+    persisted_tags = row["tags"]
+    # The AWS key must not survive in any tag:
+    for t in persisted_tags:
+        assert "AKIAIOSFODNN7EXAMPLE" not in t, (
+            f"Tag {t!r} contains unscrubbed AWS key — scrub() not wired on tags."
+        )
+
+
+def test_cap_holds_when_all_inserts_fail(tmp_path: Path):
+    """MAX_CANDIDATES cap must fire on attempted (not just succeeded) inserts.
+
+    Regression: round-3 incremented the cap counter only on successful
+    inserts; a persistent insert failure (RLS rejection after credential
+    rotation, schema mismatch, etc.) made the cap silently never fire and
+    the pipeline attempted N>>5 candidates with N failure log lines each.
+    """
+    buffer_dir = tmp_path / ".deriver-buffer"
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _asst_turn("ok"),
+            _user_turn("plenty of insights"),
+        ],
+    )
+    # 20 valid candidates so the cap is the only thing that can stop the loop.
+    candidates = []
+    for i in range(20):
+        candidates.append(
+            {
+                "type": "user",
+                "project": None,
+                "name": f"insight-{i}",
+                "description": f"d{i}",
+                "content": f"content {i}",
+                "tags": ["t"],
+            }
+        )
+    llm_fn = _make_llm(candidates)
+
+    attempts: list[dict] = []
+
+    def always_fail_insert(row):
+        attempts.append(row)
+        raise RuntimeError("simulated RLS rejection")
+
+    result = derive_from_session(
+        SESSION_ID,
+        project_hash=PROJECT_HASH,
+        llm_fn=llm_fn,
+        insert_fn=always_fail_insert,
+        buffer_root=buffer_dir,
+    )
+
+    assert result == []  # nothing inserted (all attempts failed)
+    # Cap fires at MAX_CANDIDATES=5 attempts — NOT all 20.
+    assert len(attempts) == 5, (
+        f"Cap must fire on attempted inserts; got {len(attempts)} attempts "
+        "(round-3 regression: only-on-success counter let this run unbounded)."
+    )
+
+
 def test_scrubber_wired_on_candidate_content(tmp_path: Path):
     """Given a transcript with a known privacy token, the persisted
     candidate content does NOT contain the token — proves the scrubber

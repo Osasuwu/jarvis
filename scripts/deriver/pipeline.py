@@ -244,11 +244,22 @@ def _build_row(candidate: dict[str, Any], *, session_id: str) -> dict[str, Any] 
     # Also scrub the name (paths, keys are unlikely in names, but defensively)
     scrubbed_name, _ = scrub(name)
 
-    # Normalise tags
+    # Normalise tags. Per the module-level invariant, every text field
+    # written to memories MUST pass through scrub() — including tags, which
+    # the LLM can occasionally populate with paths or secret-like fragments
+    # (e.g. classifier tags derived from raw transcript phrases).
     if isinstance(raw_tags, list):
-        cleaned_tags = [
-            str(t).strip().lower()[:50] for t in raw_tags if isinstance(t, (str, int, float))
-        ]
+        cleaned_tags: list[str] = []
+        for t in raw_tags:
+            if not isinstance(t, (str, int, float)):
+                continue
+            t_str = str(t).strip().lower()[:50]
+            if not t_str:
+                continue
+            scrubbed_t, _ = scrub(t_str)
+            scrubbed_t = scrubbed_t.strip()
+            if scrubbed_t:
+                cleaned_tags.append(scrubbed_t)
         # Deduplicate, preserve order, cap at 15
         seen: set[str] = set()
         tags: list[str] = []
@@ -367,33 +378,46 @@ def derive_from_session(
     inserted: list[UUID] = []
     errors: list[str] = []
 
-    # The cap counts VALID-and-INSERTED candidates, not raw list indices.
-    # If the LLM returns leading nulls or malformed entries, an index-based
-    # cap would silently drop valid candidates past index MAX_CANDIDATES-1
-    # even when fewer than MAX_CANDIDATES were inserted. Counting
-    # valid_seen mirrors the spirit of the cap ("at most N memories written
-    # per session").
-    valid_seen = 0
+    # Two counters with different semantics:
+    #   * attempted_seen — incremented for every VALID candidate we tried to
+    #     insert, regardless of whether the insert itself succeeded. This is
+    #     what bounds the cap so a misconfigured Supabase (all inserts fail)
+    #     can't loop through 20+ candidates burning errors.
+    #   * inserted (the return value) — only candidates that landed.
+    # Pre-round-3 used a single counter that only incremented on success, so
+    # a persistent RLS rejection turned MAX_CANDIDATES into "no cap".
+    attempted_seen = 0
     for i, candidate in enumerate(candidates):
-        if valid_seen >= MAX_CANDIDATES:
+        if attempted_seen >= MAX_CANDIDATES:
             break
         err = _validate_candidate(candidate)
         if err:
             errors.append(f"candidate #{i}: {err}")
             continue
 
-        row = _build_row(candidate, session_id=session_id)
+        # _build_row defensively runs scrub() on three text fields plus tags.
+        # scrub() is pure regex replacement — but if a future change makes it
+        # raise on pathological input, the "No exception escapes" contract in
+        # this function's docstring would break. Wrap in try/except as
+        # belt-and-braces.
+        try:
+            row = _build_row(candidate, session_id=session_id)
+        except Exception as e:
+            errors.append(f"candidate #{i}: row build crashed: {e}")
+            attempted_seen += 1
+            continue
         if isinstance(row, str):
             errors.append(f"candidate #{i}: row build failed: {row}")
+            attempted_seen += 1
             continue
 
+        attempted_seen += 1
         try:
             uid = insert_fn(row)
             inserted.append(uid)
-            valid_seen += 1
         except Exception as e:
             errors.append(f"candidate #{i}: insert failed: {e}")
-            # Continue inserting remaining candidates
+            # Continue inserting remaining candidates (cap still enforced).
             continue
 
     if errors:
