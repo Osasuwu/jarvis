@@ -42,6 +42,16 @@ jobs:
               return;
             }
 
+            // Refactor escape: conventional-commit `refactor:` / `refactor(scope):` title
+            // bypasses the requirement. Refactors are usually structural cleanup with
+            // no parent feature/bug issue; the [no-issue] marker is redundant paperwork
+            // for this class. Same posture as #428 but auto-detected from title prefix.
+            const title = pr.title || '';
+            if (/^refactor(\([^)]*\))?:/i.test(title)) {
+              console.log('refactor: title prefix — skipping linked-issue requirement.');
+              return;
+            }
+
             const issueMatches = [...body.matchAll(/(?:closes|fixes|resolves)\s+#(\d+)/gi)];
             const issueNumbers = [...new Set(issueMatches.map(m => parseInt(m[1], 10)))];
 

@@ -39,25 +39,21 @@ Currently enforced in code: only **T2** rows, via [`scripts/protected-files.py`]
 
 ## Protected Files
 
-These files must NEVER be modified by subagents. Changes require principal review in the main session. This table is the **single source of truth** — skills reference it rather than redefining their own lists.
+This table is the **single source of truth** — skills reference it rather than redefining their own lists.
+
+### Policy
+
+All code changes go through PRs with CI + code review — that is the primary safety gate. File-level blocking is reserved for the narrow surface where a subagent edit could leak secrets into git history *before* review sees it (i.e. weakening the scanners themselves), plus the enforcement scripts themselves (a non-live principal that can modify them can bypass the rest). Repo-level copies of everything else — `config/SOUL.md`, `CLAUDE.md`, `.mcp.json`, `mcp-memory/*` — may be edited in feature branches; the review process rejects anything wrong. Note: user-level mirrors under `~/.claude/` are still blocked for all principals (no PR process there; see "User-level" table below).
+
+Redrobot follows the same policy: no file-level protection; CI + PR review is sufficient.
 
 ### Repo-level (jarvis working copy)
 
 | File | Why |
 |------|-----|
-| `.mcp.json` | MCP server config — affects all devices and projects |
-| `config/SOUL.md` | Jarvis identity — changes alter all behavior |
-| `CLAUDE.md` | Project instructions — affects all sessions |
-| `mcp-memory/server.py` | Memory server entry — affects all projects |
-| `mcp-memory/client.py` | Supabase client + audit log — split out by #360 |
-| `mcp-memory/embeddings.py` | Voyage AI embedding pipeline — split out by #360 |
-| `mcp-memory/tools_schema.py` | MCP tool schemas — schema drift breaks redrobot consumers |
-| `mcp-memory/classifier.py` | Phase 2b write-side classifier — affects all writes |
-| `mcp-memory/episode_extractor.py` | Episode → memory extractor — affects ingest |
-| `mcp-memory/handlers/*.py` | Memory tool handlers (#360 split) — same blast radius as server.py |
-| `.claude/settings.json` | Hooks and permissions — security boundary |
-| `.gitleaks.toml` | Secret scanning config — disabling = security bypass |
-| `.pre-commit-config.yaml` | Pre-commit hooks — disabling = security bypass |
+| `.gitleaks.toml` | Secret scanning config — weakening this allows secrets into git history before review |
+| `.pre-commit-config.yaml` | Pre-commit hooks — same class as .gitleaks.toml |
+| `scripts/secret-scanner.py` | The scanner itself — same blast radius |
 
 ### User-level (installed under `~/.claude/` by `scripts/install/installer.py`)
 
