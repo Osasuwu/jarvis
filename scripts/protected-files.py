@@ -38,9 +38,16 @@ finally:
 # Everything else (SOUL.md, CLAUDE.md, mcp-memory/*, .mcp.json, etc.) is
 # fine to edit in a feature branch; review rejects anything wrong.
 T2_CANONICAL = {
+    # Secret-leakage surface: weakening these allows secrets into git history
+    # before review, which is permanent even if the PR is later rejected.
     ".gitleaks.toml",
     ".pre-commit-config.yaml",
     "scripts/secret-scanner.py",
+    # Enforcement infrastructure: a non-live principal that can edit these
+    # scripts could strip the protected list or spoof principal detection,
+    # then freely edit the scanner surface above.
+    "scripts/protected-files.py",
+    "scripts/principal.py",
 }
 
 # Backwards-compat alias — older imports / docs may still reference this.

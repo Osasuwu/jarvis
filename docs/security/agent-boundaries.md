@@ -43,7 +43,7 @@ This table is the **single source of truth** — skills reference it rather than
 
 ### Policy
 
-All code changes go through PRs with CI + code review — that is the primary safety gate. File-level blocking is reserved for the narrow surface where a subagent edit could leak secrets into git history *before* review sees it (i.e. weakening the scanners themselves). Everything else — SOUL.md, CLAUDE.md, mcp-memory/*, .mcp.json — may be edited in feature branches; the review process rejects anything wrong.
+All code changes go through PRs with CI + code review — that is the primary safety gate. File-level blocking is reserved for the narrow surface where a subagent edit could leak secrets into git history *before* review sees it (i.e. weakening the scanners themselves), plus the enforcement scripts themselves (a non-live principal that can modify them can bypass the rest). Repo-level copies of everything else — `config/SOUL.md`, `CLAUDE.md`, `.mcp.json`, `mcp-memory/*` — may be edited in feature branches; the review process rejects anything wrong. Note: user-level mirrors under `~/.claude/` are still blocked for all principals (no PR process there; see "User-level" table below).
 
 Redrobot follows the same policy: no file-level protection; CI + PR review is sufficient.
 

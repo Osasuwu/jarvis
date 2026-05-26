@@ -30,22 +30,10 @@ def fake_claude_home(tmp_path, monkeypatch):
     return home.as_posix().rstrip("/")
 
 
-# ── Protected files: blocked ─────────────────────────────────────────
-
-def test_blocks_mcp_json():
-    assert is_protected(".mcp.json")
-
-def test_blocks_soul_md():
-    assert is_protected("config/SOUL.md")
-
-def test_blocks_claude_md():
-    assert is_protected("CLAUDE.md")
-
-def test_blocks_server_py():
-    assert is_protected("mcp-memory/server.py")
-
-def test_blocks_settings_json():
-    assert is_protected(".claude/settings.json")
+# ── Protected files: secret-scanner surface ──────────────────────────
+# Policy: file-level blocking is reserved for files whose corruption could
+# leak secrets into git history before PR review sees it, plus the enforcement
+# scripts themselves (privilege-escalation path).
 
 def test_blocks_gitleaks():
     assert is_protected(".gitleaks.toml")
@@ -53,20 +41,51 @@ def test_blocks_gitleaks():
 def test_blocks_pre_commit():
     assert is_protected(".pre-commit-config.yaml")
 
+def test_blocks_secret_scanner():
+    assert is_protected("scripts/secret-scanner.py")
+
+def test_blocks_protected_files_script():
+    """The enforcement hook itself must be protected against non-live tampering."""
+    assert is_protected("scripts/protected-files.py")
+
+def test_blocks_principal_script():
+    """Principal-detection script: spoofing it bypasses the whole hook."""
+    assert is_protected("scripts/principal.py")
+
 
 # ── Absolute paths (Windows-style) ──────────────────────────────────
 
 def test_blocks_absolute_windows():
-    assert is_protected("C:\\Users\\petrk\\GitHub\\jarvis\\CLAUDE.md")
+    assert is_protected("C:\\Users\\petrk\\GitHub\\jarvis\\.gitleaks.toml")
 
 def test_blocks_absolute_forward_slash():
-    assert is_protected("C:/Users/petrk/GitHub/jarvis/config/SOUL.md")
+    assert is_protected("C:/Users/petrk/GitHub/jarvis/scripts/secret-scanner.py")
 
 
 # ── Non-protected files: allowed ─────────────────────────────────────
+# Previously-protected files (SOUL.md, CLAUDE.md, mcp-memory/*, .mcp.json)
+# are now handled by PR review + CI only — no file-level block needed.
+
+def test_allows_soul_md():
+    assert not is_protected("config/SOUL.md")
+
+def test_allows_claude_md():
+    assert not is_protected("CLAUDE.md")
+
+def test_allows_mcp_json():
+    assert not is_protected(".mcp.json")
+
+def test_allows_mcp_memory_server():
+    assert not is_protected("mcp-memory/server.py")
+
+def test_allows_mcp_memory_handler():
+    assert not is_protected("mcp-memory/handlers/events.py")
+
+def test_allows_settings_json():
+    assert not is_protected(".claude/settings.json")
 
 def test_allows_regular_python():
-    assert not is_protected("scripts/secret-scanner.py")
+    assert not is_protected("scripts/device-info.py")
 
 def test_allows_docs():
     assert not is_protected("docs/PROJECT_PLAN.md")
@@ -157,11 +176,11 @@ def test_allows_user_level_skill_subresource(fake_claude_home):
 
 def test_classify_repo_canonical():
     """Repo-side protected files classify as ``canonical``."""
-    assert classify("config/SOUL.md") == "canonical"
-    assert classify("CLAUDE.md") == "canonical"
-    assert classify(".mcp.json") == "canonical"
-    assert classify("mcp-memory/server.py") == "canonical"
+    assert classify(".gitleaks.toml") == "canonical"
     assert classify(".pre-commit-config.yaml") == "canonical"
+    assert classify("scripts/secret-scanner.py") == "canonical"
+    assert classify("scripts/protected-files.py") == "canonical"
+    assert classify("scripts/principal.py") == "canonical"
 
 
 def test_classify_user_level_mirror(fake_claude_home):
@@ -174,7 +193,10 @@ def test_classify_user_level_mirror(fake_claude_home):
 
 def test_classify_unprotected_returns_none():
     """Files not on either list classify as None."""
-    assert classify("scripts/secret-scanner.py") is None
+    assert classify("config/SOUL.md") is None
+    assert classify("CLAUDE.md") is None
+    assert classify(".mcp.json") is None
+    assert classify("mcp-memory/server.py") is None
     assert classify("docs/PROJECT_PLAN.md") is None
     assert classify("tests/test_secret_scanner.py") is None
 
@@ -187,17 +209,21 @@ def test_classify_unprotected_returns_none():
 )
 def test_unprotected_never_blocks(principal):
     """Files outside the protected list never block, regardless of principal."""
-    assert not should_block("scripts/secret-scanner.py", principal)
+    assert not should_block("config/SOUL.md", principal)
+    assert not should_block("CLAUDE.md", principal)
+    assert not should_block(".mcp.json", principal)
+    assert not should_block("mcp-memory/server.py", principal)
     assert not should_block("docs/PROJECT_PLAN.md", principal)
     assert not should_block("config/device.json", principal)
 
 
 def test_canonical_allows_live_principal():
     """Live owner can edit canonical sources — harness asks one-off."""
-    assert not should_block("config/SOUL.md", "live")
-    assert not should_block("CLAUDE.md", "live")
-    assert not should_block(".mcp.json", "live")
-    assert not should_block("mcp-memory/server.py", "live")
+    assert not should_block(".gitleaks.toml", "live")
+    assert not should_block(".pre-commit-config.yaml", "live")
+    assert not should_block("scripts/secret-scanner.py", "live")
+    assert not should_block("scripts/protected-files.py", "live")
+    assert not should_block("scripts/principal.py", "live")
 
 
 @pytest.mark.parametrize(
@@ -205,10 +231,11 @@ def test_canonical_allows_live_principal():
 )
 def test_canonical_blocks_non_live_principals(principal):
     """Anything but live blocks canonical sources."""
-    assert should_block("config/SOUL.md", principal)
-    assert should_block("CLAUDE.md", principal)
-    assert should_block(".mcp.json", principal)
-    assert should_block("mcp-memory/server.py", principal)
+    assert should_block(".gitleaks.toml", principal)
+    assert should_block(".pre-commit-config.yaml", principal)
+    assert should_block("scripts/secret-scanner.py", principal)
+    assert should_block("scripts/protected-files.py", principal)
+    assert should_block("scripts/principal.py", principal)
 
 
 @pytest.mark.parametrize(
