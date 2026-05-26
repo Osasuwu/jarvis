@@ -59,7 +59,7 @@ Required secrets in GitHub repo settings (Settings → Secrets and variables →
 
 | Secret | Used by | Purpose |
 |--------|---------|---------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | `code-review.yml`, `review-response.yml` | `anthropics/claude-code-action` for PR review + review-response |
+| `CLAUDE_CODE_OAUTH_TOKEN` | `code-review.yml` | `anthropics/claude-code-action` for PR review |
 | `SUPABASE_URL` | `event-dispatch.yml` | Supabase project URL for event logging |
 | `SUPABASE_ANON_KEY` | `event-dispatch.yml` | Supabase publishable anon key for event logging |
 

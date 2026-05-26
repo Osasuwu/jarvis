@@ -329,7 +329,8 @@ jobs:
           COMMENT_BODY="$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")"
 
           # Bail if this isn't a Code Review comment (claude[bot] posts other
-          # comment kinds too — e.g. from review-response workflow)
+          # comment kinds too — e.g. orchestrator-watcher dispatches, /rework
+          # progress comments).
           if ! printf '%s' "$COMMENT_BODY" | head -1 | grep -qE '^##[[:space:]]+Code Review'; then
             echo "Not a Code Review comment header; skipping"
             exit 0
