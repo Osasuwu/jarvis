@@ -125,10 +125,21 @@ def _embed_upsert_fields(embedding: list[float], model: str) -> dict:
     }
 
 
+def _normalize_for_embed(text: str) -> str:
+    """Normalize text for embedding by replacing underscores with spaces.
+
+    Applied at both write (_canonical_embed_text) and read (_embed_query) to
+    ensure symmetric tokenization across the pipeline.
+    """
+    return text.replace("_", " ")
+
+
 async def _embed_query(text: str) -> list[float] | None:
     # #242: read path embeds with PRIMARY so the vector matches whichever
     # column we're about to query via _hybrid_recall's RPC selection.
-    return await _embed(text, input_type="query", model=EMBEDDING_MODEL_PRIMARY)
+    # Normalize text to match the write-side transformation in _canonical_embed_text (#766).
+    normalized_text = _normalize_for_embed(text)
+    return await _embed(normalized_text, input_type="query", model=EMBEDDING_MODEL_PRIMARY)
 
 
 def _canonical_embed_text(name: str, description: str, tags: list[str], content: str) -> str:
@@ -141,7 +152,7 @@ def _canonical_embed_text(name: str, description: str, tags: list[str], content:
     """
     parts: list[str] = []
     if name:
-        parts.append(name.replace("_", " "))
+        parts.append(_normalize_for_embed(name))
     if tags:
         parts.append("tags: " + ", ".join(tags))
     if description:
