@@ -850,11 +850,18 @@ async def _expand_with_links(
     client,
     memory_ids: list[str],
     show_history: bool = False,
+    *,
+    include_unreviewed: bool = False,
 ) -> list[dict]:
     """Fetch 1-hop linked memories via graph traversal RPC.
 
     show_history mirrors the primary recall flag: when true, skip the
     lifecycle filter so history views don't drop linked neighbors.
+
+    include_unreviewed forwards the always-gate opt-in (#552). Currently
+    no call site exercises this helper (the active expand_links lives in
+    recall.py), but the parameter is plumbed so any future reinstatement
+    can't silently drop the flag — matches the SQL RPC contract.
     """
     try:
         result = client.rpc(
@@ -863,6 +870,7 @@ async def _expand_with_links(
                 "memory_ids": memory_ids,
                 "link_types": None,
                 "show_history": show_history,
+                "include_unreviewed": include_unreviewed,
             },
         ).execute()
         return result.data or []

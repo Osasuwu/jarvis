@@ -831,9 +831,16 @@ class TestExpandWithLinks:
     async def test_passes_memory_ids_to_rpc(self, mock_client):
         mock_client.rpc.return_value.execute.return_value = MagicMock(data=[])
         await _expand_with_links(mock_client, ["id-1", "id-2"])
+        # include_unreviewed=False is the always-gate default (#552); the
+        # parameter is now plumbed through so future call sites can opt in.
         mock_client.rpc.assert_called_once_with(
             "get_linked_memories",
-            {"memory_ids": ["id-1", "id-2"], "link_types": None, "show_history": False},
+            {
+                "memory_ids": ["id-1", "id-2"],
+                "link_types": None,
+                "show_history": False,
+                "include_unreviewed": False,
+            },
         )
 
     @pytest.mark.asyncio
@@ -842,7 +849,27 @@ class TestExpandWithLinks:
         await _expand_with_links(mock_client, ["id-1"], show_history=True)
         mock_client.rpc.assert_called_once_with(
             "get_linked_memories",
-            {"memory_ids": ["id-1"], "link_types": None, "show_history": True},
+            {
+                "memory_ids": ["id-1"],
+                "link_types": None,
+                "show_history": True,
+                "include_unreviewed": False,
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_passes_include_unreviewed_to_rpc(self, mock_client):
+        """When opt-in flag is set, it must reach the RPC body."""
+        mock_client.rpc.return_value.execute.return_value = MagicMock(data=[])
+        await _expand_with_links(mock_client, ["id-1"], include_unreviewed=True)
+        mock_client.rpc.assert_called_once_with(
+            "get_linked_memories",
+            {
+                "memory_ids": ["id-1"],
+                "link_types": None,
+                "show_history": False,
+                "include_unreviewed": True,
+            },
         )
 
 

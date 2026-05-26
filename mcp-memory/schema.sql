@@ -2101,12 +2101,16 @@ returns table(
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    -- requires_review surfaced so Python-side temporal scoring can floor
+    -- entrenchment for unreviewed candidates (see apply_temporal_scoring).
+    requires_review boolean,
     similarity float
 )
 language sql stable as $$
     select m.id, m.name, m.type, m.project,
            m.description, m.content, m.tags,
            m.updated_at, m.content_updated_at, m.last_accessed_at,
+           m.requires_review,
            1 - (m.embedding_v2 <=> query_embedding) as similarity
     from memories m
     where m.embedding_v2 is not null
@@ -2401,12 +2405,14 @@ returns table(
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    requires_review boolean,
     similarity float
 )
 language sql stable as $$
     select m.id, m.name, m.type, m.project,
            m.description, m.content, m.tags,
            m.updated_at, m.content_updated_at, m.last_accessed_at,
+           m.requires_review,
            1 - (m.embedding <=> query_embedding) as similarity
     from memories m
     where m.embedding is not null
@@ -2454,20 +2460,25 @@ returns table(
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    requires_review boolean,
     rank real
 )
 language sql stable as $$
     select m.id, m.name, m.type, m.project,
            m.description, m.content, m.tags,
            m.updated_at, m.content_updated_at, m.last_accessed_at,
+           m.requires_review,
            ts_rank(m.fts, websearch_to_tsquery('english', search_query)) as rank
     from memories m
     where m.fts @@ websearch_to_tsquery('english', search_query)
+      -- Soft-deleted rows must never surface, even with show_history=true.
+      -- Mirrors match_memories / match_memories_v2 — keeps the FTS leg
+      -- consistent with the vector legs under rrf_merge.
+      and m.deleted_at is null
       and (filter_project is null or m.project = filter_project or m.project is null)
       and (filter_type is null or m.type = filter_type)
       and (show_history
-           or (m.deleted_at is null
-               and m.expired_at is null
+           or (m.expired_at is null
                and m.superseded_by is null
                and (m.valid_to is null or m.valid_to > now())))
       -- Deriver review-gate (issue #552): see match_memories above.
@@ -2490,6 +2501,7 @@ returns table(
     description text, content text, tags text[],
     updated_at timestamptz, content_updated_at timestamptz,
     last_accessed_at timestamptz,
+    requires_review boolean,
     link_type text, link_strength float, linked_from uuid
 )
 language sql stable as $$
@@ -2498,11 +2510,13 @@ language sql stable as $$
             sub.id, sub.name, sub.type, sub.project, sub.description,
             sub.content, sub.tags,
             sub.updated_at, sub.content_updated_at, sub.last_accessed_at,
+            sub.requires_review,
             sub.link_type, sub.link_strength, sub.linked_from
         from (
             -- Outgoing edges: source ∈ memory_ids, target resolved to head.
             select m.id, m.name, m.type, m.project, m.description, m.content,
                    m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   m.requires_review,
                    l.link_type, l.strength as link_strength, l.source_id as linked_from
             from memory_links l
             join memories m on m.id = coalesce(
@@ -2512,9 +2526,10 @@ language sql stable as $$
             where l.source_id = any(memory_ids)
               and not (m.id = any(memory_ids))
               and (link_types is null or l.link_type = any(link_types))
+              -- Soft-deleted rows must never surface (mirrors match_memories).
+              and m.deleted_at is null
               and (show_history
-                   or (m.deleted_at is null
-                       and m.expired_at is null
+                   or (m.expired_at is null
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
               -- Deriver review-gate (issue #552): see match_memories above.
@@ -2524,6 +2539,7 @@ language sql stable as $$
             -- Incoming edges: target ∈ memory_ids, source resolved to head.
             select m.id, m.name, m.type, m.project, m.description, m.content,
                    m.tags, m.updated_at, m.content_updated_at, m.last_accessed_at,
+                   m.requires_review,
                    l.link_type, l.strength as link_strength, l.target_id as linked_from
             from memory_links l
             join memories m on m.id = coalesce(
@@ -2533,9 +2549,10 @@ language sql stable as $$
             where l.target_id = any(memory_ids)
               and not (m.id = any(memory_ids))
               and (link_types is null or l.link_type = any(link_types))
+              -- Soft-deleted rows must never surface (mirrors match_memories).
+              and m.deleted_at is null
               and (show_history
-                   or (m.deleted_at is null
-                       and m.expired_at is null
+                   or (m.expired_at is null
                        and m.superseded_by is null
                        and (m.valid_to is null or m.valid_to > now())))
               -- Deriver review-gate (issue #552): see match_memories above.

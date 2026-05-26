@@ -56,6 +56,28 @@ def _extract_param_list(text: str, func_name: str) -> str | None:
     return text[start : pos - 1]
 
 
+def _extract_function_body(text: str, func_name: str) -> str | None:
+    """Return the body (text between `CREATE OR REPLACE FUNCTION <name>(` and `$$;`).
+
+    Uses word-boundary matching so ``match_memories`` doesn't match
+    ``match_memories_v2``. As with _extract_param_list, the LAST definition
+    in the file is authoritative under Postgres CREATE OR REPLACE semantics.
+    Returns None if the function is not found.
+    """
+    pattern = re.compile(
+        r"create\s+or\s+replace\s+function\s+" + re.escape(func_name) + r"\s*\(",
+        re.IGNORECASE,
+    )
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    m = matches[-1]
+    body_end = text.find("$$;", m.end())
+    if body_end == -1:
+        return None
+    return text[m.end() : body_end]
+
+
 class TestMigrationFile:
     """The migration file exists and has the expected RPC signatures."""
 
@@ -151,39 +173,60 @@ class TestSchemaFileInSync:
         (primary slot) hid them, producing non-deterministic RRF fusion.
         Fix mirrors match_memories_v2: deleted_at filtering is unconditional.
         """
-        migration_text = (MIGRATION_DIR / EXPECTED_MIGRATION).read_text(encoding="utf-8")
-        # match_memories (not _v2) signature is unique to the migration body.
-        # Use a word-boundary regex so match_memories_v2 doesn't match.
-        mm_match = re.search(
-            r"create\s+or\s+replace\s+function\s+match_memories\s*\(",
-            migration_text,
-            re.IGNORECASE,
-        )
-        assert mm_match is not None, "match_memories not found in migration"
-        # The body extends until the next $$; terminator.
-        body_start = mm_match.end()
-        body_end = migration_text.find("$$;", body_start)
-        assert body_end != -1, "match_memories body not terminated by $$;"
-        mm_body = migration_text[body_start:body_end]
-        # Unconditional deleted_at clause must be at the same indent level
-        # as the other top-level `where` conjuncts (6 leading spaces).
-        assert "\n      and m.deleted_at is null\n" in mm_body, (
-            "match_memories must have `and m.deleted_at is null` outside the "
-            "show_history branch (asymmetry vs match_memories_v2)."
-        )
-        # The show_history `or (...)` clause must NOT mention deleted_at.
-        # Body for the show_history clause starts at the keyword and ends at
-        # the next top-level conjunct (the `and (include_unreviewed` line).
-        sh_start = mm_body.find("(show_history")
-        assert sh_start != -1, "show_history clause not found in match_memories"
-        sh_block_end = mm_body.find("\n      and (include_unreviewed", sh_start)
-        if sh_block_end == -1:
-            sh_block_end = len(mm_body)
-        sh_block = mm_body[sh_start:sh_block_end]
-        assert "deleted_at" not in sh_block, (
-            "show_history branch in match_memories must not mention deleted_at — "
-            "the unconditional filter above it covers soft-deletion."
-        )
+        # Check BOTH the migration and the schema.sql copy — `supabase db reset`
+        # uses schema.sql, so a regression there would otherwise pass CI silently.
+        for source_label, text in (
+            ("migration", (MIGRATION_DIR / EXPECTED_MIGRATION).read_text(encoding="utf-8")),
+            ("schema.sql", SCHEMA_PATH.read_text(encoding="utf-8")),
+        ):
+            for func_name in ("match_memories", "keyword_search_memories"):
+                body = _extract_function_body(text, func_name)
+                assert body is not None, f"{source_label}: {func_name} not found"
+                assert "\n      and m.deleted_at is null\n" in body, (
+                    f"{source_label}: {func_name} must have "
+                    "`and m.deleted_at is null` outside the show_history branch."
+                )
+                sh_start = body.find("(show_history")
+                assert sh_start != -1, (
+                    f"{source_label}: show_history clause not found in {func_name}"
+                )
+                sh_block_end = body.find("\n      and (include_unreviewed", sh_start)
+                if sh_block_end == -1:
+                    sh_block_end = len(body)
+                sh_block = body[sh_start:sh_block_end]
+                assert "deleted_at" not in sh_block, (
+                    f"{source_label}: show_history branch in {func_name} must not "
+                    "mention deleted_at — the unconditional filter above covers it."
+                )
+
+    def test_recall_rpcs_project_requires_review_column(self):
+        """All 4 recall-path RPCs must return `requires_review boolean`.
+
+        Regression: round-3's Python-side CONFIDENCE_FLOOR floor for
+        unreviewed candidates (recall.py:apply_temporal_scoring) was dead
+        code because the SQL RPCs never projected the column. PostgREST
+        only materialises projected columns, so `row.get("requires_review")`
+        always returned None → falsy → conf=1.0 (full entrenchment).
+        """
+        for source_label, text in (
+            ("migration", (MIGRATION_DIR / EXPECTED_MIGRATION).read_text(encoding="utf-8")),
+            ("schema.sql", SCHEMA_PATH.read_text(encoding="utf-8")),
+        ):
+            for rpc in RECALL_RPCS:
+                body = _extract_function_body(text, rpc)
+                assert body is not None, f"{source_label}: {rpc} body not found"
+                # Either the literal `requires_review boolean,` in `returns table`
+                # or `m.requires_review` (or `sub.requires_review`) in the SELECT
+                # — both must appear in the body of each RPC.
+                assert "requires_review boolean" in body, (
+                    f"{source_label}: {rpc} returns table(...) must declare "
+                    "`requires_review boolean` so the Python temporal-scoring "
+                    "floor for unreviewed rows isn't dead code."
+                )
+                assert ("m.requires_review" in body) or ("sub.requires_review" in body), (
+                    f"{source_label}: {rpc} SELECT must project `m.requires_review` "
+                    "(or `sub.requires_review` in the linked-memories CTE)."
+                )
 
 
 # ---------------------------------------------------------------------------
