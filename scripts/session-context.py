@@ -307,10 +307,13 @@ def main():
     #    Everything else (feedback/decisions) is loaded task-aware via
     #    UserPromptSubmit hook (scripts/memory-recall-hook.py).
     #    Compact one-line format for the same reason as user profile.
+    #    NOTE: Do NOT touch always_load memories (bump last_accessed_at) to prevent
+    #    access-bias feedback loop (#767). Recency should not dominate semantic recall.
     section, ids = _query_always_load(client, compact=True)
     if section:
         sections.append("## Always-Load Rules\n" + section)
-        touched_ids.extend(ids)
+        # CHANGE #767: Skip touching always_load memories to de-bias access-boost
+        # touched_ids.extend(ids)
 
     # 3a. Project domain context (CONTEXT.md) — glossary + invariants + arch
     #     shape. Read order at session start: CLAUDE.md (rules) → SOUL.md
