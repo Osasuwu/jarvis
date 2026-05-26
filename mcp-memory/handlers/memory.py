@@ -1172,6 +1172,236 @@ async def _handle_restore(args: dict) -> list[TextContent]:
     return [TextContent(type="text", text=f"No soft-deleted memory '{mem_name}' found.")]
 
 
+# -- Hygiene handlers (M45 S3 / #768) ---------------------------------------
+#
+# Lifecycle vs soft-delete: memory_delete sets `deleted_at` (30-day recoverable
+# trash); memory_mark_stale sets `expired_at` (hygiene — owner says "this
+# belief is wrong/outdated") OR `superseded_by` (hygiene — "this belief has a
+# named replacement"). The two namespaces are orthogonal and the recall path
+# filters all three independently (`is_(deleted_at,null) & is_(expired_at,
+# null) & is_(superseded_by,null)`, see #284).
+#
+# RLS is enforced at the SUPABASE layer via service-role-vs-anon (#542). The
+# `SANDCASTLE_RUN_ID` env-var refusal below is a defense-in-depth Python-side
+# gate: sandcastle containers ship anon-only and MUST NOT be able to mark
+# arbitrary memories stale (decision d5bfd444 supersedes 719fb533).
+
+
+def _is_sandcastle_runtime() -> bool:
+    """Defense-in-depth host-only gate. Refuses hygiene writes in sandcastle."""
+    return bool(os.environ.get("SANDCASTLE_RUN_ID"))
+
+
+def _normalize_project(project):
+    """Match _handle_delete's project='global' → NULL convention."""
+    if project == "global":
+        return None
+    return project
+
+
+def _apply_name_project_filter(query, name: str, project):
+    query = query.eq("name", name)
+    if project is not None:
+        return query.eq("project", project)
+    return query.is_("project", "null")
+
+
+def _record_hygiene_outcome(client, *, action: str, mem_name: str, project, mem_id, reason):
+    """Fire-and-forget outcome_record write. Never raises into the caller."""
+    try:
+        client.table("task_outcomes").insert(
+            {
+                "task_type": "fix",
+                "task_description": f"memory_{action} {mem_name}",
+                "outcome_status": "success",
+                "outcome_summary": (
+                    f"Curated memory '{mem_name}' (project={project or 'global'}, "
+                    f"id={mem_id}, action={action}). Reason: {reason or 'unspecified'}."
+                ),
+                "project": project,
+                "memory_id": mem_id,
+                "pattern_tags": ["memory-hygiene", "manual-curation"]
+                if action == "mark_stale"
+                else ["memory-hygiene", "revival"],
+            }
+        ).execute()
+    except Exception:
+        pass
+
+
+async def _handle_memory_mark_stale(args: dict) -> list[TextContent]:
+    """Mark a memory stale (hygiene). Owner-invoked, host-only.
+
+    Two modes:
+      - successor_uuid given → UPDATE superseded_by = successor_uuid
+        (chain walk reaches the replacement on recall)
+      - successor_uuid omitted → UPDATE expired_at = now()
+        (the belief is wrong/outdated, no replacement)
+
+    Returns a TextContent block carrying action / target_uuid / prior_state.
+    """
+    if _is_sandcastle_runtime():
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    "Refused: memory_mark_stale is host-only. "
+                    "Sandcastle containers ship anon-only Supabase keys and "
+                    "must not edit hygiene lifecycle fields."
+                ),
+            )
+        ]
+
+    client = server._get_client()
+    mem_name = args["name"]
+    project = _normalize_project(args.get("project"))
+    reason = args.get("reason")
+    successor_uuid = args.get("successor_uuid")
+
+    # Fetch prior state — we need it for the return payload AND to surface
+    # not-found before issuing the UPDATE.
+    select_q = _apply_name_project_filter(
+        client.table("memories").select("id,name,project,expired_at,superseded_by"),
+        mem_name,
+        project,
+    )
+    sel = select_q.execute()
+    if not sel.data:
+        return [
+            TextContent(
+                type="text",
+                text=f"Memory '{mem_name}' not found (project={project or 'global'}).",
+            )
+        ]
+
+    target = sel.data[0]
+    mem_id = target["id"]
+    prior_state = {
+        "expired_at": target.get("expired_at"),
+        "superseded_by": target.get("superseded_by"),
+    }
+
+    if successor_uuid:
+        update_payload = {"superseded_by": successor_uuid}
+        action = "supersede"
+    else:
+        update_payload = {"expired_at": datetime.now(timezone.utc).isoformat()}
+        action = "expire"
+
+    update_q = _apply_name_project_filter(
+        client.table("memories").update(update_payload), mem_name, project
+    )
+    update_q.execute()
+
+    server._audit_log(
+        client,
+        "memory_mark_stale",
+        action,
+        mem_name,
+        {"project": project or "global", "reason": reason, "successor_uuid": successor_uuid},
+    )
+
+    _record_hygiene_outcome(
+        client,
+        action="mark_stale",
+        mem_name=mem_name,
+        project=project,
+        mem_id=mem_id,
+        reason=reason,
+    )
+
+    return [
+        TextContent(
+            type="text",
+            text=(
+                f"Marked '{mem_name}' as {action} "
+                f"(id={mem_id}, project={project or 'global'}). "
+                f"Prior state: expired_at={prior_state['expired_at']}, "
+                f"superseded_by={prior_state['superseded_by']}. "
+                f"Inverse: memory_unmark_stale(project='{project or 'global'}', name='{mem_name}')."
+            ),
+        )
+    ]
+
+
+async def _handle_memory_unmark_stale(args: dict) -> list[TextContent]:
+    """Revive a stale memory by clearing BOTH expired_at and superseded_by.
+
+    Owner-invoked inverse of memory_mark_stale. Host-only.
+    """
+    if _is_sandcastle_runtime():
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    "Refused: memory_unmark_stale is host-only. "
+                    "Sandcastle containers ship anon-only Supabase keys and "
+                    "must not edit hygiene lifecycle fields."
+                ),
+            )
+        ]
+
+    client = server._get_client()
+    mem_name = args["name"]
+    project = _normalize_project(args.get("project"))
+
+    select_q = _apply_name_project_filter(
+        client.table("memories").select("id,name,project,expired_at,superseded_by"),
+        mem_name,
+        project,
+    )
+    sel = select_q.execute()
+    if not sel.data:
+        return [
+            TextContent(
+                type="text",
+                text=f"Memory '{mem_name}' not found (project={project or 'global'}).",
+            )
+        ]
+
+    target = sel.data[0]
+    mem_id = target["id"]
+    prior_state = {
+        "expired_at": target.get("expired_at"),
+        "superseded_by": target.get("superseded_by"),
+    }
+
+    update_q = _apply_name_project_filter(
+        client.table("memories").update({"expired_at": None, "superseded_by": None}),
+        mem_name,
+        project,
+    )
+    update_q.execute()
+
+    server._audit_log(
+        client,
+        "memory_unmark_stale",
+        "revive",
+        mem_name,
+        {"project": project or "global"},
+    )
+
+    _record_hygiene_outcome(
+        client,
+        action="unmark_stale",
+        mem_name=mem_name,
+        project=project,
+        mem_id=mem_id,
+        reason="revival",
+    )
+
+    return [
+        TextContent(
+            type="text",
+            text=(
+                f"Revived '{mem_name}' (id={mem_id}, project={project or 'global'}). "
+                f"Cleared prior state: expired_at={prior_state['expired_at']}, "
+                f"superseded_by={prior_state['superseded_by']}."
+            ),
+        )
+    ]
+
+
 # -- Graph handlers ---------------------------------------------------------
 
 

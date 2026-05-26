@@ -349,6 +349,62 @@ def tool_definitions() -> list[Tool]:
                 "required": ["name"],
             },
         ),
+        Tool(
+            name="memory_mark_stale",
+            description=(
+                "Hygiene: mark a memory as stale. Host-only (anon/sandcastle refused). "
+                "With successor_uuid → sets superseded_by (chain walks to replacement). "
+                "Without → sets expired_at (belief is wrong/outdated). Use /curate skill "
+                "for owner-invoked weekly hygiene passes; not for autonomous calls."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Memory name to mark stale",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope. null/global = cross-project.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this memory is stale (audit + outcome trail)",
+                    },
+                    "successor_uuid": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Optional UUID of the replacement memory. If provided, "
+                            "sets superseded_by (NOT expired_at) so recall can walk "
+                            "the chain to the successor."
+                        ),
+                    },
+                },
+                "required": ["name", "reason"],
+            },
+        ),
+        Tool(
+            name="memory_unmark_stale",
+            description=(
+                "Hygiene inverse: revive a memory by clearing BOTH expired_at and "
+                "superseded_by. Host-only. Used when /curate marked the wrong row."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Memory name to revive",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope. null/global = cross-project.",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
         # ---- Event tools ----
         Tool(
             name="events_list",
