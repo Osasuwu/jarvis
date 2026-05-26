@@ -558,8 +558,7 @@ function Invoke-PytestGate {
     [CmdletBinding()]
     param(
         [string]$RepoRoot,
-        [string]$Branch,
-        [string]$RepoSlug
+        [string]$Branch
     )
 
     if (-not (Test-Path -LiteralPath $RepoRoot)) {
@@ -574,6 +573,7 @@ function Invoke-PytestGate {
     # Get changed .py files against the base branch
     Push-Location -LiteralPath $RepoRoot
     try {
+        & git fetch origin main --quiet 2>$null | Out-Null
         $changedRaw = & git diff origin/main...$Branch --name-only 2>$null
         $gitExit = $LASTEXITCODE
     } finally {
@@ -624,7 +624,7 @@ function Invoke-PytestGate {
     $failedLines = $output | Select-String '^FAILED ' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }
     $failureNames = $failedLines -replace '^FAILED ', ''
 
-    if ($exitCode -eq -1 -or $exitCode -eq 2) {
+    if ($exitCode -in @(2, 3, 4, 5)) {
         return [pscustomobject]@{
             passed          = $false
             collectionError = $true
@@ -1028,7 +1028,7 @@ function Invoke-Watchdog {
     # ---- 5. Pytest gate (redrobot only) ----
     $pytestResult = $null
     if (-not $partialReason -and $Repo -eq 'redrobot') {
-        $pytestResult = Invoke-PytestGate -RepoRoot $repoRoot -Branch $branch -RepoSlug $repoSlug
+        $pytestResult = Invoke-PytestGate -RepoRoot $repoRoot -Branch $branch
         $totalUsage.gates = @{ pytest = $pytestResult }
 
         if (-not $pytestResult.passed) {

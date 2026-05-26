@@ -1152,11 +1152,17 @@ Describe 'Get-RelatedTestFiles' {
     }
 
     It 'deduplicates when multiple files map to same test' {
-        # Create src/sub/module.py and another file mapping to test_module
-        New-Item -ItemType Directory -Path (Join-Path $script:tmpRoot 'src\sub') | Out-Null
-        New-Item -ItemType File -Path (Join-Path $script:tmpRoot 'src\sub\module.py') | Out-Null
-        $files = Get-RelatedTestFiles -ChangedFiles @('src/module.py', 'src/sub/module.py') -RepoRoot $script:tmpRoot
-        ($files | Select-Object -Unique).Count | Should Be 1
+        # Two files in different dirs both fall back to tests/test_module.py when
+        # no colocated test exists -- the function's own Select-Object -Unique must
+        # deduplicate them so the caller gets exactly one path, not two.
+        Remove-Item -LiteralPath (Join-Path $script:tmpRoot 'src\test_module.py') -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path (Join-Path $script:tmpRoot 'lib') | Out-Null
+        New-Item -ItemType File     -Path (Join-Path $script:tmpRoot 'lib\module.py') | Out-Null
+        New-Item -ItemType File     -Path (Join-Path $script:tmpRoot 'tests\test_module.py') | Out-Null
+        # src/module.py: no src/test_module.py -> falls back to tests/test_module.py
+        # lib/module.py: no lib/test_module.py -> falls back to tests/test_module.py (same path)
+        $files = Get-RelatedTestFiles -ChangedFiles @('src/module.py', 'lib/module.py') -RepoRoot $script:tmpRoot
+        $files.Count | Should Be 1
     }
 }
 
@@ -1219,7 +1225,7 @@ Describe 'Invoke-PytestGate' {
         # B3: filter on LiteralPath (callers use -LiteralPath, not -Path)
         Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like '*test_module*' }
 
-        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'SergazyNarynov/redrobot'
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
 
         $r.passed          | Should Be $true
         $r.collectionError | Should Be $false
@@ -1231,10 +1237,11 @@ Describe 'Invoke-PytestGate' {
         # B4: git diff succeeds, pytest exits 1
         Mock git { $global:LASTEXITCODE = 0; 'src/module.py' }
         Mock Test-Path { $false }
-        Mock pytest { $global:LASTEXITCODE = 1; '1 failed' }
-        Mock Select-String { 'FAILED test_module.py::test_something' }
+        # M5: return real pytest-formatted output so Select-String.Line works on MatchInfo,
+        # not on a bare string whose .Line is always $null.
+        Mock pytest { $global:LASTEXITCODE = 1; @('FAILED test_module.py::test_something', '1 failed in 0.1s') }
 
-        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'SergazyNarynov/redrobot'
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
 
         $r.passed          | Should Be $false
         $r.collectionError | Should Be $false
@@ -1249,14 +1256,14 @@ Describe 'Invoke-PytestGate' {
         Mock Test-Path { $false }
         Mock pytest { $global:LASTEXITCODE = 2; 'ERROR: could not collect test files' }
 
-        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'SergazyNarynov/redrobot'
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
 
         $r.passed          | Should Be $false
         $r.collectionError | Should Be $true
     }
 
     It 'returns collection error when repo root does not exist' {
-        $r = Invoke-PytestGate -RepoRoot "Nope:\missing" -Branch 'feat/test' -RepoSlug 'x/y'
+        $r = Invoke-PytestGate -RepoRoot "Nope:\missing" -Branch 'feat/test'
 
         $r.passed          | Should Be $false
         $r.collectionError | Should Be $true
@@ -1270,7 +1277,7 @@ Describe 'Invoke-PytestGate' {
         Mock git { $global:LASTEXITCODE = 1; $null }
         Mock pytest { $global:LASTEXITCODE = 0; '42 passed' }
 
-        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test' -RepoSlug 'x/y'
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
 
         $r.passed  | Should Be $true
         $r.testsRun | Should Be 42
