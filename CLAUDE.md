@@ -86,7 +86,7 @@ Use skills — don't reinvent with raw tools.
 | "исследуй", "research", "сравни" | `/research` |
 | "улучши себя", self-improvement | `/self-improve` |
 | "цели", "приоритеты" | `/goals` |
-| New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
+| New device bootstrap, "scheduled tasks setup" | `/setup-tasks` (Workshop-only as of 2026-05-26 per `1b7ff8d1`; refuses on other devices, offers `--cleanup` for legacy entries) |
 | ~~Daily scheduled tick~~ | ~~`/autonomous-loop`~~ — **SUPERSEDED**, pre-M44 catch-up baseline only. **Do not invoke for new flows.** No live cron registration since Medium-scope cleanup 2026-05-26. Will be deleted when reactive-core M44 (`wake_driver` + `orchestrator`) ships. |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Vague intuition (no written plan yet) / "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт"; subsumes /research for in-debate factual grounding | `/reason` |
