@@ -22,7 +22,8 @@ from scripts.code_review_retry import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
+RETRY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review-retry.yml"
+REVIEW_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
 
 
 # -- Decision logic ----------------------------------------------------------
@@ -134,8 +135,13 @@ class TestParseResetTimeUtc:
 
 
 @pytest.fixture(scope="module")
-def workflow() -> dict:
-    return yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
+def retry_workflow() -> dict:
+    return yaml.safe_load(RETRY_WORKFLOW.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="module")
+def review_workflow() -> dict:
+    return yaml.safe_load(REVIEW_WORKFLOW.read_text(encoding="utf-8"))
 
 
 def _triggers(workflow: dict) -> dict:
@@ -143,49 +149,66 @@ def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow.get(True)
 
 
-class TestWorkflowWiring:
-    def test_listens_to_its_own_completion(self, workflow):
-        on = _triggers(workflow)
-        assert "workflow_run" in on, "Retry path requires workflow_run trigger"
+class TestRetryWorkflowWiring:
+    def test_retry_workflow_exists(self):
+        assert RETRY_WORKFLOW.exists(), (
+            "Retry workflow split out into its own file because GitHub rejects "
+            "workflows that declare workflow_run triggers on themselves "
+            "(validation failure with 0 jobs)."
+        )
+
+    def test_listens_to_code_review_completion(self, retry_workflow):
+        on = _triggers(retry_workflow)
+        assert "workflow_run" in on
         wr = on["workflow_run"]
         assert "Code Review" in wr.get("workflows", []), (
-            "Workflow_run trigger must reference its own workflow by name"
+            "Retry must listen to the Code Review workflow by name"
         )
         assert "completed" in wr.get("types", [])
 
-    def test_pull_request_and_dispatch_triggers_preserved(self, workflow):
-        on = _triggers(workflow)
-        assert "pull_request" in on, "Existing pull_request trigger must remain"
-        assert "workflow_dispatch" in on, "Manual dispatch entry point must remain"
-
-    def test_review_job_does_not_fire_on_workflow_run(self, workflow):
-        review_if = workflow["jobs"]["review"]["if"]
-        # The review job's gate must list pull_request and workflow_dispatch,
-        # NOT include workflow_run — otherwise the retry path would
-        # re-trigger the review job rather than the retry job.
-        assert "pull_request" in review_if
-        assert "workflow_dispatch" in review_if
-        assert "workflow_run" not in review_if
-
-    def test_retry_job_exists_with_correct_gate(self, workflow):
-        retry = workflow["jobs"].get("retry")
-        assert retry is not None, "Retry job is the whole point of #807"
+    def test_retry_job_gates_on_failure(self, retry_workflow):
+        retry = retry_workflow["jobs"]["retry"]
         gate = retry["if"]
-        assert "workflow_run" in gate
-        assert "failure" in gate
+        assert "conclusion == 'failure'" in gate
+        # Default-branch gate prevents dispatching for dispatch-from-main runs
+        assert "default_branch" in gate
 
-    def test_retry_job_has_actions_write_permission(self, workflow):
-        perms = workflow["jobs"]["retry"]["permissions"]
+    def test_retry_job_has_required_permissions(self, retry_workflow):
+        perms = retry_workflow["jobs"]["retry"]["permissions"]
         assert perms.get("actions") == "write", (
-            "Retry job dispatches workflow_dispatch — needs actions:write"
+            "Retry dispatches workflow_dispatch → needs actions:write"
         )
         assert perms.get("pull-requests") == "write", (
-            "Retry job posts exhausted-retry PR comment — needs pull-requests:write"
+            "Retry posts exhausted-retry PR comment → needs pull-requests:write"
         )
 
-    def test_retry_job_invokes_script(self, workflow):
-        steps = workflow["jobs"]["retry"]["steps"]
+    def test_retry_job_invokes_script(self, retry_workflow):
+        steps = retry_workflow["jobs"]["retry"]["steps"]
         invocations = " ".join(s.get("run", "") for s in steps)
-        assert "code_review_retry.py" in invocations, (
-            "Retry job must invoke scripts/code_review_retry.py"
+        assert "code_review_retry.py" in invocations
+
+    def test_retry_job_passes_required_env(self, retry_workflow):
+        steps = retry_workflow["jobs"]["retry"]["steps"]
+        invoke_step = next(s for s in steps if "code_review_retry.py" in s.get("run", ""))
+        env = invoke_step["env"]
+        # The script reads these env vars (see scripts/code_review_retry.py:main).
+        for key in ("REPO", "HEAD_BRANCH", "HEAD_SHA", "FAILED_RUN_ID", "GH_TOKEN"):
+            assert key in env, f"Retry step must pass {key} env to the script"
+
+
+class TestReviewWorkflowUntouched:
+    """The split-out retry workflow must NOT modify code-review.yml triggers."""
+
+    def test_review_workflow_keeps_pull_request_trigger(self, review_workflow):
+        on = _triggers(review_workflow)
+        assert "pull_request" in on
+        assert "workflow_dispatch" in on
+
+    def test_review_workflow_has_no_workflow_run_trigger(self, review_workflow):
+        # If this trigger reappears, we're back to the validation-failure
+        # scenario where GitHub rejects self-referencing workflow_run.
+        on = _triggers(review_workflow)
+        assert "workflow_run" not in on, (
+            "code-review.yml must not self-reference via workflow_run — "
+            "use code-review-retry.yml instead."
         )
