@@ -9,6 +9,9 @@ on:
         description: PR number to review
         required: true
         type: string
+  workflow_run:
+    workflows: ["Code Review"]
+    types: [completed]
 
 jobs:
   review:
@@ -16,9 +19,11 @@ jobs:
     # plugin will mark these as trivial and exit anyway, but bail earlier
     # to save Claude tokens). Draft PRs are skipped at the step-1 eligibility
     # check inside the plugin.
+    # workflow_run events are handled by the `retry` job, not this one.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.head.repo.full_name == github.repository &&
+      (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository &&
        github.actor != 'dependabot[bot]')
     runs-on: ubuntu-latest
     permissions:
@@ -60,3 +65,32 @@ jobs:
             (not available in this runner). This is plugin invocation only.
           claude_args: |
             --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
+
+  retry:
+    # Reactive retry path (#807). Fires when a Code Review run completes with
+    # conclusion=failure. The script enforces:
+    #   - retry cap (3 failed attempts per head SHA)
+    #   - quota-aware delay (sleep until Claude Max session-limit reset, if the
+    #     failed run's log carries the reset-time signature)
+    # Skip when the failed run was dispatched from the default branch
+    # (workflow_dispatch without --ref) — those runs lack a usable head_branch.
+    if: |
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'failure' &&
+      github.event.workflow_run.head_branch != github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 420  # 7h — covers max sleep (~6h) + dispatch overhead
+    permissions:
+      actions: write
+      pull-requests: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Decide and dispatch retry
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          FAILED_RUN_ID: ${{ github.event.workflow_run.id }}
+        run: python scripts/code_review_retry.py
