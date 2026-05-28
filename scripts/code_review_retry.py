@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 4  # counts the triggering run; net retries = MAX_ATTEMPTS - 1 = 3
 RESET_BUFFER_SEC = 60
 MAX_SLEEP_SEC = 6 * 60 * 60  # 6h — Claude Max rolling window is ~5h, leave headroom
 FAILED_CONCLUSIONS = frozenset({"failure", "cancelled", "timed_out", "action_required"})
@@ -89,6 +89,9 @@ def parse_reset_time_utc(log_text: str, now: datetime) -> datetime | None:
     hour, minute, ampm = int(m.group(1)), int(m.group(2)), m.group(3)
     if ampm:
         ampm = ampm.lower()
+        # am/pm only valid for 12-hour clock (1–12); 13:00am/pm is nonsense.
+        if not (1 <= hour <= 12):
+            return None
         if ampm == "pm" and hour != 12:
             hour += 12
         if ampm == "am" and hour == 12:
@@ -97,7 +100,9 @@ def parse_reset_time_utc(log_text: str, now: datetime) -> datetime | None:
         return None
     target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if target <= now:
-        target += timedelta(days=1)
+        # Reset time has already passed (log-fetch latency or near-boundary).
+        # Return None so the caller retries immediately rather than sleeping ~24h.
+        return None
     return target
 
 
@@ -151,10 +156,33 @@ def main() -> int:
         "--head", head_branch,
         "--json", "number,headRefName,headRefOid", "--limit", "5",
     ))
-    runs = json.loads(_gh(
+    runs_resp = json.loads(_gh(
         "api",
         f"repos/{repo}/actions/workflows/code-review.yml/runs?head_sha={head_sha}&per_page=100",
-    ))["workflow_runs"]
+    ))
+    if "workflow_runs" not in runs_resp:
+        print(f"ERROR: unexpected API response (no workflow_runs key): {list(runs_resp.keys())}")
+        return 1
+    runs = runs_resp["workflow_runs"]
+
+    # Finding #4: GitHub API can lag a few seconds after a workflow_run event fires.
+    # If the triggering run's conclusion is still null, wait once and re-fetch.
+    if any(r.get("id") == int(failed_run_id) and r.get("conclusion") is None
+           for r in runs if failed_run_id):
+        print("head run conclusion is null — sleeping 5s for API propagation, then retrying")
+        time.sleep(5)
+        runs_resp2 = json.loads(_gh(
+            "api",
+            f"repos/{repo}/actions/workflows/code-review.yml/runs?head_sha={head_sha}&per_page=100",
+        ))
+        if "workflow_runs" not in runs_resp2:
+            print(f"ERROR: unexpected API response on propagation-lag retry "
+                  f"(no workflow_runs key): {list(runs_resp2.keys())}")
+            return 1
+        runs = runs_resp2["workflow_runs"]
+        if any(r.get("id") == int(failed_run_id) and r.get("conclusion") is None
+               for r in runs):
+            print("head run conclusion still null after propagation-lag retry — count may undercount")
 
     decision = decide(open_prs, head_branch, runs)
     print(f"failed_run={failed_run_id} sha={head_sha[:8]} branch={head_branch}")
@@ -183,18 +211,24 @@ def main() -> int:
                   f"({delay/60:.1f}min) before retry")
             time.sleep(delay)
 
-        # After waking up, re-check: maybe someone manually dispatched a
-        # successful run while we slept. Avoid double-trigger.
-        runs_after = json.loads(_gh(
-            "api",
-            f"repos/{repo}/actions/workflows/code-review.yml/runs?head_sha={head_sha}&per_page=20",
-        ))["workflow_runs"]
-        if any(r.get("conclusion") == "success" for r in runs_after):
-            print("post-sleep: success run already exists for this SHA — no dispatch")
-            return 0
-        if any(r.get("status") in ("queued", "in_progress") for r in runs_after):
-            print("post-sleep: a run is already queued/in_progress — no dispatch")
-            return 0
+    # Finding #2: double-dispatch guard runs before every _dispatch(), not only
+    # after quota-sleep. GitHub sometimes delivers duplicate workflow_run events.
+    # Also covers the immediate-retry path (reset_at is None / non-quota failure).
+    runs_before_dispatch_resp = json.loads(_gh(
+        "api",
+        f"repos/{repo}/actions/workflows/code-review.yml/runs?head_sha={head_sha}&per_page=20",
+    ))
+    if "workflow_runs" not in runs_before_dispatch_resp:
+        print(f"ERROR: unexpected API response before dispatch "
+              f"(no workflow_runs key): {list(runs_before_dispatch_resp.keys())}")
+        return 1
+    runs_before_dispatch = runs_before_dispatch_resp["workflow_runs"]
+    if any(r.get("conclusion") == "success" for r in runs_before_dispatch):
+        print("pre-dispatch: success run already exists for this SHA — no dispatch")
+        return 0
+    if any(r.get("status") in ("queued", "in_progress") for r in runs_before_dispatch):
+        print("pre-dispatch: a run is already queued/in_progress — no dispatch")
+        return 0
 
     print(f"dispatching retry for PR #{decision.pr_number} at {head_branch}")
     _dispatch(repo, head_branch, decision.pr_number)
