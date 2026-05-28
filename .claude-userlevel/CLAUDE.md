@@ -77,3 +77,46 @@ Memory records can be wrong:
 ### Decisions belong in memory, not in issue/PR bodies
 
 Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD prose all decay; the queryable decision log doesn't. Skills that produce issues (`/to-prd`, `/to-issues`) reference `decision_uuids[]` rather than restating the *why* — see each skill for the section template.
+
+## Repo policy — auto-merge & merge gates
+
+Applies to every owned repo (`Osasuwu/jarvis`, `SergazyNarynov/redrobot`, and any future personal project). Foreign-owner repos are exempt — they have their own protection rules.
+
+**Goal:** AFK Path A loop closes by itself — `open → CI → review → automerge → rework → escalate`. Subagent opens a PR, Jarvis flips it to ready, GitHub merges when every gate is green. No human in the merge step *unless* a gate fires.
+
+### The four gates
+
+Every owned repo enforces the same set via **branch protection on the default branch** + repo-level `allow_auto_merge=true`:
+
+1. **`review` (Claude code-review plugin)** — the workflow runs `/code-review`, posts findings as a structured comment, **and a post-step (`Verify review verdict`) fails the job on `Found N issues:`**. Without the post-step the check signals "bot ran" not "PR is clean" — auto-merge would happily ship PRs with CRITICAL findings. Plugin already drops findings below 80-confidence per its rubric, so any surfaced finding is real.
+2. **`owner-queue-guard`** — fails the job when the PR carries the `status:owner-queue` label. That label is the manual "park this for me" signal; the guard turns it into a hard merge block instead of a hope-Jarvis-honors-it convention. Triggered on `opened / synchronize / labeled / unlabeled` so the gate is re-evaluated whenever label state changes.
+3. **`require-linked-issue`** — PR body must reference `Closes #NNN`, OR carry the `priority:critical` label (hotfix bypass), OR contain the `[no-issue]` marker (drive-by fix-inline per jarvis#428), OR use a `refactor:` / `refactor(scope):` title prefix.
+4. **Project-specific test gates** — `pytest`, `meta-tests`, `Detect secrets with gitleaks` in jarvis; the equivalents in any other repo. These come from the repo's own CI surface.
+
+### Drafts are the manual hold
+
+A PR stays in **draft** while owner attention is owed (waiting on design feedback, intentional batching, etc.). Drafts never auto-merge — that's GitHub's default and it's the right one. Once flipped to ready, the four gates above are the merge gate.
+
+Use `status:owner-queue` for the rarer case: PR is content-complete (so it can pass review) but owner still wants to eyeball it before it ships. The label keeps it ready-but-blocked. Don't reach for the label when draft already covers the case.
+
+### Required files per repo
+
+- `.github/workflows/code-review.yml` — final step `Verify review verdict` parses the latest `### Code review` comment, exits 1 on `Found N issues:` / 0 on `No issues found.` / 0 on no comment (plugin skipped).
+- `.github/workflows/owner-queue-guard.yml` — single job named `owner-queue-guard`, triggers on `opened, synchronize, labeled, unlabeled`, fails on the label.
+
+The check name `owner-queue-guard` is what branch protection references — rename in lockstep with the protection rule or the gate silently disappears (cf. jarvis#326 meta-test rule: path-filtered guards need a fixture test pinning the canonical name).
+
+### Repo-settings checklist (one-time per repo)
+
+```
+gh api -X PATCH /repos/<owner>/<repo> -F allow_auto_merge=true -F delete_branch_on_merge=true
+gh api -X PUT /repos/<owner>/<repo>/branches/<default>/protection -F required_status_checks='{"strict":true,"contexts":["review","owner-queue-guard","require-linked-issue", ...repo-specific...]}' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null
+```
+
+`enforce_admins=false` keeps escape-hatch open for the owner (admin-merge when a gate is broken). `required_pull_request_reviews=null` because the `review` check already encodes the AI review verdict — adding a required human review would defeat AFK Path A.
+
+### When to break the rules
+
+- **Gate is broken, blocking real work**: admin-merge (`gh pr merge --admin`) is fine. Note in the PR comment which gate you bypassed and why.
+- **A PR modifies `code-review.yml` itself**: `anthropics/claude-code-action@v1` refuses to run on self-modifying PRs ("Workflow validation failed" — documented behavior). The `review` check fails as expected; admin-merge.
+- **Self-hosted runner is down (redrobot)**: review/CI can't run. Verify locally, admin-merge per `redrobot_billing_blocked_manual_merge_protocol` precedent.
