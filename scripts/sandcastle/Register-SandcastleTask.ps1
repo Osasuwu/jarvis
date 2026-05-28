@@ -144,6 +144,15 @@ if (-not $Force -and $currentDevice -ne $expectedDevice) {
     throw "Refusing to register on '$currentDevice' -- sandcastle production target is '$expectedDevice'. Pass -Force for dev rehearsal."
 }
 
+# Admin check up front -- Register-ScheduledTask with an S4U principal needs
+# elevation. If we don't check here, the idempotent "unregister existing first"
+# block below wipes the old task and then the Register call fails with
+# "Access is denied", leaving the device with NO task at all.
+$isAdmin = ([Security.Principal.WindowsPrincipal]([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin -and -not $WhatIfOnly) {
+    throw "Register-SandcastleTask must run from an elevated PowerShell. Re-launch as Administrator and retry."
+}
+
 # ---------------------------------------------------------------------------
 # Quota-probe mode (#635)
 # ---------------------------------------------------------------------------
@@ -193,13 +202,13 @@ if ($QuotaProbe) {
     # set on New-ScheduledTaskTrigger, which builds the MSFT_TaskRepetitionPattern
     # CIM instance internally.
     #
-    # [timespan]::MaxValue (~10.6M days) overflows Task Scheduler's COM layer
-    # (max ~49,710 days from Int32 seconds) -> COMException at register time or a
-    # silent wrap that stops the repetition immediately (C8). 100 years is well
-    # within range and is effectively indefinite for a self-retriggered task.
+    # Duration cap: Task Scheduler XML rejects durations exceeding PT24H × 9999
+    # (P36500D = 100 years tripped this — Register-ScheduledTask error
+    # "(10,29):Duration:P36500D"). 9999 days (~27 years) is the documented max and
+    # is effectively indefinite for a self-retriggered task.
     $trigger = New-ScheduledTaskTrigger -Once -At $startDt `
         -RepetitionInterval ([timespan]::FromMinutes($QuotaProbeInterval)) `
-        -RepetitionDuration (New-TimeSpan -Days 36500)
+        -RepetitionDuration ([timespan]::FromDays(9999))
 
     # S4U: run whether or not the user is logged on, and fire even when the screen
     # is locked (m1: LogonType Interactive skips the run on a locked workstation).
