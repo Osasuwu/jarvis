@@ -350,7 +350,15 @@ def main():
     if goal_section:
         sections.append(goal_section)
 
-    # 5. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
+    # 5. Pending review count — one-line reminder when candidates await review
+    pending_count = _query_pending_review_count(client, project)
+    if pending_count > 0:
+        sections.append(
+            "**Pending memory candidates:** "
+            f"{pending_count} (run `/learn` to review)"
+        )
+
+    # 6. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
     #    live memories (name + type + scope + short description) so Jarvis
     #    knows what exists and can pull full content on demand via memory_get
     #    / memory_recall. Replaces the old recency-based feedback/decision
@@ -531,6 +539,41 @@ def _fmt_catalog_entry(m, current_project):
     if len(desc) > 120:
         desc = desc[:117] + "..."
     return f"- {m['name']} [{scope}]: {desc}"
+
+
+def _query_pending_review_count(client, project) -> int:
+    """Query pending review candidates via memory_review_list RPC.
+
+    Queries both project-specific and global (null-project) pools.
+    Returns total count across both. On RPC failure (not yet deployed
+    or unreachable), returns 0 — graceful degradation (#556).
+    """
+    total = 0
+
+    # Project-scoped candidates (only when inside a known project)
+    if project:
+        try:
+            result = client.rpc("memory_review_list", {
+                "queue": "candidate",
+                "project_filter": project,
+                "limit_count": 1000,
+            }).execute()
+            total += len(result.data or [])
+        except Exception as e:
+            print(f"[session-context] pending-review count failed ({project}): {e}", file=sys.stderr)
+
+    # Global candidates (project IS NULL) — always query
+    try:
+        result = client.rpc("memory_review_list", {
+            "queue": "candidate",
+            "project_filter": "",
+            "limit_count": 1000,
+        }).execute()
+        total += len(result.data or [])
+    except Exception as e:
+        print(f"[session-context] pending-review count failed (global): {e}", file=sys.stderr)
+
+    return total
 
 
 def _touch_accessed(client, ids):
