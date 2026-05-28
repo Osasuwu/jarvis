@@ -21,13 +21,14 @@ must never inherit API-billing keys.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import shutil
 import subprocess
 from datetime import UTC, datetime
 from typing import Any
+
+from agents.scope_hash import _hash_scope_files  # re-export — see issue #773
 
 logger = logging.getLogger(__name__)
 
@@ -159,16 +160,6 @@ def _sanitize_env(env: dict[str, str] | None = None) -> dict[str, str]:
     """
     source = env if env is not None else os.environ
     return {k: v for k, v in source.items() if k not in _SENSITIVE_ENV_KEYS}
-
-
-def _hash_scope_files(scope_files: list[str] | tuple[str, ...]) -> str:
-    """Deterministic scope-files hash for drift detection.
-
-    Sort the list so "files reordered" doesn't read as "files changed";
-    newline-join so a glob that grew by one file produces different hashes.
-    """
-    normalized = "\n".join(sorted(scope_files or []))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _now_iso() -> str:
