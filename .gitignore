@@ -31,6 +31,7 @@ Thumbs.DB
 
 # Jarvis specific
 .jarvis/
+.cache/
 
 # Claude Code device-local settings (not shared)
 .claude/settings.local.json
