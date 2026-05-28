@@ -4,13 +4,13 @@
 worker: ln-635
 category: Test Trustworthiness
 domain: memory_cluster
-scan_path: tests/
-score: 8.5
+scan_path: tests/test_memory_server.py, tests/test_memory_server_script_launch.py, tests/test_pretooluse_recall.py, tests/test_recall_audit.py
+score: 9.2
 total_issues: 4
 critical: 0
 high: 0
-medium: 3
-low: 1
+medium: 0
+low: 4
 status: completed
 -->
 
@@ -33,9 +33,9 @@ status: completed
 
 | Severity | Location | Issue | Principle | Recommendation | Effort |
 |----------|----------|-------|-----------|----------------|--------|
-| MEDIUM | tests/test_memory_server_script_launch.py:28-66 | Real subprocess.Popen to launch server.py — test spawns real Python process with subprocess.Popen; 3s sleep for race condition; process lifecycle management | Isolation: FS | Replace with import-based smoke test that verifies the MCP handler registration without spawning a subprocess | M |
-| MEDIUM | tests/test_pretooluse_recall.py:240-474 | _run_main helper creates real temp directories and file I/O for each test invocation — uses tmp_path per test but still exercises real file system for stdin mock | Isolation: FS | Accepted — tmp_path is pytest-managed and cleaned up between runs; low risk | S |
-| MEDIUM | tests/test_recall_audit.py:47-51 | _write_jsonl fixture writes real files to tmp_path; each test creates/reads actual JSONL files | Isolation: FS | Accepted — tmp_path scoping ensures isolation; risk is low | S |
+| LOW | tests/test_memory_server_script_launch.py:28-66 | Real subprocess.Popen to launch server.py — test spawns real Python process with subprocess.Popen; 3s sleep for race condition; process lifecycle management | Isolation: FS | Keep subprocess approach — an import-based test would lose circular-import detection (the primary value of this test); 3s sleep is inherent to the detection mechanism; keep standalone, do not merge into test_memory_server.py (downgraded from MEDIUM: trade-off documented, subprocess purpose is irreplaceable) | M |
+| LOW | tests/test_pretooluse_recall.py:240-474 | _run_main helper creates real temp directories and file I/O for each test invocation — uses tmp_path per test but still exercises real file system for stdin mock | Isolation: FS | Accepted — tmp_path is pytest-managed and cleaned up between runs; low risk (downgraded from MEDIUM: accepted risk level matches LOW, not MEDIUM) | S |
+| LOW | tests/test_recall_audit.py:47-51 | _write_jsonl fixture writes real files to tmp_path; each test creates/reads actual JSONL files | Isolation: FS | Accepted — tmp_path scoping ensures isolation; risk is low (downgraded from MEDIUM: accepted risk level matches LOW, not MEDIUM) | S |
 | LOW | tests/test_memory_server.py | 2008-line monolithic test file likely uses default Supabase config values for mock setup | Determinism: Default Value | Audit mock Supabase config values — ensure test assertions use non-default values to detect config-drift | M |
 
 ## Isolation Analysis Detail
@@ -53,9 +53,9 @@ All test files properly mock external dependencies:
 
 ### File System Isolation (WARNING)
 Three areas where real filesystem operations occur:
-1. **test_memory_server_script_launch.py** — actual subprocess to test import chain
-2. **test_recall_audit.py** — _write_jsonl creates real temp JSONL files
-3. **test_pretooluse_recall.py** — tmp_path is used for cache isolation
+1. **test_memory_server_script_launch.py** — actual subprocess to test import chain (LOW: unique circular-import detection purpose; cannot be replaced by import-based test)
+2. **test_recall_audit.py** — _write_jsonl creates real temp JSONL files (LOW: tmp_path is ephemeral, accepted)
+3. **test_pretooluse_recall.py** — tmp_path is used for cache isolation (LOW: tmp_path is ephemeral, accepted)
 
 All use pytest's tmp_path which is ephemeral and scoped per-function — acceptable for unit tests.
 
@@ -86,14 +86,26 @@ All use pytest's tmp_path which is ephemeral and scoped per-function — accepta
 - _MockClient instances are created per-test
 - monkeypatch is properly scoped
 
+## Unaudited Files
+
+The following 7 files were in `tests/` but were not assessed in this pass — deferred for a future audit cycle:
+
+- `tests/test_consolidation_review.py`
+- `tests/test_episode_extractor.py`
+- `tests/test_evolve_neighbors.py`
+- `tests/test_memory_recall_hook.py`
+- `tests/test_migrate_memory_structure.py`
+- `tests/test_pre_compact_backup.py`
+- `tests/test_recall_orchestrator.py`
+
 ## Summary
 
-Overall Trustworthiness Score: **8.5/10**
+Overall Trustworthiness Score: **9.2/10**
 
-- **3 MEDIUM** findings — mostly related to real filesystem I/O via tmp_path (acceptable) and one subprocess-based test
-- **1 LOW** finding — default value audit recommended for the large test_memory_server.py
+- **0 MEDIUM** findings — subprocess test downgraded to LOW after trade-off analysis (circular-import detection is irreplaceable)
+- **4 LOW** findings — subprocess isolation (accepted, unique purpose), 2 tmp_path filesystem (low risk, accepted), default config value audit recommendation
 - **No flaky tests detected**
 - **No order-dependent tests detected**
 - **No shared mutable state issues**
 
-The memory cluster tests are highly trustworthy. The mock/stub architecture is consistent across all 13 files. The subprocess test is the primary isolation concern, but it serves a unique purpose (detecting circular import bugs) that can't be easily tested via pure import.
+The memory cluster tests are highly trustworthy. The mock/stub architecture is consistent across all audited files. The subprocess test is the primary isolation concern, but it serves a unique purpose (detecting circular import bugs) that cannot be easily replaced via pure import — the MEDIUM recommendation to replace has been revised to KEEP.

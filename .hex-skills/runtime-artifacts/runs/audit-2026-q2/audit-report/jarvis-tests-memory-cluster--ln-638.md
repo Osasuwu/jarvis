@@ -5,12 +5,12 @@ worker: ln-638
 category: Oracle Effectiveness
 domain: memory_cluster
 scan_path: tests/
-score: 7.2
+score: 5.9
 total_issues: 8
 critical: 0
 high: 2
-medium: 4
-low: 2
+medium: 3
+low: 3
 status: completed
 -->
 
@@ -28,11 +28,11 @@ status: completed
 
 | Severity | Location | Issue | Principle | Recommendation | Effort |
 |----------|----------|-------|-----------|----------------|--------|
-| HIGH | tests/test_memory_server.py | 2008-line monolith likely tests handler registration via mock-call assertions on MagicMock — mock-proves-mock pattern risk | Over-mocking | Audit for tests where the primary assertion is `mock.assert_called_with(...)` without verifying the downstream effect | M |
+| HIGH | tests/test_memory_server.py | 2008-line monolith contains 212 mock/call-assertion matches — confirmed mock-proves-mock pattern risk where primary assertion is mock wiring rather than downstream behavior | Over-mocking | Audit for tests where the primary assertion is `mock.assert_called_with(...)` without verifying the downstream effect | M |
 | HIGH | tests/test_pretooluse_recall.py:277-279 | `client.rpc.return_value.execute.return_value = MagicMock(data=rpc_rows or [])` — deep mock chains make assertions about mock wiring, not actual behavior | Over-mocking | Consider contract-style test doubles that enforce real response shapes | M |
 | MEDIUM | tests/test_consolidation_review.py:114-142 | _FakeClient.execute() returns _FakeResp with canned data — test verifies call routing, not actual RPC roundtrip | Oracle: Mock | Accepted pattern for unit-testing CLI dispatch; integration tests cover real RPCs | S |
 | MEDIUM | tests/test_evolve_neighbors.py:38-247 | _parse_response tests verify JSON parsing edge cases with inline strings — good coverage but the primary oracle is "does not crash" + "returns expected structure" | Assertion Strength | Acceptable for a defensive parsing function; consider adding property-based tests | M |
-| MEDIUM | tests/test_recall_orchestrator.py:121-134 | Assertions like `assert isinstance(h.semantic_score, float)` verify type contracts but not correctness of score values | Oracle: Meaningful | Strengthen with value-range assertions (0-1 bounds for scores) | S |
+| LOW | tests/test_recall_orchestrator.py:121-134 | Assertions like `assert isinstance(h.semantic_score, float)` verify type contracts but not correctness of score values — however, the same test also asserts explicit ordering and score constraints (a strong oracle); the isinstance check is a smaller secondary concern that does not warrant MEDIUM severity | Oracle: Meaningful | Strengthen with value-range assertions (0-1 bounds for scores) | S |
 | MEDIUM | tests/test_memory_calibration.py:108-115 | RPC failure test asserts error text contains "rpc blew up" — asserts the error surfaced but not the error-handling behavior | Oracle: Error handling | Add assertion that error recovery completes (no partial state, no cascade) | S |
 | LOW | tests/test_recall_audit.py:108-129 | "does not flag when populated" test verifies empty filter result — assertion is `assert [] == []` test variant | Assertion Strength | Assert that other detectors still ran (not just that the empty_memories_used detector was silent) | S |
 | LOW | tests/test_pre_compact_backup.py:112-148 | _parse_transcript tests verify parsing of small/truncated/malformed input — good edge-case coverage, oracle is structural | Oracle: Structure | Accepted — oracle matches the function's contract; no improvement needed | - |
@@ -43,7 +43,7 @@ status: completed
 |-----------|------------------|-------------------|-------------|
 | test_memory_calibration.py | GOOD | LOW | Schema guard is a strong regression oracle; handler tests use text-content assertions |
 | test_memory_recall_hook.py | GOOD | MEDIUM | Main integration test verifies JSON payload shape; dedup tests verify boolean outcomes |
-| test_memory_server.py | MIXED | HIGH | Largest file — likely has both strong and mock-proves-mock patterns |
+| test_memory_server.py | MIXED | HIGH | Largest file — confirmed 212 mock/call-assertion matches; likely has both strong and mock-proves-mock patterns |
 | test_memory_server_script_launch.py | GOOD | NONE | Single strong regression guard with explicit failure conditions |
 | test_episode_extractor.py | GOOD | LOW | Verifies inserted data shape, provenance, and processing outcomes |
 | test_consolidation_review.py | GOOD | MEDIUM | JSON output shape verified; call routing verified through recorded calls |
@@ -69,16 +69,16 @@ The memory cluster tests follow a consistent pattern of creating fake/mock Supab
 |---------------|-------|--------|---------|
 | CRITICAL | 0 | 2.0 | 0 |
 | HIGH | 2 | 1.0 | 2.0 |
-| MEDIUM | 4 | 0.5 | 2.0 |
-| LOW | 2 | 0.2 | 0.4 |
-| **Total penalty** | | | **4.4** |
-| **Score** | | | **7.2/10** |
+| MEDIUM | 3 | 0.5 | 1.5 |
+| LOW | 3 | 0.2 | 0.6 |
+| **Total penalty** | | | **4.1** |
+| **Score** | | | **5.9/10** |
 
 ## Summary
 
-Overall Oracle Effectiveness Score: **7.2/10**
+Overall Oracle Effectiveness Score: **5.9/10**
 
-- **8 findings** — 2 HIGH, 4 MEDIUM, 2 LOW
+- **8 findings** — 2 HIGH, 3 MEDIUM, 3 LOW
 - **Primary concern**: Over-mocking pattern in files with deep mock chains (test_memory_server.py, test_pretooluse_recall.py)
 - **Strength**: Most files have strong behavior-level oracles (test_recall_orchestrator.py golden test, test_episode_extractor.py provenance verification)
 - **Recommendation**: Add integration-level contract tests for critical RPC interfaces; current unit tests provide good coverage of logic but mock-Supabase assertions don't verify real DB behavior
