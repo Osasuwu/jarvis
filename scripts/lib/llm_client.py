@@ -50,12 +50,17 @@ def call_ollama(
     timeout_s: int = DEFAULT_OLLAMA_TIMEOUT_S,
     system_prompt: str | None = None,
     format_json: bool = True,
-) -> str | None:
+    return_usage: bool = False,
+) -> str | dict | None:
     """Call Ollama ``/api/generate`` with *prompt* and return the response text.
 
-    Returns None on any error.  *system_prompt* is passed as the ``system``
-    field (supported by Ollama 0.3+).  When *format_json* is true (default)
-    the request sets ``"format": "json"``.
+    When *return_usage* is True, returns a dict with keys ``text``,
+    ``input_tokens`` (prompt_eval_count), ``output_tokens`` (eval_count),
+    and ``model`` — or None on error.
+
+    Returns None (bare) on any error or empty response.  *system_prompt* is
+    passed as the ``system`` field (Ollama 0.3+).  When *format_json* is true
+    (default) the request sets ``"format": "json"``.
     """
     host = host or os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
     model = model or os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
@@ -101,6 +106,14 @@ def call_ollama(
             f"reason={done_reason!r} with empty response — falling back to DeepSeek",
             file=sys.stderr,
         )
+
+    if return_usage:
+        return {
+            "text": response_text,
+            "input_tokens": envelope.get("prompt_eval_count", 0) or 0,
+            "output_tokens": envelope.get("eval_count", 0) or 0,
+            "model": model,
+        }
     return response_text
 
 
@@ -118,10 +131,14 @@ def call_deepseek(
     timeout_s: int = DEFAULT_DEEPSEEK_TIMEOUT_S,
     system_prompt: str | None = None,
     format_json: bool = True,
-) -> str | None:
+    return_usage: bool = False,
+) -> str | dict | None:
     """Call DeepSeek chat-completions API and return the response text.
 
-    Returns None on any error.  Uses ``requests``-style JSON POST via
+    When *return_usage* is True, returns a dict with keys ``text``,
+    ``input_tokens``, ``output_tokens``, and ``model`` — or None on error.
+
+    Returns None (bare) on any error.  Uses ``requests``-style JSON POST via
     stdlib ``urllib`` — no extra dependency.
 
     When *format_json* is true (default), sets
@@ -173,7 +190,17 @@ def call_deepseek(
     choices = envelope.get("choices", [])
     if not choices:
         return None
-    return choices[0].get("message", {}).get("content")
+    content = choices[0].get("message", {}).get("content")
+    usage = envelope.get("usage", {})
+
+    if return_usage:
+        return {
+            "text": content,
+            "input_tokens": usage.get("prompt_tokens", 0) or 0,
+            "output_tokens": usage.get("completion_tokens", 0) or 0,
+            "model": model,
+        }
+    return content
 
 
 # ---------------------------------------------------------------------------
@@ -186,15 +213,28 @@ def call_llm(
     *,
     system_prompt: str | None = None,
     format_json: bool = True,
-) -> str | None:
+    return_usage: bool = False,
+) -> str | dict | None:
     """Try Ollama first; fall back to DeepSeek on any error.
 
-    Returns None only if **both** backends fail.
+    When *return_usage* is True, returns a dict with the winning tier's
+    token info (see ``call_ollama`` / ``call_deepseek``). Returns None
+    only if **both** backends fail.
     """
-    result = call_ollama(prompt, system_prompt=system_prompt, format_json=format_json)
+    result = call_ollama(
+        prompt,
+        system_prompt=system_prompt,
+        format_json=format_json,
+        return_usage=return_usage,
+    )
     if result is not None:
         return result
     # Fallback — forward format_json so DeepSeek also gets JSON-mode enforcement.
     # Without this, DeepSeek's prose wrapping triggered the non-greedy regex
     # bug in scripts/deriver/pipeline.py (now also fixed).
-    return call_deepseek(prompt, system_prompt=system_prompt, format_json=format_json)
+    return call_deepseek(
+        prompt,
+        system_prompt=system_prompt,
+        format_json=format_json,
+        return_usage=return_usage,
+    )
