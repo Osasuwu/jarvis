@@ -191,7 +191,7 @@ git commit -m "<type>(<scope>): <description> (#N)"
 git push -u origin feat/<N>-<slug>
 ```
 
-**PR body must be rich and informative** — this is the primary context for reviewers (human and Copilot). Use this template:
+**PR body must be rich and informative** — this is the primary context for reviewers (human and the Claude code-review bot). Use this template:
 
 ```markdown
 ## Summary
@@ -228,7 +228,7 @@ EOF
 )"
 ```
 
-**Why this matters**: Copilot and human reviewers see reasoning inline, not just diff. HIGH/CRITICAL risks are flagged before review starts. No back-and-forth asking "why did you do X?"
+**Why this matters**: the Claude code-review bot and human reviewers see reasoning inline, not just diff. HIGH/CRITICAL risks are flagged before review starts. No back-and-forth asking "why did you do X?"
 
 ### 6. Record outcome
 
@@ -260,15 +260,15 @@ outcome_record(
 When implementing multiple related issues back-to-back:
 - Group into one branch if they touch the same files
 - Separate branches for independent changes (can be merged independently)
-- Address Copilot review comments promptly
+- Address Claude code-review findings promptly
 
 ### 7.5. Merge policy
 
 **The current session (the one running /implement) CAN merge — no permission needed for routine PRs:**
-- Tests green + Copilot review addressed + LOW/MEDIUM risk → **merge without asking**
+- Tests green + Claude code-review comment checked & addressed + LOW/MEDIUM risk → **merge without asking**
 - HIGH/CRITICAL risk or safety-critical zone (`driver/`, `planning/`, `mujoco/`) → wait for principal explicit approval
-- CI infra-blocked (billing failure, empty `steps` array — not *failing* tests) → merge if local tests green AND Copilot review clean
-- Copilot findings are advisory — address substantive ones, ignore style nits
+- CI infra-blocked (billing failure, empty `steps` array — not *failing* tests) → merge if local tests green AND Claude code-review clean
+- Claude code-review findings are advisory — address substantive ones, ignore style nits. The bot posts as an **issue-comment** (`gh api repos/<owner>/<repo>/issues/<n>/comments`), not a PR review — check it explicitly; "no Copilot review" is no longer a valid merge basis.
 
 Waiting for manual review on every LOW-risk PR is the anti-pattern. See memories: `pm_autonomy_redrobot`, `copilot_review_advisory_only`, `no_confirm_commits_pushes_merges`.
 

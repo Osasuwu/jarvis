@@ -56,6 +56,11 @@ if sys.stderr.encoding != "utf-8":
 
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
+_PROJECT_REPO: dict[str, str] = {
+    "jarvis": "Osasuwu/jarvis",
+    "redrobot": "SergazyNarynov/redrobot",
+}
+
 # Pre-compact snapshots older than this are treated as stale. They most
 # likely belong to a different run that happened to reuse the same
 # session_id — Claude Code does reuse ids across `--resume` invocations.
@@ -307,10 +312,13 @@ def main():
     #    Everything else (feedback/decisions) is loaded task-aware via
     #    UserPromptSubmit hook (scripts/memory-recall-hook.py).
     #    Compact one-line format for the same reason as user profile.
+    #    NOTE: Do NOT touch always_load memories (bump last_accessed_at) to prevent
+    #    access-bias feedback loop (#767). Recency should not dominate semantic recall.
     section, ids = _query_always_load(client, compact=True)
     if section:
         sections.append("## Always-Load Rules\n" + section)
-        touched_ids.extend(ids)
+        # CHANGE #767: Skip touching always_load memories to de-bias access-boost
+        # touched_ids.extend(ids)
 
     # 3a. Project domain context (CONTEXT.md) — glossary + invariants + arch
     #     shape. Read order at session start: CLAUDE.md (rules) → SOUL.md
@@ -347,7 +355,23 @@ def main():
     if goal_section:
         sections.append(goal_section)
 
-    # 5. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
+    # 5. Pending review count — one-line reminder when candidates await review
+    pending_count = _query_pending_review_count(client, project)
+    if pending_count > 0:
+        sections.append(
+            "**Pending memory candidates:** "
+            f"{pending_count} (run `/learn` to review)"
+        )
+
+    # 5b. Architecture sweep recommendation -- recently closed milestones with
+    #     enough closed slices to warrant a /improve-codebase-architecture run.
+    #     Only fires in a known project dir where the sweep is meaningful.
+    if project:
+        sweep_section = _check_milestone_sweep(repo=_PROJECT_REPO.get(project))
+        if sweep_section:
+            sections.append(sweep_section)
+
+    # 6. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
     #    live memories (name + type + scope + short description) so Jarvis
     #    knows what exists and can pull full content on demand via memory_get
     #    / memory_recall. Replaces the old recency-based feedback/decision
@@ -530,6 +554,41 @@ def _fmt_catalog_entry(m, current_project):
     return f"- {m['name']} [{scope}]: {desc}"
 
 
+def _query_pending_review_count(client, project) -> int:
+    """Query pending review candidates via memory_review_list RPC.
+
+    Queries both project-specific and global (null-project) pools.
+    Returns total count across both. On RPC failure (not yet deployed
+    or unreachable), returns 0 — graceful degradation (#556).
+    """
+    total = 0
+
+    # Project-scoped candidates (only when inside a known project)
+    if project:
+        try:
+            result = client.rpc("memory_review_list", {
+                "queue": "candidate",
+                "project_filter": project,
+                "limit_count": 1000,
+            }).execute()
+            total += len(result.data or [])
+        except Exception as e:
+            print(f"[session-context] pending-review count failed ({project}): {e}", file=sys.stderr)
+
+    # Global candidates (project IS NULL) — always query
+    try:
+        result = client.rpc("memory_review_list", {
+            "queue": "candidate",
+            "project_filter": "",
+            "limit_count": 1000,
+        }).execute()
+        total += len(result.data or [])
+    except Exception as e:
+        print(f"[session-context] pending-review count failed (global): {e}", file=sys.stderr)
+
+    return total
+
+
 def _touch_accessed(client, ids):
     """Bump last_accessed_at via the same RPC server.py uses on recall.
 
@@ -605,6 +664,108 @@ def _fmt_goal(g):
     return (
         f"- [{g['priority']}] {g['title']} "
         f"(`{g['slug']}` | {scope} | {pct_str}{deadline}){tail}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Milestone-close detection for architecture sweep recommendation (issue #605)
+# ---------------------------------------------------------------------------
+
+# How far back (days) to consider a milestone "recently closed".
+try:
+    _MILESTONE_SWEEP_DAYS = int(os.environ.get("MILESTONE_SWEEP_DAYS", "7"))
+except (ValueError, TypeError):
+    _MILESTONE_SWEEP_DAYS = 7
+# Minimum closed issues to qualify as a "capability-shipping" milestone.
+try:
+    _MILESTONE_SWEEP_MIN_SLICES = int(os.environ.get("MILESTONE_SWEEP_MIN_SLICES", "3"))
+except (ValueError, TypeError):
+    _MILESTONE_SWEEP_MIN_SLICES = 3
+
+
+def _check_milestone_sweep(
+    repo: str | None = None,
+    days: int | None = None,
+    min_slices: int | None = None,
+    _now=None,
+) -> str | None:
+    """Check if any GitHub milestones were recently closed with enough slices
+    to warrant an architecture-sweep recommendation.
+
+    Returns a formatted hint string (e.g. "Milestone N closed M days ago —
+    run /improve-codebase-architecture") or None when no milestone qualifies.
+
+    Thresholds are configurable via env (MILESTONE_SWEEP_DAYS,
+    MILESTONE_SWEEP_MIN_SLICES) or overridden per-call.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    if repo is None:
+        return None
+
+    now = _now if _now is not None else datetime.now(timezone.utc)
+    window_days = days if days is not None else _MILESTONE_SWEEP_DAYS
+    min_count = min_slices if min_slices is not None else _MILESTONE_SWEEP_MIN_SLICES
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", f"repos/{repo}/milestones?state=closed&per_page=100"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    try:
+        milestones = json.loads(result.stdout)
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    if not isinstance(milestones, list):
+        return None
+
+    # Collect milestones qualifying for a sweep recommendation.
+    qualified: list[tuple[int, str, int, float]] = []
+    for m in milestones:
+        closed_at_str = m.get("closed_at")
+        closed_issues = m.get("closed_issues", 0)
+        if not closed_at_str or not isinstance(closed_issues, (int, float)):
+            continue
+        if closed_issues < min_count:
+            continue
+        try:
+            closed_at = datetime.fromisoformat(closed_at_str.replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        age_days = (now - closed_at).total_seconds() / 86400
+        if age_days > window_days:
+            continue
+        qualified.append((
+            m.get("number", 0),
+            m.get("title", f"Milestone #{m.get('number', '?')}"),
+            int(closed_issues),
+            age_days,
+        ))
+
+    if not qualified:
+        return None
+
+    # Sort by age (most recently closed first).
+    qualified.sort(key=lambda x: x[3])
+    lines: list[str] = []
+    for num, title, count, age in qualified:
+        age_str = f"{age:.0f}d"
+        lines.append(
+            f"- Milestone #{num} ({title}) closed {age_str} ago with "
+            f"{count} closed slice{'s' if count != 1 else ''} — "
+            f"consider `/improve-codebase-architecture`"
+        )
+    plural = "s" if len(qualified) > 1 else ""
+    return (
+        f"## Architecture Sweep{plural}\n"
+        f"{chr(10).join(lines)}"
     )
 
 

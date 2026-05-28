@@ -1,10 +1,13 @@
 <#
 .SYNOPSIS
     Register (or re-register) a Windows Task Scheduler entry for the sandcastle
-    AFK loop. Idempotent -- running again with the same -Repo replaces the
+    AFK loop or the quota probe. Idempotent -- running again replaces the
     existing entry.
 
 .DESCRIPTION
+    Two modes:
+
+    **Sandcastle mode** (default, requires -Repo):
     Slices #545 (jarvis) and #546 (redrobot). The task fires Run-Sandcastle.ps1
     nightly inside the chosen safe-hours window:
         jarvis   : 18:00 → soft-stop at 01:00  (7h)
@@ -14,11 +17,22 @@
     Tier 2-as-primary (#711) the local Ollama is bypassed in AFK runs, so the
     contention constraint no longer applies and the windows can grow.
 
+    **Quota-probe mode** (-QuotaProbe):
+    Registers Quota-Probe.ps1 as a recurring task every N minutes (default 30).
+    Polls Claude Max weekly usage and broadcasts pressure state. See issue #635.
+
     The script must run on the Workshop PC (decision 4890aa35 -- Workshop = prod,
     Main = dev/test bench). On other devices the script refuses unless -Force.
 
+.PARAMETER QuotaProbe
+    Register the quota-probe recurring task instead of a sandcastle loop.
+    Mutually exclusive with -Repo.
+
+.PARAMETER QuotaProbeInterval
+    Polling interval in minutes for quota-probe mode. Default 30.
+
 .PARAMETER Repo
-    Which sandcastle loop to wire up: jarvis or redrobot.
+    Which sandcastle loop to wire up: jarvis or redrobot. Ignored in quota-probe mode.
 
 .PARAMETER StartTime
     Override the default start time. Default per-repo:
@@ -68,10 +82,24 @@
 .EXAMPLE
     .\Register-SandcastleTask.ps1 -Repo redrobot -RepoRoot D:\Github\redrobot\redrobot
     # Registers Sandcastle-Redrobot daily at 01:00, soft-stop 08:00 (non-overlapping).
+
+.EXAMPLE
+    .\Register-SandcastleTask.ps1 -QuotaProbe
+    # Registers Quota-Probe polling every 30 minutes.
+
+.EXAMPLE
+    .\Register-SandcastleTask.ps1 -QuotaProbe -QuotaProbeInterval 15
+    # Registers Quota-Probe polling every 15 minutes.
 #>
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Sandcastle')]
 param(
-    [Parameter(Mandatory)]
+    [Parameter(ParameterSetName = 'QuotaProbe')]
+    [switch]$QuotaProbe,
+
+    [Parameter(ParameterSetName = 'QuotaProbe')]
+    [int]$QuotaProbeInterval = 30,
+
+    [Parameter(ParameterSetName = 'Sandcastle', Mandatory)]
     [ValidateSet('jarvis', 'redrobot')]
     [string]$Repo,
 
@@ -114,6 +142,111 @@ if (Test-Path $deviceJson) {
 
 if (-not $Force -and $currentDevice -ne $expectedDevice) {
     throw "Refusing to register on '$currentDevice' -- sandcastle production target is '$expectedDevice'. Pass -Force for dev rehearsal."
+}
+
+# Admin check up front -- Register-ScheduledTask with an S4U principal needs
+# elevation. If we don't check here, the idempotent "unregister existing first"
+# block below wipes the old task and then the Register call fails with
+# "Access is denied", leaving the device with NO task at all.
+$isAdmin = ([Security.Principal.WindowsPrincipal]([Security.Principal.WindowsIdentity]::GetCurrent())).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin -and -not $WhatIfOnly) {
+    throw "Register-SandcastleTask must run from an elevated PowerShell. Re-launch as Administrator and retry."
+}
+
+# ---------------------------------------------------------------------------
+# Quota-probe mode (#635)
+# ---------------------------------------------------------------------------
+
+if ($QuotaProbe) {
+    if (-not $QuotaProbeInterval -or $QuotaProbeInterval -lt 1) {
+        throw "QuotaProbeInterval must be >= 1."
+    }
+
+    $taskName = 'Quota-Probe'
+    $probeScript = Join-Path $PSScriptRoot 'Quota-Probe.ps1'
+    if (-not (Test-Path -LiteralPath $probeScript)) {
+        throw "Quota-Probe.ps1 not found at '$probeScript'."
+    }
+
+    # Working directory: the jarvis repo root (same discovery as sandcastle mode)
+    if (-not $RepoRoot) {
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+    }
+
+    $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+    $pwshExe = if ($pwshCmd) { $pwshCmd.Source } else { (Get-Command powershell -ErrorAction Stop).Source }
+
+    # Keep the cache TTL just over the probe interval so a probe is not served a
+    # stale cache from the previous run (m2: at -QuotaProbeInterval 15 the 35-min
+    # default meant nearly every run hit cache instead of re-probing).
+    $cacheTtl = $QuotaProbeInterval + 5
+
+    $probeQuoted = '"' + $probeScript + '"'
+    $argParts = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $probeQuoted,
+        '-CacheTTLMinutes', $cacheTtl
+    )
+
+    $action = New-ScheduledTaskAction -Execute $pwshExe `
+        -Argument ($argParts -join ' ') `
+        -WorkingDirectory $RepoRoot
+
+    # Daily trigger with repetition interval (runs every N minutes all day)
+    $startDt = (Get-Date).Date.AddMinutes(5)  # start 5 min past midnight
+    if ($startDt -lt (Get-Date)) { $startDt = $startDt.AddDays(1) }
+
+    # New-ScheduledTaskTriggerRepetition does not exist as a cmdlet on PS 5.1 / Win11
+    # (#792). The supported way to attach a repetition pattern is the -Once parameter
+    # set on New-ScheduledTaskTrigger, which builds the MSFT_TaskRepetitionPattern
+    # CIM instance internally.
+    #
+    # Duration cap: Task Scheduler XML rejects durations exceeding PT24H × 9999
+    # (P36500D = 100 years tripped this — Register-ScheduledTask error
+    # "(10,29):Duration:P36500D"). 9999 days (~27 years) is the documented max and
+    # is effectively indefinite for a self-retriggered task.
+    $trigger = New-ScheduledTaskTrigger -Once -At $startDt `
+        -RepetitionInterval ([timespan]::FromMinutes($QuotaProbeInterval)) `
+        -RepetitionDuration ([timespan]::FromDays(9999))
+
+    # S4U: run whether or not the user is logged on, and fire even when the screen
+    # is locked (m1: LogonType Interactive skips the run on a locked workstation).
+    $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U -RunLevel Limited
+
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit ([timespan]::FromMinutes(15))
+
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+
+    if ($WhatIfOnly) {
+        Write-Host "[whatif] Would register task '$taskName'"
+        Write-Host "         Execute   : $pwshExe"
+        Write-Host "         Arguments : $($argParts -join ' ')"
+        Write-Host "         WorkingDir: $RepoRoot"
+        Write-Host "         Interval  : Every ${QuotaProbeInterval}min"
+        Write-Host "         Existing  : $(if ($existing) { 'YES (would be replaced)' } else { 'no' })"
+        return
+    }
+
+    if ($existing) {
+        Write-Host "[register] Unregistering existing '$taskName' (idempotent)"
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    }
+
+    Register-ScheduledTask -TaskName $taskName `
+        -Action $action -Trigger $trigger `
+        -Principal $principal -Settings $settings `
+        -Description "Quota pressure probe every ${QuotaProbeInterval}min. Issue #635." | Out-Null
+
+    Write-Host "[register] '$taskName' scheduled every ${QuotaProbeInterval}min."
+    Write-Host "           Inspect: Get-ScheduledTask -TaskName '$taskName'"
+    Write-Host "           Trigger now: Start-ScheduledTask -TaskName '$taskName'"
+    return
 }
 
 # ---------------------------------------------------------------------------

@@ -42,7 +42,7 @@ gh pr list --repo {{repo}} --state open
 - Triage issues: relabel, reprioritize, close duplicates (up to 3)
 - Implement small fixes directly (< 50 lines)
 - Create PRs for your changes
-- Merge PRs after Copilot review passes (no blockers)
+- Merge PRs after the Claude code-review comment is checked and addressed (no blockers)
 - Update project memory: `memory_store(project="{{project_key}}", ...)`
 
 ### Delegate to Coding Agents:
@@ -60,7 +60,7 @@ You can launch multiple coding agents in parallel if tasks are independent.
 
 ### Report (MUST do at end):
 
-Save a structured report to memory. This format is machine-readable — Jarvis and autonomous-loop parse it.
+Save a structured report to memory. This format is machine-readable — Jarvis (and the future reactive-core orchestrator) parse it. (Pre-2026-05-26 also consumed by `/autonomous-loop`, now superseded.)
 
 ```
 memory_store(

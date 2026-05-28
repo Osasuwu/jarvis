@@ -20,11 +20,12 @@ Only jarvis-project-specific Claude Code config:
   here if jarvis ever needs them. The federation-wide hooks live in
   `~/.claude/settings.json` (installed from `.claude-userlevel/settings.json`).
 
-Everything else (the 11 core skills — `implement`, `delegate`, `verify`,
+Everything else (the core skills — `implement`, `delegate`, `verify`,
 `status`, `reflect`, `end` (with `--quick`), `research`, `goals`,
-`self-improve`, `setup-tasks`, `autonomous-loop` — plus SOUL.md and
-`.mcp.json`) was removed in M5 (#340). They're still available in every
-session, just from `~/.claude/` now.
+`self-improve`, `setup-tasks` — plus SOUL.md and `.mcp.json`) was removed
+in M5 (#340). They're still available in every session, just from
+`~/.claude/` now. (`autonomous-loop` skill file is retained but SUPERSEDED
+2026-05-26 — pre-M44 baseline only, do not invoke for new flows.)
 
 ## Where to look next
 

@@ -77,7 +77,7 @@ DEFAULT_TIMEOUT = 15.0
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 1200
-MAX_CONTENT_CHARS = 700     # truncate each memory body before sending
+MAX_CONTENT_CHARS = 700  # truncate each memory body before sending
 MAX_NEIGHBORS_PER_UPDATE = 8  # hard cap to bound Haiku cost per UPDATE
 
 VALID_ACTIONS = ("KEEP", "UPDATE_TAGS", "UPDATE_DESC", "UPDATE_BOTH")
@@ -210,8 +210,7 @@ def _fetch_seen_update_ids(client, update_queue_ids: list[str]) -> set[str]:
         # Dedup is an optimization. Fail open so a transient DB blip
         # doesn't stop planning — at worst we re-plan an already-evolved
         # UPDATE, which is wasteful but not incorrect.
-        print(f"! evolution dedup lookup failed ({e}); proceeding without dedup",
-              file=sys.stderr)
+        print(f"! evolution dedup lookup failed ({e}); proceeding without dedup", file=sys.stderr)
         return set()
     wanted = set(update_queue_ids)
     seen: set[str] = set()
@@ -247,6 +246,11 @@ def fetch_neighbors(client, target_id: str) -> list[dict]:
                 "memory_ids": [target_id],
                 "link_types": None,
                 "show_history": False,
+                # evolve operates on the unreviewed candidate layer by design —
+                # if a candidate's 1-hop neighbors are also pending review, we
+                # still need them in the evolution prompt. Without this the
+                # always-gate silently drops the very rows we're evolving.
+                "include_unreviewed": True,
             },
         ).execute()
     except Exception as e:
@@ -386,9 +390,7 @@ def _parse_response(text: str, neighbor_ids: set[str]) -> list[dict] | None:
                 "neighbor_id": nid,
                 "action": action,
                 "new_tags": new_tags if action in ("UPDATE_TAGS", "UPDATE_BOTH") else None,
-                "new_description": new_desc
-                if action in ("UPDATE_DESC", "UPDATE_BOTH")
-                else None,
+                "new_description": new_desc if action in ("UPDATE_DESC", "UPDATE_BOTH") else None,
                 "confidence": round(confidence, 3),
                 "reasoning": reasoning,
             }
@@ -547,9 +549,7 @@ def render_markdown(results: list[dict], *, model: str, limit: int) -> str:
                 .replace("\n", " ")
                 .replace("|", "\\|")
             )
-            lines.append(
-                f"| `{name}` | **{p['action']}** | {p['confidence']:.2f} | {reasoning} |"
-            )
+            lines.append(f"| `{name}` | **{p['action']}** | {p['confidence']:.2f} | {reasoning} |")
         lines.append("")
         # Detail block for non-KEEP proposals
         actionable = [p for p in r["proposals"] if p["action"] != "KEEP"]
@@ -673,9 +673,7 @@ def _build_rpc_plan(result: dict, source_provenance: str) -> dict:
     }
 
 
-def apply_plan_to_db(
-    client, result: dict, *, today: str, model: str
-) -> dict:
+def apply_plan_to_db(client, result: dict, *, today: str, model: str) -> dict:
     """Call apply_evolution_plan RPC + write auto_applied queue row.
 
     Transactional inside the RPC: if the queue insert fails, the neighbor
@@ -712,9 +710,7 @@ def apply_plan_to_db(
     }
 
 
-def queue_for_review(
-    client, result: dict, *, today: str, model: str
-) -> dict:
+def queue_for_review(client, result: dict, *, today: str, model: str) -> dict:
     """Route a low-confidence plan to the review queue.
 
     Mirrors `queue_for_review` in consolidation-merge-plan.py: direct
@@ -758,9 +754,7 @@ def queue_for_review(
             f"Queue insert for UPDATE {result['queue_id']} (EVOLVE) failed: {e}"
         ) from e
     if not queue_id:
-        raise RuntimeError(
-            f"Queue insert for UPDATE {result['queue_id']} (EVOLVE) returned no id"
-        )
+        raise RuntimeError(f"Queue insert for UPDATE {result['queue_id']} (EVOLVE) returned no id")
     return {
         "update_queue_id": result["queue_id"],
         "queue_id": queue_id,
@@ -769,9 +763,7 @@ def queue_for_review(
     }
 
 
-def apply_or_queue(
-    client, results: list[dict], *, model: str, gate: float
-) -> list[dict]:
+def apply_or_queue(client, results: list[dict], *, model: str, gate: float) -> list[dict]:
     """Route each result to apply / queue / skip based on confidence gate.
 
     Returns a list of outcome dicts (one per input result).
@@ -781,11 +773,13 @@ def apply_or_queue(
     for r in results:
         actionable = _actionable_proposals(r["proposals"])
         if not actionable:
-            outcomes.append({
-                "update_queue_id": r["queue_id"],
-                "status": "skipped_all_keep",
-                "applied_count": 0,
-            })
+            outcomes.append(
+                {
+                    "update_queue_id": r["queue_id"],
+                    "status": "skipped_all_keep",
+                    "applied_count": 0,
+                }
+            )
             continue
         min_conf = _plan_min_confidence(actionable)
         try:
@@ -800,12 +794,14 @@ def apply_or_queue(
                 f"! apply/queue failed for UPDATE {r['queue_id']}: {e}",
                 file=sys.stderr,
             )
-            outcomes.append({
-                "update_queue_id": r["queue_id"],
-                "status": "error",
-                "error": str(e),
-                "applied_count": 0,
-            })
+            outcomes.append(
+                {
+                    "update_queue_id": r["queue_id"],
+                    "status": "error",
+                    "error": str(e),
+                    "applied_count": 0,
+                }
+            )
             continue
         outcome["min_confidence"] = min_conf
         outcomes.append(outcome)
@@ -855,7 +851,7 @@ def main() -> int:
         "--apply",
         action="store_true",
         help="Phase 5.2-β: persist high-confidence plans via apply_evolution_plan RPC + "
-             "queue low-confidence ones. Off by default — dry-run only.",
+        "queue low-confidence ones. Off by default — dry-run only.",
     )
     p.add_argument(
         "--confidence-gate",
@@ -873,7 +869,10 @@ def main() -> int:
     # which the #542 RLS gate rejects for anon. See mcp-memory/client.py.
     sb_key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
     if not sb_url or not sb_key:
-        print("SUPABASE_URL / SUPABASE_KEY (or SUPABASE_SERVICE_KEY) missing from env", file=sys.stderr)
+        print(
+            "SUPABASE_URL / SUPABASE_KEY (or SUPABASE_SERVICE_KEY) missing from env",
+            file=sys.stderr,
+        )
         return 2
     # ANTHROPIC_API_KEY is NOT a hard requirement: call_haiku() falls back to
     # a KEEP-only plan when the key is absent, matching the documented fallback
@@ -910,16 +909,14 @@ def main() -> int:
             print(render_markdown([], model=args.model, limit=args.limit))
         return 0
 
-    print(f"Planning evolution for {len(updates)} UPDATE(s) with {args.model}...",
-          file=sys.stderr)
+    print(f"Planning evolution for {len(updates)} UPDATE(s) with {args.model}...", file=sys.stderr)
 
     results: list[dict] = []
     for i, row in enumerate(updates, 1):
         cand = fetch_memory(client, row["candidate_id"])
         tgt = fetch_memory(client, row["target_id"])
         if not cand or not tgt:
-            print(f"  [{i}/{len(updates)}] skipped: missing candidate/target rows",
-                  file=sys.stderr)
+            print(f"  [{i}/{len(updates)}] skipped: missing candidate/target rows", file=sys.stderr)
             continue
         neighbors = fetch_neighbors(client, row["target_id"])[:MAX_NEIGHBORS_PER_UPDATE]
         print(
@@ -927,9 +924,7 @@ def main() -> int:
             f"({len(neighbors)} neighbors)...",
             file=sys.stderr,
         )
-        proposals = call_haiku(
-            tgt, cand, neighbors, model=args.model, timeout=args.timeout
-        )
+        proposals = call_haiku(tgt, cand, neighbors, model=args.model, timeout=args.timeout)
         results.append(
             {
                 "queue_id": row["id"],

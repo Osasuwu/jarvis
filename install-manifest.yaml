@@ -105,8 +105,10 @@ groups:
           - "goals"
           - "implement"
           - "last-work-report"
+          - "learn"
           - "reflect"
           - "research"
+          - "rework"
           - "self-improve"
           - "setup-tasks"
           - "status-record"
@@ -114,6 +116,7 @@ groups:
           # AI Hero skills (Matt Pocock — github.com/mattpocock/skills, MIT).
           # See .claude-userlevel/skills/AIHERO_CREDIT.md for attribution + adaptations.
           - "caveman"
+          - "curate"
           - "diagnose"
           - "grill"
           - "improve-codebase-architecture"

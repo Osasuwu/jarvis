@@ -69,6 +69,7 @@ Jarvis covers the work of an entire software development team, leaving the princ
 - Impersonating the principal — Jarvis drafts; principal sends
 - Telegram as a primary interface (chat-only role at most, see L1)
 - Designing for other developers / multi-tenancy (separate project)
+- Persistent always-on process — Jarvis operates via event-woken cold boot, not a resident daemon. Persistent BEHAVIOR ≠ persistent PROCESS (resolved 2026-05-20 — see `pm_dispatch_v1_superseded_by_persistent_agents`).
 
 **Future feature backlog** (1.x, not separately versioned): TTS/STT, broader personal-data access, cross-platform search/curation, personal-life management, open-source framework split. Captured in memory + GitHub issues, surfaced via 1.x release planning when each becomes ready. Not "v3" — semver discipline reserves v2 for cardinal paradigm shifts.
 

@@ -172,6 +172,8 @@ from handlers.memory import (  # noqa: E402, F401
     _handle_list,
     _handle_delete,
     _handle_restore,
+    _handle_memory_mark_stale,
+    _handle_memory_unmark_stale,
     _handle_graph,
     _hybrid_recall,
     _keyword_recall,
@@ -220,6 +222,10 @@ from handlers.memory import (  # noqa: E402, F401
 from handlers.events import (  # noqa: E402, F401
     _handle_events_list,
     _handle_events_mark_processed,
+    _handle_event_claim_next,
+    _handle_event_mark_processed,
+    _handle_event_park,
+    _handle_event_requeue,
 )
 from handlers.outcome import (  # noqa: E402, F401
     _handle_outcome_record,
@@ -265,6 +271,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return await _handle_delete(arguments)
         elif name == "memory_restore":
             return await _handle_restore(arguments)
+        elif name == "memory_mark_stale":
+            return await _handle_memory_mark_stale(arguments)
+        elif name == "memory_unmark_stale":
+            return await _handle_memory_unmark_stale(arguments)
         # Graph tools
         elif name == "memory_graph":
             return _big_result(await _handle_graph(arguments))
@@ -293,6 +303,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             return _big_result(await _handle_events_list(arguments))
         elif name == "events_mark_processed":
             return await _handle_events_mark_processed(arguments)
+        # Event queue FSM tools (#739)
+        elif name == "event_claim_next":
+            return await _handle_event_claim_next(arguments)
+        elif name == "event_mark_processed_fsm":
+            return await _handle_event_mark_processed(arguments)
+        elif name == "event_park":
+            return await _handle_event_park(arguments)
+        elif name == "event_requeue":
+            return await _handle_event_requeue(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
     except Exception as exc:

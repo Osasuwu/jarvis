@@ -46,7 +46,7 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 ## Project-specific rules
 
-- **Only justified Python: `mcp-memory/server.py`**. Everything else is Claude Code native — check skills, MCP, hooks, subagents before writing Python.
+- **Native-first priority, not a ban.** Before writing a custom script/service (any language), check skills/MCP/hooks/subagents first; if native covers it cleanly, use native. Custom code is permitted on merit — when the native solution is awkward or incomplete. (Relaxed 2026-05-20 from the prior near-prohibition; decision `d9be0390`.) Existing justified custom code: `mcp-memory/server.py`, `src/risk_radar.py`.
 - **Check native capabilities first**: Telegram → Channels; scheduling → `/loop` or scheduled tasks; background → desktop agents.
 - **Cross-project impact**: `mcp-memory/server.py`, `.mcp.json`, and Supabase schema are shared with redrobot. Changes here can break redrobot.
 - **MCP config portability**: `.mcp.json` must work on all 3 devices. No hardcoded usernames/absolute paths/device-specific values. Use relative paths or env vars.
@@ -86,15 +86,18 @@ Use skills — don't reinvent with raw tools.
 | "исследуй", "research", "сравни" | `/research` |
 | "улучши себя", self-improvement | `/self-improve` |
 | "цели", "приоритеты" | `/goals` |
-| New device bootstrap, "scheduled tasks setup" | `/setup-tasks` |
-| Daily scheduled tick, "запусти автономный цикл" | `/autonomous-loop` |
+| New device bootstrap, "scheduled tasks setup" | `/setup-tasks` (Workshop-only as of 2026-05-26 per `1b7ff8d1`; refuses on other devices, offers `--cleanup` for legacy entries) |
+| ~~Daily scheduled tick~~ | ~~`/autonomous-loop`~~ — **SUPERSEDED**, pre-M44 catch-up baseline only. **Do not invoke for new flows.** No live cron registration since Medium-scope cleanup 2026-05-26. Will be deleted when reactive-core M44 (`wake_driver` + `orchestrator`) ships. |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Vague intuition (no written plan yet) / "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт"; subsumes /research for in-debate factual grounding | `/reason` |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
 | Conversation context → PRD on issue tracker | `/to-prd` |
 | Plan / PRD → vertical-slice issues | `/to-issues` |
 | "diagnose this", bug repro, perf regression | `/diagnose` |
+| PR rework needed / negative review received | `/rework` (skips grill-me checkbox; reactive TDD per CRITICAL finding, MAJOR fixes, loop-stop guard policy) |
 | "improve architecture", find shallow modules, refactoring opportunities | `/improve-codebase-architecture` |
+| "почисти память", "memory hygiene", /curate, after 2+ recall complaints | `/curate` (owner-invoked weekly; M45 S3 — host-only, deterministic surfacer, per-row owner confirm) |
+| "review memories", "drain queue", "проверь кандидаты", weekly memory-review, volume-event fire, /learn --status | `/learn` (M42 always-gate review surface; drains classifier + Deriver/Dreamer queues, hard cap 20, idempotent, no defer/accept_all) |
 | "last sprint report", "what did we ship", "milestone closeout", pre-sweep brief | `/last-work-report` (skeleton — #606) |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
@@ -108,6 +111,20 @@ Rules:
 - **`/reason` (optional, intuition-stage) → `/grill` → `/to-prd` → `/to-issues` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 
+### Responsibility split — interactive · `/delegate` · reactive-core orchestrator
+
+Three places work can land. Pick by **who's present** and **how the work was triggered**, not by what the work is.
+
+- **Interactive `/implement` (you, in this session).** Owner is present. One issue, judgment-heavy, working through together. Full SOUL loaded. SOUL.md grill-checkbox is the in-skill backstop for AFK-readiness.
+- **`/delegate` (you, dispatching subagents).** Owner is present and chose to fan out. Multiple AFK-eligible issues → parallel sandcastle subagents. The pre-dispatch gate (CONTEXT.md → *Pre-dispatch gate*) refuses dispatch if the `sandcastle` label, AC, decision-UUID, or a `needs-*` blocker is missing. `/delegate` is **not** the orchestrator — it's operator-driven parallel dispatch.
+- **Reactive-core orchestrator (M44, no operator).** Events arrive (`ci_failure`, `review_negative`, `quota_pressure`, etc.) → `wake_driver` `LISTEN/NOTIFY` cold-boots the orchestrator → it triages **one** event with **three dispositions**: (1) one-shot inline tool call, (2) emit a `task_queue` row → `executor.spawn(task)` runs `claude -p` in sandcastle, (3) enqueue a cloud decision-task. After spawn, the loop is closed by **external GitHub workflows** (Path A — open → CI → review → automerge → rework → escalate, results re-enter as fresh events), not by internal code.
+
+Boundaries:
+
+- **Orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-issues`'s checklist applies regardless of who emits the task. An AFK-unsafe TASK row gets routed for owner attention (no auto-spawn), same as the `status:owner-queue` landing zone for `/delegate` refuses.
+- **The orchestrator is a router, not the principal.** It runs routing-policy only (no full SOUL load). Full SOUL is for interactive `/implement` and for the `claude -p` subagents the executor spawns — both are the principal in their lane (CONTEXT.md → *SOUL is shared across interactive + autonomous lanes*).
+- **`/autonomous-loop` (SUPERSEDED 2026-05-26)** — cron entry removed from `setup-tasks` bootstrap; existing cron jobs on each device must be unregistered manually. The skill file is retained as an opt-in pre-M44 catch-up baseline ONLY. **Do not invoke for new flows; do not reference it in routing as if alive.** New AFK paths route through events + reactive-core orchestrator (M44). When M44 ships, the skill itself is deleted.
+
 ## Autonomous work
 
 User often leaves Jarvis to work alone. Core loop comes from §Engineering posture above (recall before action, verify before assuming implemented) + SOUL §Personality (quality over speed) + SOUL §Goal awareness. "Aligned plans = standing orders" — when a multi-step plan was discussed and signed off, the alignment IS the approval; don't re-confirm at each checkpoint.
@@ -119,9 +136,10 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 - Branches from `main`. **PRs are for code, not for discussions.**
   - Code change → one issue, one PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
   - Hotfix → label `priority:critical` (PR Body Check honors the label per #424; no linked issue required); commit-msg uses `[no-issue]` when there's no parent issue (per `.pre-commit-config.yaml` regex from #329).
+  - Refactor → PR title with conventional-commit prefix `refactor:` / `refactor(scope):` auto-bypasses the PR Body Check linked-issue requirement (structural cleanup rarely has a parent issue; `[no-issue]` marker still works but isn't required).
   - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
-- Check GitHub Copilot auto-review before merging.
+- Check the Claude code-review comment before merging (forked `code-review` plugin via `code-review.yml`). Copilot is no longer used — the plan lapsed and Claude review supersedes it (decision 2026-05-22). Still check ALL reviewers, not just one (the Claude bot posts as an issue-comment, not a PR review).
 
 ### Architecture sweep at milestone close
 

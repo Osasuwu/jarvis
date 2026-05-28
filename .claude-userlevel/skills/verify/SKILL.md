@@ -10,8 +10,8 @@ Closes the outcome tracking loop: did the work actually land?
 ## When to use
 
 - After delegations have had time to merge
-- As part of autonomous-loop (scheduled)
 - Manual: `/verify` to check all pending outcomes
+- (Pre-2026-05-26: scheduled inside `/autonomous-loop` — superseded.)
 
 ## Step 1 — Fetch pending outcomes
 

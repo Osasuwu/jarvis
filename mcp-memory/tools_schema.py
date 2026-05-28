@@ -261,6 +261,17 @@ def tool_definitions() -> list[Tool]:
                         ),
                         "default": False,
                     },
+                    "include_unreviewed": {
+                        "type": "boolean",
+                        "description": (
+                            "Include `requires_review=true` rows (Deriver/Dreamer "
+                            "candidates pending owner review). Default false — the "
+                            "always-gate (#552) hides them from production recall. "
+                            "Opt-in for the eval harness and `/learn --status`; "
+                            "merge-proposal rows are filtered regardless."
+                        ),
+                        "default": False,
+                    },
                     "brief": {
                         "type": "boolean",
                         "description": (
@@ -349,6 +360,64 @@ def tool_definitions() -> list[Tool]:
                 "required": ["name"],
             },
         ),
+        Tool(
+            name="memory_mark_stale",
+            description=(
+                "Hygiene: mark a memory as stale. Host-only (anon/sandcastle refused). "
+                "With successor_uuid → stores the UUID in superseded_by; the recall "
+                "pipeline filters superseded rows and follows links to the successor. "
+                "Without → sets expired_at (belief is wrong/outdated, no replacement). "
+                "Use /curate skill for owner-invoked weekly hygiene passes; not for "
+                "autonomous calls."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Memory name to mark stale",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope. null/global = cross-project.",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why this memory is stale (audit + outcome trail)",
+                    },
+                    "successor_uuid": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Optional UUID of the replacement memory. If provided, "
+                            "sets superseded_by (NOT expired_at) so recall can walk "
+                            "the chain to the successor."
+                        ),
+                    },
+                },
+                "required": ["name", "reason"],
+            },
+        ),
+        Tool(
+            name="memory_unmark_stale",
+            description=(
+                "Hygiene inverse: revive a memory by clearing BOTH expired_at and "
+                "superseded_by. Host-only. Used when /curate marked the wrong row."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Memory name to revive",
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Project scope. null/global = cross-project.",
+                    },
+                },
+                "required": ["name"],
+            },
+        ),
         # ---- Event tools ----
         Tool(
             name="events_list",
@@ -408,6 +477,91 @@ def tool_definitions() -> list[Tool]:
                     },
                 },
                 "required": ["event_ids", "processed_by"],
+            },
+        ),
+        # ---- Event queue FSM tools (#739) ----
+        Tool(
+            name="event_claim_next",
+            description=(
+                "Claim the highest-priority pending event for processing. "
+                "Atomically transitions a 'pending' event to 'claimed' and returns it."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "claimer": {
+                        "type": "string",
+                        "description": "Who is claiming the event (e.g. 'orchestrator', 'wake_driver')",
+                    },
+                },
+                "required": ["claimer"],
+            },
+        ),
+        Tool(
+            name="event_mark_processed_fsm",
+            description=(
+                "Transition a claimed event to 'processed' via the event queue FSM. "
+                "Returns error if event is not in 'claimed' state."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "UUID of the event to mark as processed",
+                    },
+                    "processor": {
+                        "type": "string",
+                        "description": "Who processed it (e.g. 'orchestrator', 'wake_driver')",
+                    },
+                    "action_taken": {
+                        "type": "string",
+                        "description": "What was done in response",
+                    },
+                },
+                "required": ["event_id", "processor"],
+            },
+        ),
+        Tool(
+            name="event_park",
+            description=(
+                "Park a claimed event that is blocked on a dependency. "
+                "Transitions 'claimed' → 'parked'."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "UUID of the event to park",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why the event is being parked",
+                    },
+                },
+                "required": ["event_id"],
+            },
+        ),
+        Tool(
+            name="event_requeue",
+            description=(
+                "Re-queue a parked or claimed event back to 'pending'. "
+                "Use when a blocked dependency resolves or a claim times out."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "event_id": {
+                        "type": "string",
+                        "description": "UUID of the event to requeue",
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "Why the event is being requeued",
+                    },
+                },
+                "required": ["event_id"],
             },
         ),
         # ---- Outcome tracking tools (Pillar 3) ----

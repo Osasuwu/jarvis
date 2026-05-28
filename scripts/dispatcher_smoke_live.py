@@ -21,6 +21,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from agents.scope_hash import _hash_scope_files
+
 STATE_FILE = Path(__file__).parent / ".dispatcher_smoke_state.json"
 MARKER_DIR = Path(__file__).parent / ".smoke-markers"
 
@@ -46,7 +48,7 @@ def seed() -> int:
     )
 
     scope_files: list[str] = []
-    scope_hash = hashlib.sha256("\n".join(sorted(scope_files)).encode("utf-8")).hexdigest()
+    scope_hash = _hash_scope_files(scope_files)
     idem_key = hashlib.sha256(f"dispatcher-smoke-live-{marker}".encode("utf-8")).hexdigest()
 
     cli = get_client()

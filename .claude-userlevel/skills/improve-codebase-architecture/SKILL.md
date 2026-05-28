@@ -1,6 +1,8 @@
 ---
 name: improve-codebase-architecture
 description: Find deepening opportunities in a codebase, informed by the domain language in CONTEXT.md and the decisions in docs/adr/. Use when the user wants to improve architecture, find refactoring opportunities, consolidate tightly-coupled modules, or make a codebase more testable and AI-navigable.
+model: opus
+effort: xhigh
 ---
 
 # Improve Codebase Architecture
@@ -62,6 +64,12 @@ Do NOT propose interfaces yet. Ask the user: "Which of these would you like to e
 ### 3. Grilling loop
 
 Once the user picks a candidate, drop into a grilling conversation. Walk the design tree with them — constraints, dependencies, the shape of the deepened module, what sits behind the seam, what tests survive.
+
+**Before creating any child issues** from a deepening opportunity, load and execute the research-pass gate:
+
+**Procedural source: [`../_shared/research-pass-gate.md`](../_shared/research-pass-gate.md).**
+
+This gate is **unconditional** — publishing child issues always requires a research artifact. If the gate blocks, do not create the child issue; propose `/research` on the topic first.
 
 Side effects happen inline as decisions crystallize:
 

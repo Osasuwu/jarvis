@@ -42,7 +42,7 @@ Installed to `~/.claude/` by `scripts/install/installer.py` (entry points `insta
 | Component | Source in repo | Installed to | Purpose |
 |-----------|----------------|--------------|---------|
 | Identity | `config/SOUL.md` | `~/.claude/SOUL.md` | Personality, tone, behavior rules (loaded by SessionStart) |
-| Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` | 11 core slash commands: `implement`, `delegate`, `verify`, `status`, `reflect`, `end` (with `--quick` flag), `research`, `goals`, `self-improve`, `setup-tasks`, `autonomous-loop` |
+| Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` | Core slash commands: `implement`, `delegate`, `verify`, `status`, `reflect`, `end` (with `--quick` flag), `research`, `goals`, `self-improve`, `setup-tasks`. (`autonomous-loop` retained on disk but SUPERSEDED 2026-05-26 — do not invoke for new flows.) |
 | Hooks | `.claude-userlevel/settings.json` | `~/.claude/settings.json` (deep-merged) | SessionStart, PreCompact, PreToolUse secret/dedup/protected-file scans, UserPromptSubmit memory recall |
 | MCP servers | `.claude-userlevel/.mcp.json` | `~/.claude/.mcp.json` (deep-merged) | memory, github, context7, etc. |
 | Version pin | — | `~/.claude/.jarvis-version` | Current applied jarvis SHA (for no-op detection) |
@@ -139,7 +139,7 @@ Universal skills live at `~/.claude/skills/` (source of truth: `.claude-userleve
 | `/goals` | View / set / update strategic goals |
 | `/self-improve` | Health check + gap analysis + auto-apply low-risk fixes |
 | `/setup-tasks` | Bootstrap scheduled tasks on a new device (idempotent) |
-| `/autonomous-loop` | Perceive → evaluate → decide → act (daily scheduled or manual) |
+| ~~`/autonomous-loop`~~ | **SUPERSEDED 2026-05-26.** No live cron. Retained as opt-in pre-M44 catch-up only; will be deleted when reactive-core M44 ships. |
 
 Project-specific skills stay under `<project>/.claude/skills/`. In this repo the only one is `/sprint-report` (redrobot release flow).
 
@@ -172,7 +172,7 @@ jarvis/
 ├── config/
 │   ├── SOUL.md              ← Jarvis personality (canonical; installed to ~/.claude/SOUL.md)
 │   ├── SETUP.md             ← First-time device setup
-│   └── repos.conf           ← Repos scanned by risk-radar / autonomous-loop
+│   └── repos.conf           ← Repos scanned by risk-radar (and historically by autonomous-loop, superseded)
 ├── .claude-userlevel/       ← SOURCE OF TRUTH for user-level install
 │   ├── settings.json        ← Hooks (installed to ~/.claude/settings.json)
 │   ├── .mcp.json            ← MCP servers (installed to ~/.claude/.mcp.json)

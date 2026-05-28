@@ -57,14 +57,20 @@ DEFAULT_LIMIT = 20
 
 
 def fetch_pending_events(client, min_severity: str, limit: int) -> list[dict]:
-    """Pending (unprocessed) events at or above `min_severity`, newest first."""
+    """Pending (unprocessed) events at or above `min_severity`, newest first.
+
+    Filters on the FSM ``state='pending'`` column (#739), not the legacy
+    ``processed`` flag. ``claim_next`` flips state to ``'claimed'`` while
+    leaving ``processed=false`` until ``mark_processed`` runs; filtering on
+    the flag would re-notify events the orchestrator already picked up.
+    """
     idx = SEVERITIES.index(min_severity)
     allowed = list(SEVERITIES[: idx + 1])
 
     result = (
         client.table("events")
         .select("id, event_type, severity, repo, source, title, payload, created_at")
-        .eq("processed", False)
+        .eq("state", "pending")
         .in_("severity", allowed)
         .order("created_at", desc=True)
         .limit(limit)

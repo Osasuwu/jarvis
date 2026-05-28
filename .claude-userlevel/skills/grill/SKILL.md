@@ -1,6 +1,8 @@
 ---
 name: grill
 description: Grilling session that challenges your plan against the existing domain model, sharpens terminology, and updates documentation (CONTEXT.md, ADRs) inline as decisions crystallise. Use when user wants to stress-test a plan against their project's language and documented decisions.
+model: opus
+effort: xhigh
 ---
 
 <what-to-do>
@@ -33,36 +35,90 @@ If a question can be answered by exploring the codebase, explore the codebase in
 
 **Anti-sycophancy note** (decision 316c5911-9f06-44de-8f99-20fe3e9fa448): This third-person reviewer framing (based on arxiv 2505.23840) reduces agreement-bias in LLM responses to user proposals by ~64% in multi-turn dialogues. The goal is crisp pushback, not reflexive agreement.
 
-### Phase 3: Cross-context review (CRITIC subagent)
+### Research-pass gate (precondition to Phase 3)
 
-Single-agent self-critique grades its own exam. Personalisation measurably increases sycophancy (MIT 2026, ICLR 2026). Phase 3 dispatches a sibling subagent — operating as a **role-isolated critic** without SOUL.md, always_load memory, or project calibration in its prompt — to critique the proposal cold. The prompt template lives in [CRITIC.md](./CRITIC.md) and is pasted verbatim into the subagent dispatch.
+Before entering the CRITIC subagent phase, check whether a recent 4-channel
+research artifact exists for the current topic. The gate fires only for
+**high-stakes** decisions — those whose `reversibility` is `{hard, irreversible}`
+OR `confidence < 0.7`.
 
-#### Triggers — exactly two
+**Procedural source: [`../_shared/research-pass-gate.md`](../_shared/research-pass-gate.md).**
 
-CRITIC runs when **either** of these fires (decision c29c2b00-e9e1-43d1-93ff-ada5820c434c):
+Load and execute the procedure there. If the gate blocks:
+- Propose running `/research` on the current topic first
+- Do not proceed to Phase 3 until research completes or owner explicitly waives
+
+Low-stakes decisions (reversible AND confidence >= 0.7) skip this gate entirely.
+
+### Phase 3: Cross-context review (CRITIC subagents)
+
+Single-agent self-critique grades its own exam. Personalisation measurably increases sycophancy (MIT 2026, ICLR 2026); same-session self-review has a 64.5% blind-spot rate across 14 models (arXiv 2506.04907); fresh-context review measurably beats same-session (CCR F1 28.6 vs 24.6, arXiv 2603.12123). Phase 3 dispatches sibling subagent(s) — each operating as a **role-isolated critic** without SOUL.md, always_load memory, or project calibration in its prompt — to critique the proposal cold.
+
+Two tiers exist; they target different blind-spot classes and may both run on the same AC-lock:
+
+- **Sampling tier** — narrative critique with a fixed ceiling (≤3 risks + ≤3 alternatives + 1 assumption). Catches obvious load-bearing risks the proposer fluffed. Template: [`CRITIC.md`](./CRITIC.md).
+- **Coverage tier** — Cartesian guideword sweep with mandatory per-cell disposition (SHARD data-flow guidewords × every node, STPA UCA decision guidewords × every node, Key Assumptions Check, Premortem inversion). Catches the systematic blind spots that proposer and reviewer share by virtue of co-occupying the frame. Template: [`CRITIC-COVERAGE.md`](./CRITIC-COVERAGE.md). Rationale and research basis in that file.
+
+When both tiers fire on the same AC-lock, dispatch in **parallel** (independent subagents, no debate chain — debate ≤ majority vote in expectation per arXiv 2508.17536, and conformity degrades correct answers per arXiv 2509.05396).
+
+#### Triggers
+
+**Sampling tier (CRITIC.md) — exactly two** (decision c29c2b00-e9e1-43d1-93ff-ada5820c434c):
 
 1. **AC-lock gate** — immediately before the grill session would commit acceptance criteria to the issue body / CONTEXT.md / record_decision chain. This is the highest-leverage gate; most critique value lands here.
 2. **`record_decision` with `reversibility ∈ {hard, irreversible}`** — every hard or irreversible decision the grill is about to emit. Catches architectural calls the AC-lock gate alone would miss when the decision precedes AC formation.
 
 WHY→HOW and HOW→AC mid-session checkpoints were considered and **rejected as ceremony** in the same decision — they add critique cost without distinct leverage past the two triggers above. Do not add them as triggers.
 
+**Coverage tier (CRITIC-COVERAGE.md) — fires in addition when BOTH hold** (decision 44a72728-b622-42e3-b7b9-3a52b268b4ba):
+
+1. **≥2 grill-checkbox yes** — the SOUL.md `/grill` trigger checkbox (user-visible behavior / domain logic / non-trivial tests / crosses non-trivial code) has at least two boxes checked.
+2. **Milestone-level** — the design under critique is a milestone PRD or equivalent grouping of slices, not an individual slice. Per CLAUDE.md milestone-vs-slice hygiene.
+
+Single-axis touch or lone slices ⇒ sampling tier only. Owner may invoke coverage tier explicitly ("coverage critic" / "deep critic") on any AC-lock but MAY NOT skip it when the trigger fires — that's exactly the same-frame rationalization the coverage tier exists to break.
+
 #### Context scrubbing — behavioural, not structural
 
-Dispatch the critic via the `Agent` tool with `subagent_type: general-purpose`. **Do not** pass `isolation: "worktree"` — that would block the codebase + memory tools the critic needs to ground its critique. Instead, scrub by **what you put in the prompt**, mirroring the precedent in [`reason/NEUTRAL-RESEARCHER.md`](../reason/NEUTRAL-RESEARCHER.md):
+Dispatch each critic via the `Agent` tool with `subagent_type: general-purpose`. **Do not** pass `isolation: "worktree"` — that would block the codebase + memory tools the critic needs to ground its critique. Instead, scrub by **what you put in the prompt**, mirroring the precedent in [`reason/NEUTRAL-RESEARCHER.md`](../reason/NEUTRAL-RESEARCHER.md):
 
-- Forward: the problem statement, the owner's proposed direction (verbatim), the acceptance criteria as drafted.
+- Forward: the problem statement, the owner's proposed direction (verbatim), the acceptance criteria as drafted. **For the coverage tier additionally**: the node enumeration (see CRITIC-COVERAGE.md "Node enumeration" section).
 - Omit: which side of any disagreement the operator favours, prior memory hits used to shape the proposal, SOUL.md / CLAUDE.md / CONTEXT.md content, any "I think…" framing.
-- The behavioural nudge in CRITIC.md's system block does the rest. Isolation here is **behavioural, not structural** — a known limitation, sufficient for routine bias prevention (same trade-off as NEUTRAL-RESEARCHER; worktree isolation would lose access to project memory the critic still needs for grounded critique).
+- The behavioural nudge in each critic's system block does the rest. Isolation here is **behavioural, not structural** — a known limitation, sufficient for routine bias prevention (same trade-off as NEUTRAL-RESEARCHER; worktree isolation would lose access to project memory the critic still needs for grounded critique).
 
 #### Loopback — forced per-item disposition blocks AC-lock
 
-The critic returns a fixed-schema verdict (≤3 risks with severity, ≤3 unmentioned alternatives, 1 challenged assumption — see CRITIC.md). For **each** returned item, the operator surfaces the item to the owner and records one of three dispositions:
+Sampling critic returns ≤3 risks + ≤3 alternatives + 1 assumption (see CRITIC.md). Coverage critic returns Cartesian grids + assumptions list + premortem narrative (see CRITIC-COVERAGE.md). When both tiers run, **surface BOTH verdicts unedited to the owner as one consolidated batch**.
+
+For **each FINDING** across both critics — every item the sampling critic returned, plus every non-N/A cell in the coverage grids, plus each populated assumption, plus the premortem narrative — owner records one of three dispositions:
 
 - **accept** — owner agrees the critique lands; the proposal/AC changes to address it before lock.
 - **reject** — owner explicitly disagrees with the critique; rationale captured inline.
 - **defer** — owner acknowledges the critique is valid but out of scope for this slice; a follow-up issue is filed before lock.
 
-Per-item disposition is **mandatory** and **blocks AC-lock**: the grill cannot proceed to commit AC, write CONTEXT.md updates, or emit `record_decision` until every returned item has a recorded disposition. Bulk "accept all" / "reject all" sweeps are not permitted — the per-item discipline is what keeps the loopback from collapsing back into sycophancy at the wording layer.
+N/A cells in coverage grids do NOT require disposition — they are silent evidence the cell was considered. (Owner may promote an N/A to FINDING if they disagree.)
+
+Per-item disposition is **mandatory** and **blocks AC-lock**: the grill cannot proceed to commit AC, write CONTEXT.md updates, or emit `record_decision` until every FINDING across both critics has a recorded disposition. Bulk "accept all" / "reject all" sweeps are not permitted — the per-item discipline is what keeps the loopback from collapsing back into sycophancy at the wording layer.
+
+Cross-critic hits (sampling and coverage both surface the same risk) are higher-confidence signal but are NOT automatically promoted in severity — owner's judgement applies. Dedup is the owner's job, not the critics'.
+
+When Phase 4 (Grounding pass) also fires on the same AC-lock, its non-MATCH rows fold into the same per-item disposition pass — see Phase 4 below.
+
+### Phase 4: Grounding pass (code-grounded verification)
+
+Critics in Phase 3 are spec-bound by construction: they ask *"what is structurally missing or unexamined in this design?"* They cannot reliably catch the second class of blind spot — drift between the design's mental model of the codebase and the codebase's current state. Owner framing: *"для code-grounded gap'ов нужен Read, не критика"* (see outcome `b995dd20-31ef-4bdc-bc43-194e9b0c4d89` — empirical test of Phase 3 alone on redrobot RL Phase 0 caught 15 structural gaps including 4 P0 + premortem narrative, but missed all code-level prereq drift: `reset()` absent in `warp_sand.py`, `seed=42` hardcoded, Warp 1162mm vs Sandbox 500mm geometry mismatch).
+
+Phase 4 dispatches a **separate Read-shaped subagent** (template: [`GROUNDING.md`](./GROUNDING.md)) that verifies the design's asserted and implied code-level prerequisites: for each, reports MATCH / DRIFT / MISSING / UNVERIFIABLE with `file:line` citation. Verification is a different work-shape from critique — the file is deliberately `GROUNDING.md`, not `CRITIC-*`, because mixing the two dilutes both.
+
+**Triggers** (decision `a5e76208-8636-4c80-9423-98e63981c903`) — same gating logic as Phase 3 coverage tier, on top of the base CRITIC.md triggers:
+
+1. **≥2 grill-checkbox yes**
+2. **Milestone-level** design (not lone slice)
+
+Owner may invoke explicitly ("grounding pass" / "ground this" / "check prereqs"); may NOT skip when the trigger fires. Same same-frame rationalization concern that gates coverage tier.
+
+**Dispatch**: parallel with Phase 3 critics, `subagent_type: general-purpose`, **without** `isolation: "worktree"` (Read access to the whole codebase is the entire point). Operator forwards the same stripped payload as the critics PLUS an enumerated list of asserted prerequisites (see GROUNDING.md "Prerequisite enumeration" section — this is the input-quality lever for Phase 4, mirroring node enumeration's role for coverage tier).
+
+**Loopback**: Grounding output (asserted-prereqs table + additional-prereqs-found-while-reading table) consolidates into the SAME owner disposition pass as Phase 3 verdicts. Each non-MATCH row (DRIFT, MISSING, UNVERIFIABLE) requires one of `accept` / `reject` / `defer` before AC-lock can proceed. MATCH rows are silent evidence the prereq was verified — no disposition required. Cross-axis hits (a coverage critic finding reinforced by a grounding DRIFT, or vice versa) are higher-confidence signal but NOT auto-promoted in severity — owner judgement, owner dedup.
 
 </what-to-do>
 

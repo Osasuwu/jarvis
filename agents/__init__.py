@@ -8,13 +8,14 @@ See docs/agents/ for setup and operational notes.
 
 __all__ = [
     "config",
-    "dispatcher",
     "escalation",
     "event_monitor",
+    "executor",
     "github_client",
     "ollama_client",
     "safety",
     "scheduler",
     "supabase_client",
+    "task_queue",
     "usage_probe",
 ]

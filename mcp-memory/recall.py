@@ -270,6 +270,7 @@ def expand_links(
     link_types: list[str] | None = None,
     top_k: int = LINK_EXPAND_TOP_K,
     decay: float = LINK_DECAY,
+    include_unreviewed: bool = False,
 ) -> list[dict]:
     """Fetch 1-hop linked neighbors of the top-K rows via ``get_linked_memories``.
 
@@ -287,6 +288,7 @@ def expand_links(
                 "memory_ids": seed_ids,
                 "link_types": link_types,
                 "show_history": False,
+                "include_unreviewed": include_unreviewed,
             },
         ).execute()
         linked_rows = result.data or []
@@ -389,9 +391,16 @@ def apply_temporal_scoring(rows: list[dict]) -> list[dict]:
         recency = math.exp(-0.693 * days_since_update / half_life)
         access = 1.0 + ACCESS_BOOST_MAX * math.exp(-0.693 * days_since_access / ACCESS_HALF_LIFE)
 
+        # Reviewed memories with no confidence column default to 1.0 (full
+        # entrenchment) — pre-PR behavior, calibrated against existing rows.
+        # Unreviewed Deriver/Dreamer candidates (requires_review=true) typically
+        # have confidence=NULL at write time; treating them as fully entrenched
+        # would rank a pending candidate above an established memory in
+        # include_unreviewed=true queries. Floor them at CONFIDENCE_FLOOR so
+        # entrenchment caps at 0.75 instead of 1.0 (#552 always-gate corollary).
         confidence_raw = row.get("confidence")
         if confidence_raw is None:
-            conf = 1.0
+            conf = CONFIDENCE_FLOOR if row.get("requires_review") else 1.0
         else:
             try:
                 conf = float(confidence_raw)
@@ -442,6 +451,7 @@ class RecallConfig:
     rrf_k: int = RRF_K
     temporal_half_lives: dict[str, float] = field(default_factory=lambda: dict(TEMPORAL_HALF_LIVES))
     excluded_tags: frozenset[str] = EXCLUDE_TAGS_FROM_RECALL
+    include_unreviewed: bool = False
     limit: int = 10
 
 
@@ -599,6 +609,7 @@ async def recall(
                 "filter_project": project,
                 "filter_type": type_filter,
                 "show_history": show_history,
+                "include_unreviewed": config.include_unreviewed,
             },
         ).execute()
         semantic_rows = filter_excluded_tags(sem_result.data or [])
@@ -611,6 +622,7 @@ async def recall(
                 "filter_project": project,
                 "filter_type": type_filter,
                 "show_history": show_history,
+                "include_unreviewed": config.include_unreviewed,
             },
         ).execute()
         keyword_rows = filter_excluded_tags(kw_result.data or [])
@@ -634,7 +646,12 @@ async def recall(
         return []
 
     if config.use_links:
-        linked = expand_links(client, merged)
+        linked = expand_links(client, merged, include_unreviewed=config.include_unreviewed)
+        if linked:
+            # Linked rows are tag-filtered to match semantic/keyword legs —
+            # otherwise session-snapshot etc. can ride in as 1-hop neighbors of
+            # a seed row and bypass the same filter applied above on lines 608/621.
+            linked = filter_excluded_tags(linked)
         if linked:
             merged = merge_with_links(merged, linked)
         merged = merged[: config.limit]
