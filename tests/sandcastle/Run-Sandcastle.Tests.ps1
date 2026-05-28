@@ -1113,3 +1113,301 @@ Describe 'Write-OutcomeRecord HTTP path' {
         Assert-MockCalled Invoke-RestMethod -Times 0 -Exactly -Scope It
     }
 }
+
+# ---------------------------------------------------------------------------
+# Pytest gate for redrobot (#630)
+# ---------------------------------------------------------------------------
+
+Describe 'Get-RelatedTestFiles' {
+    BeforeEach {
+        $script:tmpRoot = Join-Path $env:TEMP "pytest-gate-test-$([guid]::NewGuid())"
+        New-Item -ItemType Directory -Path $script:tmpRoot | Out-Null
+        # Create a src dir with module.py
+        New-Item -ItemType Directory -Path (Join-Path $script:tmpRoot 'src') | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:tmpRoot 'src\module.py') | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:tmpRoot 'src\test_module.py') | Out-Null
+        # Create a tests dir with test_other.py
+        New-Item -ItemType Directory -Path (Join-Path $script:tmpRoot 'tests') | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:tmpRoot 'tests\test_other.py') | Out-Null
+    }
+    AfterEach {
+        Remove-Item -LiteralPath $script:tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'finds co-located test file' {
+        $files = Get-RelatedTestFiles -ChangedFiles @('src/module.py') -RepoRoot $script:tmpRoot
+        $files.Count | Should Be 1
+        $files[0] | Should Match 'test_module\.py$'
+    }
+
+    It 'finds test in tests/ mirror' {
+        $files = Get-RelatedTestFiles -ChangedFiles @('src/other.py') -RepoRoot $script:tmpRoot
+        $files.Count | Should Be 1
+        $files[0] | Should Match 'test_other\.py$'
+    }
+
+    It 'returns empty array when no test files match' {
+        $files = Get-RelatedTestFiles -ChangedFiles @('src/nonexistent.py') -RepoRoot $script:tmpRoot
+        $files.Count | Should Be 0
+    }
+
+    It 'deduplicates when multiple files map to same test' {
+        # Two files in different dirs both fall back to tests/test_module.py when
+        # no colocated test exists -- the function's own Select-Object -Unique must
+        # deduplicate them so the caller gets exactly one path, not two.
+        Remove-Item -LiteralPath (Join-Path $script:tmpRoot 'src\test_module.py') -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path (Join-Path $script:tmpRoot 'lib') | Out-Null
+        New-Item -ItemType File     -Path (Join-Path $script:tmpRoot 'lib\module.py') | Out-Null
+        New-Item -ItemType File     -Path (Join-Path $script:tmpRoot 'tests\test_module.py') | Out-Null
+        # src/module.py: no src/test_module.py -> falls back to tests/test_module.py
+        # lib/module.py: no lib/test_module.py -> falls back to tests/test_module.py (same path)
+        $files = Get-RelatedTestFiles -ChangedFiles @('src/module.py', 'lib/module.py') -RepoRoot $script:tmpRoot
+        $files.Count | Should Be 1
+    }
+}
+
+Describe 'Stop-AgentPR' {
+    It 'returns false when branch is empty' {
+        Stop-AgentPR -Branch '' -RepoSlug 'x/y' | Should Be $false
+    }
+
+    It 'returns false when repo slug is empty' {
+        Stop-AgentPR -Branch 'feat/test' -RepoSlug '' | Should Be $false
+    }
+
+    It 'returns false when no PR exists for branch (Invoke-Gh returns null)' {
+        # C2: mock Invoke-Gh wrapper instead of native gh exe (Pester 3.4 cannot intercept native exes)
+        Mock Invoke-Gh { $null }
+        Stop-AgentPR -Branch 'feat/test' -RepoSlug 'x/y' | Should Be $false
+    }
+
+    It 'calls gh pr close when PR exists' {
+        $script:ghCalls = @()
+        # C2: mock Invoke-Gh; use comma-prefix to capture each call's args as a sub-array
+        Mock Invoke-Gh {
+            $script:ghCalls += ,$args
+            if ($args[0] -eq 'pr' -and $args[1] -eq 'list') {
+                $global:LASTEXITCODE = 0
+                return '42'
+            }
+            $global:LASTEXITCODE = 0
+            return $null
+        }
+        $result = Stop-AgentPR -Branch 'feat/630-test' -RepoSlug 'SergazyNarynov/redrobot'
+        $result | Should Be $true
+        # Verify close was called (each sub-array is one call's positional args)
+        $closeCall = $script:ghCalls | Where-Object { $_[0] -eq 'pr' -and $_[1] -eq 'close' }
+        $closeCall | Should Not BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-PytestGate' {
+    BeforeEach {
+        $script:tmpRoot = Join-Path $env:TEMP "pytest-invoke-$([guid]::NewGuid())"
+        New-Item -ItemType Directory -Path $script:tmpRoot | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:tmpRoot 'src') | Out-Null
+        New-Item -ItemType File -Path (Join-Path $script:tmpRoot 'src\module.py') | Out-Null
+        Mock Write-Host { }  # suppress output
+    }
+    AfterEach {
+        Remove-Item -LiteralPath $script:tmpRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'AC: green path -- pytest exits 0 -> passed=true' {
+        Mock Push-Location { }
+        Mock Pop-Location { }
+        # B4: set LASTEXITCODE so git diff appears to succeed
+        Mock git { $global:LASTEXITCODE = 0; 'src/module.py' }
+        # Return test file exists
+        New-Item -ItemType File -Path (Join-Path $script:tmpRoot 'src\test_module.py') | Out-Null
+        # B4: set LASTEXITCODE = 0 (green)
+        Mock pytest { $global:LASTEXITCODE = 0; '1 passed' }
+        # B3: filter on LiteralPath (callers use -LiteralPath, not -Path)
+        Mock Test-Path { $true } -ParameterFilter { $LiteralPath -like '*test_module*' }
+
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
+
+        $r.passed          | Should Be $true
+        $r.collectionError | Should Be $false
+    }
+
+    It 'AC: red path -- pytest exits 1 -> passed=false' {
+        Mock Push-Location { }
+        Mock Pop-Location { }
+        # B4: git diff succeeds, pytest exits 1
+        Mock git { $global:LASTEXITCODE = 0; 'src/module.py' }
+        Mock Test-Path { $false }
+        # M5: return real pytest-formatted output so Select-String.Line works on MatchInfo,
+        # not on a bare string whose .Line is always $null.
+        Mock pytest { $global:LASTEXITCODE = 1; @('FAILED test_module.py::test_something', '1 failed in 0.1s') }
+
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
+
+        $r.passed          | Should Be $false
+        $r.collectionError | Should Be $false
+        $r.failures.Count  | Should Be 1
+    }
+
+    It 'AC: collection error -- pytest exits 2 -> collectionError=true' {
+        Mock Push-Location { }
+        Mock Pop-Location { }
+        # B4: git diff succeeds, pytest exits 2 (collection error)
+        Mock git { $global:LASTEXITCODE = 0; 'src/module.py' }
+        Mock Test-Path { $false }
+        Mock pytest { $global:LASTEXITCODE = 2; 'ERROR: could not collect test files' }
+
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
+
+        $r.passed          | Should Be $false
+        $r.collectionError | Should Be $true
+    }
+
+    It 'returns collection error when repo root does not exist' {
+        $r = Invoke-PytestGate -RepoRoot "Nope:\missing" -Branch 'feat/test'
+
+        $r.passed          | Should Be $false
+        $r.collectionError | Should Be $true
+        $r.summary         | Should Match 'not found'
+    }
+
+    It 'falls back to full suite when git diff fails (base branch missing)' {
+        Mock Push-Location { }
+        Mock Pop-Location { }
+        # B4: git exits non-zero (diff fails), pytest exits 0 (full suite green)
+        Mock git { $global:LASTEXITCODE = 1; $null }
+        Mock pytest { $global:LASTEXITCODE = 0; '42 passed' }
+
+        $r = Invoke-PytestGate -RepoRoot $script:tmpRoot -Branch 'feat/test'
+
+        $r.passed  | Should Be $true
+        $r.testsRun | Should Be 42
+    }
+}
+
+Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
+    BeforeEach {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Start-DockerDesktop { }
+        Mock Start-OllamaServer  { }
+        Mock Get-RepoRoot { $env:TEMP }
+        Mock Read-DotEnvFile { @{ SUPABASE_URL = 'https://x'; SUPABASE_KEY = 'k'; TELEGRAM_BOT_TOKEN = 't'; TELEGRAM_CHAT_ID = '1' } }
+        Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-pytest-int-$([guid]::NewGuid())" }
+        Mock Invoke-RuntimeSweep { @() }
+        Mock Write-OutcomeRecord { 'mocked' }
+        Mock Send-TelegramAlert  { 'mocked' }
+        Mock Add-IssueLabel      { $true }
+        Mock Get-IssueLabels     { @() }
+        # M4: renamed Close-AgentPR -> Stop-AgentPR
+        Mock Stop-AgentPR        { $true }
+        Mock Invoke-PytestGate   { $null }  # overridden per test
+        # M6: mock decision memory write so tests don't hit Supabase
+        Mock Write-SandcastleDecisionMemory { }
+        # C2: Invoke-Gh used for gh issue edit in watchdog; mock to no-op
+        Mock Invoke-Gh { }
+    }
+
+    It 'AC: redrobot green gate -> outcome=success, gates summary includes pytest' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/630-pytest'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+        Mock Invoke-PytestGate {
+            [pscustomobject]@{
+                passed = $true; collectionError = $false; summary = '5 passed'; testsRun = 5
+            }
+        }
+
+        Invoke-Watchdog -Repo 'redrobot' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-PytestGate -Times 1 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' }
+        # M4: renamed to Stop-AgentPR
+        Assert-MockCalled Stop-AgentPR -Times 0 -Exactly -Scope It
+        # M6: no decision memory write on green gate
+        Assert-MockCalled Write-SandcastleDecisionMemory -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC: redrobot red gate -> outcome=partial, PR closed, tests-failing label' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/630-fail'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+        Mock Invoke-PytestGate {
+            [pscustomobject]@{
+                passed = $false; collectionError = $false; summary = '2 total, 1 failed: test_foo'; testsRun = 2; failures = @('test_foo')
+            }
+        }
+
+        Invoke-Watchdog -Repo 'redrobot' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-PytestGate -Times 1 -Exactly -Scope It
+        # M4: renamed to Stop-AgentPR
+        Assert-MockCalled Stop-AgentPR -Times 1 -Exactly -Scope It
+        Assert-MockCalled Add-IssueLabel -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Label -eq 'tests-failing' }
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'partial' -and $Summary -like '*pytest-gate:tests-failing*' }
+        # M6: decision memory must be written on gate failure
+        Assert-MockCalled Write-SandcastleDecisionMemory -Times 1 -Exactly -Scope It
+    }
+
+    It 'AC: redrobot collection error -> outcome=partial, tests-broken label' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/630-broken'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+        Mock Invoke-PytestGate {
+            [pscustomobject]@{
+                passed = $false; collectionError = $true; summary = 'pytest collection error (exit=2)'; testsRun = 0
+            }
+        }
+
+        Invoke-Watchdog -Repo 'redrobot' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Add-IssueLabel -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Label -eq 'tests-broken' }
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'partial' -and $Summary -like '*pytest-gate:tests-broken*' }
+        # M6: decision memory must be written on gate failure
+        Assert-MockCalled Write-SandcastleDecisionMemory -Times 1 -Exactly -Scope It
+    }
+
+    It 'AC: jarvis repo skips pytest gate entirely' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = 'feat/630-jarvis'; commits = @(); iterations = @()
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-PytestGate -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' }
+    }
+}

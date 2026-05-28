@@ -60,3 +60,42 @@ jobs:
             (not available in this runner). This is plugin invocation only.
           claude_args: |
             --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
+
+      # Auto-merge gate: the plugin emits a structured comment beginning with
+      # `### Code review` and either "No issues found." (clean) or
+      # "Found N issues:" (findings ≥80 confidence). Without this step the
+      # `review` check is SUCCESS as long as the bot ran — auto-merge can't
+      # distinguish "ran cleanly" from "found CRITICAL bugs". Failing the
+      # job on findings turns the `review` check into a real verdict.
+      - name: Verify review verdict
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+        run: |
+          set -euo pipefail
+          body=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            --jq 'map(select(.body | startswith("### Code review"))) | .[-1].body // ""')
+
+          if [ -z "$body" ]; then
+            # Plugin skipped (draft / closed / already reviewed / not-eligible).
+            # No new verdict — leave merge gating to the eligibility logic upstream.
+            echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
+            exit 0
+          fi
+
+          if grep -qE '^No issues found\.?\s*$' <<<"$body"; then
+            echo "::notice::Code review clean."
+            exit 0
+          fi
+
+          if grep -qE 'Found [0-9]+ issues?:' <<<"$body"; then
+            count=$(grep -oE 'Found [0-9]+ issues?:' <<<"$body" | head -1 | grep -oE '[0-9]+')
+            echo "::error::Code review found $count issue(s); blocking auto-merge until addressed."
+            exit 1
+          fi
+
+          # Unexpected format — fail conservatively so a malformed comment
+          # can't slip past auto-merge.
+          echo "::warning::Could not parse /code-review verdict from last comment. Failing for safety."
+          exit 1
