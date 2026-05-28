@@ -369,14 +369,18 @@ function Get-IssueFromBranch {
     return $null
 }
 
+function Invoke-Gh {
+    & gh @args 2>$null
+}
+
 function Get-IssueLabels {
     [CmdletBinding()]
     param([int]$Issue, [string]$RepoSlug)
     if (-not $Issue) { return @() }
     try {
-        $args = @('issue', 'view', "$Issue", '--json', 'labels', '--jq', '[.labels[].name]')
-        if ($RepoSlug) { $args += @('--repo', $RepoSlug) }
-        $raw = & gh @args 2>$null
+        $ghArgs = @('issue', 'view', "$Issue", '--json', 'labels', '--jq', '[.labels[].name]')
+        if ($RepoSlug) { $ghArgs += @('--repo', $RepoSlug) }
+        $raw = Invoke-Gh @ghArgs
         if ($LASTEXITCODE -ne 0 -or -not $raw) { return @() }
         return ($raw | ConvertFrom-Json)
     } catch {
@@ -388,9 +392,9 @@ function Add-IssueLabel {
     [CmdletBinding()]
     param([int]$Issue, [string]$Label, [string]$RepoSlug)
     if (-not $Issue -or -not $Label) { return $false }
-    $args = @('issue', 'edit', "$Issue", '--add-label', $Label)
-    if ($RepoSlug) { $args += @('--repo', $RepoSlug) }
-    & gh @args 2>$null | Out-Null
+    $ghArgs = @('issue', 'edit', "$Issue", '--add-label', $Label)
+    if ($RepoSlug) { $ghArgs += @('--repo', $RepoSlug) }
+    Invoke-Gh @ghArgs | Out-Null
     return ($LASTEXITCODE -eq 0)
 }
 
@@ -502,6 +506,215 @@ function Send-TelegramAlert {
         # include the request URL with the bot token embedded. Strip it
         # so callers / logs only ever see "<TOKEN-REDACTED>".
         throw "telegram alert failed: $(Format-RedactedError -Message "$_" -Secret $BotToken)"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Pytest gate (redrobot only, #630)
+#
+# Test-surface discovery strategy: for each changed .py file, look for a
+# co-located test_<name>.py in the same directory or in tests/. Falls back
+# to full `pytest` suite when no targeted test files are found.
+#
+# Decision: touched-file-mapped test discovery with full-suite fallback.
+# Rationale: agent may refactor files whose test coverage lives outside
+# the co-located pattern (e.g. a tests/ directory mirror). Full suite
+# has ~30s overhead on redrobot's small test corpus -- acceptable.
+# Reversibility: reversible (strategy is config at the function level).
+# Alternatives:
+#   1. pytest --lf (last-failed) -- rejected, first run has no history.
+#   2. Full suite always -- rejected, agent changes are typically small
+#      and targeted; full suite is a safety net, not the primary gate.
+# Confidence: 0.8.
+# ---------------------------------------------------------------------------
+
+function Get-RelatedTestFiles {
+    [CmdletBinding()]
+    param(
+        [string[]]$ChangedFiles,
+        [string]$RepoRoot
+    )
+    $testFiles = @()
+    foreach ($f in $ChangedFiles) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($f)
+        $dir  = [System.IO.Path]::GetDirectoryName($f)
+        # Co-located: src/module.py -> src/test_module.py
+        $colocated = Join-Path (Join-Path $RepoRoot $dir) "test_$name.py"
+        if (Test-Path -LiteralPath $colocated -PathType Leaf) {
+            $testFiles += $colocated
+            continue
+        }
+        # Tests mirror: src/module.py -> tests/test_module.py
+        $inTests = Join-Path (Join-Path $RepoRoot 'tests') "test_$name.py"
+        if (Test-Path -LiteralPath $inTests -PathType Leaf) {
+            $testFiles += $inTests
+            continue
+        }
+    }
+    return ($testFiles | Select-Object -Unique)
+}
+
+function Invoke-PytestGate {
+    [CmdletBinding()]
+    param(
+        [string]$RepoRoot,
+        [string]$Branch
+    )
+
+    if (-not (Test-Path -LiteralPath $RepoRoot)) {
+        return [pscustomobject]@{
+            passed          = $false
+            collectionError = $true
+            summary         = "redrobot repo root not found: $RepoRoot"
+            testsRun        = 0
+        }
+    }
+
+    # Get changed .py files against the base branch
+    Push-Location -LiteralPath $RepoRoot
+    try {
+        & git fetch origin main --quiet 2>$null | Out-Null
+        $changedRaw = & git diff origin/main...$Branch --name-only 2>$null
+        $gitExit = $LASTEXITCODE
+    } finally {
+        Pop-Location
+    }
+
+    if ($gitExit -ne 0 -or [string]::IsNullOrWhiteSpace($changedRaw)) {
+        # No base branch to diff or no changes -- run full suite as safety net.
+        $changedFiles = @()
+    } else {
+        $changedFiles = ($changedRaw -split "`n") | Where-Object { $_ -match '\.py$' -and $_ -match '\S' }
+    }
+
+    $testTargets = @()
+    if ($changedFiles.Count -gt 0) {
+        $testTargets = Get-RelatedTestFiles -ChangedFiles $changedFiles -RepoRoot $RepoRoot
+    }
+
+    # Run pytest
+    Push-Location -LiteralPath $RepoRoot
+    try {
+        if ($testTargets.Count -gt 0) {
+            Write-Host "[pytest-gate] running $($testTargets.Count) test files for $($changedFiles.Count) changed .py files"
+            $output = & pytest $testTargets --tb=short -q 2>&1
+        } else {
+            Write-Host "[pytest-gate] no targeted tests found -- running full suite"
+            $output = & pytest --tb=short -q 2>&1
+        }
+        $exitCode = $LASTEXITCODE
+    } catch {
+        return [pscustomobject]@{
+            passed          = $false
+            collectionError = $true
+            summary         = "pytest invocation failed: $_"
+            testsRun        = 0
+        }
+    } finally {
+        Pop-Location
+    }
+
+    # Parse output for test count (B1: join array to scalar before -match so $Matches is populated)
+    $testsRun = 0
+    $joined = $output -join "`n"
+    if ($joined -match '(\d+) passed') { $testsRun = [int]$Matches[1] }
+    if ($joined -match '(\d+) failed') { $testsRun += [int]$Matches[1] }
+
+    # Extract failing test names
+    $failedLines = $output | Select-String '^FAILED ' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }
+    $failureNames = $failedLines -replace '^FAILED ', ''
+
+    if ($exitCode -in @(2, 3, 4, 5)) {
+        return [pscustomobject]@{
+            passed          = $false
+            collectionError = $true
+            exitCode        = $exitCode
+            summary         = "pytest collection error (exit=$exitCode)"
+            testsRun        = $testsRun
+        }
+    }
+
+    $passed = ($exitCode -eq 0)
+    $summary = if ($passed) {
+        "${testsRun} passed"
+    } else {
+        "${testsRun} total, $($failureNames.Count) failed: $($failureNames -join ', ')"
+    }
+
+    return [pscustomobject]@{
+        passed          = $passed
+        collectionError = $false
+        exitCode        = $exitCode
+        summary         = $summary
+        testsRun        = $testsRun
+        failures        = $failureNames
+    }
+}
+
+function Stop-AgentPR {
+    [CmdletBinding()]
+    param(
+        [string]$Branch,
+        [string]$RepoSlug
+    )
+    if ([string]::IsNullOrWhiteSpace($Branch) -or [string]::IsNullOrWhiteSpace($RepoSlug)) {
+        return $false
+    }
+    try {
+        # Find the PR for this branch
+        $prNum = Invoke-Gh pr list --repo $RepoSlug --head $Branch --state open --json number --jq '.[0].number'
+        if ($prNum -and [int]$prNum.Trim() -gt 0) {
+            Invoke-Gh pr close $prNum --repo $RepoSlug --comment "Closed by sandcastle watchdog -- pytest gate failed." | Out-Null
+            return ($LASTEXITCODE -eq 0)
+        }
+    } catch {
+        Write-Warning "Stop-AgentPR: $_"
+    }
+    return $false
+}
+
+# ---------------------------------------------------------------------------
+# Decision memory write -- records pytest-gate decisions in memories table
+# (M6/AC7: decision must be queryable by next session via memory_recall).
+# Anon INSERT allowed when source_provenance like 'sandcastle:%' (RLS policy).
+# ---------------------------------------------------------------------------
+
+function Write-SandcastleDecisionMemory {
+    [CmdletBinding()]
+    param(
+        [string]$SupabaseUrl,
+        [string]$SupabaseKey,
+        [string]$Project,
+        [string]$Name,
+        [string]$Description,
+        [string]$Content,
+        [string]$RunId
+    )
+    if (-not $SupabaseUrl -or -not $SupabaseKey) {
+        Write-Warning "SUPABASE_URL/SUPABASE_KEY missing -- skipping decision memory write."
+        return
+    }
+    $body = @{
+        type              = 'decision'
+        project           = $Project
+        name              = $Name
+        description       = $Description
+        content           = $Content
+        tags              = @('sandcastle', 'afk', 'pytest-gate')
+        source_provenance = "sandcastle:pytest-gate:$RunId"
+    }
+    $headers = @{
+        apikey         = $SupabaseKey
+        Authorization  = "Bearer $SupabaseKey"
+        'Content-Type' = 'application/json'
+        Prefer         = 'return=minimal,resolution=merge-duplicates'
+    }
+    $url = "$($SupabaseUrl.TrimEnd('/'))/rest/v1/memories"
+    try {
+        Invoke-RestMethod -Uri $url -Method Post -Headers $headers `
+            -Body ($body | ConvertTo-Json -Depth 4) -ErrorAction Stop | Out-Null
+    } catch {
+        Write-Warning "decision memory write failed: $_"
     }
 }
 
@@ -810,6 +1023,47 @@ function Invoke-Watchdog {
                 $totalUsage.cache_creation_input_tokens+= [int]$it.usage.cacheCreationInputTokens
             }
         }
+    }
+
+    # ---- 5. Pytest gate (redrobot only) ----
+    $pytestResult = $null
+    if (-not $partialReason -and $Repo -eq 'redrobot') {
+        $pytestResult = Invoke-PytestGate -RepoRoot $repoRoot -Branch $branch
+        $totalUsage.gates = @{ pytest = $pytestResult }
+
+        if (-not $pytestResult.passed) {
+            $pytestReason = if ($pytestResult.collectionError) { 'tests-broken' } else { 'tests-failing' }
+            $pytestLabel = $pytestReason
+
+            # Close the PR if one was opened
+            if ($branch) {
+                Stop-AgentPR -Branch $branch -RepoSlug $repoSlug
+            }
+
+            # Label the issue
+            if ($targetIssue -and $repoSlug) {
+                Add-IssueLabel -Issue $targetIssue -Label $pytestLabel -RepoSlug $repoSlug | Out-Null
+                # Drop status:in-progress
+                Invoke-Gh issue edit $targetIssue --repo $repoSlug --remove-label 'status:in-progress' | Out-Null
+            }
+
+            $summary = "pytest-gate:$pytestReason -- branch=$branch $($pytestResult.summary)"
+            Record 'partial' $summary $totalUsage ''
+
+            # M6/AC7: record decision in Supabase memory for next-session recall
+            Write-SandcastleDecisionMemory `
+                -SupabaseUrl $supabaseUrl -SupabaseKey $supabaseKey `
+                -Project 'redrobot' `
+                -Name "pytest-gate:$pytestReason:$branch" `
+                -Description "pytest gate blocked sandcastle PR on $branch ($pytestReason)" `
+                -Content "Sandcastle run $runId blocked PR on branch $branch for redrobot. Reason: $pytestReason. $($pytestResult.summary)" `
+                -RunId $runId
+
+            Write-Host "[watchdog] $summary"
+            return
+        }
+
+        Write-Host "[watchdog] pytest gate passed ($($pytestResult.testsRun) tests)"
     }
 
     if ($partialReason) {
