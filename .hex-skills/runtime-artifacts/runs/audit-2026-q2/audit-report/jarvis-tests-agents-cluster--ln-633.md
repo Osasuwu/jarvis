@@ -9,17 +9,17 @@
 
 ## AUDIT-META
 
-- **Files audited:** 10 (4,311 lines total)
-  - `test_agents_dispatcher.py` — 800 lines (29 tests)
-  - `test_agents_escalation.py` — 500 lines (33 tests)
-  - `test_agents_perception_github.py` — 515 lines (24 tests)
-  - `test_agents_scheduler.py` — 451 lines (19 tests)
-  - `test_agents_safety.py` — 416 lines (28 tests)
-  - `test_agents_smoke.py` — 385 lines (14 tests)
-  - `test_agents_supabase_bridge.py` — 364 lines (15 tests)
-  - `test_agents_usage_probe.py` — 360 lines (22 tests)
-  - `test_agents_dispatcher_e2e.py` — 318 lines (2 tests)
-  - `test_agents_integration.py` — 212 lines (3 tests)
+- **Files audited:** 10 (3,877 lines total)
+  - `test_agents_escalation.py` — 499 lines (33 tests)
+  - `test_agents_executor.py` — 298 lines (17 tests)
+  - `test_agents_integration.py` — 211 lines (3 tests)
+  - `test_agents_perception_github.py` — 514 lines (24 tests)
+  - `test_agents_safety.py` — 415 lines (28 tests)
+  - `test_agents_scheduler.py` — 433 lines (19 tests)
+  - `test_agents_smoke.py` — 371 lines (13 tests)
+  - `test_agents_supabase_bridge.py` — 363 lines (15 tests)
+  - `test_agents_task_queue.py` — 414 lines (25 tests)
+  - `test_agents_usage_probe.py` — 359 lines (22 tests)
 - **Business criticality:** HIGH — agents subsystem handles GitHub issue triage, safety gating, scheduling, and dispatch of autonomous work
 
 ---
@@ -29,9 +29,9 @@
 | Check | Finding | Severity |
 |---|---|---|
 | Business value alignment | Covers every agent subsystem: safety, dispatch, escalation, scheduling, perception, bridge, usage, integration | HIGH |
-| Coverage breadth | 189 total test functions across 10 files — largest cluster | HIGH |
+| Coverage breadth | 199 total test functions across 10 files — largest cluster | HIGH |
 | Test-level depth | escalation.py (33 tests for ~500 lines) has best ratio; integration tests are sparse | OK |
-| E2E coverage | 2 E2E files (5 tests) opt-in, rest are unit with stubs | MEDIUM |
+| E2E coverage | 1 E2E file (3 tests) opt-in, rest are unit with stubs | MEDIUM |
 | Edge case coverage | escalation.py is the most thorough boundary testing in the project | HIGH |
 
 ---
@@ -40,8 +40,8 @@
 
 ### FINDING-001: E2E tests are opt-in and require real credentials
 **Severity:** MEDIUM
-**Files:** `test_agents_dispatcher_e2e.py`, `test_agents_integration.py`
-**Detail:** The 5 E2E tests require `AGENTS_E2E=1`, a real Supabase instance, and (for integration.py) a real Ollama server. They are skipped by default in CI. This means the bridge between stubs and reality is only verified when a developer explicitly runs them. Critical paths like the full dispatch pipeline (task queue → safety gate → subprocess → audit log) are never exercised in CI.
+**Files:** `test_agents_integration.py`
+**Detail:** The 3 E2E tests require `AGENTS_E2E=1`, a real Supabase instance, and a real Ollama server. They are skipped by default in CI. This means the bridge between stubs and reality is only verified when a developer explicitly runs them. Critical paths like the full dispatch pipeline (task queue → safety gate → subprocess → audit log) are never exercised in CI.
 
 ### FINDING-003: test_agents_perception_github.py has a hardcoded absolute path
 **Severity:** MEDIUM

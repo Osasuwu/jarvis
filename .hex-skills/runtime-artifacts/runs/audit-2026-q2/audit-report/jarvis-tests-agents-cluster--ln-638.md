@@ -9,8 +9,8 @@
 
 ## AUDIT-META
 
-- **Files audited:** 10 (4,311 lines)
-- **Total assertions:** ~400-500 (estimated across 189 tests)
+- **Files audited:** 10 (3,877 lines)
+- **Total assertions:** ~400-500 (estimated across 199 tests)
 - **Assertion density:** ~0.10 assertions/line
 - **Dominant oracle style:** Enum equality (`== Tier.AUTO`/`== Tier.BLOCKED`), containment, `pytest.raises` with match, shape assertions on recorded call chains
 
@@ -38,13 +38,13 @@
 
 ### FINDING-002: Call-chain assertions are precise but verbose
 **Severity:** LOW
-**Files:** `test_agents_dispatcher.py`, `test_agents_supabase_bridge.py`
-**Detail:** Tests that verify DB operation shape use `client.calls` lists and helper functions like `_names(chain)` and `_find(chain, name)`. While these assertions are precise (they verify exact method names and arguments), they are verbose — a single assertion requires 2-3 lines of setup. A dedicated assertion helper (e.g., `assert_chain_contains(chain, "eq", "project", "jarvis")`) would reduce boilerplate.
+**Files:** `test_agents_executor.py`, `test_agents_supabase_bridge.py`
+**Detail:** Tests that verify DB operation shape use `client.calls` lists and helper functions like `_names(chain)` and `_find(chain, name)` (defined in `test_agents_supabase_bridge.py`). While these assertions are precise (they verify exact method names and arguments), they are verbose — a single assertion requires 2-3 lines of setup. A dedicated assertion helper (e.g., `assert_chain_contains(chain, "eq", "project", "jarvis")`) would reduce boilerplate.
 
-### FINDING-003: 189 tests run in CI without external dependencies
+### FINDING-003: 199 tests run in CI without external dependencies
 **Severity:** (POSITIVE)
 **All files**
-**Detail:** All 189 tests are structured so that the 184 unit+smoke tests run in CI without any external credentials. Only the 5 E2E tests are opt-in. This means the cluster provides high confidence in CI with zero false negatives from credential availability.
+**Detail:** All 199 tests are structured so that the 196 unit+smoke tests run in CI without any external credentials. Only the 3 E2E tests (all in `test_agents_integration.py`) are opt-in. This means the cluster provides high confidence in CI with zero false negatives from credential availability.
 
 ### FINDING-004: Docstrings explain every test's "why"
 **Severity:** (POSITIVE)
