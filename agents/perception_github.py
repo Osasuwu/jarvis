@@ -37,6 +37,7 @@ from typing import Any
 from supabase import Client
 
 from agents import supabase_client
+from agents.scope_hash import _hash_scope_files  # re-export — see issue #773
 
 logger = logging.getLogger(__name__)
 
@@ -85,16 +86,6 @@ def _parse_scope_files(body: str) -> list[str]:
             files.add(match)
 
     return sorted(files)
-
-
-def _hash_scope_files(scope_files: list[str]) -> str:
-    """Deterministic scope-files hash.
-
-    Matches dispatcher._hash_scope_files: sort + newline-join + sha256.
-    Used for approved_scope_hash and idempotency key computation.
-    """
-    normalized = "\n".join(sorted(scope_files or []))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def _idempotency_key(repo: str, issue_number: int, labels: list[str]) -> str:

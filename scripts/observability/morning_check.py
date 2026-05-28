@@ -20,7 +20,8 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from agents.executor import _hash_scope_files, _now_iso
+from agents.executor import _now_iso
+from agents.scope_hash import _hash_scope_files
 from agents.supabase_client import get_client
 
 # Alarm categories for stable idempotency key generation
