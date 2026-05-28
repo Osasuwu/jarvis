@@ -5,7 +5,7 @@ worker: ln-635
 category: Test Trustworthiness
 domain: misc_skills
 scan_path: tests/
-score: 8.5
+score: 8.8
 total_issues: 3
 critical: 0
 high: 0
@@ -34,7 +34,7 @@ status: completed
 | Severity | Location | Issue | Principle | Recommendation | Effort |
 |----------|----------|-------|-----------|----------------|--------|
 | MEDIUM | tests/test_protected_files.py:24-31 | fake_claude_home fixture creates real temp directory with monkeypatched JARVIS_CLAUDE_HOME — exercises real file system for path resolution | Isolation: FS | Accepted — tmp_path is pytest-managed and isolated per-function; testing path normalization inherently needs real paths | S |
-| MEDIUM | tests/test_risk_radar.py:81-88, 339-365 | _load_repos writes conf files to tmp_path; _write_report creates real report files to tmp_path | Isolation: FS | Accepted — tmp_path scoping ensures isolation; risk is minimal | S |
+| MEDIUM | tests/test_risk_radar.py:81-88, 339-365 | Test fixture writes conf files to tmp_path (conf.write_text at line 87) then monkeypatches risk_radar.REPOS_CONF; _write_report creates real report files to tmp_path. _load_repos itself only reads. | Isolation: FS | Accepted — tmp_path scoping ensures isolation; risk is minimal | S |
 | LOW | tests/test_morning_check.py:135-147 | _now_utc() returns real datetime.now(UTC) instead of a frozen value — intentional design choice to prevent seed date staleness (documented in detailed comment) | Isolation: Time | Accepted — assertions depend on relative behavior (exit codes, call counts), not absolute time values | S |
 
 ## Isolation Analysis Detail
@@ -52,7 +52,7 @@ status: completed
 ### File System Isolation (WARNING)
 Two test files use real file I/O via tmp_path:
 1. **test_protected_files.py** — fake_claude_home fixture creates a tmp directory to simulate ~/.claude/ structure for path resolution tests
-2. **test_risk_radar.py** — _load_repos writes conf files; _write_report creates report files
+2. **test_risk_radar.py** — test fixtures write conf files via conf.write_text() before monkeypatching REPOS_CONF; _write_report creates report files. _load_repos itself only reads.
 All use pytest tmp_path which is ephemeral and scoped per-function.
 
 ### Time/Date Isolation (WARNING)
@@ -84,9 +84,13 @@ All use pytest tmp_path which is ephemeral and scoped per-function.
 - All stubs and mocks are created per-test
 - monkeypatch is properly scoped
 
+## Cross-Report Note
+
+`test_morning_check.py` is also flagged in the Oracle Effectiveness report (ln-638) for stub maintainability (custom 5-class stub layer at lines 23-128). The concerns are non-overlapping: this report addresses **time isolation** (real `datetime.now(UTC)` at line 135-147, assessed LOW risk), while ln-638 addresses **oracle indirection** (stub layer depth, assessed MEDIUM). Both findings can apply simultaneously and fixing one does not resolve the other.
+
 ## Summary
 
-Overall Trustworthiness Score: **8.5/10**
+Overall Trustworthiness Score: **8.8/10**
 
 - **2 MEDIUM** findings — real file I/O via tmp_path in protected_files and risk_radar (acceptable, pytest-managed)
 - **1 LOW** finding — real datetime.now(UTC) in morning_check (intentional, documented)

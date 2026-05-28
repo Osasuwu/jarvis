@@ -5,7 +5,7 @@ worker: ln-638
 category: Oracle Effectiveness
 domain: misc_skills
 scan_path: tests/
-score: 9.0
+score: 9.3
 total_issues: 2
 critical: 0
 high: 0
@@ -28,7 +28,7 @@ status: completed
 
 | Severity | Location | Issue | Principle | Recommendation | Effort |
 |----------|----------|-------|-----------|----------------|--------|
-| MEDIUM | tests/test_morning_check.py:23-128 | Custom stub layer (_StubClient, _Table, _UpsertQuery, _SelectQuery — 4 classes, ~100 lines) creates indirection between test and real Supabase query behavior | Oracle: Maintainability | Add a contract test that verifies the stub methods match real Supabase query builder method signatures; or reduce stub surface by using MagicMock for non-critical paths | M |
+| MEDIUM | tests/test_morning_check.py:23-128 | Custom stub layer (_Response, _UpsertQuery, _SelectQuery, _Table, _StubClient — 5 classes, ~100 lines) creates indirection between test and real Supabase query behavior | Oracle: Maintainability | Add a contract test that verifies the stub methods match real Supabase query builder method signatures; or reduce stub surface by using MagicMock for non-critical paths | M |
 | LOW | tests/test_risk_radar.py:105-107, 112-113, 117-118 | _check_ci_instability and other pattern checkers patch _run_gh with canned JSON responses — oracle depends on response shape matching real gh CLI output | Oracle: Mock shape | Add a regression guard that verifies the expected JSON keys match real gh CLI output for each pattern | S |
 
 ## Oracle Quality by File
@@ -50,7 +50,7 @@ status: completed
 
 3. **test_protected_files.py:203-211** — `test_canonical_blocks_non_live_principals` parametrized across 3 principals asserting the should_block matrix. Combined with `test_mirror_blocks_all_principals` (lines 217-233), the entire classify/should_block contract is verified in ~30 lines.
 
-4. **test_risk_radar.py:95-145** — `TestCiInstability` class with 6 test methods proving critical/high/medium/none severity boundary logic. Each threshold is tested with explicit ratios that verify the constants are correctly applied.
+4. **test_risk_radar.py:95-145** — `TestCiInstability` class with 7 test methods proving critical/high/medium/none severity boundary logic plus `test_pattern_slug_is_ci_instability` (line 140). Each threshold is tested with explicit ratios that verify the constants are correctly applied.
 
 ## Scoring
 
@@ -61,11 +61,15 @@ status: completed
 | MEDIUM | 1 | 0.5 | 0.5 |
 | LOW | 1 | 0.2 | 0.2 |
 | **Total penalty** | | | **0.7** |
-| **Score** | | | **9.0/10** |
+| **Score** | | | **9.3/10** |
+
+## Cross-Report Note
+
+`test_morning_check.py` is also flagged in the Test Trustworthiness report (ln-635) for time isolation (real `datetime.now(UTC)` at line 135-147, assessed LOW risk). The concerns are non-overlapping: this report addresses **oracle indirection** (5-class stub layer depth at lines 23-128, assessed MEDIUM), while ln-635 addresses **time isolation**. Both findings can apply simultaneously; fixing one does not resolve the other.
 
 ## Summary
 
-Overall Oracle Effectiveness Score: **9.0/10**
+Overall Oracle Effectiveness Score: **9.3/10**
 
 - **2 findings** — 1 MEDIUM, 1 LOW
 - **Outstanding oracle quality** across all 6 files

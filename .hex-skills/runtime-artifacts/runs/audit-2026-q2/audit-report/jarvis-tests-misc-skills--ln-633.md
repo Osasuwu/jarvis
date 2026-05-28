@@ -5,7 +5,7 @@ worker: ln-633
 category: Portfolio Value
 domain: misc_skills
 scan_path: tests/
-score: 9.0
+score: 9.5
 total_issues: 1
 critical: 0
 high: 0
@@ -29,22 +29,22 @@ status: completed
 
 | Test File | Lines | Impact (1-5) | Probability (1-5) | Score | Decision | Notes |
 |-----------|-------|-------------|-------------------|-------|----------|-------|
-| test_classifier.py | 175 | 3 | 3 | 9 | KEEP | Pure parsing + prompt assembly; well-scoped edge-case coverage |
-| test_principal.py | 134 | 3 | 4 | 12 | KEEP | #429 regression guard (piped stdin); parametrized env var tests |
-| test_protected_files.py | 251 | 4 | 3 | 12 | KEEP | #426 classify/should_block matrix; cross-platform path handling |
-| test_morning_check.py | 423 | 4 | 3 | 12 | KEEP | Custom stubs for alarm enqueue; idempotency key tests |
-| test_secret_scanner.py | 266 | 5 | 4 | 20 | KEEP | Highest-value file — 25+ secret patterns, bash dangers, heredocs |
-| test_risk_radar.py | 388 | 3 | 3 | 9 | KEEP | 5 risk patterns with severity thresholds; report generation |
+| test_classifier.py | 174 | 3 | 3 | 9 | KEEP | Pure parsing + prompt assembly; well-scoped edge-case coverage |
+| test_principal.py | 133 | 3 | 4 | 12 | KEEP | #429 regression guard (piped stdin); parametrized env var tests |
+| test_protected_files.py | 277 | 4 | 3 | 12 | KEEP | #426 classify/should_block matrix; cross-platform path handling |
+| test_morning_check.py | 422 | 4 | 3 | 12 | KEEP | Custom stubs for alarm enqueue; idempotency key tests |
+| test_secret_scanner.py | 265 | 5 | 4 | 20 | KEEP | Highest-value file — 25+ secret patterns, bash dangers, heredocs |
+| test_risk_radar.py | 387 | 3 | 3 | 9 | KEEP | 5 risk patterns with severity thresholds; report generation |
 
 ## Findings
 
 | Severity | Location | Issue | Principle | Recommendation | Effort |
 |----------|----------|-------|-----------|----------------|--------|
-| MEDIUM | tests/test_morning_check.py:397 | Imports `_hash_scope_files` from `agents.dispatcher` — a private function from another module; dispatcher refactors could silently break this test | Maintainability | Use public API or duplicate the hash logic inline; alternatively add a comment linking to the contract | S |
+| MEDIUM | tests/test_morning_check.py:397 | Imports `_hash_scope_files` from `agents.executor` — a private function from another module; executor refactors could silently break this test | Maintainability | Use public API or duplicate the hash logic inline; alternatively add a comment linking to the contract | S |
 
 ## Summary
 
-Overall Portfolio Value Score: **9.0/10**
+Overall Portfolio Value Score: **9.5/10**
 
 - **6 KEEP** — all test files provide strong value with minimal maintenance overhead
 - **0 DELETE / 0 MERGE / 0 REWRITE** — no files recommended for deletion or consolidation
