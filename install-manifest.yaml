@@ -132,6 +132,21 @@ env_vars:
   - name: "JARVIS_HOME"
     value: "{repo_root}"
     platforms: ["windows", "posix"]
+  # Context-economy env vars per #706 / workflow-table rows #96+#97.
+  # NoLiMa ICML 2025: 11/12 LLMs drop below 50% by 32K tokens;
+  # Sikkema 2026-04: 65% autocompact cap improves CC reasoning consistency.
+  - name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+    value: "65"
+    platforms: ["windows", "posix"]
+  # Disable Opus 1M-context window. Rationale is latency / reasoning quality
+  # (NoLiMa: degradation past ~32K), NOT cost — Claude Max has no incremental
+  # per-token charge. Note: this env var is device-global; every Claude Code
+  # session on the box (including non-Jarvis projects like redrobot) inherits
+  # the 1M-disabled default. Accept that scope: the smart-zone argument
+  # applies to all CC sessions regardless of project.
+  - name: "CLAUDE_CODE_DISABLE_1M_CONTEXT"
+    value: "1"
+    platforms: ["windows", "posix"]
 
 # Health check — after apply, run this command (dry-run of SessionStart hook).
 # Non-zero exit → auto-rollback from the most recent backup.
