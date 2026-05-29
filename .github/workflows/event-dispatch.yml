@@ -304,15 +304,29 @@ jobs:
             }"
 
   # ── Review Negative: Claude code-review bot ───────────────────────
-  # The Claude code-review plugin posts findings as an issue-comment
-  # (memory `feedback_check_all_pr_reviewers`), not via pull_request_review.
+  # The Claude code-review plugin (Osasuwu/claude-plugins-official fork)
+  # posts findings as an issue-comment, not via pull_request_review.
   # This job parses the verdict here in CI — the only fragile string-match
   # in the system per PRD #41 — so the orchestrator's filter stays
   # `event_type = 'review_negative'`, one stable predicate.
   #
-  # Negative threshold: ≥1 CRITICAL or MAJOR finding (matches /rework
-  # convergence target n_critical==0 AND n_major<=2). MINOR-only or
-  # clean reviews do NOT emit.
+  # Plugin output format (post-fork as of 2026-05-29):
+  #   Header line is exactly `### Code review` (three #, lowercase 'r').
+  #   Body line `Found N issues:` declares N actionable findings (the
+  #   plugin already filters to confidence >= 80, so every one is real).
+  #   `No issues found.` body → clean PR, no emit.
+  #   Severity labels (CRITICAL / MAJOR / MINOR) are NOT emitted by the
+  #   plugin — every surfaced issue is treated as actionable.
+  #
+  # The plugin also emits a SEPARATE `### Simplification opportunities`
+  # comment when agent #10 finds informational opportunities. That header
+  # is intentionally informational-only — this job ignores it so the
+  # rework loop does not fire on simplification-only findings.
+  #
+  # Negative threshold: N >= 1 actionable issue. Maps to /rework convergence
+  # target via n_issues. Back-compat fields n_critical / n_major / n_minor
+  # preserved for downstream consumers; with the plugin we set
+  # n_critical=N, n_major=0, n_minor=0 (every plugin issue is actionable).
   review-negative-claude-bot:
     if: >
       github.event_name == 'issue_comment' &&
@@ -328,47 +342,44 @@ jobs:
           # Read comment body from the event payload (safe — no shell expansion of comment content)
           COMMENT_BODY="$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")"
 
-          # Bail if this isn't a Code Review comment (claude[bot] posts other
-          # comment kinds too — e.g. orchestrator-watcher dispatches, /rework
-          # progress comments).
-          if ! printf '%s' "$COMMENT_BODY" | head -1 | grep -qE '^##[[:space:]]+Code Review'; then
-            echo "Not a Code Review comment header; skipping"
+          # Bail if this isn't a Code Review header (claude[bot] posts other
+          # comment kinds: simplification opportunities, /rework progress,
+          # orchestrator-watcher dispatches). Match `### Code review` exactly —
+          # case-sensitive, lowercase 'r' (plugin spelling).
+          FIRST_LINE="$(printf '%s' "$COMMENT_BODY" | head -1)"
+          if ! printf '%s' "$FIRST_LINE" | grep -qE '^###[[:space:]]+Code review$'; then
+            echo "Not a Code review comment header (first line: $FIRST_LINE); skipping"
             exit 0
           fi
 
-          # Count actionable findings. Two formats seen in production:
-          #   (A) ### CRITICAL / ### MAJOR / ### MINOR section headings, with
-          #       numbered ** N. ...** items beneath each section.
-          #   (B) Per-finding ** Severity: ** {CRITICAL,HIGH,MAJOR,MINOR} labels.
-          # awk tracks the current section so numbered items count toward the
-          # right bucket; per-finding Severity labels are tallied independently.
-          # The two never mix in a single comment, so no double-counting.
-          # This is the "fragile string-match" the PRD #41 calls out as the
-          # only one in the system; if the bot's format changes, fix here.
-          COUNTS=$(printf '%s\n' "$COMMENT_BODY" | awk '
-            BEGIN { section=""; crit=0; maj=0; min=0 }
-            /^### CRITICAL/ { section="C"; next }
-            /^### MAJOR/    { section="M"; next }
-            /^### MINOR/    { section="m"; next }
-            /^### /         { section=""; next }
-            /^\*\*[0-9]+\./ {
-              if      (section=="C") crit++
-              else if (section=="M") maj++
-              else if (section=="m") min++
-            }
-            /\*\*Severity:\*\* CRITICAL/      { crit++ }
-            /\*\*Severity:\*\* (HIGH|MAJOR)/  { maj++ }
-            /\*\*Severity:\*\* MINOR/         { min++ }
-            END { print crit, maj, min }
-          ')
-          N_CRITICAL=$(echo "$COUNTS" | awk '{print $1}')
-          N_MAJOR=$(echo "$COUNTS" | awk '{print $2}')
-          N_MINOR=$(echo "$COUNTS" | awk '{print $3}')
-
-          if [ "$N_CRITICAL" -eq 0 ] && [ "$N_MAJOR" -eq 0 ]; then
-            echo "No CRITICAL/MAJOR findings (minor=$N_MINOR); not emitting review_negative"
+          # Count actionable findings.
+          # Two outcomes possible from the plugin:
+          #   - "No issues found." → clean review, no emit.
+          #   - "Found N issues:" or "Found N issue:" → N actionable findings.
+          # This is the "fragile string-match" PRD #41 calls out as the only
+          # one in the system; if the plugin format changes, fix here.
+          # See Osasuwu/claude-plugins-official:plugins/code-review/commands/code-review.md
+          if printf '%s\n' "$COMMENT_BODY" | grep -qE '^No issues found\.'; then
+            echo "Clean review (No issues found); not emitting review_negative"
             exit 0
           fi
+
+          N_ISSUES=$(printf '%s\n' "$COMMENT_BODY" \
+            | grep -oE '^Found [0-9]+ issues?:' \
+            | head -1 \
+            | grep -oE '[0-9]+')
+
+          if [ -z "$N_ISSUES" ] || [ "$N_ISSUES" -eq 0 ]; then
+            echo "No 'Found N issues:' line parseable from Code review comment; not emitting"
+            exit 0
+          fi
+
+          # Back-compat: downstream consumers (orchestrator watcher, /rework)
+          # still read n_critical / n_major / n_minor from earlier schema.
+          # Plugin output has no severity split, so map all to n_critical.
+          N_CRITICAL=$N_ISSUES
+          N_MAJOR=0
+          N_MINOR=0
 
           REPO="${{ github.repository }}"
           PR_NUM="${{ github.event.issue.number }}"
@@ -377,6 +388,9 @@ jobs:
           COMMENT_URL="${{ github.event.comment.html_url }}"
 
           PR_TITLE_ESCAPED=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
+
+          ISSUE_WORD="issues"
+          if [ "$N_ISSUES" -eq 1 ]; then ISSUE_WORD="issue"; fi
 
           curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
             -H "apikey: ${SUPABASE_ANON_KEY}" \
@@ -388,13 +402,14 @@ jobs:
               \"severity\": \"medium\",
               \"repo\": \"${REPO}\",
               \"source\": \"github_action\",
-              \"title\": \"PR #${PR_NUM} — Claude code-review: ${N_CRITICAL} CRITICAL, ${N_MAJOR} MAJOR\",
+              \"title\": \"PR #${PR_NUM} — Claude code-review: ${N_ISSUES} ${ISSUE_WORD}\",
               \"payload\": {
                 \"pr_number\": ${PR_NUM},
                 \"pr_title\": \"${PR_TITLE_ESCAPED}\",
                 \"reviewer_kind\": \"claude_bot\",
                 \"comment_id\": ${COMMENT_ID},
                 \"comment_url\": \"${COMMENT_URL}\",
+                \"n_issues\": ${N_ISSUES},
                 \"n_critical\": ${N_CRITICAL},
                 \"n_major\": ${N_MAJOR},
                 \"n_minor\": ${N_MINOR}
