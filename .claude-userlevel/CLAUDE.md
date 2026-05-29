@@ -21,7 +21,7 @@ If the empty-`memories_used` rate rises after centralising here, the relevant ru
 
 Before any non-trivial decision, save, or skill invocation, consult memory. Three passes — run in parallel where possible:
 
-- **Always-load gates** — `memory_list(project=<project>, type=feedback, always_load=true)`. Surface unconditionally; these are session-wide rules that bind every skill.
+- **Always-load gates** — memories **tagged `always_load`**, surfaced by the SessionStart hook (`session-context.py` → `_query_always_load`, a `tags @> ['always_load']` query). There is **no `always_load` parameter** on `memory_list`/`memory_recall` — the gate is tag-based, not a query flag. Flipping the tag on a memory requires `record_decision` (trigger #4 below). Surface unconditionally; these are session-wide rules that bind every skill. (Mechanism detail: memory `always_load_tag_mechanism`.)
 - **Topic recall with skill name** — `memory_recall(query="<skill-name> <topic + entities>", type=decision/feedback, brief=true, limit=10–15)`. **The literal skill name MUST appear in the query** so skill-specific contract memories (e.g. `grill_me_record_decision_gate`) surface every invocation. Skill contracts are not always_load — they ride on this recall.
 - **Outcomes for the area** — `outcome_list(scope=<area>, severity≥medium, since=90d)` when the work touches a known-failure region. 2+ failures cluster → surface in the first turn before acting.
 
