@@ -78,7 +78,7 @@ def fake_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init"],
+        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "init"],
         cwd=repo,
         check=True,
     )
@@ -1297,3 +1297,359 @@ def test_unknown_install_as_raises(fake_repo: Path, tmp_path: Path) -> None:
     m = installer.load_manifest(path)
     with pytest.raises(ValueError, match="unknown install_as"):
         installer.build_plan(m, fake_repo)
+
+
+# ── #706: BOM/CRLF .env encoding scan ──────────────────────────────
+
+
+class TestEnvEncodingScan:
+    """Tests for .env BOM/CRLF detection and fix."""
+
+    def test_detect_bom(self, tmp_path: Path) -> None:
+        """BOM-prefixed .env is flagged."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc123\n")
+        assert installer._detect_env_issues(env_file) == "BOM"
+
+    def test_detect_crlf(self, tmp_path: Path) -> None:
+        """CRLF line endings in .env are flagged."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"TOKEN=abc123\r\nKEY=val\r\n")
+        assert installer._detect_env_issues(env_file) == "CRLF"
+
+    def test_detect_bom_and_crlf(self, tmp_path: Path) -> None:
+        """Both BOM and CRLF in same file are flagged."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc123\r\n")
+        issues = installer._detect_env_issues(env_file)
+        assert "BOM" in issues
+        assert "CRLF" in issues
+        assert "+" in issues
+
+    def test_clean_file_unflagged(self, tmp_path: Path) -> None:
+        """UTF-8-no-BOM + LF file returns empty string."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"TOKEN=abc123\nKEY=val\n")
+        assert installer._detect_env_issues(env_file) == ""
+
+    def test_scan_finds_bom_and_crlf(self, tmp_path: Path) -> None:
+        """_scan_env_encoding flags both BOM and CRLF .env files."""
+        claude_home = tmp_path / ".claude"
+        claude_home.mkdir()
+        # BOM file under .claude/
+        bom_env = claude_home / "plugins" / "cache"
+        bom_env.mkdir(parents=True)
+        (bom_env / ".env").write_bytes(b"\xef\xbb\xbfTOKEN=abc\n")
+        # CRLF file under .claude/**/
+        crlf_env = claude_home / "debug"
+        crlf_env.mkdir()
+        (crlf_env / "test.env").write_bytes(b"KEY=val\r\n")
+
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        # Clean repo-root .env (should not appear in findings).
+        (repo_root / ".env").write_bytes(b"CLEAN=ok\n")
+
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert len(findings) == 2
+        paths = {str(p) for p, _, _ in findings}
+        assert str(bom_env / ".env") in paths
+        assert str(crlf_env / "test.env") in paths
+        # All findings are fixable (is_user_env=True)
+        assert all(u for _, _, u in findings)
+
+    def test_repo_root_env_is_warn_only(self, tmp_path: Path) -> None:
+        """Repo-root .env with issues is flagged as is_user_env=False."""
+        claude_home = tmp_path / ".claude"
+        claude_home.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".env").write_bytes(b"\xef\xbb\xbfTOKEN=abc\n")
+
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert len(findings) == 1
+        assert not findings[0][2]  # is_user_env=False
+
+    def test_fix_strips_bom(self, tmp_path: Path) -> None:
+        """_fix_env_encoding strips UTF-8 BOM."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc\n")
+        installer._fix_env_encoding(env_file, "BOM")
+        assert env_file.read_bytes() == b"TOKEN=abc\n"
+
+    def test_fix_converts_crlf(self, tmp_path: Path) -> None:
+        """_fix_env_encoding converts CRLF to LF."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"TOKEN=abc\r\nKEY=val\r\n")
+        installer._fix_env_encoding(env_file, "CRLF")
+        assert env_file.read_bytes() == b"TOKEN=abc\nKEY=val\n"
+
+    def test_fix_bom_and_crlf(self, tmp_path: Path) -> None:
+        """_fix_env_encoding handles both BOM and CRLF."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"\xef\xbb\xbfTOKEN=abc\r\n")
+        installer._fix_env_encoding(env_file, "BOM+CRLF")
+        assert env_file.read_bytes() == b"TOKEN=abc\n"
+
+    def test_scan_skips_directories(self, tmp_path: Path) -> None:
+        """rglob("*.env") may match dir names; _scan_env_encoding skips them."""
+        claude_home = tmp_path / ".claude"
+        claude_home.mkdir()
+        # Create a directory named .env (unusual but possible).
+        (claude_home / "some.env").mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert findings == []  # no crash, no false positive
+
+    # ── Review-finding regressions (PR #725 round 1) ───────────────
+
+    def test_scan_missing_claude_home_returns_no_findings(self, tmp_path: Path) -> None:
+        """B3: claude_home absent → return []. Python 3.12 ``Path.rglob`` raises
+        ``FileNotFoundError`` on a missing base since gh-73435; the pre-apply
+        scan on a fresh install must not crash."""
+        claude_home = tmp_path / ".claude-does-not-exist-yet"
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        # Must not raise — fresh-install path.
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert findings == []
+
+    def test_scan_missing_claude_home_still_checks_repo_env(self, tmp_path: Path) -> None:
+        """B3 follow-up: missing claude_home must not suppress repo-root .env warning."""
+        claude_home = tmp_path / ".claude-does-not-exist-yet"
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".env").write_bytes(b"\xef\xbb\xbfTOKEN=abc\n")
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert len(findings) == 1
+        path, issues, is_user = findings[0]
+        assert path == repo_root / ".env"
+        assert "BOM" in issues
+        assert is_user is False  # repo-root .env stays warn-only
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("os"), "symlink"),
+        reason="symlink unsupported on this platform / unprivileged",
+    )
+    def test_scan_skips_symlink_escape(self, tmp_path: Path) -> None:
+        """M2: a symlink under claude_home that resolves outside it is skipped.
+        Prevents arbitrary-file read+write via planted symlink."""
+        import os as _os
+
+        claude_home = tmp_path / ".claude"
+        claude_home.mkdir()
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        target = outside / "secrets.env"
+        target.write_bytes(b"\xef\xbb\xbfPROD_SECRET=value\n")
+        link = claude_home / "leaked.env"
+        try:
+            _os.symlink(target, link)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation denied (Windows non-admin)")
+        findings = installer._scan_env_encoding(claude_home, repo_root)
+        assert findings == [], (
+            "symlink escape must be skipped, not surfaced as a fixable finding"
+        )
+        # Original target untouched (proves _fix_env_encoding never ran on it).
+        assert target.read_bytes() == b"\xef\xbb\xbfPROD_SECRET=value\n"
+
+    def test_fix_atomic_writes_via_tempfile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """B2: a SIGKILL between truncate and write must not destroy the .env.
+        Simulated by raising in os.fsync after the tempfile is written but
+        before os.replace — original file content must survive untouched."""
+        import os as _os
+
+        env_file = tmp_path / ".env"
+        original = b"\xef\xbb\xbfTOKEN=critical-prod-secret\n"
+        env_file.write_bytes(original)
+
+        real_fsync = _os.fsync
+
+        def boom(fd: int) -> None:
+            real_fsync(fd)
+            raise OSError("simulated disk full mid-write")
+
+        monkeypatch.setattr(_os, "fsync", boom)
+        with pytest.raises(OSError, match="simulated disk full"):
+            installer._fix_env_encoding(env_file, "BOM")
+        assert env_file.read_bytes() == original, (
+            "atomic write contract broken — original .env destroyed on interruption"
+        )
+        # Tempfile cleanup: only the original remains.
+        siblings = [p.name for p in tmp_path.iterdir()]
+        assert siblings == [".env"], f"tempfile leak: {siblings}"
+
+    def test_fix_noop_when_already_clean(self, tmp_path: Path) -> None:
+        """B2 follow-up: clean file → no write at all (preserves mtime/perms)."""
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(b"TOKEN=abc\n")
+        # Mark mtime far in past to detect any rewrite.
+        import os as _os
+
+        _os.utime(env_file, (1_000_000_000, 1_000_000_000))
+        installer._fix_env_encoding(env_file, "BOM")  # claims BOM but content is clean
+        st = env_file.stat()
+        assert st.st_mtime == 1_000_000_000, "clean-file fast path was bypassed"
+
+    @staticmethod
+    def _wire_main(monkeypatch, manifest_path, fake_repo) -> None:
+        """Point installer.__file__ at fake_repo so main() derives the right
+        repo_root via ``Path(__file__).resolve().parents[2]``."""
+        fake_installer = fake_repo / "scripts" / "install" / "installer.py"
+        fake_installer.parent.mkdir(parents=True, exist_ok=True)
+        fake_installer.touch()
+        monkeypatch.setattr(installer, "__file__", str(fake_installer))
+
+    def test_main_fix_env_encoding_without_apply_warns(
+        self,
+        manifest: Path,
+        fake_repo: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """m3 minor: --fix-env-encoding without --apply must warn, not silently no-op."""
+        self._wire_main(monkeypatch, manifest, fake_repo)
+        rc = installer.main(["--manifest", str(manifest), "--fix-env-encoding"])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "no effect without --apply" in err
+
+    def test_main_fix_env_encoding_with_state_current(
+        self,
+        manifest: Path,
+        fake_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """B1: when state=='current', --fix-env-encoding --apply must STILL run
+        the fix loop. The state==current short-circuit was unreachable for the
+        most common re-run case (broken .env on an already-installed machine)."""
+        self._wire_main(monkeypatch, manifest, fake_repo)
+        # First apply → state becomes current.
+        rc = installer.main(["--manifest", str(manifest), "--apply", "--skip-health-check"])
+        assert rc == 0
+
+        m = installer.load_manifest(manifest)
+        target = installer._expand(m["target_root"])
+        # Now corrupt a .env file under target_root.
+        broken = target / "broken.env"
+        broken.write_bytes(b"\xef\xbb\xbfTOKEN=abc\r\nKEY=val\r\n")
+
+        # Re-run with state=current + --fix-env-encoding — must repair it.
+        rc = installer.main(
+            ["--manifest", str(manifest), "--apply", "--fix-env-encoding", "--skip-health-check"]
+        )
+        assert rc == 0
+        assert broken.read_bytes() == b"TOKEN=abc\nKEY=val\n"
+
+    def test_main_fresh_install_scans_post_apply(
+        self,
+        manifest: Path,
+        fake_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """M3: on fresh install, the pre-apply scan sees an empty target. The
+        fix loop must re-scan after apply_plan or it always says 'no fixable
+        files found' even when newly-installed .env files have issues."""
+        # Plant a BOM-laden .env IN the source tree so apply_plan copies it
+        # into the fresh target. We piggy-back on the SOUL.md group by renaming
+        # the dest, but the simpler path is to add a tiny standalone group.
+        bad_env_src = fake_repo / "config" / "broken.env"
+        bad_env_src.write_bytes(b"\xef\xbb\xbfTOKEN=abc\r\n")
+
+        m = installer.load_manifest(manifest)
+        m["groups"].append(
+            {
+                "id": "test_env",
+                "enabled": True,
+                "files": [
+                    {"source": "config/broken.env", "dest": "broken.env", "template": False},
+                ],
+            }
+        )
+        manifest.write_text(yaml.safe_dump(m), encoding="utf-8")
+
+        self._wire_main(monkeypatch, manifest, fake_repo)
+        rc = installer.main(
+            ["--manifest", str(manifest), "--apply", "--fix-env-encoding", "--skip-health-check"]
+        )
+        assert rc == 0
+        target = installer._expand(m["target_root"])
+        assert (target / "broken.env").read_bytes() == b"TOKEN=abc\n", (
+            "post-apply re-scan must repair newly-installed .env files; "
+            "pre-apply scan can't see them"
+        )
+
+    def test_main_fix_loop_continues_on_oserror(
+        self,
+        manifest: Path,
+        fake_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """M1: an OSError on one .env must not exit with an unhandled traceback.
+        Other files continue to be processed; the apply itself reports success."""
+        self._wire_main(monkeypatch, manifest, fake_repo)
+        # First apply → state becomes current.
+        rc = installer.main(["--manifest", str(manifest), "--apply", "--skip-health-check"])
+        assert rc == 0
+
+        m = installer.load_manifest(manifest)
+        target = installer._expand(m["target_root"])
+        bad = target / "bad.env"
+        good = target / "good.env"
+        bad.write_bytes(b"\xef\xbb\xbfTOKEN=x\n")
+        good.write_bytes(b"\xef\xbb\xbfTOKEN=y\n")
+
+        real_fix = installer._fix_env_encoding
+
+        def selective_fix(path: Path, issues: str) -> None:
+            if path.name == "bad.env":
+                raise OSError("simulated permission denied")
+            return real_fix(path, issues)
+
+        monkeypatch.setattr(installer, "_fix_env_encoding", selective_fix)
+        rc = installer.main(
+            ["--manifest", str(manifest), "--apply", "--fix-env-encoding", "--skip-health-check"]
+        )
+        assert rc == 0, "OSError on one .env must not fail the whole install"
+        err = capsys.readouterr().err
+        assert "could not fix" in err and "bad.env" in err
+        # good.env got fixed despite bad.env failing.
+        assert good.read_bytes() == b"TOKEN=y\n"
+
+    def test_platforms_filter_skips_non_matching(self, tmp_path: Path) -> None:
+        """m2 minor: env_vars entry with platforms=['windows'] only on windows.
+        Asserts the filter is applied, regardless of which platform the test
+        runs on (one of the two must be excluded)."""
+        manifest = {
+            "version": 1,
+            "target_root": str(tmp_path / ".claude"),
+            "env_vars": [
+                {"name": "WIN_ONLY", "value": "1", "platforms": ["windows"]},
+                {"name": "POSIX_ONLY", "value": "1", "platforms": ["posix"]},
+                {"name": "BOTH", "value": "1"},  # platforms omitted → applies everywhere
+            ],
+            "groups": [],
+        }
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
+                        "-c", "commit.gpgsign=false",
+                        "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+        plan = installer.build_plan(manifest, repo)
+        set_env_names = {a.dest for a in plan.actions if a.kind == "set_env"}
+        if installer._platform() == "windows":
+            assert "WIN_ONLY" in set_env_names
+            assert "POSIX_ONLY" not in set_env_names
+        else:
+            assert "POSIX_ONLY" in set_env_names
+            assert "WIN_ONLY" not in set_env_names
+        assert "BOTH" in set_env_names  # platforms omitted → always applies
