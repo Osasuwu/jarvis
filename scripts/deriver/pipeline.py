@@ -23,13 +23,12 @@ from __future__ import annotations
 import json
 import os
 import re
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from lib.llm_client import call_llm
 from lib.secret_scrubber import scrub
+from deriver.escalation import TierResult, derive_with_escalation
 
 # ---------------------------------------------------------------------------
 # Defaults
@@ -308,15 +307,18 @@ def derive_from_session(
       project_hash:     Stable hash of the project root (see
                         ``deriver-accumulator._project_hash``).
       llm_fn:           Callable ``(prompt) → text or None``.  Defaults to
-                        ``partial(call_llm, system_prompt=…)``.
+                        ``derive_with_escalation`` (multi-tier: Ollama →
+                        Ollama-small → DeepSeek; see
+                        ``deriver.escalation``).
       insert_fn:        Callable ``(row_dict) → UUID``.  Defaults to
                         ``_insert_memory`` (writes to Supabase).
       buffer_root:      Override the buffer directory root.  Defaults to
                         ``~/.claude/.deriver-buffer``.
 
     Returns:
-      List of inserted candidate UUIDs (≤5).  Empty list on empty buffer
-      or all-parsing-fail.
+      List of inserted candidate UUIDs (≤5).  Empty list on empty buffer,
+      all-parsing-fail, or all-tiers-exhausted (defer-to-queue with
+      ``events_canonical`` row).
 
     No exception escapes — errors are logged to stderr and the function
     returns whatever was inserted before the error.
@@ -332,28 +334,41 @@ def derive_from_session(
     # 2. Scrub input transcript before LLM sees it
     scrubbed_transcript, _ = scrub(transcript)
 
-    # 3. Resolve LLM
+    # 3. Resolve LLM system prompt
     system_prompt = (
         "You are a memory-extraction assistant. "
         "Analyse the session transcript and return ONLY a JSON array of memory-worthy insights. "
         "Each object must have: type, project, name, description, content, tags."
     )
-    if llm_fn is None:
-        llm_fn = partial(
-            call_llm,
+
+    # 4. Call LLM (multi-tier escalation in production, injected fn for tests)
+    prompt = _render_prompt(scrubbed_transcript)
+
+    tier_used: str | None = None
+    if llm_fn is not None:
+        response = llm_fn(prompt)
+        if response is None:
+            print(
+                "[deriver-pipeline] LLM returned None (both backends failed)",
+                file=__import__("sys").stderr,
+            )
+            return []
+    else:
+        tier_result = derive_with_escalation(
+            prompt,
             system_prompt=system_prompt,
             format_json=True,
         )
-
-    # 4. Call LLM
-    prompt = _render_prompt(scrubbed_transcript)
-    response = llm_fn(prompt)
-    if response is None:
-        print(
-            "[deriver-pipeline] LLM returned None (both backends failed)",
-            file=__import__("sys").stderr,
-        )
-        return []
+        tier_used = tier_result.tier_completed
+        if tier_result.text is None:
+            print(
+                f"[deriver-pipeline] all tiers failed (tier={tier_result.tier_completed} "
+                f"model={tier_result.model}) — deferring to queue",
+                file=__import__("sys").stderr,
+            )
+            _write_skip_event(session_id, tier_result)
+            return []
+        response = tier_result.text
 
     # 5. Parse response
     candidates = _parse_json_response(response)
@@ -427,6 +442,87 @@ def derive_from_session(
         )
 
     return inserted
+
+
+# ---------------------------------------------------------------------------
+# Defer-to-queue — events_canonical row on all-tiers-failure
+# ---------------------------------------------------------------------------
+
+
+def _write_skip_event(session_id: str, result: TierResult) -> None:
+    """Write an ``events_canonical`` row recording the skip.
+
+    Called when all escalation tiers are exhausted.  This is best-effort:
+    if Supabase is unreachable the error is logged but not raised (the
+    session end must not block on observability).
+
+    ``events_canonical`` schema (see ``mcp-memory/schema.sql``):
+      event_id (PK), trace_id, ts, actor, action, payload, outcome,
+      cost_tokens, cost_usd, redacted, degraded.
+    """
+    import json as _json
+
+    _root = Path(__file__).resolve().parent.parent.parent
+    try:
+        from dotenv import load_dotenv
+
+        for _env in [_root / ".env", _root.parent / ".env"]:
+            if _env.exists():
+                load_dotenv(_env, override=True)
+                break
+    except Exception:
+        pass
+
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not (url and key):
+        print(
+            "[deriver-pipeline] skip-event: SUPABASE_URL or SUPABASE_KEY missing — skipping events row",
+            file=__import__("sys").stderr,
+        )
+        return
+
+    total_tokens = result.input_tokens + result.output_tokens
+
+    body = _json.dumps({
+        "trace_id": str(uuid4()),
+        "actor": "deriver:sessionend",
+        "action": "deriver_skip",
+        "payload": {
+            "session_id": session_id,
+            "tier_completed": result.tier_completed,
+            "model": result.model,
+            "input_tokens": result.input_tokens,
+            "output_tokens": result.output_tokens,
+        },
+        "outcome": "failure",
+        "cost_tokens": total_tokens if total_tokens > 0 else None,
+        "degraded": True,
+    })
+
+    # Use stdlib urllib (no extra dependency).
+    import urllib.request
+
+    headers = {
+        "apikey": key,
+        "Authorization": f"Bearer {key}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+    api_url = f"{url.rstrip('/')}/rest/v1/events_canonical"
+    req = urllib.request.Request(
+        api_url,
+        data=body.encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(
+            f"[deriver-pipeline] skip-event: write failed: {e}",
+            file=__import__("sys").stderr,
+        )
 
 
 # ---------------------------------------------------------------------------
