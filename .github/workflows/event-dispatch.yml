@@ -251,58 +251,6 @@ jobs:
               \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
             }"
 
-  # ── Review Negative: Copilot ──────────────────────────────────────
-  # Same canonical event_type, reviewer_kind='copilot'. Per memory
-  # `copilot_review_role` (2026-05-22) Copilot is currently inactive in
-  # this repo, but the schema branch stays — orchestrator filter is
-  # event_type only; keeping the branch costs nothing and avoids workflow
-  # churn if Copilot returns.
-  review-negative-copilot:
-    if: >
-      github.event_name == 'pull_request_review' &&
-      github.event.review.state == 'changes_requested' &&
-      github.event.review.user.type == 'Bot' &&
-      (github.event.review.user.login == 'github-copilot[bot]' ||
-       github.event.review.user.login == 'copilot-pull-request-reviewer[bot]') &&
-      github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch review_negative event (copilot)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-        run: |
-          REPO="${{ github.repository }}"
-          PR_NUM="${{ github.event.pull_request.number }}"
-          PR_TITLE="${{ github.event.pull_request.title }}"
-          REVIEWER="${{ github.event.review.user.login }}"
-          REVIEW_ID="${{ github.event.review.id }}"
-          REVIEW_URL="${{ github.event.review.html_url }}"
-
-          PR_TITLE_ESCAPED=$(echo "$PR_TITLE" | sed 's/"/\\"/g')
-
-          curl -s -X POST "${SUPABASE_URL}/rest/v1/events" \
-            -H "apikey: ${SUPABASE_ANON_KEY}" \
-            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
-            -H "Content-Type: application/json" \
-            -H "Prefer: return=minimal" \
-            -d "{
-              \"event_type\": \"review_negative\",
-              \"severity\": \"medium\",
-              \"repo\": \"${REPO}\",
-              \"source\": \"github_action\",
-              \"title\": \"PR #${PR_NUM} changes requested by ${REVIEWER}\",
-              \"payload\": {
-                \"pr_number\": ${PR_NUM},
-                \"pr_title\": \"${PR_TITLE_ESCAPED}\",
-                \"reviewer_kind\": \"copilot\",
-                \"reviewer\": \"${REVIEWER}\",
-                \"review_id\": ${REVIEW_ID},
-                \"review_url\": \"${REVIEW_URL}\"
-              },
-              \"event_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
-            }"
-
   # ── Review Negative: Claude code-review bot ───────────────────────
   # The Claude code-review plugin (Osasuwu/claude-plugins-official fork)
   # posts findings as an issue-comment, not via pull_request_review.
