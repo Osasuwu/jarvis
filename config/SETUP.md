@@ -133,11 +133,11 @@ If you see `SUPABASE_URL and SUPABASE_KEY must be set` — check your `.env`.
 
 ## 8. Model routing policy
 
-| Model | Use for |
-|-------|---------|
-| `claude-haiku-4-5` | Triage, reports, searches, simple edits |
-| `claude-sonnet-4-6` | Planning, coding, complex debugging |
-| `claude-opus-4-6` | Manual-only, high-risk architectural decisions |
+| Tier | Use for |
+|------|---------|
+| Haiku | Triage, reports, searches, simple edits |
+| Sonnet | Planning, coding, complex debugging |
+| Opus | Manual-only, high-risk architectural decisions |
 
 Budget target: ~$20/month.
 

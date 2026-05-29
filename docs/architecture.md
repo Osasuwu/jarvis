@@ -109,11 +109,11 @@ Claude Code (Sonnet — default)
 
 ### Model routing
 
-| Model | Use for |
-|-------|---------|
-| `claude-haiku-4-5` | Triage, reports, searches, simple edits |
-| `claude-sonnet-4-6` | Planning, coding, research, debugging |
-| `claude-opus-4-6` | Manual-only, high-risk architectural decisions |
+| Tier | Use for |
+|------|---------|
+| Haiku | Triage, reports, searches, simple edits |
+| Sonnet | Planning, coding, research, debugging |
+| Opus | Manual-only, high-risk architectural decisions |
 
 ### Permission model
 
