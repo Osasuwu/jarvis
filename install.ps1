@@ -15,7 +15,8 @@ param(
     [string]$Manifest,
     [string]$Rollback,
     [switch]$SkipEnv,
-    [switch]$SkipHealthCheck
+    [switch]$SkipHealthCheck,
+    [switch]$FixEncoding
 )
 
 # Note: NOT setting $ErrorActionPreference = "Stop" globally.
@@ -41,6 +42,7 @@ $pyArgs = @("$repoRoot\scripts\install\installer.py")
 if ($Apply)            { $pyArgs += "--apply" }
 if ($SkipEnv)          { $pyArgs += "--skip-env" }
 if ($SkipHealthCheck)  { $pyArgs += "--skip-health-check" }
+if ($FixEncoding)      { $pyArgs += "--fix-env-encoding" }
 if ($Target)           { $pyArgs += @("--target", $Target) }
 if ($Manifest)         { $pyArgs += @("--manifest", $Manifest) }
 if ($Rollback)         { $pyArgs += @("--rollback", $Rollback) }
