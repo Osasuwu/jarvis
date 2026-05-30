@@ -215,3 +215,161 @@ queries:
     expected: [autonomous_chain_synthesis_template]
     kind: reference
     axis: lexical
+
+  # --- HYBRID lifecycle + topic (S0 expansion continued) ---
+  - id: q29
+    query: "subagent delegation verification PR"
+    expected: [verify_agent_findings_against_memory, subagent_acceptance_criteria_dodged_as_out_of_scope]
+    kind: behavior
+    axis: hybrid
+
+  - id: q30
+    query: "mock supabase client test patterns"
+    expected: [supabase_mocks_must_match_real_schema, memory_server_test_pattern]
+    kind: reference
+    axis: hybrid
+
+  - id: q31
+    query: "recall stale memories fix"
+    expected: [memory_recall_staleness_pattern_2026_05_23]
+    kind: topic
+    axis: lifecycle
+
+  - id: q32
+    query: "code review confidence CI tests"
+    expected: [reviewer_rubric_assumes_ci_present]
+    kind: behavior
+
+  - id: q33
+    query: "subagent test coverage quality"
+    expected: [subagent_test_coverage_overclaim]
+    kind: behavior
+
+  - id: q34
+    query: "session context memory management hooks"
+    expected: [memory_management_strategy_v1]
+    kind: reference
+
+  - id: q35
+    query: "events_canonical writer design C17"
+    expected: [event_dispatch_spam_fix]
+    kind: reference
+
+  - id: q36
+    query: "consolidation review approve reject"
+    expected: [consolidation_soft_archive]
+    kind: reference
+
+  - id: q37
+    query: "phase 3 type narrowing regression recall"
+    expected: [phase3_rewriter_type_narrowing_regression]
+    kind: topic
+
+  - id: q38
+    query: "record_decision always pass memories_used UUID"
+    expected: [record_decision_always_pass_memories_used]
+    kind: behavior
+
+  - id: q39
+    query: "record decision during refactors gap"
+    expected: [record_decision_during_refactors]
+    kind: behavior
+
+  - id: q40
+    query: "distribution test before taxonomy deletion"
+    expected: [distribution_test_before_deletion]
+    kind: behavior
+
+  - id: q41
+    query: "система целей Jarvis приоритеты P0 P1"
+    expected: [milestone_hierarchy_v3]
+    kind: topic
+
+  - id: q42
+    query: "cross-project impact mcp-memory redrobot"
+    expected: [pillar_is_not_one_task]
+    kind: reference
+
+  - id: q43
+    query: "context compaction verify premise"
+    expected: [post_compaction_task_premise_verification]
+    kind: behavior
+
+  - id: q44
+    query: "subagent Windows absolute path test portability"
+    expected: [delegate_subagent_pr_step_skipped_and_absolute_path_2026_05_17]
+    kind: behavior
+
+  - id: q45
+    query: "subagent worktree hijack uncommitted changes"
+    expected: [subagent_worktree_hijack_can_discard_uncommitted_local_edits]
+    kind: behavior
+
+  - id: q46
+    query: "outcome record verify project pattern tags"
+    expected: [outcome_record_verify_after_write]
+    kind: behavior
+
+  - id: q47
+    query: "explain analyze pgvector index recall tuning"
+    expected: [explain_sql_before_tuning_recall]
+    kind: reference
+
+  - id: q48
+    query: "pre-tool recall hook autonomous mid-turn"
+    expected: [pretooluse_action_triggers_idea]
+    kind: reference
+
+  - id: q49
+    query: "memory store dup warning before write"
+    expected: [no_memory_hygiene_tool]
+    kind: reference
+
+  # --- Cross-project / diagnostic queries ---
+  - id: q50
+    query: "redrobot CI pytest gate sandcastle"
+    expected: [smoke_test_catches_what_unit_tests_miss]
+    kind: reference
+
+  - id: q51
+    query: "FOK calibration Brier score metric"
+    expected: [decision_calibration_audit_2026_05_18_90d]
+    kind: topic
+
+  # --- More lifecycle: current-vs-stale pairs ---
+  - id: q52
+    query: "how to handle worktree isolation for agent tasks"
+    expected: []
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q53
+    query: "copilot review follow up before redo"
+    expected: [copilot_review_run_tests_before_fix, copilot_review_check_follow_up_commit]
+    kind: behavior
+
+  # --- More direct retrieval ---
+  - id: q54
+    query: "milestone vs pillar vs epic terminology"
+    expected: [milestone_hierarchy_v3]
+    kind: direct
+
+  - id: q55
+    query: "sandcastle agent hard rules protected files"
+    expected: []
+    kind: behavior
+
+  - id: q56
+    query: "PR body check no-issue hotfix labels"
+    expected: []
+    kind: reference
+
+  - id: q57
+    query: "installer BOM CRLF scan .env"
+    expected: []
+    kind: reference
+
+  - id: q58
+    query: "deriver multi-tier routing Ollama DeepSeek defer"
+    expected: []
+    kind: reference
