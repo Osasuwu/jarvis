@@ -111,8 +111,12 @@ class TestMemoryCalibrationSummary:
         monkeypatch.setattr("server._get_client", lambda: client)
 
         result = await _handle_memory_calibration_summary({})
+        # Error text surfaced
         assert "Error calling memory_calibration_summary" in result[0].text
         assert "rpc blew up" in result[0].text
+        # Complete recovery: single clean result, no partial state
+        assert len(result) == 1
+        assert result[0].type == "text"
 
     @pytest.mark.asyncio
     async def test_handles_dict_shape_rpc_response(self, monkeypatch):
