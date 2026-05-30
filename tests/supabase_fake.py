@@ -12,6 +12,8 @@ Usage::
     client.rpc_handlers["apply_evolution_plan"] = lambda params: {"status": "applied"}
 """
 
+from types import SimpleNamespace
+
 
 class FakeResp:
     """Fake response returned by execute()."""
@@ -140,3 +142,72 @@ def filter_val(call: dict, op: str, col: str):
         if f[0] == op and f[1] == col:
             return f[2]
     return None
+
+
+# ---------------------------------------------------------------------------
+# Lightweight stubs for simple hook tests
+# ---------------------------------------------------------------------------
+
+
+class StubClient:
+    """Minimal supabase-client stand-in for expand_links-style tests.
+
+    Supports ``.rpc(name, params) → self`` → ``.execute()`` chain.
+    Records RPC calls and returns controlled data or raises.
+    """
+
+    def __init__(self, *, data: list | None = None, raise_exc: Exception | None = None):
+        self._data = data or []
+        self._raise = raise_exc
+        self.rpc_calls: list[tuple[str, dict]] = []
+
+    def rpc(self, name: str, params: dict) -> "StubClient":
+        self.rpc_calls.append((name, params))
+        return self
+
+    def execute(self):
+        if self._raise:
+            raise self._raise
+        return SimpleNamespace(data=self._data)
+
+
+class TableStub:
+    """Supabase table/select-chain stand-in for check_known_unknown_gate-style tests.
+
+    Supports the ``.table().select().eq().not_.is_().limit().execute()`` chain.
+    ``data`` is the rows returned; ``raise_exc`` bubbles through any method
+    to exercise the fail-soft path.
+    """
+
+    def __init__(self, *, data: list | None = None, raise_exc: Exception | None = None):
+        self._data = data or []
+        self._raise = raise_exc
+        self.calls: list[tuple[str, tuple]] = []
+        # ``.not_`` is an accessor on the query builder, not a method, so
+        # expose it as an attribute that chains back to self.
+        self.not_ = self
+
+    def table(self, name: str) -> "TableStub":
+        self.calls.append(("table", (name,)))
+        return self
+
+    def select(self, *cols: str) -> "TableStub":
+        self.calls.append(("select", cols))
+        return self
+
+    def eq(self, col: str, val: object) -> "TableStub":
+        self.calls.append(("eq", (col, val)))
+        return self
+
+    def is_(self, col: str, val: object) -> "TableStub":
+        self.calls.append(("is_", (col, val)))
+        return self
+
+    def limit(self, n: int) -> "TableStub":
+        self.calls.append(("limit", (n,)))
+        return self
+
+    def execute(self):
+        if self._raise:
+            raise self._raise
+        return SimpleNamespace(data=self._data)
