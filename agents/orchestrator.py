@@ -8,9 +8,11 @@ type has a deterministic route, and any unenumerated ``(event_type, severity)``
 pair fails safe to ``ESCALATE``. The gemma4 judgment layer is deferred to #872.
 
 Side effects (writing ``task_queue`` rows, weekend-aware owner notification,
-running inline tool calls through the safety gate) live in :func:`dispatch`,
-which takes ``now`` / ``client`` / ``notifier`` as injected parameters. Keeping
-the routing decision pure is what lets AC1/AC4 be asserted on fixed inputs.
+running inline tool calls through the safety gate) live in :func:`dispatch`
+and :func:`run_inline_tool`, which take ``now`` / ``client`` / ``notifier`` as
+injected parameters. Keeping the routing decision pure is what lets AC1/AC4 be
+asserted on fixed inputs, and the injected ``now`` is what lets AC3's
+weekend-aware policy be asserted deterministically.
 """
 
 from __future__ import annotations
@@ -19,7 +21,10 @@ import enum
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Mapping
+from datetime import datetime
+from typing import Any, Callable, Mapping
+
+from agents import safety, task_queue
 
 # Severity ordering — strictly monotonic so priority never ties across tiers.
 _SEVERITY_RANK: dict[str, int] = {
@@ -200,3 +205,210 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         key,
         reason=f"no deterministic route for ({event_type!r}, {severity!r})",
     )
+
+
+# ---------------------------------------------------------------------------
+# AC3 — weekend-aware escalation notification policy (pure)
+# ---------------------------------------------------------------------------
+#
+# Decision basis: e5131e38 (#744 grill — weekend-aware escalate) +
+# weekday_weekend_scheduling_policy (memory 46ee0986). The escalation *row* is
+# always written (the owner never loses the work); this policy governs only
+# *when/how* the owner is notified, so weekends stay HITL-free except for real
+# incidents.
+
+
+class EscalationNotice(enum.Enum):
+    """How/when to surface an ``escalate_to_human`` decision to the owner."""
+
+    TELEGRAM_NOW = "telegram_now"  # critical — ping immediately, any day (incident exception)
+    PARK_MONDAY = "park_monday"  # non-critical on a weekend — defer owner attention to Monday
+    SESSIONSTART = "sessionstart"  # non-critical weekday — surface at next SessionStart + on-demand
+
+
+def escalation_notice(severity: str, now: datetime) -> EscalationNotice:
+    """Decide the owner-notification mode for an escalation.
+
+    Pure function of ``(severity, now)`` so it is assertable on fixed inputs:
+
+    - ``critical`` → :attr:`EscalationNotice.TELEGRAM_NOW` regardless of weekday
+      (a real incident overrides the no-weekend-HITL rule).
+    - non-critical on a weekend (Sat/Sun) → :attr:`EscalationNotice.PARK_MONDAY`
+      (weekends are autoregulation-only — no owner HITL).
+    - non-critical on a weekday → :attr:`EscalationNotice.SESSIONSTART`
+      (no interrupting ping; surfaced at the next session and on demand).
+    """
+    if severity == "critical":
+        return EscalationNotice.TELEGRAM_NOW
+    # datetime.weekday(): Monday=0 … Saturday=5, Sunday=6.
+    if now.weekday() >= 5:
+        return EscalationNotice.PARK_MONDAY
+    return EscalationNotice.SESSIONSTART
+
+
+# ---------------------------------------------------------------------------
+# AC2 / AC3 — dispatch a Decision to its side effect
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DispatchResult:
+    """Outcome of acting on a :class:`Decision` (what the side-effect layer did)."""
+
+    route: Route
+    enqueued: bool  # a task_queue row was written (False on idempotency collision)
+    row: dict[str, Any] | None
+    notice: EscalationNotice | None  # set only for ESCALATE
+    notified: bool  # a Telegram ping was actually sent
+    noop: bool  # pure-pipeline event — acknowledged, no work
+
+
+def dispatch(
+    decision: Decision,
+    *,
+    now: datetime,
+    client: Any | None = None,
+    notifier: Callable[[Decision], Any] | None = None,
+) -> DispatchResult:
+    """Perform the side effect for ``decision``.
+
+    - :attr:`Route.EMIT_TASK` → write a ``sandcastle`` ``task_queue`` row
+      (AC2). A colliding ``idempotency_key`` is a silent no-op (re-delivered
+      event dedups; a genuinely-new event has a different key and re-runs).
+    - :attr:`Route.ESCALATE` → write an ``owner`` row carrying
+      ``escalated_reason`` (AC3), then apply the weekend-aware notification
+      policy: ``critical`` pings Telegram via ``notifier``; everything else is
+      parked (weekend) or left for SessionStart (weekday).
+    - :attr:`Route.HANDLE_INLINE` → a pure-pipeline no-op is acknowledged
+      here; a real inline tool call goes through :func:`run_inline_tool`.
+    """
+    if decision.route is Route.EMIT_TASK:
+        row = task_queue.enqueue(
+            goal=decision.goal,
+            priority=decision.priority,
+            assignee=decision.assignee,
+            idempotency_key=decision.idempotency_key,
+            client=client,
+        )
+        return DispatchResult(
+            route=decision.route,
+            enqueued=row is not None,
+            row=row,
+            notice=None,
+            notified=False,
+            noop=False,
+        )
+
+    if decision.route is Route.ESCALATE:
+        row = task_queue.enqueue(
+            goal=decision.goal or decision.escalated_reason or "escalation",
+            priority=decision.priority,
+            assignee=decision.assignee,
+            idempotency_key=decision.idempotency_key,
+            escalated_reason=decision.escalated_reason,
+            client=client,
+        )
+        notice = escalation_notice(decision.severity, now)
+        notified = False
+        if notice is EscalationNotice.TELEGRAM_NOW and notifier is not None:
+            notifier(decision)
+            notified = True
+        return DispatchResult(
+            route=decision.route,
+            enqueued=row is not None,
+            row=row,
+            notice=notice,
+            notified=notified,
+            noop=False,
+        )
+
+    # Route.HANDLE_INLINE
+    return DispatchResult(
+        route=decision.route,
+        enqueued=False,
+        row=None,
+        notice=None,
+        notified=False,
+        noop=decision.noop,
+    )
+
+
+# ---------------------------------------------------------------------------
+# AC5 — inline tool surface, gated by agents.safety (SAFETY-CRITICAL)
+# ---------------------------------------------------------------------------
+#
+# The orchestrator may run a one-shot tool inline instead of emitting a task.
+# Every such call routes through ``safety.gate()``: Tier 0 runs inline, Tier 1
+# degrades to an owner ``task_queue`` row, Tier 2 is blocked + audited (gate
+# raises ``GateError``). The registry below is the *intended* inline surface
+# (read-only / Tier-0 tools); ``gate()`` is the enforcement — a registry entry
+# that fails to classify Tier 0 still degrades or blocks, so a registration
+# mistake cannot silently auto-run an unsafe action.
+
+# tool_name -> (area, action, target) for safety.classify.
+_INLINE_TOOL_REGISTRY: dict[str, tuple[str, str, str | None]] = {
+    "audit_event": ("supabase", "insert", "audit_log"),
+    "append_event": ("supabase", "append", "events"),
+    "label_area": ("github", "add_label", "area:core-agent"),
+}
+
+_INLINE_AGENT_ID = "orchestrator"
+
+
+@dataclass(frozen=True)
+class InlineResult:
+    """Outcome of an inline tool attempt through the safety gate."""
+
+    tier: safety.Tier
+    fired: bool  # the tool's fn actually ran (Tier 0)
+    queued_owner_row: dict[str, Any] | None  # owner row written on Tier-1 degrade
+
+
+def run_inline_tool(
+    tool_name: str,
+    *,
+    fn: Callable[[], object] | None = None,
+    agent_id: str = _INLINE_AGENT_ID,
+    client: Any | None = None,
+) -> InlineResult:
+    """Run an inline tool under the safety gate (AC5).
+
+    Resolves ``tool_name`` to its ``(area, action, target)`` from the inline
+    registry, then defers the tier decision to :func:`safety.gate`:
+
+    - **Tier 0** → ``fn`` runs inline, ``fired=True``.
+    - **Tier 1** → degrade to an ``owner`` ``task_queue`` row; ``fn`` is not run.
+    - **Tier 2** → :class:`safety.GateError` is raised (already audited).
+
+    An **unmapped** tool has no vetted classification, so it is treated as
+    Tier 1 (owner queue) — never auto-run.
+    """
+    mapping = _INLINE_TOOL_REGISTRY.get(tool_name)
+    if mapping is None:
+        area: str | None = None
+        action = tool_name
+        target: str | None = None
+    else:
+        area, action, target = mapping
+
+    outcome = safety.gate(
+        agent_id=agent_id,
+        tool_name=tool_name,
+        action=action,
+        target=target,
+        area=area,
+        fn=fn,
+    )  # Tier 2 raises GateError here (audited) and propagates.
+
+    if outcome.tier is safety.Tier.OWNER_QUEUE:
+        row = task_queue.enqueue(
+            goal=f"inline tool {tool_name!r} needs owner approval (Tier 1)",
+            priority=priority_for("medium"),
+            assignee=_ASSIGNEE_OWNER,
+            idempotency_key=outcome.idempotency_key,
+            escalated_reason=f"inline tool {tool_name!r} classified Tier 1 (owner queue)",
+            client=client,
+        )
+        return InlineResult(tier=outcome.tier, fired=False, queued_owner_row=row)
+
+    return InlineResult(tier=outcome.tier, fired=outcome.fired, queued_owner_row=None)

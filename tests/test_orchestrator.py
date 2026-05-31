@@ -6,13 +6,22 @@ every assertion here pins a fixed (event_type, severity) input to its route.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
+from agents import safety
 from agents.orchestrator import (
     Decision,
+    DispatchResult,
+    EscalationNotice,
+    InlineResult,
     Route,
+    dispatch,
+    escalation_notice,
     handle_event,
     priority_for,
+    run_inline_tool,
 )
 
 
@@ -22,6 +31,51 @@ def _ev(event_type: str, severity: str = "info", payload: dict | None = None) ->
         "severity": severity,
         "payload": payload or {},
     }
+
+
+# -- Fake task_queue client (insert-only; simulates idempotency collision) --
+
+
+class _FakeResult:
+    def __init__(self, data: list[dict]) -> None:
+        self.data = data
+
+
+class _FakeInsert:
+    def __init__(self, table: _FakeTable, payload: dict) -> None:
+        self._table = table
+        self._payload = payload
+
+    def execute(self) -> _FakeResult:
+        key = self._payload.get("idempotency_key")
+        if any(r.get("idempotency_key") == key for r in self._table.rows):
+            return _FakeResult([])  # unique-constraint collision → no row
+        stored = {**self._payload, "id": f"tq-{len(self._table.rows) + 1}"}
+        self._table.rows.append(stored)
+        return _FakeResult([stored])
+
+
+class _FakeTable:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def insert(self, payload: dict) -> _FakeInsert:
+        return _FakeInsert(self, payload)
+
+
+class _FakeClient:
+    def __init__(self) -> None:
+        self._tables: dict[str, _FakeTable] = {}
+
+    def table(self, name: str) -> _FakeTable:
+        return self._tables.setdefault(name, _FakeTable())
+
+
+# Weekdays/weekends with a fixed, deterministic clock (no Date.now()).
+_FRIDAY = datetime(2026, 5, 29, 10, 0, 0)  # weekday() == 4
+_SATURDAY = datetime(2026, 5, 30, 10, 0, 0)  # weekday() == 5
+_SUNDAY = datetime(2026, 5, 31, 10, 0, 0)  # weekday() == 6
+_MONDAY = datetime(2026, 6, 1, 10, 0, 0)  # weekday() == 0
 
 
 # -- AC1: deterministic route table ----------------------------------------
@@ -125,3 +179,138 @@ def test_decision_is_frozen():
     with pytest.raises(Exception):
         d.route = Route.ESCALATE  # type: ignore[misc]
     assert isinstance(d, Decision)
+
+
+# ===========================================================================
+# AC2 side-effect: dispatch(EMIT_TASK) writes a sandcastle row, dedups
+# ===========================================================================
+
+
+def test_dispatch_emit_task_writes_sandcastle_row():
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}))
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert isinstance(res, DispatchResult)
+    assert res.enqueued is True
+    assert res.row is not None
+    assert res.row["assignee"] == "sandcastle"
+    assert res.row["priority"] == priority_for("high")
+    assert res.row["idempotency_key"] == d.idempotency_key
+    assert res.row["status"] == "pending"
+
+
+def test_dispatch_emit_task_redelivery_dedups():
+    cli = _FakeClient()
+    e = _ev("ci_failure", "high", {"pr": 5, "sha": "abc"})
+    first = dispatch(handle_event(e), now=_FRIDAY, client=cli)
+    # Identical re-delivery → same idempotency_key → collision, no second row.
+    second = dispatch(handle_event(dict(e)), now=_FRIDAY, client=cli)
+    assert first.enqueued is True
+    assert second.enqueued is False
+    assert second.row is None
+    assert len(cli.table("task_queue").rows) == 1
+
+
+def test_dispatch_emit_task_new_event_reruns():
+    cli = _FakeClient()
+    first = dispatch(
+        handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"})),
+        now=_FRIDAY,
+        client=cli,
+    )
+    # A genuinely-new event (different sha) has a different key → re-runs.
+    second = dispatch(
+        handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "def"})),
+        now=_FRIDAY,
+        client=cli,
+    )
+    assert first.enqueued is True and second.enqueued is True
+    assert len(cli.table("task_queue").rows) == 2
+
+
+# ===========================================================================
+# AC3 side-effect: escalate writes owner row + escalated_reason; weekend-aware
+# ===========================================================================
+
+
+def test_dispatch_escalate_writes_owner_row_with_reason():
+    cli = _FakeClient()
+    d = handle_event(_ev("security_alert", "critical", {"detail": "leaked key"}))
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.row is not None
+    assert res.row["assignee"] == "owner"
+    assert res.row["escalated_reason"]  # persisted on the row
+    assert res.row["priority"] >= priority_for("critical")
+
+
+def test_escalation_notice_critical_pings_any_day():
+    for day in (_FRIDAY, _SATURDAY, _SUNDAY, _MONDAY):
+        assert escalation_notice("critical", day) is EscalationNotice.TELEGRAM_NOW
+
+
+def test_escalation_notice_noncritical_weekend_parks_to_monday():
+    assert escalation_notice("high", _SATURDAY) is EscalationNotice.PARK_MONDAY
+    assert escalation_notice("medium", _SUNDAY) is EscalationNotice.PARK_MONDAY
+
+
+def test_escalation_notice_noncritical_weekday_sessionstart():
+    assert escalation_notice("high", _FRIDAY) is EscalationNotice.SESSIONSTART
+    assert escalation_notice("low", _MONDAY) is EscalationNotice.SESSIONSTART
+
+
+def test_dispatch_critical_fires_notifier():
+    cli = _FakeClient()
+    pinged: list[Decision] = []
+    d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
+    res = dispatch(d, now=_SATURDAY, client=cli, notifier=pinged.append)
+    assert res.notice is EscalationNotice.TELEGRAM_NOW
+    assert res.notified is True
+    assert pinged == [d]
+
+
+def test_dispatch_noncritical_weekend_does_not_ping():
+    cli = _FakeClient()
+    pinged: list[Decision] = []
+    # Unknown (event_type, severity) → fail-safe escalate at non-critical sev.
+    d = handle_event(_ev("some_unknown_event", "high"))
+    assert d.route is Route.ESCALATE
+    res = dispatch(d, now=_SATURDAY, client=cli, notifier=pinged.append)
+    assert res.notice is EscalationNotice.PARK_MONDAY
+    assert res.notified is False
+    assert pinged == []
+    # The owner row is still written — work is never lost, only the ping waits.
+    assert res.row is not None and res.row["assignee"] == "owner"
+
+
+# ===========================================================================
+# AC5: inline tool surface routes through safety.gate (Tier 0 / 1 / 2)
+# ===========================================================================
+
+
+def test_run_inline_tier0_fires_fn():
+    ran: list[str] = []
+    res = run_inline_tool("audit_event", fn=lambda: ran.append("ran"))
+    assert isinstance(res, InlineResult)
+    assert res.tier is safety.Tier.AUTO
+    assert res.fired is True
+    assert ran == ["ran"]
+    assert res.queued_owner_row is None
+
+
+def test_run_inline_unmapped_tool_degrades_to_owner_row():
+    cli = _FakeClient()
+    ran: list[str] = []
+    res = run_inline_tool("mystery_tool", fn=lambda: ran.append("ran"), client=cli)
+    assert res.tier is safety.Tier.OWNER_QUEUE
+    assert res.fired is False
+    assert ran == []  # never auto-run an unvetted tool
+    assert res.queued_owner_row is not None
+    assert res.queued_owner_row["assignee"] == "owner"
+
+
+def test_run_inline_tier2_blocks_and_audits():
+    ran: list[str] = []
+    # A destructive action classifies Tier 2 → gate raises, fn never runs.
+    with pytest.raises(safety.GateError):
+        run_inline_tool("delete", fn=lambda: ran.append("ran"))
+    assert ran == []

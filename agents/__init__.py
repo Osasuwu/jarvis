@@ -1,7 +1,8 @@
-"""Jarvis Pillar 7 — persistent LangGraph agents.
+"""Jarvis Pillar 7 — reactive-core agents.
 
-Runs alongside Claude Code (not as replacement). Uses Ollama as local LLM
-and PostgreSQL checkpointer for state that survives restart.
+Runs alongside Claude Code (not as replacement). The deterministic event
+router (:mod:`agents.orchestrator`) consumes the ``events`` queue and routes
+each event to inline handling, a ``task_queue`` row, or owner escalation.
 
 See docs/agents/ for setup and operational notes.
 """
@@ -9,10 +10,10 @@ See docs/agents/ for setup and operational notes.
 __all__ = [
     "config",
     "escalation",
-    "event_monitor",
     "executor",
     "github_client",
     "ollama_client",
+    "orchestrator",
     "safety",
     "scheduler",
     "supabase_client",
