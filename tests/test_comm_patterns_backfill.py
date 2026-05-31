@@ -138,9 +138,18 @@ def test_run_uses_shared_confidence_threshold():
     silently changes which historical patterns get re-classified into
     the table."""
     from comm_patterns.extractor import CONFIDENCE_THRESHOLD as live_threshold
-    # backfill imports it from extractor; if anyone hardcodes a different
-    # number, this assertion catches the drift.
+    # Value check: if the backfill module has a different number, this
+    # catches the drift.
     assert _mod.CONFIDENCE_THRESHOLD == live_threshold
+    # Source check: verify backfill imports from extractor rather than
+    # hardcoding its own copy. The equality assertion could pass if both
+    # happen to share the same literal — this guards against a refactor
+    # that silently copies the value instead of importing it.
+    import inspect
+    source = inspect.getsource(_mod)
+    assert "from comm_patterns.extractor import CONFIDENCE_THRESHOLD" in source, (
+        "Backfill must import CONFIDENCE_THRESHOLD from extractor, not hardcode it"
+    )
 
 
 def test_run_max_examples_caps_processing(tmp_path: Path, monkeypatch):
