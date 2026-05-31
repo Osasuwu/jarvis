@@ -180,31 +180,67 @@ def test_scrubber_secret_labels_match_secret_scanner_coverage():
     scanner_src = (
         Path(__file__).resolve().parent.parent / "scripts" / "secret-scanner.py"
     ).read_text(encoding="utf-8")
-    # secret-scanner.py uses `(r"...", "Friendly Label")` tuples. Pull the
-    # second element of each (the human label).
+
+    # ------------------------------------------------------------------
+    # Regex contract: extracts the 2nd element (human label) from
+    # ``(r"...", "Friendly Label")`` tuples in ``SECRET_PATTERNS``.
+    #
+    # Pattern: ``, "Label"`` where Label starts with a letter, contains
+    # alphanumerics / spaces / slashes / hyphens, and ends with ``Key``,
+    # ``Token``, or ``PAT``.
+    #
+    # This omits ``BASH_DANGER_PATTERNS`` labels (e.g. "Reading .env file")
+    # and ``SECRET_PATTERNS`` entries whose label suffix doesn't match
+    # the Key/Token/PAT convention ("Credential assignment").
+    #
+    # Breaking conditions:
+    #  - Tuple format changes (namedtuple, dict, dataclass) -> no match
+    #  - New label doesn't end with Key/Token/PAT -> silently dropped
+    #  - Label starts with non-alpha (e.g. "2FA Token") -> no match
+    #
+    # If you add a secret family whose label doesn't match this pattern,
+    # update the regex to cover it AND add the family to the floor below.
+    #
+    # Known limitation: ``-`` was missing from the original character class
+    # so "OpenAI-style API Key" was silently dropped before this test was
+    # strengthened. Keep the class synced with label naming conventions.
+    # ------------------------------------------------------------------
+    _LABEL_RE = _re.compile(
+        r',\s*"([A-Za-z][-A-Za-z0-9 /]+(?:Key|Token|PAT))"'
+    )
     scanner_labels = set(
         m.group(1).lower().replace(" ", "-")
-        for m in _re.finditer(r',\s*"([A-Za-z][A-Za-z0-9 /]+(?:Key|Token|PAT))"', scanner_src)
+        for m in _re.finditer(_LABEL_RE, scanner_src)
     )
     scrubber_labels = {label for _, label in _SECRET_PATTERNS}
-    # Each high-confidence secret family covered by secret-scanner must
-    # have a matching token-type label in the scrubber. Comparison is done
-    # on a normalised stem so cosmetic suffix differences (e.g. "key" vs
-    # "Key") don't trigger false drift.
+
     def _stem(s: str) -> str:
         return s.lower().replace("-", "").replace(" ", "")
-    _scanner_stems = {_stem(s) for s in scanner_labels}  # for debug; not asserted
+
     scrubber_stems = {_stem(s) for s in scrubber_labels}
     # Floor of secret families we must always carry. Drift below the
     # floor (a family disappearing) trips the assert; new families above
     # the floor are silent because additions are never the bug.
     expected_floor = {"awskey", "anthropickey", "githubtoken", "openaikey",
                       "voyagekey", "firecrawlkey", "slacktoken", "telegramtoken"}
+    # 1) Scrubber must cover every high-confidence family.
     assert expected_floor.issubset(scrubber_stems), (
         f"scrubber missing high-confidence secret families: "
         f"{expected_floor - scrubber_stems}"
     )
-    assert _scanner_stems  # silence ruff F841 by using the var
+    # 2) Scanner must also cover the same floor (bidirectional drift
+    #    sentinel). If the tuple format in secret-scanner.py changes and
+    #    the regex silently drops labels, this catches the drift.
+    #    Format matches scanner_labels (lowercased, hyphens for spaces).
+    scanner_floor = {
+        "aws-access-key", "anthropic-api-key", "github-token",
+        "openai-style-api-key", "voyage-ai-key", "firecrawl-api-key",
+        "slack-token", "telegram-bot-token",
+    }
+    assert scanner_floor.issubset(scanner_labels), (
+        f"secret-scanner.py missing or regex failed to extract: "
+        f"{scanner_floor - scanner_labels}"
+    )
 
 
 def test_quote_truncation_is_caller_responsibility():
