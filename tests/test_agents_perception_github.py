@@ -10,12 +10,13 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 # Add agents module to path for imports.
-sys.path.insert(0, "/d/Github/jarvis")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agents import perception_github
 
