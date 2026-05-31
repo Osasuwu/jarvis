@@ -3,16 +3,20 @@
 Runs the query set in tests/memory-eval/queries.yaml against the live Supabase
 corpus and reports:
 
-    - recall@5, recall@10:  fraction of queries where >=1 expected name is in top-k
-    - MRR:                  mean reciprocal rank of the first expected hit
-    - must_not violations:  queries where a "should not surface" memory landed
-                            in top 5 (tracked separately — lifecycle signal)
+    - recall@3, recall@5, recall@10:  fraction of queries where >=1 expected name is in top-k
+    - MRR:                            mean reciprocal rank of the first expected hit
+    - mean_rank:                      average position of first expected hit (lower better)
+    - must_not violations:            queries where a "should not surface" memory landed
+                                      in top 5 (tracked separately — lifecycle signal)
 
 Usage:
-    python scripts/eval-recall.py                 # run, pretty-print, don't save
-    python scripts/eval-recall.py --save-baseline # run + overwrite baseline.json
-    python scripts/eval-recall.py --diff baseline # run + print delta vs baseline.json
-    python scripts/eval-recall.py --quiet         # only print aggregates
+    python scripts/eval-recall.py                                # run, pretty-print, don't save
+    python scripts/eval-recall.py --save-baseline                # run + overwrite baseline.json
+    python scripts/eval-recall.py --diff baseline                # run + print delta vs baseline.json
+    python scripts/eval-recall.py --quiet                        # only print aggregates
+    python scripts/eval-recall.py --record <path>                # capture RPC snapshot for offline replay
+    python scripts/eval-recall.py --replay <path> --diff baseline # replay cached data (no secrets)
+    python scripts/eval-recall.py --ci <path> --diff baseline     # CI: replay + fail on regressions
 
 Pipeline (embed → semantic+keyword RPCs → RRF → links → temporal) runs inside
 recall() from mcp-memory/recall.py — one implementation, three adapters. Ablation
@@ -36,6 +40,7 @@ import asyncio
 import dataclasses
 import importlib.util
 import json
+import math
 import os
 import sys
 from dataclasses import dataclass, field, asdict
@@ -134,6 +139,7 @@ class QueryResult:
     must_not: list[str]
     top_names: list[str]  # top-10 names in order
     first_hit_rank: int | None  # 1-indexed, None if no expected hit in top-10
+    hits_at_3: list[str]  # expected names that appeared in top-3
     hits_at_5: list[str]  # expected names that appeared in top-5
     hits_at_10: list[str]
     must_not_violations_at_5: list[str]  # must_not names that appeared in top-5
@@ -151,9 +157,11 @@ class EvalReport:
     mode: str  # e.g. "server_only", "with_rewriter+links"
     corpus_size: int
     total_queries: int
+    recall_at_3: float
     recall_at_5: float
     recall_at_10: float
     mrr: float
+    mean_rank: float  # average first_hit_rank across all queries (NaN if none in top-10)
     must_not_violations: int  # must_not violations at @5 (primary signal)
     must_not_violations_at_10: int  # must_not violations at @10 (S0 expansion)
     passed: int
@@ -161,6 +169,218 @@ class EvalReport:
     rewriter_fired_count: int = 0  # queries where rewriter produced output
     links_added_total: int = 0  # total new rows pulled in via link expansion
     results: list[dict] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Offline replay snapshot — record RPC results to disk, replay without
+# Supabase/Voyage keys. ln-635: enables CI eval without secrets.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class QuerySnapshot:
+    """Cached RPC data for one query — enough to re-run the post-RPC pipeline."""
+
+    query: str
+    embedding: list[float]
+    semantic_rows: list[dict]
+    keyword_rows: list[dict]
+    confidence_rows: list[dict]  # id + confidence pairs for enrich_with_confidence
+
+
+@dataclass
+class EvalSnapshot:
+    """Full offline snapshot — corpus metadata + per-query cached RPC data."""
+
+    timestamp: str
+    corpus_size: int
+    queries: dict[str, QuerySnapshot]  # qid → cached data
+
+
+async def _record_snapshot(
+    queries: list[dict],
+    client,
+    config: RecallConfig = PROD_RECALL_CONFIG,
+) -> EvalSnapshot:
+    """Run the full pipeline against live Supabase, capture raw RPC data for offline replay.
+
+    Uses _run_query_direct() for a clean record/replay pipeline match. Runs
+    embed + RPC calls live but captures the raw rows so _run_query_replay()
+    can reproduce identical QueryResults without network access.
+    """
+    snapshots: dict[str, QuerySnapshot] = {}
+
+    for q in queries:
+        embedding = await _embed_query(q["query"])
+
+        sem = client.rpc(
+            "match_memories",
+            {
+                "query_embedding": embedding,
+                "match_limit": 20,
+                "similarity_threshold": SIMILARITY_THRESHOLD,
+                "filter_project": None,
+                "filter_type": None,
+                "show_history": False,
+            },
+        ).execute()
+        semantic_rows = sem.data or []
+
+        kw = client.rpc(
+            "keyword_search_memories",
+            {
+                "search_query": q["query"],
+                "match_limit": 20,
+                "filter_project": None,
+                "filter_type": None,
+                "show_history": False,
+            },
+        ).execute()
+        keyword_rows = kw.data or []
+
+        # Capture confidence for all returned ids
+        all_ids = list(
+            {r["id"] for r in semantic_rows if r.get("id")}
+            | {r["id"] for r in keyword_rows if r.get("id")}
+        )
+        confidence_rows: list[dict] = []
+        if all_ids:
+            try:
+                cr = client.table("memories").select("id, confidence").in_("id", all_ids).execute()
+                confidence_rows = cr.data or []
+            except Exception:
+                confidence_rows = []
+
+        snapshots[q["id"]] = QuerySnapshot(
+            query=q["query"],
+            embedding=embedding,
+            semantic_rows=semantic_rows,
+            keyword_rows=keyword_rows,
+            confidence_rows=confidence_rows,
+        )
+
+    cs = (
+        client.table("memories")
+        .select("id", count="exact")
+        .is_("deleted_at", "null")
+        .limit(1)
+        .execute()
+    )
+
+    return EvalSnapshot(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        corpus_size=cs.count or 0,
+        queries=snapshots,
+    )
+
+
+async def _run_query_replay(
+    q: dict,
+    snapshot_entry: QuerySnapshot,
+) -> QueryResult:
+    """Replay path: use cached RPC data instead of calling Supabase/Voyage.
+
+    Runs the same post-RPC pipeline (RRF merge → confidence → temporal →
+    scoring) as _run_query_direct() on pre-recorded rows. The rewriter and
+    link expansion are NOT available in replay mode.
+    """
+    sem_rows = _filter_excluded_tags(snapshot_entry.semantic_rows)
+    kw_rows = _filter_excluded_tags(snapshot_entry.keyword_rows)
+
+    merged = _rrf_merge(sem_rows, kw_rows, limit=10)
+
+    # Backfill confidence from cached data
+    conf_map = {r["id"]: r.get("confidence") for r in snapshot_entry.confidence_rows if r.get("id")}
+    for row in merged:
+        rid = row.get("id")
+        if rid and rid in conf_map and "confidence" not in row:
+            row["confidence"] = conf_map[rid]
+
+    _apply_temporal_scoring(merged)
+
+    top_names = [r.get("name", "?") for r in merged]
+    expected = set(q.get("expected") or [])
+    must_not = set(q.get("must_not") or [])
+
+    top3 = top_names[:3]
+    top5 = top_names[:5]
+    top10 = top_names[:10]
+    hits_3 = [n for n in top3 if n in expected]
+    hits_5 = [n for n in top5 if n in expected]
+    hits_10 = [n for n in top10 if n in expected]
+    mn_viol_5 = [n for n in top5 if n in must_not]
+    mn_viol_10 = [n for n in top10 if n in must_not]
+
+    first_hit_rank = None
+    for i, name in enumerate(top10, start=1):
+        if name in expected:
+            first_hit_rank = i
+            break
+
+    passed = bool(hits_5) and not mn_viol_5
+
+    return QueryResult(
+        id=q["id"],
+        query=q["query"],
+        kind=q.get("kind", ""),
+        expected=sorted(expected),
+        must_not=sorted(must_not),
+        top_names=top_names,
+        first_hit_rank=first_hit_rank,
+        hits_at_3=hits_3,
+        hits_at_5=hits_5,
+        hits_at_10=hits_10,
+        must_not_violations_at_5=mn_viol_5,
+        must_not_violations_at_10=mn_viol_10,
+        passed=passed,
+        rewriter_entities=[],
+        rewriter_types=[],
+        rewriter_fired=False,
+        links_added=0,
+    )
+
+
+async def run_all_replay(
+    queries: list[dict],
+    snapshot: EvalSnapshot,
+) -> EvalReport:
+    """Run full eval from a cached snapshot — no network access needed."""
+    results = []
+    for q in queries:
+        entry = snapshot.queries.get(q["id"])
+        if entry is None:
+            # Query not in snapshot — skip
+            continue
+        r = await _run_query_replay(q, entry)
+        results.append(r)
+
+    total = len(results)
+    r3 = sum(1 for r in results if r.hits_at_3) / total if total else 0.0
+    r5 = sum(1 for r in results if r.hits_at_5) / total if total else 0.0
+    r10 = sum(1 for r in results if r.hits_at_10) / total if total else 0.0
+    mrr = sum(1.0 / r.first_hit_rank for r in results if r.first_hit_rank) / total if total else 0.0
+    ranks_with_hit = [r.first_hit_rank for r in results if r.first_hit_rank]
+    mean_rank = sum(ranks_with_hit) / len(ranks_with_hit) if ranks_with_hit else float("nan")
+    mn_viol_5 = sum(1 for r in results if r.must_not_violations_at_5)
+    mn_viol_10 = sum(1 for r in results if r.must_not_violations_at_10)
+    passed = sum(1 for r in results if r.passed)
+
+    return EvalReport(
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        mode="replay",
+        corpus_size=snapshot.corpus_size,
+        total_queries=total,
+        recall_at_3=r3,
+        recall_at_5=r5,
+        recall_at_10=r10,
+        mrr=mrr,
+        mean_rank=mean_rank,
+        must_not_violations=mn_viol_5,
+        must_not_violations_at_10=mn_viol_10,
+        passed=passed,
+        failed=total - passed,
+        results=[asdict(r) for r in results],
+    )
 
 
 # -- #241: context-rot measurement -----------------------------------------
@@ -198,6 +418,9 @@ class ContextRotReport:
     timestamp: str
     corpus_size: int
     total_queries: int
+    plain_recall_at_3: float
+    context_recall_at_3: float
+    delta_recall_at_3_pp: float
     plain_recall_at_5: float
     context_recall_at_5: float
     delta_recall_at_5_pp: float  # (context - plain) * 100
@@ -207,6 +430,9 @@ class ContextRotReport:
     plain_mrr: float
     context_mrr: float
     delta_mrr: float
+    plain_mean_rank: float
+    context_mean_rank: float
+    delta_mean_rank: float
     plain_must_not_violations: int
     context_must_not_violations: int
     plain_must_not_violations_at_10: int
@@ -279,8 +505,10 @@ async def _run_query_direct(
     expected = set(q.get("expected") or [])
     must_not = set(q.get("must_not") or [])
 
+    top3 = top_names[:3]
     top5 = top_names[:5]
     top10 = top_names[:10]
+    hits_3 = [n for n in top3 if n in expected]
     hits_5 = [n for n in top5 if n in expected]
     hits_10 = [n for n in top10 if n in expected]
     mn_viol_5 = [n for n in top5 if n in must_not]
@@ -302,6 +530,7 @@ async def _run_query_direct(
         must_not=sorted(must_not),
         top_names=top_names,
         first_hit_rank=first_hit_rank,
+        hits_at_3=hits_3,
         hits_at_5=hits_5,
         hits_at_10=hits_10,
         must_not_violations_at_5=mn_viol_5,
@@ -372,8 +601,10 @@ async def run_query(
     expected = set(q.get("expected") or [])
     must_not = set(q.get("must_not") or [])
 
+    top3 = top_names[:3]
     top5 = top_names[:5]
     top10 = top_names[:10]
+    hits_3 = [n for n in top3 if n in expected]
     hits_5 = [n for n in top5 if n in expected]
     hits_10 = [n for n in top10 if n in expected]
     mn_viol_5 = [n for n in top5 if n in must_not]
@@ -396,6 +627,7 @@ async def run_query(
         must_not=sorted(must_not),
         top_names=top_names,
         first_hit_rank=first_hit_rank,
+        hits_at_3=hits_3,
         hits_at_5=hits_5,
         hits_at_10=hits_10,
         must_not_violations_at_5=mn_viol_5,
@@ -419,9 +651,12 @@ async def run_all(
         results.append(r)
 
     total = len(results)
+    r3 = sum(1 for r in results if r.hits_at_3) / total if total else 0.0
     r5 = sum(1 for r in results if r.hits_at_5) / total if total else 0.0
     r10 = sum(1 for r in results if r.hits_at_10) / total if total else 0.0
     mrr = sum(1.0 / r.first_hit_rank for r in results if r.first_hit_rank) / total if total else 0.0
+    ranks_with_hit = [r.first_hit_rank for r in results if r.first_hit_rank]
+    mean_rank = sum(ranks_with_hit) / len(ranks_with_hit) if ranks_with_hit else float("nan")
     mn_viol_5 = sum(1 for r in results if r.must_not_violations_at_5)
     mn_viol_10 = sum(1 for r in results if r.must_not_violations_at_10)
     passed = sum(1 for r in results if r.passed)
@@ -442,9 +677,11 @@ async def run_all(
         mode=_build_mode_string(config.use_rewriter, config.use_links),
         corpus_size=corpus_size,
         total_queries=total,
+        recall_at_3=r3,
         recall_at_5=r5,
         recall_at_10=r10,
         mrr=mrr,
+        mean_rank=mean_rank,
         must_not_violations=mn_viol_5,
         must_not_violations_at_10=mn_viol_10,
         passed=passed,
@@ -589,12 +826,15 @@ def _load_session_context(client) -> tuple[str, dict]:
 
 def _metrics_from_results(
     results: list[QueryResult], total: int
-) -> tuple[float, float, float, int]:
+) -> tuple[float, float, float, float, float, int]:
+    r3 = sum(1 for r in results if r.hits_at_3) / total if total else 0.0
     r5 = sum(1 for r in results if r.hits_at_5) / total if total else 0.0
     r10 = sum(1 for r in results if r.hits_at_10) / total if total else 0.0
     mrr = sum(1.0 / r.first_hit_rank for r in results if r.first_hit_rank) / total if total else 0.0
+    ranks_with_hit = [r.first_hit_rank for r in results if r.first_hit_rank]
+    mean_rank = sum(ranks_with_hit) / len(ranks_with_hit) if ranks_with_hit else float("nan")
     mn = sum(1 for r in results if r.must_not_violations_at_5)
-    return r5, r10, mrr, mn
+    return r3, r5, r10, mrr, mean_rank, mn
 
 
 async def run_context_rot_eval(
@@ -642,8 +882,8 @@ async def run_context_rot_eval(
         )
 
     total = len(queries)
-    p_r5, p_r10, p_mrr, p_mn = _metrics_from_results(plain_results, total)
-    c_r5, c_r10, c_mrr, c_mn = _metrics_from_results(context_results, total)
+    p_r3, p_r5, p_r10, p_mrr, p_mean_rank, p_mn = _metrics_from_results(plain_results, total)
+    c_r3, c_r5, c_r10, c_mrr, c_mean_rank, c_mn = _metrics_from_results(context_results, total)
     p_mn_10 = sum(1 for r in plain_results if r.must_not_violations_at_10)
     c_mn_10 = sum(1 for r in context_results if r.must_not_violations_at_10)
 
@@ -670,6 +910,9 @@ async def run_context_rot_eval(
         timestamp=datetime.now(timezone.utc).isoformat(),
         corpus_size=cs.count or 0,
         total_queries=total,
+        plain_recall_at_3=p_r3,
+        context_recall_at_3=c_r3,
+        delta_recall_at_3_pp=(c_r3 - p_r3) * 100,
         plain_recall_at_5=p_r5,
         context_recall_at_5=c_r5,
         delta_recall_at_5_pp=(c_r5 - p_r5) * 100,
@@ -679,6 +922,9 @@ async def run_context_rot_eval(
         plain_mrr=p_mrr,
         context_mrr=c_mrr,
         delta_mrr=c_mrr - p_mrr,
+        plain_mean_rank=p_mean_rank,
+        context_mean_rank=c_mean_rank,
+        delta_mean_rank=c_mean_rank - p_mean_rank,
         plain_must_not_violations=p_mn,
         context_must_not_violations=c_mn,
         plain_must_not_violations_at_10=p_mn_10,
@@ -731,6 +977,10 @@ def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> N
             print(f"{r['id']:<5} {p_s:>6}  {c_s:>6}  {d_s:>5}  {verdict}   {q}")
 
     print("\n=== CONTEXT-ROT AGGREGATES ===")
+    print(f"plain    recall@3 : {_fmt_pct(report.plain_recall_at_3)}")
+    print(f"context  recall@3 : {_fmt_pct(report.context_recall_at_3)}")
+    sign3 = "+" if report.delta_recall_at_3_pp >= 0 else ""
+    print(f"delta recall@3         : {sign3}{report.delta_recall_at_3_pp:.1f} pp")
     print(f"plain    recall@5 : {_fmt_pct(report.plain_recall_at_5)}")
     print(f"context  recall@5 : {_fmt_pct(report.context_recall_at_5)}")
     sign = "+" if report.delta_recall_at_5_pp >= 0 else ""
@@ -742,6 +992,8 @@ def print_context_rot_report(report: ContextRotReport, quiet: bool = False) -> N
     print(f"delta recall@10       : {sign10}{report.delta_recall_at_10_pp:.1f} pp")
     sign_mrr = "+" if report.delta_mrr >= 0 else ""
     print(f"delta MRR             : {sign_mrr}{report.delta_mrr:.3f}")
+    sign_mrank = "+" if report.delta_mean_rank >= 0 else ""
+    print(f"delta mean_rank       : {sign_mrank}{report.delta_mean_rank:.2f}")
     print(
         f"must_not @5 (p/c) : {report.plain_must_not_violations} / {report.context_must_not_violations}"
     )
@@ -773,16 +1025,21 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
         print(
             f"\nQueries: {report.total_queries}   Corpus: {report.corpus_size} memories   Mode: {report.mode}\n"
         )
-        print(f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit5':>5}  {'v5':>3}  {'v10':>3}  {'rw':>3}  query")
-        print("-" * 105)
+        print(
+            f"{'id':<5} {'kind':<10} {'rank':>5}  {'hit3':>5}  {'hit5':>5}  {'v5':>3}  {'v10':>3}  {'rw':>3}  query"
+        )
+        print("-" * 115)
         for r in report.results:
             rank_s = str(r["first_hit_rank"]) if r["first_hit_rank"] else "-"
+            hit3 = "Y" if r.get("hits_at_3") else " "
             hit = "Y" if r["hits_at_5"] else " "
             v5 = "!" if r["must_not_violations_at_5"] else " "
             v10 = "!" if r.get("must_not_violations_at_10") else " "
             rw = "*" if r.get("rewriter_fired") else " "
-            q = r["query"] if len(r["query"]) <= 55 else r["query"][:52] + "..."
-            print(f"{r['id']:<5} {r['kind']:<10} {rank_s:>5}  {hit:>5}  {v5:>3}  {v10:>3}  {rw:>3}  {q}")
+            q = r["query"] if len(r["query"]) <= 52 else r["query"][:49] + "..."
+            print(
+                f"{r['id']:<5} {r['kind']:<10} {rank_s:>5}  {hit3:>5}  {hit:>5}  {v5:>3}  {v10:>3}  {rw:>3}  {q}"
+            )
 
         # fail details
         fails = [r for r in report.results if not r["passed"]]
@@ -805,11 +1062,17 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
 
     print("\n=== AGGREGATES ===")
     print(f"mode               : {report.mode}")
+    print(f"recall@3           : {_fmt_pct(report.recall_at_3)}")
     print(
         f"recall@5           : {_fmt_pct(report.recall_at_5)}  ({report.passed}/{report.total_queries} queries retrieved at least one expected memory in top-5)"
     )
     print(f"recall@10          : {_fmt_pct(report.recall_at_10)}")
     print(f"MRR                : {report.mrr:.3f}")
+    print(
+        f"mean_rank          : {report.mean_rank:.2f}"
+        if not math.isnan(report.mean_rank)
+        else "mean_rank          : NaN"
+    )
     print(
         f"must_not @5        : {report.must_not_violations}  (lifecycle signal — should be 0 after Phase 1)"
     )
@@ -827,7 +1090,9 @@ def print_report(report: EvalReport, quiet: bool = False) -> None:
 def print_diff(current: EvalReport, baseline: dict) -> None:
     def delta(k: str) -> str:
         cur = getattr(current, k)
-        base = baseline.get(k, 0)
+        base = baseline.get(k, 0) if k in baseline else None
+        if base is None:
+            return f"{cur:.3f}  (baseline: n/a — new metric)"
         d = cur - base
         sign = "+" if d >= 0 else ""
         return f"{cur:.3f}  (baseline {base:.3f}, {sign}{d:.3f})"
@@ -841,9 +1106,11 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
         )
     else:
         print(f"mode           : {current.mode}")
+    print(f"recall@3       : {delta('recall_at_3')}")
     print(f"recall@5       : {delta('recall_at_5')}")
     print(f"recall@10      : {delta('recall_at_10')}")
     print(f"MRR            : {delta('mrr')}")
+    print(f"mean_rank      : {delta('mean_rank')}")
     print(
         f"must_not viol  : {current.must_not_violations}  (baseline {baseline.get('must_not_violations', '?')})"
     )
@@ -931,6 +1198,23 @@ def main() -> int:
         "default (spec #241: flip to blocking after 2-week "
         "baseline).",
     )
+    ap.add_argument(
+        "--record",
+        default=None,
+        help="Run live and save RPC snapshot to PATH (offline replay, ln-635)",
+    )
+    ap.add_argument(
+        "--replay",
+        default=None,
+        help="Run from cached snapshot at PATH instead of live Supabase (ln-635)",
+    )
+    ap.add_argument(
+        "--ci",
+        default=None,
+        metavar="SNAPSHOT_PATH",
+        help="CI mode: replay from SNAPSHOT_PATH, diff against baseline, exit 1 "
+        "if regressions. Needs --diff baseline (ln-633)",
+    )
     args = ap.parse_args()
 
     _load_env()
@@ -947,6 +1231,54 @@ def main() -> int:
         doc = yaml.safe_load(f)
     queries = doc["queries"]
 
+    # --replay / --ci skip Supabase client — load from cached snapshot
+    if args.replay or args.ci:
+        snapshot_path = Path(args.replay or args.ci)
+        if not snapshot_path.exists():
+            print(f"ERROR: snapshot not found at {snapshot_path}", file=sys.stderr)
+            return 2
+        with snapshot_path.open("r", encoding="utf-8") as f:
+            raw = json.load(f)
+        snapshot = EvalSnapshot(
+            timestamp=raw["timestamp"],
+            corpus_size=raw["corpus_size"],
+            queries={
+                qid: QuerySnapshot(**entry) for qid, entry in (raw.get("queries") or {}).items()
+            },
+        )
+        if args.replay:
+            report = asyncio.run(run_all_replay(queries, snapshot))
+            print_report(report, quiet=args.quiet)
+            if args.diff == "baseline":
+                if baseline_path.exists():
+                    with baseline_path.open("r", encoding="utf-8") as f:
+                        baseline = json.load(f)
+                    print_diff(report, baseline)
+            return 0 if report.failed == 0 else 1
+        else:  # --ci
+            if args.diff != "baseline":
+                print("ERROR: --ci requires --diff baseline", file=sys.stderr)
+                return 2
+            if not baseline_path.exists():
+                print(
+                    f"ERROR: no baseline at {baseline_path} — run --save-baseline first",
+                    file=sys.stderr,
+                )
+                return 2
+            report = asyncio.run(run_all_replay(queries, snapshot))
+            with baseline_path.open("r", encoding="utf-8") as f:
+                baseline = json.load(f)
+            print_report(report, quiet=args.quiet)
+            print_diff(report, baseline)
+            # Fail on regressions (baseline query passing, now failing)
+            base_results = {r["id"]: r for r in baseline.get("results", [])}
+            for r in report.results:
+                br = base_results.get(r.id)
+                if br and br["passed"] and not r["passed"]:
+                    print(f"FAIL: regression on {r.id} — was passing, now failing", file=sys.stderr)
+                    return 1
+            return 0
+
     try:
         from supabase import create_client
     except ImportError:
@@ -961,15 +1293,41 @@ def main() -> int:
     client = create_client(url, key)
 
     # Build RecallConfig from CLI ablation flags (#499).
-    # --with-rewriter sets use_rewriter=True as a mode label; the rewriter call
-    # is adapter-side and not yet implemented inside recall(). _load_hook_module()
-    # shim removed: TYPE_BOOST_MULTIPLIER and rewrite_prompt no longer consumed
-    # by run_query(). rewriter_fired_count = 0 always for this adapter.
     cfg = PROD_RECALL_CONFIG
     if args.with_links:
         cfg = dataclasses.replace(cfg, use_links=True)
     if args.with_rewriter:
         cfg = dataclasses.replace(cfg, use_rewriter=True)
+
+    # --record mode captures RPC snapshot then runs live eval
+    if args.record:
+        if args.with_rewriter or args.with_links:
+            print(
+                "WARN: --record only captures base pipeline data; rewriter/link state "
+                "is NOT preserved in the snapshot.",
+                file=sys.stderr,
+            )
+        snapshot = asyncio.run(_record_snapshot(queries, client, config=cfg))
+        record_path = Path(args.record)
+        record_path.parent.mkdir(parents=True, exist_ok=True)
+        with record_path.open("w", encoding="utf-8") as f:
+            json.dump(asdict(snapshot), f, indent=2, ensure_ascii=False, default=str)
+        print(
+            f"RPC snapshot saved to {record_path}  ({len(snapshot.queries)} queries, "
+            f"{snapshot.corpus_size} corpus)"
+        )
+        # Also run the full live eval for immediate feedback
+        report = asyncio.run(run_all(queries, client, config=cfg))
+        print_report(report, quiet=args.quiet)
+        if args.diff == "baseline":
+            if baseline_path.exists():
+                with baseline_path.open("r", encoding="utf-8") as f:
+                    baseline = json.load(f)
+                print_diff(report, baseline)
+        return 0
+
+        # (--replay / --ci handled before client init above)
+        return 0
 
     # #241 context-rot path: dual-run plain vs context-injected and exit
     if args.with_session_context:
