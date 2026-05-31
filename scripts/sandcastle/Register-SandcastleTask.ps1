@@ -120,10 +120,92 @@ param(
 
     [switch]$WhatIfOnly,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$NoExecute
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---------------------------------------------------------------------------
+# Testable helper functions (extracted for Pester coverage, #865).
+# ---------------------------------------------------------------------------
+
+function Get-ConfigDeviceName {
+    param([string]$DeviceJsonPath)
+    if (Test-Path $DeviceJsonPath) {
+        try {
+            return (Get-Content $DeviceJsonPath -Raw | ConvertFrom-Json).name
+        } catch {
+            Write-Warning "config/device.json present but unparsable: $($_.Exception.Message)"
+        }
+    }
+    return $null
+}
+
+function Get-SandcastleDefaults {
+    param([string]$Repo)
+    $defaults = @{
+        jarvis   = @{ Start = '18:00'; End = '01:00'; TaskName = 'Sandcastle-Jarvis' }
+        redrobot = @{ Start = '01:00'; End = '08:00'; TaskName = 'Sandcastle-Redrobot' }
+    }
+    return $defaults[$Repo]
+}
+
+function Get-PowerShellExe {
+    $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($pwshCmd) {
+        return $pwshCmd.Source
+    }
+    return (Get-Command powershell -ErrorAction Stop).Source
+}
+
+function Format-SandcastleActionArgs {
+    param(
+        [string]$WatchdogPath,
+        [string]$Repo,
+        [string]$Model,
+        [string]$Tier1Model,
+        [string]$Tier2Provider,
+        [int]$MaxIterations,
+        [string]$WindowEnd
+    )
+    $watchdogQuoted = '"' + $WatchdogPath + '"'
+    $argParts = @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $watchdogQuoted,
+        '-Repo', $Repo,
+        '-Model', $Model,
+        '-MaxIterations', $MaxIterations,
+        '-WindowEnd', $WindowEnd
+    )
+    if ($Tier1Model)    { $argParts += @('-Tier1Model', $Tier1Model) }
+    if ($Tier2Provider) {
+        $argParts += @('-Tier2Provider', $Tier2Provider)
+        # 2026-05-14: Tier 2 runs as primary for AFK scheduled tasks. Local Ollama
+        # tiers fail the real-Claude-Code tool_use fidelity check on qwen2.5-coder:14b
+        # and qwen3-coder:30b — see memory ollama_bench_must_measure_tool_use_fidelity.
+        $argParts += '-Tier2AsPrimary'
+    }
+    return $argParts
+}
+
+function Format-QuotaProbeActionArgs {
+    param(
+        [string]$ProbeScript,
+        [int]$CacheTTLMinutes
+    )
+    $probeQuoted = '"' + $ProbeScript + '"'
+    return @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $probeQuoted,
+        '-CacheTTLMinutes', $CacheTTLMinutes
+    )
+}
+
+if ($NoExecute) { return }
 
 # ---------------------------------------------------------------------------
 # Device guard -- decision 4890aa35 (Workshop = production target).
@@ -131,14 +213,7 @@ $ErrorActionPreference = 'Stop'
 
 $expectedDevice = 'VividFormsPC4Workshop'
 $deviceJson     = Join-Path $PSScriptRoot '..\..\config\device.json'
-$currentDevice  = $null
-if (Test-Path $deviceJson) {
-    try {
-        $currentDevice = (Get-Content $deviceJson -Raw | ConvertFrom-Json).name
-    } catch {
-        Write-Warning "config/device.json present but unparsable: $($_.Exception.Message)"
-    }
-}
+$currentDevice  = Get-ConfigDeviceName -DeviceJsonPath $deviceJson
 
 if (-not $Force -and $currentDevice -ne $expectedDevice) {
     throw "Refusing to register on '$currentDevice' -- sandcastle production target is '$expectedDevice'. Pass -Force for dev rehearsal."
@@ -173,21 +248,14 @@ if ($QuotaProbe) {
         $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
     }
 
-    $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
-    $pwshExe = if ($pwshCmd) { $pwshCmd.Source } else { (Get-Command powershell -ErrorAction Stop).Source }
+    $pwshExe = Get-PowerShellExe
 
     # Keep the cache TTL just over the probe interval so a probe is not served a
     # stale cache from the previous run (m2: at -QuotaProbeInterval 15 the 35-min
     # default meant nearly every run hit cache instead of re-probing).
     $cacheTtl = $QuotaProbeInterval + 5
 
-    $probeQuoted = '"' + $probeScript + '"'
-    $argParts = @(
-        '-NoProfile',
-        '-ExecutionPolicy', 'Bypass',
-        '-File', $probeQuoted,
-        '-CacheTTLMinutes', $cacheTtl
-    )
+    $argParts = Format-QuotaProbeActionArgs -ProbeScript $probeScript -CacheTTLMinutes $cacheTtl
 
     $action = New-ScheduledTaskAction -Execute $pwshExe `
         -Argument ($argParts -join ' ') `
@@ -253,14 +321,11 @@ if ($QuotaProbe) {
 # Per-repo defaults
 # ---------------------------------------------------------------------------
 
-$defaults = @{
-    jarvis   = @{ Start = '18:00'; End = '01:00'; TaskName = 'Sandcastle-Jarvis' }
-    redrobot = @{ Start = '01:00'; End = '08:00'; TaskName = 'Sandcastle-Redrobot' }
-}
+$defaults = Get-SandcastleDefaults -Repo $Repo
 
-if (-not $StartTime) { $StartTime = $defaults[$Repo].Start }
-if (-not $WindowEnd) { $WindowEnd = $defaults[$Repo].End }
-$taskName = $defaults[$Repo].TaskName
+if (-not $StartTime) { $StartTime = $defaults.Start }
+if (-not $WindowEnd) { $WindowEnd = $defaults.End }
+$taskName = $defaults.TaskName
 
 # Watchdog always lives in the jarvis repo (same dir as this script). Both
 # jarvis and redrobot loops invoke the same parameterised watchdog -- it
@@ -302,29 +367,12 @@ if ($Repo -eq 'redrobot') {
 # Build the action -- pwsh preferred, fallback to powershell.exe (5.1).
 # ---------------------------------------------------------------------------
 
-$pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
-$pwshExe = if ($pwshCmd) { $pwshCmd.Source } else { (Get-Command powershell -ErrorAction Stop).Source }
+$pwshExe = Get-PowerShellExe
 
-# Quote the watchdog path in case RepoRoot contains spaces.
-$watchdogQuoted = '"' + $watchdog + '"'
-
-$argParts = @(
-    '-NoProfile',
-    '-ExecutionPolicy', 'Bypass',
-    '-File', $watchdogQuoted,
-    '-Repo', $Repo,
-    '-Model', $Model,
-    '-MaxIterations', $MaxIterations,
-    '-WindowEnd', $WindowEnd
-)
-if ($Tier1Model)    { $argParts += @('-Tier1Model', $Tier1Model) }
-if ($Tier2Provider) {
-    $argParts += @('-Tier2Provider', $Tier2Provider)
-    # 2026-05-14: Tier 2 runs as primary for AFK scheduled tasks. Local Ollama
-    # tiers fail the real-Claude-Code tool_use fidelity check on qwen2.5-coder:14b
-    # and qwen3-coder:30b — see memory ollama_bench_must_measure_tool_use_fidelity.
-    $argParts += '-Tier2AsPrimary'
-}
+$argParts = Format-SandcastleActionArgs -WatchdogPath $watchdog `
+    -Repo $Repo -Model $Model -Tier1Model $Tier1Model `
+    -Tier2Provider $Tier2Provider -MaxIterations $MaxIterations `
+    -WindowEnd $WindowEnd
 
 $action = New-ScheduledTaskAction -Execute $pwshExe `
     -Argument ($argParts -join ' ') `
