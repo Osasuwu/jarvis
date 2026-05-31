@@ -17,10 +17,12 @@ sessions. The original chain mis-classified live owners as ``autonomous``
 inside hooks — a hard regression for ``protected-files.py`` decisions.
 
 **Contract for autonomous entry points**: launchers that run Claude headless
-(scheduler, future dispatcher, any cron/task wrapper) MUST set
-``JARVIS_PRINCIPAL`` explicitly. The scheduler does this via NSSM
-``AppEnvironmentExtra=JARVIS_PRINCIPAL=autonomous`` (see
-``scripts/install/install-scheduler-service.ps1``).
+(the reactive-core executor, any cron/task wrapper) MUST set
+``JARVIS_PRINCIPAL`` explicitly. The APScheduler scheduler service that
+formerly demonstrated this via NSSM ``AppEnvironmentExtra=JARVIS_PRINCIPAL=autonomous``
+was retired in #743 (replaced by the event-driven ``agents/wake_driver.py``);
+the executor that spawns ``claude -p`` is the headless launcher now bound by
+this rule.
 
 Tier model is shared with ``agents.safety`` (T0=AUTO, T1=OWNER_QUEUE,
 T2=BLOCKED). This module covers the orthogonal "principal" axis; concrete

@@ -15,8 +15,8 @@ __all__ = [
     "ollama_client",
     "orchestrator",
     "safety",
-    "scheduler",
     "supabase_client",
     "task_queue",
     "usage_probe",
+    "wake_driver",
 ]
