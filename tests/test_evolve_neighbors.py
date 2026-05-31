@@ -56,6 +56,18 @@ class TestTruncate:
         assert out.endswith("…")
         assert len(out) == evo.MAX_CONTENT_CHARS + 1  # +1 for the ellipsis char
 
+    def test_at_boundary_no_truncation(self):
+        text = "x" * evo.MAX_CONTENT_CHARS
+        out = evo._truncate(text)
+        assert out == text
+        assert "…" not in out
+
+    def test_one_past_boundary_truncates(self):
+        text = "x" * (evo.MAX_CONTENT_CHARS + 1)
+        out = evo._truncate(text)
+        assert out.endswith("…")
+        assert len(out) == evo.MAX_CONTENT_CHARS + 1
+
 
 # ---------------------------------------------------------------------------
 # _parse_response — Haiku output parsing with defensive downgrades
@@ -224,6 +236,176 @@ class TestParseResponse:
         r = evo._parse_response(text, {"abc-123"})
         assert r and r[0]["reasoning"] == ""
 
+    # ------------------------------------------------------------------
+    # Property-style invariants — these hold for any well-structured input
+    # ------------------------------------------------------------------
+
+    def test_never_raises_on_malformed_input(self):
+        """Defensive: any string input must not raise an exception."""
+        examples = [
+            "",
+            "not json",
+            "{",
+            "}",
+            "{{}",
+            "[]",
+            "null",
+            "true",
+            "42",
+            '"string"',
+            "\x00\x01\x02",
+            "\n\n\n\n",
+            " " * 100,
+            '{"broken": }',
+            "{'single_quotes': 'not valid json'}",
+        ]
+        for text in examples:
+            # Must not raise
+            evo._parse_response(text, {"x"})
+
+    def test_return_value_is_always_valid_shape(self):
+        """Result is always None, [], or list of dicts with 6 expected keys."""
+        valid_ids = {"abc-123", "def-456"}
+        # (input_text, neighbor_ids, expected_length_or_None)
+        examples = [
+            ("garbage", valid_ids, None),                     # unparseable → None
+            ('{"proposals": []}', valid_ids, 0),               # empty list → []
+            (
+                '{"proposals": [{"neighbor_id": "abc-123", "action": "KEEP", '
+                '"confidence": 0.9}]}',
+                valid_ids,
+                1,
+            ),
+        ]
+        for text, ids, expected in examples:
+            r = evo._parse_response(text, ids)
+            if expected is None:
+                assert r is None
+            else:
+                assert isinstance(r, list)
+                assert len(r) == expected
+                for p in r:
+                    assert isinstance(p, dict)
+                    assert set(p.keys()) == {
+                        "neighbor_id", "action", "new_tags",
+                        "new_description", "confidence", "reasoning",
+                    }
+
+    def test_all_returned_proposals_have_valid_action(self):
+        """Action in every proposal must be one of VALID_ACTIONS."""
+        text = (
+            '{"proposals": ['
+            '{"neighbor_id": "a", "action": "KEEP", "confidence": 0.9},'
+            '{"neighbor_id": "b", "action": "DELETE", "confidence": 0.8},'
+            '{"neighbor_id": "c", "action": "  update_tags  ", "new_tags": ["x"]},'
+            '{"neighbor_id": "d", "action": "", "confidence": 0.5}'
+            "]}"
+        )
+        r = evo._parse_response(text, {"a", "b", "c", "d"})
+        assert r is not None
+        for p in r:
+            assert p["action"] in evo.VALID_ACTIONS
+
+    def test_confidence_always_clamped_to_unit_interval(self):
+        """Confidence always in [0.0, 1.0] regardless of input."""
+        text = (
+            '{"proposals": ['
+            '{"neighbor_id": "a", "action": "KEEP", "confidence": 100},'
+            '{"neighbor_id": "b", "action": "KEEP", "confidence": -1},'
+            '{"neighbor_id": "c", "action": "KEEP", "confidence": null},'
+            '{"neighbor_id": "d", "action": "KEEP"},'
+            '{"neighbor_id": "e", "action": "KEEP", "confidence": 0.5}'
+            "]}"
+        )
+        r = evo._parse_response(text, {"a", "b", "c", "d", "e"})
+        assert r is not None
+        for p in r:
+            assert 0.0 <= p["confidence"] <= 1.0
+
+    def test_hallucinated_ids_always_dropped(self):
+        """Proposals with unknown neighbor_ids never appear in output."""
+        r = evo._parse_response(
+            '{"proposals": [{"neighbor_id": "unknown-1"}, {"neighbor_id": "unknown-2"}]}',
+            {"known-id"},
+        )
+        assert r == []
+
+    def test_extra_top_level_keys_tolerated(self):
+        """Unknown top-level keys do not interfere with parsing."""
+        text = (
+            '{"proposals": [{"neighbor_id": "a", "action": "KEEP", '
+            '"confidence": 0.9}], "unexpected_key": "value", "another": [1, 2, 3]}'
+        )
+        r = evo._parse_response(text, {"a"})
+        assert r is not None
+        assert len(r) == 1
+        assert r[0]["action"] == "KEEP"
+
+    def test_extra_fields_in_proposal_tolerated(self):
+        """Proposals with extra fields are still parsed and returned."""
+        text = (
+            '{"proposals": [{"neighbor_id": "abc-123", "action": "KEEP", '
+            '"confidence": 0.9, "extra_field": "ignored", "nested": {"x": 1}}]}'
+        )
+        r = evo._parse_response(text, {"abc-123"})
+        assert r is not None
+        assert r[0]["action"] == "KEEP"
+        # Extra fields are dropped from output — only the 6 expected keys survive.
+        assert set(r[0].keys()) == {
+            "neighbor_id", "action", "new_tags",
+            "new_description", "confidence", "reasoning",
+        }
+
+    def test_missing_neighbor_id_field_skipped(self):
+        """A proposal dict without neighbor_id is skipped."""
+        text = '{"proposals": [{"action": "UPDATE_TAGS", "confidence": 0.9}]}'
+        r = evo._parse_response(text, {"abc-123"})
+        assert r == []
+
+    def test_confidence_as_numeric_string(self):
+        """Confidence passed as a string number is accepted by float()."""
+        text = (
+            '{"proposals": [{"neighbor_id": "abc-123", "action": "KEEP", '
+            '"confidence": "0.85"}]}'
+        )
+        r = evo._parse_response(text, {"abc-123"})
+        assert r is not None
+        assert r[0]["confidence"] == 0.85
+
+    def test_reasoning_whitespace_only_becomes_empty(self):
+        """Reasoning with only whitespace is stripped to empty string."""
+        text = (
+            '{"proposals": [{"neighbor_id": "abc-123", "action": "KEEP", '
+            '"confidence": 0.9, "reasoning": "   "}]}'
+        )
+        r = evo._parse_response(text, {"abc-123"})
+        assert r is not None
+        assert r[0]["reasoning"] == ""
+
+    def test_non_dict_proposal_skipped(self):
+        """Non-dict items in the proposals list are skipped."""
+        text = (
+            '{"proposals": ['
+            '"string proposal", 42, null, '
+            '{"neighbor_id": "abc-123", "action": "KEEP", "confidence": 0.9}'
+            "]}"
+        )
+        r = evo._parse_response(text, {"abc-123"})
+        assert r is not None
+        assert len(r) == 1
+        assert r[0]["neighbor_id"] == "abc-123"
+
+    def test_unicode_chars_in_strings_tolerated(self):
+        """Unicode/special characters in JSON string values are handled."""
+        text = (
+            '{"proposals": [{"neighbor_id": "abc-123", "action": "UPDATE_TAGS", '
+            '"new_tags": ["émoji🔥", "статус", "中文"], "confidence": 0.9}]}'
+        )
+        r = evo._parse_response(text, {"abc-123"})
+        assert r is not None
+        assert r[0]["action"] == "UPDATE_TAGS"
+        assert r[0]["new_tags"] == ["émoji🔥", "статус", "中文"]
+
 
 # ---------------------------------------------------------------------------
 # _fallback_keep — last-resort safe output when the API fails
@@ -245,6 +427,21 @@ class TestFallbackKeep:
 
     def test_empty_input(self):
         assert evo._fallback_keep([], "no-op") == []
+
+    def test_all_returned_proposals_have_expected_schema(self):
+        """Every returned proposal has all 6 fields."""
+        neighbors = [{"id": "a"}, {"id": "b"}]
+        out = evo._fallback_keep(neighbors, "test")
+        for p in out:
+            assert set(p.keys()) == {
+                "neighbor_id", "action", "new_tags",
+                "new_description", "confidence", "reasoning",
+            }
+            assert p["action"] == "KEEP"
+            assert p["new_tags"] is None
+            assert p["new_description"] is None
+            assert p["confidence"] == 0.0
+            assert "test" in p["reasoning"]
 
 
 # ---------------------------------------------------------------------------
