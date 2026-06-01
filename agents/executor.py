@@ -28,7 +28,8 @@ import subprocess
 from datetime import UTC, datetime
 from typing import Any
 
-from agents.scope_hash import _hash_scope_files  # re-export — see issue #773
+from agents.scope_hash import _hash_scope_files  # noqa: F401 — re-export, see issue #773
+from agents.usage_probe import read_usage
 
 logger = logging.getLogger(__name__)
 
@@ -170,19 +171,40 @@ def _now_iso() -> str:
 def spawn(
     task_text: str,
     *,
+    probe: Any | None = None,  # injectable UsageProbe for tests
     stderr_log_dir: str | None = None,
     popen: Any = None,  # noqa: ANN401 — injectable for tests
-) -> subprocess.Popen[str]:
+) -> subprocess.Popen[str] | None:
     """Fire-and-forget spawn of ``claude -p <task_text>``.
 
-    Returns the :class:`subprocess.Popen` handle. The caller does not wait;
-    the child session writes its own outcomes. Stderr is captured to a log
-    file (never ``DEVNULL``) so silent failures are observable.
+    Checks the usage quota before spawning.  When the probe reports
+    near-exhaustion the spawn is refused and ``None`` is returned — the
+    caller can distinguish throttled (``None``) from spawned (Popen handle).
+
+    Returns the :class:`subprocess.Popen` handle, or ``None`` if throttled.
+    The caller does not wait; the child session writes its own outcomes.
+    Stderr is captured to a log file (never ``DEVNULL``) so silent failures
+    are observable.
+
+    ``probe`` is injectable so tests can control the quota signal without
+    a real probe; defaults to :func:`~agents.usage_probe.read_usage` which
+    auto-initialises the production probe chain.
 
     ``popen`` is injectable so tests can capture the env dict without
     shelling out to a real ``claude`` binary; production wiring goes through
     :func:`subprocess.Popen` directly.
     """
+    reading = read_usage(probe)
+    if reading.near_exhaustion:
+        logger.warning(
+            "[executor] spawn refused — quota near-exhaustion "
+            "(used=%d/%d, near_exhaustion=%s)",
+            reading.used,
+            reading.total,
+            reading.near_exhaustion,
+        )
+        return None
+
     env = _sanitize_env()
     argv = [
         _resolve_claude_binary(),

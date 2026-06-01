@@ -13,6 +13,32 @@ from typing import Any
 
 import pytest
 
+from agents.usage_probe import UsageReading, UsageProbeError
+
+
+# ---------------------------------------------------------------------------
+# Stubs
+# ---------------------------------------------------------------------------
+
+
+class _StubProbe:
+    """Injectable probe that returns a pre-set ``near_exhaustion``."""
+
+    def __init__(self, near_exhaustion: bool, *, raises: type[Exception] | None = None) -> None:
+        self._near = near_exhaustion
+        self._raises = raises
+
+    def read(self) -> UsageReading:
+        if self._raises:
+            raise self._raises("probe failure")
+        return UsageReading(
+            limit_window=timedelta(hours=5),
+            used=50,
+            total=100,
+            reset_at=datetime.now(UTC),
+            near_exhaustion=self._near,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Stubs
@@ -236,7 +262,12 @@ def test_spawn_passes_sanitized_env_to_subprocess(
     monkeypatch.setenv("PATH_FROM_PARENT", "keep-me")
 
     captured = _CapturedPopen()
-    spawn("test task", stderr_log_dir=str(tmp_path / "logs"), popen=captured)
+    spawn(
+        "test task",
+        probe=_StubProbe(near_exhaustion=False),
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+    )
 
     assert len(captured.calls) == 1
     env = captured.calls[0]["env"]
@@ -258,7 +289,12 @@ def test_spawn_uses_resolved_binary_path(
     monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
 
     captured = _CapturedPopen()
-    spawn("test", stderr_log_dir=str(tmp_path / "logs"), popen=captured)
+    spawn(
+        "test",
+        probe=_StubProbe(near_exhaustion=False),
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+    )
 
     assert len(captured.calls) == 1
     argv = captured.calls[0]["argv"]
@@ -285,7 +321,12 @@ def test_spawn_captures_stderr_to_file(
 
     log_dir = tmp_path / "logs"
     captured = _CapturedPopen()
-    spawn("test", stderr_log_dir=str(log_dir), popen=captured)
+    spawn(
+        "test",
+        probe=_StubProbe(near_exhaustion=False),
+        stderr_log_dir=str(log_dir),
+        popen=captured,
+    )
 
     assert len(captured.calls) == 1
     stderr_arg = captured.calls[0].get("stderr")
@@ -296,3 +337,77 @@ def test_spawn_captures_stderr_to_file(
     # The parent file handle must be closed after Popen dup2's the fd —
     # otherwise a long-running scheduler leaks one fd per spawn.
     assert stderr_arg.closed, "parent stderr handle must be closed after spawn"
+
+
+# ---------------------------------------------------------------------------
+# spawn — quota gate tests (#906)
+# ---------------------------------------------------------------------------
+
+
+def test_spawn_proceeds_when_quota_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Spawn proceeds when the quota probe reports healthy."""
+    from agents.executor import spawn
+
+    fake = tmp_path / "claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "test",
+        probe=_StubProbe(near_exhaustion=False),
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+    )
+
+    assert result is not None, "spawn should NOT be throttled when quota is healthy"
+    assert len(captured.calls) == 1, "Popen must be called exactly once"
+
+
+def test_spawn_refused_when_quota_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Spawn returns None when the probe reports near-exhaustion."""
+    from agents.executor import spawn
+
+    fake = tmp_path / "claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "test",
+        probe=_StubProbe(near_exhaustion=True),
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+    )
+
+    assert result is None, "spawn MUST return None when throttled"
+    assert len(captured.calls) == 0, "Popen must NOT be called when throttled"
+
+
+def test_spawn_refused_when_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Spawn returns None when the probe raises (false-safe: refuse, never allow)."""
+    from agents.executor import spawn
+
+    fake = tmp_path / "claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "test",
+        probe=_StubProbe(near_exhaustion=False, raises=UsageProbeError),
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+    )
+
+    assert result is None, "spawn MUST return None when probe errors (false-safe)"
+    assert len(captured.calls) == 0, "Popen must NOT be called when probe errors"
