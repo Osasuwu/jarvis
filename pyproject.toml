@@ -76,7 +76,7 @@ Issues = "https://github.com/Osasuwu/jarvis/issues"
 # Explicit declarations so `pip install -e ".[agents]"` installs the root-layout
 # `agents` package correctly, rather than silently skipping it.
 package-dir = {"" = "src", "agents" = "agents"}
-packages = ["agents"]
+packages = ["agents", "strategic_ideation"]
 py-modules = ["risk_radar"]
 
 [tool.pytest.ini_options]
