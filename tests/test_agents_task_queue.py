@@ -231,6 +231,30 @@ class TestEnqueue:
         assert row is not None
         assert row["priority"] == 0
 
+    def test_escalated_reason_persisted_on_insert(self, client: _StubClient) -> None:
+        row = enqueue(
+            goal="owner escalation",
+            priority=14,
+            assignee="owner",
+            idempotency_key="key-escalate",
+            escalated_reason="security_alert (critical) — owner review required",
+            client=client,
+        )
+        assert row is not None
+        assert row["assignee"] == "owner"
+        assert row["escalated_reason"] == (
+            "security_alert (critical) — owner review required"
+        )
+
+    def test_escalated_reason_omitted_when_none(self, client: _StubClient) -> None:
+        row = enqueue(
+            goal="no reason",
+            idempotency_key="key-noreason",
+            client=client,
+        )
+        assert row is not None
+        assert "escalated_reason" not in row
+
 
 # ===========================================================================
 # claim_next

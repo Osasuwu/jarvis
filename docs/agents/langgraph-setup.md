@@ -45,9 +45,10 @@ Credentials in the compose file are dev-only:
 To stop without losing checkpoints: `docker compose -f docker-compose.agents.yml stop`.
 To wipe state: `docker compose -f docker-compose.agents.yml down -v`.
 
-**Production deploy note:** For production NSSM deployment on Windows, see
-[Postgres prerequisite in scheduler.md](scheduler.md#postgres-prerequisite)
-for both Docker Compose and native install paths.
+**Production deploy note:** The NSSM scheduler service this section described
+was retired in #743 — the reactive-core loop (`agents/wake_driver.py`) is
+event-driven and runs foreground for now. See [scheduler.md](scheduler.md) for
+the retirement details and per-device teardown.
 
 ## Configure environment
 
