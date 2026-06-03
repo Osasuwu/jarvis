@@ -546,6 +546,7 @@ async def recall(
     boost_types: set[str] | None = None,
     boost_multiplier: float = 1.5,
     config: RecallConfig = PROD_RECALL_CONFIG,
+    query_embedding: list[float] | None = None,
 ) -> list[RecallHit]:
     """Run the hybrid-recall pipeline and return ranked RecallHits.
 
@@ -581,12 +582,21 @@ async def recall(
     (a misclassified-but-relevant memory still survives single-signal). When
     None or empty, no boost is applied. Default multiplier 1.5 matches the
     pre-#499 hook calibration.
+
+    ``query_embedding`` (#508): pre-computed embedding for the query. When
+    provided, ``recall()`` skips the internal ``_embed_query()`` call and
+    uses this directly. This eliminates the double-embed overhead when
+    the caller (notably the UserPromptSubmit hook) already computed an
+    embedding for its own gate check. Falls back to embedding internally
+    when None (default), preserving the existing behavior for all current
+    callers.
     """
     # Late-bind `server` so test patches of the embedding model + embed
     # function still apply. Same pattern as handlers/memory.py.
     import server  # noqa: PLC0415
 
-    query_embedding = await server._embed_query(query)
+    if query_embedding is None:
+        query_embedding = await server._embed_query(query)
     if query_embedding is None:
         return []
 

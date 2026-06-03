@@ -171,30 +171,31 @@ class TestPowerShellEncoding:
             f"{len(bad)} invalid allowlist entr(ies):\n" + "\n".join(f"  {b}" for b in bad)
         )
 
-    def test_allowlist_uncommented_warning(self, recwarn):
-        """Uncommented allowlist entries emit a warning so they surface in audits."""
+    def test_allowlist_entries_have_comments(self):
+        """Every allowlist entry must have a trailing # comment explaining why.
+
+        An uncommented entry is a stale or cargo-culted exemption.  Failing
+        CI forces the author to add a rationale comment, which in turn makes
+        audits and future cleanups possible.
+        """
         if not ALLOWLIST_PATH.exists():
             return
 
+        uncommented: list[str] = []
         with open(ALLOWLIST_PATH, encoding="utf-8") as f:
             for line in f:
                 stripped = line.strip()
-                if stripped and not stripped.startswith("#") and ":" in stripped:
-                    import warnings
-                    warnings.warn(
-                        f"Uncommented allowlist entry: {stripped} — "
-                        "add a trailing # comment explaining why",
-                        stacklevel=2,
-                    )
+                if not stripped or stripped.startswith("#"):
+                    continue
+                # Line is an actual entry — split on first space to separate
+                # the path:line token from potential trailing content.
+                token = stripped.split()[0]
+                rest = stripped[len(token):].strip()
+                if not rest.startswith("#"):
+                    uncommented.append(token)
 
-        # No assertion — we just want the warning to be collected.
-        # pytest's recwarn fixture lets us inspect if needed.
-        uncommented = [
-            w.message.args[0]
-            for w in recwarn
-            if "Uncommented allowlist entry" in str(w.message)
-        ]
-        if uncommented:
-            print(f"WARNING: {len(uncommented)} uncommented allowlist entry/ies:")
-            for msg in uncommented:
-                print(f"  {msg}")
+        assert not uncommented, (
+            f"{len(uncommented)} allowlist entr(ies) without a comment:\n"
+            + "\n".join(f"  {e}" for e in uncommented)
+            + "\n\nAdd a trailing # comment explaining why each entry is exempt."
+        )
