@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -338,13 +339,16 @@ def test_build_plan_emits_prune_orphan_for_stale_skill_dir(
     orphans = [a for a in plan.actions if a.kind == "prune_orphan"]
     assert len(orphans) == 1
     assert Path(orphans[0].source).name == "deprecated-skill"
-    assert ".bak.orphan" in orphans[0].dest
+    # dest must land in .skills-orphaned/ OUTSIDE skills/ (#927)
+    dest = Path(orphans[0].dest)
+    assert dest.parent == target / ".skills-orphaned"
+    assert dest.name == "deprecated-skill"
 
 
 def test_apply_plan_quarantines_orphan_skill(
     manifest: Path, fake_repo: Path, tmp_path: Path
 ) -> None:
-    """apply_plan moves orphan dir to a quarantine sibling, doesn't delete."""
+    """apply_plan moves orphan dir to .skills-orphaned/ outside skills/, not a sibling rename."""
     m = installer.load_manifest(manifest)
     installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
     target = tmp_path / "claude_home"
@@ -357,9 +361,12 @@ def test_apply_plan_quarantines_orphan_skill(
     installer.apply_plan(plan, m, run_env=None)
 
     assert not orphan_dir.exists(), "orphan should have been moved out of skills/"
-    quarantined = list((target / "skills").glob("deprecated-skill.bak.orphan*"))
-    assert len(quarantined) == 1
-    assert (quarantined[0] / "SKILL.md").read_text(encoding="utf-8") == "# stale\n"
+    # Must land in .skills-orphaned/ — NOT inside skills/ (#927)
+    quarantined = target / ".skills-orphaned" / "deprecated-skill"
+    assert quarantined.exists(), ".skills-orphaned/deprecated-skill must exist"
+    assert (quarantined / "SKILL.md").read_text(encoding="utf-8") == "# stale\n"
+    # No .bak.orphan remnant inside skills/
+    assert not list((target / "skills").glob("deprecated-skill*"))
     # Whitelisted skill still present.
     assert (target / "skills" / "implement" / "SKILL.md").exists()
 
@@ -477,6 +484,31 @@ def test_existing_bak_orphan_is_not_re_quarantined(
     assert "dnd-prep.bak.orphan-20260516-120000" not in orphan_sources, (
         "timestamped quarantine variant must also be skipped"
     )
+
+
+def test_prune_orphan_dest_is_outside_skills_dir(
+    manifest: Path, fake_repo: Path, tmp_path: Path
+) -> None:
+    """Orphan dest must be outside skills/ so the skill loader ignores it (#927).
+
+    The original bug: dest was computed with path.with_name() which stays inside
+    skills/ — Claude Code loads any subdir there regardless of suffix.
+    """
+    m = installer.load_manifest(manifest)
+    installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
+    target = tmp_path / "claude_home"
+    (target / "skills" / "stale-skill").mkdir()
+    (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+
+    plan = installer.build_plan(m, fake_repo)
+    orphans = [a for a in plan.actions if a.kind == "prune_orphan"]
+    assert len(orphans) == 1
+    dest = Path(orphans[0].dest)
+    skills_dir = target / "skills"
+    assert skills_dir not in dest.parents, (
+        f"orphan dest {dest} must not be inside skills/ — skill loader picks it up"
+    )
+    assert dest.parent == target / ".skills-orphaned"
 
 
 def test_disabled_group_is_skipped(manifest: Path, fake_repo: Path) -> None:
@@ -936,7 +968,7 @@ def test_backup_tolerates_vanished_file(
     assert (plan2.backup_path / "SOUL.md").exists()
     assert not (plan2.backup_path / "debug" / "latest").exists()  # the vanishing one
     stderr = capsys.readouterr().err
-    assert "unreadable" in stderr and "latest" in stderr
+    assert re.search(r"backup:\s+skipped unreadable entry.*latest", stderr)
 
 
 def test_backup_tolerates_locked_file(manifest: Path, fake_repo: Path, monkeypatch, capsys) -> None:
@@ -964,7 +996,8 @@ def test_backup_tolerates_locked_file(manifest: Path, fake_repo: Path, monkeypat
 
     assert plan2.backup_path.exists()
     assert not (plan2.backup_path / "debug" / "locked.log").exists()
-    assert "locked.log" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert re.search(r"backup:\s+skipped unreadable entry.*locked\.log", err)
 
 
 # ---------- legacy parent-dir .mcp.json quarantine ----------
@@ -1620,7 +1653,7 @@ class TestEnvEncodingScan:
         )
         assert rc == 0, "OSError on one .env must not fail the whole install"
         err = capsys.readouterr().err
-        assert "could not fix" in err and "bad.env" in err
+        assert re.search(r"could not fix.*bad\.env", err)
         # good.env got fixed despite bad.env failing.
         assert good.read_bytes() == b"TOKEN=y\n"
 
@@ -1653,3 +1686,47 @@ class TestEnvEncodingScan:
             assert "POSIX_ONLY" in set_env_names
             assert "WIN_ONLY" not in set_env_names
         assert "BOTH" in set_env_names  # platforms omitted → always applies
+
+
+# ---------- #856: E2E dry-run + real subprocess health check + structured oracles ----------
+
+
+def test_health_check_real_subprocess_succeeds(fake_repo: Path) -> None:
+    """run_health_check with real subprocess call succeeds for a simple command."""
+    m = {"health_check": {"enabled": True, "commands": [_sys.executable + " -c exit(0)"]}}
+    ok, logs = installer.run_health_check(m, fake_repo)
+    assert ok is True
+    assert any("OK" in line for line in logs)
+
+
+def test_main_dry_run_plans_does_not_create_files(
+    manifest: Path,
+    fake_repo: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """E2E: main() without --apply builds + prints plan but creates nothing on disk.
+
+    The installer default mode is dry-run. This test verifies the full main()
+    pipeline — from argparse through build_plan to format_plan — without
+    executing any writes, and asserts the target directory is left untouched.
+    """
+    fake_installer = fake_repo / "scripts" / "install" / "installer.py"
+    fake_installer.parent.mkdir(parents=True, exist_ok=True)
+    fake_installer.touch()
+    monkeypatch.setattr(installer, "__file__", str(fake_installer))
+
+    m = installer.load_manifest(manifest)
+    target = installer._expand(m["target_root"])
+    assert not target.exists(), "precondition: target does not exist yet"
+
+    rc = installer.main(["--manifest", str(manifest)])
+    assert rc == 0, "dry-run must return 0"
+
+    out = capsys.readouterr().out
+    assert "dry-run" in out
+    assert "state:" in out
+    assert "actions:" in out
+
+    # Plan was printed but NOT applied — target must still be absent.
+    assert not target.exists(), "dry-run must NOT create target files"

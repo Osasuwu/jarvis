@@ -70,7 +70,9 @@ for _mod_name, _mod in [
 try:
     import supabase  # noqa: F401
 except ImportError:
-    sys.modules["supabase"] = types.ModuleType("supabase")
+    _supabase_mod = types.ModuleType("supabase")
+    _supabase_mod.create_client = MagicMock
+    sys.modules["supabase"] = _supabase_mod
 
 try:
     import httpx  # noqa: F401
