@@ -241,24 +241,19 @@ def test_find_broken_links_same_file_anchor():
     assert broken[0][3] == "#nonexistent"
 
 
-def test_find_broken_links_cross_file_anchor_missing():
+def test_find_broken_links_cross_file_anchor_missing(tmp_path):
     """Find broken links: anchor in target file doesn't exist."""
     from scripts.audit_anchors import find_broken_links
-    # Create a temporary test setup
-    test_file = REPO_ROOT / "test1.md"
-    target_file = REPO_ROOT / "test2.md"
+    test_file = tmp_path / "test1.md"
+    target_file = tmp_path / "test2.md"
     test_file.write_text("[link](test2.md#missing)")
     target_file.write_text("# Real")
-    try:
-        corpus = {
-            test_file: test_file.read_text(),
-            target_file: target_file.read_text(),
-        }
-        broken = find_broken_links(corpus)
-        assert any(b[3] == "test2.md#missing" for b in broken)
-    finally:
-        test_file.unlink(missing_ok=True)
-        target_file.unlink(missing_ok=True)
+    corpus = {
+        test_file: test_file.read_text(),
+        target_file: target_file.read_text(),
+    }
+    broken = find_broken_links(corpus)
+    assert any(b[3] == "test2.md#missing" for b in broken)
 
 
 def test_find_broken_links_missing_file():
