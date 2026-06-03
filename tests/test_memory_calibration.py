@@ -111,6 +111,9 @@ class TestMemoryCalibrationSummary:
         monkeypatch.setattr("server._get_client", lambda: client)
 
         result = await _handle_memory_calibration_summary({})
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0].type == "text"
         assert "Error calling memory_calibration_summary" in result[0].text
         assert "rpc blew up" in result[0].text
 
