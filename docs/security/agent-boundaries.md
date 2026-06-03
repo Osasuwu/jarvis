@@ -19,7 +19,7 @@ Detection chain (#429):
 2. Claude Code headless env vars → `autonomous`
 3. Default → `live`
 
-**Contract for autonomous entry points**: launchers that run Claude headless (scheduler, future dispatcher, any cron/task wrapper) MUST set `JARVIS_PRINCIPAL` explicitly. The scheduler does this via NSSM `AppEnvironmentExtra=JARVIS_PRINCIPAL=autonomous` ([`scripts/install/install-scheduler-service.ps1`](../../scripts/install/install-scheduler-service.ps1)).
+**Contract for autonomous entry points**: launchers that run Claude headless (the reactive-core executor, any cron/task wrapper) MUST set `JARVIS_PRINCIPAL` explicitly. The APScheduler scheduler service that formerly demonstrated this via NSSM `AppEnvironmentExtra=JARVIS_PRINCIPAL=autonomous` was retired in #743 (replaced by the event-driven `agents/wake_driver.py`); when wake_driver gets a service launcher it carries the same contract. wake_driver itself owns no decisions and spawns nothing directly — the executor that spawns `claude -p` is the headless launcher bound by this rule.
 
 The earlier "default-safe to autonomous" design (#426) was reverted in #429 because hook subprocesses always have piped stdin, so an `isatty()` fallback would mis-classify every interactive session as autonomous. Today's autonomous launchers explicitly set the env; future ones must do the same.
 

@@ -124,6 +124,64 @@ def test_judge_via_haiku_missing_httpx():
         fok_batch.httpx = original_httpx
 
 
+def _mock_httpx_response(text_content: str) -> Mock:
+    """Build a mock httpx response that returns the given text content."""
+    mock_resp = Mock()
+    mock_resp.json.return_value = {"content": [{"type": "text", "text": text_content}]}
+    return mock_resp
+
+
+def test_judge_via_haiku_parses_json_from_prose():
+    """Response fixture: exercises the real JSON-parsing path through
+    ``judge_via_haiku`` with a mocked HTTP response."""
+    prose = (
+        "Based on my assessment:\n"
+        '{"verdict": "sufficient", "confidence": 0.85, "reason": "Memories directly answer."}\n'
+        "The query is straightforward."
+    )
+    mock_resp = _mock_httpx_response(prose)
+    with patch.object(fok_batch, "httpx") as mock_httpx:
+        mock_httpx.Client.return_value.__enter__.return_value.post.return_value = mock_resp
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            result = fok_batch.judge_via_haiku("test query", [])
+
+    assert result["verdict"] == "sufficient"
+    assert result["confidence"] == 0.85
+    assert result["reason"] == "Memories directly answer."
+
+
+def test_judge_via_haiku_returns_unknown_on_malformed_json():
+    """Malformed JSON in Haiku response yields ``unknown`` verdict."""
+    prose = (
+        "Here is my judgment:\n"
+        '{"verdict": "insufficient", "confidence": 0.7, "reason": "Missing contextual data"\n'  # missing trailing }
+        "The memories are not sufficient."
+    )
+    mock_resp = _mock_httpx_response(prose)
+    with patch.object(fok_batch, "httpx") as mock_httpx:
+        mock_httpx.Client.return_value.__enter__.return_value.post.return_value = mock_resp
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            result = fok_batch.judge_via_haiku("test query", [])
+
+    assert result["verdict"] == "unknown"
+    assert result["confidence"] is None
+
+
+def test_judge_via_haiku_returns_unknown_on_empty_response():
+    """Empty or non-JSON response yields ``unknown`` verdict."""
+    prose = "I cannot assess this query without more context."
+    mock_resp = _mock_httpx_response(prose)
+    with patch.object(fok_batch, "httpx") as mock_httpx:
+        mock_httpx.Client.return_value.__enter__.return_value.post.return_value = mock_resp
+        with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"}):
+            result = fok_batch.judge_via_haiku("test query", [])
+
+    assert result["verdict"] == "unknown"
+    assert result["confidence"] is None
+    reason = result.get("reason", "").lower()
+    assert "parse" in reason or "json" in reason
+
+
 def test_try_insert_known_unknown_sufficient_verdict():
     """Test that 'sufficient' verdicts don't get inserted."""
     mock_client = MagicMock()

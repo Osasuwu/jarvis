@@ -16,13 +16,34 @@ python scripts/eval-recall.py --diff baseline  # compare to saved baseline
 
 Requires `VOYAGE_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY` in `.env`.
 
+## Offline replay / CI (no secrets needed)
+
+```bash
+# 1. Record a snapshot (requires live keys):
+python scripts/eval-recall.py --record tests/memory-eval/snapshot.json
+
+# 2. Replay offline (no keys needed):
+python scripts/eval-recall.py --replay tests/memory-eval/snapshot.json --diff baseline
+
+# 3. CI mode — replay + fail on regressions:
+python scripts/eval-recall.py --ci tests/memory-eval/snapshot.json --diff baseline
+```
+
+The `--record` flag captures raw RPC results (embeddings + semantic/keyword search
+rows) to a snapshot file. The `--replay` flag re-runs the post-RPC pipeline (RRF
+merge → confidence → temporal scoring → metric computation) on the cached data
+without needing Supabase or VoyageAI access. `--ci` replays and exits 1 if any
+baseline-passing query regresses.
+
 ## Metrics
 
 | metric | meaning | target |
 |---|---|---|
+| `recall@3`  | fraction of queries where ≥1 expected memory is in top-3 | drive up |
 | `recall@5`  | fraction of queries where ≥1 expected memory is in top-5 | drive up |
 | `recall@10` | same, top-10                                              | drive up |
 | `MRR`       | mean reciprocal rank of first expected hit (0 if no hit)   | drive up |
+| `mean_rank` | average position of first expected hit (lower better)      | drive down |
 | `must_not violations` | queries where a superseded/archived memory surfaced in top-5 | drive to 0 |
 
 `must_not` is the **lifecycle signal**. Phase 0.5 baseline will have violations
