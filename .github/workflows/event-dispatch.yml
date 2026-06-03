@@ -1,7 +1,8 @@
 name: Event Dispatch
 
 # Captures critical GitHub events and writes them to Supabase events table.
-# The autonomous-loop orchestrator reads unprocessed events and takes action.
+# The reactive-core orchestrator (wake_driver → agents/orchestrator router)
+# consumes pending events and routes each to inline / task_queue / escalation.
 #
 # Required secrets:
 #   SUPABASE_URL      — project URL (https://xxx.supabase.co)

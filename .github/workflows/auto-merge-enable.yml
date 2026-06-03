@@ -1,0 +1,26 @@
+# Closes the AFK Path A merge-enable gap (#891): the repo allows auto-merge,
+# but nothing was turning it on per-PR, so green PRs never merged on their own.
+# This enables squash auto-merge the moment a PR is open-and-ready (non-draft);
+# GitHub then merges it once every required gate (review / pytest / meta-tests /
+# gitleaks / require-linked-issue / owner-queue-guard) is green. Owner holds a PR
+# by keeping it a draft or applying status:owner-queue (owner-queue-guard stays red).
+name: auto-merge-enable
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    # Skip drafts — a draft is the manual "owner attention owed" hold.
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enable squash auto-merge
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --auto --squash
