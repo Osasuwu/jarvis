@@ -215,3 +215,291 @@ queries:
     expected: [autonomous_chain_synthesis_template]
     kind: reference
     axis: lexical
+
+  # --- DIRECT queries (new) ---
+  - id: q29
+    query: "custom MCP server vs official Supabase MCP decision"
+    expected: [supabase_custom_mcp_preferred]
+    kind: direct
+
+  - id: q30
+    query: "pgvector column returns JSON string not list decode bug"
+    expected: [pgvector_string_decode_bug]
+    kind: direct
+
+  - id: q31
+    query: "136 spam events issue checks CI dispatch fix"
+    expected: [event_dispatch_spam_fix]
+    kind: direct
+
+  - id: q32
+    query: "goals system v1 supabase table MCP implementation"
+    expected: [goals_system_v1]
+    kind: direct
+
+  - id: q33
+    query: "when did Jarvis repo become public open source"
+    expected: [jarvis_public_release_v020]
+    kind: direct
+
+  - id: q34
+    query: "strategic docs location wiki not repo"
+    expected: [docs_in_wiki]
+    kind: direct
+
+  - id: q35
+    query: "always_load tag mechanism memory flip by restore"
+    expected: [always_load_tag_mechanism]
+    kind: direct
+
+  - id: q36
+    query: "native memory evaluation Claude Desktop why not used"
+    expected: [claude_native_memory_evaluation]
+    kind: direct
+
+  # --- TOPIC queries (new) ---
+  - id: q37
+    query: "delegating work to subagents lessons and failure modes"
+    expected: [lessons_agent_delegation, delegate_explicit_branch_origin_main, subagent_acceptance_criteria_dodged_as_out_of_scope]
+    kind: topic
+
+  - id: q38
+    query: "event-driven architecture GitHub Actions Supabase events orchestrator"
+    expected: [event_driven_perception_v1, event_dispatch_spam_fix]
+    kind: topic
+
+  - id: q39
+    query: "Ollama local model speed hardware GPU limits laptop"
+    expected: [main_pc_ollama_benchmark_2026_05_10, user_laptop_hardware]
+    kind: topic
+
+  - id: q40
+    query: "pillars architecture decisions capabilities milestones taxonomy"
+    expected: [pillars_drop_structural_direction_2, pillar7_personal_vs_company_separation, pillar9_sprint1_self_security]
+    kind: topic
+
+  - id: q41
+    query: "memory server pgvector HNSW hybrid search consolidation"
+    expected: [memory_server_v2_improvements, consolidation_soft_archive, memory_tiers_convention]
+    kind: topic
+
+  - id: q42
+    query: "verifying agent subagent work cross-check findings"
+    expected: [verify_agent_findings_against_memory, post_compaction_task_premise_verification, subagent_test_coverage_overclaim]
+    kind: topic
+
+  - id: q43
+    query: "sandcastle container scheduled tasks Windows PowerShell"
+    expected: [sandcastle_winps51_parse_errors_kill_silently, lesson_cloud_mcp_limitations, scheduled_tasks_subscription_not_api, weekday_weekend_scheduling_policy]
+    kind: topic
+
+  - id: q44
+    query: "developer practices research sweep agent dev 2026"
+    expected: [research_agent_dev_practices_sweep_2026_05_06, personal_workflow_aihero_adoption]
+    kind: topic
+
+  # --- BEHAVIORAL / FEEDBACK queries (new) ---
+  - id: q45
+    query: "fix independent bugs in parallel subagents"
+    expected: [prefer_agents_for_parallel_bugs]
+    kind: behavior
+
+  - id: q46
+    query: "visually verify UI with Playwright MCP"
+    expected: [use_playwright_for_testing]
+    kind: behavior
+
+  - id: q47
+    query: "slash command execute immediately no reconfirm"
+    expected: [feedback_skill_prelude_no_reconfirm]
+    kind: behavior
+
+  - id: q48
+    query: "grill session start with why the problem before how mechanism"
+    expected: [grill_me_start_with_why_before_how]
+    kind: behavior
+
+  - id: q49
+    query: "grill high level blocks must end with SVG diagram"
+    expected: [grill_high_level_blocks_require_svg_diagram]
+    kind: behavior
+
+  - id: q50
+    query: "decision shedding when to decide vs leave open question"
+    expected: [decision_shedding_via_open_questions]
+    kind: behavior
+
+  - id: q51
+    query: "read existing code before implementing don't rebuild"
+    expected: [read_code_before_implementing]
+    kind: behavior
+
+  - id: q52
+    query: "access robot telemetry directly curl localhost"
+    expected: [direct_robot_access_pattern, direct_server_access]
+    kind: behavior
+
+  - id: q53
+    query: "check naming vocabulary overlap before creating new skill"
+    expected: [naming_check_existing_vocabulary]
+    kind: behavior
+
+  # --- RUSSIAN queries (new) ---
+  - id: q54
+    query: "как работает always_load тэг в памяти"
+    expected: [always_load_tag_mechanism]
+    kind: direct
+
+  - id: q55
+    query: "как делегировать задачи сабагентам правильно"
+    expected: [lessons_agent_delegation, delegate_explicit_branch_origin_main]
+    kind: topic
+
+  - id: q56
+    query: "тестирование моков Supabase проверка схемы"
+    expected: [supabase_mocks_must_match_real_schema, smoke_test_catches_what_unit_tests_miss]
+    kind: topic
+
+  - id: q57
+    query: "когда Jarvis стал опенсорс публичный репозиторий"
+    expected: [jarvis_public_release_v020]
+    kind: direct
+
+  - id: q58
+    query: "железо ноутбука видеокарта Оллама ограничения"
+    expected: [user_laptop_hardware]
+    kind: direct
+
+  - id: q59
+    query: "личность владельца MBTI тип сотрудничества"
+    expected: [user_mmpi_profile]
+    kind: direct
+
+  # --- USER PROFILE queries (new) ---
+  - id: q60
+    query: "owner personality MMPI results collaboration style"
+    expected: [user_mmpi_profile]
+    kind: user
+
+  - id: q61
+    query: "owner working style multistream hyperfocus parallel sessions"
+    expected: [user_working_pattern_multistream]
+    kind: user
+
+  - id: q62
+    query: "security philosophy protect keys personal data leak acceptable"
+    expected: [security_philosophy]
+    kind: user
+
+  - id: q63
+    query: "university student Satbayev CSE8012 IT project management"
+    expected: [user_university_student, university_student_cse8012]
+    kind: user
+
+  - id: q64
+    query: "owner thinks in physical intuition architecture translate to code"
+    expected: [owner_thinks_architecturally]
+    kind: user
+
+  - id: q65
+    query: "Claude Max subscription unlimited tokens cost no constraint"
+    expected: [claude_max_upgrade]
+    kind: user
+
+  - id: q66
+    query: "personal devloop practices PEC rhythm vertical slices"
+    expected: [personal_workflow_aihero_adoption]
+    kind: user
+
+  - id: q67
+    query: "owner DnD Dungeon Master homebrew campaign"
+    expected: [dnd_dm_role]
+    kind: user
+
+  # --- REFERENCE queries (new) ---
+  - id: q68
+    query: "Main PC RTX 3050 6GB Ollama qwen3 throughput benchmark"
+    expected: [main_pc_ollama_benchmark_2026_05_10]
+    kind: reference
+
+  - id: q69
+    query: "Workshop RTX 5080 reactive core cold boot tick latency"
+    expected: [workshop_coldboot_tick_bound_738]
+    kind: reference
+
+  - id: q70
+    query: "decision quality audit 90 day bad normal good calibration"
+    expected: [decision_calibration_audit_2026_05_18_90d]
+    kind: reference
+
+  - id: q71
+    query: "alternative memory systems mem0 hindsight pgvector migration"
+    expected: [memory_alternatives]
+    kind: reference
+
+  - id: q72
+    query: "kroki diagram render Mermaid PlantUML SVG local docker"
+    expected: [kroki_diagram_render_setup]
+    kind: reference
+
+  - id: q73
+    query: "reason skill prior art debate sycophancy multi-agent"
+    expected: [reason_skill_prior_art_2026_05_17]
+    kind: reference
+
+  # --- LIFECYCLE queries (new) ---
+  - id: q74
+    query: "how session state restored between restarts hook"
+    expected: [session_context_hook_architecture]
+    must_not: [checkpoint_skill_architecture]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q75
+    query: "Jarvis multi-agent orchestration approach history decisions"
+    expected: [event_driven_perception_v1, jarvis_wrapping_direction]
+    must_not: [pm_dispatch_v1_superseded_by_persistent_agents]
+    kind: lifecycle
+    axis: lifecycle
+
+  - id: q76
+    query: "куда делась архитектура checkpoint skill восстановление сессии"
+    expected: [session_context_hook_architecture]
+    must_not: [checkpoint_skill_architecture]
+    kind: lifecycle
+    axis: lifecycle
+
+  # --- REDROBOT topic queries (new) ---
+  - id: q77
+    query: "redrobot physics engine Warp DEM vs Taichi MPM benchmark"
+    expected: [physics_engine_migration_warp, taichi_vs_warp_benchmark]
+    kind: topic
+
+  - id: q78
+    query: "redrobot CI billing GitHub Actions minutes disabled"
+    expected: [redrobot_no_ci_on_pr, redrobot_gha_billing_blocked]
+    kind: topic
+
+  - id: q79
+    query: "redrobot GitHub project board structure fields critical path"
+    expected: [github_project_board_structure, redrobot_project_board_ids]
+    kind: topic
+
+  # --- LEXICAL queries (second memory: main_pc_ollama_benchmark) ---
+  - id: q80
+    query: "main_pc_ollama_benchmark_2026_05_10"
+    expected: [main_pc_ollama_benchmark_2026_05_10]
+    kind: reference
+    axis: lexical
+
+  - id: q81
+    query: "RTX 3050 6GB VRAM throughput baseline tokens per second"
+    expected: [main_pc_ollama_benchmark_2026_05_10]
+    kind: reference
+    axis: lexical
+
+  - id: q82
+    query: "Ollama CPU offload 7B model 6 tok/s qwen3 4B fits VRAM"
+    expected: [main_pc_ollama_benchmark_2026_05_10]
+    kind: reference
+    axis: lexical

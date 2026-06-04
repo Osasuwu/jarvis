@@ -54,6 +54,7 @@ def enqueue(
     assignee: str | None = None,
     idempotency_key: str,
     scope_files: list[str] | None = None,
+    escalated_reason: str | None = None,
     client: Client | None = None,
 ) -> dict[str, Any] | None:
     """Insert a task into the queue.
@@ -61,6 +62,11 @@ def enqueue(
     **Idempotent:** a colliding ``idempotency_key`` silently returns
     ``None`` instead of raising. Callers that need to detect collision
     should check the return value.
+
+    ``escalated_reason`` is persisted on insert for ``assignee='owner'``
+    escalation rows (the deterministic router's ``escalate_to_human``
+    route, #744) so the owner sees *why* a task was escalated without a
+    separate transition. The column already exists on ``task_queue``.
 
     Returns the inserted row, or ``None`` if the key already existed.
     """
@@ -75,6 +81,8 @@ def enqueue(
         row["assignee"] = assignee
     if scope_files:
         row["scope_files"] = scope_files
+    if escalated_reason is not None:
+        row["escalated_reason"] = escalated_reason
 
     result = cli.table("task_queue").insert(row).execute()
     data = result.data or []
@@ -160,11 +168,7 @@ def transition(
 
     # Read current state
     rows = (
-        cli.table("task_queue")
-        .select("status")
-        .eq("id", task_id)
-        .limit(1)
-        .execute()
+        cli.table("task_queue").select("status").eq("id", task_id).limit(1).execute()
     ).data or []
 
     if not rows:
@@ -173,9 +177,7 @@ def transition(
     current_status = rows[0]["status"]
 
     if current_status in _TERMINAL_STATES:
-        raise ValueError(
-            f"Cannot transition from terminal state {current_status!r}"
-        )
+        raise ValueError(f"Cannot transition from terminal state {current_status!r}")
 
     allowed = _VALID_TRANSITIONS.get(current_status, frozenset())
     if to_status not in allowed:

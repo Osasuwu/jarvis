@@ -128,6 +128,37 @@ class _StubClient:
 
 
 # ---------------------------------------------------------------------------
+# Stub contract: verify the stub satisfies real client expectations
+# ---------------------------------------------------------------------------
+
+
+def test_stub_contract_smoke() -> None:
+    """Smoke test: the _StubClient supports the query patterns morning_check.py uses.
+
+    Without this contract test, a refactor of the stub that drops a method
+    (e.g. _SelectQuery.order) would only surface as a test failure, not a
+    compilation error — the stubs duck-type the real Supabase client.
+    """
+    stub = _StubClient()
+    stub.seed_audit_log([{"agent_id": "a", "outcome": "ok", "timestamp": "2026-01-01T00:00:00"}])
+
+    # Select chain: table().select().gte().order().eq().execute()
+    q = stub.table("audit_log").select("*").gte("timestamp", "2026-01-01").order("timestamp")
+    q = q.eq("agent_id", "a")
+    result = q.execute()
+    assert result.data is not None
+    assert len(result.data) == 1
+    assert result.data[0]["agent_id"] == "a"
+
+    # Upsert chain: table().upsert().execute()
+    stub.table("task_queue").upsert(
+        {"key": "v"}, on_conflict="k", ignore_duplicates=True
+    ).execute()
+    upserts = [c for c in stub.calls if c[0] == "upsert"]
+    assert len(upserts) == 1
+
+
+# ---------------------------------------------------------------------------
 # Test utilities
 # ---------------------------------------------------------------------------
 
@@ -393,8 +424,7 @@ def test_upsert_failure_does_not_crash() -> None:
 
 
 def test_approved_scope_hash_matches_empty_list_hash() -> None:
-    """approved_scope_hash is sha256 of empty list."""
-    from agents.executor import _hash_scope_files
+    """approved_scope_hash matches sha256 of an empty scope list."""
     from scripts.observability.morning_check import main
 
     stub = _StubClient()
@@ -417,6 +447,9 @@ def test_approved_scope_hash_matches_empty_list_hash() -> None:
         upserts = [c for c in stub.calls if c[0] == "upsert"]
         payload = upserts[0][2]["payload"]
 
-        # Verify it matches the empty-list hash
-        expected_hash = _hash_scope_files([])
+        # Compute the expected hash inline rather than importing the private
+        # _hash_scope_files from agents.executor.  The algorithm joins
+        # sorted() with "\n" then sha256 digests; for an empty list the
+        # joined string is "" so the hash is sha256(b"").
+        expected_hash = hashlib.sha256(b"").hexdigest()
         assert payload["approved_scope_hash"] == expected_hash
