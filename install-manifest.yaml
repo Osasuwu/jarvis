@@ -133,17 +133,32 @@ env_vars:
     value: "{repo_root}"
     platforms: ["windows", "posix"]
   # Context-economy env vars per #706 / workflow-table rows #96+#97.
-  # NoLiMa ICML 2025: 11/12 LLMs drop below 50% by 32K tokens;
-  # Sikkema 2026-04: 65% autocompact cap improves CC reasoning consistency.
-  - name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
-    value: "65"
+  # NoLiMa ICML 2025: 11/12 LLMs drop below 50% by 32K tokens.
+  #
+  # Owner directive 2026-06-01: keep autocompact in the 150-200k band so no CC
+  # session physically leaves the smart zone. AUTO_COMPACT_WINDOW caps the
+  # compaction window at 200k regardless of the model's native window — without
+  # it, PCT computes against the model window, and on Opus 1M that is ~650k
+  # (the bug that let context reach 300k+ before compacting). The CC binary
+  # (v2.1.156) then fires at threshold = min(window*PCT/100, window-13000)
+  # = min(200000*0.75, 187000) = 150000.
+  - name: "CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+    value: "200000"
     platforms: ["windows", "posix"]
-  # Disable Opus 1M-context window. Rationale is latency / reasoning quality
-  # (NoLiMa: degradation past ~32K), NOT cost — Claude Max has no incremental
-  # per-token charge. Note: this env var is device-global; every Claude Code
-  # session on the box (including non-Jarvis projects like redrobot) inherits
-  # the 1M-disabled default. Accept that scope: the smart-zone argument
-  # applies to all CC sessions regardless of project.
+  # 75% of the 200k window = 150k fire point. Raised from 65% (#706 / Sikkema
+  # 2026-04 reasoning-consistency cap) to honor the owner's 150k floor — at the
+  # 200k window 65% gave 130k, below the requested band. Tune within band:
+  # 75->150k, 80->160k, 85->170k, 90->180k, >=~94 hits the 187k hard cap.
+  - name: "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"
+    value: "75"
+    platforms: ["windows", "posix"]
+  # Disable Opus 1M-context window. Rationale: latency / reasoning quality
+  # (NoLiMa: degradation past ~32K) AND cost — per memory opus_1m_extra_billing
+  # (10be89f8) Opus 1M is now extra-billed, so 1M is off by default (supersedes
+  # the earlier "NOT cost / Max has no per-token charge" note). Device-global:
+  # every CC session on the box (including non-Jarvis projects like redrobot)
+  # inherits the 1M-disabled default. Accept that scope: the smart-zone
+  # argument applies to all CC sessions regardless of project.
   - name: "CLAUDE_CODE_DISABLE_1M_CONTEXT"
     value: "1"
     platforms: ["windows", "posix"]

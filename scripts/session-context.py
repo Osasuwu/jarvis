@@ -371,6 +371,14 @@ def main():
         if sweep_section:
             sections.append(sweep_section)
 
+    # 5c. Mirror drift warning — show when ~/.claude/.jarvis-version is
+    #     behind repo HEAD. Fires anywhere the script can read both SHAs
+    #     (inside the jarvis repo). Silent when absent, in sync, or when
+    #     git is unavailable (not a git dir / no permission).
+    drift_section = _check_mirror_drift()
+    if drift_section:
+        sections.append(drift_section)
+
     # 6. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
     #    live memories (name + type + scope + short description) so Jarvis
     #    knows what exists and can pull full content on demand via memory_get
@@ -766,6 +774,66 @@ def _check_milestone_sweep(
     return (
         f"## Architecture Sweep{plural}\n"
         f"{chr(10).join(lines)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mirror drift detection (#753): compare ~/.claude/.jarvis-version vs HEAD
+# ---------------------------------------------------------------------------
+
+# Path to the version marker installed by the manifest installer.
+_JARVIS_VERSION_PATH = Path.home() / ".claude" / ".jarvis-version"
+
+
+def _check_mirror_drift(
+    version_path: Path | None = None,
+    repo_root: Path | None = None,
+) -> str | None:
+    """Compare installed version marker against repo HEAD.
+
+    Returns a formatted drift warning when the installed SHA differs from
+    HEAD, or None when in sync / marker absent / git unavailable.
+
+    Both parameters are injectable for testing: version_path defaults to
+    ~/.claude/.jarvis-version, repo_root defaults to the discovered repo root.
+    """
+    vp = version_path if version_path is not None else _JARVIS_VERSION_PATH
+    rr = repo_root if repo_root is not None else _root
+
+    if not vp.exists():
+        return None
+
+    try:
+        installed = vp.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not installed:
+        return None
+
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=rr, capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+
+    if installed == head:
+        return None
+
+    try:
+        count = subprocess.run(
+            ["git", "rev-list", "--count", f"{installed}..HEAD"],
+            cwd=rr, capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+    except (subprocess.SubprocessError, FileNotFoundError):
+        count = "?"
+
+    return (
+        "## Mirror Drift\n"
+        f"⚠ Installed ({installed[:12]}) is {count} commit(s) behind "
+        f"HEAD ({head[:12]}) — run `install.ps1 -Apply` or "
+        f"`install.sh --apply` to sync."
     )
 
 

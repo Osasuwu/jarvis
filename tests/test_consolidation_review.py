@@ -6,7 +6,7 @@ and reject path (Python-side status flip). The consolidation paths get a
 light regression check so the shared dispatcher (approve/reject/show_diff)
 doesn't drift.
 
-Network + DB are stubbed via _FakeClient. Haiku/VoyageAI HTTP paths are
+Network + DB are stubbed via FakeClient. Haiku/VoyageAI HTTP paths are
 untouched by this change so they're not re-tested.
 """
 
@@ -14,22 +14,9 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import sys
-import types
 from pathlib import Path
 
-# Stub httpx / supabase / dotenv if not installed so the module import works
-# in minimal CI. The HTTP/DB paths we test go through the fake client.
-for name in ("httpx", "supabase", "dotenv"):
-    try:
-        __import__(name)
-    except ImportError:
-        mod = types.ModuleType(name)
-        if name == "supabase":
-            mod.create_client = lambda *a, **k: None  # type: ignore[attr-defined]
-        if name == "dotenv":
-            mod.load_dotenv = lambda *a, **k: None  # type: ignore[attr-defined]
-        sys.modules[name] = mod
+from test_utils import FakeClient, FakeResp, filter_val
 
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent / "scripts" / "consolidation-review.py"
@@ -39,134 +26,6 @@ spec = importlib.util.spec_from_file_location("consolidation_review", SCRIPT_PAT
 assert spec and spec.loader
 review = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(review)
-
-
-# ---------------------------------------------------------------------------
-# Minimal Supabase chainable-query stub
-# ---------------------------------------------------------------------------
-
-
-class _FakeResp:
-    def __init__(self, data):
-        self.data = data
-
-
-class _FakeTableQuery:
-    """Chainable fake supporting select/eq/in_/filter/order/limit/is_/update/delete/insert."""
-
-    def __init__(self, parent, table: str):
-        self.parent = parent
-        self.table_name = table
-        self._select = None
-        self._filters: list[tuple] = []
-        self._order: tuple | None = None
-        self._limit: int | None = None
-        self._op = "select"
-        self._row: dict | list | None = None
-
-    def select(self, columns: str):
-        self._op = "select"
-        self._select = columns
-        return self
-
-    def insert(self, row):
-        self._op = "insert"
-        self._row = row
-        return self
-
-    def update(self, row):
-        self._op = "update"
-        self._row = row
-        return self
-
-    def delete(self):
-        self._op = "delete"
-        return self
-
-    def eq(self, col, val):
-        self._filters.append(("eq", col, val))
-        return self
-
-    def in_(self, col, vals):
-        self._filters.append(("in", col, list(vals)))
-        return self
-
-    def filter(self, col, op, val):
-        self._filters.append(("filter", col, op, val))
-        return self
-
-    def is_(self, col, val):
-        self._filters.append(("is", col, val))
-        return self
-
-    def order(self, col, *, desc: bool = False):
-        self._order = (col, desc)
-        return self
-
-    def limit(self, n: int):
-        self._limit = n
-        return self
-
-    def gte(self, col, val):
-        self._filters.append(("gte", col, val))
-        return self
-
-    def execute(self):
-        call = {
-            "table": self.table_name,
-            "op": self._op,
-            "filters": self._filters,
-            "select": self._select,
-            "order": self._order,
-            "limit": self._limit,
-            "row": self._row,
-        }
-        self.parent.table_calls.append(call)
-        handler = self.parent.table_handlers.get(self.table_name)
-        if handler is not None:
-            return _FakeResp(handler(call))
-        return _FakeResp([])
-
-
-class _FakeRPC:
-    def __init__(self, parent, name, params):
-        self.parent = parent
-        self.name = name
-        self.params = params
-
-    def execute(self):
-        self.parent.rpc_calls.append({"name": self.name, "params": self.params})
-        handler = self.parent.rpc_handlers.get(self.name)
-        if handler is not None:
-            return _FakeResp(handler(self.params))
-        return _FakeResp(None)
-
-
-class _FakeClient:
-    """Stand-in for the supabase-py client.
-
-    rpc_handlers / table_handlers keyed by name; each handler receives the
-    call dict (for tables) or params (for rpcs) and returns the .data payload.
-    """
-
-    def __init__(self):
-        self.rpc_calls: list[dict] = []
-        self.table_calls: list[dict] = []
-        self.rpc_handlers: dict = {}
-        self.table_handlers: dict = {}
-
-    def rpc(self, name, params):
-        return _FakeRPC(self, name, params)
-
-    def table(self, name):
-        return _FakeTableQuery(self, name)
-
-
-def _filter_val(call: dict, op: str, col: str):
-    for f in call["filters"]:
-        if f[0] == op and f[1] == col:
-            return f[2]
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +67,7 @@ class TestKindRouting:
 
 class TestListPending:
     def test_passes_kind_decisions_to_query(self):
-        client = _FakeClient()
+        client = FakeClient()
         client.table_handlers["memory_review_queue"] = lambda call: []
         review.list_pending(client, limit=5, kind="evolution")
         call = client.table_calls[-1]
@@ -217,7 +76,7 @@ class TestListPending:
         assert in_filter[2] == ["EVOLVE"]
 
     def test_kind_all_covers_both(self):
-        client = _FakeClient()
+        client = FakeClient()
         client.table_handlers["memory_review_queue"] = lambda call: []
         review.list_pending(client, limit=5, kind="all")
         call = client.table_calls[-1]
@@ -225,7 +84,7 @@ class TestListPending:
         assert set(in_filter[2]) == {"MERGE", "SUPERSEDE_CONSOLIDATION", "EVOLVE"}
 
     def test_kind_consolidation_excludes_evolve(self):
-        client = _FakeClient()
+        client = FakeClient()
         client.table_handlers["memory_review_queue"] = lambda call: []
         review.list_pending(client, limit=5, kind="consolidation")
         call = client.table_calls[-1]
@@ -421,8 +280,8 @@ class TestApproveEvolutionRow:
             },
         }
 
-    def _build_client(self, *, snapshots: list | None = None) -> _FakeClient:
-        client = _FakeClient()
+    def _build_client(self, *, snapshots: list | None = None) -> FakeClient:
+        client = FakeClient()
 
         if snapshots is None:
             snapshots = [
@@ -458,7 +317,7 @@ class TestApproveEvolutionRow:
                         ]
                     return []
                 # update / delete on memory_review_queue → just echo back
-                return [{"id": _filter_val(call, "eq", "id")}]
+                return [{"id": filter_val(call, "eq", "id")}]
             if t == "events":
                 return [{"id": "event-fake"}]
             return []
@@ -581,15 +440,15 @@ class TestRejectEvolutionRow:
             "reasoning": "original haiku reasoning",
         }
 
-    def _build_client(self) -> _FakeClient:
-        client = _FakeClient()
+    def _build_client(self) -> FakeClient:
+        client = FakeClient()
 
         def handler(call):
             if call["table"] == "events":
                 return [{"id": "event-reject"}]
             # memory_review_queue update → echo
             if call["op"] == "update":
-                return [{"id": _filter_val(call, "eq", "id")}]
+                return [{"id": filter_val(call, "eq", "id")}]
             return []
 
         client.table_handlers["memory_review_queue"] = handler
@@ -662,8 +521,8 @@ class TestDispatcherRouting:
         base.update(extra)
         return base
 
-    def _client_returning(self, row) -> _FakeClient:
-        client = _FakeClient()
+    def _client_returning(self, row) -> FakeClient:
+        client = FakeClient()
 
         def handler(call):
             if call["op"] == "select" and ("eq", "id", row["id"]) in call["filters"]:

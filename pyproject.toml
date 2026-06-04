@@ -33,11 +33,14 @@ memory = [
   "httpx>=0.27",
   "pyyaml>=6.0",
 ]
-# Pillar 7: LangGraph persistent agents (Ollama + Postgres checkpointer + Supabase bridge)
+# Pillar 7: reactive-core agents (Ollama + Postgres + Supabase bridge).
+# LangGraph (langgraph / langgraph-checkpoint-postgres / langchain-ollama) was
+# retired with agents/event_monitor.py in #744 — the deterministic router has
+# no graph runtime. APScheduler + SQLAlchemy were retired with agents/scheduler.py
+# in #743 — wake_driver is event-driven (LISTEN/NOTIFY), not a resident poller.
+# psycopg stays: wake_driver uses it for the LISTEN socket the PostgREST client
+# can't open.
 agents = [
-  "langgraph>=0.2.50",
-  "langchain-ollama>=0.2.0",
-  "langgraph-checkpoint-postgres>=2.0.0",
   "psycopg[binary,pool]>=3.1",
   "ollama>=0.4.0",
   # Supabase bridge — agents read/write memories/events/goals/audit_log directly
@@ -47,11 +50,6 @@ agents = [
   # but agents/github_client.py depends on it unconditionally — declare it
   # explicitly so the contract doesn't depend on a transitive.
   "httpx>=0.27",
-  # Pillar 7 Sprint 2: scheduler primitive (agents/scheduler.py, #300).
-  # APScheduler's SQLAlchemyJobStore needs SQLAlchemy; pin ranges that
-  # work with psycopg v3 (already pulled in above).
-  "apscheduler>=3.10",
-  "sqlalchemy>=2.0",
 ]
 # All runtime components
 full = [
