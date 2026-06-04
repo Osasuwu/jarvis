@@ -1,6 +1,14 @@
 # Uninstall jarvis-scheduler Windows service
 # Gracefully stops and removes the service
 # Usage: .\uninstall-scheduler-service.ps1
+#
+# RETIRED (#743): the APScheduler resident scheduler (agents/scheduler.py) and
+# its installer were removed when wake_driver replaced it (milestone #44 —
+# reactive-core is event-driven via LISTEN/NOTIFY, no resident poller). This
+# teardown script is intentionally KEPT so any device that still has the
+# 'jarvis-scheduler' NSSM service registered can remove it cleanly — the
+# service would otherwise fail-loop on the now-deleted module. Run it once per
+# device that ever installed the scheduler service, then this file can go too.
 
 param(
     [Parameter(HelpMessage = "Skip confirmation prompt")]

@@ -29,76 +29,111 @@ def _isolate_buffer() -> None:
     events_canonical_mod._buffer_clear_for_test()
 
 
-def _dual_write_client(
-    *,
-    canonical_raises: Exception | None = None,
-    inserted_episode_id: str = "ep-123",
-) -> MagicMock:
-    """Stub that distinguishes inserts by table name.
+# ---------------------------------------------------------------------------
+# Lightweight Supabase client fakes (contract-style, no deep mock chains)
+# ---------------------------------------------------------------------------
 
-    Caches one Table mock per name on first request — re-requests
-    return the same mock, so .insert.call_args_list captures every
-    payload sent to that table.
+
+class _FakeSelectBuilder:
+    """Replaces MagicMock chains for ``table.select().eq(...).execute()``.
+
+    Every builder method returns ``self`` so any call order works — the
+    only method with real behavior is ``.execute()``.
     """
-    client = MagicMock()
-    tables: dict[str, MagicMock] = {}
 
-    def _table_factory(name: str) -> MagicMock:
-        if name in tables:
-            return tables[name]
-        table = MagicMock()
-        if name == "episodes":
-            table.insert.return_value.execute.return_value = MagicMock(
-                data=[{"id": inserted_episode_id, "created_at": "2026-04-29T15:00:00Z"}]
+    def __init__(self, data: list | None = None) -> None:
+        self._data = data or []
+
+    def eq(self, *a, **kw) -> _FakeSelectBuilder:
+        return self
+
+    def is_(self, *a, **kw) -> _FakeSelectBuilder:
+        return self
+
+    def order(self, *a, **kw) -> _FakeSelectBuilder:
+        return self
+
+    def limit(self, *a, **kw) -> _FakeSelectBuilder:
+        return self
+
+    def execute(self):
+        return MagicMock(data=self._data)
+
+
+class _FakeTable:
+    """Lightweight fake for a Supabase table builder.
+
+    Records every ``.insert(payload)`` call in an ordered list so tests
+    can inspect what was written to each table.
+    """
+
+    def __init__(self, name: str, *,
+                 inserted_episode_id: str = "ep-123",
+                 canonical_raises: Exception | None = None,
+                 ) -> None:
+        self._name = name
+        self._insert_payloads: list[dict] = []
+        self._canonical_raises = canonical_raises
+        self._inserted_episode_id = inserted_episode_id
+
+    def insert(self, payload: dict):
+        self._insert_payloads.append(payload)
+        if self._name == "events_canonical" and self._canonical_raises is not None:
+            raise self._canonical_raises
+        return MagicMock(
+            execute=lambda: MagicMock(
+                data=[{"id": self._inserted_episode_id}]
             )
-        elif name == "events_canonical":
-            insert = MagicMock()
-            if canonical_raises is not None:
-                insert.side_effect = canonical_raises
-            else:
-                insert.return_value.execute.return_value = MagicMock(
-                    data=[{"event_id": "ev-456", "trace_id": "deadbeef" * 4}]
-                )
-            table.insert = insert
-        elif name == "memories":
-            chain = MagicMock()
-            leaf = MagicMock()
-            leaf.data = []
-            chain.eq.return_value.is_.return_value.order.return_value.limit.return_value.execute.return_value = leaf
-            chain.eq.return_value.is_.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = leaf
-            chain.eq.return_value.eq.return_value.is_.return_value.order.return_value.limit.return_value.execute.return_value = leaf
-            table.select.return_value = chain
-        else:
-            table.insert.return_value.execute.return_value = MagicMock(data=[])
-            table.select.return_value.eq.return_value.execute.return_value = MagicMock(
-                data=[]
+        )
+
+    def select(self, *args, **kwargs) -> _FakeSelectBuilder:
+        return _FakeSelectBuilder()
+
+
+class _FakeClient:
+    """Contract-style Supabase client for dual-write tests.
+
+    Returns one ``_FakeTable`` per table name, cached so that
+    multiple ``.table(name)`` calls in the same handler invocation
+    return the same instance — insert payloads are accumulated.
+    """
+
+    def __init__(self, *,
+                 inserted_episode_id: str = "ep-123",
+                 canonical_raises: Exception | None = None,
+                 ) -> None:
+        self._tables: dict[str, _FakeTable] = {}
+        self._inserted_episode_id = inserted_episode_id
+        self._canonical_raises = canonical_raises
+
+    def table(self, name: str) -> _FakeTable:
+        if name not in self._tables:
+            self._tables[name] = _FakeTable(
+                name,
+                inserted_episode_id=self._inserted_episode_id,
+                canonical_raises=self._canonical_raises,
             )
-        tables[name] = table
-        # Stash the cache on client so tests can introspect.
-        client._tables = tables  # type: ignore[attr-defined]
-        return table
-
-    client.table.side_effect = _table_factory
-    client._tables = tables  # type: ignore[attr-defined]
-    return client
+        return self._tables[name]
 
 
-def _calls_to_table(client: MagicMock, name: str) -> list:
-    """Return the list of insert payloads executed against ``name``."""
+def _calls_to_table(client, name: str) -> list[dict]:
+    """Return the list of insert payloads sent to the table ``name``."""
     tables = getattr(client, "_tables", {})
     table = tables.get(name)
     if table is None:
         return []
-    return [c.args[0] for c in table.insert.call_args_list if c.args]
+    return table._insert_payloads
 
 
+# ---------------------------------------------------------------------------
+# Tests
 # ---------------------------------------------------------------------------
 
 
 class TestDualWriteHappyPath:
     @pytest.mark.asyncio
     async def test_writes_to_both_tables(self, monkeypatch):
-        client = _dual_write_client()
+        client = _FakeClient()
         monkeypatch.setattr("server._get_client", lambda: client)
 
         result = await _handle_record_decision(
@@ -129,7 +164,7 @@ class TestDualWriteHappyPath:
 
     @pytest.mark.asyncio
     async def test_canonical_payload_includes_episode_id_link(self, monkeypatch):
-        client = _dual_write_client(inserted_episode_id="ep-link-test")
+        client = _FakeClient(inserted_episode_id="ep-link-test")
         monkeypatch.setattr("server._get_client", lambda: client)
 
         await _handle_record_decision(
@@ -146,7 +181,7 @@ class TestDualWriteHappyPath:
 class TestOTelKeysFromLLMMetadata:
     @pytest.mark.asyncio
     async def test_otel_keys_present_when_llm_provided(self, monkeypatch):
-        client = _dual_write_client()
+        client = _FakeClient()
         monkeypatch.setattr("server._get_client", lambda: client)
 
         await _handle_record_decision(
@@ -178,7 +213,7 @@ class TestOTelKeysFromLLMMetadata:
 
     @pytest.mark.asyncio
     async def test_otel_keys_absent_when_no_llm_metadata(self, monkeypatch):
-        client = _dual_write_client()
+        client = _FakeClient()
         monkeypatch.setattr("server._get_client", lambda: client)
 
         await _handle_record_decision(
@@ -206,7 +241,7 @@ class TestOTelKeysFromLLMMetadata:
 class TestCanonicalFailureDoesNotBreakEpisodeWrite:
     @pytest.mark.asyncio
     async def test_substrate_failure_returns_success(self, monkeypatch):
-        client = _dual_write_client(
+        client = _FakeClient(
             canonical_raises=RuntimeError("connection dropped")
         )
         monkeypatch.setattr("server._get_client", lambda: client)

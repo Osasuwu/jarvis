@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from comm_patterns.extractor import extract_session
 from comm_patterns.store import InMemoryStore
@@ -456,23 +457,34 @@ def test_wall_clock_budget_aborts_loop_and_preserves_watermark(tmp_path: Path):
     _write_jsonl(fp, rows)
     store = InMemoryStore()
 
-    import time as _t
+    class _MockClock:
+        def __init__(self, start: float = 0.0) -> None:
+            self._now = start
+
+        def monotonic(self) -> float:
+            return self._now
+
+        def sleep(self, secs: float) -> None:
+            self._now += secs
+
+    clock = _MockClock()
 
     def slow(user_text, prev):
-        _t.sleep(0.05)
+        clock.sleep(0.05)
         return {"primary_label": "affirmation", "subtype": None,
                 "confidence": 0.9, "anchor_quote": user_text}
 
-    stats = extract_session(
-        device="dev1",
-        session_id="wall",
-        transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
-        store=store,
-        classify_fn=slow,
-        source_provenance="extractor:stop-hook",
-        max_wall_seconds=0.1,  # cap forces early break
-    )
+    with patch("comm_patterns.extractor.time.monotonic", clock.monotonic):
+        stats = extract_session(
+            device="dev1",
+            session_id="wall",
+            transcript_path=fp,
+            cwd="/Users/petrk/GitHub/jarvis",
+            store=store,
+            classify_fn=slow,
+            source_provenance="extractor:stop-hook",
+            max_wall_seconds=0.1,  # cap forces early break
+        )
     assert stats["wall_clock_aborted"] is True
     # Some rows written, but not all 5 — and the watermark covers exactly
     # what was written, so the next pass resumes cleanly.

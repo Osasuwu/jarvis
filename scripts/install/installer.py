@@ -512,25 +512,33 @@ def build_plan(
                     note=f"include={include}" if include else "",
                 )
             )
-            # Orphan cleanup (#576): if the entry pins an `include` whitelist
+            # Orphan cleanup (#576 #927): if the entry pins an `include` whitelist
             # and the destination already exists, anything under dest not in
             # the whitelist is a leftover from a previous install whose
-            # source/manifest no longer lists it. Quarantine each leftover.
-            # Skip names containing `.bak.orphan` — they're already quarantined
-            # from a prior install; re-quarantining grows the suffix chain
-            # unboundedly (foo.bak.orphan → foo.bak.orphan.bak.orphan → ...).
+            # source/manifest no longer lists it. Move each leftover to a
+            # `.skills-orphaned/` sibling OUTSIDE the skills dir so the skill
+            # loader never picks it up (naming it .bak.orphan inside skills/
+            # was the original bug — Claude Code loads any subdir regardless
+            # of suffix).
+            # Skip names containing `.bak.` — leftovers from the old naming
+            # scheme; the suffix chain guard still prevents re-quarantine.
             if include and dest.exists() and dest.is_dir():
+                orphan_dir = dest.parent / ".skills-orphaned"
                 allowed = set(include)
                 for child in sorted(dest.iterdir()):
                     if child.name in allowed:
                         continue
                     if ".bak." in child.name:
                         continue
+                    orphan_dest = orphan_dir / child.name
+                    if orphan_dest.exists():
+                        stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+                        orphan_dest = orphan_dir / f"{child.name}-{stamp}"
                     actions.append(
                         Action(
                             kind="prune_orphan",
                             source=str(child),
-                            dest=str(_backup_dest(child, "orphan")),
+                            dest=str(orphan_dest),
                             group=gid,
                             note=f"absent from {entry['dest']} include whitelist",
                         )
@@ -821,11 +829,13 @@ def apply_plan(
         elif action.kind == "prune_orphan":
             src = Path(action.source)
             dst = Path(action.dest)
-            # `dst` was computed at plan time; recompute if a sibling backup
-            # has appeared since (rare race during long installs).
+            # dst was computed at plan time; recompute if a collision appeared
+            # since (rare race during long installs).
             if dst.exists():
-                dst = _backup_dest(src, "orphan")
+                stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+                dst = dst.parent / f"{dst.name}-{stamp}"
             if src.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
                 src.rename(dst)
                 print(f"quarantined orphan {src} -> {dst}", file=sys.stderr)
         elif action.kind == "register_mcp_user":

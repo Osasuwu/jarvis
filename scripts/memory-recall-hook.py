@@ -22,10 +22,10 @@ Known divergences vs pre-#499 behavior (documented, not bugs):
   • TYPE_BOOST_MULTIPLIER (soft rewriter-type boost in rrf_merge) is not
     yet threaded into recall(). Future slice: add boost_types to
     RecallConfig or recall() signature.
-  • Hook embeds the prompt TWICE per invocation: once via embed() for
-    the known-unknown gate, once via server._embed_query inside recall().
-    Future slice: expose query_embedding from recall() to eliminate the
-    redundant call.
+  • Hook used to embed the prompt TWICE per invocation. Resolved by #508:
+    embed() for the known-unknown gate now passes query_embedding into
+    recall(), which skips its internal _embed_query(). Single Voyage API
+    call per invocation.
 """
 
 import asyncio
@@ -445,10 +445,8 @@ def main():
     # Embed and rewrite run in parallel — both are network-bound.
     # embed() result feeds the known-unknown gate (Phase 7.3 widening).
     # rewrite_prompt() result feeds the header note (entities display).
-    # Note: recall() does its own embed internally for the search RPCs.
-    # The double embed is a known inefficiency (#499 divergence); future
-    # slice: expose query_embedding from recall() to eliminate the redundant
-    # embed() call here.
+    # The embed() result is now passed into recall() via query_embedding,
+    # eliminating the pre-#508 double-embed overhead.
     with ThreadPoolExecutor(max_workers=2) as ex:
         fut_embed = ex.submit(embed, prompt)
         fut_rewrite = ex.submit(rewrite_prompt, prompt)
@@ -494,6 +492,7 @@ def main():
                 boost_types=boost_types,
                 boost_multiplier=TYPE_BOOST_MULTIPLIER,
                 config=hook_config,
+                query_embedding=query_embedding,
             )
         )
     except Exception:

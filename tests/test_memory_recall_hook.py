@@ -11,26 +11,9 @@ plain import statement.
 from __future__ import annotations
 
 import importlib.util
-import sys
-import types
 from pathlib import Path
 
-
-# Stub httpx / dotenv / supabase if not installed — we only test pure
-# helpers here, the module-level imports must still succeed.
-for _stub in ("httpx", "dotenv", "supabase"):
-    if _stub not in sys.modules:
-        try:
-            __import__(_stub)
-        except ImportError:
-            mod = types.ModuleType(_stub)
-            if _stub == "dotenv":
-                mod.load_dotenv = lambda *a, **k: None
-            sys.modules[_stub] = mod
-    if _stub == "dotenv" and not hasattr(sys.modules[_stub], "load_dotenv"):
-        sys.modules[_stub].load_dotenv = lambda *a, **k: None
-    if _stub == "supabase" and not hasattr(sys.modules[_stub], "create_client"):
-        sys.modules[_stub].create_client = lambda *a, **k: None
+from test_utils import StubClient, TableStub
 
 
 _HOOK_PATH = Path(__file__).resolve().parent.parent / "scripts" / "memory-recall-hook.py"
@@ -569,45 +552,28 @@ class TestMergeWithLinks:
 # ---------------------------------------------------------------------------
 
 
-class _StubClient:
-    """Minimal supabase-client stand-in for expand_links tests."""
-    def __init__(self, *, data=None, raise_exc=None):
-        self._data = data or []
-        self._raise = raise_exc
-        self.rpc_calls: list[tuple[str, dict]] = []
-
-    def rpc(self, name, params):
-        self.rpc_calls.append((name, params))
-        return self
-
-    def execute(self):
-        if self._raise:
-            raise self._raise
-        return types.SimpleNamespace(data=self._data)
-
-
 class TestExpandLinks:
     def test_empty_top_rows_no_rpc(self):
-        client = _StubClient(data=[{"id": "x"}])
+        client = StubClient(data=[{"id": "x"}])
         out = mrh.expand_links(client, [])
         assert out == []
         assert client.rpc_calls == []
 
     def test_all_top_rows_missing_id_no_rpc(self):
         # Defensive: if all seeds lack ids, don't bother hitting the RPC.
-        client = _StubClient(data=[{"id": "x"}])
+        client = StubClient(data=[{"id": "x"}])
         out = mrh.expand_links(client, [{"name": "no-id"}])
         assert out == []
         assert client.rpc_calls == []
 
     def test_rpc_exception_returns_empty(self):
         # Fail-soft contract: RPC failure must not raise or pollute results.
-        client = _StubClient(raise_exc=RuntimeError("connection lost"))
+        client = StubClient(raise_exc=RuntimeError("connection lost"))
         out = mrh.expand_links(client, [{"id": "seed"}])
         assert out == []
 
     def test_successful_rpc_returns_scored_rows(self):
-        client = _StubClient(data=[
+        client = StubClient(data=[
             {"id": "child", "linked_from": "seed", "link_strength": 1.0},
         ])
         out = mrh.expand_links(client, [{"id": "seed"}])
@@ -617,7 +583,7 @@ class TestExpandLinks:
     def test_rpc_called_with_top_k_seed_ids(self):
         # Seed slice must respect LINK_EXPAND_TOP_K — we don't want to expand
         # a 25-row RRF list into a graph fetch.
-        client = _StubClient(data=[])
+        client = StubClient(data=[])
         seeds = [{"id": f"s{i}"} for i in range(10)]
         mrh.expand_links(client, seeds)
         assert len(client.rpc_calls) == 1
@@ -703,66 +669,25 @@ class TestCosineSim:
 # ---------------------------------------------------------------------------
 
 
-class _TableStub:
-    """Supabase table/select-chain stand-in for check_known_unknown_gate tests.
-
-    Supports the `.table().select().eq().not_.is_().limit().execute()` chain
-    used by the gate. `data` is the rows returned; `raise_exc` bubbles through
-    any method to exercise the fail-soft path.
-    """
-    def __init__(self, *, data=None, raise_exc=None):
-        self._data = data or []
-        self._raise = raise_exc
-        self.calls: list[tuple[str, tuple]] = []
-        # `.not_` is an accessor on the query builder, not a method, so
-        # expose it as an attribute that chains back to self.
-        self.not_ = self
-
-    def table(self, name):
-        self.calls.append(("table", (name,)))
-        return self
-
-    def select(self, *cols):
-        self.calls.append(("select", cols))
-        return self
-
-    def eq(self, col, val):
-        self.calls.append(("eq", (col, val)))
-        return self
-
-    def is_(self, col, val):
-        self.calls.append(("is_", (col, val)))
-        return self
-
-    def limit(self, n):
-        self.calls.append(("limit", (n,)))
-        return self
-
-    def execute(self):
-        if self._raise:
-            raise self._raise
-        return types.SimpleNamespace(data=self._data)
-
-
 class TestCheckKnownUnknownGate:
     def test_empty_embedding_returns_false_without_db_call(self):
         # Short-circuit: no prompt embedding (Voyage failed) → no point
         # scanning the table. Don't hit the DB for a guaranteed miss.
-        client = _TableStub(data=[{"query_embedding": "[1,0,0]"}])
+        client = TableStub(data=[{"query_embedding": "[1,0,0]"}])
         assert mrh.check_known_unknown_gate(client, None) is False
         assert client.calls == []
 
-        client2 = _TableStub()
+        client2 = TableStub()
         assert mrh.check_known_unknown_gate(client2, []) is False
         assert client2.calls == []
 
     def test_no_open_unknowns_returns_false(self):
-        client = _TableStub(data=[])
+        client = TableStub(data=[])
         assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
 
     def test_below_threshold_returns_false(self):
         # cosine([1,0,0], [0.5, 0.866, 0]) = 0.5 — well below 0.85.
-        client = _TableStub(data=[
+        client = TableStub(data=[
             {"query_embedding": "[0.5, 0.866, 0.0]"}
         ])
         assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
@@ -770,14 +695,14 @@ class TestCheckKnownUnknownGate:
     def test_at_threshold_triggers(self):
         # Stored vector exactly at the threshold — must trigger (>=, not >).
         # Cosine of identical unit vectors is 1.0 >= 0.85.
-        client = _TableStub(data=[
+        client = TableStub(data=[
             {"query_embedding": "[1.0, 0.0, 0.0]"}
         ])
         assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is True
 
     def test_above_threshold_triggers(self):
         # Small perturbation: cosine ≈ 0.995 — widen.
-        client = _TableStub(data=[
+        client = TableStub(data=[
             {"query_embedding": "[0.99, 0.1, 0.0]"}
         ])
         assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is True
@@ -785,7 +710,7 @@ class TestCheckKnownUnknownGate:
     def test_scans_until_hit(self):
         # First row misses (cosine 0), second row triggers. Confirms we
         # don't bail on the first miss.
-        client = _TableStub(data=[
+        client = TableStub(data=[
             {"query_embedding": "[0.0, 1.0, 0.0]"},  # orthogonal: miss
             {"query_embedding": "[1.0, 0.0, 0.0]"},  # identical: hit
         ])
@@ -795,7 +720,7 @@ class TestCheckKnownUnknownGate:
         # Rows without an embedding (stored as None) don't count even
         # though the query filters them out — defensive against schema
         # changes or partial rows.
-        client = _TableStub(data=[
+        client = TableStub(data=[
             {"query_embedding": None},
             {"query_embedding": "[1.0, 0.0, 0.0]"},
         ])
@@ -804,20 +729,20 @@ class TestCheckKnownUnknownGate:
     def test_malformed_embedding_skipped(self):
         # A row whose stored embedding can't be parsed is treated as a miss,
         # not a crash — the hook must never raise.
-        client = _TableStub(data=[
+        client = TableStub(data=[
             {"query_embedding": "not a vector"},
         ])
         assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
 
     def test_db_exception_returns_false(self):
         # Fail-soft: any Supabase error falls back to default (brief) path.
-        client = _TableStub(raise_exc=RuntimeError("connection lost"))
+        client = TableStub(raise_exc=RuntimeError("connection lost"))
         assert mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0]) is False
 
     def test_query_filters_open_and_nonnull(self):
         # Sanity: verify we scoped the query correctly so the SCAN_LIMIT cap
         # is meaningful. Without `status=open` we'd pull resolved gaps too.
-        client = _TableStub(data=[])
+        client = TableStub(data=[])
         mrh.check_known_unknown_gate(client, [1.0, 0.0, 0.0])
         # eq(status, open) and limit(SCAN_LIMIT) must both appear.
         assert ("eq", ("status", "open")) in client.calls
