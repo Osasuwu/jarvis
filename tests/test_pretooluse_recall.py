@@ -238,6 +238,32 @@ class TestHelpers:
 # ---------------------------------------------------------------------------
 
 
+class _FakeSupabaseResponse:
+    """Fake response returned by FakeSupabaseClient.rpc().execute()."""
+
+    def __init__(self, data: list[dict]) -> None:
+        self.data = data
+
+
+class FakeSupabaseClient:
+    """Supabase-shaped test double for keyword_search_memories RPC.
+
+    Replaces the deep ``client.rpc.return_value.execute.return_value.data``
+    mock chain with a real method chain that returns controlled response data.
+    """
+
+    def __init__(self, *, rpc_rows: list[dict] | None = None) -> None:
+        self._rpc_rows = rpc_rows or []
+        self.rpc_calls: list[tuple[str, dict]] = []
+
+    def rpc(self, name: str, params: dict) -> FakeSupabaseClient:
+        self.rpc_calls.append((name, params))
+        return self
+
+    def execute(self) -> _FakeSupabaseResponse:
+        return _FakeSupabaseResponse(self._rpc_rows)
+
+
 def _run_main(
     stdin_payload: dict,
     monkeypatch,
@@ -273,9 +299,8 @@ def _run_main(
     buf = io.StringIO()
     monkeypatch.setattr("sys.stdout", buf)
 
-    # Mock supabase create_client -> client with rpc().execute() returning rpc_rows
-    client = MagicMock()
-    client.rpc.return_value.execute.return_value = MagicMock(data=rpc_rows or [])
+    # Mock supabase create_client -> FakeSupabaseClient with real rpc().execute()
+    client = FakeSupabaseClient(rpc_rows=rpc_rows)
     fake_supabase = types.SimpleNamespace(create_client=lambda *a, **k: client)
     monkeypatch.setitem(sys.modules, "supabase", fake_supabase)
 

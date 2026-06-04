@@ -340,32 +340,7 @@ def test_summarise_event_covers_known_types() -> None:
         assert event["type"] in s, s
 
 
-def test_event_monitor_graph_builds() -> None:
-    """The monitor graph compiles to fetch -> classify -> store."""
-    pytest.importorskip("langgraph")
-    _require_supabase()
-    _require_httpx()
-
-    from agents.event_monitor import MonitorState, build_graph
-
-    graph = build_graph()
-    assert {"fetch_events", "classify", "store"} <= set(graph.nodes)
-    assert {"repos", "cursors", "fetched_events", "classified_events", "stored_count"} <= set(
-        MonitorState.__annotations__
-    )
-
-
-def test_event_monitor_classification_schema() -> None:
-    """Classifier enum stays three-tier — Ollama prompt depends on it."""
-    # agents.event_monitor imports langgraph + supabase + httpx (via
-    # github_client) at module load, so skip (not error) when the optional
-    # [agents] extras aren't installed.
-    pytest.importorskip("langgraph")
-    _require_supabase()
-    _require_httpx()
-
-    from agents.event_monitor import _CLASSIFY_SCHEMA
-
-    enum = _CLASSIFY_SCHEMA["properties"]["classification"]["enum"]
-    assert set(enum) == {"noise", "info", "action"}
-    assert set(_CLASSIFY_SCHEMA["required"]) == {"classification", "reason"}
+# NOTE: tests for agents.event_monitor (LangGraph monitor graph + classifier
+# schema) were removed with the module in #744 — the deterministic router
+# (agents/orchestrator.py) replaced the graph runtime. Router coverage lives
+# in tests/test_orchestrator.py.
