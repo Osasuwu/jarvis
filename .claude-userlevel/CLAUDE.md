@@ -82,6 +82,8 @@ Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD 
 
 Applies to every owned repo (`Osasuwu/jarvis`, `SergazyNarynov/redrobot`, and any future personal project). Foreign-owner repos are exempt — they have their own protection rules.
 
+> **Caveat — auto-merge needs a paid GitHub plan on private repos.** `allow_auto_merge` / `gh pr merge --auto` is rejected (`Auto merge is not allowed for this repository`) on **private repos on the Free plan**. `SergazyNarynov/redrobot` is private+Free, so it has **no auto-merge**: the four gates below still apply, but the final merge is **manual when CI is green** (`gh pr merge <N> --squash --delete-branch`, or poll-then-merge). Don't retry `--auto` there. The AFK Path A loop is fully automatic only on repos with a paid plan (or public repos).
+
 **Goal:** AFK Path A loop closes by itself — `open → CI → review → automerge → rework → escalate`. Subagent opens a PR, Jarvis flips it to ready, GitHub merges when every gate is green. No human in the merge step *unless* a gate fires.
 
 ### The four gates
