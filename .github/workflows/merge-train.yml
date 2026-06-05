@@ -1,0 +1,156 @@
+name: Merge Train
+
+# Auto-updates stale auto-merge PRs so strict branch protection can let them
+# merge. Background (memory: stuck_automerge_rootcause_taxonomy):
+#
+#   With branch protection `strict: true` (branch must be up to date with base)
+#   and NO merge queue (unavailable on personal-account repos), any PR that
+#   falls BEHIND `main` never auto-updates — so auto-merge never fires and PRs
+#   pile up serialized behind `main`. On 2026-06-03 this jammed 24 PRs (#891).
+#
+# This workflow is the portable replacement for a merge queue: on every push to
+# `main` (cascade) and on a schedule (cold-start / self-heal), it finds stale
+# auto-merge PRs and calls the update-branch API on them.
+#
+# CRITICAL — why a GitHub App token, not GITHUB_TOKEN:
+#   A branch update performed with the default GITHUB_TOKEN does NOT create new
+#   workflow runs (GitHub recursion prevention). The required checks would then
+#   sit at "Expected — waiting for status" forever and auto-merge would still
+#   stall. The update must be pushed by a non-GITHUB_TOKEN credential. We use a
+#   dedicated GitHub App ("jarvis-ci") installation token, minted per-run.
+#   Decision: 2ccfa29a (no PAT, per #891).
+#
+# Portability: references ${{ github.repository }} only — no hardcoded
+# owner/repo/paths. Works on private repos (redrobot) once the App is installed.
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    # Cold-start / self-heal: catches PRs that settled to BEHIND with no
+    # subsequent push, and recovers a cascade that broke mid-chain.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# One train per repo at a time. Don't cancel an in-flight run — a cancelled
+# self-heal tick could drop a PR that needed updating.
+concurrency:
+  group: merge-train-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  update-stale-prs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assert App credentials present
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_ID}" ] || [ -z "${APP_PRIVATE_KEY}" ]; then
+            echo "::error::merge-train requires the 'jarvis-ci' GitHub App, but APP_ID and/or APP_PRIVATE_KEY repo secrets are unset."
+            echo "Why: update-branch pushed by the default GITHUB_TOKEN does not re-trigger required checks (GitHub recursion prevention), so auto-merge stalls. A GitHub App installation token is required."
+            echo "Setup (one-time per repo):"
+            echo "  1. Create a GitHub App with permissions: Contents=Read&write, Pull requests=Read&write."
+            echo "  2. Install the App on this repository."
+            echo "  3. Add repo secrets: APP_ID (the App's numeric id) and APP_PRIVATE_KEY (the .pem private key)."
+            echo "Until then the merge train cannot run on this repo."
+            exit 1
+          fi
+          echo "App credentials present."
+
+      - name: Mint App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Update stale auto-merge PR branches
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          BASE_REF: ${{ github.event.repository.default_branch }}
+          CAP: "10"
+        run: |
+          set -euo pipefail
+
+          # Candidate PRs: open, non-draft, auto-merge enabled, not parked for
+          # the owner. Sorted oldest-first (FIFO — deterministic, no starvation).
+          mapfile -t candidates < <(
+            gh pr list --repo "$REPO" --state open \
+              --json number,isDraft,autoMergeRequest,labels,createdAt \
+              --jq 'sort_by(.createdAt) | .[]
+                    | select(.isDraft | not)
+                    | select(.autoMergeRequest != null)
+                    | select([.labels[].name] | index("status:owner-queue") | not)
+                    | .number'
+          )
+
+          if [ "${#candidates[@]}" -eq 0 ]; then
+            echo "::notice::No eligible auto-merge PRs. Nothing to do."
+            exit 0
+          fi
+
+          echo "Candidates (oldest-first): ${candidates[*]}"
+          updated=0
+
+          for n in "${candidates[@]}"; do
+            if [ "$updated" -ge "$CAP" ]; then
+              echo "::notice::Update cap ($CAP) reached; remaining stale PRs will be picked up on the next run."
+              break
+            fi
+
+            # Mergeability is computed asynchronously; right after a push it is
+            # often UNKNOWN. Poll a few times (gh pr view forces computation)
+            # before trusting the verdict — otherwise we'd skip everything.
+            ms="UNKNOWN"; mg="UNKNOWN"
+            for _try in 1 2 3 4 5; do
+              read -r ms mg < <(
+                gh pr view "$n" --repo "$REPO" --json mergeStateStatus,mergeable \
+                  --jq '"\(.mergeStateStatus) \(.mergeable)"'
+              )
+              if [ "$ms" != "UNKNOWN" ] && [ "$mg" != "UNKNOWN" ]; then
+                break
+              fi
+              sleep 5
+            done
+
+            has_label="$(gh pr view "$n" --repo "$REPO" --json labels --jq '[.labels[].name] | index("needs-rebase") != null')"
+
+            if [ "$mg" = "CONFLICTING" ] || [ "$ms" = "DIRTY" ]; then
+              # Can't fast-forward — surface for manual rebase, skip, continue.
+              gh label create needs-rebase --repo "$REPO" \
+                --color D93F0B --description "Branch conflicts with base; needs a manual rebase" >/dev/null 2>&1 || true
+              if [ "$has_label" != "true" ]; then
+                gh pr edit "$n" --repo "$REPO" --add-label needs-rebase >/dev/null
+                gh pr comment "$n" --repo "$REPO" --body \
+                  "🚆 merge-train: this branch conflicts with \`$BASE_REF\` and can't be fast-forwarded, so auto-merge is stuck. Rebase/resolve conflicts and the train will pick it up automatically once it's mergeable. (auto-applied \`needs-rebase\`)"
+              fi
+              echo "::notice::#$n is CONFLICTING — labelled needs-rebase, skipped."
+              continue
+            fi
+
+            # No longer conflicting but still carrying a stale label → clear it.
+            if [ "$has_label" = "true" ]; then
+              gh pr edit "$n" --repo "$REPO" --remove-label needs-rebase >/dev/null 2>&1 || true
+              echo "::notice::#$n no longer conflicting — removed stale needs-rebase label."
+            fi
+
+            if [ "$ms" = "BEHIND" ]; then
+              if gh api --method PUT "repos/$REPO/pulls/$n/update-branch" >/dev/null 2>&1; then
+                echo "::notice::#$n was BEHIND — branch updated (checks will re-run, then auto-merge)."
+                updated=$((updated + 1))
+              else
+                echo "::warning::#$n update-branch call failed (race or permissions); will retry next run."
+              fi
+            else
+              echo "::debug::#$n mergeStateStatus=$ms — no update needed."
+            fi
+          done
+
+          echo "::notice::merge-train finished — $updated branch(es) updated this run."
