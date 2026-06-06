@@ -4,39 +4,17 @@
       "command": "python",
       "args": ["scripts/run-memory-server.py"]
     },
-    "github": {
-      "type": "http",
-      "url": "https://api.githubcopilot.com/mcp",
-      "headers": {
-        "Authorization": "Bearer ${GITHUB_TOKEN}"
-      }
-    },
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"]
-    },
-    "firecrawl": {
-      "command": "npx",
-      "args": ["-y", "firecrawl-mcp"],
-      "env": {
-        "FIRECRAWL_API_KEY": "${FIRECRAWL_API_KEY}"
-      }
     },
     "sequential-thinking": {
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
     },
-    "reddit": {
-      "command": "uvx",
-      "args": ["reddit-no-auth-mcp-server"]
-    },
     "obsidian": {
       "command": "npx",
       "args": ["-y", "@bitbonsai/mcpvault@latest", "${OBSIDIAN_VAULT_PATH}"]
-    },
-    "tg-messenger": {
-      "command": "python",
-      "args": ["scripts/run-telegram-mcp.py"]
     },
     "blender": {
       "command": "uvx",

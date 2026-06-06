@@ -56,9 +56,7 @@
       "Bash(gh release view:*)",
       "Bash(gh run view:*)",
       "WebFetch",
-      "WebSearch",
-      "mcp__firecrawl__firecrawl_search",
-      "mcp__firecrawl__firecrawl_scrape"
+      "WebSearch"
     ]
   },
   "hooks": {
