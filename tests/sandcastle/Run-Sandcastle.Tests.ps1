@@ -187,6 +187,72 @@ Describe 'Format-RedactedError' {
     }
 }
 
+Describe 'Get-SandcastleErrorClass' {
+    It 'detects an idle-timeout crash' {
+        Get-SandcastleErrorClass -Text 'foo AgentIdleTimeoutError: idle 600s' |
+            Should Be 'AgentIdleTimeoutError'
+    }
+    It 'detects a worktree-teardown crash' {
+        Get-SandcastleErrorClass -Text 'WorktreeError: git worktree remove failed' |
+            Should Be 'WorktreeError'
+    }
+    It 'does not confuse AgentIdleTimeoutError for the generic AgentError' {
+        Get-SandcastleErrorClass -Text 'AgentIdleTimeoutError thrown' |
+            Should Be 'AgentIdleTimeoutError'
+    }
+    It 'returns empty when no known class is present' {
+        Get-SandcastleErrorClass -Text 'random failure exit=1' | Should Be ''
+    }
+    It 'returns empty on empty input' {
+        Get-SandcastleErrorClass -Text '' | Should Be ''
+    }
+}
+
+Describe 'Protect-LogTail' {
+    It 'redacts a known literal secret' {
+        $out = Protect-LogTail -Text 'before SUPER-SECRET-VALUE after' -Secrets @('SUPER-SECRET-VALUE')
+        $out | Should Not Match 'SUPER-SECRET-VALUE'
+        $out | Should Match 'SECRET-REDACTED'
+    }
+    It 'redacts a GitHub token shape by pattern (no literal needed)' {
+        # Built at runtime so the token shape never appears as a source literal
+        # (keeps gitleaks quiet on the test file itself).
+        $tok = 'ghp_' + ('a' * 36)
+        $out = Protect-LogTail -Text "stderr: auth $tok rejected"
+        $out | Should Not Match 'ghp_a'
+        $out | Should Match 'GH-TOKEN-REDACTED'
+    }
+    It 'redacts an Anthropic key shape by pattern' {
+        $tok = 'sk-ant-' + ('x' * 24)
+        $out = Protect-LogTail -Text "key=$tok"
+        $out | Should Not Match 'sk-ant-x'
+        $out | Should Match 'ANTHROPIC-KEY-REDACTED'
+    }
+    It 'returns empty string on empty input' {
+        Protect-LogTail -Text '' | Should Be ''
+    }
+}
+
+Describe 'Get-LogTail' {
+    It 'returns empty string when the log file does not exist' {
+        Get-LogTail -LogFile (Join-Path $env:TEMP "no-such-$([guid]::NewGuid()).log") |
+            Should Be ''
+    }
+    It 'returns empty string when LogFile is blank' {
+        Get-LogTail -LogFile '' | Should Be ''
+    }
+    It 'returns the last N non-empty lines joined by newline' {
+        $f = Join-Path $env:TEMP "logtail-$([guid]::NewGuid()).log"
+        @('l1', '', 'l2', 'l3', '', 'l4') | Set-Content -LiteralPath $f -Encoding utf8
+        try {
+            $out = Get-LogTail -LogFile $f -Lines 2
+            $out | Should Be "l3`nl4"
+        } finally {
+            Remove-Item -LiteralPath $f -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Describe 'Test-IsOOM' {
     It 'flags exit code 137 (Linux OOM-kill) without a log file' {
         Test-IsOOM -Reason 'exit=137' -LogFile '' | Should Be $true
@@ -895,6 +961,78 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
                 $Status -eq 'partial' -and
                 $Summary -like '*window-expired*' -and
                 $Summary -like '*iterations=1*'
+            }
+    }
+
+    It 'stops looping early when the agent signals the queue is drained' {
+        # Completion signal (prompt.md §Done) => queue empty. The watchdog must
+        # NOT keep re-invoking on an empty queue (those redundant runs are the
+        # source of the spurious nightly `failure` rows). One invocation, then
+        # a clean success:idle heartbeat -- not five rolls of the crash dice.
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Test-WindowExpired { $false }   # isolate from leaked window mocks (Pester 3.4 It-scope leak)
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0
+                result = [pscustomobject]@{
+                    branch           = $null
+                    commits          = @()
+                    completionSignal = '<promise>COMPLETE</promise>'
+                    iterations       = @()
+                }
+            }
+        }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 5 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle   -Times 1 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' -and $Summary -like '*success:idle*' }
+        Assert-MockCalled Send-TelegramAlert  -Times 0 -Exactly -Scope It
+    }
+
+    It 'does NOT stop early when a productive iteration omits the completion signal' {
+        # Regression guard for the multi-issue-per-night flow: an iteration that
+        # did work but left issues in the queue carries no completion signal, so
+        # the watchdog must run the full MaxIterations (one issue per iteration).
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Test-WindowExpired { $false }   # isolate from leaked window mocks (Pester 3.4 It-scope leak)
+        # BeforeEach mock returns a result WITHOUT completionSignal => no early stop.
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 3 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle   -Times 3 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' -and $Summary -notlike '*success:idle*' }
+    }
+
+    It 'enriches the failure outcome with the tagged-error class and a redacted log tail' {
+        # An opaque `exit=1` must arrive in Supabase carrying the crash class
+        # (so Worktree vs idle vs API is distinguishable) and a secret-scrubbed
+        # tail of the run.log.
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Test-WindowExpired { $false }   # isolate from leaked window mocks (Pester 3.4 It-scope leak)
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 1; result = $null; reason = 'exit=1' }
+        }
+        Mock Get-LogTail {
+            "agent noise`nWorktreeError: git worktree remove failed: NTFS reparse point`ntrailing"
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'm' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Status -eq 'failure' -and
+                $Summary -like '*class=WorktreeError*' -and
+                $LlmMetrics.error_class -eq 'WorktreeError' -and
+                $LlmMetrics.diag_tail -like '*WorktreeError*'
             }
     }
 }
