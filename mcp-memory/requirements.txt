@@ -1,5 +1,5 @@
 mcp>=1.27.2
-supabase>=2.30.1
+supabase>=2.31.0
 voyageai>=0.4.0
 httpx>=0.28.1
 python-dotenv>=1.2.2
