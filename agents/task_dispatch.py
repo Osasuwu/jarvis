@@ -71,6 +71,11 @@ class TaskQueuePort(Protocol):
 
     Implemented for real by :class:`SupabaseTaskQueue` over
     :mod:`agents.task_queue`, and by an in-memory fake in the tests.
+
+    ``runtime_checkable`` makes ``isinstance(x, TaskQueuePort)`` check only that
+    the five method *names* are present — not their signatures — so the
+    ``isinstance`` assertion in the tests is a structural smoke check, not a
+    full conformance proof.
     """
 
     def claim_next(self, *, assignee: str) -> dict[str, Any] | None:
@@ -102,6 +107,10 @@ class DrainResult:
     # True iff the whole drain was skipped because the claude binary did not
     # resolve (AC7a) — distinct from "ran, claimed nothing".
     skipped_no_binary: bool = False
+    # True iff the drain stopped early because a spawn was throttled (quota
+    # near-exhaustion). The one in-flight row is left ``running`` for the AC6
+    # reaper; remaining rows stay ``pending`` and self-heal next drain.
+    throttled: bool = False
 
 
 @dataclass(frozen=True)
@@ -112,23 +121,22 @@ class ReclaimResult:
     reaped_running: int = 0
 
 
-def _default_spawn(goal: str) -> Any:
+def default_spawn(goal: str) -> Any:
     """Production spawn adapter — fire-and-forget ``claude -p`` via the executor.
 
     Returns the :class:`executor.SpawnResult`. A throttled result (quota
-    near-exhaustion) means no process launched while the row is already
-    ``running``; the AC6 reaper reclaims it after the generous threshold.
-    Liveness-aware handling is deferred to #921. Imported lazily so the tested
-    drain logic (which injects its own spawn) need not pull executor's
-    subprocess/usage-probe dependencies.
+    near-exhaustion) means no process launched; :func:`drain_tasks` inspects the
+    ``throttled`` flag and stops the drain rather than counting a phantom spawn.
+    Imported lazily so the tested drain logic (which injects its own spawn) need
+    not pull executor's subprocess/usage-probe dependencies.
     """
     from agents.executor import spawn as executor_spawn
 
     return executor_spawn(goal)
 
 
-def _default_resolve_binary() -> str:
-    """Production binary-resolution adapter (lazy import; see :func:`_default_spawn`)."""
+def default_resolve_binary() -> str:
+    """Production binary-resolution adapter (lazy import; see :func:`default_spawn`)."""
     from agents.executor import _resolve_claude_binary
 
     return _resolve_claude_binary()
@@ -136,20 +144,21 @@ def _default_resolve_binary() -> str:
 
 def drain_tasks(
     port: TaskQueuePort,
-    spawn: Spawn = _default_spawn,
+    spawn: Spawn = default_spawn,
     *,
     assignee: str = DEFAULT_ASSIGNEE,
     cap: int = DEFAULT_CONCURRENCY_CAP,
-    resolve_binary: ResolveBinary = _default_resolve_binary,
+    resolve_binary: ResolveBinary = default_resolve_binary,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
     Order of operations:
 
     1. **Pre-flight binary resolution, once (AC7a).** If the claude binary does
-       not resolve, skip the *entire* drain — zero claims, nothing marked
-       ``failed``, every row stays ``pending`` so the next drain self-heals once
-       the env is fixed. No internal retry.
+       not resolve — missing, not executable, or the executor import is broken —
+       skip the *entire* drain: zero claims, nothing marked ``failed``, every
+       row stays ``pending`` so the next drain self-heals once the env is fixed.
+       No internal retry.
     2. **Budget, sampled once (AC3).** ``budget = cap − count_running(assignee)``.
        Nothing exits ``running`` mid-drain, so the snapshot is exact; the loop
        spawns at most ``budget`` tasks and leaves the rest ``pending``.
@@ -160,14 +169,21 @@ def drain_tasks(
        would double-spawn under the AC5 reclaimer).
 
     A ``claim_next`` returning ``None`` (empty queue or lost race, AC9) breaks
-    the loop cleanly. A ``spawn`` raising (AC7b) marks *that* task
-    ``running→failed`` (terminal — the external event loop re-drives) and the
-    drain continues with the next claim.
+    the loop cleanly. A ``transition(running)`` raising leaves the row
+    ``claimed`` (no process launched) for the AC5 reclaimer and skips to the
+    next slot. A ``spawn`` raising (AC7b) marks *that* task ``running→failed``
+    (terminal — the external event loop re-drives) and the drain continues. A
+    ``spawn`` returning a *throttled* result (quota near-exhaustion: no process
+    launched) stops the drain — the one in-flight row is left ``running`` for
+    the AC6 reaper, the rest stay ``pending``; quota will not recover mid-drain.
     """
-    # AC7a — pre-flight once; unresolved binary skips the whole drain.
+    # AC7a — pre-flight once; an unusable binary skips the whole drain. Widened
+    # past FileNotFoundError to the other no-usable-binary failures (not
+    # executable → PermissionError; broken executor import → ImportError): all
+    # mean "cannot spawn", so skip-and-self-heal beats claim-and-strand.
     try:
         resolve_binary()
-    except FileNotFoundError:
+    except (FileNotFoundError, PermissionError, ImportError):
         logger.warning(
             "[task_dispatch] claude binary unresolved; skipping drain "
             "(no claims, rows stay pending, self-heals when env is fixed)"
@@ -187,15 +203,39 @@ def drain_tasks(
             break
         task_id = str(row["id"])
 
-        # AC4 Ordering B — running BEFORE spawn.
-        port.transition(task_id, "running")
+        # AC4 Ordering B — running BEFORE spawn. Guard it: a transient store
+        # error here leaves the row ``claimed`` with no process, so the AC5
+        # reclaimer returns it to ``pending``. Skip to the next slot rather than
+        # spawn against a row we failed to mark running.
         try:
-            spawn(row["goal"])  # AC8 billing-trap rides executor._sanitize_env
+            port.transition(task_id, "running")
+        except Exception:  # noqa: BLE001 — isolate a transient transition error
+            logger.exception(
+                "[task_dispatch] could not mark task %s running; left claimed for the reclaimer",
+                task_id,
+            )
+            continue
+
+        try:
+            result = spawn(row["goal"])  # AC8 billing-trap rides executor._sanitize_env
         except Exception as exc:  # noqa: BLE001 — AC7b: isolate one bad spawn
             # AC7b — terminal failure; no internal retry, external loop re-drives.
             port.transition(task_id, "failed", reason=f"spawn raised: {exc}")
             failed += 1
             continue
+
+        # The executor declined to launch (quota near-exhaustion): no process
+        # exists, but the row is already ``running`` (reaped by AC6 — bounded to
+        # this one row). Quota won't recover mid-drain, so stop claiming rather
+        # than strand the whole budget. Not a spawn failure → not counted.
+        if getattr(result, "throttled", False):
+            logger.warning(
+                "[task_dispatch] spawn throttled (quota near-exhaustion); "
+                "stopping drain — task %s left running for the reaper",
+                task_id,
+            )
+            return DrainResult(spawned=spawned, failed=failed, throttled=True)
+
         spawned += 1
 
     return DrainResult(spawned=spawned, failed=failed)

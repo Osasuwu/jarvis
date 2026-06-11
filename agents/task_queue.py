@@ -25,7 +25,7 @@ Usage::
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -231,8 +231,6 @@ def _cutoff_iso(older_than_seconds: float) -> str:
     client-side; the few-ms client/server clock skew is irrelevant against
     the 300s+ thresholds these helpers run with.
     """
-    from datetime import timedelta
-
     return (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
 
 
@@ -305,9 +303,11 @@ def list_stale_running(
     generous (≫ normal task runtime) until #921 adds liveness-aware reaping.
     """
     cli = client or get_client()
+    # Only the id is needed — the reaper transitions by id; selecting "*" would
+    # ship every column over the wire for no reader.
     rows = (
         cli.table("task_queue")
-        .select("*")
+        .select("id")
         .eq("status", "running")
         .eq("assignee", assignee)
         .lt("claimed_at", _cutoff_iso(older_than_seconds))

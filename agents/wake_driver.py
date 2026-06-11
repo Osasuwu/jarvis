@@ -53,8 +53,8 @@ from agents.task_dispatch import (
     Spawn,
     SupabaseTaskQueue,
     TaskQueuePort,
-    _default_resolve_binary,
-    _default_spawn,
+    default_resolve_binary,
+    default_spawn,
     drain_tasks,
     reclaim_stale_tasks,
 )
@@ -169,8 +169,8 @@ def tick(
     *,
     stale_after_seconds: float,
     task_port: TaskQueuePort | None = None,
-    task_spawn: Spawn = _default_spawn,
-    task_resolve_binary: ResolveBinary = _default_resolve_binary,
+    task_spawn: Spawn = default_spawn,
+    task_resolve_binary: ResolveBinary = default_resolve_binary,
     task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
     task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
 ) -> TickResult:
@@ -185,6 +185,13 @@ def tick(
     NOTIFY — a task is born from an event that already woke the driver, or is
     swept by the idle-timeout watchdog (AC1; task-NOTIFY latency deferred to
     #922).
+
+    The task steps (2 and 4) are each isolated in their own try/except: the
+    task_queue rides supabase-py while events ride psycopg, so a task-store
+    outage is an independent failure mode. It must not block the event drain
+    (Step 3) — events are the primary wake path. A failing task step is logged
+    and its rows stay in place (``claimed``/``running`` → swept next tick;
+    ``pending`` → re-drained next tick), exactly as a crash would leave them.
     """
     # Step 1 — event watchdog.
     reclaimed = run_watchdog(port, stale_after_seconds=stale_after_seconds)
@@ -192,11 +199,16 @@ def tick(
     # Step 2 — task watchdog (stale claimed → pending, stale running → failed).
     task_reclaim = None
     if task_port is not None:
-        task_reclaim = reclaim_stale_tasks(
-            task_port,
-            claimed_stale_after_seconds=task_claimed_stale_after_seconds,
-            running_reap_after_seconds=task_running_reap_after_seconds,
-        )
+        try:
+            task_reclaim = reclaim_stale_tasks(
+                task_port,
+                claimed_stale_after_seconds=task_claimed_stale_after_seconds,
+                running_reap_after_seconds=task_running_reap_after_seconds,
+            )
+        except Exception:  # noqa: BLE001 — task-store outage must not block event drain
+            logger.exception(
+                "[wake_driver] task watchdog failed; stale task rows left for the next tick"
+            )
 
     # Step 3 — event drain.
     processed = drain_pending(port, orchestrator)
@@ -204,7 +216,12 @@ def tick(
     # Step 4 — task drain (claim → running → spawn, capped, Ordering B).
     task_drain = None
     if task_port is not None:
-        task_drain = drain_tasks(task_port, task_spawn, resolve_binary=task_resolve_binary)
+        try:
+            task_drain = drain_tasks(task_port, task_spawn, resolve_binary=task_resolve_binary)
+        except Exception:  # noqa: BLE001 — task-store outage must not crash the tick
+            logger.exception(
+                "[wake_driver] task drain failed; pending tasks left for the next tick"
+            )
 
     return TickResult(
         reclaimed=reclaimed,
@@ -223,6 +240,10 @@ def run(
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
     should_continue: Callable[[], bool] | None = None,
     task_port: TaskQueuePort | None = None,
+    task_spawn: Spawn = default_spawn,
+    task_resolve_binary: ResolveBinary = default_resolve_binary,
+    task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
+    task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -235,7 +256,10 @@ def run(
     When ``task_port`` is supplied, each tick also sweeps and drains the
     ``task_queue`` (#909). The same idle-timeout that runs the event watchdog
     runs the task watchdog, so tasks left ``claimed``/``running`` by a crash
-    are swept even on an idle queue.
+    are swept even on an idle queue. The ``task_spawn`` / ``task_resolve_binary``
+    / ``task_*_after_seconds`` knobs are forwarded to each :func:`tick` so the
+    spawn function, binary resolver, and staleness thresholds stay injectable
+    end-to-end (tests and operators), not just at the ``tick`` boundary.
 
     A tick that raises is logged and swallowed so a transient failure does
     not tear down the driver — the offending event stays ``claimed`` and the
@@ -245,7 +269,16 @@ def run(
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
         try:
-            tick(port, orchestrator, stale_after_seconds=stale_after_seconds, task_port=task_port)
+            tick(
+                port,
+                orchestrator,
+                stale_after_seconds=stale_after_seconds,
+                task_port=task_port,
+                task_spawn=task_spawn,
+                task_resolve_binary=task_resolve_binary,
+                task_claimed_stale_after_seconds=task_claimed_stale_after_seconds,
+                task_running_reap_after_seconds=task_running_reap_after_seconds,
+            )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
 
