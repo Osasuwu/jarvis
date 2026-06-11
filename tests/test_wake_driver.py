@@ -283,3 +283,116 @@ def test_apscheduler_and_sqlalchemy_dropped_from_deps():
     assert "sqlalchemy" not in joined, (
         "sqlalchemy was only APScheduler's jobstore driver — drop it too"
     )
+
+
+# --- #909 AC1: tick gains task reclaim + task drain, four ordered steps -----
+
+
+class _RecordingTaskQueue:
+    """Minimal TaskQueuePort that logs the calls drain/reclaim make, in order.
+
+    Shares the order log with a _LoggingEventQueue so a single tick's
+    event-side and task-side operations can be asserted against AC1's
+    ``reclaim(events) → reclaim_tasks() → drain(events) → drain_tasks()`` order.
+    """
+
+    def __init__(self, log: list, *, pending=None, stale_claimed: int = 0, stale_running=None):
+        self._log = log
+        self._pending = list(pending or [])
+        self._stale_claimed = stale_claimed
+        self._stale_running = list(stale_running or [])
+
+    def claim_next(self, *, assignee: str):
+        for i, r in enumerate(self._pending):
+            if r.get("assignee", "sandcastle") == assignee:
+                self._log.append("task_drain")
+                return self._pending.pop(i)
+        return None
+
+    def count_running(self, *, assignee: str) -> int:
+        return 0
+
+    def transition(self, task_id: str, to_status: str, *, reason=None):
+        self._log.append(f"task_transition:{to_status}")
+        return {"id": task_id, "status": to_status}
+
+    def reclaim_stale_claimed(self, *, assignee: str, older_than_seconds: float) -> int:
+        self._log.append("task_reclaim")
+        return self._stale_claimed
+
+    def list_stale_running(self, *, assignee: str, older_than_seconds: float):
+        self._log.append("task_list_running")
+        return list(self._stale_running)
+
+
+class _LoggingEventQueue(FakeEventQueue):
+    """FakeEventQueue that records reclaim/drain into a shared order log."""
+
+    def __init__(self, log: list, events=None):
+        super().__init__(events)
+        self._log = log
+
+    def reclaim_stale(self, *, older_than_seconds: float) -> int:
+        self._log.append("event_reclaim")
+        return super().reclaim_stale(older_than_seconds=older_than_seconds)
+
+    def claim_next(self):
+        row = super().claim_next()
+        if row is not None:
+            self._log.append("event_drain")
+        return row
+
+
+def test_tick_runs_the_four_steps_in_order():
+    log: list = []
+    eq = _LoggingEventQueue(log, [_ev("e1", state="claimed")])
+    eq.events[0]["claimed_at"] = 0.0
+    eq.clock = 999.0  # the claimed event is stale → reclaimed → drained this tick
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+
+    wake_driver.tick(
+        eq,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal: None,
+        task_resolve_binary=lambda: "claude",
+    )
+
+    # AC1 order: reclaim(events) → reclaim_tasks() → drain(events) → drain_tasks()
+    assert log.index("event_reclaim") < log.index("task_reclaim")
+    assert log.index("task_list_running") < log.index("event_drain")
+    assert log.index("event_drain") < log.index("task_drain")
+
+
+def test_tick_without_task_port_is_event_only():
+    # Backward-compat: omitting task_port skips both task steps entirely.
+    q = FakeEventQueue([_ev("a")])
+    result = wake_driver.tick(q, wake_driver.default_orchestrator, stale_after_seconds=300)
+    assert result.processed == 1
+    assert result.tasks_spawned == 0
+    assert result.tasks_reclaimed == 0
+    assert result.tasks_reaped == 0
+    assert result.tasks_failed == 0
+
+
+def test_tick_reports_task_counts():
+    log: list = []
+    eq = FakeEventQueue([])
+    tq = _RecordingTaskQueue(
+        log,
+        pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}],
+        stale_claimed=2,
+        stale_running=[{"id": "r1"}],
+    )
+    result = wake_driver.tick(
+        eq,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal: None,
+        task_resolve_binary=lambda: "claude",
+    )
+    assert result.tasks_reclaimed == 2  # AC5 stale claimed → pending
+    assert result.tasks_reaped == 1  # AC6 stale running → failed
+    assert result.tasks_spawned == 1  # AC2/AC3/AC4 the pending sandcastle row
