@@ -16,10 +16,19 @@ jobs:
     # plugin will mark these as trivial and exit anyway, but bail earlier
     # to save Claude tokens). Draft PRs are skipped at the step-1 eligibility
     # check inside the plugin.
+    #
+    # The Dependabot guard keys off the PR AUTHOR (pull_request.user.login),
+    # NOT the triggering actor (github.actor). github.actor changes to the
+    # pusher on `synchronize` events — when merge-train.yml updates a stale
+    # Dependabot branch, the actor becomes the App token, the old
+    # `github.actor != 'dependabot[bot]'` guard passed, the job ran on a
+    # Dependabot PR and failed, code-review-retry re-dispatched, and the
+    # `review` check went red on a trivial dep bump (#944). The author is
+    # stable across every pull_request event type for a given PR.
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.actor != 'dependabot[bot]')
+       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: ubuntu-latest
     permissions:
       contents: read
