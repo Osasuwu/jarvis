@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from agents.scope_hash import _hash_scope_files  # re-export — see issue #773
+from agents.scope_hash import _hash_scope_files  # noqa: F401 — re-export, see issue #773
 from agents.usage_probe import UsageProbe, read_usage
 
 logger = logging.getLogger(__name__)
@@ -43,6 +43,10 @@ _SENSITIVE_ENV_KEYS: frozenset[str] = frozenset(
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_API_KEY",
+        # A base-url redirect is a billing trap too: it can point the spawned
+        # `claude -p` at a metered API gateway instead of the Max session.
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_BASE_URL",
     }
 )
 
@@ -117,17 +121,13 @@ def _resolve_claude_binary(override: str | None = None) -> str:
     if override:
         if os.path.exists(override):
             return override
-        raise FileNotFoundError(
-            f"claude binary override does not exist: {override!r}"
-        )
+        raise FileNotFoundError(f"claude binary override does not exist: {override!r}")
 
     env_path = os.environ.get("JARVIS_CLAUDE_BIN")
     if env_path:
         if os.path.exists(env_path):
             return env_path
-        raise FileNotFoundError(
-            f"JARVIS_CLAUDE_BIN points to a missing file: {env_path!r}"
-        )
+        raise FileNotFoundError(f"JARVIS_CLAUDE_BIN points to a missing file: {env_path!r}")
 
     found = shutil.which("claude")
     if found:
@@ -214,7 +214,8 @@ def spawn(
     if reading.near_exhaustion:
         logger.warning(
             "spawn refused — quota near-exhaustion (used=%d/%d)",
-            reading.used, reading.total,
+            reading.used,
+            reading.total,
         )
         return SpawnResult(
             proc=None,

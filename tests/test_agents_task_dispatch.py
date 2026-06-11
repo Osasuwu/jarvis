@@ -20,6 +20,7 @@ from typing import Any
 from agents.task_dispatch import (
     DEFAULT_ASSIGNEE,
     DEFAULT_CONCURRENCY_CAP,
+    DrainResult,
     SupabaseTaskQueue,
     TaskQueuePort,
     drain_tasks,
@@ -86,6 +87,18 @@ class FakeTaskQueue:
 
 def _always_resolve() -> str:
     return "claude"
+
+
+class _ThrottledResult:
+    """Stand-in for ``executor.SpawnResult`` when quota is near-exhaustion.
+
+    No process was launched (``proc=None``); the ``throttled`` flag is the
+    signal :func:`drain_tasks` must honor instead of counting a spawn.
+    """
+
+    proc = None
+    throttled = True
+    reason = "quota near-exhaustion"
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +220,34 @@ class TestBinaryPreflight:
         assert res.spawned == 0
         assert len(q._pending) == 2  # rows stay pending -> next drain self-heals
 
+    def test_permissionerror_in_resolve_also_skips_drain(self) -> None:
+        # A binary that exists but is not executable means "cannot spawn" just
+        # as much as a missing one — skip the whole drain, claim nothing.
+        q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
+        spawns: list[str] = []
+
+        def resolve_denied() -> str:
+            raise PermissionError("claude is not executable")
+
+        res = drain_tasks(q, lambda g: spawns.append(g), resolve_binary=resolve_denied)
+
+        assert res.skipped_no_binary is True
+        assert q.claimed == []
+        assert spawns == []
+
+    def test_importerror_in_resolve_also_skips_drain(self) -> None:
+        # A broken executor import surfaces as ImportError from the lazy
+        # default resolver — still "cannot spawn", so skip not strand.
+        q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
+
+        def resolve_broken() -> str:
+            raise ImportError("executor dependency missing")
+
+        res = drain_tasks(q, lambda g: None, resolve_binary=resolve_broken)
+
+        assert res.skipped_no_binary is True
+        assert q.claimed == []
+
 
 # ---------------------------------------------------------------------------
 # AC7b — spawn raises: mark that task failed (terminal), continue the drain
@@ -234,6 +275,93 @@ class TestSpawnFailureIsTerminal:
         assert spawns == ["do ok"]
         assert res.spawned == 1
         assert res.failed == 1
+
+
+# ---------------------------------------------------------------------------
+# review #2 — throttled spawn (quota near-exhaustion) is not a spawn
+# ---------------------------------------------------------------------------
+
+
+class TestThrottledSpawn:
+    def test_throttle_stops_drain_without_miscounting(self) -> None:
+        # Quota near-exhaustion: executor.spawn returns throttled=True, proc=None
+        # — no process launched. The pre-fix bug counted this as `spawned` and
+        # drained the WHOLE budget into 'running' rows, orphaning every one for
+        # the 6h reaper. The drain must instead bail after a single row.
+        q = FakeTaskQueue(pending=[_row(f"t{i}") for i in range(4)], running_count=0)
+        res = drain_tasks(q, lambda g: _ThrottledResult(), cap=5, resolve_binary=_always_resolve)
+
+        assert res.spawned == 0
+        assert res.failed == 0
+        assert res.throttled is True
+        # Exactly one row was claimed+transitioned-running before the drain
+        # bailed — bounded blast radius (that row is reaped by AC6), not the cap.
+        assert len(q.claimed) == 1
+        assert ("t0", "running", None) in q.transitions
+        # A throttle is NOT a spawn failure — the row must not be marked failed.
+        assert [t for t in q.transitions if t[1] == "failed"] == []
+
+    def test_throttle_midway_spawns_healthy_then_stops(self) -> None:
+        # First task spawns healthily, the second hits the quota wall. The
+        # healthy spawn still counts; the drain then stops on the throttle.
+        calls = {"n": 0}
+
+        def spawn(goal: str) -> Any:
+            calls["n"] += 1
+            return None if calls["n"] == 1 else _ThrottledResult()
+
+        q = FakeTaskQueue(pending=[_row("t0"), _row("t1"), _row("t2")], running_count=0)
+        res = drain_tasks(q, spawn, cap=5, resolve_binary=_always_resolve)
+
+        assert res.spawned == 1
+        assert res.throttled is True
+        assert len(q.claimed) == 2  # t0 (spawned) + t1 (throttled, left running)
+
+    def test_drain_result_has_throttled_field_default_false(self) -> None:
+        assert DrainResult().throttled is False
+
+
+# ---------------------------------------------------------------------------
+# review #5 — a failed running-transition leaves the row claimed (AC5 reclaims)
+# ---------------------------------------------------------------------------
+
+
+class TestRunningTransitionFailureIsSafe:
+    def test_transition_running_raise_skips_row_no_spawn(self) -> None:
+        spawns: list[str] = []
+
+        class Q(FakeTaskQueue):
+            def transition(self, task_id: str, to_status: str, *, reason: str | None = None) -> Any:
+                if to_status == "running":
+                    raise RuntimeError("supabase transient error")
+                return super().transition(task_id, to_status, reason=reason)
+
+        q = Q(pending=[_row("t0")], running_count=0)
+        res = drain_tasks(q, lambda g: spawns.append(g), cap=5, resolve_binary=_always_resolve)
+
+        # The row was claimed but the running transition failed: never spawned,
+        # never marked failed — left 'claimed' for the AC5 reclaimer.
+        assert spawns == []
+        assert res.spawned == 0
+        assert res.failed == 0
+        assert [t for t in q.transitions if t[1] == "failed"] == []
+
+    def test_transition_running_raise_continues_to_next_row(self) -> None:
+        # A transient transition error on one row must not abort the drain —
+        # it skips that row (left claimed) and continues with the next.
+        spawns: list[str] = []
+
+        class Q(FakeTaskQueue):
+            def transition(self, task_id: str, to_status: str, *, reason: str | None = None) -> Any:
+                if to_status == "running" and task_id == "bad":
+                    raise RuntimeError("transient")
+                return super().transition(task_id, to_status, reason=reason)
+
+        q = Q(pending=[_row("bad"), _row("good")], running_count=0)
+        res = drain_tasks(q, lambda g: spawns.append(g), cap=5, resolve_binary=_always_resolve)
+
+        assert spawns == ["do good"]
+        assert res.spawned == 1
 
 
 # ---------------------------------------------------------------------------
@@ -290,6 +418,8 @@ class TestBillingTrapThroughDrain:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-must-be-stripped")
         monkeypatch.setenv("CLAUDE_API_KEY", "sk-also-stripped")
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "tok-stripped")
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://metered.example/v1")
+        monkeypatch.setenv("CLAUDE_BASE_URL", "https://metered.example/v1")
         monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake_bin))
         monkeypatch.setenv("PATH_FROM_PARENT", "keep-me")
 
@@ -310,6 +440,8 @@ class TestBillingTrapThroughDrain:
         assert "ANTHROPIC_API_KEY" not in env, "billing-trap leak through drain path"
         assert "CLAUDE_API_KEY" not in env
         assert "ANTHROPIC_AUTH_TOKEN" not in env
+        assert "ANTHROPIC_BASE_URL" not in env, "base-url redirect leak through drain path"
+        assert "CLAUDE_BASE_URL" not in env
         assert env.get("PATH_FROM_PARENT") == "keep-me", "non-sensitive env must survive"
 
 

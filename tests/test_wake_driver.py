@@ -361,6 +361,8 @@ def test_tick_runs_the_four_steps_in_order():
 
     # AC1 order: reclaim(events) → reclaim_tasks() → drain(events) → drain_tasks()
     assert log.index("event_reclaim") < log.index("task_reclaim")
+    # Within the task watchdog, claimed-reclaim precedes the running-reaper scan.
+    assert log.index("task_reclaim") < log.index("task_list_running")
     assert log.index("task_list_running") < log.index("event_drain")
     assert log.index("event_drain") < log.index("task_drain")
 
@@ -396,3 +398,162 @@ def test_tick_reports_task_counts():
     assert result.tasks_reclaimed == 2  # AC5 stale claimed → pending
     assert result.tasks_reaped == 1  # AC6 stale running → failed
     assert result.tasks_spawned == 1  # AC2/AC3/AC4 the pending sandcastle row
+
+
+# --- review #1: the task side and event side are isolated within a tick -----
+
+
+class _RaisingOnReclaimTaskQueue:
+    """TaskQueuePort whose task watchdog raises — models a Supabase outage in
+    tick Step 2 (the task reclaim), which must not starve the event drain."""
+
+    def claim_next(self, *, assignee: str):
+        return None
+
+    def count_running(self, *, assignee: str) -> int:
+        return 0
+
+    def transition(self, task_id: str, to_status: str, *, reason=None):
+        return {"id": task_id, "status": to_status}
+
+    def reclaim_stale_claimed(self, *, assignee: str, older_than_seconds: float) -> int:
+        raise RuntimeError("supabase unreachable")
+
+    def list_stale_running(self, *, assignee: str, older_than_seconds: float):
+        return []
+
+
+class _RaisingOnDrainTaskQueue:
+    """TaskQueuePort whose drain raises — models a task-store outage in tick
+    Step 4 (after events already drained in Step 3)."""
+
+    def claim_next(self, *, assignee: str):
+        raise RuntimeError("supabase unreachable")
+
+    def count_running(self, *, assignee: str) -> int:
+        return 0
+
+    def transition(self, task_id: str, to_status: str, *, reason=None):
+        return {"id": task_id, "status": to_status}
+
+    def reclaim_stale_claimed(self, *, assignee: str, older_than_seconds: float) -> int:
+        return 0
+
+    def list_stale_running(self, *, assignee: str, older_than_seconds: float):
+        return []
+
+
+def test_tick_task_watchdog_failure_does_not_block_event_drain():
+    # A Supabase outage in the task watchdog (Step 2) must not starve the
+    # psycopg-backed event path (Step 3). Events still drain; task counts are
+    # zero; the tick returns instead of raising.
+    q = FakeEventQueue([_ev("a"), _ev("b")])
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=_RaisingOnReclaimTaskQueue(),
+        task_resolve_binary=lambda: "claude",
+    )
+    assert result.processed == 2  # events drained despite the task-side outage
+    assert result.tasks_reclaimed == 0
+    assert result.tasks_reaped == 0
+
+
+def test_tick_task_drain_failure_does_not_crash_tick():
+    # A failure in the task drain (Step 4) is contained — the event drain
+    # (Step 3) already ran, and the tick returns a result instead of raising.
+    q = FakeEventQueue([_ev("a")])
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=_RaisingOnDrainTaskQueue(),
+        task_resolve_binary=lambda: "claude",
+    )
+    assert result.processed == 1
+    assert result.tasks_spawned == 0
+    assert result.tasks_failed == 0
+
+
+# --- review #3: run() forwards every task param to tick() -------------------
+
+
+def test_run_forwards_task_spawn_and_resolver_to_tick():
+    # run() must forward task_spawn / task_resolve_binary, else the loop
+    # silently falls back to the production defaults (real claude binary, real
+    # spawn) no matter what main() injected. Drive one iteration and assert the
+    # injected fakes were the ones used.
+    log: list = []
+    q = FakeEventQueue([])
+    q.wake_signals = [True]
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t1", "goal": "do-the-thing", "assignee": "sandcastle"}]
+    )
+    spawned: list[str] = []
+    resolved = {"n": 0}
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] <= 1
+
+    def fake_resolve() -> str:
+        resolved["n"] += 1
+        return "claude"
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=tq,
+        task_spawn=lambda goal: spawned.append(goal),
+        task_resolve_binary=fake_resolve,
+    )
+
+    assert spawned == ["do-the-thing"]  # injected spawn forwarded, not the default
+    assert resolved["n"] == 1  # injected resolver forwarded, not the default
+
+
+def test_run_forwards_task_thresholds_to_tick():
+    # The claimed/running staleness thresholds must reach reclaim_stale_tasks;
+    # a partial forward would silently apply the module defaults instead.
+    seen: dict = {}
+
+    class _ThresholdPort:
+        def claim_next(self, *, assignee: str):
+            return None
+
+        def count_running(self, *, assignee: str) -> int:
+            return 0
+
+        def transition(self, task_id: str, to_status: str, *, reason=None):
+            return {"id": task_id}
+
+        def reclaim_stale_claimed(self, *, assignee: str, older_than_seconds: float) -> int:
+            seen["claimed"] = older_than_seconds
+            return 0
+
+        def list_stale_running(self, *, assignee: str, older_than_seconds: float):
+            seen["running"] = older_than_seconds
+            return []
+
+    q = FakeEventQueue([])
+    q.wake_signals = [False]
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] <= 1
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=_ThresholdPort(),
+        task_resolve_binary=lambda: "claude",
+        task_claimed_stale_after_seconds=111,
+        task_running_reap_after_seconds=222,
+    )
+
+    assert seen == {"claimed": 111, "running": 222}

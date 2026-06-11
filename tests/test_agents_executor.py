@@ -49,6 +49,10 @@ def test_sensitive_env_keys_cover_known_variants() -> None:
     assert "ANTHROPIC_API_KEY" in _SENSITIVE_ENV_KEYS
     assert "ANTHROPIC_AUTH_TOKEN" in _SENSITIVE_ENV_KEYS
     assert "CLAUDE_API_KEY" in _SENSITIVE_ENV_KEYS
+    # A base-url redirect is as much a billing trap as a key: it can point the
+    # spawned `claude -p` at a metered API gateway instead of the Max session.
+    assert "ANTHROPIC_BASE_URL" in _SENSITIVE_ENV_KEYS
+    assert "CLAUDE_BASE_URL" in _SENSITIVE_ENV_KEYS
 
 
 def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
@@ -74,8 +78,9 @@ def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
 
     for pattern in ["merge", "delete"]:
         for tool in _SPAWN_ALLOWED_TOOLS:
-            assert pattern not in tool, \
+            assert pattern not in tool, (
                 f"Destructive pattern '{pattern}' found in allowlist entry '{tool}'"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +88,9 @@ def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_claude_binary_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+def test_resolve_claude_binary_override_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     from agents.executor import _resolve_claude_binary
 
     real = tmp_path / "real-claude.exe"
@@ -104,7 +111,8 @@ def test_resolve_claude_binary_override_must_exist(tmp_path: Any) -> None:
 
 
 def test_resolve_claude_binary_env_var_wins_over_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
 ) -> None:
     from agents.executor import _resolve_claude_binary
 
@@ -125,7 +133,8 @@ def test_resolve_claude_binary_env_var_must_exist(monkeypatch: pytest.MonkeyPatc
 
 
 def test_resolve_claude_binary_falls_through_to_shutil_which(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
 ) -> None:
     import shutil as _shutil
     from agents.executor import _resolve_claude_binary
@@ -175,6 +184,8 @@ def test_sanitize_env_strips_all_known_variants() -> None:
         "ANTHROPIC_API_KEY": "a",
         "ANTHROPIC_AUTH_TOKEN": "b",
         "CLAUDE_API_KEY": "c",
+        "ANTHROPIC_BASE_URL": "https://metered.example/v1",
+        "CLAUDE_BASE_URL": "https://metered.example/v1",
     }
     out = _sanitize_env(src)
     assert out == {"SAFE": "keep"}
@@ -333,7 +344,6 @@ class _FixedProbe:
 
 
 def _healthy_reading() -> Any:
-    from datetime import timedelta
 
     from agents.usage_probe import UsageReading
 
@@ -347,7 +357,6 @@ def _healthy_reading() -> Any:
 
 
 def _exhausted_reading() -> Any:
-    from datetime import timedelta
 
     from agents.usage_probe import UsageReading
 
@@ -362,9 +371,11 @@ def _exhausted_reading() -> Any:
 
 def _false_safe_error_probe() -> _FixedProbe:
     """Probe that raises — confirms the false-safe contract in the executor."""
+
     class _RaisingProbe:
         def read(self) -> Any:
             raise RuntimeError("probe broken")
+
     return _RaisingProbe()  # type: ignore[return-value]
 
 
