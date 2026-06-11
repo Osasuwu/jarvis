@@ -16,6 +16,7 @@ __all__ = [
     "orchestrator",
     "safety",
     "supabase_client",
+    "task_dispatch",
     "task_queue",
     "usage_probe",
     "wake_driver",

@@ -14,7 +14,10 @@ from agents.task_queue import (
     _TERMINAL_STATES,
     _VALID_TRANSITIONS,
     claim_next,
+    count_running,
     enqueue,
+    list_stale_running,
+    reclaim_stale_claimed,
     transition,
 )
 
@@ -34,11 +37,16 @@ class _StubSelect:
         self._parent = parent
         self._rows = list(rows)
         self._filters: list[tuple[str, Any]] = []
+        self._lt_filters: list[tuple[str, Any]] = []
         self._order: list[tuple[str, bool]] = []
         self._limit_n: int | None = None
 
     def eq(self, col: str, val: Any) -> _StubSelect:
         self._filters.append((col, val))
+        return self
+
+    def lt(self, col: str, val: Any) -> _StubSelect:
+        self._lt_filters.append((col, val))
         return self
 
     def order(self, col: str, *, desc: bool = False, **kwargs: Any) -> _StubSelect:
@@ -53,6 +61,8 @@ class _StubSelect:
         rows = list(self._rows)
         for col, val in self._filters:
             rows = [r for r in rows if r.get(col) == val]
+        for col, val in self._lt_filters:
+            rows = [r for r in rows if r.get(col) is not None and r.get(col) < val]
         for col, desc in reversed(self._order):
             rows.sort(
                 key=lambda r: (r.get(col) is None, r.get(col)),
@@ -65,21 +75,29 @@ class _StubSelect:
 
 
 class _StubUpdate:
-    def __init__(self, parent: _StubTable, rows: list[dict[str, Any]],
-                 payload: dict[str, Any]) -> None:
+    def __init__(
+        self, parent: _StubTable, rows: list[dict[str, Any]], payload: dict[str, Any]
+    ) -> None:
         self._parent = parent
         self._rows = rows
         self._payload = payload
         self._eq_filters: list[tuple[str, Any]] = []
+        self._lt_filters: list[tuple[str, Any]] = []
 
     def eq(self, col: str, val: Any) -> _StubUpdate:
         self._eq_filters.append((col, val))
         return self
 
+    def lt(self, col: str, val: Any) -> _StubUpdate:
+        self._lt_filters.append((col, val))
+        return self
+
     def execute(self) -> _StubResponse:
         matched: list[dict[str, Any]] = []
         for row in self._rows:
-            if all(row.get(c) == v for c, v in self._eq_filters):
+            eq_ok = all(row.get(c) == v for c, v in self._eq_filters)
+            lt_ok = all(row.get(c) is not None and row.get(c) < v for c, v in self._lt_filters)
+            if eq_ok and lt_ok:
                 row.update(self._payload)
                 matched.append(dict(row))
         self._parent.calls.append(("update", dict(self._eq_filters)))
@@ -87,8 +105,9 @@ class _StubUpdate:
 
 
 class _StubInsert:
-    def __init__(self, parent: _StubTable, rows: list[dict[str, Any]],
-                 payload: dict[str, Any]) -> None:
+    def __init__(
+        self, parent: _StubTable, rows: list[dict[str, Any]], payload: dict[str, Any]
+    ) -> None:
         self._parent = parent
         self._rows = rows
         self._payload = payload
@@ -165,15 +184,23 @@ def _pending(**kw: Any) -> dict[str, Any]:
 
 
 def _claimed(**kw: Any) -> dict[str, Any]:
-    base = _pending(id="tq-claimed", status="claimed", idempotency_key="key-claimed",
-                    claimed_at="2026-05-21T01:00:00")
+    base = _pending(
+        id="tq-claimed",
+        status="claimed",
+        idempotency_key="key-claimed",
+        claimed_at="2026-05-21T01:00:00",
+    )
     base.update(kw)
     return base
 
 
 def _running(**kw: Any) -> dict[str, Any]:
-    base = _claimed(id="tq-running", status="running", idempotency_key="key-running",
-                    claimed_at="2026-05-21T01:00:00")
+    base = _claimed(
+        id="tq-running",
+        status="running",
+        idempotency_key="key-running",
+        claimed_at="2026-05-21T01:00:00",
+    )
     base.update(kw)
     return base
 
@@ -211,9 +238,12 @@ class TestEnqueue:
         assert row["scope_files"] == ["src/main.py"]
 
     def test_idempotency_key_collision(self, client: _StubClient) -> None:
-        client.seed("task_queue", [
-            _pending(idempotency_key="dup-key"),
-        ])
+        client.seed(
+            "task_queue",
+            [
+                _pending(idempotency_key="dup-key"),
+            ],
+        )
         row = enqueue(
             goal="duplicate",
             priority=0,
@@ -242,9 +272,7 @@ class TestEnqueue:
         )
         assert row is not None
         assert row["assignee"] == "owner"
-        assert row["escalated_reason"] == (
-            "security_alert (critical) — owner review required"
-        )
+        assert row["escalated_reason"] == ("security_alert (critical) — owner review required")
 
     def test_escalated_reason_omitted_when_none(self, client: _StubClient) -> None:
         row = enqueue(
@@ -263,11 +291,14 @@ class TestEnqueue:
 
 class TestClaimNext:
     def test_claims_highest_priority(self, client: _StubClient) -> None:
-        client.seed("task_queue", [
-            _pending(id="low", priority=1, idempotency_key="key-low"),
-            _pending(id="high", priority=10, idempotency_key="key-high"),
-            _pending(id="medium", priority=5, idempotency_key="key-med"),
-        ])
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="low", priority=1, idempotency_key="key-low"),
+                _pending(id="high", priority=10, idempotency_key="key-high"),
+                _pending(id="medium", priority=5, idempotency_key="key-med"),
+            ],
+        )
         row = claim_next(client=client)
         assert row is not None
         assert row["id"] == "high"
@@ -275,12 +306,23 @@ class TestClaimNext:
         assert row["claimed_at"] is not None
 
     def test_fifo_for_tie(self, client: _StubClient) -> None:
-        client.seed("task_queue", [
-            _pending(id="first", priority=5, idempotency_key="key-a",
-                     created_at="2026-05-21T00:00:00"),
-            _pending(id="second", priority=5, idempotency_key="key-b",
-                     created_at="2026-05-21T01:00:00"),
-        ])
+        client.seed(
+            "task_queue",
+            [
+                _pending(
+                    id="first",
+                    priority=5,
+                    idempotency_key="key-a",
+                    created_at="2026-05-21T00:00:00",
+                ),
+                _pending(
+                    id="second",
+                    priority=5,
+                    idempotency_key="key-b",
+                    created_at="2026-05-21T01:00:00",
+                ),
+            ],
+        )
         row = claim_next(client=client)
         assert row is not None
         assert row["id"] == "first"
@@ -290,18 +332,24 @@ class TestClaimNext:
         assert row is None
 
     def test_ignores_non_pending_status(self, client: _StubClient) -> None:
-        client.seed("task_queue", [
-            _claimed(id="claimed-task"),
-            _running(id="running-task"),
-        ])
+        client.seed(
+            "task_queue",
+            [
+                _claimed(id="claimed-task"),
+                _running(id="running-task"),
+            ],
+        )
         row = claim_next(client=client)
         assert row is None
 
     def test_optimistic_lock_race(self, client: _StubClient) -> None:
         """Another worker claimed the task between our read and update."""
-        client.seed("task_queue", [
-            _pending(id="race", idempotency_key="key-race"),
-        ])
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="race", idempotency_key="key-race"),
+            ],
+        )
 
         # First claim succeeds
         first = claim_next(client=client)
@@ -417,9 +465,7 @@ class TestFSMDefinition:
         all_states = {"pending", "claimed", "running", "done", "failed", "parked"}
         non_terminal = all_states - _TERMINAL_STATES
         defined = set(_VALID_TRANSITIONS.keys())
-        assert defined == non_terminal, (
-            f"Missing transition rules for: {non_terminal - defined}"
-        )
+        assert defined == non_terminal, f"Missing transition rules for: {non_terminal - defined}"
 
     def test_no_transition_from_terminal_states(self) -> None:
         for state in _TERMINAL_STATES:
@@ -436,3 +482,164 @@ class TestFSMDefinition:
                 assert target in all_states, (
                     f"Transition {state} -> {target}: {target!r} is not a valid state"
                 )
+
+
+# ===========================================================================
+# claim_next — assignee filter (#909 AC2)
+# ===========================================================================
+
+
+class TestClaimNextAssignee:
+    """AC2: drain claims/spawns ONLY assignee='sandcastle' rows; owner never."""
+
+    def test_claims_only_matching_assignee(self, client: _StubClient) -> None:
+        # owner row has higher priority — if the filter were post-claim instead
+        # of in the SELECT, the owner row would be read first and the claim of a
+        # sandcastle row would never happen.
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="sand", assignee="sandcastle", priority=5, idempotency_key="k-s"),
+                _pending(id="own", assignee="owner", priority=10, idempotency_key="k-o"),
+            ],
+        )
+        row = claim_next(assignee="sandcastle", client=client)
+        assert row is not None
+        assert row["id"] == "sand"
+        assert row["status"] == "claimed"
+
+    def test_returns_none_when_no_matching_assignee(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="own", assignee="owner", idempotency_key="k-o"),
+            ],
+        )
+        assert claim_next(assignee="sandcastle", client=client) is None
+
+    def test_no_assignee_filter_claims_any(self, client: _StubClient) -> None:
+        # Backward-compat: omitting assignee preserves the original behavior.
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="any", assignee="owner", idempotency_key="k"),
+            ],
+        )
+        row = claim_next(client=client)
+        assert row is not None
+        assert row["id"] == "any"
+
+
+# ===========================================================================
+# count_running (#909 AC3)
+# ===========================================================================
+
+
+class TestCountRunning:
+    """AC3: concurrency budget = cap − count_running(assignee)."""
+
+    def test_counts_running_for_assignee(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _running(id="r1", assignee="sandcastle", idempotency_key="k1"),
+                _running(id="r2", assignee="sandcastle", idempotency_key="k2"),
+                _running(id="r3", assignee="owner", idempotency_key="k3"),
+                _claimed(id="c1", assignee="sandcastle", idempotency_key="k4"),
+                _pending(id="p1", assignee="sandcastle", idempotency_key="k5"),
+            ],
+        )
+        assert count_running(assignee="sandcastle", client=client) == 2
+
+    def test_zero_when_none_running(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="p", assignee="sandcastle", idempotency_key="k"),
+            ],
+        )
+        assert count_running(assignee="sandcastle", client=client) == 0
+
+
+# ===========================================================================
+# reclaim_stale_claimed (#909 AC5) — direct UPDATE bypassing the FSM
+# ===========================================================================
+
+
+class TestReclaimStaleClaimed:
+    """AC5: stale `claimed` sandcastle rows return to `pending` (not-yet-spawned)."""
+
+    _OLD = "2020-01-01T00:00:00+00:00"
+
+    def test_reclaims_old_claimed_to_pending(self, client: _StubClient) -> None:
+        fresh = datetime.now(timezone.utc).isoformat()
+        client.seed(
+            "task_queue",
+            [
+                _claimed(
+                    id="stale", assignee="sandcastle", idempotency_key="k1", claimed_at=self._OLD
+                ),
+                _claimed(id="fresh", assignee="sandcastle", idempotency_key="k2", claimed_at=fresh),
+            ],
+        )
+        n = reclaim_stale_claimed(assignee="sandcastle", older_than_seconds=300, client=client)
+        assert n == 1
+        rows = {r["id"]: r for r in client.table("task_queue")._rows}
+        assert rows["stale"]["status"] == "pending"
+        assert rows["stale"]["claimed_at"] is None
+        assert rows["fresh"]["status"] == "claimed"
+
+    def test_only_reclaims_matching_assignee(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _claimed(id="own", assignee="owner", idempotency_key="k1", claimed_at=self._OLD),
+            ],
+        )
+        assert (
+            reclaim_stale_claimed(assignee="sandcastle", older_than_seconds=300, client=client) == 0
+        )
+
+    def test_does_not_touch_running(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _running(
+                    id="run", assignee="sandcastle", idempotency_key="k1", claimed_at=self._OLD
+                ),
+            ],
+        )
+        assert (
+            reclaim_stale_claimed(assignee="sandcastle", older_than_seconds=300, client=client) == 0
+        )
+        rows = {r["id"]: r for r in client.table("task_queue")._rows}
+        assert rows["run"]["status"] == "running"
+
+
+# ===========================================================================
+# list_stale_running (#909 AC6) — running-reaper candidate selection
+# ===========================================================================
+
+
+class TestListStaleRunning:
+    """AC6: select stale `running` sandcastle rows for the reaper to fail."""
+
+    _OLD = "2020-01-01T00:00:00+00:00"
+
+    def test_lists_old_running_for_assignee(self, client: _StubClient) -> None:
+        fresh = datetime.now(timezone.utc).isoformat()
+        client.seed(
+            "task_queue",
+            [
+                _running(
+                    id="old", assignee="sandcastle", idempotency_key="k1", claimed_at=self._OLD
+                ),
+                _running(id="new", assignee="sandcastle", idempotency_key="k2", claimed_at=fresh),
+                _running(id="own", assignee="owner", idempotency_key="k3", claimed_at=self._OLD),
+                _claimed(
+                    id="clm", assignee="sandcastle", idempotency_key="k4", claimed_at=self._OLD
+                ),
+            ],
+        )
+        rows = list_stale_running(assignee="sandcastle", older_than_seconds=300, client=client)
+        assert {r["id"] for r in rows} == {"old"}

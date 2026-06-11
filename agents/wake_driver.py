@@ -46,6 +46,18 @@ from typing import TYPE_CHECKING, Any, Protocol
 from dotenv import load_dotenv
 
 from agents.config import load_config
+from agents.task_dispatch import (
+    DEFAULT_CLAIMED_STALE_SECONDS,
+    DEFAULT_RUNNING_REAP_SECONDS,
+    ResolveBinary,
+    Spawn,
+    SupabaseTaskQueue,
+    TaskQueuePort,
+    _default_resolve_binary,
+    _default_spawn,
+    drain_tasks,
+    reclaim_stale_tasks,
+)
 
 if TYPE_CHECKING:
     import psycopg
@@ -92,10 +104,18 @@ class EventQueuePort(Protocol):
 
 @dataclass(frozen=True)
 class TickResult:
-    """What one :func:`tick` did — watchdog reclaims + events drained."""
+    """What one :func:`tick` did — event watchdog + drain, then task sweep + drain.
+
+    The ``tasks_*`` fields default to 0 so an event-only tick (no ``task_port``)
+    constructs unchanged.
+    """
 
     reclaimed: int
     processed: int
+    tasks_reclaimed: int = 0
+    tasks_reaped: int = 0
+    tasks_spawned: int = 0
+    tasks_failed: int = 0
 
 
 def default_orchestrator(event: dict[str, Any]) -> None:
@@ -148,15 +168,52 @@ def tick(
     orchestrator: Orchestrator,
     *,
     stale_after_seconds: float,
+    task_port: TaskQueuePort | None = None,
+    task_spawn: Spawn = _default_spawn,
+    task_resolve_binary: ResolveBinary = _default_resolve_binary,
+    task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
+    task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
 ) -> TickResult:
-    """One unit of work: reclaim stale rows, then drain the pending queue.
+    """One unit of work — four ordered steps (#909 AC1)::
 
-    The watchdog runs **first** so a row stranded by a previous crash is
-    returned to ``pending`` and drained within the same tick.
+        reclaim_stale(events) → reclaim_stale_tasks() → drain_pending(events) → drain_tasks()
+
+    Both watchdogs run **before** both drains, so a row stranded by a previous
+    crash (event *or* task) is returned to ``pending`` and re-driven within the
+    same tick. Tasks are swept and drained only when ``task_port`` is supplied;
+    omitting it preserves the original event-only behavior. There is no task
+    NOTIFY — a task is born from an event that already woke the driver, or is
+    swept by the idle-timeout watchdog (AC1; task-NOTIFY latency deferred to
+    #922).
     """
+    # Step 1 — event watchdog.
     reclaimed = run_watchdog(port, stale_after_seconds=stale_after_seconds)
+
+    # Step 2 — task watchdog (stale claimed → pending, stale running → failed).
+    task_reclaim = None
+    if task_port is not None:
+        task_reclaim = reclaim_stale_tasks(
+            task_port,
+            claimed_stale_after_seconds=task_claimed_stale_after_seconds,
+            running_reap_after_seconds=task_running_reap_after_seconds,
+        )
+
+    # Step 3 — event drain.
     processed = drain_pending(port, orchestrator)
-    return TickResult(reclaimed=reclaimed, processed=processed)
+
+    # Step 4 — task drain (claim → running → spawn, capped, Ordering B).
+    task_drain = None
+    if task_port is not None:
+        task_drain = drain_tasks(task_port, task_spawn, resolve_binary=task_resolve_binary)
+
+    return TickResult(
+        reclaimed=reclaimed,
+        processed=processed,
+        tasks_reclaimed=task_reclaim.reclaimed_claimed if task_reclaim else 0,
+        tasks_reaped=task_reclaim.reaped_running if task_reclaim else 0,
+        tasks_spawned=task_drain.spawned if task_drain else 0,
+        tasks_failed=task_drain.failed if task_drain else 0,
+    )
 
 
 def run(
@@ -165,6 +222,7 @@ def run(
     *,
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
     should_continue: Callable[[], bool] | None = None,
+    task_port: TaskQueuePort | None = None,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -174,6 +232,11 @@ def run(
     busy sleep-poll; ``should_continue`` (default: forever) lets tests bound
     the loop.
 
+    When ``task_port`` is supplied, each tick also sweeps and drains the
+    ``task_queue`` (#909). The same idle-timeout that runs the event watchdog
+    runs the task watchdog, so tasks left ``claimed``/``running`` by a crash
+    are swept even on an idle queue.
+
     A tick that raises is logged and swallowed so a transient failure does
     not tear down the driver — the offending event stays ``claimed`` and the
     watchdog re-claims it next pass (at-least-once, never silently lost).
@@ -182,7 +245,7 @@ def run(
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
         try:
-            tick(port, orchestrator, stale_after_seconds=stale_after_seconds)
+            tick(port, orchestrator, stale_after_seconds=stale_after_seconds, task_port=task_port)
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
 
@@ -271,12 +334,23 @@ def main() -> int:
     args = parser.parse_args()
 
     queue = _build_psycopg_queue()
+    task_port = SupabaseTaskQueue()  # tasks ride supabase-py; events ride psycopg
     if args.once:
-        result = tick(queue, default_orchestrator, stale_after_seconds=args.watchdog_seconds)
+        result = tick(
+            queue,
+            default_orchestrator,
+            stale_after_seconds=args.watchdog_seconds,
+            task_port=task_port,
+        )
         logger.info(
-            "[wake_driver] one-shot tick: reclaimed=%d processed=%d",
+            "[wake_driver] one-shot tick: reclaimed=%d processed=%d "
+            "tasks_reclaimed=%d tasks_reaped=%d tasks_spawned=%d tasks_failed=%d",
             result.reclaimed,
             result.processed,
+            result.tasks_reclaimed,
+            result.tasks_reaped,
+            result.tasks_spawned,
+            result.tasks_failed,
         )
         return 0
 
@@ -286,7 +360,12 @@ def main() -> int:
         args.watchdog_seconds,
     )
     try:
-        run(queue, default_orchestrator, stale_after_seconds=args.watchdog_seconds)
+        run(
+            queue,
+            default_orchestrator,
+            stale_after_seconds=args.watchdog_seconds,
+            task_port=task_port,
+        )
     except KeyboardInterrupt:
         logger.info("[wake_driver] KeyboardInterrupt — stopping")
     return 0
