@@ -22,6 +22,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -920,38 +921,106 @@ def _rollback_failed_apply(plan: Plan) -> None:
         shutil.rmtree(plan.target_root, ignore_errors=True)
 
 
-def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[bool, list[str]]:
+HEALTH_CHECK_TIMEOUT_DEFAULT = 30
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Terminate proc AND its descendants; must never raise.
+
+    proc.kill() reaps only the direct child. Health commands spawn
+    grandchildren (session-context.py re-execs itself into the venv python);
+    a surviving grandchild keeps running — and keeps any inherited handles
+    open — long after the installer gave up on the command.
+    """
+    if os.name == "nt":
+        try:
+            # /T walks the tree by parent PID — the direct child is still
+            # alive here (we only reach this on TimeoutExpired), so the
+            # chain is discoverable.
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            proc.kill()
+    else:
+        try:
+            # start_new_session=True at spawn made proc a group leader.
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, list[str]]:
+    """Run manifest health-check commands. Returns (status, logs).
+
+    status: "ok" — every command exited 0; "fail" — a command exited non-zero
+    or could not be spawned; "timeout" — a command outlived its time limit and
+    its process tree was killed. Callers must treat "timeout" as inconclusive,
+    NOT as evidence the apply is broken — see main().
+    """
     hc = manifest.get("health_check") or {}
     if not hc.get("enabled"):
-        return True, []
+        return "ok", []
+    timeout = int(hc.get("timeout", HEALTH_CHECK_TIMEOUT_DEFAULT))
     logs: list[str] = []
     for cmd in hc.get("commands") or []:
         # Use shlex so paths with spaces survive — `cmd.split()` breaks them.
         # posix=False on Windows keeps backslashes intact.
         argv = shlex.split(cmd, posix=(os.name != "nt"))
+        # Output goes to temp FILES, never pipes. With capture_output=True, a
+        # health command that spawns its own children (session-context.py
+        # re-execs into the venv python) leaves a grandchild holding the
+        # inherited pipe write-handles; once the timeout kills the direct
+        # child, the pipe never reaches EOF and the parent blocks forever in
+        # _communicate() (2026-06-12: install.ps1 -Apply wedged 35+ min after
+        # apply succeeded). File reads cannot block on EOF, so even a
+        # grandchild the tree-kill misses can't wedge the installer.
+        # stdin=DEVNULL keeps children from waiting on console input.
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True  # killable as a group
         try:
-            # Force UTF-8 for subprocess I/O — text=True alone defaults to
-            # locale.getpreferredencoding(False), which on Russian Windows is
-            # cp1251 and can't decode the em-dashes / Cyrillic that session
-            # scripts emit. errors="replace" keeps the reader threads alive
-            # even if a rogue script ever emits garbage bytes (#352).
-            result = subprocess.run(
-                argv,
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+                err_path = Path(td) / "err"
+                timed_out = False
+                with open(Path(td) / "out", "wb") as out_f, open(err_path, "wb") as err_f:
+                    proc = subprocess.Popen(
+                        argv,
+                        cwd=repo_root,
+                        stdin=subprocess.DEVNULL,
+                        stdout=out_f,
+                        stderr=err_f,
+                        **popen_kwargs,
+                    )
+                    try:
+                        proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        _kill_tree(proc)
+                        timed_out = True
+                # Decode like the old capture path: locale-independent UTF-8,
+                # errors="replace" survives rogue bytes on cp1251 consoles (#352).
+                stderr = err_path.read_bytes().decode("utf-8", errors="replace")
+                if timed_out:
+                    logs.append(
+                        f"TIMEOUT {cmd}: no exit after {timeout}s — "
+                        f"process tree killed; stderr={stderr[:200]}"
+                    )
+                    return "timeout", logs
+        except OSError as exc:
             logs.append(f"FAIL {cmd}: {exc}")
-            return False, logs
-        if result.returncode != 0:
-            logs.append(f"FAIL {cmd} exit={result.returncode} stderr={result.stderr[:200]}")
-            return False, logs
+            return "fail", logs
+        if proc.returncode != 0:
+            logs.append(f"FAIL {cmd} exit={proc.returncode} stderr={stderr[:200]}")
+            return "fail", logs
         logs.append(f"OK   {cmd}")
-    return True, logs
+    return "ok", logs
 
 
 # ---------- printing ----------
@@ -1125,10 +1194,22 @@ def main(argv: list[str] | None = None) -> int:
             print("no fixable .env files found", file=sys.stderr)
 
     if not args.skip_health_check:
-        ok, logs = run_health_check(manifest, repo_root)
+        status, logs = run_health_check(manifest, repo_root)
         for line in logs:
             print(line)
-        if not ok:
+        if status == "timeout":
+            # Inconclusive ≠ broken. A hung health command (script stuck on
+            # network, grandchild that outlived its parent) says nothing
+            # about whether the apply itself succeeded — rolling back here
+            # would discard a completed, likely-good install. Leave it in
+            # place and tell the operator to verify by hand.
+            print(
+                "\nhealth check timed out — apply left in place (NOT rolled back); "
+                "verify manually or re-run install.ps1",
+                file=sys.stderr,
+            )
+            return 4
+        if status == "fail":
             print("\nhealth check failed", file=sys.stderr)
             _rollback_failed_apply(plan)
             return 3
