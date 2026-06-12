@@ -22,15 +22,6 @@
     "obsidian": {
       "command": "npx",
       "args": ["-y", "@bitbonsai/mcpvault@latest", "${OBSIDIAN_VAULT_PATH}"]
-    },
-    "bambu-printer": {
-      "command": "npx",
-      "args": ["-y", "bambu-printer-mcp"],
-      "env": {
-        "BAMBU_IP": "${BAMBU_IP}",
-        "BAMBU_TOKEN": "${BAMBU_TOKEN}",
-        "BAMBU_SERIAL": "${BAMBU_SERIAL}"
-      }
     }
   }
 }
