@@ -18,6 +18,7 @@ from agents.task_queue import (
     enqueue,
     list_stale_running,
     reclaim_stale_claimed,
+    requeue_running,
     transition,
 )
 
@@ -643,3 +644,38 @@ class TestListStaleRunning:
         )
         rows = list_stale_running(assignee="sandcastle", older_than_seconds=300, client=client)
         assert {r["id"] for r in rows} == {"old"}
+
+
+# ===========================================================================
+# requeue_running (#921 AC4) — mid-drain throttle returns the row to pending
+# ===========================================================================
+
+
+class TestRequeueRunning:
+    """AC4: a throttled-but-already-running row goes back to `pending` (no process)."""
+
+    def test_requeues_running_to_pending(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _running(id="run", assignee="sandcastle", idempotency_key="k1"),
+            ],
+        )
+        assert requeue_running("run", client=client) is True
+        rows = {r["id"]: r for r in client.table("task_queue")._rows}
+        assert rows["run"]["status"] == "pending"
+        assert rows["run"]["claimed_at"] is None
+
+    def test_returns_false_when_not_running(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _claimed(id="clm", idempotency_key="k1"),
+            ],
+        )
+        assert requeue_running("clm", client=client) is False
+        rows = {r["id"]: r for r in client.table("task_queue")._rows}
+        assert rows["clm"]["status"] == "claimed"
+
+    def test_returns_false_when_missing(self, client: _StubClient) -> None:
+        assert requeue_running("ghost", client=client) is False

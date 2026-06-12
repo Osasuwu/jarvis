@@ -288,6 +288,36 @@ def reclaim_stale_claimed(
     return len(result.data or [])
 
 
+def requeue_running(
+    task_id: str,
+    *,
+    client: Client | None = None,
+) -> bool:
+    """Return one ``running`` row to ``pending`` via a direct UPDATE (#921 AC4).
+
+    For the mid-drain quota flip: under Ordering B the row is transitioned
+    ``running`` *before* the spawn, so when the executor then declines to
+    launch (throttled — no process exists), the row would otherwise sit
+    ``running`` until the reaper fails it hours later. Requeueing it lets the
+    next drain pick it up as soon as quota recovers.
+
+    Like :func:`reclaim_stale_claimed`, this deliberately bypasses the FSM
+    (``pending`` is not a legal target from ``running``). The ``status``
+    filter is the optimistic lock: only a row still ``running`` is touched.
+    Returns ``True`` iff the row was requeued. Callers tolerate ``False``
+    (row changed under us) — the reaper remains the backstop.
+    """
+    cli = client or get_client()
+    result = (
+        cli.table("task_queue")
+        .update({"status": "pending", "claimed_at": None})
+        .eq("id", task_id)
+        .eq("status", "running")
+        .execute()
+    )
+    return bool(result.data)
+
+
 def list_stale_running(
     *,
     assignee: str,
@@ -298,9 +328,11 @@ def list_stale_running(
 
     Age is measured from ``claimed_at`` — there is no ``running_at`` column,
     and claimed→running is immediate under Ordering B, so ``claimed_at`` is
-    a faithful proxy for running-start. The #909 running-reaper transitions
-    each returned row ``running → failed``; the threshold is deliberately
-    generous (≫ normal task runtime) until #921 adds liveness-aware reaping.
+    a faithful proxy for running-start. The reaper is liveness-aware as of
+    #921: the wake_driver filters out rows whose process it still tracks, so
+    only *orphans* (rows with no tracked process — e.g. after a driver
+    restart) are transitioned ``running → failed``. The threshold stays
+    deliberately generous (≫ normal task runtime) as a backstop.
     """
     cli = client or get_client()
     # Only the id is needed — the reaper transitions by id; selecting "*" would
