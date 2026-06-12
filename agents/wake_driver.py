@@ -22,6 +22,15 @@ Behavior:
   model). wake_driver deliberately does **not** import
   :func:`agents.orchestrator.handle_event` — the driver is a decisionless
   program and the router is a separate concern.
+- **Task completion loop (#921).** When a ``task_port`` is wired in, each tick
+  also polls the processes spawned by earlier ticks (the in-memory liveness
+  map owned by :func:`run`) and closes their ``task_queue`` rows: exit 0 →
+  ``done``, non-zero → ``failed``. Model P semantics — ``done`` means *the
+  spawned process exited cleanly*, nothing more; it is not task success and
+  not PR-merged. Outcome truth re-enters via Path-A GitHub events. **Restart
+  limitation:** the map is process-local, so a driver restart forgets every
+  live process — those rows age out as orphans and the reaper backstop fails
+  them (self-healing via Path A; a PID sidecar that survives restarts is #952).
 
 The pure loop (:func:`drain_pending` / :func:`run_watchdog` / :func:`tick` /
 :func:`run`) operates over an :class:`EventQueuePort`, so it is unit-testable
@@ -39,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
@@ -49,13 +59,19 @@ from agents.config import load_config
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
+    ReadUsage,
     ResolveBinary,
     Spawn,
     SupabaseTaskQueue,
     TaskQueuePort,
+    TrackedProc,
+    default_read_usage,
     default_resolve_binary,
     default_spawn,
     drain_tasks,
+    kill_process_tree,
+    kill_runaways,
+    poll_completions,
     reclaim_stale_tasks,
 )
 
@@ -104,10 +120,14 @@ class EventQueuePort(Protocol):
 
 @dataclass(frozen=True)
 class TickResult:
-    """What one :func:`tick` did — event watchdog + drain, then task sweep + drain.
+    """What one :func:`tick` did — completion poll, watchdogs, then both drains.
 
     The ``tasks_*`` fields default to 0 so an event-only tick (no ``task_port``)
-    constructs unchanged.
+    constructs unchanged. ``tasks_done`` / ``tasks_failed_exit`` count rows
+    closed by the #921 completion poll (Model P: *done* = process exited 0,
+    nothing more — not task success, not PR merged). Runaways tree-killed by
+    the same step fold into ``tasks_failed_exit`` (their rows end ``failed``
+    just like a non-zero exit).
     """
 
     reclaimed: int
@@ -116,6 +136,8 @@ class TickResult:
     tasks_reaped: int = 0
     tasks_spawned: int = 0
     tasks_failed: int = 0
+    tasks_done: int = 0
+    tasks_failed_exit: int = 0
 
 
 def default_orchestrator(event: dict[str, Any]) -> None:
@@ -171,12 +193,35 @@ def tick(
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
     task_resolve_binary: ResolveBinary = default_resolve_binary,
+    task_read_usage: ReadUsage = default_read_usage,
     task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
     task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
+    task_procs: dict[str, TrackedProc] | None = None,
+    task_clock: Callable[[], float] = time.monotonic,
+    task_kill: Callable[[Any], None] = kill_process_tree,
 ) -> TickResult:
-    """One unit of work — four ordered steps (#909 AC1)::
+    """One unit of work — five ordered steps (#909 AC1, #921 AC3)::
 
-        reclaim_stale(events) → reclaim_stale_tasks() → drain_pending(events) → drain_tasks()
+        poll_completions() + kill_runaways()                  # Step 0, #921
+        → reclaim_stale(events) → reclaim_stale_tasks()       # watchdogs
+        → drain_pending(events) → drain_tasks()               # drains
+
+    Step 0 closes ``running`` rows whose tracked process exited (rc 0 → done,
+    rc ≠0 → failed) and tree-kills live processes past the reap threshold —
+    *before* anything else, so freed cap slots are visible to this same tick's
+    drain and freshly-closed rows are no longer ``running`` when the orphan
+    reaper scans. It runs only when ``task_procs`` (the cross-tick liveness
+    map, owned by :func:`run`) is supplied; ``--once`` and event-only ticks
+    skip it.
+
+    The task watchdog receives the map's keyset as ``live_task_ids`` (#921
+    AC5): rows with a live tracked process are never time-reaped, however old —
+    a fresh driver (empty/absent map) treats every stale running row as an
+    orphan again, which is the documented restart limitation (the map does not
+    survive restart; Path-A re-drives the lost work; PID sidecar = #952).
+
+    After the drain, each spawned ``(task_id, proc)`` pair is folded into
+    ``task_procs`` stamped with ``task_clock`` so a later tick can close it.
 
     Both watchdogs run **before** both drains, so a row stranded by a previous
     crash (event *or* task) is returned to ``pending`` and re-driven within the
@@ -186,17 +231,33 @@ def tick(
     swept by the idle-timeout watchdog (AC1; task-NOTIFY latency deferred to
     #922).
 
-    The task steps (2 and 4) are each isolated in their own try/except: the
+    The task steps (0, 2 and 4) are each isolated in their own try/except: the
     task_queue rides supabase-py while events ride psycopg, so a task-store
     outage is an independent failure mode. It must not block the event drain
     (Step 3) — events are the primary wake path. A failing task step is logged
     and its rows stay in place (``claimed``/``running`` → swept next tick;
     ``pending`` → re-drained next tick), exactly as a crash would leave them.
     """
+    # Step 0 — completion poll + runaway kill (#921 AC2/AC3/AC6).
+    completions = None
+    runaways_killed = 0
+    if task_port is not None and task_procs is not None:
+        try:
+            completions = poll_completions(task_port, task_procs)
+            runaways_killed = kill_runaways(
+                task_port,
+                task_procs,
+                max_runtime_seconds=task_running_reap_after_seconds,
+                now=task_clock,
+                kill=task_kill,
+            )
+        except Exception:  # noqa: BLE001 — task-store outage must not block event drain
+            logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
+
     # Step 1 — event watchdog.
     reclaimed = run_watchdog(port, stale_after_seconds=stale_after_seconds)
 
-    # Step 2 — task watchdog (stale claimed → pending, stale running → failed).
+    # Step 2 — task watchdog (stale claimed → pending, orphaned running → failed).
     task_reclaim = None
     if task_port is not None:
         try:
@@ -204,6 +265,7 @@ def tick(
                 task_port,
                 claimed_stale_after_seconds=task_claimed_stale_after_seconds,
                 running_reap_after_seconds=task_running_reap_after_seconds,
+                live_task_ids=frozenset(task_procs or ()),
             )
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception(
@@ -213,11 +275,21 @@ def tick(
     # Step 3 — event drain.
     processed = drain_pending(port, orchestrator)
 
-    # Step 4 — task drain (claim → running → spawn, capped, Ordering B).
+    # Step 4 — task drain (claim → running → spawn, capped, Ordering B), then
+    # fold the new handles into the liveness map for later ticks to close.
     task_drain = None
     if task_port is not None:
         try:
-            task_drain = drain_tasks(task_port, task_spawn, resolve_binary=task_resolve_binary)
+            task_drain = drain_tasks(
+                task_port,
+                task_spawn,
+                resolve_binary=task_resolve_binary,
+                read_usage=task_read_usage,
+            )
+            if task_procs is not None:
+                started = task_clock()
+                for task_id, proc in task_drain.procs:
+                    task_procs[task_id] = TrackedProc(proc=proc, started_at=started)
         except Exception:  # noqa: BLE001 — task-store outage must not crash the tick
             logger.exception(
                 "[wake_driver] task drain failed; pending tasks left for the next tick"
@@ -230,6 +302,8 @@ def tick(
         tasks_reaped=task_reclaim.reaped_running if task_reclaim else 0,
         tasks_spawned=task_drain.spawned if task_drain else 0,
         tasks_failed=task_drain.failed if task_drain else 0,
+        tasks_done=completions.done if completions else 0,
+        tasks_failed_exit=(completions.failed_exit if completions else 0) + runaways_killed,
     )
 
 
@@ -242,8 +316,12 @@ def run(
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
     task_resolve_binary: ResolveBinary = default_resolve_binary,
+    task_read_usage: ReadUsage = default_read_usage,
     task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
     task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
+    task_procs: dict[str, TrackedProc] | None = None,
+    task_clock: Callable[[], float] = time.monotonic,
+    task_kill: Callable[[Any], None] = kill_process_tree,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -254,18 +332,22 @@ def run(
     the loop.
 
     When ``task_port`` is supplied, each tick also sweeps and drains the
-    ``task_queue`` (#909). The same idle-timeout that runs the event watchdog
-    runs the task watchdog, so tasks left ``claimed``/``running`` by a crash
-    are swept even on an idle queue. The ``task_spawn`` / ``task_resolve_binary``
-    / ``task_*_after_seconds`` knobs are forwarded to each :func:`tick` so the
-    spawn function, binary resolver, and staleness thresholds stay injectable
-    end-to-end (tests and operators), not just at the ``tick`` boundary.
+    ``task_queue`` (#909) and the loop owns the **liveness map** (#921): one
+    ``{task_id: TrackedProc}`` dict created here (or injected via
+    ``task_procs``) and handed to every tick, so a process spawned in tick N
+    is polled to completion in tick N+M. The map lives only in this process —
+    a restart loses it, stale rows become orphans, and the reaper backstop
+    fails them (documented #921 AC7 limitation; PID sidecar = #952). The
+    ``task_*`` knobs are forwarded to each :func:`tick` so spawn, resolver,
+    quota probe, thresholds, clock, and killer stay injectable end-to-end
+    (tests and operators), not just at the ``tick`` boundary.
 
     A tick that raises is logged and swallowed so a transient failure does
     not tear down the driver — the offending event stays ``claimed`` and the
     watchdog re-claims it next pass (at-least-once, never silently lost).
     """
     keep_going = should_continue or (lambda: True)
+    procs = task_procs if task_procs is not None else ({} if task_port is not None else None)
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
         try:
@@ -276,8 +358,12 @@ def run(
                 task_port=task_port,
                 task_spawn=task_spawn,
                 task_resolve_binary=task_resolve_binary,
+                task_read_usage=task_read_usage,
                 task_claimed_stale_after_seconds=task_claimed_stale_after_seconds,
                 task_running_reap_after_seconds=task_running_reap_after_seconds,
+                task_procs=procs,
+                task_clock=task_clock,
+                task_kill=task_kill,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
@@ -369,6 +455,10 @@ def main() -> int:
     queue = _build_psycopg_queue()
     task_port = SupabaseTaskQueue()  # tasks ride supabase-py; events ride psycopg
     if args.once:
+        # Deliberately no task_procs: a one-shot tick has no map from a prior
+        # tick to poll, so completion-poll/runaway-kill are skipped and the
+        # orphan reaper sees an empty live set — i.e. the #921 restart
+        # semantics (stale running rows fail via the backstop).
         result = tick(
             queue,
             default_orchestrator,
