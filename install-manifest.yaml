@@ -171,6 +171,11 @@ health_check:
   commands:
     - "python scripts/device-info.py"
     - "python scripts/session-context.py --smoke"  # --smoke flag = dry load, no Supabase writes
+  # Per-command limit in seconds. On expiry the whole process tree is killed
+  # (health commands may spawn children — session-context.py re-execs into
+  # the venv python) and the apply is left in place — timeout is
+  # inconclusive, so NO rollback (exit code 4).
+  timeout: 30
 
 # Backup — timestamped directory created before any destructive write.
 backup:
