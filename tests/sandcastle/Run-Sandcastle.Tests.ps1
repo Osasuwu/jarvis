@@ -141,6 +141,95 @@ Describe 'Test-IsInfraDown' {
         Test-IsInfraDown -Reason 'window-expired'    | Should Be $false
         Test-IsInfraDown -Reason 'json-parse-error'  | Should Be $false
     }
+
+    It 'returns true for provider-billing reasons (#955)' {
+        Test-IsInfraDown -Reason 'provider-billing'                            | Should Be $true
+        Test-IsInfraDown -Reason 'provider-billing: exit=1 (deepseek 402)'     | Should Be $true
+    }
+}
+
+Describe 'Test-IsProviderBilling' {
+    # Tier-2 provider ran out of money (#955): DeepSeek answers HTTP 402
+    # {"error":{"message":"Insufficient Balance"}} on /anthropic/v1/messages.
+    # The watchdog must classify this as infra-down (the AFK loop is dead
+    # until a human tops up the account), not as a routine agent-side exit=1
+    # -- that misclassification kept the 2026-06-03..11 outage silent.
+    It 'matches the DeepSeek Insufficient Balance message case-insensitively' {
+        Test-IsProviderBilling -Text 'API Error: 402 {"error":{"message":"Insufficient Balance"}}' | Should Be $true
+        Test-IsProviderBilling -Text 'insufficient balance' | Should Be $true
+    }
+
+    It 'matches generic payment-required wording' {
+        Test-IsProviderBilling -Text 'HTTP 402 Payment Required' | Should Be $true
+    }
+
+    It 'matches a 402 status code when HTTP context is nearby' {
+        Test-IsProviderBilling -Text 'request failed with status 402'  | Should Be $true
+        Test-IsProviderBilling -Text '{"error":{"code":402}}'          | Should Be $true
+    }
+
+    It 'does not fire on a bare 402 in branch names or token counts' {
+        Test-IsProviderBilling -Text 'checked out feat/402-some-issue' | Should Be $false
+        Test-IsProviderBilling -Text 'inputTokens=402'                 | Should Be $false
+    }
+
+    It 'returns false for empty and generic failures' {
+        Test-IsProviderBilling -Text ''        | Should Be $false
+        Test-IsProviderBilling -Text 'exit=1'  | Should Be $false
+    }
+}
+
+Describe 'Test-DeepSeekBalance' {
+    # Pre-flight probe against GET /user/balance (#955). Only an affirmative
+    # {"is_available": false} blocks the run; every error path fails OPEN so
+    # a flaky balance endpoint can never stop a healthy night -- the
+    # provider-billing signature class is the in-run backstop.
+    It 'returns false when the API reports is_available=false (balance exhausted)' {
+        Mock Invoke-RestMethod { [pscustomobject]@{ is_available = $false; balance_infos = @() } }
+        Test-DeepSeekBalance -ApiKey 'k' | Should Be $false
+    }
+
+    It 'returns true when the API reports is_available=true' {
+        Mock Invoke-RestMethod { [pscustomobject]@{ is_available = $true } }
+        Test-DeepSeekBalance -ApiKey 'k' | Should Be $true
+    }
+
+    It 'fails OPEN on network/HTTP errors' {
+        Mock Invoke-RestMethod { throw 'connect timeout' }
+        Test-DeepSeekBalance -ApiKey 'k' | Should Be $true
+    }
+
+    It 'fails OPEN when the response has no is_available field' {
+        Mock Invoke-RestMethod { [pscustomobject]@{ unexpected = 1 } }
+        Test-DeepSeekBalance -ApiKey 'k' | Should Be $true
+    }
+
+    It 'skips the HTTP call entirely when the key is empty' {
+        Mock Invoke-RestMethod { throw 'must not be called' }
+        Test-DeepSeekBalance -ApiKey '' | Should Be $true
+        Assert-MockCalled Invoke-RestMethod -Times 0 -Exactly -Scope It
+    }
+
+    It 'sends the key as a bearer header to the balance endpoint' {
+        $script:probeArgs = $null
+        Mock Invoke-RestMethod {
+            $script:probeArgs = @{ Uri = $Uri; Headers = $Headers }
+            [pscustomobject]@{ is_available = $true }
+        }
+        Test-DeepSeekBalance -ApiKey 'k123' | Out-Null
+        $script:probeArgs.Uri                   | Should Be 'https://api.deepseek.com/user/balance'
+        $script:probeArgs.Headers.Authorization | Should Be 'Bearer k123'
+    }
+}
+
+Describe 'Invoke-NpmSandcastle npm flags (#955)' {
+    It 'does not pass --silent to npm run (it suppressed provider errors during the 402 outage)' {
+        # Regression pin: with --silent the agent's "Insufficient Balance"
+        # output never reached run.log, so Get-LogTail returned '' and
+        # diag_tail stayed blank for the whole 5-day outage.
+        $src = Get-Content -LiteralPath $script:WatchdogPath -Raw
+        $src | Should Not Match 'npm run --silent'
+    }
 }
 
 Describe 'Send-TelegramAlert' {
@@ -567,6 +656,9 @@ Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
         Mock Send-TelegramAlert  { 'mocked' }
         Mock Add-IssueLabel      { $true }
         Mock Get-IssueLabels     { @() }
+        # #955: keep the pre-flight balance probe off the network in every
+        # Tier2AsPrimary test; individual tests re-mock to simulate exhaustion.
+        Mock Test-DeepSeekBalance { $true }
     }
 
     It 'AC: Tier 2 as primary -> first call hits deepseek directly, no Tier 0/1 invocation' {
@@ -710,6 +802,75 @@ Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
         # Claude the configured provider when Tier 2 primary is desired with
         # Anthropic instead of DeepSeek.
         $script:calls[0].Token | Should Be 'ds-key'
+    }
+
+    It 'AC #955: Tier 2 billing failure (DeepSeek 402) -> provider-billing outcome + Telegram alert' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 1; result = $null; reason = 'exit=1' }
+        }
+        Mock Get-LogTail {
+            "agent boot`nAPI Error: 402 {`"error`":{`"message`":`"Insufficient Balance`"}}"
+        }
+        Mock Test-IsOOM { $false }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $Summary -like '*provider-billing*' }
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*provider-billing*' }
+    }
+
+    It 'AC #955: generic Tier 2 failure without billing signature stays silent (no Telegram)' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 1; result = $null; reason = 'exit=1' }
+        }
+        Mock Get-LogTail { 'AgentError: agent exited non-zero' }
+        Mock Test-IsOOM { $false }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $Summary -notlike '*provider-billing*' }
+        Assert-MockCalled Send-TelegramAlert -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC #955: pre-flight balance probe exhausted -> fail fast before any container run + alert' {
+        Mock Test-DeepSeekBalance { $false }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/955-x'; commits = @(); iterations = @() } }
+        }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Invoke-Sandcastle -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $Summary -like 'provider-billing*pre-flight*' }
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*provider-billing*' }
+    }
+
+    It 'AC #955: balance probe is deepseek-only -- claude primary never consults it' {
+        Mock Test-DeepSeekBalance { $false }   # would block if consulted
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/955-claude'; commits = @(); iterations = @() } }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'claude' -Tier2AsPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Test-DeepSeekBalance -Times 0 -Exactly -Scope It
+        Assert-MockCalled Invoke-Sandcastle    -Times 1 -Exactly -Scope It
     }
 }
 
