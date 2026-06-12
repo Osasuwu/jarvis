@@ -70,12 +70,40 @@ jobs:
           claude_args: |
             --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
 
-      # Auto-merge gate: the plugin emits a structured comment beginning with
+      # Auto-merge gate: the plugin's canonical comment begins with
       # `### Code review` and either "No issues found." (clean) or
       # "Found N issues:" (findings ≥80 confidence). Without this step the
       # `review` check is SUCCESS as long as the bot ran — auto-merge can't
       # distinguish "ran cleanly" from "found CRITICAL bugs". Failing the
       # job on findings turns the `review` check into a real verdict.
+      #
+      # Incident (PR #957): the bot posted 10 findings under a deviant title
+      # "## Claude Code Review — PR #957" with "### MAJOR findings" /
+      # "### MINOR findings" sections. The old selector matched only the
+      # literal `### Code review` prefix, so the comment counted as
+      # "no comment → pass" and the PR auto-merged unreviewed. The deviation
+      # is routine, not a one-off — observed shapes: "### MAJOR findings"
+      # (#957), bare "### MAJOR" (#956), "### 🔴 BLOCKING" (#954). Hardened
+      # contract (mirrored by tests/ci/test_code_review_verdict_guard.py):
+      #   - SELECT the latest comment containing any heading line that looks
+      #     like a code-review title (1-6 #'s, optional "Claude", any case,
+      #     anywhere in the body — deviant bots may prepend preamble).
+      #   - Findings signals fail BEFORE the clean signal is consulted:
+      #     severity-section headings (CRITICAL/MAJOR/MINOR/BLOCKING after
+      #     1-6 #'s with optional decoration, optional findings/issues
+      #     suffix) and "Found N issues:".
+      #   - A line starting "No issues found." passes (the plugin spec's
+      #     clean example carries trailing prose on the same line — the old
+      #     end-anchored regex would have failed-closed on a spec-compliant
+      #     clean comment).
+      #   - Selected comment matching neither → exit 1, fail-closed.
+      #   - No selected comment at all → pass (plugin legitimately skips
+      #     drafts / already-reviewed / not-eligible PRs). Residual risk: a
+      #     review title with no "Code Review" wording at all still slips
+      #     through here; accepted — selection can't be author-based (other
+      #     bots comment too) and findings-shaped selection would wrongly
+      #     gate on `### Simplification opportunities` comments, which are
+      #     informational-only by design (see event-dispatch.yml).
       - name: Verify review verdict
         if: github.event_name == 'pull_request'
         env:
@@ -83,8 +111,18 @@ jobs:
           PR: ${{ steps.pr.outputs.number }}
         run: |
           set -euo pipefail
+          # Selection happens in standalone jq, not gh's --jq:
+          #   - gh rejects `--slurp` combined with `--jq` (despite the help
+          #     text), and without slurping, --jq runs per page so `.[-1]`
+          #     is per-page latest, not global-latest. `gh api --paginate`
+          #     emits one JSON array per page back-to-back; `jq -s` slurps
+          #     them and `add` flattens to one comment list.
+          #   - gh's --jq is gojq (Go regexp), where ^ matches string start
+          #     only. The (^|\n) anchor is line-anchored in every engine —
+          #     keep it even under Oniguruma jq, so the pattern survives
+          #     being moved between the two.
           body=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
-            --jq 'map(select(.body | startswith("### Code review"))) | .[-1].body // ""')
+            | jq -rs 'add | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i"))) | (.[-1].body // "")')
 
           if [ -z "$body" ]; then
             # Plugin skipped (draft / closed / already reviewed / not-eligible).
@@ -93,9 +131,15 @@ jobs:
             exit 0
           fi
 
-          if grep -qE '^No issues found\.?\s*$' <<<"$body"; then
-            echo "::notice::Code review clean."
-            exit 0
+          # Findings checks run before the clean check: a findings comment may
+          # contain an incidental "No issues found." line — pass must never
+          # shadow fail.
+          # [^[:alnum:]]* tolerates decoration between #'s and the severity
+          # word (emoji, whitespace — "### 🔴 BLOCKING" on #954); the
+          # findings/issues suffix is optional ("### MAJOR" bare on #956).
+          if grep -qiE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|MINOR|BLOCKING)\b' <<<"$body"; then
+            echo "::error::Code review posted severity findings sections (CRITICAL/MAJOR/MINOR/BLOCKING); blocking auto-merge until addressed."
+            exit 1
           fi
 
           if grep -qE 'Found [0-9]+ issues?:' <<<"$body"; then
@@ -104,7 +148,12 @@ jobs:
             exit 1
           fi
 
-          # Unexpected format — fail conservatively so a malformed comment
-          # can't slip past auto-merge.
-          echo "::warning::Could not parse /code-review verdict from last comment. Failing for safety."
+          if grep -qE '^No issues found\.' <<<"$body"; then
+            echo "::notice::Code review clean."
+            exit 0
+          fi
+
+          # Unrecognized format — fail closed so a malformed or deviant
+          # comment can't slip past auto-merge (cf. PR #957 false-pass).
+          echo "::error::Could not parse /code-review verdict from latest review comment. Failing closed."
           exit 1
