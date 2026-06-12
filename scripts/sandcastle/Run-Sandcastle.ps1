@@ -234,7 +234,13 @@ function Invoke-NpmSandcastle {
     # (any warning). Delegate the 2>&1 merge to cmd.exe so PS only sees
     # a single stdout stream -- no wrapping, no terminating exception.
     # See issue #608.
-    $combined = & cmd.exe /c 'npm run --silent sandcastle 2>&1'
+    #
+    # No --silent: it suppressed npm's error framing, so when the in-container
+    # agent died on a provider error (DeepSeek HTTP 402 "Insufficient Balance")
+    # nothing reached run.log and diag_tail stayed blank for the whole
+    # 2026-06-03..11 outage (#955). Noisier npm banners in run.log are the
+    # acceptable cost of never losing the crash text again.
+    $combined = & cmd.exe /c 'npm run sandcastle 2>&1'
     $exitCode = $LASTEXITCODE
     if ($LogFile) {
         $combined | Out-File -FilePath $LogFile -Encoding utf8 -Append
@@ -458,7 +464,8 @@ $script:TelegramInfraReasons = @(
     'docker-down',
     'ollama-down',
     'npm-not-found',
-    'no-result-file'
+    'no-result-file',
+    'provider-billing'
 )
 
 function Test-IsInfraDown {
@@ -471,11 +478,77 @@ function Test-IsInfraDown {
     return $false
 }
 
+# Provider-billing failure signatures (#955). A Tier-2 provider that runs out
+# of balance returns an HTTP 402 / "Insufficient Balance" body, which the
+# in-container agent surfaces in its crash text. The watchdog otherwise
+# classifies this as a generic agent-side `exit=1` and stays silent -- the
+# exact failure mode that ran unnoticed 2026-06-03..11. Matching these
+# signatures promotes the reason to `provider-billing`, which is an
+# infra-down class (above) and therefore fires the Telegram alert.
+$script:ProviderBillingSignatures = @(
+    'insufficient balance',
+    'payment required',
+    'insufficient funds'
+)
+
+function Test-IsProviderBilling {
+    [CmdletBinding()]
+    param([string]$Text)
+    if (-not $Text) { return $false }
+    foreach ($sig in $script:ProviderBillingSignatures) {
+        if ($Text -match [regex]::Escape($sig)) { return $true }
+    }
+    # HTTP 402 (Payment Required) in a status/error context. Two narrow branches
+    # instead of a wide `\D{0,20}` window, which matched prose like
+    # `error occurred at line 402` and `issue #402` -- spurious billing alerts
+    # an agent's run.log can realistically produce (#956 review):
+    #   (a) a context word (http/status/error/code) followed by ONLY structured
+    #       separators (`:`, `=`, whitespace, JSON punctuation) before 402 --
+    #       keeps `status: 402`, `error=402`, `{"code":402}`, `HTTP 402`, while
+    #       prose (which puts letters between the word and 402) no longer matches;
+    #   (b) the HTTP status line `HTTP/1.1 402 ...`, which (a) misses because the
+    #       version digits sit between `http` and `402`.
+    if ($Text -match '(?i)\b(?:http|status|error|code)[\s:="''{},/]{0,6}\b402\b') { return $true }
+    if ($Text -match '(?i)\bhttp/\d[\d.]*\s+402\b') { return $true }
+    return $false
+}
+
 function Format-RedactedError {
     [CmdletBinding()]
     param([string]$Message, [string]$Secret)
     if (-not $Secret) { return $Message }
     return ($Message -replace [regex]::Escape($Secret), '<TOKEN-REDACTED>')
+}
+
+# Pre-flight DeepSeek balance probe (#955). GET /user/balance returns
+# {"is_available": false, ...} once the account is exhausted -- catching it
+# before we spin a container means the run records `provider-billing` and
+# fires the alert immediately instead of burning a container boot to discover
+# the same 402. Fail-OPEN: no key, network error, HTTP error, or a missing
+# is_available field all return $true (proceed) -- the in-run signature class
+# (Test-IsProviderBilling) is the backstop, so a flaky probe must never block
+# an otherwise-healthy run. Only an affirmative is_available=false blocks.
+function Test-DeepSeekBalance {
+    [CmdletBinding()]
+    param(
+        [string]$ApiKey,
+        [string]$BalanceUrl = 'https://api.deepseek.com/user/balance'
+    )
+    if (-not $ApiKey) { return $true }
+    try {
+        $resp = Invoke-RestMethod -Uri $BalanceUrl -Method Get `
+            -Headers @{ Authorization = "Bearer $ApiKey" } -TimeoutSec 10 -ErrorAction Stop
+    } catch {
+        # Write-Host (stream 1), not Write-Warning (stream 3): a Scheduled Task
+        # with default config discards the warning stream, so a persistently
+        # failing fail-open probe would silently bypass the whole pre-flight
+        # guard with no trace in the task log (#956 review). Matches the rest of
+        # the [watchdog] operational logging, which is all stdout.
+        Write-Host "[watchdog] WARNING: deepseek balance probe failed (fail-open): $(Format-RedactedError -Message "$_" -Secret $ApiKey)"
+        return $true
+    }
+    if ($null -eq $resp -or $null -eq $resp.is_available) { return $true }
+    return [bool]$resp.is_available
 }
 
 # Sandcastle tagged-error classes (node_modules/@ai-hero/sandcastle/dist/errors.js).
@@ -964,6 +1037,19 @@ function Invoke-Watchdog {
             $tier2Primary = $null
         } else {
             Write-Host "[watchdog] Tier 2 ($($tier2Primary.Provider): $($tier2Primary.Model)) is primary — Tier 0/1 Ollama disabled for this run."
+            # Pre-flight billing probe (#955) -- deepseek only. Catch an exhausted
+            # balance before booting a container, so the outcome is the actionable
+            # `provider-billing` reason (alert fires) rather than a wasted container
+            # boot ending in an opaque agent-side exit=1. Fail-open inside the probe.
+            if ($tier2Primary.Provider -eq 'deepseek' -and
+                -not (Test-DeepSeekBalance -ApiKey $tier2Primary.AuthToken)) {
+                $reason = 'provider-billing: deepseek balance exhausted (pre-flight probe)'
+                # Tag the outcome so pre-flight billing rows are distinguishable
+                # from generic failures in Supabase, matching the in-run path
+                # which sets $totalUsage.provider_billing (#956 review).
+                Record 'failure' $reason @{ provider_billing = $true } $reason
+                throw $reason
+            }
         }
     }
 
@@ -1037,6 +1123,17 @@ function Invoke-Watchdog {
             $tier2 = Resolve-Tier2Config -Provider $Tier2Provider -Issue $targetIssue `
                 -RepoSlug $repoSlug -EnvVars $envVars
             if ($tier2 -and $tier2.AuthToken) {
+                # Pre-flight billing probe on the OOM-escalation lane too (#956
+                # review). The in-run classifier below still fires the alert on a
+                # drained balance, but without this probe the escalation boots a
+                # container against a dead provider first -- a wasted boot. Mirror
+                # the primary-path check; deepseek only; fail-open inside.
+                if ($tier2.Provider -eq 'deepseek' -and
+                    -not (Test-DeepSeekBalance -ApiKey $tier2.AuthToken)) {
+                    $reason = 'provider-billing: deepseek balance exhausted (pre-flight probe, OOM escalation)'
+                    Record 'failure' $reason @{ provider_billing = $true } $reason
+                    throw $reason
+                }
                 Write-Host "[watchdog] Tier 1 failed -- escalating to Tier 2 ($($tier2.Provider): $($tier2.Model))"
                 $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $tier2.Model `
                     -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
@@ -1055,6 +1152,15 @@ function Invoke-Watchdog {
             # reachable from the orchestrator host). Redact before persisting.
             $logTail  = Get-LogTail -LogFile $logFile
             $errClass = Get-SandcastleErrorClass -Text "$reason`n$logTail"
+            # Billing classification (#955): scan the RAW reason+log tail (before
+            # redaction) for a provider out-of-balance signature. Promoting the
+            # reason to `provider-billing` makes Test-IsInfraDown match, which is
+            # what fires the Telegram alert -- otherwise a 402 looks like a
+            # generic agent-side exit=1 and stays silent.
+            if (Test-IsProviderBilling -Text "$reason`n$logTail") {
+                $reason = "provider-billing: $reason"
+                $totalUsage.provider_billing = $true
+            }
             $logTail  = Protect-LogTail -Text $logTail -Secrets @($supabaseKey, $supabaseUrl, $tgToken)
             # Full chain failure: label the issue if we know which one was attempted.
             $labelApplied = $false
