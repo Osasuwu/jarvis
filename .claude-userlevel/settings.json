@@ -74,6 +74,13 @@
         ]
       }
     ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "matcher": "startup",
@@ -206,5 +213,17 @@
         ]
       }
     ]
+  },
+  "fallbackModel": "claude-sonnet-4-6",
+  "statusLine": {
+    "type": "inline",
+    "format": "{model} | ctx {context_usage}% | {git_branch}"
+  },
+  "skillOverrides": {
+    "setup-tasks": "name-only",
+    "last-work-report": "name-only",
+    "caveman": "name-only",
+    "status-record": "name-only",
+    "autonomous-loop": "name-only"
   }
 }
