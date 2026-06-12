@@ -539,7 +539,12 @@ function Test-DeepSeekBalance {
         $resp = Invoke-RestMethod -Uri $BalanceUrl -Method Get `
             -Headers @{ Authorization = "Bearer $ApiKey" } -TimeoutSec 10 -ErrorAction Stop
     } catch {
-        Write-Warning "deepseek balance probe failed (fail-open): $(Format-RedactedError -Message "$_" -Secret $ApiKey)"
+        # Write-Host (stream 1), not Write-Warning (stream 3): a Scheduled Task
+        # with default config discards the warning stream, so a persistently
+        # failing fail-open probe would silently bypass the whole pre-flight
+        # guard with no trace in the task log (#956 review). Matches the rest of
+        # the [watchdog] operational logging, which is all stdout.
+        Write-Host "[watchdog] WARNING: deepseek balance probe failed (fail-open): $(Format-RedactedError -Message "$_" -Secret $ApiKey)"
         return $true
     }
     if ($null -eq $resp -or $null -eq $resp.is_available) { return $true }

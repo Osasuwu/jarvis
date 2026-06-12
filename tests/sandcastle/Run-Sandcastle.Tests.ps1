@@ -178,6 +178,16 @@ Describe 'Test-IsProviderBilling' {
         Test-IsProviderBilling -Text 'status: 402'                     | Should Be $true
     }
 
+    It 'matches a bare HTTP 402 via branch (a), independent of the string signatures (#956 review)' {
+        # 'HTTP 402' with no reason phrase contains none of the billing string
+        # signatures, so this independently exercises regex branch (a) -- the
+        # only handler for a status code without "Payment Required" text. The
+        # 'HTTP 402 Payment Required' assertion above is short-circuited by the
+        # 'payment required' signature before branch (a) is ever reached, so it
+        # would still pass even if branch (a) regressed; this one would not.
+        Test-IsProviderBilling -Text 'HTTP 402' | Should Be $true
+    }
+
     It 'matches the HTTP status line even with a non-standard 402 reason phrase' {
         # The string signatures catch "Payment Required"; this branch covers a
         # custom 402 body like `HTTP/1.1 402 Account Exhausted` (#956 review
@@ -228,6 +238,14 @@ Describe 'Test-DeepSeekBalance' {
 
     It 'fails OPEN when the response has no is_available field' {
         Mock Invoke-RestMethod { [pscustomobject]@{ unexpected = 1 } }
+        Test-DeepSeekBalance -ApiKey 'k' | Should Be $true
+    }
+
+    It 'fails OPEN when Invoke-RestMethod returns $null (empty 200 body)' {
+        # Left side of the `$null -eq $resp -or $null -eq $resp.is_available`
+        # guard: a 200 OK with an empty body. The "no is_available field" test
+        # above only exercises the right side (#956 review).
+        Mock Invoke-RestMethod { $null }
         Test-DeepSeekBalance -ApiKey 'k' | Should Be $true
     }
 
