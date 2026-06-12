@@ -14,6 +14,7 @@ Each test names the acceptance criterion it covers (see issue #909, grilled
 from __future__ import annotations
 
 import os
+import subprocess
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -105,6 +106,7 @@ class _FakeProc:
         self._rc = rc
         self.pid = pid
         self.killed = False
+        self.waited = False
 
     def poll(self) -> int | None:
         return self._rc
@@ -112,6 +114,10 @@ class _FakeProc:
     def kill(self) -> None:
         self.killed = True
         self._rc = -9
+
+    def wait(self, timeout: float | None = None) -> int | None:
+        self.waited = True
+        return self._rc
 
 
 class _ThrottledResult:
@@ -405,6 +411,35 @@ class TestSpawnFailureIsTerminal:
         assert spawns == ["do ok"]
         assert res.spawned == 1
         assert res.failed == 1
+
+    def test_failed_mark_raise_does_not_abort_drain(self) -> None:
+        # review #957-1 (MAJOR): the AC7b failure-marking itself can raise
+        # (store outage). That must not escape drain_tasks — an escape discards
+        # DrainResult.procs for already-spawned tasks, orphaning live children
+        # onto the 6h reaper instead of next-tick completion polling.
+        class Q(FakeTaskQueue):
+            def transition(
+                self, task_id: str, to_status: str, *, reason: str | None = None
+            ) -> dict[str, Any]:
+                if to_status == "failed":
+                    raise RuntimeError("store outage")
+                return super().transition(task_id, to_status, reason=reason)
+
+        handle = object()
+        q = Q(pending=[_row("boom"), _row("ok")], running_count=0)
+
+        def spawn(goal: str) -> Any:
+            if goal == "do boom":
+                raise RuntimeError("spawn blew up")
+            return _HealthySpawnResult(handle)
+
+        res = drain_tasks(
+            q, spawn, cap=5, resolve_binary=_always_resolve, read_usage=_healthy_usage
+        )
+
+        assert res.failed == 1  # still counted despite the failed-mark raising
+        assert res.spawned == 1  # the drain continued past the bad row
+        assert res.procs == (("ok", handle),)  # spawned handle survives for tracking
 
 
 # ---------------------------------------------------------------------------
@@ -736,6 +771,25 @@ class TestOrphanOnlyReaper:
         res = reclaim_stale_tasks(q)
         assert res.reaped_running == 2
 
+    def test_orphan_transition_raise_isolated(self) -> None:
+        # review #957-5 (MINOR): one orphan's failed-mark raising must not
+        # abort the sweep — the remaining orphans are still reaped this pass
+        # (per-row isolation, mirroring poll_completions).
+        class Q(FakeTaskQueue):
+            def transition(
+                self, task_id: str, to_status: str, *, reason: str | None = None
+            ) -> dict[str, Any]:
+                if task_id == "bad":
+                    raise RuntimeError("transient store error")
+                return super().transition(task_id, to_status, reason=reason)
+
+        q = Q()
+        q.stale_running = [{"id": "bad"}, {"id": "ok"}]
+        res = reclaim_stale_tasks(q)
+        assert res.reaped_running == 1  # 'bad' raised → not counted
+        failed = [t[0] for t in q.transitions if t[1] == "failed"]
+        assert failed == ["ok"]  # the sweep continued past the bad row
+
 
 # ---------------------------------------------------------------------------
 # #921 AC1 — DrainResult exposes spawned (task_id, proc) pairs
@@ -958,6 +1012,45 @@ class TestKillProcessTree:
     def test_posix_uses_proc_kill(self) -> None:
         proc = _FakeProc(rc=None, pid=1234)
         kill_process_tree(proc, platform="linux")
+        assert proc.killed is True
+
+    def test_reaps_handle_with_wait(self, monkeypatch: Any) -> None:
+        # review #957-3: the post-kill wait must actually run (it reaps the
+        # handle so poll() reflects the death immediately), win32 and POSIX
+        # alike — a fake without wait() was silently masking this call.
+        import agents.task_dispatch as td
+
+        monkeypatch.setattr(td.subprocess, "run", lambda argv, **kw: None)
+        win = _FakeProc(rc=None, pid=1234)
+        kill_process_tree(win, platform="win32")
+        posix = _FakeProc(rc=None, pid=1234)
+        kill_process_tree(posix, platform="linux")
+        assert win.waited is True
+        assert posix.waited is True
+
+    def test_hung_wait_is_swallowed(self) -> None:
+        # A child that won't reap within the timeout must not hang the driver
+        # tick: TimeoutExpired is swallowed, the next tick's poll re-checks.
+        class _HangingProc(_FakeProc):
+            def wait(self, timeout: float | None = None) -> int | None:
+                raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout or 10)
+
+        proc = _HangingProc(rc=None, pid=1234)
+        kill_process_tree(proc, platform="linux")
+        assert proc.killed is True  # the kill happened despite the hung wait
+
+    def test_missing_taskkill_falls_back_to_proc_kill(self, monkeypatch: Any) -> None:
+        # review #957-7 (MINOR): taskkill absent from PATH (stripped env,
+        # minimal container) must not leave the runaway alive — fall back to
+        # plain Popen.kill(), which at least takes down the direct child.
+        import agents.task_dispatch as td
+
+        def raising_run(argv: list[str], **kw: Any) -> None:
+            raise FileNotFoundError("taskkill not found")
+
+        monkeypatch.setattr(td.subprocess, "run", raising_run)
+        proc = _FakeProc(rc=None, pid=1234)
+        kill_process_tree(proc, platform="win32")
         assert proc.killed is True
 
 

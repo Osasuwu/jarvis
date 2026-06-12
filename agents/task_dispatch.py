@@ -131,9 +131,11 @@ class DrainResult:
     # reaper is the backstop). Remaining rows stay ``pending`` and self-heal.
     throttled: bool = False
     # (task_id, proc) per *successful* spawn that yielded a pollable process
-    # handle (#921 AC1). Throttled spawns (proc=None), raising spawns, and
-    # proc-less results contribute no pair. The wake_driver folds these into
-    # its {task_id: proc} liveness map to close running→done on process exit.
+    # handle (#921 AC1). A raising spawn never reaches the append; a throttled
+    # spawn returns early (the whole drain stops) before it; a result without
+    # a ``proc`` attribute counts as spawned but is skipped here. The
+    # wake_driver folds these pairs into its {task_id: TrackedProc} liveness
+    # map to close running→done on process exit.
     procs: tuple[tuple[str, Any], ...] = ()
 
 
@@ -171,9 +173,10 @@ def poll_completions(port: TaskQueuePort, procs: dict[str, TrackedProc]) -> Comp
 
     For each tracked pair: ``poll() is None`` → still running, kept;
     ``poll() == 0`` → ``transition(done)``; ``poll() != 0`` →
-    ``transition(failed, reason="exit <rc>")``. Closed entries are dropped from
-    ``procs`` (mutated in place) so the freed slots are visible to the same
-    tick's drain.
+    ``transition(failed, reason="exit <rc>")``. The DB transition is what frees
+    the cap slot (``count_running`` drops) for the same tick's drain; dropping
+    the closed entry from ``procs`` (mutated in place) just stops it from being
+    re-polled and shields the row from the watchdogs.
 
     **``done`` means the process exited 0 — nothing more.** Not task success,
     not PR merged; the child may have produced garbage and exited cleanly.
@@ -212,19 +215,33 @@ def kill_process_tree(proc: Any, *, platform: str = sys.platform) -> None:
 
     On Windows ``Popen.kill()`` is an alias for ``terminate()`` — it kills only
     the direct process, and a ``claude -p`` child's own subprocesses (git, gh,
-    tools) survive as orphans. ``taskkill /PID <pid> /T /F`` walks the tree.
-    POSIX falls back to ``proc.kill()`` (the spawned process is the process
-    group leader for our use; good enough until a POSIX deployment exists).
+    tools) survive as orphans. ``taskkill /PID <pid> /T /F`` walks the tree; if
+    taskkill itself can't launch (stripped PATH), degrade to ``proc.kill()`` —
+    direct child only, better than leaving the runaway alive.
+
+    POSIX gets plain ``proc.kill()`` — direct child only. ``os.killpg`` would
+    be WRONG here: :func:`executor.spawn` does not pass
+    ``start_new_session=True``, so the child shares the driver's process group
+    and ``killpg`` would kill the driver itself. A POSIX tree-kill needs the
+    spawn-side change first; production runs on Windows, so this is deferred.
 
     Best-effort ``wait`` afterwards reaps the handle so ``poll()`` reflects the
     death immediately; a hung wait is swallowed (the next tick's poll re-checks).
     """
     if platform == "win32":
-        subprocess.run(
-            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-            capture_output=True,
-            check=False,
-        )
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+            )
+        except OSError:  # taskkill missing/unlaunchable — degrade to direct kill
+            logger.exception(
+                "[task_dispatch] taskkill unavailable for pid %s; "
+                "falling back to Popen.kill() (children may survive)",
+                proc.pid,
+            )
+            proc.kill()
     else:
         proc.kill()
     try:
@@ -412,7 +429,16 @@ def drain_tasks(
             result = spawn(row["goal"])  # AC8 billing-trap rides executor._sanitize_env
         except Exception as exc:  # noqa: BLE001 — AC7b: isolate one bad spawn
             # AC7b — terminal failure; no internal retry, external loop re-drives.
-            port.transition(task_id, "failed", reason=f"spawn raised: {exc}")
+            try:
+                port.transition(task_id, "failed", reason=f"spawn raised: {exc}")
+            except Exception:  # noqa: BLE001 — the failed-mark itself can raise; an
+                # escape here would discard the already-spawned handles in ``procs``
+                # (orphans for the 6h reaper). Row stays running; reaper backstops.
+                logger.exception(
+                    "[task_dispatch] could not mark task %s failed after spawn raise; "
+                    "row left running for the reaper",
+                    task_id,
+                )
             failed += 1
             continue
 
@@ -491,15 +517,21 @@ def reclaim_stale_tasks(
         task_id = str(row["id"])
         if task_id in live_task_ids:
             continue
-        port.transition(
-            task_id,
-            "failed",
-            reason=(
-                f"reaped: orphaned running row (no tracked process) "
-                f"after {running_reap_after_seconds:.0f}s"
-            ),
-        )
-        reaped += 1
+        try:
+            port.transition(
+                task_id,
+                "failed",
+                reason=(
+                    f"reaped: orphaned running row (no tracked process) "
+                    f"after {running_reap_after_seconds:.0f}s"
+                ),
+            )
+            reaped += 1
+        except Exception:  # noqa: BLE001 — isolate one bad row; the rest still reap
+            logger.exception(
+                "[task_dispatch] orphan reap of task %s failed; retried next sweep",
+                task_id,
+            )
 
     return ReclaimResult(reclaimed_claimed=reclaimed, reaped_running=reaped)
 
