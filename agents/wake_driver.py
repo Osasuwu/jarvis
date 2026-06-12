@@ -238,12 +238,17 @@ def tick(
     and its rows stay in place (``claimed``/``running`` → swept next tick;
     ``pending`` → re-drained next tick), exactly as a crash would leave them.
     """
-    # Step 0 — completion poll + runaway kill (#921 AC2/AC3/AC6).
+    # Step 0 — completion poll + runaway kill (#921 AC2/AC3/AC6). Two
+    # independent halves: a completion-poll blowup must not stop the runaway
+    # killer from bounding live processes, so each gets its own isolation.
     completions = None
     runaways_killed = 0
     if task_port is not None and task_procs is not None:
         try:
             completions = poll_completions(task_port, task_procs)
+        except Exception:  # noqa: BLE001 — task-store outage must not block event drain
+            logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
+        try:
             runaways_killed = kill_runaways(
                 task_port,
                 task_procs,
@@ -251,8 +256,8 @@ def tick(
                 now=task_clock,
                 kill=task_kill,
             )
-        except Exception:  # noqa: BLE001 — task-store outage must not block event drain
-            logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
+        except Exception:  # noqa: BLE001 — same isolation for the runaway killer
+            logger.exception("[wake_driver] runaway kill failed; live rows retry next tick")
 
     # Step 1 — event watchdog.
     reclaimed = run_watchdog(port, stale_after_seconds=stale_after_seconds)
@@ -280,6 +285,10 @@ def tick(
     task_drain = None
     if task_port is not None:
         try:
+            # Stamp BEFORE the drain: a broken clock then fails the step while
+            # no process exists yet — stamped after, the raise would discard
+            # the just-spawned handles (orphans for the 6h reaper).
+            started = task_clock()
             task_drain = drain_tasks(
                 task_port,
                 task_spawn,
@@ -287,7 +296,6 @@ def tick(
                 read_usage=task_read_usage,
             )
             if task_procs is not None:
-                started = task_clock()
                 for task_id, proc in task_drain.procs:
                     task_procs[task_id] = TrackedProc(proc=proc, started_at=started)
         except Exception:  # noqa: BLE001 — task-store outage must not crash the tick

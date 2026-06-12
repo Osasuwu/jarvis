@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from agents import wake_driver
-from agents.task_dispatch import TrackedProc
+from agents.task_dispatch import TaskQueuePort, TrackedProc
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -326,6 +326,17 @@ class _RecordingTaskQueue:
     def list_stale_running(self, *, assignee: str, older_than_seconds: float):
         self._log.append("task_list_running")
         return list(self._stale_running)
+
+    def requeue_running(self, task_id: str) -> bool:
+        self._log.append("task_requeue")
+        return True
+
+
+def test_recording_task_queue_conforms_to_the_port_protocol():
+    # review #957-2 (MAJOR): the fake must satisfy the full TaskQueuePort
+    # surface (incl. requeue_running, #921 AC4) — a partial fake lets tick
+    # paths that touch the missing method blow up only in production.
+    assert isinstance(_RecordingTaskQueue([]), TaskQueuePort)
 
 
 class _LoggingEventQueue(FakeEventQueue):
@@ -744,6 +755,104 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
     assert set(procs) == {"t1"}
     assert procs["t1"].proc is proc
     assert procs["t1"].started_at == 42.0
+
+
+def test_tick_stamps_the_clock_before_spawning():
+    # review #957-4 (MAJOR): the started_at stamp must be taken BEFORE the
+    # drain runs. Taken after, a raising clock discards the just-spawned
+    # handles — live children orphaned onto the 6h reaper. Clock-first means
+    # a broken clock fails the step before any process exists.
+    order: list = []
+
+    def clock() -> float:
+        order.append("clock")
+        return 0.0
+
+    def spawn(goal: str) -> _SpawnHandle:
+        order.append("spawn")
+        return _SpawnHandle(_TickProc(rc=None))
+
+    tq = _RecordingTaskQueue([], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=spawn,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs={},
+        task_clock=clock,
+    )
+
+    assert "spawn" in order and "clock" in order
+    assert order.index("clock") < order.index("spawn")
+
+
+def test_tick_with_a_broken_clock_spawns_nothing():
+    # Consequence of clock-first ordering (review #957-4): a broken clock
+    # fails Step 4 before the drain — no child is spawned only to have its
+    # handle dropped on the floor.
+    spawned: list = []
+
+    def bad_clock() -> float:
+        raise RuntimeError("clock broken")
+
+    def spawn(goal: str) -> _SpawnHandle:
+        spawned.append(goal)
+        return _SpawnHandle(_TickProc(rc=None))
+
+    tq = _RecordingTaskQueue([], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=spawn,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs={},
+        task_clock=bad_clock,
+    )
+
+    assert spawned == []
+
+
+def test_tick_poll_blowup_does_not_block_the_runaway_killer():
+    # review #957-6 (MINOR): Step 0's two halves are independent — a
+    # completion-poll blowup must not stop the runaway killer from bounding
+    # live processes. Each half needs its own isolation.
+    class _ExplodingProc:
+        pid = 1
+
+        def poll(self) -> int | None:
+            raise RuntimeError("handle gone")
+
+    log: list = []
+    tq = _RecordingTaskQueue(log)
+    runaway = _TickProc(rc=None)
+    procs = {
+        "runaway": TrackedProc(proc=runaway, started_at=0.0),
+        "exploder": TrackedProc(proc=_ExplodingProc(), started_at=0.0),
+    }
+    killed: list = []
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 999_999.0,
+        task_running_reap_after_seconds=60,
+        task_kill=killed.append,
+    )
+
+    assert killed == [runaway]
 
 
 def test_tick_without_task_procs_reaps_all_stale_running_as_orphans():
