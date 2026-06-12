@@ -159,18 +159,45 @@ Describe 'Test-IsProviderBilling' {
         Test-IsProviderBilling -Text 'insufficient balance' | Should Be $true
     }
 
+    It 'matches every billing string signature' {
+        # Each entry in $script:ProviderBillingSignatures must be exercised so a
+        # future edit to the list cannot silently drop a case (#956 review noted
+        # 'insufficient funds' had no direct assertion).
+        Test-IsProviderBilling -Text 'payment required'     | Should Be $true
+        Test-IsProviderBilling -Text 'insufficient funds'   | Should Be $true
+    }
+
     It 'matches generic payment-required wording' {
         Test-IsProviderBilling -Text 'HTTP 402 Payment Required' | Should Be $true
     }
 
-    It 'matches a 402 status code when HTTP context is nearby' {
+    It 'matches a 402 status code when a structured context separator precedes it' {
         Test-IsProviderBilling -Text 'request failed with status 402'  | Should Be $true
         Test-IsProviderBilling -Text '{"error":{"code":402}}'          | Should Be $true
+        Test-IsProviderBilling -Text 'error=402'                       | Should Be $true
+        Test-IsProviderBilling -Text 'status: 402'                     | Should Be $true
+    }
+
+    It 'matches the HTTP status line even with a non-standard 402 reason phrase' {
+        # The string signatures catch "Payment Required"; this branch covers a
+        # custom 402 body like `HTTP/1.1 402 Account Exhausted` (#956 review
+        # false-negative: version digits sit between `http` and `402`).
+        Test-IsProviderBilling -Text 'HTTP/1.1 402 Payment Required'   | Should Be $true
+        Test-IsProviderBilling -Text 'HTTP/1.1 402 Account Exhausted'  | Should Be $true
+        Test-IsProviderBilling -Text 'HTTP/2 402 Quota Drained'        | Should Be $true
     }
 
     It 'does not fire on a bare 402 in branch names or token counts' {
         Test-IsProviderBilling -Text 'checked out feat/402-some-issue' | Should Be $false
         Test-IsProviderBilling -Text 'inputTokens=402'                 | Should Be $false
+    }
+
+    It 'does not fire on prose where letters separate a context word from 402' {
+        # #956 review (HIGH): the prior `\D{0,20}` window matched these, firing
+        # spurious Telegram billing alerts on ordinary agent run.log content.
+        Test-IsProviderBilling -Text 'Error occurred at line 402 of config.js' | Should Be $false
+        Test-IsProviderBilling -Text 'error handling in issue #402'            | Should Be $false
+        Test-IsProviderBilling -Text 'see the code path around line 402'       | Should Be $false
     }
 
     It 'returns false for empty and generic failures' {
@@ -447,6 +474,10 @@ Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
         Mock Send-TelegramAlert  { 'mocked' }
         Mock Add-IssueLabel      { $true }
         Mock Get-IssueLabels     { @() }
+        # #956: the OOM-escalation path now pre-flights the deepseek balance.
+        # Default it healthy so escalation tests stay off the network; the
+        # exhausted-balance case overrides this mock in its own It.
+        Mock Test-DeepSeekBalance { $true }
     }
 
     It 'AC: Tier 0 success -> no escalation, no labels, no Tier 1/2 invocation' {
@@ -623,6 +654,39 @@ Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
         Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $LlmMetrics.tier -eq 'tier2:deepseek' }
+    }
+
+    It 'AC #956: drained deepseek balance on OOM escalation -> abort before Tier 2 container boot + alert' {
+        # Sibling-gap fix: the primary path (Tier2AsPrimary) pre-flighted the
+        # balance, but the OOM-escalation lane booted a Tier 2 container against
+        # a dead provider first. With the balance exhausted, escalation must fail
+        # fast after Tier 0/1 -- the third Invoke-Sandcastle (the Tier 2 boot)
+        # never happens, the outcome is the actionable provider-billing reason,
+        # and the Telegram alert fires.
+        Mock Test-DeepSeekBalance { $false }   # overrides the healthy BeforeEach default
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $false; exitCode = 137; reason = 'exit=137'
+                result = [pscustomobject]@{ branch = 'feat/801-oom-billing' }
+            }
+        }
+        Mock Test-IsOOM { $true }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        # Tier 0 + Tier 1 booted (2 calls); the Tier 2 container boot is skipped.
+        Assert-MockCalled Invoke-Sandcastle   -Times 2 -Exactly -Scope It
+        Assert-MockCalled Test-DeepSeekBalance -Times 1 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Status -eq 'failure' -and
+                $Summary -like 'provider-billing*OOM escalation*' -and
+                $LlmMetrics.provider_billing -eq $true
+            }
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*provider-billing*' }
     }
 }
 

@@ -498,10 +498,18 @@ function Test-IsProviderBilling {
     foreach ($sig in $script:ProviderBillingSignatures) {
         if ($Text -match [regex]::Escape($sig)) { return $true }
     }
-    # HTTP 402 (Payment Required), but only when a status/error context word
-    # sits within ~20 non-digit chars before the 402 -- avoids false positives
-    # on branch names (`feat/402-foo`) and token counts (`inputTokens=402`).
-    if ($Text -match '(?i)\b(?:http|status|error|code)\D{0,20}\b402\b') { return $true }
+    # HTTP 402 (Payment Required) in a status/error context. Two narrow branches
+    # instead of a wide `\D{0,20}` window, which matched prose like
+    # `error occurred at line 402` and `issue #402` -- spurious billing alerts
+    # an agent's run.log can realistically produce (#956 review):
+    #   (a) a context word (http/status/error/code) followed by ONLY structured
+    #       separators (`:`, `=`, whitespace, JSON punctuation) before 402 --
+    #       keeps `status: 402`, `error=402`, `{"code":402}`, `HTTP 402`, while
+    #       prose (which puts letters between the word and 402) no longer matches;
+    #   (b) the HTTP status line `HTTP/1.1 402 ...`, which (a) misses because the
+    #       version digits sit between `http` and `402`.
+    if ($Text -match '(?i)\b(?:http|status|error|code)[\s:="''{},/]{0,6}\b402\b') { return $true }
+    if ($Text -match '(?i)\bhttp/\d[\d.]*\s+402\b') { return $true }
     return $false
 }
 
@@ -1031,7 +1039,10 @@ function Invoke-Watchdog {
             if ($tier2Primary.Provider -eq 'deepseek' -and
                 -not (Test-DeepSeekBalance -ApiKey $tier2Primary.AuthToken)) {
                 $reason = 'provider-billing: deepseek balance exhausted (pre-flight probe)'
-                Record 'failure' $reason @{} $reason
+                # Tag the outcome so pre-flight billing rows are distinguishable
+                # from generic failures in Supabase, matching the in-run path
+                # which sets $totalUsage.provider_billing (#956 review).
+                Record 'failure' $reason @{ provider_billing = $true } $reason
                 throw $reason
             }
         }
@@ -1107,6 +1118,17 @@ function Invoke-Watchdog {
             $tier2 = Resolve-Tier2Config -Provider $Tier2Provider -Issue $targetIssue `
                 -RepoSlug $repoSlug -EnvVars $envVars
             if ($tier2 -and $tier2.AuthToken) {
+                # Pre-flight billing probe on the OOM-escalation lane too (#956
+                # review). The in-run classifier below still fires the alert on a
+                # drained balance, but without this probe the escalation boots a
+                # container against a dead provider first -- a wasted boot. Mirror
+                # the primary-path check; deepseek only; fail-open inside.
+                if ($tier2.Provider -eq 'deepseek' -and
+                    -not (Test-DeepSeekBalance -ApiKey $tier2.AuthToken)) {
+                    $reason = 'provider-billing: deepseek balance exhausted (pre-flight probe, OOM escalation)'
+                    Record 'failure' $reason @{ provider_billing = $true } $reason
+                    throw $reason
+                }
                 Write-Host "[watchdog] Tier 1 failed -- escalating to Tier 2 ($($tier2.Provider): $($tier2.Model))"
                 $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $tier2.Model `
                     -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
