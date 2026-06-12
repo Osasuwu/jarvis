@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from agents import wake_driver
+from agents.task_dispatch import TaskQueuePort, TrackedProc
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -301,6 +302,7 @@ class _RecordingTaskQueue:
         self._pending = list(pending or [])
         self._stale_claimed = stale_claimed
         self._stale_running = list(stale_running or [])
+        self.transitions: list[tuple[str, str, str | None]] = []
 
     def claim_next(self, *, assignee: str):
         for i, r in enumerate(self._pending):
@@ -314,6 +316,7 @@ class _RecordingTaskQueue:
 
     def transition(self, task_id: str, to_status: str, *, reason=None):
         self._log.append(f"task_transition:{to_status}")
+        self.transitions.append((task_id, to_status, reason))
         return {"id": task_id, "status": to_status}
 
     def reclaim_stale_claimed(self, *, assignee: str, older_than_seconds: float) -> int:
@@ -323,6 +326,17 @@ class _RecordingTaskQueue:
     def list_stale_running(self, *, assignee: str, older_than_seconds: float):
         self._log.append("task_list_running")
         return list(self._stale_running)
+
+    def requeue_running(self, task_id: str) -> bool:
+        self._log.append("task_requeue")
+        return True
+
+
+def test_recording_task_queue_conforms_to_the_port_protocol():
+    # review #957-2 (MAJOR): the fake must satisfy the full TaskQueuePort
+    # surface (incl. requeue_running, #921 AC4) — a partial fake lets tick
+    # paths that touch the missing method blow up only in production.
+    assert isinstance(_RecordingTaskQueue([]), TaskQueuePort)
 
 
 class _LoggingEventQueue(FakeEventQueue):
@@ -343,6 +357,39 @@ class _LoggingEventQueue(FakeEventQueue):
         return row
 
 
+class _HealthyUsage:
+    """UsageReading-shaped fake — quota fine, drain proceeds (#921 AC4)."""
+
+    near_exhaustion = False
+
+
+def _healthy_usage() -> _HealthyUsage:
+    return _HealthyUsage()
+
+
+class _TickProc:
+    """Popen-shaped fake with a scripted return code — never a real process.
+
+    Tests that hand live (``rc=None``) instances to ``tick`` must also inject
+    ``task_clock`` (and rely on the injected ``task_kill``) so the runaway
+    killer never reaches a real ``taskkill`` against the fake pid.
+    """
+
+    def __init__(self, rc: int | None = None, pid: int = 4242) -> None:
+        self._rc = rc
+        self.pid = pid
+
+    def poll(self) -> int | None:
+        return self._rc
+
+
+class _SpawnHandle:
+    """SpawnResult-shaped fake exposing a pollable ``proc`` (not throttled)."""
+
+    def __init__(self, proc: _TickProc) -> None:
+        self.proc = proc
+
+
 def test_tick_runs_the_four_steps_in_order():
     log: list = []
     eq = _LoggingEventQueue(log, [_ev("e1", state="claimed")])
@@ -357,6 +404,7 @@ def test_tick_runs_the_four_steps_in_order():
         task_port=tq,
         task_spawn=lambda goal: None,
         task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
     )
 
     # AC1 order: reclaim(events) → reclaim_tasks() → drain(events) → drain_tasks()
@@ -376,6 +424,8 @@ def test_tick_without_task_port_is_event_only():
     assert result.tasks_reclaimed == 0
     assert result.tasks_reaped == 0
     assert result.tasks_failed == 0
+    assert result.tasks_done == 0
+    assert result.tasks_failed_exit == 0
 
 
 def test_tick_reports_task_counts():
@@ -394,6 +444,7 @@ def test_tick_reports_task_counts():
         task_port=tq,
         task_spawn=lambda goal: None,
         task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
     )
     assert result.tasks_reclaimed == 2  # AC5 stale claimed → pending
     assert result.tasks_reaped == 1  # AC6 stale running → failed
@@ -454,6 +505,7 @@ def test_tick_task_watchdog_failure_does_not_block_event_drain():
         stale_after_seconds=300,
         task_port=_RaisingOnReclaimTaskQueue(),
         task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
     )
     assert result.processed == 2  # events drained despite the task-side outage
     assert result.tasks_reclaimed == 0
@@ -470,6 +522,7 @@ def test_tick_task_drain_failure_does_not_crash_tick():
         stale_after_seconds=300,
         task_port=_RaisingOnDrainTaskQueue(),
         task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
     )
     assert result.processed == 1
     assert result.tasks_spawned == 0
@@ -509,6 +562,7 @@ def test_run_forwards_task_spawn_and_resolver_to_tick():
         task_port=tq,
         task_spawn=lambda goal: spawned.append(goal),
         task_resolve_binary=fake_resolve,
+        task_read_usage=_healthy_usage,
     )
 
     assert spawned == ["do-the-thing"]  # injected spawn forwarded, not the default
@@ -552,8 +606,364 @@ def test_run_forwards_task_thresholds_to_tick():
         should_continue=should_continue,
         task_port=_ThresholdPort(),
         task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
         task_claimed_stale_after_seconds=111,
         task_running_reap_after_seconds=222,
     )
 
     assert seen == {"claimed": 111, "running": 222}
+
+
+# --- #921 AC2/AC3/AC8: completion poll closes running→done in the tick ------
+
+
+def test_tick_completion_poll_runs_before_watchdogs_and_drains():
+    # AC3 ordering: Step 0 (completion poll) precedes the event watchdog, the
+    # task watchdog, and both drains — so an exited child's slot is freed and
+    # its row closed before this same tick reaps or re-claims anything.
+    log: list = []
+    eq = _LoggingEventQueue(log, [_ev("e1", state="claimed")])
+    eq.events[0]["claimed_at"] = 0.0
+    eq.clock = 999.0
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t2", "goal": "g", "assignee": "sandcastle"}])
+    procs = {"t1": TrackedProc(proc=_TickProc(rc=0), started_at=0.0)}
+
+    wake_driver.tick(
+        eq,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 0.0,
+    )
+
+    done_at = log.index("task_transition:done")
+    assert done_at < log.index("event_reclaim")
+    assert done_at < log.index("task_reclaim")
+    assert done_at < log.index("task_drain")
+
+
+def test_tick_reports_completion_counts_and_drops_closed_entries():
+    # AC2/AC8: exit 0 → done, exit ≠0 → failed_exit; both dropped from the
+    # map; a still-running entry is kept.
+    log: list = []
+    tq = _RecordingTaskQueue(log)
+    procs = {
+        "ok": TrackedProc(proc=_TickProc(rc=0), started_at=0.0),
+        "bad": TrackedProc(proc=_TickProc(rc=3), started_at=0.0),
+        "live": TrackedProc(proc=_TickProc(rc=None), started_at=0.0),
+    }
+
+    result = wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 0.0,
+    )
+
+    assert result.tasks_done == 1
+    assert result.tasks_failed_exit == 1
+    assert set(procs) == {"live"}
+    assert ("ok", "done", None) in tq.transitions
+    assert ("bad", "failed", "exit 3") in tq.transitions
+
+
+def test_tick_shields_live_rows_from_the_orphan_reaper():
+    # #921 AC5: a stale running row WITH a live tracked process is not reaped;
+    # the stale row with no tracked process is an orphan → failed.
+    log: list = []
+    tq = _RecordingTaskQueue(log, stale_running=[{"id": "live"}, {"id": "orphan"}])
+    procs = {"live": TrackedProc(proc=_TickProc(rc=None), started_at=0.0)}
+
+    result = wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 0.0,
+    )
+
+    assert result.tasks_reaped == 1
+    failed_ids = [t[0] for t in tq.transitions if t[1] == "failed"]
+    assert failed_ids == ["orphan"]
+    assert "live" in procs  # still tracked, still running
+
+
+def test_tick_kills_runaway_live_processes():
+    # #921 AC6: a live process past the reap threshold is tree-killed via the
+    # injected kill, its row failed, the entry dropped — and it folds into
+    # tasks_failed_exit.
+    log: list = []
+    tq = _RecordingTaskQueue(log)
+    proc = _TickProc(rc=None)
+    procs = {"runaway": TrackedProc(proc=proc, started_at=0.0)}
+    killed: list = []
+
+    result = wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 999_999.0,  # way past the 6h knob
+        task_running_reap_after_seconds=60,
+        task_kill=killed.append,
+    )
+
+    assert killed == [proc]
+    assert result.tasks_failed_exit == 1
+    assert procs == {}
+    assert any(
+        t[0] == "runaway" and t[1] == "failed" and "max runtime" in (t[2] or "")
+        for t in tq.transitions
+    )
+
+
+def test_tick_merges_spawned_procs_into_the_tracking_map():
+    # AC2: a successful spawn's (task_id, proc) pair lands in the map, stamped
+    # with the injected clock — so the NEXT tick can poll it to completion.
+    log: list = []
+    proc = _TickProc(rc=None)
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    procs: dict = {}
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 42.0,
+    )
+
+    assert set(procs) == {"t1"}
+    assert procs["t1"].proc is proc
+    assert procs["t1"].started_at == 42.0
+
+
+def test_tick_stamps_the_clock_before_spawning():
+    # review #957-4 (MAJOR): the started_at stamp must be taken BEFORE the
+    # drain runs. Taken after, a raising clock discards the just-spawned
+    # handles — live children orphaned onto the 6h reaper. Clock-first means
+    # a broken clock fails the step before any process exists.
+    order: list = []
+
+    def clock() -> float:
+        order.append("clock")
+        return 0.0
+
+    def spawn(goal: str) -> _SpawnHandle:
+        order.append("spawn")
+        return _SpawnHandle(_TickProc(rc=None))
+
+    tq = _RecordingTaskQueue([], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=spawn,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs={},
+        task_clock=clock,
+    )
+
+    assert "spawn" in order and "clock" in order
+    assert order.index("clock") < order.index("spawn")
+
+
+def test_tick_with_a_broken_clock_spawns_nothing():
+    # Consequence of clock-first ordering (review #957-4): a broken clock
+    # fails Step 4 before the drain — no child is spawned only to have its
+    # handle dropped on the floor.
+    spawned: list = []
+
+    def bad_clock() -> float:
+        raise RuntimeError("clock broken")
+
+    def spawn(goal: str) -> _SpawnHandle:
+        spawned.append(goal)
+        return _SpawnHandle(_TickProc(rc=None))
+
+    tq = _RecordingTaskQueue([], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=spawn,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs={},
+        task_clock=bad_clock,
+    )
+
+    assert spawned == []
+
+
+def test_tick_poll_blowup_does_not_block_the_runaway_killer():
+    # review #957-6 (MINOR): Step 0's two halves are independent — a
+    # completion-poll blowup must not stop the runaway killer from bounding
+    # live processes. Each half needs its own isolation.
+    class _ExplodingProc:
+        pid = 1
+
+        def poll(self) -> int | None:
+            raise RuntimeError("handle gone")
+
+    log: list = []
+    tq = _RecordingTaskQueue(log)
+    runaway = _TickProc(rc=None)
+    procs = {
+        "runaway": TrackedProc(proc=runaway, started_at=0.0),
+        "exploder": TrackedProc(proc=_ExplodingProc(), started_at=0.0),
+    }
+    killed: list = []
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 999_999.0,
+        task_running_reap_after_seconds=60,
+        task_kill=killed.append,
+    )
+
+    assert killed == [runaway]
+
+
+def test_tick_without_task_procs_reaps_all_stale_running_as_orphans():
+    # AC7 restart simulation: no map (fresh driver / --once) → poll and kill
+    # are skipped, and EVERY stale running row is an orphan again — reaped to
+    # failed; Path-A re-drives the lost work as fresh events.
+    log: list = []
+    tq = _RecordingTaskQueue(log, stale_running=[{"id": "r1"}, {"id": "r2"}])
+
+    result = wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+    )
+
+    assert result.tasks_reaped == 2
+    assert result.tasks_done == 0
+    assert result.tasks_failed_exit == 0
+
+
+def test_run_retains_the_tracking_map_across_ticks():
+    # AC2 end-to-end: tick 1 spawns t1 into the injected map; the process
+    # exits between ticks; tick 2 polls the SAME map and closes running→done.
+    # A per-tick map would lose the handle and never close the row.
+    log: list = []
+    q = FakeEventQueue([])
+    q.wake_signals = [True, True]
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    proc = _TickProc(rc=None)  # alive during tick 1...
+    procs: dict = {}
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            proc._rc = 0  # ...exits before tick 2
+        return ticks["n"] <= 2
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=tq,
+        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 0.0,
+    )
+
+    assert ("t1", "done", None) in tq.transitions
+    assert procs == {}
+
+
+def test_run_creates_and_retains_a_map_when_not_injected():
+    # run() must own a map even when none is injected — otherwise the
+    # production loop (main()) would never close running→done.
+    log: list = []
+    q = FakeEventQueue([])
+    q.wake_signals = [True, True]
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    proc = _TickProc(rc=None)
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            proc._rc = 0
+        return ticks["n"] <= 2
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=tq,
+        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_clock=lambda: 0.0,
+    )
+
+    assert ("t1", "done", None) in tq.transitions
+
+
+def test_run_forwards_task_read_usage_to_the_drain():
+    # #921 AC4: without forwarding, the drain silently falls back to the
+    # production probe (live Supabase) no matter what main() injected.
+    calls = {"n": 0}
+
+    def probe() -> _HealthyUsage:
+        calls["n"] += 1
+        return _HealthyUsage()
+
+    q = FakeEventQueue([])
+    q.wake_signals = [True]
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] <= 1
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=_RecordingTaskQueue([]),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=probe,
+    )
+
+    assert calls["n"] == 1
