@@ -350,17 +350,58 @@ class TestPersistLocal:
 
 
 # ---------------------------------------------------------------------------
-# main — never raises, honours missing/absent inputs
+# _persist_supabase — missing-env path must be loud, not silent
+# ---------------------------------------------------------------------------
+class TestPersistSupabaseMissingEnv:
+    def test_missing_env_returns_false_and_warns(self, monkeypatch, capsys):
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_KEY", raising=False)
+        assert pcb._persist_supabase("s", "jarvis", "auto", "content") is False
+        assert "SUPABASE_URL/SUPABASE_KEY not set" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# _append_hook_log — heartbeat
+# ---------------------------------------------------------------------------
+def _read_hook_log(root: Path) -> str:
+    return (root / ".claude" / "session-snapshots" / "hook.log").read_text(encoding="utf-8")
+
+
+class TestAppendHookLog:
+    def test_appends_timestamped_line(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        pcb._append_hook_log("session=s1 trigger=auto outcome=supabase")
+        pcb._append_hook_log("session=s1 trigger=auto outcome=local-fallback")
+        lines = _read_hook_log(tmp_path).splitlines()
+        assert len(lines) == 2
+        assert lines[0].endswith("session=s1 trigger=auto outcome=supabase")
+        assert lines[1].endswith("session=s1 trigger=auto outcome=local-fallback")
+        # Each line starts with an ISO-8601 UTC stamp
+        assert lines[0].split(" ")[0].startswith("20")
+
+    def test_never_raises(self, tmp_path, monkeypatch):
+        # _root pointing at a regular file makes mkdir fail — must be swallowed
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", blocker)
+        pcb._append_hook_log("must not raise")
+
+
+# ---------------------------------------------------------------------------
+# main — never raises, honours missing/absent inputs, always heartbeats
 # ---------------------------------------------------------------------------
 class TestMain:
-    def test_missing_transcript_path_exits_zero(self, monkeypatch):
+    def test_missing_transcript_path_exits_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"session_id": "x"})))
         # No Supabase creds → would take the fallback branch, but transcript_path is empty
         monkeypatch.setenv("SUPABASE_URL", "")
         monkeypatch.setenv("SUPABASE_KEY", "")
         assert pcb.main() == 0
+        assert "session=x trigger=unknown outcome=no-transcript-path" in _read_hook_log(tmp_path)
 
     def test_missing_transcript_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(
             sys,
             "stdin",
@@ -375,6 +416,7 @@ class TestMain:
             ),
         )
         assert pcb.main() == 0
+        assert "outcome=transcript-missing" in _read_hook_log(tmp_path)
 
     def test_supabase_fail_triggers_local_fallback(self, tmp_path, monkeypatch):
         # Build a tiny transcript
@@ -403,7 +445,39 @@ class TestMain:
         text = out.read_text(encoding="utf-8")
         assert "Session Snapshot — sess-fallback" in text
         assert "**Trigger:** manual" in text
+        assert "session=sess-fallback trigger=manual outcome=local-fallback" in _read_hook_log(
+            tmp_path
+        )
 
-    def test_bad_hook_input_does_not_raise(self, monkeypatch):
+    def test_supabase_success_heartbeats(self, tmp_path, monkeypatch):
+        t = tmp_path / "t.jsonl"
+        t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_persist_supabase", lambda *a, **k: True)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "sess-ok",
+                        "transcript_path": str(t),
+                        "cwd": str(tmp_path),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert "session=sess-ok trigger=auto outcome=supabase" in _read_hook_log(tmp_path)
+        # Supabase succeeded — no local fallback file
+        assert not (tmp_path / ".claude" / "session-snapshots" / "sess-ok.md").exists()
+
+    def test_bad_hook_input_does_not_raise(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(sys, "stdin", io.StringIO("definitely not json"))
         assert pcb.main() == 0
+        # Unparseable input → empty hook dict → no transcript_path
+        assert "session=unknown-session trigger=unknown outcome=no-transcript-path" in (
+            _read_hook_log(tmp_path)
+        )

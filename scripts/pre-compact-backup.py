@@ -9,6 +9,11 @@ Invariants:
 - **Never** blocks compaction. Exits 0 on all paths, including failures.
 - Snapshot content stays under SIZE_BUDGET bytes (~30KB). Long transcripts
   keep only the last TAIL_KEEP entries with a dropped-head counter.
+- Every invocation appends one heartbeat line to
+  `.claude/session-snapshots/hook.log` — no line at compaction time means the
+  harness never ran the hook (e.g. the 2026-06-12 outage: rewriting
+  `~/.claude/settings.json` while the desktop app runs disables all hooks
+  until app restart).
 
 Registered in user-level `settings.json` under `PreCompact` (matchers `auto`,
 `manual`) and `SessionEnd` (all end reasons) — the same snapshot doubles as a
@@ -364,6 +369,10 @@ def _persist_supabase(
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
+        print(
+            "[pre-compact] SUPABASE_URL/SUPABASE_KEY not set — skipping Supabase",
+            file=sys.stderr,
+        )
         return False
     try:
         from supabase import create_client
@@ -403,10 +412,30 @@ def _persist_local(session_id: str, content: str) -> Path | None:
         return None
 
 
+def _append_hook_log(message: str) -> None:
+    """Heartbeat: one line per invocation to `.claude/session-snapshots/hook.log`.
+
+    Distinguishes "hook ran but persistence failed" from "harness never
+    executed the hook" — the latter was diagnosable only by the absence of
+    Supabase rows during the 2026-06-12 outage. Never raises.
+    """
+    try:
+        out_dir = _root / ".claude" / "session-snapshots"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with (out_dir / "hook.log").open("a", encoding="utf-8") as f:
+            f.write(f"{stamp} {message}\n")
+    except Exception:
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> int:
+    session_id = "unknown-session"
+    trigger = "unknown"
+    outcome = "unhandled-error"
     try:
         hook = _read_hook_input()
         session_id = hook.get("session_id") or hook.get("sessionId") or "unknown-session"
@@ -421,22 +450,30 @@ def main() -> int:
 
         if not transcript_path:
             print("[pre-compact] no transcript_path in hook input", file=sys.stderr)
+            outcome = "no-transcript-path"
             return 0
 
         p = Path(transcript_path)
         if not p.exists():
             print(f"[pre-compact] transcript not found: {p}", file=sys.stderr)
+            outcome = "transcript-missing"
             return 0
 
         entries, total, dropped = _parse_transcript(p)
         content = _compose_markdown(session_id, trigger, cwd, entries, total, dropped)
         project = _detect_project(cwd)
 
-        if not _persist_supabase(session_id, project, trigger, content):
-            _persist_local(session_id, content)
+        if _persist_supabase(session_id, project, trigger, content):
+            outcome = "supabase"
+        elif _persist_local(session_id, content) is not None:
+            outcome = "local-fallback"
+        else:
+            outcome = "persist-failed"
     except Exception as e:
         # Never block compaction — log and move on.
         print(f"[pre-compact] unhandled error: {e}", file=sys.stderr)
+    finally:
+        _append_hook_log(f"session={session_id} trigger={trigger} outcome={outcome}")
     return 0
 
 
