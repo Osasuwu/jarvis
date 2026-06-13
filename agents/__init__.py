@@ -14,6 +14,7 @@ __all__ = [
     "github_client",
     "ollama_client",
     "orchestrator",
+    "poller",
     "safety",
     "supabase_client",
     "task_queue",

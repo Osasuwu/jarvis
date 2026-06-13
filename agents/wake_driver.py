@@ -22,6 +22,9 @@ Behavior:
   model). wake_driver deliberately does **not** import
   :func:`agents.orchestrator.handle_event` — the driver is a decisionless
   program and the router is a separate concern.
+- **Path B (#745)** — the tick optionally runs the parked-event re-queue poller
+  before draining, so events that were parked because their blocking task
+  completed are re-queued to ``pending`` and picked up on the same tick.
 
 The pure loop (:func:`drain_pending` / :func:`run_watchdog` / :func:`tick` /
 :func:`run`) operates over an :class:`EventQueuePort`, so it is unit-testable
@@ -49,6 +52,8 @@ from agents.config import load_config
 
 if TYPE_CHECKING:
     import psycopg
+
+    from agents.poller import PollerPort
 
 logger = logging.getLogger(__name__)
 
@@ -92,10 +97,11 @@ class EventQueuePort(Protocol):
 
 @dataclass(frozen=True)
 class TickResult:
-    """What one :func:`tick` did — watchdog reclaims + events drained."""
+    """What one :func:`tick` did — watchdog reclaims + parked events + events drained."""
 
     reclaimed: int
-    processed: int
+    requeued: int = 0
+    processed: int = 0
 
 
 def default_orchestrator(event: dict[str, Any]) -> None:
@@ -148,15 +154,27 @@ def tick(
     orchestrator: Orchestrator,
     *,
     stale_after_seconds: float,
+    poller_port: PollerPort | None = None,
 ) -> TickResult:
-    """One unit of work: reclaim stale rows, then drain the pending queue.
+    """One unit of work: reclaim stale rows, re-queue parked events, drain pending.
+
+    Order:
+    1. **Watchdog** — reclaim stranded ``claimed`` rows back to ``pending``.
+    2. **Path B poller** — re-queue ``parked`` events whose blocking task
+       completed (if ``poller_port`` is provided).
+    3. **Drain** — process every ``pending`` event through the orchestrator.
 
     The watchdog runs **first** so a row stranded by a previous crash is
     returned to ``pending`` and drained within the same tick.
     """
     reclaimed = run_watchdog(port, stale_after_seconds=stale_after_seconds)
+    requeued = 0
+    if poller_port is not None:
+        from agents.poller import poll as poll_parked
+
+        requeued = poll_parked(poller_port)
     processed = drain_pending(port, orchestrator)
-    return TickResult(reclaimed=reclaimed, processed=processed)
+    return TickResult(reclaimed=reclaimed, requeued=requeued, processed=processed)
 
 
 def run(
@@ -165,6 +183,7 @@ def run(
     *,
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
     should_continue: Callable[[], bool] | None = None,
+    poller_port: PollerPort | None = None,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -174,6 +193,9 @@ def run(
     busy sleep-poll; ``should_continue`` (default: forever) lets tests bound
     the loop.
 
+    When ``poller_port`` is provided, each tick also re-queues ``parked``
+    events whose blocking task has completed (Path B, #745).
+
     A tick that raises is logged and swallowed so a transient failure does
     not tear down the driver — the offending event stays ``claimed`` and the
     watchdog re-claims it next pass (at-least-once, never silently lost).
@@ -182,7 +204,12 @@ def run(
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
         try:
-            tick(port, orchestrator, stale_after_seconds=stale_after_seconds)
+            tick(
+                port,
+                orchestrator,
+                stale_after_seconds=stale_after_seconds,
+                poller_port=poller_port,
+            )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
 
