@@ -378,6 +378,7 @@ def test_health_check_timeout_with_grandchild_returns_promptly(
     assert not t.is_alive(), (
         "run_health_check still blocked after 35s — grandchild pipe-EOF hang regressed"
     )
+    assert "r" in result, "run_health_check raised — thread exited without returning a result"
     status, logs = result["r"]
     assert status == "timeout", logs
     # timeout=5 + tree-kill overhead (≤5s) ⇒ ~10–12s expected. Bound at 20s:

@@ -988,14 +988,12 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, li
         # Use shlex so paths with spaces survive — `cmd.split()` breaks them.
         # posix=False on Windows keeps backslashes intact.
         argv = shlex.split(cmd, posix=(os.name != "nt"))
-        # Output goes to temp FILES, never pipes. With capture_output=True, a
-        # health command that spawns its own children (session-context.py
-        # re-execs into the venv python) leaves a grandchild holding the
-        # inherited pipe write-handles; once the timeout kills the direct
-        # child, the pipe never reaches EOF and the parent blocks forever in
-        # _communicate() (2026-06-12: install.ps1 -Apply wedged 35+ min after
-        # apply succeeded). File reads cannot block on EOF, so even a
-        # grandchild the tree-kill misses can't wedge the installer.
+        # Output goes to temp FILES, never pipes. With the prior capture_output=True
+        # approach, a health command that spawns its own children (session-context.py
+        # re-execs into the venv python) left a grandchild holding inherited pipe
+        # write-handles; once the timeout killed the direct child, the pipe never
+        # reached EOF and the parent blocked forever. File reads cannot block on EOF,
+        # so even a grandchild the tree-kill misses can't wedge the installer.
         # stdin=DEVNULL keeps children from waiting on console input.
         popen_kwargs: dict[str, Any] = {}
         if os.name != "nt":
@@ -1004,12 +1002,12 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, li
             with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
                 err_path = Path(td) / "err"
                 timed_out = False
-                with open(Path(td) / "out", "wb") as out_f, open(err_path, "wb") as err_f:
+                with open(err_path, "wb") as err_f:
                     proc = subprocess.Popen(
                         argv,
                         cwd=repo_root,
                         stdin=subprocess.DEVNULL,
-                        stdout=out_f,
+                        stdout=subprocess.DEVNULL,
                         stderr=err_f,
                         **popen_kwargs,
                     )
@@ -1017,6 +1015,7 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, li
                         proc.wait(timeout=timeout)
                     except subprocess.TimeoutExpired:
                         _kill_tree(proc)
+                        proc.wait()  # reap zombie — _kill_tree already sent SIGKILL
                         timed_out = True
                 # Decode like the old capture path: locale-independent UTF-8,
                 # errors="replace" survives rogue bytes on cp1251 consoles (#352).
@@ -1089,6 +1088,14 @@ def format_plan(plan: Plan) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Install/sync Jarvis agent machinery into ~/.claude/.
+
+    Exit codes:
+      0  success
+      2  apply error (rolled back)
+      3  health check non-zero exit (rolled back)
+      4  health check timeout — inconclusive, apply left in place
+    """
     parser = argparse.ArgumentParser(
         prog="jarvis-installer",
         description="Install/sync Jarvis agent machinery into ~/.claude/.",
