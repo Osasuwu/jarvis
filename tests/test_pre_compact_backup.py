@@ -386,6 +386,31 @@ class TestAppendHookLog:
         monkeypatch.setattr(pcb, "_root", blocker)
         pcb._append_hook_log("must not raise")
 
+    def test_write_failure_reports_to_stderr(self, tmp_path, monkeypatch, capsys):
+        # The observability log is itself observable on failure (#962 MINOR #7).
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", blocker)
+        pcb._append_hook_log("disk full")
+        assert "hook.log write failed" in capsys.readouterr().err
+
+    def test_trims_when_oversized(self, tmp_path, monkeypatch):
+        # Bounded growth: once past the byte cap the log keeps only its tail
+        # (#962 MINOR #9). Shrink the constants so the test stays fast.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_HOOK_LOG_MAX_BYTES", 120)
+        monkeypatch.setattr(pcb, "_HOOK_LOG_KEEP_LINES", 5)
+        for i in range(50):
+            pcb._append_hook_log(f"line-{i}")
+        log = _read_hook_log(tmp_path)
+        lines = log.splitlines()
+        # Stays bounded near the keep-window rather than growing to 50 lines…
+        assert len(lines) <= 6
+        # …always retains the newest entry…
+        assert lines[-1].endswith("line-49")
+        # …and the oldest forged-off entries are gone.
+        assert "line-0 " not in log and "line-0\n" not in log
+
 
 # ---------------------------------------------------------------------------
 # main — never raises, honours missing/absent inputs, always heartbeats
@@ -416,7 +441,9 @@ class TestMain:
             ),
         )
         assert pcb.main() == 0
-        assert "outcome=transcript-missing" in _read_hook_log(tmp_path)
+        # Full triplet, not just `outcome=` — keeps the heartbeat format
+        # contract auditable in line with every sibling test (#962 MINOR #8).
+        assert "session=x trigger=unknown outcome=transcript-missing" in _read_hook_log(tmp_path)
 
     def test_supabase_fail_triggers_local_fallback(self, tmp_path, monkeypatch):
         # Build a tiny transcript
@@ -481,3 +508,77 @@ class TestMain:
         assert "session=unknown-session trigger=unknown outcome=no-transcript-path" in (
             _read_hook_log(tmp_path)
         )
+
+    def test_persist_failed_heartbeats(self, tmp_path, monkeypatch):
+        # Both persist paths fail → `outcome=persist-failed` (#962 MAJOR #6:
+        # this outcome value previously had zero coverage).
+        t = tmp_path / "t.jsonl"
+        t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_persist_supabase", lambda *a, **k: False)
+        monkeypatch.setattr(pcb, "_persist_local", lambda *a, **k: None)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "sess-pf",
+                        "transcript_path": str(t),
+                        "cwd": str(tmp_path),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert "session=sess-pf trigger=auto outcome=persist-failed" in _read_hook_log(tmp_path)
+
+    def test_unhandled_error_still_heartbeats(self, tmp_path, monkeypatch):
+        # An exception mid-run still writes a heartbeat, re-stamped to record
+        # that it failed after the initial state (#962 MAJOR #2 + #6).
+        t = tmp_path / "t.jsonl"
+        t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+
+        def _boom(*a, **k):
+            raise RuntimeError("compose blew up")
+
+        monkeypatch.setattr(pcb, "_compose_markdown", _boom)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "sess-err",
+                        "transcript_path": str(t),
+                        "cwd": str(tmp_path),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert (
+            "session=sess-err trigger=auto outcome=error-after:unhandled-error"
+            in _read_hook_log(tmp_path)
+        )
+
+    def test_session_id_newline_is_escaped(self, tmp_path, monkeypatch):
+        # A `\n` in the stdin-sourced session_id must NOT split the heartbeat
+        # into a forged second line (#962 MAJOR #1).
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(json.dumps({"session_id": "real\ninjected outcome=supabase"})),
+        )
+        assert pcb.main() == 0
+        log = _read_hook_log(tmp_path)
+        # One physical line — the injected newline is escaped, not honoured.
+        assert len(log.splitlines()) == 1
+        assert (
+            "session=real\\ninjected outcome=supabase "
+            "trigger=unknown outcome=no-transcript-path"
+        ) in log

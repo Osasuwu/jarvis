@@ -412,6 +412,37 @@ def _persist_local(session_id: str, content: str) -> Path | None:
         return None
 
 
+# Heartbeat log is head-trimmed to its last _HOOK_LOG_KEEP_LINES once it grows
+# past _HOOK_LOG_MAX_BYTES, so a device with frequent compaction can't let it
+# accumulate without bound (#962 review MINOR #9).
+_HOOK_LOG_MAX_BYTES = 1_000_000  # ~1 MB
+_HOOK_LOG_KEEP_LINES = 500
+
+
+def _sanitize_log_field(value: str) -> str:
+    """Escape CR/LF so a hostile field can't forge extra heartbeat lines.
+
+    `session_id` and `trigger` come verbatim from hook stdin. A literal
+    newline would split one heartbeat into several forged lines — the exact
+    opposite of the diagnostic contract (#962 review MAJOR #1).
+    """
+    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+
+
+def _trim_hook_log(log_path: Path) -> None:
+    """Head-trim the heartbeat log to its last _HOOK_LOG_KEEP_LINES.
+
+    No-op until the file exceeds _HOOK_LOG_MAX_BYTES. Best-effort: a failure
+    here must never stop the heartbeat, so the single caller wraps it.
+    """
+    if not log_path.exists() or log_path.stat().st_size <= _HOOK_LOG_MAX_BYTES:
+        return
+    lines = log_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    if len(lines) <= _HOOK_LOG_KEEP_LINES:
+        return
+    log_path.write_text("".join(lines[-_HOOK_LOG_KEEP_LINES:]), encoding="utf-8")
+
+
 def _append_hook_log(message: str) -> None:
     """Heartbeat: one line per invocation to `.claude/session-snapshots/hook.log`.
 
@@ -419,14 +450,25 @@ def _append_hook_log(message: str) -> None:
     executed the hook" — the latter was diagnosable only by the absence of
     Supabase rows during the 2026-06-12 outage. Never raises.
     """
+    out_dir = _root / ".claude" / "session-snapshots"
+    log_path = out_dir / "hook.log"
     try:
-        out_dir = _root / ".claude" / "session-snapshots"
         out_dir.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        with (out_dir / "hook.log").open("a", encoding="utf-8") as f:
+        with log_path.open("a", encoding="utf-8") as f:
             f.write(f"{stamp} {message}\n")
-    except Exception:
-        pass
+    except Exception as e:
+        # The one function whose job is observability must itself be
+        # observable on failure (disk full, bad perms). stderr does not
+        # raise, so the "never raises" contract holds (#962 review MINOR #7).
+        print(f"[pre-compact] hook.log write failed: {e}", file=sys.stderr)
+        return
+    # Trim only after a successful append, so a trim failure can't cost us the
+    # heartbeat line we just wrote.
+    try:
+        _trim_hook_log(log_path)
+    except OSError as e:
+        print(f"[pre-compact] hook.log trim failed: {e}", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -470,10 +512,20 @@ def main() -> int:
         else:
             outcome = "persist-failed"
     except Exception as e:
-        # Never block compaction — log and move on.
+        # Never block compaction — log and move on. Re-stamp the outcome so the
+        # heartbeat records that an exception fired (and how far we got) instead
+        # of a stale value left over from a partially-completed persist (#962
+        # review MAJOR #2).
         print(f"[pre-compact] unhandled error: {e}", file=sys.stderr)
+        outcome = f"error-after:{outcome}"
     finally:
-        _append_hook_log(f"session={session_id} trigger={trigger} outcome={outcome}")
+        # Sanitize the stdin-sourced fields before they enter the log line;
+        # `outcome` is always one of our own literals — safe (#962 review MAJOR #1).
+        _append_hook_log(
+            f"session={_sanitize_log_field(session_id)} "
+            f"trigger={_sanitize_log_field(trigger)} "
+            f"outcome={outcome}"
+        )
     return 0
 
 
