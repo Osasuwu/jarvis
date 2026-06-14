@@ -401,7 +401,11 @@ def _persist_local(session_id: str, content: str) -> Path | None:
     try:
         out_dir = _root / ".claude" / "session-snapshots"
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_file = out_dir / f"{session_id}.md"
+        out_file = (out_dir / f"{session_id}.md").resolve()
+        # Guard against path traversal: session_id from untrusted JSON.
+        if not str(out_file).startswith(str(out_dir.resolve())):
+            print("[pre-compact] suspicious session_id in local fallback", file=sys.stderr)
+            return None
         # Use binary write to avoid Windows \n→\r\n translation, which would
         # inflate size past SIZE_BUDGET by one byte per newline.
         out_file.write_bytes(content.encode("utf-8"))
@@ -420,14 +424,14 @@ _HOOK_LOG_KEEP_LINES = 500
 
 
 def _sanitize_log_field(value: object) -> str:
-    """Escape CR/LF so a hostile field can't forge extra heartbeat lines.
+    """Escape CR/LF/NUL so a hostile field can't forge extra heartbeat lines.
 
     `session_id` and `trigger` come verbatim from hook stdin (untrusted JSON),
     so the value may not even be a `str` — `str(value)` coerces first. A literal
     newline would otherwise split one heartbeat into several forged lines, the
     exact opposite of the diagnostic contract.
     """
-    return str(value).replace("\n", "\\n").replace("\r", "\\r")
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x00", "\\x00")
 
 
 def _trim_hook_log(log_path: Path) -> None:

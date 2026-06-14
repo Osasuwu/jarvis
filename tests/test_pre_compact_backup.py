@@ -426,6 +426,10 @@ class TestAppendHookLog:
         # Must not raise despite the un-decodable existing content.
         pcb._append_hook_log("after-corruption")
         assert "hook.log trim failed" in capsys.readouterr().err
+        # Key invariant: append happens before trim, so even if trim fails the
+        # heartbeat line is written. Read as bytes to skip UTF-8 decode errors.
+        log_bytes = (out_dir / "hook.log").read_bytes()
+        assert b"after-corruption" in log_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -435,9 +439,8 @@ class TestMain:
     def test_missing_transcript_path_exits_zero(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"session_id": "x"})))
-        # No Supabase creds → would take the fallback branch, but transcript_path is empty
-        monkeypatch.setenv("SUPABASE_URL", "")
-        monkeypatch.setenv("SUPABASE_KEY", "")
+        # Missing transcript_path exits early with outcome=no-transcript-path;
+        # Supabase state doesn't matter because we don't reach persistence code.
         assert pcb.main() == 0
         assert "session=x trigger=unknown outcome=no-transcript-path" in _read_hook_log(tmp_path)
 
