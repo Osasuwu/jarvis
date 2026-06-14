@@ -387,7 +387,7 @@ class TestAppendHookLog:
         pcb._append_hook_log("must not raise")
 
     def test_write_failure_reports_to_stderr(self, tmp_path, monkeypatch, capsys):
-        # The observability log is itself observable on failure (#962 MINOR #7).
+        # The observability log is itself observable on failure.
         blocker = tmp_path / "blocker"
         blocker.write_text("x", encoding="utf-8")
         monkeypatch.setattr(pcb, "_root", blocker)
@@ -395,8 +395,8 @@ class TestAppendHookLog:
         assert "hook.log write failed" in capsys.readouterr().err
 
     def test_trims_when_oversized(self, tmp_path, monkeypatch):
-        # Bounded growth: once past the byte cap the log keeps only its tail
-        # (#962 MINOR #9). Shrink the constants so the test stays fast.
+        # Bounded growth: once past the byte cap the log keeps only its tail.
+        # Shrink the constants so the test stays fast.
         monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(pcb, "_HOOK_LOG_MAX_BYTES", 120)
         monkeypatch.setattr(pcb, "_HOOK_LOG_KEEP_LINES", 5)
@@ -410,6 +410,22 @@ class TestAppendHookLog:
         assert lines[-1].endswith("line-49")
         # …and the oldest forged-off entries are gone.
         assert "line-0 " not in log and "line-0\n" not in log
+
+    def test_trim_on_corrupted_log_does_not_raise(self, tmp_path, monkeypatch, capsys):
+        # A partially-written/corrupted hook.log makes _trim_hook_log's
+        # read_text(encoding="utf-8") raise UnicodeDecodeError — which is an
+        # Exception but NOT an OSError. The trim guard must catch it broadly so
+        # the heartbeat append still succeeds and the hook never exits non-zero.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_HOOK_LOG_MAX_BYTES", 8)
+        out_dir = tmp_path / ".claude" / "session-snapshots"
+        out_dir.mkdir(parents=True)
+        # Invalid UTF-8 (lone 0x80 continuation byte) over the byte cap so the
+        # subsequent append triggers a trim that must decode the bad bytes.
+        (out_dir / "hook.log").write_bytes(b"\x80" * 64)
+        # Must not raise despite the un-decodable existing content.
+        pcb._append_hook_log("after-corruption")
+        assert "hook.log trim failed" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +458,7 @@ class TestMain:
         )
         assert pcb.main() == 0
         # Full triplet, not just `outcome=` — keeps the heartbeat format
-        # contract auditable in line with every sibling test (#962 MINOR #8).
+        # contract auditable in line with every sibling test.
         assert "session=x trigger=unknown outcome=transcript-missing" in _read_hook_log(tmp_path)
 
     def test_supabase_fail_triggers_local_fallback(self, tmp_path, monkeypatch):
@@ -510,8 +526,8 @@ class TestMain:
         )
 
     def test_persist_failed_heartbeats(self, tmp_path, monkeypatch):
-        # Both persist paths fail → `outcome=persist-failed` (#962 MAJOR #6:
-        # this outcome value previously had zero coverage).
+        # Both persist paths fail → `outcome=persist-failed`. This outcome value
+        # previously had zero coverage.
         t = tmp_path / "t.jsonl"
         t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
         monkeypatch.setattr(pcb, "_root", tmp_path)
@@ -536,7 +552,7 @@ class TestMain:
 
     def test_unhandled_error_still_heartbeats(self, tmp_path, monkeypatch):
         # An exception mid-run still writes a heartbeat, re-stamped to record
-        # that it failed after the initial state (#962 MAJOR #2 + #6).
+        # that it failed after the initial state.
         t = tmp_path / "t.jsonl"
         t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
         monkeypatch.setattr(pcb, "_root", tmp_path)
@@ -567,7 +583,7 @@ class TestMain:
 
     def test_session_id_newline_is_escaped(self, tmp_path, monkeypatch):
         # A `\n` in the stdin-sourced session_id must NOT split the heartbeat
-        # into a forged second line (#962 MAJOR #1).
+        # into a forged second line.
         monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(
             sys,
@@ -582,3 +598,43 @@ class TestMain:
             "session=real\\ninjected outcome=supabase "
             "trigger=unknown outcome=no-transcript-path"
         ) in log
+
+    def test_trigger_newline_is_escaped(self, tmp_path, monkeypatch):
+        # `trigger` shares session_id's untrusted-stdin provenance and the same
+        # sanitizer — a `\n` here must not forge a second heartbeat line either.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps({"session_id": "s", "trigger": "auto\nforged outcome=supabase"})
+            ),
+        )
+        assert pcb.main() == 0
+        log = _read_hook_log(tmp_path)
+        assert len(log.splitlines()) == 1
+        assert "trigger=auto\\nforged outcome=supabase" in log
+
+
+class TestSanitizeLogField:
+    """Direct unit coverage for the security-adjacent `_sanitize_log_field`."""
+
+    def test_newline_escaped(self):
+        assert pcb._sanitize_log_field("a\nb") == "a\\nb"
+
+    def test_carriage_return_escaped(self):
+        # CR alone (no LF) overwrites the line on legacy terminals — a distinct
+        # escape path from `\n` that the through-main tests don't exercise.
+        assert pcb._sanitize_log_field("a\rb") == "a\\rb"
+
+    def test_crlf_escaped(self):
+        assert pcb._sanitize_log_field("a\r\nb") == "a\\r\\nb"
+
+    def test_clean_value_untouched(self):
+        assert pcb._sanitize_log_field("plain-value") == "plain-value"
+
+    def test_non_str_is_coerced(self):
+        # stdin JSON can yield a non-str (null/number); the annotation is widened
+        # to object precisely so the str() coerce is the documented contract.
+        assert pcb._sanitize_log_field(None) == "None"
+        assert pcb._sanitize_log_field(42) == "42"

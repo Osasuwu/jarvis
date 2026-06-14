@@ -414,17 +414,18 @@ def _persist_local(session_id: str, content: str) -> Path | None:
 
 # Heartbeat log is head-trimmed to its last _HOOK_LOG_KEEP_LINES once it grows
 # past _HOOK_LOG_MAX_BYTES, so a device with frequent compaction can't let it
-# accumulate without bound (#962 review MINOR #9).
+# accumulate without bound.
 _HOOK_LOG_MAX_BYTES = 1_000_000  # ~1 MB
 _HOOK_LOG_KEEP_LINES = 500
 
 
-def _sanitize_log_field(value: str) -> str:
+def _sanitize_log_field(value: object) -> str:
     """Escape CR/LF so a hostile field can't forge extra heartbeat lines.
 
-    `session_id` and `trigger` come verbatim from hook stdin. A literal
-    newline would split one heartbeat into several forged lines — the exact
-    opposite of the diagnostic contract (#962 review MAJOR #1).
+    `session_id` and `trigger` come verbatim from hook stdin (untrusted JSON),
+    so the value may not even be a `str` — `str(value)` coerces first. A literal
+    newline would otherwise split one heartbeat into several forged lines, the
+    exact opposite of the diagnostic contract.
     """
     return str(value).replace("\n", "\\n").replace("\r", "\\r")
 
@@ -460,14 +461,19 @@ def _append_hook_log(message: str) -> None:
     except Exception as e:
         # The one function whose job is observability must itself be
         # observable on failure (disk full, bad perms). stderr does not
-        # raise, so the "never raises" contract holds (#962 review MINOR #7).
+        # raise, so the "never raises" contract holds.
         print(f"[pre-compact] hook.log write failed: {e}", file=sys.stderr)
         return
     # Trim only after a successful append, so a trim failure can't cost us the
     # heartbeat line we just wrote.
     try:
         _trim_hook_log(log_path)
-    except OSError as e:
+    except Exception as e:
+        # Catch broadly, not just OSError: _trim_hook_log reads the log with
+        # read_text(), which raises UnicodeDecodeError (an Exception, not an
+        # OSError) on a corrupted/partially-written file. Letting that escape
+        # would propagate out of the finally-block heartbeat and force the hook
+        # to exit non-zero — breaking the never-blocks-compaction invariant.
         print(f"[pre-compact] hook.log trim failed: {e}", file=sys.stderr)
 
 
@@ -514,13 +520,12 @@ def main() -> int:
     except Exception as e:
         # Never block compaction — log and move on. Re-stamp the outcome so the
         # heartbeat records that an exception fired (and how far we got) instead
-        # of a stale value left over from a partially-completed persist (#962
-        # review MAJOR #2).
+        # of a stale value left over from a partially-completed persist.
         print(f"[pre-compact] unhandled error: {e}", file=sys.stderr)
         outcome = f"error-after:{outcome}"
     finally:
         # Sanitize the stdin-sourced fields before they enter the log line;
-        # `outcome` is always one of our own literals — safe (#962 review MAJOR #1).
+        # `outcome` is always one of our own literals — safe.
         _append_hook_log(
             f"session={_sanitize_log_field(session_id)} "
             f"trigger={_sanitize_log_field(trigger)} "
