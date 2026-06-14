@@ -478,6 +478,63 @@ function Format-RedactedError {
     return ($Message -replace [regex]::Escape($Secret), '<TOKEN-REDACTED>')
 }
 
+# Sandcastle tagged-error classes (node_modules/@ai-hero/sandcastle/dist/errors.js).
+# The orchestrate() loop returns cleanly on every *normal* termination (no
+# commits, no completion signal, max iterations all return a result). The only
+# way `npm run sandcastle` exits non-zero is one of these throwing -- so a
+# nightly `exit=1` is always a real crash, never a benign "nothing to do".
+# Surfacing the class into the outcome turns an opaque exit code into an
+# actionable signal (idle-timeout vs worktree-teardown vs API error) without
+# needing the Workshop-disk run.log. Order: most specific first (substring-safe
+# anyway, matches are on the literal class token).
+$script:SandcastleErrorClasses = @(
+    'AgentIdleTimeoutError', 'ContainerStartTimeoutError', 'MergeToHostTimeoutError',
+    'WorktreeError', 'DockerError', 'SyncError', 'SessionCaptureError',
+    'PromptError', 'AgentError', 'ExecError'
+)
+
+function Get-LogTail {
+    # Last N non-empty lines of the run.log -- the tail carries the thrown
+    # tagged-error stack from `npm run sandcastle`. Guards a missing/locked file
+    # (returns '') so the failure path never crashes while reporting a failure.
+    [CmdletBinding()]
+    param([string]$LogFile, [int]$Lines = 12)
+    if (-not $LogFile -or -not (Test-Path -LiteralPath $LogFile)) { return '' }
+    try {
+        $all = @(Get-Content -LiteralPath $LogFile -Encoding utf8 -ErrorAction Stop |
+            Where-Object { $_.Trim() })
+    } catch { return '' }
+    if (-not $all.Count) { return '' }
+    ($all | Select-Object -Last $Lines) -join "`n"
+}
+
+function Get-SandcastleErrorClass {
+    # First known tagged-error class mentioned in $Text (reason + log tail), or ''.
+    [CmdletBinding()]
+    param([string]$Text)
+    if (-not $Text) { return '' }
+    foreach ($cls in $script:SandcastleErrorClasses) {
+        if ($Text -match [regex]::Escape($cls)) { return $cls }
+    }
+    return ''
+}
+
+function Protect-LogTail {
+    # Defense-in-depth before a container log tail reaches Supabase: strip any
+    # known literal secrets, then redact generic token shapes by pattern. The
+    # agent is instructed never to print secrets, but a crash tail is untrusted.
+    [CmdletBinding()]
+    param([string]$Text, [string[]]$Secrets = @())
+    if (-not $Text) { return '' }
+    foreach ($s in $Secrets) {
+        if ($s) { $Text = $Text -replace [regex]::Escape($s), '<SECRET-REDACTED>' }
+    }
+    $Text = $Text -replace 'gh[pousr]_[A-Za-z0-9]{20,}', '<GH-TOKEN-REDACTED>'
+    $Text = $Text -replace 'github_pat_[A-Za-z0-9_]{20,}', '<GH-TOKEN-REDACTED>'
+    $Text = $Text -replace 'sk-ant-[A-Za-z0-9\-_]{20,}', '<ANTHROPIC-KEY-REDACTED>'
+    return $Text
+}
+
 function Send-TelegramAlert {
     [CmdletBinding()]
     param(
@@ -928,6 +985,7 @@ function Invoke-Watchdog {
     $branch = $null
     $iter = 0
     $partialReason = $null
+    $queueDrained = $false     # agent emitted the completion signal (queue empty)
     $tierCompleted = $null    # 'tier0' | 'tier1' | 'tier2:deepseek' | 'tier2:claude'
 
     while ($iter -lt $MaxIterations) {
@@ -992,6 +1050,12 @@ function Invoke-Watchdog {
 
         if (-not $invocation.ok) {
             $reason = if ($invocation.reason) { $invocation.reason } else { "exit=$($invocation.exitCode)" }
+            # Diagnose the crash from the run.log tail so a nightly `exit=1` is
+            # actionable from Supabase alone (the Workshop run.log is not
+            # reachable from the orchestrator host). Redact before persisting.
+            $logTail  = Get-LogTail -LogFile $logFile
+            $errClass = Get-SandcastleErrorClass -Text "$reason`n$logTail"
+            $logTail  = Protect-LogTail -Text $logTail -Secrets @($supabaseKey, $supabaseUrl, $tgToken)
             # Full chain failure: label the issue if we know which one was attempted.
             $labelApplied = $false
             if ($targetIssue -and $repoSlug) {
@@ -999,7 +1063,10 @@ function Invoke-Watchdog {
             }
             $totalUsage.tier = $tierUsed
             $totalUsage.too_large_for_local = $labelApplied
-            Record 'failure' "sandcastle invocation failed: $reason (tier=$tierUsed issue=$targetIssue label=$labelApplied)" $totalUsage $reason
+            if ($errClass) { $totalUsage.error_class = $errClass }
+            if ($logTail)  { $totalUsage.diag_tail   = $logTail }
+            $classNote = if ($errClass) { " class=$errClass" } else { '' }
+            Record 'failure' "sandcastle invocation failed: $reason (tier=$tierUsed issue=$targetIssue label=$labelApplied)$classNote" $totalUsage $reason
             throw "sandcastle invocation failed: $reason"
         }
 
@@ -1022,6 +1089,21 @@ function Invoke-Watchdog {
                 $totalUsage.cache_read_input_tokens    += [int]$it.usage.cacheReadInputTokens
                 $totalUsage.cache_creation_input_tokens+= [int]$it.usage.cacheCreationInputTokens
             }
+        }
+
+        # Honor the agent's completion signal (prompt.md §Done): it fires only
+        # when the AFK queue is drained -- nothing left to pick. Re-invoking on
+        # an empty queue is pure downside: wasted runs plus a fresh crash surface
+        # (e.g. an idle-timeout while the model sits on an empty queue), and a
+        # crash on any redundant iteration would overwrite this night's verdict
+        # with a spurious `failure` and discard the work already done. Stop here
+        # and let the success path record the run. (A flaky model that emits the
+        # signal early loses at most one extra issue this night; tomorrow's run
+        # picks it back up -- far cheaper than the manufactured-failure cascade.)
+        if ($r.completionSignal) {
+            $queueDrained = $true
+            Write-Host "[watchdog] agent signaled queue drained after iteration $iter -- stopping early."
+            break
         }
     }
 
@@ -1054,7 +1136,7 @@ function Invoke-Watchdog {
             Write-SandcastleDecisionMemory `
                 -SupabaseUrl $supabaseUrl -SupabaseKey $supabaseKey `
                 -Project 'redrobot' `
-                -Name "pytest-gate:$pytestReason:$branch" `
+                -Name "pytest-gate:${pytestReason}:$branch" `
                 -Description "pytest gate blocked sandcastle PR on $branch ($pytestReason)" `
                 -Content "Sandcastle run $runId blocked PR on branch $branch for redrobot. Reason: $pytestReason. $($pytestResult.summary)" `
                 -RunId $runId
@@ -1073,7 +1155,14 @@ function Invoke-Watchdog {
         return
     }
 
-    $summary = "success -- branch=$branch iterations=$iter commits=$($allCommits.Count)"
+    if ($queueDrained -and $allCommits.Count -eq 0) {
+        # Clean "nothing to do" heartbeat -- the queue was empty/all-attempted.
+        # Recorded as success (the run worked), not failure, so it neither
+        # pollutes the outcome log nor masks real crashes.
+        $summary = "success:idle -- queue drained, no eligible issues (iterations=$iter)"
+    } else {
+        $summary = "success -- branch=$branch iterations=$iter commits=$($allCommits.Count)"
+    }
     Record 'success' $summary $totalUsage ''
     Write-Host "[watchdog] $summary"
 }

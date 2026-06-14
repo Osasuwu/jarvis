@@ -17,6 +17,7 @@ __all__ = [
     "poller",
     "safety",
     "supabase_client",
+    "task_dispatch",
     "task_queue",
     "usage_probe",
     "wake_driver",
