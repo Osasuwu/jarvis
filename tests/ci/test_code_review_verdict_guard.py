@@ -256,9 +256,46 @@ def verdict_step(workflow_text) -> dict:
     return next(s for s in steps if s.get("name") == "Verify review verdict")
 
 
+@pytest.fixture(scope="module")
+def review_step(workflow_text) -> dict:
+    workflow = yaml.safe_load(workflow_text)
+    steps = workflow["jobs"]["review"]["steps"]
+    return next(s for s in steps if s.get("name") == "Run /code-review")
+
+
+class TestReviewStepBotGate:
+    def test_allowed_bots_wildcard_is_set(self, review_step):
+        # claude-code-action@v1's `allowed_bots` gate hard-fails on a Bot
+        # actor. Two legitimate bot triggers feed the `review` check:
+        # code-review-retry.yml (workflow_dispatch as github-actions[bot]) and
+        # merge-train.yml's update-branch (synchronize as the App token). With
+        # this unset, every retried / merge-train-updated PR jams the gate.
+        assert review_step["with"].get("allowed_bots") == "*", (
+            "Run /code-review must set allowed_bots: '*' — otherwise bot-"
+            "triggered runs (retry dispatch, merge-train synchronize) fail at "
+            "the action level and the `review` check goes permanently red. "
+            "Safe here: the job-level `if:` excludes fork PRs and "
+            "workflow_dispatch requires repo write access, so no untrusted "
+            "external actor can initiate this run."
+        )
+
+
 class TestVerdictStepWiring:
-    def test_step_exists_and_gates_on_pull_request(self, verdict_step):
-        assert verdict_step["if"] == "github.event_name == 'pull_request'"
+    def test_step_gates_on_pull_request_and_dispatch(self, verdict_step):
+        # MUST also run on workflow_dispatch: the retry path
+        # (code-review-retry.yml) dispatches with --ref <head_branch>, so its
+        # check attaches to the PR head SHA and feeds the `review` gate. Gating
+        # to pull_request only would let a retry that surfaced findings post
+        # them but skip this step → the run goes green → auto-merge with
+        # findings. Dormant only while the allowed_bots jam made retries fail
+        # at the action level; once that's fixed, this gate must enforce on the
+        # dispatch path too.
+        gate = verdict_step["if"]
+        assert "github.event_name == 'pull_request'" in gate
+        assert "github.event_name == 'workflow_dispatch'" in gate, (
+            "Verdict must enforce on the retry (workflow_dispatch) path, not "
+            "just pull_request — else the retry path is an auto-merge bypass."
+        )
 
     def test_selector_matches_title_variants_not_literal_prefix(self, verdict_step):
         run = verdict_step["run"]
