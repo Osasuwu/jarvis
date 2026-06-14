@@ -19,7 +19,7 @@ jobs:
     if: |
       github.event_name == 'workflow_dispatch' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-       github.actor != 'dependabot[bot]')
+       github.event.pull_request.user.login != 'dependabot[bot]')
     runs-on: {{ runs_on }}
     permissions:
       contents: read
@@ -46,6 +46,7 @@ jobs:
         uses: {{ code_review_marketplace }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "*"
           plugin_marketplaces: ./.claude/marketplace
           plugins: code-review@jarvis-fork-plugins
           prompt: |
@@ -66,7 +67,8 @@ jobs:
     needs: [attempt-1]
     if: |
       always() && needs.attempt-1.result == 'failure' &&
-      (github.event.pull_request.head.repo.full_name == github.repository)
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: {{ runs_on }}
     permissions:
       contents: read
@@ -93,6 +95,7 @@ jobs:
         uses: {{ code_review_marketplace }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "*"
           plugin_marketplaces: ./.claude/marketplace
           plugins: code-review@jarvis-fork-plugins
           prompt: |
@@ -111,7 +114,7 @@ jobs:
   verify-verdict:
     name: verify-verdict
     needs: [attempt-1, attempt-2]
-    if: always() && github.event_name == 'pull_request'
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
     runs-on: {{ runs_on }}
     permissions:
       pull-requests: read
@@ -119,19 +122,26 @@ jobs:
       - name: Verify review verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
-          body=$(gh api "repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments" --paginate \
-            --jq 'map(select(.body | startswith("### Code review"))) | .[-1].body // ""')
+          # Selection happens in standalone jq, not gh's --jq:
+          # gh rejects --slurp with --jq, and without slurping --jq runs per
+          # page so .[-1] is per-page latest not global. Paginated arrays
+          # are flattened with add after slurping all pages.
+          body=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            | jq -rs 'add | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i"))) | (.[-1].body // "")')
 
           if [ -z "$body" ]; then
             echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
             exit 0
           fi
 
-          if grep -qE '^No issues found\.?\s*$' <<<"$body"; then
-            echo "::notice::Code review clean."
-            exit 0
+          # Findings checks run before clean check: a findings comment may
+          # contain incidental "No issues found." — pass must never shadow fail.
+          if grep -qiE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|MINOR|BLOCKING)\b' <<<"$body"; then
+            echo "::error::Code review posted severity findings sections (CRITICAL/MAJOR/MINOR/BLOCKING); blocking auto-merge until addressed."
+            exit 1
           fi
 
           if grep -qE 'Found [0-9]+ issues?:' <<<"$body"; then
@@ -140,5 +150,10 @@ jobs:
             exit 1
           fi
 
-          echo "::warning::Could not parse /code-review verdict from last comment. Failing for safety."
+          if grep -qE '^No issues found\.' <<<"$body"; then
+            echo "::notice::Code review clean."
+            exit 0
+          fi
+
+          echo "::error::Could not parse /code-review verdict from latest review comment. Failing closed."
           exit 1

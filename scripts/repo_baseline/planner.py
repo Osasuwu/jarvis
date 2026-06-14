@@ -39,7 +39,9 @@ class Action:
     kind: ActionKind
     path: str
     content: Optional[str] = None
-    """File content (for WRITE_FILE). None for other kinds."""
+    """File content (for WRITE_FILE). Always None until render phase —
+    the Executor must call Renderer.render() to populate this field
+    before file mutations. Reserved for future slice."""
 
     file_class: Optional[str] = None
     """File class for traceability (managed/language_test/repo_custom)."""
@@ -79,6 +81,7 @@ class Planner:
         2. Check-context sync
         """
         actions: List[Action] = []
+        seen_paths: set[str] = set()
 
         # ── WRITE_FILE for managed files ──────────────────────────────
         for path in sorted(self.manifest.resolved_managed_files):
@@ -88,14 +91,17 @@ class Planner:
                 path=path,
                 file_class=fclass.value,
             ))
+            seen_paths.add(path)
 
         # ── WRITE_FILE for LANGUAGE-TEST files ────────────────────────
         for path in sorted(self.manifest.language_test_files):
-            actions.append(Action(
-                kind=ActionKind.WRITE_FILE,
-                path=path,
-                file_class=FileClass.LANGUAGE_TEST.value,
-            ))
+            if path not in seen_paths:
+                actions.append(Action(
+                    kind=ActionKind.WRITE_FILE,
+                    path=path,
+                    file_class=FileClass.LANGUAGE_TEST.value,
+                ))
+                seen_paths.add(path)
 
         # ── DELETE_FILE for files that are in actual but not in any list ──
         actual_paths = set(actual.files.keys())
@@ -108,11 +114,11 @@ class Planner:
 
         # ── SET_CHECK_CONTEXTS ─────────────────────────────────────────
         required = self.manifest.resolve_axis("required_check_contexts")
-        if required:
+        if required is not None:
             actions.append(Action(
                 kind=ActionKind.SET_CHECK_CONTEXTS,
                 path="<repo-settings>",
-                context_names=list(required),
+                context_names=list(required) if required else [],
             ))
 
         return actions

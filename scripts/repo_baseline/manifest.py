@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional
 
 
 class FileClass(enum.Enum):
@@ -85,12 +85,12 @@ class Manifest:
 
     # ── Axis overrides (None = use profile default) ───────────────────
     runs_on: Optional[List[str]] = None
-    ci_language: str = ""
-    code_review_marketplace: str = ""
+    ci_language: Optional[str] = None
+    code_review_marketplace: Optional[str] = None
     dependabot_ecosystems: Optional[List[str]] = None
     auto_merge: Optional[bool] = None
     branch_protection: Optional[bool] = None
-    test_extras: str = ""
+    test_extras: Optional[str] = None
 
     # ── Explicit check-contexts (required axis — no fallback) ──────────
     required_check_contexts: List[str] = field(default_factory=list)
@@ -105,7 +105,7 @@ class Manifest:
     ])
 
     # ── Profiles (class constant — not a field) ────────────────────────
-    _PROFILES: Dict[str, AxisProfile] = field(default_factory=lambda: {
+    _PROFILES: ClassVar[Dict[str, AxisProfile]] = {
         "full": AxisProfile(),
         "minimal": AxisProfile(
             auto_merge=False,
@@ -117,7 +117,7 @@ class Manifest:
                 ".github/dependabot.yml",
             ],
         ),
-    })
+    }
 
     @classmethod
     def from_dict(cls, data: dict) -> Manifest:
@@ -135,12 +135,12 @@ class Manifest:
             profile=data.get("profile", "full"),
             visibility=data.get("visibility", "public"),
             runs_on=data.get("runs_on"),
-            ci_language=data.get("ci_language", ""),
-            code_review_marketplace=data.get("code_review_marketplace", ""),
+            ci_language=data.get("ci_language"),
+            code_review_marketplace=data.get("code_review_marketplace"),
             dependabot_ecosystems=data.get("dependabot_ecosystems"),
             auto_merge=data.get("auto_merge"),
             branch_protection=data.get("branch_protection"),
-            test_extras=data.get("test_extras", ""),
+            test_extras=data.get("test_extras"),
             required_check_contexts=data.get("required_check_contexts", []),
             managed_files=data.get("managed_files"),
             custom_files=data.get("custom_files", []),
@@ -161,8 +161,9 @@ class Manifest:
         if key == "managed_files":
             return _resolve_managed_files(override, self.profile, self._PROFILES)
 
-        # Explicit None or empty → use profile default
-        if override is None or (isinstance(override, (str, list)) and not override):
+        # Only None (not set) → use profile default. Explicit empty list/string
+        # is a valid override meaning "clear this field".
+        if override is None:
             return profile_val
         return override
 

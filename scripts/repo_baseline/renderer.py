@@ -7,14 +7,14 @@ Unknown or missing axes that are not in ``OPTIONAL_AXES`` are a hard error.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Set
+from typing import Any
 
 from .manifest import Manifest
 
 _PATTERN = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 # Axes that MAY be omitted (template silently skips them).
-_OPTIONAL_AXES: Set[str] = {
+_OPTIONAL_AXES: set[str] = {
     "test_extras",  # empty-string OK — no extra install
 }
 
@@ -57,11 +57,8 @@ class Renderer:
 
         Raises ``RenderError`` for unknown or missing mandatory axes.
         """
-        seen: Set[str] = set()
-
         def _sub(m: re.Match) -> str:
             key = m.group(1)
-            seen.add(key)
             val = self.resolve(key, manifest)
             if val is None and key not in _OPTIONAL_AXES:
                 raise RenderError(
@@ -71,8 +68,4 @@ class Renderer:
             return self._format(key, val)
 
         result = _PATTERN.sub(_sub, template)
-
-        # Warn about unused axes — not an error, could be intentional.
-        # (No-op in production; tests can assert specific warnings.)
-
         return result
