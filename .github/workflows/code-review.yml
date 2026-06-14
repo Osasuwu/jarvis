@@ -57,6 +57,21 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: ./.claude/marketplace
           plugins: code-review@jarvis-fork-plugins
+          # claude-code-action@v1 added an `allowed_bots` gate that hard-fails
+          # ("Workflow initiated by non-human actor") when the triggering actor
+          # is a Bot. Two LEGITIMATE bot triggers exist in this pipeline and
+          # both jammed the `review` check across every in-flight PR:
+          #   - code-review-retry.yml re-dispatches via workflow_dispatch
+          #     (actor: github-actions[bot]) on a failed run.
+          #   - merge-train.yml's update-branch fires a `synchronize` whose
+          #     actor is the merge-train GitHub App token (a [bot] login).
+          # "*" is safe here despite the action's public-repo warning: the
+          # job-level `if:` requires head.repo.full_name == github.repository,
+          # so fork/external PRs never reach this step, and workflow_dispatch /
+          # branch pushes both require repo write access. No untrusted external
+          # actor can initiate this run. Allowed-tools are also locked
+          # read-only below. Uniform across owned repos for the M48 baseline.
+          allowed_bots: "*"
           prompt: |
             Run /code-review for PR #${{ steps.pr.outputs.number }} in repo ${{ github.repository }}.
 
@@ -104,8 +119,19 @@ jobs:
       #     bots comment too) and findings-shaped selection would wrongly
       #     gate on `### Simplification opportunities` comments, which are
       #     informational-only by design (see event-dispatch.yml).
+      #
+      # Runs on BOTH pull_request and workflow_dispatch. The dispatch path is
+      # the retry (code-review-retry.yml dispatches with --ref <head_branch>,
+      # so its check attaches to the PR head SHA and feeds the `review` gate).
+      # If the verdict step were gated to pull_request only, a retry that
+      # surfaced findings would post them but skip this gate → the run goes
+      # green → auto-merge with findings. That hole was dormant only because
+      # the `allowed_bots` jam made retries fail at the action level; closing
+      # that jam (above) makes retries succeed, so this gate must enforce on
+      # the dispatch path too. steps.pr.outputs.number resolves on dispatch
+      # via inputs.pr_number, so the lookup works for both events.
       - name: Verify review verdict
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
