@@ -50,7 +50,13 @@ class RenameAction:
 
 @dataclass(frozen=True)
 class MergeAction:
-    """Consolidate multiple source labels into a single target."""
+    """Consolidate multiple source labels into a single target.
+
+    Execution strategy differs from RenameAction: an executor must reassign
+    all issues/PRs bearing each source label to the target, then delete the
+    source labels (a multi-step destructive operation). Do not use ``gh label
+    edit --name`` for merge actions — that only works for renames.
+    """
 
     source_names: tuple[str, ...]
     target_name: str
@@ -58,7 +64,13 @@ class MergeAction:
 
 @dataclass(frozen=True)
 class AddAction:
-    """Create a clean label that does not yet exist on the repo."""
+    """Create a clean label that does not yet exist on the repo.
+
+    Executor contract: resolve the label's color and description from the
+    canonical schema by calling clean_label_by_name(label_name). The planner
+    carries only the name; the executor fills in the color/description when
+    applying the action.
+    """
 
     label_name: str
 
@@ -136,7 +148,11 @@ class LabelMigrator:
         mapping: dict[str, str] | None = None,
     ):
         self._clean_names: set[str] = {lb.name for lb in clean_schema}
-        self._mapping: dict[str, str] = mapping or {}
+        self._clean_labels_by_name: dict[str, CleanLabel] = {
+            lb.name: lb for lb in clean_schema
+        }
+        # Copy the mapping dict to prevent caller mutation bypassing validation.
+        self._mapping: dict[str, str] = dict(mapping) if mapping is not None else {}
 
         # Fail fast on mapping targets that don't exist in the clean schema.
         # Without this, a typo (e.g. "priorty:high") silently produces a
@@ -195,26 +211,29 @@ class LabelMigrator:
 
         # Group mapped labels by their target clean name.
         target_to_sources: dict[str, list[str]] = {}
-        for actual_name in mapped:
+        for actual_name in sorted(mapped):  # Deterministic iteration order
             target = self._mapping[actual_name]
             target_to_sources.setdefault(target, []).append(actual_name)
 
         renames: list[RenameAction] = []
         merges: list[MergeAction] = []
-        for target, sources in target_to_sources.items():
-            if len(sources) == 1:
-                # Single source → rename (or no-op if already the same).
-                src = sources[0]
-                if src != target:
-                    renames.append(RenameAction(old_name=src, new_name=target))
-            else:
-                # Multiple sources → merge into target.
+        for target in sorted(target_to_sources.keys()):  # Deterministic order
+            sources = target_to_sources[target]
+            # If the target is already in the actual set or there are multiple
+            # sources, emit a merge action. A rename would fail (target already
+            # exists) or lose information (multiple sources mapping to one).
+            if target in already_clean or len(sources) > 1:
                 merges.append(
                     MergeAction(
                         source_names=tuple(sorted(sources)),
                         target_name=target,
                     )
                 )
+            else:
+                # Single source, target not yet in actual → rename.
+                src = sources[0]
+                if src != target:
+                    renames.append(RenameAction(old_name=src, new_name=target))
 
         # Clean labels not yet present and not already targeted by a
         # rename/merge.

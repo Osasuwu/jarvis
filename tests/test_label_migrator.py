@@ -82,11 +82,11 @@ class TestRename:
         """Actual label mapped to a clean label with different name → rename."""
         migrator = LabelMigrator(
             clean_schema=_schema("area:quality"),
-            mapping={"area:ci-quality": "area:quality"},
+            mapping={"old-quality": "area:quality"},
         )
-        plan = migrator.plan(_actual("area:ci-quality"))
+        plan = migrator.plan(_actual("old-quality"))
         assert plan.renames == (
-            RenameAction(old_name="area:ci-quality", new_name="area:quality"),
+            RenameAction(old_name="old-quality", new_name="area:quality"),
         )
         assert plan.merges == ()
         assert plan.adds == ()
@@ -104,6 +104,26 @@ class TestRename:
         # since it's already the target of the rename.
         added_names = {a.label_name for a in plan.adds}
         assert "needs-research" not in added_names
+
+    def test_rename_when_target_already_in_actual_produces_merge(self):
+        """When target is already in actual, emit merge not rename (avoid 422).
+
+        This tests the CRITICAL M1 finding: if actual contains both a source
+        label and its rename target simultaneously, the planner must emit a
+        MergeAction (re-tag + delete) instead of a RenameAction that GitHub
+        would reject with HTTP 422 (name already in use).
+        """
+        migrator = LabelMigrator(
+            clean_schema=_schema("task"),
+            mapping={"old-task": "task"},
+        )
+        plan = migrator.plan(_actual("task", "old-task"))
+        # No rename — would fail on GitHub
+        assert plan.renames == ()
+        # Instead, merge old-task into task
+        assert plan.merges == (MergeAction(source_names=("old-task",), target_name="task"),)
+        assert plan.adds == ()
+        assert plan.orphans == ()
 
     def test_already_matching_no_rename(self):
         """Actual label already matching clean name → no action."""

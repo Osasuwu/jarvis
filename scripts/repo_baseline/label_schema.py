@@ -7,6 +7,7 @@ tier, special, type.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -46,7 +47,7 @@ CLEAN_LABELS: list[CleanLabel] = [
     CleanLabel("status:blocked", "b60205", "Blocked", "status"),
     CleanLabel(
         "status:children-done",
-        "0e8a16",
+        "85e89d",
         "All child issues closed",
         "status",
     ),
@@ -103,27 +104,27 @@ CLEAN_LABELS: list[CleanLabel] = [
     # CLAUDE.md; renaming to needs:* would break every existing issue's
     # association. The schema mirrors reality; do not "normalize" the dash.
     CleanLabel(
-        "needs-research", "ededed", "Needs investigation", "needs"
+        "needs-research", "f0f8f0", "Needs investigation", "needs"
     ),
     CleanLabel(
         "needs-grill",
-        "fbca04",
+        "fdd835",
         "Needs /grill before implementation",
         "needs",
     ),
     CleanLabel(
-        "needs-prd", "fbca04", "Needs PRD before slicing", "needs"
+        "needs-prd", "ffc844", "Needs PRD before slicing", "needs"
     ),
     # ── Tier ──────────────────────────────────────────────────────────
     CleanLabel(
         "tier:1-auto",
-        "0e8a16",
+        "51dd5f",
         "Tier 1: auto-dispatch",
         "tier",
     ),
     CleanLabel(
         "tier:2-review",
-        "fbca04",
+        "ffc844",
         "Tier 2: owner review required",
         "tier",
     ),
@@ -136,13 +137,13 @@ CLEAN_LABELS: list[CleanLabel] = [
     # ── Special ───────────────────────────────────────────────────────
     CleanLabel(
         "sandcastle",
-        "1d76db",
+        "0052cc",
         "AFK queue: safe for sandcastle agent",
         "special",
     ),
     CleanLabel(
-        "unsafe-for-AFK",
-        "b60205",
+        "unsafe-for-afk",
+        "e92c42",
         "Not safe for sandcastle agent",
         "special",
     ),
@@ -154,10 +155,22 @@ CLEAN_LABELS: list[CleanLabel] = [
         "draft", "c5def5", "Rough idea, not ready for triage", "type"
     ),
     CleanLabel("dependencies", "0366d6", "Dependency updates", "type"),
-    CleanLabel("github_actions", "000000", "GitHub Actions code", "type"),
+    CleanLabel("github-actions", "000000", "GitHub Actions code", "type"),
     CleanLabel("python", "2b67c6", "Python code", "type"),
 ]
 
+
+# Validate the canonical schema at import time.
+_HEX6 = re.compile(r"^[0-9a-f]{6}$")
+_names = [lb.name for lb in CLEAN_LABELS]
+assert len(_names) == len(set(_names)), (
+    f"Duplicate label names in CLEAN_LABELS: "
+    f"{[n for n in _names if _names.count(n) > 1]}"
+)
+for lb in CLEAN_LABELS:
+    assert _HEX6.match(lb.color), (
+        f"{lb.name}: color {lb.color!r} must be 6 lowercase hex chars"
+    )
 
 # Built once at import — O(1) name lookup instead of a linear scan per call.
 _CLEAN_BY_NAME: dict[str, CleanLabel] = {lb.name: lb for lb in CLEAN_LABELS}
