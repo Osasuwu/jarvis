@@ -498,20 +498,23 @@ def main():
     except Exception:
         silent_exit()
 
+    # Derive signal label from RecallHit source attribution BEFORE the
+    # ALLOWED_TYPES filter. This ensures the header note reflects pipeline
+    # activity (which legs fired, RRF fusion) regardless of what survives
+    # the type post-filter. If dual-hit rows happen to carry excluded types,
+    # has_dual stays True and the signal reads "semantic+keyword (RRF)" —
+    # truthful about what the pipeline did (#507).
+    has_dual = any(h.memory.get("_rrf_score") is not None for h in hits)
+    has_sem = any(h.source == "semantic" for h in hits)
+    has_kw = any(h.source == "keyword" for h in hits) or has_dual
+    linked_count = sum(1 for h in hits if h.source == "linked")
+
     # Post-filter by ALLOWED_TYPES (hook caller policy).
     # user/project memories are loaded by scripts/session-context.py at
     # session start and excluded here to avoid duplication.
     hits = [h for h in hits if h.memory.get("type") in ALLOWED_TYPES]
     if not hits:
         silent_exit()
-
-    # Derive signal label from RecallHit source attribution.
-    # Dual-hit rows (both legs) carry _rrf_score on the raw memory dict;
-    # source="semantic" for dual-hits (rrf_merge keeps the semantic row).
-    has_dual = any(h.memory.get("_rrf_score") is not None for h in hits)
-    has_sem = any(h.source == "semantic" for h in hits)
-    has_kw = any(h.source == "keyword" for h in hits) or has_dual
-    linked_count = sum(1 for h in hits if h.source == "linked")
     signal = (
         "semantic+keyword (RRF)"
         if (has_sem and has_kw)

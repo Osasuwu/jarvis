@@ -25,10 +25,12 @@ import logging
 import os
 import shutil
 import subprocess
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from agents.scope_hash import _hash_scope_files  # re-export — see issue #773
+from agents.scope_hash import _hash_scope_files  # noqa: F401 — re-export, see issue #773
+from agents.usage_probe import UsageProbe, read_usage
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +43,10 @@ _SENSITIVE_ENV_KEYS: frozenset[str] = frozenset(
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_API_KEY",
+        # A base-url redirect is a billing trap too: it can point the spawned
+        # `claude -p` at a metered API gateway instead of the Max session.
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_BASE_URL",
     }
 )
 
@@ -115,17 +121,13 @@ def _resolve_claude_binary(override: str | None = None) -> str:
     if override:
         if os.path.exists(override):
             return override
-        raise FileNotFoundError(
-            f"claude binary override does not exist: {override!r}"
-        )
+        raise FileNotFoundError(f"claude binary override does not exist: {override!r}")
 
     env_path = os.environ.get("JARVIS_CLAUDE_BIN")
     if env_path:
         if os.path.exists(env_path):
             return env_path
-        raise FileNotFoundError(
-            f"JARVIS_CLAUDE_BIN points to a missing file: {env_path!r}"
-        )
+        raise FileNotFoundError(f"JARVIS_CLAUDE_BIN points to a missing file: {env_path!r}")
 
     found = shutil.which("claude")
     if found:
@@ -167,22 +169,60 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+@dataclass(frozen=True)
+class SpawnResult:
+    """Outcome of a :func:`spawn` call.
+
+    ``proc`` is ``None`` when the spawn was refused (throttled). The caller
+    can distinguish throttled from failed by checking ``throttled``.
+    """
+
+    proc: subprocess.Popen[str] | None
+    throttled: bool = False
+    reason: str | None = None
+
+
 def spawn(
     task_text: str,
     *,
     stderr_log_dir: str | None = None,
     popen: Any = None,  # noqa: ANN401 — injectable for tests
-) -> subprocess.Popen[str]:
+    probe: UsageProbe | None = None,
+) -> SpawnResult:
     """Fire-and-forget spawn of ``claude -p <task_text>``.
 
-    Returns the :class:`subprocess.Popen` handle. The caller does not wait;
-    the child session writes its own outcomes. Stderr is captured to a log
-    file (never ``DEVNULL``) so silent failures are observable.
+    Before spawning, the quota probe is consulted. If the probe reports
+    near-exhaustion, the spawn is refused and the caller receives a
+    :class:`SpawnResult` with ``throttled=True`` — distinguishable from a
+    launch failure.
+
+    Returns a :class:`SpawnResult`. When ``result.proc`` is not ``None``,
+    the caller does not wait; the child session writes its own outcomes.
+    Stderr is captured to a log file (never ``DEVNULL``) so silent failures
+    are observable.
 
     ``popen`` is injectable so tests can capture the env dict without
     shelling out to a real ``claude`` binary; production wiring goes through
     :func:`subprocess.Popen` directly.
+
+    ``probe`` is injectable for tests wanting to control the quota reading;
+    defaults to the standard :func:`read_usage` chain.
     """
+    # Pre-spawn quota gate — refuse when near exhaustion (false-safe:
+    # a probe error also reads as near-exhaustion, never as "plenty").
+    reading = read_usage(probe=probe)
+    if reading.near_exhaustion:
+        logger.warning(
+            "spawn refused — quota near-exhaustion (used=%d/%d)",
+            reading.used,
+            reading.total,
+        )
+        return SpawnResult(
+            proc=None,
+            throttled=True,
+            reason=f"quota near-exhaustion: used {reading.used}/{reading.total}",
+        )
+
     env = _sanitize_env()
     argv = [
         _resolve_claude_binary(),
@@ -222,4 +262,4 @@ def spawn(
         stderr_path,
         argv,
     )
-    return proc
+    return SpawnResult(proc=proc, throttled=False)
