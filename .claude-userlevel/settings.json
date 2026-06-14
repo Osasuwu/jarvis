@@ -216,8 +216,8 @@
   },
   "fallbackModel": "claude-sonnet-4-6",
   "statusLine": {
-    "type": "inline",
-    "format": "{model} | ctx {context_usage}% | {git_branch}"
+    "type": "command",
+    "command": "python scripts/statusline.py"
   },
   "skillOverrides": {
     "setup-tasks": "name-only",
