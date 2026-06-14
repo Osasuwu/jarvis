@@ -1,10 +1,16 @@
 """Tests for the LabelMigrator pure planner.
 
 Covers all four migration behaviors + routine mode through the public
-``plan()`` interface (schema + snapshot in → plan out).
+``plan()`` interface (schema + snapshot in → plan out), plus canonical-schema
+invariants and plan-object flags.
+
+Plan collection fields are tuples (immutable value object), so equality
+assertions compare against tuples, not lists.
 """
 
 from __future__ import annotations
+
+import pytest
 
 from repo_baseline.label_migrator import (
     ActualLabel,
@@ -14,7 +20,44 @@ from repo_baseline.label_migrator import (
     OrphanLabel,
     RenameAction,
 )
-from repo_baseline.label_schema import CleanLabel, CLEAN_LABELS
+from repo_baseline.label_schema import (
+    CleanLabel,
+    CLEAN_LABELS,
+    clean_label_by_name,
+    clean_label_names,
+)
+
+
+# ── Canonical schema invariants ──────────────────────────────────────
+
+
+class TestSchemaInvariants:
+    def test_no_epic_label_in_clean_schema(self):
+        """'epic' must not be a canonical label.
+
+        CLAUDE.md decision 2a7ae10e: milestone is the only grouping
+        primitive — the term 'epic' is not used. Shipping an 'epic' label
+        into the canonical schema would create it on every owned repo via
+        the executor, permanently contradicting the convention.
+        """
+        assert "epic" not in clean_label_names()
+        assert clean_label_by_name("epic") is None
+        assert all(lb.name != "epic" for lb in CLEAN_LABELS)
+
+    def test_clean_hex_colors_are_lowercase(self):
+        """GitHub normalizes label colors to lowercase; the canonical
+        schema must match so drift-detection string comparison doesn't
+        report false positives on every sync run."""
+        for lb in CLEAN_LABELS:
+            assert lb.color == lb.color.lower(), (
+                f"{lb.name} has non-lowercase color {lb.color!r}"
+            )
+
+    def test_clean_label_by_name_round_trips(self):
+        """The O(1) lookup returns the same object present in CLEAN_LABELS."""
+        for lb in CLEAN_LABELS:
+            assert clean_label_by_name(lb.name) is lb
+        assert clean_label_by_name("definitely-not-a-label") is None
 
 
 # ── Fixture helpers ──────────────────────────────────────────────────
@@ -42,12 +85,12 @@ class TestRename:
             mapping={"area:ci-quality": "area:quality"},
         )
         plan = migrator.plan(_actual("area:ci-quality"))
-        assert plan.renames == [
-            RenameAction(old_name="area:ci-quality", new_name="area:quality")
-        ]
-        assert plan.merges == []
-        assert plan.adds == []
-        assert plan.orphans == []
+        assert plan.renames == (
+            RenameAction(old_name="area:ci-quality", new_name="area:quality"),
+        )
+        assert plan.merges == ()
+        assert plan.adds == ()
+        assert plan.orphans == ()
 
     def test_rename_preserves_identity(self):
         """Plan emits rename, never delete+create (no AddAction for renamed)."""
@@ -69,10 +112,10 @@ class TestRename:
             mapping={},
         )
         plan = migrator.plan(_actual("priority:high"))
-        assert plan.renames == []
-        assert plan.merges == []
-        assert plan.adds == []
-        assert plan.orphans == []
+        assert plan.renames == ()
+        assert plan.merges == ()
+        assert plan.adds == ()
+        assert plan.orphans == ()
 
 
 # ── Collision-on-target → merge ──────────────────────────────────────
@@ -89,13 +132,13 @@ class TestMerge:
             },
         )
         plan = migrator.plan(_actual("test-audit", "area:ci-quality"))
-        assert plan.merges == [
+        assert plan.merges == (
             MergeAction(
-                source_names=["area:ci-quality", "test-audit"],
+                source_names=("area:ci-quality", "test-audit"),
                 target_name="area:quality",
-            )
-        ]
-        assert plan.renames == []
+            ),
+        )
+        assert plan.renames == ()
         # area:quality already targeted by the merge → not in adds.
         added_names = {a.label_name for a in plan.adds}
         assert "area:quality" not in added_names
@@ -121,7 +164,7 @@ class TestMerge:
             "quality-old",
             "test-audit",
         ]
-        assert plan.renames == []
+        assert plan.renames == ()
 
     def test_mix_rename_and_merge(self):
         """One rename + one merge coexist when mapping cardinalities differ."""
@@ -161,8 +204,16 @@ class TestOrphan:
         assert len(plan.orphans) == 1
         assert plan.orphans[0] == OrphanLabel(name="some-adhoc-label")
         # "task" is already clean → no orphan.
-        assert plan.renames == []
-        assert plan.merges == []
+        assert plan.renames == ()
+        assert plan.merges == ()
+
+    def test_orphan_carries_default_reason(self):
+        """Orphan reason is populated so an executor can surface *why* a
+        label is confirm-required (pins MINOR-10 — the field was previously
+        never asserted, so a default-reason change would go unnoticed)."""
+        migrator = LabelMigrator(clean_schema=_schema("task"), mapping={})
+        plan = migrator.plan(_actual("task", "adhoc"))
+        assert plan.orphans[0].reason == "No mapping to clean schema"
 
     def test_multiple_orphans_listed(self):
         """Multiple unmapped labels → all flagged."""
@@ -183,7 +234,7 @@ class TestOrphan:
         )
         plan = migrator.plan(_actual("urgent"))
         # "urgent" has a mapping → no orphan; becomes a rename.
-        assert plan.orphans == []
+        assert plan.orphans == ()
         assert len(plan.renames) == 1
 
     def test_no_orphans_when_all_mapped(self):
@@ -196,7 +247,7 @@ class TestOrphan:
             },
         )
         plan = migrator.plan(_actual("urgent", "chore"))
-        assert plan.orphans == []
+        assert plan.orphans == ()
 
 
 # ── Add behaviour ────────────────────────────────────────────────────
@@ -221,7 +272,85 @@ class TestAdd:
             mapping={},
         )
         plan = migrator.plan(_actual("task", "draft"))
-        assert plan.adds == []
+        assert plan.adds == ()
+
+
+# ── Mapping validation ───────────────────────────────────────────────
+
+
+class TestMappingValidation:
+    def test_unknown_mapping_target_rejected(self):
+        """A mapping target not present in the clean schema is rejected at
+        construction time — a typo'd target must not silently produce a
+        rename toward a non-existent label (MAJOR-3)."""
+        with pytest.raises(ValueError, match="not present in clean schema"):
+            LabelMigrator(
+                clean_schema=_schema("priority:high"),
+                mapping={"urgent": "priorty:high"},  # typo in target
+            )
+
+    def test_valid_mapping_target_accepted(self):
+        """A mapping target present in the clean schema constructs cleanly."""
+        migrator = LabelMigrator(
+            clean_schema=_schema("priority:high"),
+            mapping={"urgent": "priority:high"},
+        )
+        assert migrator is not None
+
+
+# ── Clean-name-also-mapped interaction (MAJOR 5) ─────────────────────
+
+
+class TestCleanNameAlsoMapped:
+    def test_clean_named_label_not_renamed_away(self):
+        """A label already matching a clean name is left untouched even if a
+        stale mapping entry also names it as a source — no destructive
+        rename, no orphan, no duplicate add. Pins the subtle MAJOR-5
+        interaction where a name lives in both `clean_names` and `mapping`."""
+        migrator = LabelMigrator(
+            clean_schema=_schema("task", "draft"),
+            mapping={"task": "draft"},  # stale: 'task' is itself canonical
+        )
+        plan = migrator.plan(_actual("task"))
+        assert plan.renames == ()
+        assert plan.merges == ()
+        assert plan.orphans == ()
+        # 'task' stays as-is; only the genuinely-missing 'draft' is added.
+        assert plan.adds == (AddAction(label_name="draft"),)
+
+
+# ── Plan flags (MINOR 11) ────────────────────────────────────────────
+
+
+class TestPlanFlags:
+    def test_only_orphans_needs_review_but_not_executable(self):
+        """A plan with only orphans is review-required but has nothing safe
+        to auto-execute — `has_executable_actions` must be False so an
+        executor gating on it does not fire on confirm-required work."""
+        migrator = LabelMigrator(clean_schema=_schema("task"), mapping={})
+        plan = migrator.plan(_actual("task", "adhoc"))
+        assert plan.has_actions is True
+        assert plan.has_executable_actions is False
+        assert plan.needs_review is True
+
+    def test_adds_are_executable_no_review(self):
+        """A plan with adds and no orphans is executable and needs no review."""
+        migrator = LabelMigrator(
+            clean_schema=_schema("task", "draft"), mapping={}
+        )
+        plan = migrator.plan(_actual("task"))  # 'draft' missing → add
+        assert plan.has_executable_actions is True
+        assert plan.needs_review is False
+
+    def test_empty_plan_flags_all_false(self):
+        """A converged repo yields a plan with every flag False."""
+        migrator = LabelMigrator(
+            clean_schema=_schema("task", "draft"), mapping={}
+        )
+        plan = migrator.plan(_actual("task", "draft"))
+        assert plan.has_actions is False
+        assert plan.has_executable_actions is False
+        assert plan.needs_review is False
 
 
 # ── Routine (additive-only) mode ─────────────────────────────────────
@@ -242,9 +371,9 @@ class TestRoutine:
         # emitted as an add (routine ignores mapping).
         assert len(plan.adds) == 1
         assert plan.adds[0].label_name == "priority:high"
-        assert plan.renames == []
-        assert plan.merges == []
-        assert plan.orphans == []
+        assert plan.renames == ()
+        assert plan.merges == ()
+        assert plan.orphans == ()
 
     def test_routine_idempotent_when_complete(self):
         """Routine on an already-converged repo → empty plan."""
@@ -267,10 +396,10 @@ class TestRoutine:
         )
         # "some-adhoc-label" is not in clean schema but should NOT be
         # flagged as orphan in routine mode.
-        assert plan.orphans == []
-        assert plan.renames == []
-        assert plan.merges == []
-        assert plan.adds == []
+        assert plan.orphans == ()
+        assert plan.renames == ()
+        assert plan.merges == ()
+        assert plan.adds == ()
 
 
 # ── Integration: full cycle ──────────────────────────────────────────
@@ -284,7 +413,7 @@ class TestIntegration:
                 "priority:high",
                 "priority:medium",
                 "task",
-                "epic",
+                "dependencies",
                 "draft",
                 "status:ready",
                 "status:in-progress",
@@ -326,7 +455,7 @@ class TestIntegration:
         # Adds for clean labels not present and not targeted.
         added_names = {a.label_name for a in plan.adds}
         assert "priority:medium" in added_names
-        assert "epic" in added_names
+        assert "dependencies" in added_names
         assert "draft" in added_names
         assert "needs-research" in added_names
         # Already in actual:
@@ -344,23 +473,23 @@ class TestIntegration:
     def test_already_converged_is_noop(self):
         """When actual matches clean schema exactly → empty plan."""
         migrator = LabelMigrator(
-            clean_schema=_schema("task", "epic", "draft"),
+            clean_schema=_schema("task", "dependencies", "draft"),
             mapping={},
         )
-        plan = migrator.plan(_actual("task", "epic", "draft"))
+        plan = migrator.plan(_actual("task", "dependencies", "draft"))
         assert plan.has_actions is False
 
     def test_adds_only_when_nothing_to_migrate(self):
         """Plan with no mapping and partial actual → only adds."""
         migrator = LabelMigrator(
-            clean_schema=_schema("task", "epic", "draft"),
+            clean_schema=_schema("task", "dependencies", "draft"),
             mapping={},
         )
         plan = migrator.plan(_actual("task"))
-        assert plan.adds == [
+        assert plan.adds == (
+            AddAction(label_name="dependencies"),
             AddAction(label_name="draft"),
-            AddAction(label_name="epic"),
-        ]
-        assert plan.renames == []
-        assert plan.merges == []
-        assert plan.orphans == []
+        )
+        assert plan.renames == ()
+        assert plan.merges == ()
+        assert plan.orphans == ()

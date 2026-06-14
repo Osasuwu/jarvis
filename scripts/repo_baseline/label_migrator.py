@@ -12,11 +12,18 @@ Four migration behaviors (all tested through the public ``plan()`` method):
 
 Routine (post-migration) mode is **additive-only**: no renames, no merges,
 no orphan detection.
+
+The action containers are immutable value objects: ``frozen=True`` *and*
+``tuple`` collection fields, so a constructed plan cannot be mutated in place
+by a caller (a plain ``list`` field on a frozen dataclass is still
+``.append()``-able — the footgun this avoids). An executor resolves a clean
+label's color/description from the canonical schema by name when applying an
+``AddAction``; the planner intentionally carries only the name.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from repo_baseline.label_schema import CleanLabel
 
@@ -45,7 +52,7 @@ class RenameAction:
 class MergeAction:
     """Consolidate multiple source labels into a single target."""
 
-    source_names: list[str]
+    source_names: tuple[str, ...]
     target_name: str
 
 
@@ -69,17 +76,34 @@ class OrphanLabel:
 
 @dataclass(frozen=True)
 class LabelPlan:
-    """Complete migration plan produced by the LabelMigrator."""
+    """Complete migration plan produced by the LabelMigrator.
 
-    renames: list[RenameAction] = field(default_factory=list)
-    merges: list[MergeAction] = field(default_factory=list)
-    adds: list[AddAction] = field(default_factory=list)
-    orphans: list[OrphanLabel] = field(default_factory=list)
+    Collection fields are tuples: the plan is an immutable value object,
+    safe to pass around without a caller mutating it in place.
+    """
+
+    renames: tuple[RenameAction, ...] = ()
+    merges: tuple[MergeAction, ...] = ()
+    adds: tuple[AddAction, ...] = ()
+    orphans: tuple[OrphanLabel, ...] = ()
 
     @property
     def has_actions(self) -> bool:
-        """True when the plan contains at least one action."""
+        """True when the plan contains at least one action of any kind
+        (including confirm-required orphans)."""
         return bool(self.renames or self.merges or self.adds or self.orphans)
+
+    @property
+    def has_executable_actions(self) -> bool:
+        """True when the plan has actions safe to auto-execute
+        (renames/merges/adds). Excludes orphans, which are confirm-required —
+        an executor should gate auto-execution on this, not ``has_actions``."""
+        return bool(self.renames or self.merges or self.adds)
+
+    @property
+    def needs_review(self) -> bool:
+        """True when the plan contains confirm-required orphans."""
+        return bool(self.orphans)
 
 
 # ── Migrator ─────────────────────────────────────────────────────────
@@ -96,7 +120,14 @@ class LabelMigrator:
         Optional dict mapping *actual* label names → *clean* label names.
         Only labels present in the mapping are candidates for rename/merge.
         Actual labels not in the mapping and not matching a clean name are
-        flagged as orphans.
+        flagged as orphans. Every mapping *target* must be a name in
+        ``clean_schema`` — a typo'd target is rejected at construction time
+        rather than silently producing a rename toward a non-existent label.
+
+    Raises
+    ------
+    ValueError:
+        If any mapping value is not a name present in ``clean_schema``.
     """
 
     def __init__(
@@ -104,9 +135,23 @@ class LabelMigrator:
         clean_schema: list[CleanLabel],
         mapping: dict[str, str] | None = None,
     ):
-        self._clean_by_name = {lb.name: lb for lb in clean_schema}
-        self._clean_names: set[str] = set(self._clean_by_name.keys())
+        self._clean_names: set[str] = {lb.name for lb in clean_schema}
         self._mapping: dict[str, str] = mapping or {}
+
+        # Fail fast on mapping targets that don't exist in the clean schema.
+        # Without this, a typo (e.g. "priorty:high") silently produces a
+        # RenameAction pointing at a non-existent clean label that an
+        # executor would apply blindly.
+        bad_targets = {
+            target
+            for target in self._mapping.values()
+            if target not in self._clean_names
+        }
+        if bad_targets:
+            raise ValueError(
+                "mapping targets not present in clean schema: "
+                f"{sorted(bad_targets)}"
+            )
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -132,17 +177,18 @@ class LabelMigrator:
 
     # ── Internal: migration mode ──────────────────────────────────────
 
-    def _plan_migration(
-        self, actual: list[ActualLabel]
-    ) -> LabelPlan:
-        actual_by_name = {a.name: a for a in actual}
-        actual_names = set(actual_by_name.keys())
+    def _plan_migration(self, actual: list[ActualLabel]) -> LabelPlan:
+        actual_names = {a.name for a in actual}
 
-        # Already match a clean label — no action needed.
+        # Already match a clean label — canonical, no action needed.
         already_clean = actual_names & self._clean_names
 
-        # Labels that have an explicit mapping entry.
-        mapped = actual_names & set(self._mapping.keys())
+        # Labels with an explicit mapping entry, *excluding* any that are
+        # already canonical. A label whose name is already a clean name is
+        # never renamed away, even if a stale mapping entry also names it as
+        # a source — leaving the canonical label in place beats emitting a
+        # destructive rename of a label that's already correct.
+        mapped = (actual_names & set(self._mapping.keys())) - already_clean
 
         # Labels present in actual but not in clean schema and not mapped.
         orphan_names = actual_names - self._clean_names - mapped
@@ -164,7 +210,10 @@ class LabelMigrator:
             else:
                 # Multiple sources → merge into target.
                 merges.append(
-                    MergeAction(source_names=sorted(sources), target_name=target)
+                    MergeAction(
+                        source_names=tuple(sorted(sources)),
+                        target_name=target,
+                    )
                 )
 
         # Clean labels not yet present and not already targeted by a
@@ -175,21 +224,19 @@ class LabelMigrator:
             for name in sorted(self._clean_names - targeted)
         ]
 
-        orphans = [
-            OrphanLabel(name=name)
-            for name in sorted(orphan_names)
-        ]
+        orphans = [OrphanLabel(name=name) for name in sorted(orphan_names)]
 
         return LabelPlan(
-            renames=renames, merges=merges, adds=adds, orphans=orphans
+            renames=tuple(renames),
+            merges=tuple(merges),
+            adds=tuple(adds),
+            orphans=tuple(orphans),
         )
 
     # ── Internal: routine (additive-only) mode ────────────────────────
 
-    def _plan_routine(
-        self, actual: list[ActualLabel]
-    ) -> LabelPlan:
+    def _plan_routine(self, actual: list[ActualLabel]) -> LabelPlan:
         actual_names = {a.name for a in actual}
         missing = self._clean_names - actual_names
-        adds = [AddAction(label_name=name) for name in sorted(missing)]
+        adds = tuple(AddAction(label_name=name) for name in sorted(missing))
         return LabelPlan(adds=adds)
