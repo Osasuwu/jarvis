@@ -380,7 +380,10 @@ def test_health_check_timeout_with_grandchild_returns_promptly(
     )
     status, logs = result["r"]
     assert status == "timeout", logs
-    assert elapsed < 30, f"returned after {elapsed:.0f}s — timeout-kill did not bound it"
+    # timeout=5 + tree-kill overhead (≤5s) ⇒ ~10–12s expected. Bound at 20s:
+    # 8s of CI slack while still catching a slow-tree-kill regression as a
+    # distinct failure mode from the 35s join (which only flags a full hang).
+    assert elapsed < 20, f"returned after {elapsed:.0f}s — timeout-kill did not bound it"
 
     # Tree-kill must reach the grandchild: its heartbeat (append-only, so the
     # size can only grow while it lives) stops growing.
@@ -1802,7 +1805,10 @@ def test_main_health_check_timeout_does_not_rollback(
     }
     manifest.write_text(yaml.safe_dump(m), encoding="utf-8")
 
-    rc = installer.main(["--manifest", str(manifest), "--apply"])
+    # --skip-env: this test exercises the timeout/rollback path, not env setup.
+    # Without it _set_env appends `export JARVIS_HOME=...` to the real
+    # ~/.bashrc/~/.zshrc on a dev machine running the suite locally.
+    rc = installer.main(["--manifest", str(manifest), "--apply", "--skip-env"])
     assert rc == 4
 
     captured = capsys.readouterr()

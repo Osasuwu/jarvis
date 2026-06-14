@@ -931,6 +931,12 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     grandchildren (session-context.py re-execs itself into the venv python);
     a surviving grandchild keeps running — and keeps any inherited handles
     open — long after the installer gave up on the command.
+
+    Precondition (POSIX): proc must have been spawned with
+    ``start_new_session=True`` so it is its own process-group leader — the
+    ``os.killpg(proc.pid, ...)`` path assumes PGID == PID. The sole call site
+    in run_health_check satisfies this; document it here to prevent misuse if
+    _kill_tree is ever reused for a proc spawned without a new session.
     """
     if os.name == "nt":
         try:
@@ -944,13 +950,21 @@ def _kill_tree(proc: subprocess.Popen) -> None:
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):
-            proc.kill()
+            # Fallback must honour the "never raise" contract: killing an
+            # already-exited process can surface OSError on Windows.
+            try:
+                proc.kill()
+            except OSError:
+                pass
     else:
         try:
             # start_new_session=True at spawn made proc a group leader.
             os.killpg(proc.pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):
-            proc.kill()
+            try:
+                proc.kill()
+            except OSError:
+                pass
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
