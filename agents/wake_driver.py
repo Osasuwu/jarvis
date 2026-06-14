@@ -513,10 +513,11 @@ def main() -> int:
             task_port=task_port,
         )
         logger.info(
-            "[wake_driver] one-shot tick: reclaimed=%d processed=%d "
+            "[wake_driver] one-shot tick: reclaimed=%d processed=%d requeued=%d "
             "tasks_reclaimed=%d tasks_reaped=%d tasks_spawned=%d tasks_failed=%d",
             result.reclaimed,
             result.processed,
+            result.requeued,
             result.tasks_reclaimed,
             result.tasks_reaped,
             result.tasks_spawned,

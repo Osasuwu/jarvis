@@ -4,11 +4,17 @@ When the orchestrator parks an event because it is blocked on a sandcastle
 task, the poller periodically checks whether the blocking task has reached
 a terminal state and re-queues the event accordingly.
 
-- Task ``done`` → event is re-queued to ``pending`` so the wake_driver
-  picks it up on the next drain.
+- Task ``done`` → event is re-queued to ``pending``. The wake_driver runs the
+  poll step (Step 2b) *before* the event drain (Step 3) in the same tick, so
+  the re-queued event is drained within that same tick, not the next one.
 - Task ``failed`` → event is re-queued to ``pending`` (not silently dropped;
   the orchestrator will re-route it per the deterministic routing table).
-- Task still ``running`` or ``parked`` → event stays ``parked``.
+- Task ``parked`` → event is re-queued to ``pending`` as well. ``parked`` is a
+  *terminal* task state (``task_queue._TERMINAL_STATES``) — the blocking task
+  will never advance to ``done``, so leaving the event parked strands it
+  forever. Requeueing hands it back to the orchestrator to re-route, with a
+  distinct reason so the cause is recoverable.
+- Task still ``running`` (or no such task) → event stays ``parked``.
 - No ``blocked_by_task_id`` in event payload → skipped (parked for a
   different reason).
 
@@ -21,6 +27,7 @@ Usage::
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Protocol
 
@@ -33,9 +40,9 @@ logger = logging.getLogger(__name__)
 class PollerPort(Protocol):
     """Interface the poller depends on for events and task_queue access.
 
-    Implemented by an in-memory fake in tests and by a live database-backed
-    adapter wired in a future slice (the production poller is scaffolding here —
-    no concrete adapter ships in this slice).
+    Implemented by an in-memory fake in tests; the live database-backed adapter
+    is provided by the wake_driver production bootstrap. See #745 (Path B) for
+    the rollout status of that adapter.
     """
 
     def find_parked_events(self) -> list[dict[str, Any]]:
@@ -62,15 +69,28 @@ class PollerPort(Protocol):
 # -- Core logic ---------------------------------------------------------------
 
 
+# Task FSM states that release a parked event back to ``pending``, mapped to the
+# clause used in the requeue reason. All three are terminal in
+# ``task_queue._TERMINAL_STATES``: a blocking task in any of them will never
+# advance, so the waiting event must be re-routed by the orchestrator rather
+# than stranded. ``parked`` is the #964 fix — it is terminal too, so an event
+# blocked on a parked task was previously stranded forever.
+_REQUEUE_REASONS: dict[str, str] = {
+    "done": "completed",
+    "failed": "failed",
+    "parked": "parked (terminal) — orchestrator re-routes",
+}
+
+
 def poll(port: PollerPort) -> int:
     """Check all parked events with a ``blocked_by_task_id`` reference.
 
     For each parked event:
-    - If the blocking task reached ``done`` → requeue the event.
-    - If the blocking task reached ``failed`` → requeue the event (the
-      orchestrator will re-route it — never silently dropped).
-    - If the blocking task is still ``running`` / ``parked``, or the task
-      no longer exists → leave the event parked.
+    - If the blocking task reached a terminal state (``done`` / ``failed`` /
+      ``parked``) → requeue the event. The orchestrator re-routes it — it is
+      never silently dropped.
+    - If the blocking task is still ``running``, or the task no longer
+      exists → leave the event parked.
 
     Returns the number of events requeued.
     """
@@ -105,33 +125,28 @@ def _process_parked_event(port: PollerPort, event: dict[str, Any]) -> int:
         return 0
 
     task_status = port.get_task_status(task_id)
-    if task_status == "done":
-        ok = port.requeue_event(event["id"], reason=f"Blocking task {task_id} completed")
-        if not ok:
-            logger.warning(
-                "Requeue of event %s (task %s done) was not applied",
-                event["id"],
-                task_id,
-            )
-            return 0
-        logger.info("Re-queued event %s (blocking task %s is done)", event["id"], task_id)
-        return 1
-    if task_status == "failed":
-        ok = port.requeue_event(event["id"], reason=f"Blocking task {task_id} failed")
-        if not ok:
-            logger.warning(
-                "Requeue of event %s (task %s failed) was not applied",
-                event["id"],
-                task_id,
-            )
-            return 0
-        logger.info(
-            "Re-queued event %s (blocking task %s failed — orchestrator re-routes)",
+    reason_clause = _REQUEUE_REASONS.get(task_status)
+    if reason_clause is None:
+        # ``running`` or task-not-found → not terminal; leave parked for the
+        # next pass.
+        return 0
+
+    ok = port.requeue_event(event["id"], reason=f"Blocking task {task_id} {reason_clause}")
+    if not ok:
+        logger.warning(
+            "Requeue of event %s (task %s %s) was not applied",
             event["id"],
             task_id,
+            task_status,
         )
-        return 1
-    return 0
+        return 0
+    logger.info(
+        "Re-queued event %s (blocking task %s is %s — orchestrator re-routes)",
+        event["id"],
+        task_id,
+        task_status,
+    )
+    return 1
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -149,8 +164,6 @@ def _blocking_task_id(event: dict[str, Any]) -> str | None:
         return None
     if isinstance(payload, str):
         try:
-            import json
-
             payload = json.loads(payload)
         except (ValueError, TypeError):
             return None

@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import pytest
+
 from agents import poller
 
 
@@ -45,7 +47,13 @@ class FakePollerPort:
             if ev.get("state") != "parked":
                 continue
             payload = ev.get("payload") or {}
-            if isinstance(payload, dict) and payload.get("blocked_by_task_id"):
+            if not isinstance(payload, dict):
+                continue
+            tid = payload.get("blocked_by_task_id")
+            # Mirror the production guard (_blocking_task_id): present-but-falsy
+            # ids such as int 0 must survive — a truthiness test would drop them
+            # and silently strand the event.
+            if tid is not None and tid != "":
                 result.append(ev)
         return result
 
@@ -139,14 +147,31 @@ class TestBlockingTaskStillRunning:
         assert port.state_of("e1") == "parked"
         assert port.requeue_calls == []
 
-    def test_does_not_requeue_when_task_still_parked(self):
+
+# ===========================================================================
+# AC2b: parked task is terminal → event requeued (#964 MAJOR #1)
+# ===========================================================================
+
+
+class TestBlockingTaskParked:
+    """A ``parked`` blocking task is terminal — the event must be re-queued.
+
+    ``parked`` is in ``task_queue._TERMINAL_STATES`` and the FSM blocks any
+    transition out of it, so a parked task never advances to ``done``. Leaving
+    the event parked would strand it forever; the poller releases it so the
+    orchestrator can re-route.
+    """
+
+    def test_requeues_event_when_task_parked(self):
         port = FakePollerPort(
             events=[_ev("e1", task_id="t1")],
             tasks=[_task("t1", "parked")],
         )
         n = poller.poll(port)
-        assert n == 0
-        assert port.state_of("e1") == "parked"
+        assert n == 1
+        assert port.state_of("e1") == "pending"
+        assert len(port.requeue_calls) == 1
+        assert "parked" in port.requeue_calls[0][1]
 
 
 # ===========================================================================
@@ -169,7 +194,7 @@ class TestBlockingTaskFailed:
         assert "failed" in port.requeue_calls[0][1]
 
     def test_mixed_states_only_requeues_terminal(self):
-        """Only done/failed tasks cause requeue; running/parked stay."""
+        """Terminal tasks (done/failed/parked) requeue; only running stays."""
         port = FakePollerPort(
             events=[
                 _ev("e-done", task_id="t-done"),
@@ -185,11 +210,11 @@ class TestBlockingTaskFailed:
             ],
         )
         n = poller.poll(port)
-        assert n == 2  # done + failed
+        assert n == 3  # done + failed + parked (all terminal)
         assert port.state_of("e-done") == "pending"
         assert port.state_of("e-failed") == "pending"
-        assert port.state_of("e-running") == "parked"
-        assert port.state_of("e-parked") == "parked"
+        assert port.state_of("e-parked") == "pending"
+        assert port.state_of("e-running") == "parked"  # only non-terminal stays
 
 
 # ===========================================================================
@@ -313,6 +338,26 @@ class _FalseRequeuePort(FakePollerPort):
         return False
 
 
+class _RaisingRequeuePort(FakePollerPort):
+    """Fake whose ``requeue_event`` raises for one specific event id."""
+
+    def __init__(self, *, raise_for: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._raise_for = raise_for
+
+    def requeue_event(self, event_id: str, *, reason: str) -> bool:
+        if event_id == self._raise_for:
+            raise RuntimeError("requeue blew up")
+        return super().requeue_event(event_id, reason=reason)
+
+
+class _RaisingFindPort(FakePollerPort):
+    """Fake whose ``find_parked_events`` raises — simulates a query outage."""
+
+    def find_parked_events(self) -> list[dict[str, Any]]:
+        raise RuntimeError("find_parked_events blew up")
+
+
 class TestPollRobustness:
     def test_one_bad_event_does_not_abort_the_sweep(self):
         """A probe failure on one parked event must not strand the rest."""
@@ -341,6 +386,29 @@ class TestPollRobustness:
             tasks=[_task("t1", "failed")],
         )
         assert poller.poll(port) == 0
+
+    def test_requeue_raising_on_one_event_does_not_strand_the_rest(self):
+        """A ``requeue_event`` failure on one event must not abort the sweep."""
+        port = _RaisingRequeuePort(
+            raise_for="e-bad",
+            events=[_ev("e-bad", task_id="t-bad"), _ev("e-good", task_id="t-good")],
+            tasks=[_task("t-bad", "done"), _task("t-good", "done")],
+        )
+        n = poller.poll(port)
+        assert n == 1  # the good event still requeued
+        assert port.state_of("e-good") == "pending"
+        assert port.state_of("e-bad") == "parked"  # left parked, not lost
+
+    def test_find_parked_events_failure_propagates_to_caller(self):
+        """``poll()`` does not swallow a ``find_parked_events`` outage.
+
+        The whole sweep is wrapped in a try/except by the wake_driver's tick
+        (Step 2b) so a query outage retries next tick — but ``poll()`` itself
+        surfaces the failure rather than reporting a false ``0`` requeued.
+        """
+        port = _RaisingFindPort()
+        with pytest.raises(RuntimeError):
+            poller.poll(port)
 
 
 # ===========================================================================
