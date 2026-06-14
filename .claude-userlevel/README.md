@@ -43,6 +43,21 @@ rewritten to absolute paths inside the jarvis repo at install time by
 in-repo artefacts, and the rewrite logic is the single place path-portability
 concerns land.
 
+### Hardware-bound MCP servers stay per-device
+
+`bambu-printer` (and any future hardware-tied server) is intentionally **not**
+in `.claude-userlevel/.mcp.json`: the installer registers every listed server
+at user scope on *every* device, and a server whose hardware/env
+(`BAMBU_IP`, …) is absent on a machine error-spams each session there.
+Register such servers manually on the device that owns the hardware:
+
+```
+claude mcp add -s user bambu-printer -e BAMBU_IP=... -e BAMBU_TOKEN=... -e BAMBU_SERIAL=... -- npx -y bambu-printer-mcp
+```
+
+The installer never removes user-scope servers, so a manual registration
+survives future `install.ps1 -Apply` runs.
+
 ## Why a whitelist in `install-manifest.yaml`?
 
 An explicit whitelist means dropping a README, experiment note, or

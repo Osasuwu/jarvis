@@ -49,6 +49,10 @@ def test_sensitive_env_keys_cover_known_variants() -> None:
     assert "ANTHROPIC_API_KEY" in _SENSITIVE_ENV_KEYS
     assert "ANTHROPIC_AUTH_TOKEN" in _SENSITIVE_ENV_KEYS
     assert "CLAUDE_API_KEY" in _SENSITIVE_ENV_KEYS
+    # A base-url redirect is as much a billing trap as a key: it can point the
+    # spawned `claude -p` at a metered API gateway instead of the Max session.
+    assert "ANTHROPIC_BASE_URL" in _SENSITIVE_ENV_KEYS
+    assert "CLAUDE_BASE_URL" in _SENSITIVE_ENV_KEYS
 
 
 def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
@@ -74,8 +78,9 @@ def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
 
     for pattern in ["merge", "delete"]:
         for tool in _SPAWN_ALLOWED_TOOLS:
-            assert pattern not in tool, \
+            assert pattern not in tool, (
                 f"Destructive pattern '{pattern}' found in allowlist entry '{tool}'"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -83,7 +88,9 @@ def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_claude_binary_override_wins(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+def test_resolve_claude_binary_override_wins(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     from agents.executor import _resolve_claude_binary
 
     real = tmp_path / "real-claude.exe"
@@ -104,7 +111,8 @@ def test_resolve_claude_binary_override_must_exist(tmp_path: Any) -> None:
 
 
 def test_resolve_claude_binary_env_var_wins_over_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
 ) -> None:
     from agents.executor import _resolve_claude_binary
 
@@ -125,7 +133,8 @@ def test_resolve_claude_binary_env_var_must_exist(monkeypatch: pytest.MonkeyPatc
 
 
 def test_resolve_claude_binary_falls_through_to_shutil_which(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
 ) -> None:
     import shutil as _shutil
     from agents.executor import _resolve_claude_binary
@@ -175,6 +184,8 @@ def test_sanitize_env_strips_all_known_variants() -> None:
         "ANTHROPIC_API_KEY": "a",
         "ANTHROPIC_AUTH_TOKEN": "b",
         "CLAUDE_API_KEY": "c",
+        "ANTHROPIC_BASE_URL": "https://metered.example/v1",
+        "CLAUDE_BASE_URL": "https://metered.example/v1",
     }
     out = _sanitize_env(src)
     assert out == {"SAFE": "keep"}
@@ -236,8 +247,15 @@ def test_spawn_passes_sanitized_env_to_subprocess(
     monkeypatch.setenv("PATH_FROM_PARENT", "keep-me")
 
     captured = _CapturedPopen()
-    spawn("test task", stderr_log_dir=str(tmp_path / "logs"), popen=captured)
+    result = spawn(
+        "test task",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
 
+    assert result.proc is not None, "spawn should not be throttled"
+    assert not result.throttled
     assert len(captured.calls) == 1
     env = captured.calls[0]["env"]
     assert "ANTHROPIC_API_KEY" not in env, "billing-trap leak: API key reached child env"
@@ -258,8 +276,14 @@ def test_spawn_uses_resolved_binary_path(
     monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
 
     captured = _CapturedPopen()
-    spawn("test", stderr_log_dir=str(tmp_path / "logs"), popen=captured)
+    result = spawn(
+        "test",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
 
+    assert result.proc is not None, "spawn should not be throttled"
     assert len(captured.calls) == 1
     argv = captured.calls[0]["argv"]
     assert argv[0] == str(fake)
@@ -285,8 +309,14 @@ def test_spawn_captures_stderr_to_file(
 
     log_dir = tmp_path / "logs"
     captured = _CapturedPopen()
-    spawn("test", stderr_log_dir=str(log_dir), popen=captured)
+    result = spawn(
+        "test",
+        stderr_log_dir=str(log_dir),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
 
+    assert result.proc is not None, "spawn should not be throttled"
     assert len(captured.calls) == 1
     stderr_arg = captured.calls[0].get("stderr")
     assert stderr_arg is not None, "stderr must not be DEVNULL"
@@ -296,3 +326,123 @@ def test_spawn_captures_stderr_to_file(
     # The parent file handle must be closed after Popen dup2's the fd —
     # otherwise a long-running scheduler leaks one fd per spawn.
     assert stderr_arg.closed, "parent stderr handle must be closed after spawn"
+
+
+# ---------------------------------------------------------------------------
+# spawn — quota gate
+# ---------------------------------------------------------------------------
+
+
+class _FixedProbe:
+    """Probe stub returning a fixed ``UsageReading`` for test control."""
+
+    def __init__(self, reading: Any) -> None:
+        self._reading = reading
+
+    def read(self) -> Any:
+        return self._reading
+
+
+def _healthy_reading() -> Any:
+
+    from agents.usage_probe import UsageReading
+
+    return UsageReading(
+        limit_window=timedelta(hours=5),
+        used=10,
+        total=100,
+        reset_at=datetime.now(UTC),
+        near_exhaustion=False,
+    )
+
+
+def _exhausted_reading() -> Any:
+
+    from agents.usage_probe import UsageReading
+
+    return UsageReading(
+        limit_window=timedelta(hours=5),
+        used=95,
+        total=100,
+        reset_at=datetime.now(UTC),
+        near_exhaustion=True,
+    )
+
+
+def _false_safe_error_probe() -> _FixedProbe:
+    """Probe that raises — confirms the false-safe contract in the executor."""
+
+    class _RaisingProbe:
+        def read(self) -> Any:
+            raise RuntimeError("probe broken")
+
+    return _RaisingProbe()  # type: ignore[return-value]
+
+
+def test_spawn_proceeds_when_quota_healthy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Spawn should succeed when the quota probe reports headroom."""
+    from agents.executor import spawn
+
+    fake = tmp_path / "claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "healthy task",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
+
+    assert not result.throttled
+    assert result.proc is not None
+    assert result.reason is None
+    assert len(captured.calls) == 1
+
+
+def test_spawn_refused_when_quota_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Spawn should be refused when the probe reports near-exhaustion."""
+    from agents.executor import spawn
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "exhausted task",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_exhausted_reading()),
+    )
+
+    assert result.throttled
+    assert result.proc is None
+    assert result.reason is not None
+    assert "near-exhaustion" in result.reason
+    # Popen must NOT have been called
+    assert len(captured.calls) == 0
+
+
+def test_spawn_probe_error_returns_false_safe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """A probe error must be treated as near-exhaustion (false-safe)."""
+    from agents.executor import spawn
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "broken probe task",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_false_safe_error_probe(),
+    )
+
+    assert result.throttled
+    assert result.proc is None
+    assert result.reason is not None
+    assert len(captured.calls) == 0

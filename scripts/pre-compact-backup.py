@@ -1,4 +1,4 @@
-"""PreCompact hook: capture a durable session snapshot before auto-compaction.
+"""PreCompact + SessionEnd hook: capture a durable session snapshot.
 
 Parses the session JSONL transcript, composes a structured markdown snapshot,
 and upserts it to Supabase (name=`session_snapshot_<session_id>`, type=project)
@@ -10,11 +10,14 @@ Invariants:
 - Snapshot content stays under SIZE_BUDGET bytes (~30KB). Long transcripts
   keep only the last TAIL_KEEP entries with a dropped-head counter.
 
-Registered in `.claude/settings.json` under `PreCompact` for both `auto` and
-`manual` matchers.
+Registered in user-level `settings.json` under `PreCompact` (matchers `auto`,
+`manual`) and `SessionEnd` (all end reasons) — the same snapshot doubles as a
+post-session state save that `session-context.py` picks up on resume (#279).
 
 Hook input (stdin, JSON):
-  session_id, transcript_path, cwd, hook_event_name, trigger ("auto"|"manual")
+  session_id, transcript_path, cwd, hook_event_name,
+  trigger ("auto"|"manual") for PreCompact / end_reason ("clear"|"logout"|...)
+  for SessionEnd
 
 Related:
 - `scripts/session-context.py` — reads snapshots on resume (Phase 2, #279)
@@ -409,7 +412,12 @@ def main() -> int:
         session_id = hook.get("session_id") or hook.get("sessionId") or "unknown-session"
         transcript_path = hook.get("transcript_path") or hook.get("transcriptPath") or ""
         cwd = hook.get("cwd") or os.getcwd()
-        trigger = hook.get("trigger") or hook.get("matcher") or "unknown"
+        trigger = (
+            hook.get("trigger")
+            or hook.get("matcher")
+            or hook.get("end_reason")
+            or "unknown"
+        )
 
         if not transcript_path:
             print("[pre-compact] no transcript_path in hook input", file=sys.stderr)

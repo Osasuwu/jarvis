@@ -82,13 +82,15 @@ Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD 
 
 Applies to every owned repo (`Osasuwu/jarvis`, `SergazyNarynov/redrobot`, and any future personal project). Foreign-owner repos are exempt — they have their own protection rules.
 
+> **Caveat — auto-merge needs a paid GitHub plan on private repos.** `allow_auto_merge` / `gh pr merge --auto` is rejected (`Auto merge is not allowed for this repository`) on **private repos on the Free plan**. `SergazyNarynov/redrobot` is private+Free, so it has **no auto-merge**: the four gates below still apply, but the final merge is **manual when CI is green** (`gh pr merge <N> --squash --delete-branch`, or poll-then-merge). Don't retry `--auto` there. The AFK Path A loop is fully automatic only on repos with a paid plan (or public repos).
+
 **Goal:** AFK Path A loop closes by itself — `open → CI → review → automerge → rework → escalate`. Subagent opens a PR, Jarvis flips it to ready, GitHub merges when every gate is green. No human in the merge step *unless* a gate fires.
 
 ### The four gates
 
 Every owned repo enforces the same set via **branch protection on the default branch** + repo-level `allow_auto_merge=true`:
 
-1. **`review` (Claude code-review plugin)** — the workflow runs `/code-review`, posts findings as a structured comment, **and a post-step (`Verify review verdict`) fails the job on `Found N issues:`**. Without the post-step the check signals "bot ran" not "PR is clean" — auto-merge would happily ship PRs with CRITICAL findings. Plugin already drops findings below 80-confidence per its rubric, so any surfaced finding is real.
+1. **`review` (Claude code-review plugin)** — the workflow runs `/code-review`, posts findings as a structured comment, **and a post-step (`Verify review verdict`) fails the job on any findings signal — `Found N issues:` or severity-section headings (`### MAJOR findings` etc.) — and fails closed on an unparseable review comment** (jarvis#957 false-passed when the bot used a deviant comment format the old parser didn't select). Without the post-step the check signals "bot ran" not "PR is clean" — auto-merge would happily ship PRs with CRITICAL findings. Plugin already drops findings below 80-confidence per its rubric, so any surfaced finding is real.
 2. **`owner-queue-guard`** — fails the job when the PR carries the `status:owner-queue` label. That label is the manual "park this for me" signal; the guard turns it into a hard merge block instead of a hope-Jarvis-honors-it convention. Triggered on `opened / synchronize / labeled / unlabeled` so the gate is re-evaluated whenever label state changes.
 3. **`require-linked-issue`** — PR body must reference `Closes #NNN`, OR carry the `priority:critical` label (hotfix bypass), OR contain the `[no-issue]` marker (drive-by fix-inline per jarvis#428), OR use a `refactor:` / `refactor(scope):` title prefix.
 4. **Project-specific test gates** — `pytest`, `meta-tests`, `Detect secrets with gitleaks` in jarvis; the equivalents in any other repo. These come from the repo's own CI surface.
@@ -101,7 +103,7 @@ Use `status:owner-queue` for the rarer case: PR is content-complete (so it can p
 
 ### Required files per repo
 
-- `.github/workflows/code-review.yml` — final step `Verify review verdict` parses the latest `### Code review` comment, exits 1 on `Found N issues:` / 0 on `No issues found.` / 0 on no comment (plugin skipped).
+- `.github/workflows/code-review.yml` — final step `Verify review verdict` selects the latest comment with a code-review title heading (any level, optional "Claude" prefix, case-insensitive — not just literal `### Code review`; jarvis#957), exits 1 on `Found N issues:` or severity-section headings (`CRITICAL/MAJOR/MINOR/BLOCKING` after 1-6 `#`'s — decoration like emoji tolerated, `findings`/`issues` suffix optional; observed deviants: `### MAJOR findings` #957, bare `### MAJOR` #956, `### 🔴 BLOCKING` #954) / 0 on a line starting `No issues found.` / **1 on an unrecognized verdict format (fail-closed)** / 0 only when no review-titled comment exists (plugin skipped). Findings checks run before the clean check. Contract pinned by `tests/ci/test_code_review_verdict_guard.py` in jarvis.
 - `.github/workflows/owner-queue-guard.yml` — single job named `owner-queue-guard`, triggers on `opened, synchronize, labeled, unlabeled`, fails on the label.
 
 The check name `owner-queue-guard` is what branch protection references — rename in lockstep with the protection rule or the gate silently disappears (cf. jarvis#326 meta-test rule: path-filtered guards need a fixture test pinning the canonical name).
