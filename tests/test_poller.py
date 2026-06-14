@@ -8,6 +8,7 @@ live database is required.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from agents import poller
@@ -248,6 +249,101 @@ class TestEdgeCases:
 
 
 # ===========================================================================
+# _blocking_task_id — payload shapes (#964 MINOR #6/#7)
+# ===========================================================================
+
+
+class TestBlockingTaskIdParsing:
+    """Direct tests for the payload extractor across dict / JSON-string shapes."""
+
+    def test_preserves_integer_zero(self):
+        """A falsy-but-present task id (int ``0``) must survive, not be dropped."""
+        ev = {"id": "e1", "state": "parked", "payload": {"blocked_by_task_id": 0}}
+        assert poller._blocking_task_id(ev) == "0"
+
+    def test_empty_string_task_id_is_none(self):
+        ev = {"id": "e1", "state": "parked", "payload": {"blocked_by_task_id": ""}}
+        assert poller._blocking_task_id(ev) is None
+
+    def test_missing_task_id_is_none(self):
+        ev = {"id": "e1", "state": "parked", "payload": {"other": "x"}}
+        assert poller._blocking_task_id(ev) is None
+
+    def test_parses_json_string_payload(self):
+        """PostgREST may hand back jsonb as a string — it must be parsed."""
+        ev = {
+            "id": "e1",
+            "state": "parked",
+            "payload": json.dumps({"blocked_by_task_id": "t9"}),
+        }
+        assert poller._blocking_task_id(ev) == "t9"
+
+    def test_malformed_json_string_is_none(self):
+        ev = {"id": "e1", "state": "parked", "payload": "{not valid json"}
+        assert poller._blocking_task_id(ev) is None
+
+    def test_json_string_non_object_is_none(self):
+        """A JSON string that decodes to a non-dict (e.g. a list) is skipped."""
+        ev = {"id": "e1", "state": "parked", "payload": json.dumps([1, 2, 3])}
+        assert poller._blocking_task_id(ev) is None
+
+
+# ===========================================================================
+# Robustness: per-event isolation + confirmed-requeue counting (#964 MAJOR #3/#4)
+# ===========================================================================
+
+
+class _RaisingStatusPort(FakePollerPort):
+    """Fake whose status probe raises for one specific task id."""
+
+    def __init__(self, *, raise_for: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._raise_for = raise_for
+
+    def get_task_status(self, task_id: str) -> str | None:
+        if task_id == self._raise_for:
+            raise RuntimeError("status probe blew up")
+        return super().get_task_status(task_id)
+
+
+class _FalseRequeuePort(FakePollerPort):
+    """Fake whose ``requeue_event`` reports the transition was NOT applied."""
+
+    def requeue_event(self, event_id: str, *, reason: str) -> bool:
+        return False
+
+
+class TestPollRobustness:
+    def test_one_bad_event_does_not_abort_the_sweep(self):
+        """A probe failure on one parked event must not strand the rest."""
+        port = _RaisingStatusPort(
+            raise_for="t-bad",
+            events=[_ev("e-bad", task_id="t-bad"), _ev("e-good", task_id="t-good")],
+            tasks=[_task("t-bad", "done"), _task("t-good", "done")],
+        )
+        n = poller.poll(port)
+        assert n == 1  # the good event still requeued
+        assert port.state_of("e-good") == "pending"
+        assert port.state_of("e-bad") == "parked"  # left parked, not lost
+
+    def test_unconfirmed_requeue_is_not_counted(self):
+        """``requeue_event`` returning False means no transition → don't count it."""
+        port = _FalseRequeuePort(
+            events=[_ev("e1", task_id="t1")],
+            tasks=[_task("t1", "done")],
+        )
+        n = poller.poll(port)
+        assert n == 0
+
+    def test_unconfirmed_requeue_for_failed_task_is_not_counted(self):
+        port = _FalseRequeuePort(
+            events=[_ev("e1", task_id="t1")],
+            tasks=[_task("t1", "failed")],
+        )
+        assert poller.poll(port) == 0
+
+
+# ===========================================================================
 # Wake-driver integration: tick calls the poller
 # ===========================================================================
 
@@ -312,3 +408,88 @@ def test_tick_skips_poller_when_port_is_none():
     assert result.requeued == 0
     assert result.reclaimed == 0
     assert result.processed == 0
+
+
+class _RaisingPollerPort:
+    """A poller port whose sweep always raises — simulates a poller outage."""
+
+    def find_parked_events(self) -> list[dict[str, Any]]:
+        raise RuntimeError("poller down")
+
+    def get_task_status(self, task_id: str) -> str | None:
+        return None
+
+    def requeue_event(self, event_id: str, *, reason: str) -> bool:
+        return False
+
+
+class _OneEventQueue(_MinimalFakeEventQueue):
+    """Yields a single pending event once, then drains empty."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._pending: list[dict[str, Any]] = [{"id": "ev-1"}]
+        self.processed_ids: list[str] = []
+
+    def claim_next(self) -> dict[str, Any] | None:
+        if self._pending:
+            return self._pending.pop(0)
+        return None
+
+    def mark_processed(self, event_id: str, *, action: str = "") -> bool:
+        self.processed_ids.append(event_id)
+        return True
+
+
+def test_tick_poller_exception_does_not_skip_event_drain():
+    """CRITICAL #2: a poller blow-up must not abort the event drain (Step 3).
+
+    Without the try/except around the poll step, the raise propagates out of
+    ``tick()`` before ``drain_pending`` runs — stranding every event claimed
+    this pass. The drain is the primary wake path and must survive a poller
+    outage.
+    """
+    from agents import wake_driver
+
+    q = _OneEventQueue()
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        poller_port=_RaisingPollerPort(),
+    )
+
+    assert result.processed == 1  # event drained despite the poller failure
+    assert q.processed_ids == ["ev-1"]
+    assert result.requeued == 0  # poller produced nothing
+
+
+def test_run_forwards_poller_port_to_tick():
+    """MAJOR #5: ``run()`` must thread ``poller_port`` through to each ``tick()``."""
+    from agents import wake_driver
+
+    poller_port = FakePollerPort(
+        events=[_ev("e1", task_id="t1")],
+        tasks=[_task("t1", "done")],
+    )
+    q = _MinimalFakeEventQueue()
+    q.wake_signals = [True]
+
+    calls = {"n": 0}
+
+    def should_continue() -> bool:
+        calls["n"] += 1
+        return calls["n"] <= 1  # exactly one tick
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        should_continue=should_continue,
+        poller_port=poller_port,
+    )
+
+    # The single tick forwarded poller_port and requeued the parked event.
+    assert poller_port.state_of("e1") == "pending"
+    assert poller_port.requeue_calls
+    assert poller_port.requeue_calls[0][0] == "e1"

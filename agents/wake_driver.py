@@ -78,6 +78,11 @@ from agents.task_dispatch import (
     reclaim_stale_tasks,
 )
 
+# Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
+# no import cycle to defer around. The Path B poll step runs every tick when a
+# poller_port is wired, so a per-call import bought nothing but obscurity.
+from agents.poller import poll as poll_parked
+
 if TYPE_CHECKING:
     import psycopg
 
@@ -211,9 +216,11 @@ def tick(
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
 
         poll_completions() + kill_runaways()                  # Step 0, #921
-        → reclaim_stale(events) → reclaim_stale_tasks()       # watchdogs
-        → poll(parked events)                                 # Path B, #745
-        → drain_pending(events) → drain_tasks()               # drains
+        → reclaim_stale(events)                               # Step 1, event watchdog
+        → reclaim_stale_tasks()                               # Step 2, task watchdog
+        → poll(parked events)                                 # Step 2b, Path B #745
+        → drain_pending(events)                               # Step 3, event drain
+        → drain_tasks()                                       # Step 4, task drain
 
     Step 0 closes ``running`` rows whose tracked process exited (rc 0 → done,
     rc ≠0 → failed) and tree-kills live processes past the reap threshold —
@@ -292,9 +299,16 @@ def tick(
     # and drained in this same tick rather than waiting for the next wake.
     requeued = 0
     if poller_port is not None:
-        from agents.poller import poll as poll_parked
-
-        requeued = poll_parked(poller_port)
+        # Isolated like the task steps (0/2/4): a poller outage must not skip the
+        # event drain (Step 3). Without this guard a single poll() raise would
+        # propagate out of tick(), strand every event claimed earlier this pass,
+        # and bypass drain_pending entirely — the primary wake path.
+        try:
+            requeued = poll_parked(poller_port)
+        except Exception:  # noqa: BLE001 — poller outage must not block the event drain
+            logger.exception(
+                "[wake_driver] parked-event poller failed; parked events retry next tick"
+            )
 
     # Step 3 — event drain.
     processed = drain_pending(port, orchestrator)

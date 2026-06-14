@@ -22,10 +22,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Protocol
-
-if TYPE_CHECKING:
-    import json
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +33,9 @@ logger = logging.getLogger(__name__)
 class PollerPort(Protocol):
     """Interface the poller depends on for events and task_queue access.
 
-    Implemented by an in-memory fake in tests and by a live adapter
-    (PsycopgPollerPort) in production.
+    Implemented by an in-memory fake in tests and by a live database-backed
+    adapter wired in a future slice (the production poller is scaffolding here —
+    no concrete adapter ships in this slice).
     """
 
     def find_parked_events(self) -> list[dict[str, Any]]:
@@ -79,29 +77,61 @@ def poll(port: PollerPort) -> int:
     parked = port.find_parked_events()
     requeued = 0
     for event in parked:
-        task_id = _blocking_task_id(event)
-        if task_id is None:
-            continue
-
-        task_status = port.get_task_status(task_id)
-        if task_status == "done":
-            port.requeue_event(event["id"], reason=f"Blocking task {task_id} completed")
-            requeued += 1
-            logger.info(
-                "Re-queued event %s (blocking task %s is done)",
-                event["id"],
-                task_id,
-            )
-        elif task_status == "failed":
-            port.requeue_event(event["id"], reason=f"Blocking task {task_id} failed")
-            requeued += 1
-            logger.info(
-                "Re-queued event %s (blocking task %s failed — orchestrator re-routes)",
-                event["id"],
-                task_id,
+        try:
+            requeued += _process_parked_event(port, event)
+        except Exception:  # noqa: BLE001 — one bad event must not abort the sweep
+            # A status probe or requeue can raise (network blip, malformed row).
+            # Isolate per event: log and continue so the remaining parked events
+            # are still evaluated this pass instead of being stranded until the
+            # next poll because an earlier event blew up the loop.
+            logger.exception(
+                "Poller failed on event %s; left parked for the next pass",
+                event.get("id"),
             )
 
     return requeued
+
+
+def _process_parked_event(port: PollerPort, event: dict[str, Any]) -> int:
+    """Evaluate one parked event; return 1 if it was requeued, else 0.
+
+    A requeue only counts when ``requeue_event`` confirms the transition
+    (returns ``True``). A ``False`` return means the event was *not* moved to
+    ``pending`` — e.g. it vanished or lost its parked state under a concurrent
+    writer — so counting it would over-report progress and mask a stuck event.
+    """
+    task_id = _blocking_task_id(event)
+    if task_id is None:
+        return 0
+
+    task_status = port.get_task_status(task_id)
+    if task_status == "done":
+        ok = port.requeue_event(event["id"], reason=f"Blocking task {task_id} completed")
+        if not ok:
+            logger.warning(
+                "Requeue of event %s (task %s done) was not applied",
+                event["id"],
+                task_id,
+            )
+            return 0
+        logger.info("Re-queued event %s (blocking task %s is done)", event["id"], task_id)
+        return 1
+    if task_status == "failed":
+        ok = port.requeue_event(event["id"], reason=f"Blocking task {task_id} failed")
+        if not ok:
+            logger.warning(
+                "Requeue of event %s (task %s failed) was not applied",
+                event["id"],
+                task_id,
+            )
+            return 0
+        logger.info(
+            "Re-queued event %s (blocking task %s failed — orchestrator re-routes)",
+            event["id"],
+            task_id,
+        )
+        return 1
+    return 0
 
 
 # -- Helpers ------------------------------------------------------------------
@@ -127,4 +157,9 @@ def _blocking_task_id(event: dict[str, Any]) -> str | None:
     if not isinstance(payload, dict):
         return None
     tid = payload.get("blocked_by_task_id")
-    return str(tid) if tid else None
+    # Guard on None/empty-string explicitly, not truthiness: a valid task id of
+    # integer ``0`` (or any falsy-but-present value) must survive — ``if tid``
+    # would drop it and silently strand the parked event.
+    if tid is None or tid == "":
+        return None
+    return str(tid)
