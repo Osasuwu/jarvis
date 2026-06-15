@@ -148,9 +148,6 @@ class LabelMigrator:
         mapping: dict[str, str] | None = None,
     ):
         self._clean_names: set[str] = {lb.name for lb in clean_schema}
-        self._clean_labels_by_name: dict[str, CleanLabel] = {
-            lb.name: lb for lb in clean_schema
-        }
         # Copy the mapping dict to prevent caller mutation bypassing validation.
         self._mapping: dict[str, str] = dict(mapping) if mapping is not None else {}
 
@@ -231,9 +228,10 @@ class LabelMigrator:
                 )
             else:
                 # Single source, target not yet in actual → rename.
+                # src ≠ target is guaranteed: src ∈ mapped ⊂ (actual \ clean),
+                # target ∈ clean (validated at __init__), so they never coincide.
                 src = sources[0]
-                if src != target:
-                    renames.append(RenameAction(old_name=src, new_name=target))
+                renames.append(RenameAction(old_name=src, new_name=target))
 
         # Clean labels not yet present and not already targeted by a
         # rename/merge.
