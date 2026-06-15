@@ -291,36 +291,68 @@ jobs:
           # Read comment body from the event payload (safe — no shell expansion of comment content)
           COMMENT_BODY="$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")"
 
-          # Bail if this isn't a Code Review header (claude[bot] posts other
-          # comment kinds: simplification opportunities, /rework progress,
-          # orchestrator-watcher dispatches). Match `### Code review` exactly —
-          # case-sensitive, lowercase 'r' (plugin spelling).
-          FIRST_LINE="$(printf '%s' "$COMMENT_BODY" | head -1)"
-          if ! printf '%s' "$FIRST_LINE" | grep -qE '^###[[:space:]]+Code review$'; then
-            echo "Not a Code review comment header (first line: $FIRST_LINE); skipping"
+          # Select the Claude code-review VERDICT comment. Match a heading-form
+          # "Code Review" title ANYWHERE in the body (not just the first line),
+          # case-insensitive, any heading level (1-6 #'s), optional "Claude"
+          # prefix. Mirrors the merge gate's hardened selector (code-review.yml
+          # -> "Verify review verdict", PR #960) so both surfaces recognize the
+          # same deviant titles ("## Code Review", "## Claude Code Review", ...).
+          # claude[bot] posts other comment kinds ("### Simplification
+          # opportunities", /rework progress) that must NOT match here.
+          # The old selector matched "### Code review" on the FIRST line only,
+          # case-sensitive — the #961 miss: every deviant title was treated as
+          # "not a review" and silently emitted no event, so the orchestrator
+          # never fired /rework on those negative reviews.
+          if ! printf '%s\n' "$COMMENT_BODY" \
+              | grep -qiE '^#{1,6}[[:blank:]]*(Claude[[:blank:]]+)?Code[[:blank:]]+Review'; then
+            echo "Not a Code Review verdict comment; skipping"
             exit 0
           fi
 
-          # Count actionable findings.
-          # Two outcomes possible from the plugin:
-          #   - "No issues found." → clean review, no emit.
-          #   - "Found N issues:" or "Found N issue:" → N actionable findings.
-          # This is the "fragile string-match" PRD #41 calls out as the only
-          # one in the system; if the plugin format changes, fix here.
-          # See Osasuwu/claude-plugins-official:plugins/code-review/commands/code-review.md
-          if printf '%s\n' "$COMMENT_BODY" | grep -qE '^No issues found\.'; then
-            echo "Clean review (No issues found); not emitting review_negative"
-            exit 0
+          # Findings signal #1 — severity-section headings. The bot routinely
+          # deviates from the canonical "Found N issues:" line and posts severity
+          # sections instead ("### MAJOR", "### MAJOR findings" #957, bare
+          # "### MAJOR" #956, "### 🔴 BLOCKING" #954). Without this branch those
+          # negative reviews emitted nothing and no /rework fired (#961).
+          # Decoration between the #'s and the severity word is tolerated; a
+          # trailing "findings"/"issues" suffix is optional.
+          HAS_SEVERITY=false
+          if printf '%s\n' "$COMMENT_BODY" \
+              | grep -qiE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|MINOR|BLOCKING)\b'; then
+            HAS_SEVERITY=true
           fi
 
+          # Findings signal #2 — the plugin's canonical findings line. Unanchored
+          # (matches even if a deviant bot indents it), to mirror the merge gate.
           N_ISSUES=$(printf '%s\n' "$COMMENT_BODY" \
-            | grep -oE '^Found [0-9]+ issues?:' \
+            | grep -oE 'Found [0-9]+ issues?:' \
             | head -1 \
-            | grep -oE '[0-9]+')
+            | grep -oE '[0-9]+' || true)
 
-          if [ -z "$N_ISSUES" ] || [ "$N_ISSUES" -eq 0 ]; then
-            echo "No 'Found N issues:' line parseable from Code review comment; not emitting"
+          # Findings are evaluated BEFORE the clean signal so a stray
+          # "No issues found." line cannot shadow a real severity section.
+          if [ "$HAS_SEVERITY" = false ] && { [ -z "$N_ISSUES" ] || [ "$N_ISSUES" -eq 0 ]; }; then
+            # No findings signal. Either a clean review ("No issues found.") or an
+            # unrecognized format. Unlike the merge gate this job CANNOT
+            # fail-closed — orchestrator events have no safe default verdict — so
+            # it no-ops. Safe: the merge gate itself fails-closed on unrecognized
+            # comments and blocks the merge, so a missed event never causes a bad
+            # merge, only a missed proactive /rework. A distinct
+            # review_unparseable event (#961 Option B) is deferred until the
+            # reactive-core orchestrator (M44) has a triage consumer.
+            if printf '%s\n' "$COMMENT_BODY" | grep -qE '^No issues found\.'; then
+              echo "Clean review (No issues found); not emitting review_negative"
+            else
+              echo "::warning::Code Review verdict comment matched no findings/clean signal; not emitting (see #961 Option B)"
+            fi
             exit 0
+          fi
+
+          # At least one findings signal present -> negative review. If the
+          # canonical Found-N line is absent (severity-only deviant), fall back to
+          # N=1 (>=1 actionable; /rework re-parses the comment for the exact set).
+          if [ -z "$N_ISSUES" ] || [ "$N_ISSUES" -eq 0 ]; then
+            N_ISSUES=1
           fi
 
           # Back-compat: downstream consumers (orchestrator watcher, /rework)
