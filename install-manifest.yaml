@@ -170,8 +170,8 @@ health_check:
   enabled: true
   # Resolved relative to JARVIS_HOME. Empty list = skip.
   commands:
-    - "python3 scripts/device-info.py"
-    - "python3 scripts/session-context.py --smoke"  # --smoke flag = dry load, no Supabase writes
+    - "python scripts/device-info.py"
+    - "python scripts/session-context.py --smoke"  # --smoke flag = dry load, no Supabase writes
   # Per-command limit in seconds. On expiry the whole process tree is killed
   # (health commands may spawn children — session-context.py re-execs into
   # the venv python) and the apply is left in place — timeout is

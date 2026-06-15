@@ -381,10 +381,10 @@ def test_health_check_timeout_with_grandchild_returns_promptly(
     assert "r" in result, "run_health_check raised — thread exited without returning a result"
     status, logs = result["r"]
     assert status == "timeout", logs
-    # timeout=5 + tree-kill overhead (≤5s) ⇒ ~10–12s expected. Bound at 20s:
-    # 8s of CI slack while still catching a slow-tree-kill regression as a
-    # distinct failure mode from the 35s join (which only flags a full hang).
-    assert elapsed < 20, f"returned after {elapsed:.0f}s — timeout-kill did not bound it"
+    # timeout=5 + tree-kill worst case (taskkill 15s + wait 5s + outer wait 10s)
+    # ⇒ ~10–12s expected, ~35s theoretical max on Windows. Bound at 30s:
+    # catches a slow-kill regression while allowing Windows CI overhead.
+    assert elapsed < 30, f"returned after {elapsed:.0f}s — timeout-kill did not bound it"
 
     # Tree-kill must reach the grandchild: its heartbeat (append-only, so the
     # size can only grow while it lives) stops growing.
@@ -778,7 +778,7 @@ def test_health_check_uses_shlex_for_argv_parsing(
     assert any("path with spaces" in tok for tok in argv), (
         f"quoted path split by whitespace: argv={argv}"
     )
-    assert argv[0] == "python"
+    assert argv[0] == _sys.executable  # python token resolved to running interpreter
 
 
 # ---------- #338 (M3): settings.json + .mcp.json deep-merge ----------
@@ -1776,6 +1776,22 @@ def test_health_check_real_subprocess_succeeds(fake_repo: Path) -> None:
     status, logs = installer.run_health_check(m, fake_repo)
     assert status == "ok"
     assert any("OK" in line for line in logs)
+
+
+def test_health_check_substitutes_python_token_with_sys_executable(
+    fake_repo: Path,
+) -> None:
+    """Manifest uses 'python' or 'python3' as a portable token; run_health_check
+    must resolve it to sys.executable at spawn time so the command works on
+    Windows (where python3 is absent) and Linux (where python may be absent)."""
+    m = {
+        "health_check": {
+            "enabled": True,
+            "commands": ["python3 -c exit(0)", "python -c exit(0)"],
+        }
+    }
+    status, logs = installer.run_health_check(m, fake_repo)
+    assert status == "ok", f"python/python3 token substitution failed: {logs}"
 
 
 def test_main_health_check_timeout_does_not_rollback(

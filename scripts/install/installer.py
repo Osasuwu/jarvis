@@ -943,12 +943,19 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             # /T walks the tree by parent PID — the direct child is still
             # alive here (we only reach this on TimeoutExpired), so the
             # chain is discoverable.
-            subprocess.run(
+            result = subprocess.run(
                 ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
                 capture_output=True,
                 timeout=15,
                 check=False,
             )
+            if result.returncode != 0:
+                # taskkill failed (access denied, already exited, etc.) —
+                # fall through to proc.kill() as a last resort.
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
         except (OSError, subprocess.TimeoutExpired):
             # Fallback must honour the "never raise" contract: killing an
             # already-exited process can surface OSError on Windows.
@@ -988,6 +995,10 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, li
         # Use shlex so paths with spaces survive — `cmd.split()` breaks them.
         # posix=False on Windows keeps backslashes intact.
         argv = shlex.split(cmd, posix=(os.name != "nt"))
+        # Resolve portable python/python3 tokens to the running interpreter.
+        # On Windows python3 is absent; on some Linux distros python is absent.
+        if argv and argv[0] in ("python", "python3"):
+            argv[0] = sys.executable
         # Output goes to temp FILES, never pipes. With the prior capture_output=True
         # approach, a health command that spawns its own children (session-context.py
         # re-execs into the venv python) left a grandchild holding inherited pipe
@@ -1015,11 +1026,18 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, li
                         proc.wait(timeout=timeout)
                     except subprocess.TimeoutExpired:
                         _kill_tree(proc)
-                        proc.wait()  # reap zombie — _kill_tree already sent SIGKILL
+                        try:
+                            proc.wait(timeout=10)  # reap zombie; bounded to avoid re-hang
+                        except subprocess.TimeoutExpired:
+                            pass  # unkillable (D-state) — proceed, zombie reaped at exit
                         timed_out = True
                 # Decode like the old capture path: locale-independent UTF-8,
                 # errors="replace" survives rogue bytes on cp1251 consoles (#352).
-                stderr = err_path.read_bytes().decode("utf-8", errors="replace")
+                # PermissionError: surviving grandchild may hold the write handle on Windows.
+                try:
+                    stderr = err_path.read_bytes().decode("utf-8", errors="replace")
+                except PermissionError:
+                    stderr = "<stderr unavailable — file locked by surviving child>"
                 if timed_out:
                     logs.append(
                         f"TIMEOUT {cmd}: no exit after {timeout}s — "
