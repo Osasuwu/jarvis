@@ -192,6 +192,16 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
             key,
             goal=f"/rework {target}".rstrip(),
         )
+    if event_type == "global_task_due" and severity == "low":
+        # Global task due — route through EMIT_TASK. Skill dispatch happens in task_queue.
+        dispatcher_skill = payload.get("dispatcher_skill", "research")
+        return _emit(
+            event_type,
+            severity,
+            target,
+            key,
+            goal=f"global task: {dispatcher_skill}",
+        )
 
     # 3. Pure-pipeline events → acknowledge, no work (AC1).
     if event_type in _NOOP_EVENT_TYPES:

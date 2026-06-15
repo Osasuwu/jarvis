@@ -98,6 +98,24 @@ def test_review_negative_medium_emits_rework():
     assert "/rework" in d.goal and "7" in d.goal
 
 
+def test_global_task_due_low_emits_task():
+    """global_task_due at severity='low' routes to EMIT_TASK."""
+    d = handle_event(
+        _ev(
+            "global_task_due",
+            "low",
+            {
+                "dispatcher_skill": "research",
+                "output_sink": "memory",
+                "lapse_intervals": 1,
+            },
+        )
+    )
+    assert d.route is Route.EMIT_TASK
+    assert d.assignee == "sandcastle"
+    assert "research" in d.goal
+
+
 @pytest.mark.parametrize("event_type", ["pr_approved", "pr_merged", "ci_success"])
 def test_pipeline_events_are_inline_noop(event_type):
     d = handle_event(_ev(event_type, "info"))
