@@ -348,6 +348,16 @@ class TestPersistLocal:
         assert out.parent.name == "session-snapshots"
         assert out.read_text(encoding="utf-8") == "# Snapshot\n"
 
+    def test_path_traversal_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        assert pcb._persist_local("../../etc/passwd", "evil") is None
+
+    def test_prefix_collision_blocked(self, tmp_path, monkeypatch):
+        # "session-snapshots-evil" starts with "session-snapshots" but is a
+        # different directory — is_relative_to catches this, startswith didn't.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        assert pcb._persist_local("../session-snapshots-evil/x", "evil") is None
+
 
 # ---------------------------------------------------------------------------
 # _persist_supabase — missing-env path must be loud, not silent
@@ -404,30 +414,25 @@ class TestAppendHookLog:
             pcb._append_hook_log(f"line-{i}")
         log = _read_hook_log(tmp_path)
         lines = log.splitlines()
-        # Stays bounded near the keep-window rather than growing to 50 lines…
-        assert len(lines) <= 6
+        # Stays bounded at the keep-window rather than growing to 50 lines…
+        assert len(lines) <= 5
         # …always retains the newest entry…
         assert lines[-1].endswith("line-49")
         # …and the oldest forged-off entries are gone.
         assert "line-0 " not in log and "line-0\n" not in log
 
-    def test_trim_on_corrupted_log_does_not_raise(self, tmp_path, monkeypatch, capsys):
-        # A partially-written/corrupted hook.log makes _trim_hook_log's
-        # read_text(encoding="utf-8") raise UnicodeDecodeError — which is an
-        # Exception but NOT an OSError. The trim guard must catch it broadly so
-        # the heartbeat append still succeeds and the hook never exits non-zero.
+    def test_trim_on_corrupted_log_does_not_raise(self, tmp_path, monkeypatch):
+        # A partially-written/corrupted hook.log with invalid UTF-8 bytes must
+        # not crash. The trim uses errors="replace" to handle corrupt bytes
+        # gracefully, so it succeeds rather than raising UnicodeDecodeError.
         monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(pcb, "_HOOK_LOG_MAX_BYTES", 8)
         out_dir = tmp_path / ".claude" / "session-snapshots"
         out_dir.mkdir(parents=True)
-        # Invalid UTF-8 (lone 0x80 continuation byte) over the byte cap so the
-        # subsequent append triggers a trim that must decode the bad bytes.
         (out_dir / "hook.log").write_bytes(b"\x80" * 64)
         # Must not raise despite the un-decodable existing content.
         pcb._append_hook_log("after-corruption")
-        assert "hook.log trim failed" in capsys.readouterr().err
-        # Key invariant: append happens before trim, so even if trim fails the
-        # heartbeat line is written. Read as bytes to skip UTF-8 decode errors.
+        # Key invariant: heartbeat line is written regardless.
         log_bytes = (out_dir / "hook.log").read_bytes()
         assert b"after-corruption" in log_bytes
 

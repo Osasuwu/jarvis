@@ -403,7 +403,9 @@ def _persist_local(session_id: str, content: str) -> Path | None:
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = (out_dir / f"{session_id}.md").resolve()
         # Guard against path traversal: session_id from untrusted JSON.
-        if not str(out_file).startswith(str(out_dir.resolve())):
+        # is_relative_to avoids the prefix-collision bypass that startswith
+        # has (e.g. "session-snapshots-evil" starts with "session-snapshots").
+        if not out_file.is_relative_to(out_dir.resolve()):
             print("[pre-compact] suspicious session_id in local fallback", file=sys.stderr)
             return None
         # Use binary write to avoid Windows \n→\r\n translation, which would
@@ -435,17 +437,19 @@ def _sanitize_log_field(value: object) -> str:
 
 
 def _trim_hook_log(log_path: Path) -> None:
-    """Head-trim the heartbeat log to its last _HOOK_LOG_KEEP_LINES.
+    """Keep only the last _HOOK_LOG_KEEP_LINES entries when file exceeds _HOOK_LOG_MAX_BYTES.
 
     No-op until the file exceeds _HOOK_LOG_MAX_BYTES. Best-effort: a failure
     here must never stop the heartbeat, so the single caller wraps it.
     """
     if not log_path.exists() or log_path.stat().st_size <= _HOOK_LOG_MAX_BYTES:
         return
-    lines = log_path.read_text(encoding="utf-8").splitlines(keepends=True)
-    if len(lines) <= _HOOK_LOG_KEEP_LINES:
-        return
-    log_path.write_text("".join(lines[-_HOOK_LOG_KEEP_LINES:]), encoding="utf-8")
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    trimmed = "".join(lines[-_HOOK_LOG_KEEP_LINES:])
+    # Atomic rename: avoids data loss if the process is killed mid-write.
+    tmp_path = log_path.with_suffix(".tmp")
+    tmp_path.write_text(trimmed, encoding="utf-8")
+    os.replace(str(tmp_path), str(log_path))
 
 
 def _append_hook_log(message: str) -> None:
