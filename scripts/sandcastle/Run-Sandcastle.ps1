@@ -503,12 +503,14 @@ function Test-IsProviderBilling {
     # `error occurred at line 402` and `issue #402` -- spurious billing alerts
     # an agent's run.log can realistically produce (#956 review):
     #   (a) a context word (http/status/error/code) followed by ONLY structured
-    #       separators (`:`, `=`, whitespace, JSON punctuation) before 402 --
+    #       separators (`:`, `=`, space/tab, JSON punctuation) before 402 --
     #       keeps `status: 402`, `error=402`, `{"code":402}`, `HTTP 402`, while
-    #       prose (which puts letters between the word and 402) no longer matches;
-    #   (b) the HTTP status line `HTTP/1.1 402 ...`, which (a) misses because the
-    #       version digits sit between `http` and `402`.
-    if ($Text -match '(?i)\b(?:http|status|error|code)[\s:="''{},/]{0,6}\b402\b') { return $true }
+    #       prose (which puts letters between the word and 402) no longer matches.
+    #       Uses [ \t] not \s so newlines in multi-line log tails can't bridge
+    #       an `error` keyword to a bare `402` several lines down;
+    #   (b) the HTTP status line `HTTP/1.1 402 ...`, which (a) misses because
+    #       version digits and dot are not in the separator character class.
+    if ($Text -match '(?i)\b(?:http|status|error|code)[ \t:="''{},]{0,6}\b402\b') { return $true }
     if ($Text -match '(?i)\bhttp/\d[\d.]*\s+402\b') { return $true }
     return $false
 }
@@ -548,7 +550,7 @@ function Test-DeepSeekBalance {
         return $true
     }
     if ($null -eq $resp -or $null -eq $resp.is_available) { return $true }
-    return [bool]$resp.is_available
+    return ($resp.is_available -eq $true)
 }
 
 # Sandcastle tagged-error classes (node_modules/@ai-hero/sandcastle/dist/errors.js).
@@ -605,6 +607,9 @@ function Protect-LogTail {
     $Text = $Text -replace 'gh[pousr]_[A-Za-z0-9]{20,}', '<GH-TOKEN-REDACTED>'
     $Text = $Text -replace 'github_pat_[A-Za-z0-9_]{20,}', '<GH-TOKEN-REDACTED>'
     $Text = $Text -replace 'sk-ant-[A-Za-z0-9\-_]{20,}', '<ANTHROPIC-KEY-REDACTED>'
+    # Generic sk- prefixed keys (DeepSeek, OpenRouter, etc.) -- must run AFTER
+    # the sk-ant- pattern above to avoid partial replacement artifacts.
+    $Text = $Text -replace 'sk-[A-Za-z0-9\-_]{32,}', '<API-KEY-REDACTED>'
     return $Text
 }
 
@@ -1131,7 +1136,11 @@ function Invoke-Watchdog {
                 if ($tier2.Provider -eq 'deepseek' -and
                     -not (Test-DeepSeekBalance -ApiKey $tier2.AuthToken)) {
                     $reason = 'provider-billing: deepseek balance exhausted (pre-flight probe, OOM escalation)'
-                    Record 'failure' $reason @{ provider_billing = $true } $reason
+                    # Preserve accumulated Tier 0/1 token counts in the outcome
+                    # instead of a fresh hash that silently drops them.
+                    $totalUsage.provider_billing = $true
+                    $totalUsage.tier = $tierUsed
+                    Record 'failure' $reason $totalUsage $reason
                     throw $reason
                 }
                 Write-Host "[watchdog] Tier 1 failed -- escalating to Tier 2 ($($tier2.Provider): $($tier2.Model))"
@@ -1160,11 +1169,18 @@ function Invoke-Watchdog {
             if (Test-IsProviderBilling -Text "$reason`n$logTail") {
                 $reason = "provider-billing: $reason"
                 $totalUsage.provider_billing = $true
+                # A 402 is provider infra, not an agent-side crash -- clear the
+                # sandcastle error class so Supabase rows don't carry contradictory
+                # signals (e.g. error_class=AgentError + provider_billing=true).
+                $errClass = ''
             }
-            $logTail  = Protect-LogTail -Text $logTail -Secrets @($supabaseKey, $supabaseUrl, $tgToken)
+            $tier2Secrets = @($tier2Primary.AuthToken, $tier2.AuthToken) | Where-Object { $_ }
+            $logTail  = Protect-LogTail -Text $logTail -Secrets (@($supabaseKey, $supabaseUrl, $tgToken) + $tier2Secrets)
             # Full chain failure: label the issue if we know which one was attempted.
+            # Skip labeling on billing failures -- "too-large-for-local" means the
+            # model is too small, not that the provider account is drained.
             $labelApplied = $false
-            if ($targetIssue -and $repoSlug) {
+            if ($targetIssue -and $repoSlug -and -not $totalUsage.provider_billing) {
                 $labelApplied = Add-IssueLabel -Issue $targetIssue -Label 'too-large-for-local' -RepoSlug $repoSlug
             }
             $totalUsage.tier = $tierUsed

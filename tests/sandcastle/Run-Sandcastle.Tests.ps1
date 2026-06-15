@@ -210,6 +210,22 @@ Describe 'Test-IsProviderBilling' {
         Test-IsProviderBilling -Text 'see the code path around line 402'       | Should Be $false
     }
 
+    It 'does not fire across newlines (error on one line, 402 several lines later)' {
+        # \s in .NET regex matches \n; branch (a) must use [ \t] to avoid
+        # cross-line false positives from multi-line log tails.
+        Test-IsProviderBilling -Text "error`n`n`n`n`n`n402" | Should Be $false
+    }
+
+    It 'does not fire on code #402 or error #402 (GitHub issue / line references)' {
+        Test-IsProviderBilling -Text 'code #402'  | Should Be $false
+        Test-IsProviderBilling -Text 'error #402' | Should Be $false
+    }
+
+    It 'matches billing signature on the second line (the log-tail position)' {
+        Test-IsProviderBilling -Text "exit=1`nAPI Error: 402 Insufficient Balance" | Should Be $true
+        Test-IsProviderBilling -Text "exit=1`ninsufficient balance" | Should Be $true
+    }
+
     It 'returns false for empty and generic failures' {
         Test-IsProviderBilling -Text ''        | Should Be $false
         Test-IsProviderBilling -Text 'exit=1'  | Should Be $false
@@ -249,6 +265,10 @@ Describe 'Test-DeepSeekBalance' {
         Test-DeepSeekBalance -ApiKey 'k' | Should Be $true
     }
 
+    It 'returns false when API returns the string "false" instead of boolean false' {
+        Mock Invoke-RestMethod { [pscustomobject]@{ is_available = 'false' } }
+        Test-DeepSeekBalance -ApiKey 'k' | Should Be $false
+    }
     It 'skips the HTTP call entirely when the key is empty' {
         Mock Invoke-RestMethod { throw 'must not be called' }
         Test-DeepSeekBalance -ApiKey '' | Should Be $true
@@ -361,6 +381,12 @@ Describe 'Protect-LogTail' {
         $out = Protect-LogTail -Text "key=$tok"
         $out | Should Not Match 'sk-ant-x'
         $out | Should Match 'ANTHROPIC-KEY-REDACTED'
+    }
+    It 'redacts a generic sk- prefixed key shape (DeepSeek, OpenRouter, etc.)' {
+        $tok = 'sk-' + ('d' * 40)
+        $out = Protect-LogTail -Text "Authorization: Bearer $tok failed"
+        $out | Should Not Match 'sk-ddd'
+        $out | Should Match 'API-KEY-REDACTED'
     }
     It 'returns empty string on empty input' {
         Protect-LogTail -Text '' | Should Be ''
@@ -701,6 +727,46 @@ Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
             -ParameterFilter {
                 $Status -eq 'failure' -and
                 $Summary -like 'provider-billing*OOM escalation*' -and
+                $LlmMetrics.provider_billing -eq $true -and
+                $LlmMetrics.tier -ne $null
+            }
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Message -like '*provider-billing*' }
+        Assert-MockCalled Add-IssueLabel -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC #956: OOM escalation Tier 2 boots but returns 402 in-run -> in-run classifier fires billing alert' {
+        # Pre-flight passes (balance healthy at probe time), but the in-run
+        # agent hits a 402 mid-flight. The in-run classifier must promote to
+        # provider-billing and fire the Telegram alert.
+        Mock Test-DeepSeekBalance { $true }   # pre-flight passes
+        $script:n = 0
+        Mock Invoke-Sandcastle {
+            $script:n++
+            if ($script:n -le 2) {
+                # Tier 0 + Tier 1 OOM
+                return [pscustomobject]@{
+                    ok = $false; exitCode = 137; reason = 'exit=137'
+                    result = [pscustomobject]@{ branch = 'feat/956-oom-inrun' }
+                }
+            }
+            # Tier 2 boots but returns a generic failure with billing in log
+            return [pscustomobject]@{
+                ok = $false; exitCode = 1; result = $null; reason = 'exit=1'
+            }
+        }
+        Mock Test-IsOOM { $true }
+        Mock Get-LogTail { 'API Error: 402 {"error":{"message":"Insufficient Balance"}}' }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Invoke-Sandcastle -Times 3 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Status -eq 'failure' -and
+                $Summary -like '*provider-billing*' -and
                 $LlmMetrics.provider_billing -eq $true
             }
         Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
@@ -900,9 +966,15 @@ Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
               -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
 
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
-            -ParameterFilter { $Status -eq 'failure' -and $Summary -like '*provider-billing*' }
+            -ParameterFilter {
+                $Status -eq 'failure' -and
+                $Summary -like '*provider-billing*' -and
+                $LlmMetrics.provider_billing -eq $true -and
+                -not $LlmMetrics.error_class
+            }
         Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Message -like '*provider-billing*' }
+        Assert-MockCalled Add-IssueLabel -Times 0 -Exactly -Scope It
     }
 
     It 'AC #955: generic Tier 2 failure without billing signature stays silent (no Telegram)' {
@@ -934,9 +1006,10 @@ Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
 
         Assert-MockCalled Invoke-Sandcastle -Times 0 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
-            -ParameterFilter { $Status -eq 'failure' -and $Summary -like 'provider-billing*pre-flight*' }
+            -ParameterFilter { $Status -eq 'failure' -and $Summary -like 'provider-billing*pre-flight*' -and $LlmMetrics.provider_billing -eq $true }
         Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Message -like '*provider-billing*' }
+        Assert-MockCalled Add-IssueLabel -Times 0 -Exactly -Scope It
     }
 
     It 'AC #955: balance probe is deepseek-only -- claude primary never consults it' {
@@ -1251,6 +1324,37 @@ Describe 'Invoke-Watchdog daemon-state matrix' {
         Assert-MockCalled Invoke-Sandcastle   -Times 3 -Exactly -Scope It
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
             -ParameterFilter { $Status -eq 'success' -and $Summary -notlike '*success:idle*' }
+    }
+
+    It 'redacts the tier2 auth token from diag_tail on a billing failure path' {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Test-WindowExpired { $false }
+        $dsKey = 'sk-' + ('a' * 40)
+        Mock Read-DotEnvFile {
+            @{
+                SUPABASE_URL       = 'https://x'
+                SUPABASE_KEY       = 'k'
+                TELEGRAM_BOT_TOKEN = 't'
+                TELEGRAM_CHAT_ID   = '1'
+                DEEPSEEK_API_KEY   = $dsKey
+            }
+        }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{ ok = $false; exitCode = 1; result = $null; reason = 'exit=1' }
+        }
+        Mock Get-LogTail { "Authorization: Bearer $dsKey returned 402" }
+        Mock Test-IsOOM { $false }
+        Mock Test-DeepSeekBalance { $true }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model '' -Tier2Provider 'deepseek' -Tier2AsPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $LlmMetrics.diag_tail -notlike "*$dsKey*"
+            }
     }
 
     It 'enriches the failure outcome with the tagged-error class and a redacted log tail' {
