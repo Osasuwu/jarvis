@@ -167,8 +167,14 @@ def run(
             return stats
     device = socket.gethostname()
     examples_processed = 0
+    # Circuit-breaker: Ollama being unreachable is a host-wide condition, not a
+    # per-example one. Once we see the first OllamaUnavailable we stop the whole
+    # run instead of hammering every remaining example with the same dead socket.
+    ollama_down = False
 
     for fp in files:
+        if ollama_down:
+            break
         try:
             payload = json.loads(fp.read_text(encoding="utf-8"))
         except Exception as e:
@@ -188,10 +194,13 @@ def run(
             examples_processed += 1
             try:
                 classified = call_ollama(user_text, prev)
-            except OllamaUnavailable as e:
+            except OllamaUnavailable:
+                # Host-wide condition — abort the run. The per-item line would
+                # duplicate the summary WARNING below for zero diagnostic gain,
+                # so we only count here and let the summary report it once.
                 stats["connection_errors"] += 1
-                print(f"[backfill] Ollama unavailable on {fp}#{idx}: {e}", file=sys.stderr)
-                continue
+                ollama_down = True
+                break
             except Exception as e:
                 stats["classifier_errors"] += 1
                 print(f"[backfill] classifier error on {fp}#{idx}: {type(e).__name__}", file=sys.stderr)

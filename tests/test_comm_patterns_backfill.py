@@ -181,9 +181,12 @@ def test_run_max_examples_caps_processing(tmp_path: Path, monkeypatch):
     assert stats["rows_written"] == 3
 
 
-def test_run_ollama_unavailable_increments_connection_errors(tmp_path: Path, monkeypatch):
-    """OllamaUnavailable exception increments connection_errors, not no_pattern
-    or classifier_errors."""
+def test_run_ollama_unavailable_aborts_run_circuit_breaker(tmp_path: Path, monkeypatch):
+    """OllamaUnavailable is a host-wide condition, not a per-example one: the
+    first one aborts the whole run (circuit-breaker) instead of hammering every
+    remaining example with the same dead socket. Exactly one connection_error is
+    counted and call_ollama is invoked exactly once, even though two examples
+    exist. connection_errors stays distinct from no_pattern / classifier_errors."""
     cache_root = tmp_path / "cache"
     sub = cache_root / "2026-04-30_X"
     sub.mkdir(parents=True)
@@ -199,14 +202,50 @@ def test_run_ollama_unavailable_increments_connection_errors(tmp_path: Path, mon
     }
     (sub / "X_patterns.json").write_text(_dumps_json(payload), encoding="utf-8")
 
+    calls = {"n": 0}
+
     def boom(user_text, prev):
+        calls["n"] += 1
         raise _mod.OllamaUnavailable("connection refused")
 
     monkeypatch.setattr(_mod, "call_ollama", boom)
     stats = _mod.run(dry_run=True, cache_root=cache_root)
-    assert stats["connection_errors"] == 2
+    # Circuit-breaker: stop after the first failure; example #2 is never tried.
+    assert calls["n"] == 1
+    assert stats["connection_errors"] == 1
     assert stats["no_pattern"] == 0
     assert stats["classifier_errors"] == 0
+    assert stats["rows_written"] == 0
+
+
+def test_run_ollama_unavailable_circuit_breaker_spans_files(tmp_path: Path, monkeypatch):
+    """The circuit-breaker must break out of the *outer* file loop too, not just
+    the inner example loop — Ollama being down for file A means it's down for file
+    B. With two cache files, the run still calls Ollama exactly once."""
+    cache_root = tmp_path / "cache"
+    for day in ("2026-04-10_A", "2026-04-20_B"):
+        sub = cache_root / day
+        sub.mkdir(parents=True)
+        payload = {
+            "device": day[-1],
+            "date_range": ["2026-04-01", "2026-04-30"],
+            "correctives": {"perm": {"examples": [{"trigger": "t", "correction": "c"}]}},
+        }
+        (sub / f"{day[-1]}_patterns.json").write_text(_dumps_json(payload), encoding="utf-8")
+
+    calls = {"n": 0}
+
+    def boom(user_text, prev):
+        calls["n"] += 1
+        raise _mod.OllamaUnavailable("connection refused")
+
+    monkeypatch.setattr(_mod, "call_ollama", boom)
+    stats = _mod.run(dry_run=True, cache_root=cache_root)
+    # Two files, one example each — but the breaker aborts on the first failure,
+    # so the second file is never opened for classification.
+    assert calls["n"] == 1
+    assert stats["files_seen"] == 2
+    assert stats["connection_errors"] == 1
     assert stats["rows_written"] == 0
 
 
