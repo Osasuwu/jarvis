@@ -582,7 +582,7 @@ def test_ollama_unavailable_mid_pass_preserves_completed_turns(tmp_path: Path):
         return {"primary_label": "affirmation", "subtype": None,
                 "confidence": 0.9, "anchor_quote": user_text}
 
-    stats = extract_session(
+    common = dict(
         device="dev1",
         session_id="midpass",
         transcript_path=fp,
@@ -591,6 +591,7 @@ def test_ollama_unavailable_mid_pass_preserves_completed_turns(tmp_path: Path):
         classify_fn=flaky,
         source_provenance="extractor:stop-hook",
     )
+    stats = extract_session(**common)
     # u1 written before the drop; u2/u3 deferred to the next pass.
     assert stats["rows_written"] == 1
     assert stats["connection_errors"] == 1
@@ -603,3 +604,16 @@ def test_ollama_unavailable_mid_pass_preserves_completed_turns(tmp_path: Path):
     assert stats["watermark_after"] == 1
     # The one confirmed row is u1.
     assert [r["anchor_quote"] for r in store.rows] == ["u1"]
+
+    # --- Pass 2: Ollama is back — retry picks up u2 and u3 ---
+    def healthy(user_text, prev):
+        return {"primary_label": "affirmation", "subtype": None,
+                "confidence": 0.9, "anchor_quote": user_text}
+
+    common["classify_fn"] = healthy
+    stats2 = extract_session(**common)
+    assert stats2["rows_written"] == 2  # u2 and u3
+    assert stats2["connection_errors"] == 0
+    assert store.get_watermark("dev1", "midpass") == 5
+    anchors = sorted(r["anchor_quote"] for r in store.rows)
+    assert anchors == ["u1", "u2", "u3"]

@@ -225,13 +225,13 @@ def run(
 
     if dry_run and isinstance(store, InMemoryStore):
         print(f"[backfill] DRY RUN — would write {len(store.rows)} rows")
+    print(f"[backfill] {stats}")
     if stats["connection_errors"] > 0:
         print(
-            f"[backfill] WARNING: {stats['connection_errors']} classifier calls failed (Ollama unavailable). "
-            f"Re-run after starting Ollama; results above are partial.",
+            f"[backfill] WARNING: Ollama unavailable — run aborted after first connection failure. "
+            f"Re-run after starting Ollama; results in this run are partial.",
             file=sys.stderr,
         )
-    print(f"[backfill] {stats}")
     return stats
 
 
@@ -251,7 +251,9 @@ def main() -> int:
         help="Stop after N examples (across all files). Useful for incremental runs.",
     )
     args = ap.parse_args()
-    run(dry_run=args.dry_run, cache_root=args.cache_root, max_examples=args.max_examples)
+    stats = run(dry_run=args.dry_run, cache_root=args.cache_root, max_examples=args.max_examples)
+    if stats.get("connection_errors", 0) > 0:
+        return 3  # partial run — matches smoke scripts exit-code convention
     return 0
 
 

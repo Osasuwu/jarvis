@@ -11,6 +11,8 @@ import io
 import json as _json
 from unittest.mock import patch
 
+import pytest
+
 from comm_patterns import classifier as _classifier
 from comm_patterns.classifier import VALID_LABELS, _extract_json, normalize_result
 
@@ -124,39 +126,21 @@ def test_call_ollama_returns_none_on_inner_garbage():
 def test_call_ollama_raises_ollama_unavailable_on_url_error():
     import urllib.error
 
-    def boom(*a, **kw):
-        raise urllib.error.URLError("connection refused")
-
-    with patch("urllib.request.urlopen", side_effect=boom):
-        try:
+    with patch("urllib.request.urlopen", side_effect=urllib.error.URLError("connection refused")):
+        with pytest.raises(_classifier.OllamaUnavailable):
             _classifier.call_ollama("x", "y")
-            assert False, "Expected OllamaUnavailable"
-        except _classifier.OllamaUnavailable:
-            pass  # expected
 
 
 def test_call_ollama_raises_ollama_unavailable_on_timeout():
-    def boom(*a, **kw):
-        raise TimeoutError("request timed out")
-
-    with patch("urllib.request.urlopen", side_effect=boom):
-        try:
+    with patch("urllib.request.urlopen", side_effect=TimeoutError("request timed out")):
+        with pytest.raises(_classifier.OllamaUnavailable):
             _classifier.call_ollama("x", "y")
-            assert False, "Expected OllamaUnavailable"
-        except _classifier.OllamaUnavailable:
-            pass  # expected
 
 
 def test_call_ollama_raises_ollama_unavailable_on_os_error():
-    def boom(*a, **kw):
-        raise OSError("connection reset")
-
-    with patch("urllib.request.urlopen", side_effect=boom):
-        try:
+    with patch("urllib.request.urlopen", side_effect=OSError("connection reset")):
+        with pytest.raises(_classifier.OllamaUnavailable):
             _classifier.call_ollama("x", "y")
-            assert False, "Expected OllamaUnavailable"
-        except _classifier.OllamaUnavailable:
-            pass  # expected
 
 
 def test_valid_labels_match_schema_check_constraint():

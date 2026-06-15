@@ -126,6 +126,11 @@ def call_ollama(
     Returns None on JSON-parse failures (successful HTTP but malformed body).
     Caller decides what to do with None — typically: skip this turn, don't bump
     watermark for it.
+
+    Note: ``scripts/lib/llm_client.py`` has a DIFFERENT ``call_ollama`` that
+    returns None on network errors (no exception). That one serves the Deriver
+    escalation chain. This one serves the comm-patterns classifier. Do not
+    confuse them — they have opposite error contracts.
     """
     host = host or os.environ.get("OLLAMA_HOST", DEFAULT_HOST)
     model = model or os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL)
