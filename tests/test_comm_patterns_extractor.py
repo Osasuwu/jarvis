@@ -492,7 +492,7 @@ def test_wall_clock_budget_aborts_loop_and_preserves_watermark(tmp_path: Path):
 
 
 def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
-    """A None return from classify_fn (network error, parse failure) is
+    """A None return from classify_fn (JSON parse failure) is
     treated as transient — the watermark stays put so the next run retries.
     Distinct from a result with primary_label=None, which is definitive."""
     fp = tmp_path / "s.jsonl"
@@ -511,6 +511,38 @@ def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
     # Counters distinguish transient (classifier_errors) from definitive
     # (no_pattern_skipped) — same shape as backfill.
     assert stats["classifier_errors"] == 1
+    assert stats["connection_errors"] == 0
     assert stats["no_pattern_skipped"] == 0
     # Watermark stays at -1 (the initial value) so the next run retries.
     assert store.get_watermark("dev1", "netfail") == -1
+
+
+def test_ollama_unavailable_does_not_advance_watermark(tmp_path: Path):
+    """OllamaUnavailable exception (connection failure) is treated as
+    transient — the watermark stays put so the next run retries. Distinct
+    from JSON-parse failures (None return) and definitive patterns."""
+    from comm_patterns.classifier import OllamaUnavailable
+
+    fp = tmp_path / "s.jsonl"
+    _write_jsonl(fp, [_asst_msg("a"), _user_msg("xx")])
+    store = InMemoryStore()
+
+    def boom(u, p):
+        raise OllamaUnavailable("connection refused")
+
+    stats = extract_session(
+        device="dev1",
+        session_id="ollama-fail",
+        transcript_path=fp,
+        cwd="/Users/petrk/GitHub/jarvis",
+        store=store,
+        classify_fn=boom,
+        source_provenance="extractor:stop-hook",
+    )
+    assert stats["rows_written"] == 0
+    # connection_errors distinct from classifier_errors (JSON parse)
+    assert stats["connection_errors"] == 1
+    assert stats["classifier_errors"] == 0
+    assert stats["no_pattern_skipped"] == 0
+    # Watermark stays at -1 (the initial value) so the next run retries.
+    assert store.get_watermark("dev1", "ollama-fail") == -1

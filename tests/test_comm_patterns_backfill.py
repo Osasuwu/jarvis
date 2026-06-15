@@ -181,6 +181,65 @@ def test_run_max_examples_caps_processing(tmp_path: Path, monkeypatch):
     assert stats["rows_written"] == 3
 
 
+def test_run_ollama_unavailable_increments_connection_errors(tmp_path: Path, monkeypatch):
+    """OllamaUnavailable exception increments connection_errors, not no_pattern
+    or classifier_errors."""
+    cache_root = tmp_path / "cache"
+    sub = cache_root / "2026-04-30_X"
+    sub.mkdir(parents=True)
+    payload = {
+        "device": "X",
+        "date_range": ["2026-04-01", "2026-04-30"],
+        "correctives": {
+            "perm": {"examples": [
+                {"trigger": "t", "correction": "c1"},
+                {"trigger": "t", "correction": "c2"},
+            ]}
+        },
+    }
+    (sub / "X_patterns.json").write_text(_dumps_json(payload), encoding="utf-8")
+
+    def boom(user_text, prev):
+        raise _mod.OllamaUnavailable("connection refused")
+
+    monkeypatch.setattr(_mod, "call_ollama", boom)
+    stats = _mod.run(dry_run=True, cache_root=cache_root)
+    assert stats["connection_errors"] == 2
+    assert stats["no_pattern"] == 0
+    assert stats["classifier_errors"] == 0
+    assert stats["rows_written"] == 0
+
+
+def test_run_primary_label_null_increments_no_pattern_not_connection_errors(tmp_path: Path, monkeypatch):
+    """Successful response with primary_label=None increments no_pattern,
+    not connection_errors. This confirms we don't merge (1) and (3) from
+    the issue description."""
+    cache_root = tmp_path / "cache"
+    sub = cache_root / "2026-04-30_X"
+    sub.mkdir(parents=True)
+    payload = {
+        "device": "X",
+        "date_range": ["2026-04-01", "2026-04-30"],
+        "correctives": {
+            "perm": {"examples": [
+                {"trigger": "t", "correction": "c1"},
+            ]}
+        },
+    }
+    (sub / "X_patterns.json").write_text(_dumps_json(payload), encoding="utf-8")
+
+    def null_label(user_text, prev):
+        return {"primary_label": None, "subtype": None,
+                "confidence": 0.0, "anchor_quote": user_text}
+
+    monkeypatch.setattr(_mod, "call_ollama", null_label)
+    stats = _mod.run(dry_run=True, cache_root=cache_root)
+    assert stats["no_pattern"] == 1
+    assert stats["connection_errors"] == 0
+    assert stats["classifier_errors"] == 0
+    assert stats["rows_written"] == 0
+
+
 # Helper kept here so the import block stays stable.
 def _dumps_json(obj) -> str:
     import json as _json

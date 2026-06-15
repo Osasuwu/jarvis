@@ -61,7 +61,7 @@ try:
 except Exception:
     pass
 
-from comm_patterns.classifier import call_ollama  # noqa: E402
+from comm_patterns.classifier import call_ollama, OllamaUnavailable  # noqa: E402
 from comm_patterns.extractor import CONFIDENCE_THRESHOLD  # noqa: E402
 from comm_patterns.scrubber import scrub  # noqa: E402
 from comm_patterns.store import InMemoryStore, SupabaseStore  # noqa: E402
@@ -149,6 +149,7 @@ def run(
         "no_pattern": 0,
         "low_confidence": 0,
         "classifier_errors": 0,
+        "connection_errors": 0,
     }
     if not files:
         print(f"[backfill] no cache files at {cache_root}")
@@ -187,6 +188,10 @@ def run(
             examples_processed += 1
             try:
                 classified = call_ollama(user_text, prev)
+            except OllamaUnavailable as e:
+                stats["connection_errors"] += 1
+                print(f"[backfill] Ollama unavailable on {fp}#{idx}: {e}", file=sys.stderr)
+                continue
             except Exception as e:
                 stats["classifier_errors"] += 1
                 print(f"[backfill] classifier error on {fp}#{idx}: {type(e).__name__}", file=sys.stderr)
@@ -211,6 +216,12 @@ def run(
 
     if dry_run and isinstance(store, InMemoryStore):
         print(f"[backfill] DRY RUN — would write {len(store.rows)} rows")
+    if stats["connection_errors"] > 0:
+        print(
+            f"[backfill] WARNING: {stats['connection_errors']} classifier calls failed (Ollama unavailable). "
+            f"Re-run after starting Ollama; results above are partial.",
+            file=sys.stderr,
+        )
     print(f"[backfill] {stats}")
     return stats
 
