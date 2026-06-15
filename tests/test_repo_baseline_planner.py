@@ -121,6 +121,34 @@ class TestPlannerOrdering:
         assert minimal_write_count < full_write_count
 
 
+class TestSetCheckContexts:
+    def test_no_check_contexts_emitted_when_empty(self):
+        """When required_check_contexts is empty (default), no SET_CHECK_CONTEXTS action is emitted."""
+        manifest = _manifest(required_check_contexts=[])
+        actions = _plan(manifest)
+        ctx_actions = [a for a in actions if a.kind == ActionKind.SET_CHECK_CONTEXTS]
+        assert len(ctx_actions) == 0, (
+            "SET_CHECK_CONTEXTS must not be emitted with empty required_check_contexts "
+            "— doing so would clear all required status checks on deploy"
+        )
+
+    def test_no_check_contexts_for_undeclared_manifest(self):
+        """A manifest that never declares required_check_contexts should not emit SET_CHECK_CONTEXTS."""
+        manifest = Manifest.from_dict({"repo": "bare-repo", "profile": "full"})
+        actions = Planner(manifest).plan(ActualState())
+        ctx_actions = [a for a in actions if a.kind == ActionKind.SET_CHECK_CONTEXTS]
+        assert len(ctx_actions) == 0
+
+    def test_delete_file_for_unmanaged_actual_path(self):
+        """Files in actual state but not in any managed set get DELETE_FILE actions."""
+        actual = ActualState(files={".github/workflows/stale.yml": ""})
+        actions = Planner(_manifest()).plan(actual)
+        assert any(
+            a.kind == ActionKind.DELETE_FILE and a.path == ".github/workflows/stale.yml"
+            for a in actions
+        )
+
+
 class TestClassifyFile:
     def test_classify_managed(self):
         manifest = _manifest()

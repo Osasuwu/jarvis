@@ -113,12 +113,12 @@ class Planner:
             ))
 
         # ── SET_CHECK_CONTEXTS ─────────────────────────────────────────
-        required = self.manifest.resolve_axis("required_check_contexts")
-        if required is not None:
+        required = self.manifest.required_check_contexts
+        if required:
             actions.append(Action(
                 kind=ActionKind.SET_CHECK_CONTEXTS,
                 path="<repo-settings>",
-                context_names=list(required) if required else [],
+                context_names=list(required),
             ))
 
         return actions

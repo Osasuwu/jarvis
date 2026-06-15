@@ -96,6 +96,23 @@ class TestAxisResolution:
         m = Manifest.from_dict({"repo": "x", "profile": "full"})
         assert m.resolve_axis("visibility") == "public"
 
+    def test_visibility_uses_profile_default_when_unset(self):
+        """visibility=None (unset) → falls back to profile default, not a hardcoded value."""
+        m = Manifest.from_dict({"repo": "x"})
+        # No explicit visibility → should resolve from profile (which is "public")
+        assert m.visibility is None
+        assert m.resolve_axis("visibility") == "public"
+
+    def test_visibility_explicit_override(self):
+        """Explicit visibility in manifest overrides profile default."""
+        m = Manifest.from_dict({"repo": "x", "visibility": "private"})
+        assert m.resolve_axis("visibility") == "private"
+
+    def test_explicit_empty_managed_files_not_replaced_by_default(self):
+        """Manifest with managed_files=[] must yield empty, not the default set."""
+        m = Manifest.from_dict({"repo": "x", "managed_files": []})
+        assert m.resolved_managed_files == []
+
 
 class TestJarvisSplitPreserved:
     """jarvis's existing split: pytest=LANGUAGE-TEST, ci-meta=MANAGED,

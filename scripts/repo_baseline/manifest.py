@@ -81,7 +81,7 @@ class Manifest:
 
     repo: str = ""
     profile: str = "full"
-    visibility: str = "public"
+    visibility: Optional[str] = None
 
     # ── Axis overrides (None = use profile default) ───────────────────
     runs_on: Optional[List[str]] = None
@@ -133,7 +133,7 @@ class Manifest:
         return cls(
             repo=data.get("repo", ""),
             profile=data.get("profile", "full"),
-            visibility=data.get("visibility", "public"),
+            visibility=data.get("visibility"),
             runs_on=data.get("runs_on"),
             ci_language=data.get("ci_language"),
             code_review_marketplace=data.get("code_review_marketplace"),
@@ -170,7 +170,10 @@ class Manifest:
     @property
     def resolved_managed_files(self) -> List[str]:
         """Managed files resolved through current profile."""
-        return self.resolve_axis("managed_files") or list(_MANAGED_FILES_DEFAULT)
+        result = self.resolve_axis("managed_files")
+        if result is None:
+            return list(_MANAGED_FILES_DEFAULT)
+        return result
 
     def class_for_file(self, path: str) -> FileClass:
         """Determine the file class for a given repo-path."""
