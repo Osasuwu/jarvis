@@ -1,9 +1,9 @@
 """Tests for the parked-event re-queue poller (#745 — Path B).
 
 The poller re-queues ``parked`` events when their blocking task reaches a
-terminal state (``done`` or ``failed``). It is a pure function over a
-:class:`PollerPort` interface — every test uses an in-memory fake so no
-live database is required.
+terminal state (``done``, ``failed``, or ``parked``). It is a pure function
+over a :class:`PollerPort` interface — every test uses an in-memory fake so
+no live database is required.
 """
 
 from __future__ import annotations
@@ -66,6 +66,8 @@ class FakePollerPort:
     def requeue_event(self, event_id: str, *, reason: str) -> bool:
         for ev in self.events:
             if ev["id"] == event_id:
+                if ev["state"] != "parked":
+                    return False
                 ev["state"] = "pending"
                 self.requeue_calls.append((event_id, reason))
                 return True
@@ -270,6 +272,46 @@ class TestEdgeCases:
     def test_requeue_event_returns_false_for_nonexistent_event(self):
         port = FakePollerPort(events=[], tasks=[])
         result = port.requeue_event("no-such-event", reason="test")
+        assert result is False
+
+    def test_unknown_task_status_leaves_event_parked(self):
+        """A novel task status (e.g. future ``cancelled``) leaves the event parked."""
+        port = FakePollerPort(
+            events=[_ev("e1", task_id="t1")],
+            tasks=[_task("t1", "cancelled")],
+        )
+        n = poller.poll(port)
+        assert n == 0
+        assert port.state_of("e1") == "parked"
+
+    def test_json_string_payload_requeues_through_poll(self):
+        """PostgREST JSON-string payload is parsed end-to-end through ``poll()``."""
+        json_event = {
+            "id": "e-json",
+            "state": "parked",
+            "payload": json.dumps({"blocked_by_task_id": "t9"}),
+        }
+
+        class _JsonStringPayloadPort(FakePollerPort):
+            def find_parked_events(self) -> list[dict[str, Any]]:
+                return [json_event]
+
+        port = _JsonStringPayloadPort(
+            events=[json_event],  # needed for requeue_event lookup
+            tasks=[_task("t9", "done")],
+        )
+        n = poller.poll(port)
+        assert n == 1
+        assert len(port.requeue_calls) == 1
+        assert port.requeue_calls[0][0] == "e-json"
+
+    def test_requeue_already_pending_event_returns_false(self):
+        """FakePollerPort mirrors production: requeue only from parked state."""
+        port = FakePollerPort(
+            events=[_ev("e1", task_id="t1", state="pending")],
+            tasks=[_task("t1", "done")],
+        )
+        result = port.requeue_event("e1", reason="test")
         assert result is False
 
 

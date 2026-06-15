@@ -40,9 +40,9 @@ logger = logging.getLogger(__name__)
 class PollerPort(Protocol):
     """Interface the poller depends on for events and task_queue access.
 
-    Implemented by an in-memory fake in tests; the live database-backed adapter
-    is provided by the wake_driver production bootstrap. See #745 (Path B) for
-    the rollout status of that adapter.
+    Implemented by an in-memory fake in tests. No live adapter is wired yet —
+    ``main()`` passes ``poller_port=None``. Path B is inert in production until
+    the Supabase-backed adapter is written and threaded in; see #745.
     """
 
     def find_parked_events(self) -> list[dict[str, Any]]:
@@ -56,7 +56,10 @@ class PollerPort(Protocol):
     def get_task_status(self, task_id: str) -> str | None:
         """Return the current FSM state of a task, or ``None`` if not found.
 
-        Expected values: ``"running"``, ``"done"``, ``"failed"``, ``"parked"``.
+        Expected values: ``"pending"``, ``"claimed"``, ``"running"``,
+        ``"done"``, ``"failed"``, ``"parked"``. The poller only acts on
+        terminal states (``done`` / ``failed`` / ``parked``); all others
+        leave the event parked for the next pass.
         """
 
     def requeue_event(self, event_id: str, *, reason: str) -> bool:
@@ -80,6 +83,15 @@ _REQUEUE_REASONS: dict[str, str] = {
     "failed": "failed",
     "parked": "parked (terminal) — orchestrator re-routes",
 }
+
+# Import-time guard: if task_queue adds a new terminal state the poller must
+# decide how to requeue it — fail fast rather than silently stranding events.
+from agents.task_queue import _TERMINAL_STATES as _TASK_TERMINAL_STATES  # noqa: E402
+
+assert set(_REQUEUE_REASONS.keys()) == _TASK_TERMINAL_STATES, (
+    f"_REQUEUE_REASONS keys {set(_REQUEUE_REASONS.keys())} != "
+    f"task_queue._TERMINAL_STATES {_TASK_TERMINAL_STATES}"
+)
 
 
 def poll(port: PollerPort) -> int:
@@ -125,10 +137,16 @@ def _process_parked_event(port: PollerPort, event: dict[str, Any]) -> int:
         return 0
 
     task_status = port.get_task_status(task_id)
+    if task_status is None:
+        logger.debug(
+            "Event %s blocked on task %s which is not in task_queue — left parked",
+            event["id"],
+            task_id,
+        )
+        return 0
     reason_clause = _REQUEUE_REASONS.get(task_status)
     if reason_clause is None:
-        # ``running`` or task-not-found → not terminal; leave parked for the
-        # next pass.
+        # ``running`` / ``pending`` / ``claimed`` → not terminal; leave parked.
         return 0
 
     ok = port.requeue_event(event["id"], reason=f"Blocking task {task_id} {reason_clause}")
