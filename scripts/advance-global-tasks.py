@@ -63,17 +63,30 @@ def digest_sha256(data: str) -> str:
     return hashlib.sha256(data.encode()).hexdigest()
 
 
-def compute_dedup_key(source_id: str, next_run_epoch: float) -> str:
-    """Compute dedup_key = sha256('global_task:'||source_id||':'||EXTRACT(EPOCH FROM next_run)).
+def compute_dedup_key(
+    source_id: str, next_run_epoch: float, mode: str = "coalesce"
+) -> str:
+    """Compute dedup_key = sha256('global_task:'||mode||':'||source_id||':'||epoch).
+
+    ``mode`` ('coalesce' | 'fire') namespaces the key so a coalesce event and a
+    fire_per_interval i=0 event for the same row do NOT collide (MAJOR #6):
+    fire_epoch for i=0 is ``base_epoch + 0*cadence == base_epoch``, the exact
+    epoch the coalesce branch uses, so without the mode prefix both hash to
+    'global_task:<id>:<epoch>' and ``ON CONFLICT DO NOTHING`` silently swallows
+    whichever lands second — a coalesce→fire_per_interval mode switch would lose
+    its first fire. The prefix is mode-stable (it is a column value, not derived
+    from clock state), so crash-retry of the same row in the same mode still
+    recomputes the identical key and dedupes correctly.
 
     Args:
         source_id: UUID string
         next_run_epoch: seconds since epoch (full timestamp, NOT hour-truncated)
+        mode: lapse mode namespace — 'coalesce' (default) or 'fire'
 
     Returns:
         Hex digest
     """
-    data = f"global_task:{source_id}:{int(next_run_epoch)}"
+    data = f"global_task:{mode}:{source_id}:{int(next_run_epoch)}"
     return digest_sha256(data)
 
 
@@ -173,7 +186,7 @@ def _advance_due_rows(cur: Any) -> int:
     cur.execute(
         """
         SELECT
-            id, title, dispatcher_skill, output_sink, payload,
+            id, title, body, dispatcher_skill, output_sink, payload,
             cadence, last_run, next_run, on_lapse
         FROM global_task_sources
         WHERE enabled = true
@@ -188,6 +201,7 @@ def _advance_due_rows(cur: Any) -> int:
     for row in due_rows:
         source_id = str(row["id"])
         title = row["title"]
+        body = row["body"]
         dispatcher_skill = row["dispatcher_skill"]
         output_sink = row["output_sink"]
         payload = row["payload"] or {}
@@ -215,9 +229,11 @@ def _advance_due_rows(cur: Any) -> int:
             cadence_seconds = cadence.total_seconds() if cadence is not None else 0.0
             for i in range(fire_count):
                 fire_epoch = base_epoch + i * cadence_seconds
-                dedup_key = compute_dedup_key(source_id, fire_epoch)
+                dedup_key = compute_dedup_key(source_id, fire_epoch, "fire")
                 event_payload = {
                     "source_id": source_id,
+                    "title": title,
+                    "body": body,
                     "dispatcher_skill": dispatcher_skill,
                     "output_sink": output_sink,
                     "payload": payload,
@@ -236,9 +252,11 @@ def _advance_due_rows(cur: Any) -> int:
             else:
                 lapse_intervals = _intervals_lapsed(cur, next_run, cadence)
 
-            dedup_key = compute_dedup_key(source_id, base_epoch)
+            dedup_key = compute_dedup_key(source_id, base_epoch, "coalesce")
             event_payload = {
                 "source_id": source_id,
+                "title": title,
+                "body": body,
                 "dispatcher_skill": dispatcher_skill,
                 "output_sink": output_sink,
                 "payload": payload,

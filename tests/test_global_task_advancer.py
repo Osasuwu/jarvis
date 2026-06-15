@@ -142,6 +142,7 @@ def _due_row(**overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "id": "550e8400-e29b-41d4-a716-446655440000",
         "title": "test task",
+        "body": "do the thing",
         "dispatcher_skill": "research",
         "output_sink": "memory",
         "payload": {},
@@ -174,9 +175,10 @@ class TestPurePython:
         epoch = 1713000000.0
         result = compute_dedup_key(source_id, epoch)
 
-        # Should be sha256('global_task:<id>:<int(epoch)>')
+        # Should be sha256('global_task:<mode>:<id>:<int(epoch)>'); mode defaults
+        # to 'coalesce' (MAJOR #6 — keys are namespaced by lapse mode).
         expected = hashlib.sha256(
-            f"global_task:{source_id}:1713000000".encode()
+            f"global_task:coalesce:{source_id}:1713000000".encode()
         ).hexdigest()
         assert result == expected
 
@@ -192,6 +194,19 @@ class TestPurePython:
         key2 = compute_dedup_key(source_id, epoch2)
 
         assert key1 != key2, "Dedup keys should differ for different epochs"
+
+    def test_dedup_key_namespaced_by_lapse_mode(self) -> None:
+        """MAJOR #6: a coalesce event and a fire_per_interval i=0 event for the
+        same row share next_run_epoch (fire_epoch = base + 0*cadence = base).
+        Without a mode namespace both hash to 'global_task:<id>:<epoch>' and
+        ON CONFLICT DO NOTHING silently swallows whichever lands second — a mode
+        switch from coalesce to fire_per_interval would lose its first fire. The
+        lapse mode must disambiguate the two keys."""
+        source_id = "row-1"
+        epoch = 1713000000.0
+        assert compute_dedup_key(source_id, epoch, "coalesce") != compute_dedup_key(
+            source_id, epoch, "fire"
+        )
 
     def test_lapse_intervals_calculation_coalesce(self) -> None:
         """Coalesce path: lapse_intervals = FLOOR((now - next_run) / cadence) + 1."""
@@ -229,6 +244,42 @@ class TestAdvanceDueRowsFakeCursor:
         total = _mod._advance_due_rows(cur)
         assert total == 1
         assert len(self._inserts(cur)) == 1
+
+    def test_select_fetches_body_column(self) -> None:
+        # m8 / CRITICAL #2: body lives on global_task_sources but the SELECT
+        # omitted it, so it never reached the event payload. Pin it into the
+        # projection.
+        cur = _FakeCursor([_due_row()])
+        _mod._advance_due_rows(cur)
+        selects = [
+            s for s, _ in cur.statements
+            if "FROM GLOBAL_TASK_SOURCES" in s.strip().upper()
+        ]
+        assert selects, "no SELECT FROM global_task_sources issued"
+        assert "body" in selects[0].lower(), "SELECT must project the body column"
+
+    def test_event_payload_forwards_body_title_and_source(self) -> None:
+        # CRITICAL #2: the spawned agent acts on the source row's body; the
+        # advancer must forward source_id / title / body / output_sink into the
+        # event payload so the orchestrator can build an actionable goal.
+        cur = _FakeCursor(
+            [
+                _due_row(
+                    id="src-1",
+                    title="Weekly sweep",
+                    body="Research the latest on X.",
+                    output_sink="memory",
+                )
+            ]
+        )
+        _mod._advance_due_rows(cur)
+        (_, params) = self._inserts(cur)[0]
+        # params: (title, payload_json, dedup_key)
+        event_payload = json.loads(params[1])
+        assert event_payload["source_id"] == "src-1"
+        assert event_payload["title"] == "Weekly sweep"
+        assert event_payload["body"] == "Research the latest on X."
+        assert event_payload["output_sink"] == "memory"
 
     def test_no_manual_begin_or_serializable(self) -> None:
         # CRITICAL #1: the advancer must never issue a manual BEGIN / isolation

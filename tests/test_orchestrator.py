@@ -124,7 +124,43 @@ def test_global_task_due_defaults_dispatcher_skill_to_research():
         _ev("global_task_due", "low", {"output_sink": "memory", "lapse_intervals": 1})
     )
     assert d.route is Route.EMIT_TASK
-    assert d.goal == "global task: research"
+    assert d.goal.startswith("global task: research")
+    assert "None" not in d.goal
+
+
+def test_global_task_due_goal_carries_source_and_body():
+    """CRITICAL #2: the EMIT_TASK goal IS the spawned ``claude -p`` agent's
+    prompt, so it must carry actionable context — the source row id (traceable,
+    and distinct per source) and the task ``body`` (what to actually do) — not
+    just the bare skill name. Before the fix the goal was ``"global task:
+    research"`` with no source/body, so the agent had nothing to act on."""
+    d = handle_event(
+        _ev(
+            "global_task_due",
+            "low",
+            {
+                "dispatcher_skill": "research",
+                "source_id": "src-42",
+                "output_sink": "memory",
+                "title": "Weekly arxiv sweep",
+                "body": "Summarize this week's arxiv on agents.",
+                "lapse_intervals": 1,
+            },
+        )
+    )
+    assert d.route is Route.EMIT_TASK
+    assert "src-42" in d.goal
+    assert "Summarize this week's arxiv on agents." in d.goal
+
+
+def test_global_task_due_goal_unique_per_source():
+    """MAJOR #2: two sources with the same dispatcher_skill must not collapse to
+    an identical goal string (queue rows would be indistinguishable). The source
+    id disambiguates them."""
+    base = {"dispatcher_skill": "research", "output_sink": "memory", "body": "x"}
+    g1 = handle_event(_ev("global_task_due", "low", {**base, "source_id": "a"})).goal
+    g2 = handle_event(_ev("global_task_due", "low", {**base, "source_id": "b"})).goal
+    assert g1 != g2
 
 
 @pytest.mark.parametrize("severity", ["info", "medium", "high", "critical"])

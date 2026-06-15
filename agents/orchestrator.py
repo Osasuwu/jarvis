@@ -193,15 +193,23 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
             goal=f"/rework {target}".rstrip(),
         )
     if event_type == "global_task_due" and severity == "low":
-        # Global task due — route through EMIT_TASK. Skill dispatch happens in task_queue.
+        # Global task due — route through EMIT_TASK. The goal string IS the
+        # spawned ``claude -p`` agent's prompt, so it must carry actionable
+        # context, not just the bare skill name (CRITICAL #2 — broken data
+        # pipeline): the source row id (so two sources sharing a skill produce
+        # distinct, traceable goals — MAJOR #2), the output sink, and the task
+        # title/body the owner registered. Skill dispatch happens downstream.
         dispatcher_skill = payload.get("dispatcher_skill", "research")
-        return _emit(
-            event_type,
-            severity,
-            target,
-            key,
-            goal=f"global task: {dispatcher_skill}",
-        )
+        source_id = payload.get("source_id", "?")
+        output_sink = payload.get("output_sink", "memory")
+        title = payload.get("title")
+        body = payload.get("body")
+        goal = f"global task: {dispatcher_skill} (source={source_id}, sink={output_sink})"
+        if title:
+            goal = f"{goal}: {title}"
+        if body:
+            goal = f"{goal} — {body}"
+        return _emit(event_type, severity, target, key, goal=goal)
 
     # 3. Pure-pipeline events → acknowledge, no work (AC1).
     if event_type in _NOOP_EVENT_TYPES:
