@@ -10,36 +10,148 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import logging
 import os
 import sys
-from datetime import datetime, timedelta
+import types
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 
 # =========================================================================
-# Pure-Python Helpers (replicated from advance-global-tasks.py)
+# Load the advancer module under test.
+#
+# scripts/advance-global-tasks.py has a dash in its name, so a plain `import`
+# can't reach it. Load it via importlib and bind the symbols the tests use —
+# keeping ONE definition of digest_sha256 / compute_dedup_key (the production
+# one). The previous copy-pasted re-definitions could drift from the real code
+# and let the suite pass against a lie (MAJOR #13).
 # =========================================================================
 
 
-def digest_sha256(data: str) -> str:
-    """SHA256 hex digest of a string (matching postgres digest(..., 'hex'))."""
-    return hashlib.sha256(data.encode()).hexdigest()
+def _ensure_psycopg_importable() -> None:
+    """advance-global-tasks.py does `import psycopg` / `from psycopg.rows import
+    dict_row` at module top. When the real driver isn't installed, stub just
+    enough for the module to import — the fake-cursor tests below never touch a
+    real connection (they monkeypatch psycopg.connect), and the DB-gated tests
+    skip on the DATABASE_URL check before reaching psycopg. Only stubs when the
+    real driver is absent, so a real install is used verbatim where present."""
+    try:
+        import psycopg  # noqa: F401
+        return
+    except ModuleNotFoundError:
+        pass
+    stub = types.ModuleType("psycopg")
+
+    def _no_connect(*a: Any, **k: Any) -> Any:  # pragma: no cover - monkeypatched
+        raise RuntimeError("stub psycopg: connect unavailable (install psycopg)")
+
+    stub.connect = _no_connect  # type: ignore[attr-defined]
+    rows = types.ModuleType("psycopg.rows")
+    rows.dict_row = object()  # type: ignore[attr-defined]
+    stub.rows = rows  # type: ignore[attr-defined]
+    sys.modules["psycopg"] = stub
+    sys.modules["psycopg.rows"] = rows
 
 
-def compute_dedup_key(source_id: str, next_run_epoch: float) -> str:
-    """Compute dedup_key = sha256('global_task:'||source_id||':'||EXTRACT(EPOCH FROM next_run)).
+_MODULE_PATH = (
+    Path(__file__).resolve().parent.parent / "scripts" / "advance-global-tasks.py"
+)
+_spec = importlib.util.spec_from_file_location("advance_global_tasks", _MODULE_PATH)
+assert _spec is not None and _spec.loader is not None
+_mod = importlib.util.module_from_spec(_spec)
+_ensure_psycopg_importable()
+_spec.loader.exec_module(_mod)
 
-    Args:
-        source_id: UUID string
-        next_run_epoch: seconds since epoch (full timestamp, NOT hour-truncated)
+digest_sha256 = _mod.digest_sha256
+compute_dedup_key = _mod.compute_dedup_key
 
-    Returns:
-        Hex digest
-    """
-    data = f"global_task:{source_id}:{int(next_run_epoch)}"
-    return digest_sha256(data)
+
+# =========================================================================
+# Fake cursor/connection — exercise the advancer end-to-end with no live
+# Postgres, so the transaction-model and dedup findings are assertable in CI
+# (MAJOR #10). Routes fetchall/fetchone off the statement shape and records
+# every (sql, params) the advancer emits.
+# =========================================================================
+
+
+class _FakeCursor:
+    """Minimal psycopg-cursor stand-in for _advance_due_rows."""
+
+    def __init__(
+        self,
+        due_rows: list[dict[str, Any]],
+        *,
+        intervals_missed: float = 1.0,
+        rowcounts: list[int] | None = None,
+    ) -> None:
+        self._due_rows = list(due_rows)
+        self._intervals_missed = intervals_missed
+        # rowcount values successive event INSERTs take on. Default: every
+        # insert lands (1). Pass [0, ...] to simulate ON CONFLICT skips.
+        self._rowcounts = list(rowcounts) if rowcounts is not None else None
+        self.statements: list[tuple[str, Any]] = []
+        self.rowcount = -1
+
+    def execute(self, sql: str, params: Any = None) -> None:
+        self.statements.append((sql, params))
+        if sql.strip().upper().startswith("INSERT INTO EVENTS"):
+            self.rowcount = self._rowcounts.pop(0) if self._rowcounts else 1
+        else:
+            self.rowcount = -1
+
+    def fetchall(self) -> list[dict[str, Any]]:
+        return self._due_rows
+
+    def fetchone(self) -> dict[str, Any]:
+        # Only _intervals_lapsed's SELECT calls fetchone.
+        return {"intervals_missed": self._intervals_missed}
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+
+class _FakeConn:
+    """psycopg-connection stand-in: `with conn:` + `with conn.cursor() as cur:`."""
+
+    def __init__(self, cursor: _FakeCursor) -> None:
+        self._cursor = cursor
+        self.closed = False
+
+    def __enter__(self) -> "_FakeConn":
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        return False
+
+    def cursor(self) -> _FakeCursor:
+        return self._cursor
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _due_row(**overrides: Any) -> dict[str, Any]:
+    """Build a due global_task_sources row (dict_row shape) for the fake cursor."""
+    row: dict[str, Any] = {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "title": "test task",
+        "dispatcher_skill": "research",
+        "output_sink": "memory",
+        "payload": {},
+        "cadence": None,
+        "last_run": None,
+        "next_run": None,
+        "on_lapse": "coalesce",
+    }
+    row.update(overrides)
+    return row
 
 
 # =========================================================================
@@ -83,26 +195,118 @@ class TestPurePython:
 
     def test_lapse_intervals_calculation_coalesce(self) -> None:
         """Coalesce path: lapse_intervals = FLOOR((now - next_run) / cadence) + 1."""
-        # Test logic: if one-shot (no cadence), lapse_intervals = 1
-        # If recurring and on-time, lapse_intervals = 1
-        # If recurring and 2 intervals late, lapse_intervals = 3
-
-        # One-shot case: lapse_intervals should be 1
-        cadence = None
-        next_run = None  # first run
-        if next_run is None:
-            lapse_intervals = 1
-        else:
-            # Would calculate from cadence if it exists
-            lapse_intervals = 1
-        assert lapse_intervals == 1
-
-        # Recurring case (simulated): 2 intervals late
-        # Would be: FLOOR((now - next_run) / cadence) + 1 ≈ FLOOR(2.5) + 1 = 3
+        # One-shot / first run carries lapse_intervals == 1 by definition (no
+        # cadence to count against) — that branch is exercised end-to-end in
+        # TestAdvanceDueRowsFakeCursor. Here we pin the recurring math: 2.5
+        # intervals late → FLOOR(2.5) + 1 = 3.
         cadence_seconds = 3600  # 1 hour
         time_late = 9000  # 2.5 hours = 2.5 intervals
         lapse_intervals = int(time_late / cadence_seconds) + 1
         assert lapse_intervals == 3
+
+
+class TestAdvanceDueRowsFakeCursor:
+    """End-to-end exercise of the advancer against a fake cursor (no DB).
+
+    Makes the transaction-model + dedup findings assertable in CI (MAJOR #10):
+    no manual BEGIN/SERIALIZABLE (CRITICAL #1), event count reflects rowcount
+    not a blind +1 (CRITICAL #2), null-next_run dedups on the fixed sentinel
+    (MAJOR #7), and fire_per_interval advances next_run by its fire count
+    (MAJOR #8). -1 error contract (CRITICAL #3) and no-DSN-leak (MAJOR #14)
+    covered via advance_global_tasks.
+    """
+
+    @staticmethod
+    def _inserts(cur: _FakeCursor) -> list[tuple[str, Any]]:
+        return [
+            (s, p)
+            for s, p in cur.statements
+            if s.strip().upper().startswith("INSERT INTO EVENTS")
+        ]
+
+    def test_coalesce_one_shot_inserts_one_event(self) -> None:
+        cur = _FakeCursor([_due_row(on_lapse="coalesce")])
+        total = _mod._advance_due_rows(cur)
+        assert total == 1
+        assert len(self._inserts(cur)) == 1
+
+    def test_no_manual_begin_or_serializable(self) -> None:
+        # CRITICAL #1: the advancer must never issue a manual BEGIN / isolation
+        # level — psycopg's `with conn:` owns the transaction.
+        cur = _FakeCursor([_due_row()])
+        _mod._advance_due_rows(cur)
+        for sql, _ in cur.statements:
+            upper = sql.strip().upper()
+            assert not upper.startswith("BEGIN"), f"manual BEGIN: {sql!r}"
+            assert "ISOLATION LEVEL" not in upper, f"isolation level set: {sql!r}"
+            assert "SERIALIZABLE" not in upper, f"SERIALIZABLE set: {sql!r}"
+
+    def test_deduped_insert_not_counted(self) -> None:
+        # CRITICAL #2: ON CONFLICT DO NOTHING → rowcount 0 → must not increment.
+        cur = _FakeCursor([_due_row()], rowcounts=[0])
+        assert _mod._advance_due_rows(cur) == 0
+
+    def test_null_next_run_uses_sentinel_dedup_key(self) -> None:
+        # MAJOR #7: a never-run row (next_run IS NULL) dedups on the fixed
+        # sentinel epoch, not a moving now()-derived value.
+        row_id = "abc-123"
+        cur = _FakeCursor([_due_row(id=row_id, next_run=None)])
+        _mod._advance_due_rows(cur)
+        (_, params) = self._inserts(cur)[0]
+        # params: (title, payload_json, dedup_key)
+        assert params[2] == compute_dedup_key(row_id, _mod.NULL_NEXT_RUN_SENTINEL_EPOCH)
+
+    def test_fire_per_interval_advances_by_fire_count(self) -> None:
+        # MAJOR #8: the schedule UPDATE for a lapsed fire_per_interval row jumps
+        # next_run forward by `fire_count` cadence widths, not 1.
+        cadence = timedelta(hours=1)
+        next_run = datetime(2024, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
+        cur = _FakeCursor(
+            [_due_row(on_lapse="fire_per_interval", cadence=cadence, next_run=next_run)],
+            intervals_missed=3.0,  # int(3.0) + 1 = 4 fires
+        )
+        total = _mod._advance_due_rows(cur)
+        assert total == 4
+        update = next(
+            (
+                p
+                for s, p in cur.statements
+                if s.strip().upper().startswith("UPDATE GLOBAL_TASK_SOURCES")
+                and "GREATEST" in s.upper()
+            ),
+            None,
+        )
+        assert update is not None, "recurring row must issue a GREATEST(...) UPDATE"
+        # params: (periods, cadence, source_id) — periods == fire_count.
+        assert update[0] == 4
+
+    def test_advance_global_tasks_returns_event_count(self, monkeypatch: Any) -> None:
+        cur = _FakeCursor([_due_row(), _due_row(id="second-row")])
+        conn = _FakeConn(cur)
+        monkeypatch.setattr(_mod.psycopg, "connect", lambda *a, **k: conn)
+        assert _mod.advance_global_tasks(db_url="postgres://fake") == 2
+        assert conn.closed, "connection must be closed in finally"
+
+    def test_advance_global_tasks_no_dsn_returns_minus_one(self, monkeypatch: Any) -> None:
+        # CRITICAL #3: error path returns -1 (CLI maps -1 → exit 1).
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+        assert _mod.advance_global_tasks(db_url=None) == -1
+
+    def test_advance_global_tasks_connect_error_returns_minus_one(
+        self, monkeypatch: Any, caplog: Any
+    ) -> None:
+        # CRITICAL #3 + MAJOR #14: connect failure returns -1 and never logs the
+        # DSN (which carries the password).
+        def _boom(*a: Any, **k: Any) -> Any:
+            raise RuntimeError("FATAL: password=supersecret in dsn")
+
+        monkeypatch.setattr(_mod.psycopg, "connect", _boom)
+        with caplog.at_level(logging.ERROR):
+            result = _mod.advance_global_tasks(
+                db_url="postgres://u:supersecret@host/db"
+            )
+        assert result == -1
+        assert "supersecret" not in caplog.text, "DSN/password must not be logged"
 
 
 # =========================================================================
@@ -219,11 +423,13 @@ class TestGlobalTaskSourcesSchema:
             """)
             (row_id1,) = cur.fetchone()
 
-            # Valid insert with fire_per_interval
+            # Valid insert with fire_per_interval. fire_per_interval requires a
+            # cadence (cadence_lapse_coherence CHECK forbids cadence IS NULL with
+            # fire_per_interval), so supply one.
             cur.execute("""
                 INSERT INTO global_task_sources (
-                    title, dispatcher_skill, output_sink, on_lapse
-                ) VALUES ('test2', 'research', 'memory', 'fire_per_interval')
+                    title, dispatcher_skill, output_sink, on_lapse, cadence
+                ) VALUES ('test2', 'research', 'memory', 'fire_per_interval', INTERVAL '1 hour')
                 RETURNING id
             """)
             (row_id2,) = cur.fetchone()
@@ -433,9 +639,14 @@ class TestCoalesceAdvancer:
             db_connection.commit()
 
     def test_concurrent_invocations_skip_locked(self, db_connection: Any) -> None:
-        """FOR UPDATE SKIP LOCKED prevents double-fire on concurrent invocations."""
+        """FOR UPDATE SKIP LOCKED makes a row claimed by connection A invisible to
+        connection B's concurrent claim — so two advancer invocations never
+        double-fire the same source. Uses two real connections (a single-cursor
+        test can't observe locking)."""
+        import psycopg
+
+        # Insert one due row, committed so the second connection can see it.
         with db_connection.cursor() as cur:
-            # Create a due task
             cur.execute("""
                 INSERT INTO global_task_sources (
                     title, dispatcher_skill, output_sink, cadence,
@@ -447,37 +658,61 @@ class TestCoalesceAdvancer:
                 RETURNING id
             """)
             (task_id,) = cur.fetchone()
+        db_connection.commit()
 
-            # First SELECT with FOR UPDATE SKIP LOCKED should claim it
-            cur.execute("""
-                SELECT id FROM global_task_sources
-                WHERE enabled = true AND (next_run IS NULL OR next_run <= now())
-                FOR UPDATE SKIP LOCKED
-            """)
-            rows1 = cur.fetchall()
-            assert any(row[0] == task_id for row in rows1), "First fetch should get the task"
+        claim_sql = """
+            SELECT id FROM global_task_sources
+            WHERE id = %s AND enabled = true
+              AND (next_run IS NULL OR next_run <= now())
+            FOR UPDATE SKIP LOCKED
+        """
 
-            # Open a second cursor in same connection — it should also see the task
-            # (same connection doesn't actually lock in a single-threaded test)
-            # This test is simplified; a real test would use two connections.
-            # For now, just verify SKIP LOCKED syntax is valid.
+        conn_b = psycopg.connect(os.environ["DATABASE_URL"])
+        try:
+            # Connection A claims the row and HOLDS it in an open transaction.
+            with db_connection.cursor() as cur_a:
+                cur_a.execute(claim_sql, (task_id,))
+                claimed_a = cur_a.fetchall()
+                assert any(r[0] == task_id for r in claimed_a), "A should claim the row"
 
-            # Clean up
-            cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
+                # Connection B, concurrently, must SKIP the locked row → empty.
+                with conn_b.cursor() as cur_b:
+                    cur_b.execute(claim_sql, (task_id,))
+                    assert cur_b.fetchall() == [], "B must skip the row A holds locked"
+                conn_b.rollback()
+
+            # A's transaction is still open after the cursor block; commit to
+            # release the row lock.
             db_connection.commit()
+
+            # Once A releases, B can claim it.
+            with conn_b.cursor() as cur_b2:
+                cur_b2.execute(claim_sql, (task_id,))
+                assert any(
+                    r[0] == task_id for r in cur_b2.fetchall()
+                ), "B should claim the row after A releases"
+            conn_b.rollback()
+        finally:
+            with db_connection.cursor() as cur:
+                cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
+            db_connection.commit()
+            conn_b.close()
 
 
 class TestFirePerIntervalAdvancer:
     """Test advancer behavior with fire_per_interval lapse strategy (DB-gated)."""
 
-    def test_fire_per_interval_missing_3_fires_3(self) -> None:
-        """fire_per_interval missing 3 intervals fires 3 times."""
-        # Simulated test: with a 1-hour cadence due 3+ hours ago, should fire 3 times
-        # (This is logic testing; actual multi-event insert would be in integration test)
+    def test_fire_per_interval_3_hours_late_fires_4(self) -> None:
+        """fire_per_interval 3 hours late at 1h cadence fires 4 times.
+
+        FLOOR((now - next_run) / cadence) + 1 = FLOOR(3) + 1 = 4 — the 3 missed
+        intervals plus the currently-due one. (Earlier name said "fires 3"; the
+        +1 for the due interval makes it 4.)
+        """
         cadence_seconds = 3600  # 1 hour
         time_late = 10800  # 3 hours
         fire_count = int(time_late / cadence_seconds) + 1
-        assert fire_count == 4  # 3 hours / 1 hour + 1 = 4
+        assert fire_count == 4
 
         # Cap at 24
         capped = min(24, fire_count)

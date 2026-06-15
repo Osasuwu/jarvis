@@ -116,6 +116,26 @@ def test_global_task_due_low_emits_task():
     assert "research" in d.goal
 
 
+def test_global_task_due_defaults_dispatcher_skill_to_research():
+    """A global_task_due payload missing dispatcher_skill defaults to 'research'
+    (payload.get(..., 'research')) — the goal still names a concrete skill rather
+    than emitting None."""
+    d = handle_event(
+        _ev("global_task_due", "low", {"output_sink": "memory", "lapse_intervals": 1})
+    )
+    assert d.route is Route.EMIT_TASK
+    assert d.goal == "global task: research"
+
+
+@pytest.mark.parametrize("severity", ["info", "medium", "high", "critical"])
+def test_global_task_due_non_low_severity_failsafe_escalates(severity):
+    """global_task_due is an enumerated route ONLY at severity='low'. Any other
+    severity is an unknown (event_type, severity) pair → fail-safe escalate,
+    never a silent EMIT_TASK at the wrong priority (MAJOR #11)."""
+    d = handle_event(_ev("global_task_due", severity, {"dispatcher_skill": "research"}))
+    assert d.route is Route.ESCALATE
+
+
 @pytest.mark.parametrize("event_type", ["pr_approved", "pr_merged", "ci_success"])
 def test_pipeline_events_are_inline_noop(event_type):
     d = handle_event(_ev(event_type, "info"))

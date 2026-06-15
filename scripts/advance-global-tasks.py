@@ -9,7 +9,20 @@ Idempotent single-transaction advancer:
 - UPDATE last_run, next_run, enabled
 - Handles both coalesce (one event per due row) and fire_per_interval (bounded to 24/row)
 
+Transaction model: psycopg3 manages the transaction through ``with conn:`` —
+it BEGINs on the first execute, COMMITs on clean block exit, and ROLLBACKs on
+exception. We deliberately do NOT issue a manual ``BEGIN ISOLATION LEVEL
+SERIALIZABLE``: psycopg3 silently ignores a nested BEGIN, and the default
+READ COMMITTED isolation is the correct level for a ``FOR UPDATE SKIP LOCKED``
+queue consumer (SERIALIZABLE would add serialization-failure retries for no
+benefit, since SKIP LOCKED already gives each invocation a disjoint row set).
+
 Requires DATABASE_URL env var pointing to Supabase postgres://...
+
+Return contract: :func:`advance_global_tasks` returns the number of event rows
+inserted (>= 0) on success, or -1 on any error (missing config, connection
+failure, transaction failure). The CLI maps -1 -> exit code 1 so Task Scheduler
+flags failed runs instead of silently treating them as "0 events, success".
 """
 
 from __future__ import annotations
@@ -19,10 +32,10 @@ import json
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
 from typing import Any
 
 import psycopg
+from psycopg.rows import dict_row
 
 # Configure logging
 logging.basicConfig(
@@ -30,6 +43,19 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+# Max events emitted per fire_per_interval row in a single invocation. A row
+# that has lapsed more intervals than this drains across successive invocations
+# rather than flooding the queue in one tick.
+FIRE_PER_INTERVAL_CAP = 24
+
+# Dedup sentinel epoch for a never-run row (next_run IS NULL). A fixed value
+# (rather than now()) keeps the first-run dedup_key stable across retries: if
+# the advancer crashes after the INSERT but before the next_run UPDATE commits,
+# the retry recomputes the same dedup_key and ON CONFLICT DO NOTHING dedupes it.
+# A source uses this sentinel at most once (its first fire); every later fire
+# has a concrete next_run.
+NULL_NEXT_RUN_SENTINEL_EPOCH = 0.0
 
 
 def digest_sha256(data: str) -> str:
@@ -51,192 +77,219 @@ def compute_dedup_key(source_id: str, next_run_epoch: float) -> str:
     return digest_sha256(data)
 
 
+def _next_run_epoch(next_run: Any) -> float:
+    """Epoch seconds used for dedup. Never-run rows (next_run IS NULL) use a
+    fixed sentinel so their first-run dedup_key is stable across retries."""
+    if next_run is None:
+        return NULL_NEXT_RUN_SENTINEL_EPOCH
+    return next_run.timestamp()
+
+
+def _intervals_lapsed(cur: Any, next_run: Any, cadence: Any) -> int:
+    """Cadence intervals elapsed since next_run, floored, +1 (>= 1).
+
+    The interval arithmetic runs in Postgres so cadence's real unit (minutes /
+    hours / days) is honoured rather than guessed at in Python.
+    """
+    cur.execute(
+        """
+        SELECT EXTRACT(EPOCH FROM (now() - %s::timestamptz)) /
+               EXTRACT(EPOCH FROM %s::interval) AS intervals_missed
+        """,
+        (next_run, cadence),
+    )
+    intervals_missed = cur.fetchone()["intervals_missed"]
+    return max(1, int(intervals_missed) + 1)
+
+
+def _insert_event(
+    cur: Any, *, title: str, event_payload: dict[str, Any], dedup_key: str
+) -> int:
+    """INSERT one global_task_due event, deduped on dedup_key.
+
+    Returns the number of rows ACTUALLY inserted: 1 on insert, 0 when ON CONFLICT
+    DO NOTHING skips a duplicate. Callers must add this (not a blind +1) so the
+    event count reflects real inserts.
+    """
+    cur.execute(
+        """
+        INSERT INTO events (
+            event_type, severity, repo, source, title, payload, dedup_key
+        ) VALUES (
+            'global_task_due', 'low', '_global', 'global_task_advancer',
+            %s, %s::jsonb, %s
+        )
+        ON CONFLICT (dedup_key) DO NOTHING
+        """,
+        (title, json.dumps(event_payload, default=str), dedup_key),
+    )
+    # rowcount: 1 on insert, 0 when ON CONFLICT DO NOTHING skipped a duplicate.
+    return max(0, cur.rowcount)
+
+
+def _advance_next_run(cur: Any, source_id: str, cadence: Any, periods: int) -> None:
+    """Move a row's schedule forward.
+
+    Recurring rows (cadence not NULL) advance next_run by ``periods`` cadence
+    widths — coalesce passes 1, fire_per_interval passes its fire count so the
+    row jumps past every interval it just fired (otherwise it stays "due" and
+    re-selects every invocation until next_run finally crawls past now()).
+    GREATEST(now(), ...) clamps a badly-lapsed row forward rather than leaving
+    it perpetually behind. One-shot rows (cadence IS NULL) disable themselves.
+    """
+    if cadence is not None:
+        cur.execute(
+            """
+            UPDATE global_task_sources
+            SET last_run = now(),
+                next_run = GREATEST(now(), coalesce(next_run, now()) + (%s * %s::interval))
+            WHERE id = %s
+            """,
+            (periods, cadence, source_id),
+        )
+    else:
+        cur.execute(
+            """
+            UPDATE global_task_sources
+            SET last_run = now(),
+                next_run = NULL,
+                enabled = false
+            WHERE id = %s
+            """,
+            (source_id,),
+        )
+
+
+def _advance_due_rows(cur: Any) -> int:
+    """Core advancer logic against an open cursor (dict rows). Returns the count
+    of event rows actually inserted.
+
+    Separated from connection/transaction management so it is unit-testable with
+    a fake cursor — no live Postgres required. The caller owns the transaction.
+    """
+    total_events = 0
+
+    logger.info("Fetching due global_task_sources...")
+    cur.execute(
+        """
+        SELECT
+            id, title, dispatcher_skill, output_sink, payload,
+            cadence, last_run, next_run, on_lapse
+        FROM global_task_sources
+        WHERE enabled = true
+          AND (next_run IS NULL OR next_run <= now())
+        FOR UPDATE SKIP LOCKED
+        ORDER BY created_at ASC
+        """
+    )
+    due_rows = cur.fetchall()
+    logger.info(f"Found {len(due_rows)} due rows")
+
+    for row in due_rows:
+        source_id = str(row["id"])
+        title = row["title"]
+        dispatcher_skill = row["dispatcher_skill"]
+        output_sink = row["output_sink"]
+        payload = row["payload"] or {}
+        cadence = row["cadence"]
+        next_run = row["next_run"]
+        on_lapse = row["on_lapse"]
+
+        base_epoch = _next_run_epoch(next_run)
+
+        if on_lapse == "fire_per_interval":
+            # Fire once per lapsed interval, bounded by the cap.
+            if next_run is None or cadence is None:
+                fire_count = 1
+            else:
+                fire_count = min(
+                    FIRE_PER_INTERVAL_CAP, _intervals_lapsed(cur, next_run, cadence)
+                )
+
+            if fire_count >= FIRE_PER_INTERVAL_CAP:
+                logger.warning(
+                    f"fire_per_interval cap reached for {source_id} "
+                    f"({fire_count} fires); remaining lapse drains next invocation"
+                )
+
+            cadence_seconds = cadence.total_seconds() if cadence is not None else 0.0
+            for i in range(fire_count):
+                fire_epoch = base_epoch + i * cadence_seconds
+                dedup_key = compute_dedup_key(source_id, fire_epoch)
+                event_payload = {
+                    "source_id": source_id,
+                    "dispatcher_skill": dispatcher_skill,
+                    "output_sink": output_sink,
+                    "payload": payload,
+                    "lapse_intervals": i + 1,
+                }
+                total_events += _insert_event(
+                    cur, title=title, event_payload=event_payload, dedup_key=dedup_key
+                )
+
+            _advance_next_run(cur, source_id, cadence, fire_count)
+
+        else:
+            # coalesce (default): one event regardless of how many intervals lapsed.
+            if next_run is None or cadence is None:
+                lapse_intervals = 1
+            else:
+                lapse_intervals = _intervals_lapsed(cur, next_run, cadence)
+
+            dedup_key = compute_dedup_key(source_id, base_epoch)
+            event_payload = {
+                "source_id": source_id,
+                "dispatcher_skill": dispatcher_skill,
+                "output_sink": output_sink,
+                "payload": payload,
+                "lapse_intervals": lapse_intervals,
+            }
+            logger.info(
+                f"Inserting event for {source_id} "
+                f"(lapse_intervals={lapse_intervals}, dedup_key={dedup_key[:8]}...)"
+            )
+            total_events += _insert_event(
+                cur, title=title, event_payload=event_payload, dedup_key=dedup_key
+            )
+
+            _advance_next_run(cur, source_id, cadence, 1)
+
+    return total_events
+
+
 def advance_global_tasks(db_url: str | None = None) -> int:
     """Advance due global task sources to events queue.
 
     Returns:
-        Total event rows inserted.
+        Number of event rows inserted (>= 0) on success, or -1 on error.
     """
     if not db_url:
         db_url = os.environ.get("DATABASE_URL")
     if not db_url:
         logger.error("DATABASE_URL env var not set")
-        return 0
+        return -1
 
     try:
-        conn = psycopg.connect(db_url)
+        conn = psycopg.connect(db_url, row_factory=dict_row)
     except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        return 0
-
-    total_events = 0
+        # Do NOT log the exception payload: a psycopg connection error can echo
+        # the DSN (which carries the password) into Task Scheduler logs.
+        logger.error(f"Failed to connect to database: {type(e).__name__}")
+        return -1
 
     try:
-        with conn.cursor() as cur:
-            # Begin transaction
-            cur.execute("BEGIN ISOLATION LEVEL SERIALIZABLE")
-
-            # 1. Fetch due rows FOR UPDATE SKIP LOCKED
-            logger.info("Fetching due global_task_sources...")
-            cur.execute("""
-                SELECT
-                    id, title, dispatcher_skill, output_sink, payload,
-                    cadence, last_run, next_run, on_lapse
-                FROM global_task_sources
-                WHERE enabled = true
-                  AND (next_run IS NULL OR next_run <= now())
-                FOR UPDATE SKIP LOCKED
-                ORDER BY created_at ASC
-            """)
-            due_rows = cur.fetchall()
-            logger.info(f"Found {len(due_rows)} due rows")
-
-            col_names = [d[0] for d in cur.description]
-            col_index = {name: i for i, name in enumerate(col_names)}
-
-            # 2. Process each row
-            for row in due_rows:
-                source_id = str(row[col_index["id"]])
-                title = row[col_index["title"]]
-                dispatcher_skill = row[col_index["dispatcher_skill"]]
-                output_sink = row[col_index["output_sink"]]
-                payload = row[col_index["payload"]] or {}
-                cadence = row[col_index["cadence"]]
-                next_run = row[col_index["next_run"]]
-                on_lapse = row[col_index["on_lapse"]]
-
-                # Compute next_run epoch for dedup
-                now = datetime.now()
-                if next_run is None:
-                    next_run_epoch = now.timestamp()
-                else:
-                    next_run_epoch = next_run.timestamp()
-
-                if on_lapse == "coalesce":
-                    # One event per due row, lapse_intervals = missed-interval count
-                    if next_run is None:
-                        lapse_intervals = 1  # first run
-                    else:
-                        # Count missed intervals: FLOOR((now - next_run) / cadence) + 1
-                        if cadence:
-                            # cadence is a PostgreSQL interval; convert to seconds
-                            # For simplicity in Python, assume cadence is reasonable
-                            # (minutes/hours/days). Fetch the actual delta from DB.
-                            cur.execute("""
-                                SELECT EXTRACT(EPOCH FROM (now() - %s::timestamptz)) /
-                                       EXTRACT(EPOCH FROM %s::interval) as intervals_missed
-                            """, (next_run, cadence))
-                            (intervals_missed,) = cur.fetchone()
-                            lapse_intervals = max(1, int(intervals_missed) + 1)
-                        else:
-                            lapse_intervals = 1
-
-                    dedup_key = compute_dedup_key(source_id, next_run_epoch)
-
-                    # INSERT event with ON CONFLICT DO NOTHING
-                    event_payload = {
-                        "source_id": source_id,
-                        "dispatcher_skill": dispatcher_skill,
-                        "output_sink": output_sink,
-                        "payload": payload,
-                        "lapse_intervals": lapse_intervals,
-                    }
-                    logger.info(
-                        f"Inserting event for {source_id} "
-                        f"(lapse_intervals={lapse_intervals}, dedup_key={dedup_key[:8]}...)"
-                    )
-                    cur.execute("""
-                        INSERT INTO events (
-                            event_type, severity, repo, source, title, payload, dedup_key
-                        ) VALUES (
-                            'global_task_due', 'low', '_global', 'global_task_advancer',
-                            %s, %s::jsonb, %s
-                        )
-                        ON CONFLICT (dedup_key) DO NOTHING
-                    """, (title, json.dumps(event_payload), dedup_key))
-                    total_events += 1
-
-                elif on_lapse == "fire_per_interval":
-                    # Fire up to 24 times for missed intervals
-                    if next_run is None:
-                        # First run, fire once
-                        fire_count = 1
-                    else:
-                        if cadence:
-                            cur.execute("""
-                                SELECT EXTRACT(EPOCH FROM (now() - %s::timestamptz)) /
-                                       EXTRACT(EPOCH FROM %s::interval) as intervals_missed
-                            """, (next_run, cadence))
-                            (intervals_missed,) = cur.fetchone()
-                            fire_count = min(24, max(1, int(intervals_missed) + 1))
-                        else:
-                            fire_count = 1
-
-                    logger.info(
-                        f"Fire-per-interval for {source_id}: firing {fire_count} times "
-                        f"(capped at 24)"
-                    )
-
-                    if fire_count >= 24 and (next_run is not None):
-                        logger.warning(
-                            f"fire_per_interval cap reached for {source_id} "
-                            f"({fire_count} fires); advancing next_run to now"
-                        )
-
-                    for i in range(fire_count):
-                        # Compute dedup_key for each fire
-                        fire_epoch = next_run_epoch + (i * (cadence.total_seconds() if hasattr(cadence, 'total_seconds') else 3600))
-                        dedup_key = compute_dedup_key(source_id, fire_epoch)
-
-                        event_payload = {
-                            "source_id": source_id,
-                            "dispatcher_skill": dispatcher_skill,
-                            "output_sink": output_sink,
-                            "payload": payload,
-                            "lapse_intervals": i + 1,
-                        }
-                        cur.execute("""
-                            INSERT INTO events (
-                                event_type, severity, repo, source, title, payload, dedup_key
-                            ) VALUES (
-                                'global_task_due', 'low', '_global', 'global_task_advancer',
-                                %s, %s::jsonb, %s
-                            )
-                            ON CONFLICT (dedup_key) DO NOTHING
-                        """, (title, json.dumps(event_payload), dedup_key))
-                        total_events += 1
-
-                # 3. UPDATE last_run and next_run
-                if cadence:
-                    # next_run = GREATEST(now(), next_run + cadence)
-                    cur.execute("""
-                        UPDATE global_task_sources
-                        SET last_run = now(),
-                            next_run = GREATEST(now(), coalesce(next_run, now()) + %s::interval)
-                        WHERE id = %s
-                    """, (cadence, source_id))
-                else:
-                    # One-shot: disable after first run
-                    cur.execute("""
-                        UPDATE global_task_sources
-                        SET last_run = now(),
-                            next_run = NULL,
-                            enabled = false
-                        WHERE id = %s
-                    """, (source_id,))
-
-            # Commit transaction
-            conn.commit()
-            logger.info(f"Advanced global_task_sources: {total_events} events inserted")
-
+        # psycopg3: `with conn:` opens a transaction and COMMITs on clean exit /
+        # ROLLBACKs on exception. No manual BEGIN, no manual commit.
+        with conn:
+            with conn.cursor() as cur:
+                total_events = _advance_due_rows(cur)
+        logger.info(f"Advanced global_task_sources: {total_events} events inserted")
+        return total_events
     except Exception as e:
-        conn.rollback()
-        logger.error(f"Transaction failed: {e}")
-        return 0
+        logger.error(f"advance_global_tasks transaction failed: {e}")
+        return -1
     finally:
         conn.close()
-
-    return total_events
 
 
 if __name__ == "__main__":

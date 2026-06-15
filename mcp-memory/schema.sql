@@ -3145,13 +3145,28 @@ create table if not exists global_task_sources (
 
 -- Dispatcher/sink compatibility matrix (enforced at DB level).
 -- status-record -> memory only; research -> any sink; others flexible.
-alter table global_task_sources add constraint dispatcher_sink_compatibility
-  check (
-    (dispatcher_skill = 'status-record' and output_sink = 'memory') or
-    (dispatcher_skill = 'research') or
-    (dispatcher_skill = 'self-improve') or
-    (dispatcher_skill = 'last-work-report')
-  );
+-- ALTER ... ADD CONSTRAINT is not idempotent (re-running this schema errors
+-- with "constraint already exists"); the DO/EXCEPTION guard makes it a no-op.
+do $$
+begin
+  alter table global_task_sources add constraint dispatcher_sink_compatibility
+    check (
+      (dispatcher_skill = 'status-record' and output_sink = 'memory') or
+      (dispatcher_skill = 'research') or
+      (dispatcher_skill = 'self-improve') or
+      (dispatcher_skill = 'last-work-report')
+    );
+exception when duplicate_object then null;
+end $$;
+
+-- fire_per_interval needs a cadence to count intervals against; a one-shot
+-- (cadence IS NULL) with fire_per_interval is an incoherent state. Forbid it.
+do $$
+begin
+  alter table global_task_sources add constraint cadence_lapse_coherence
+    check (not (cadence is null and on_lapse = 'fire_per_interval'));
+exception when duplicate_object then null;
+end $$;
 
 -- Indexes for efficient due-row queries and enabled filtering.
 create index if not exists idx_global_task_sources_enabled_next_run
@@ -3161,12 +3176,17 @@ create index if not exists idx_global_task_sources_enabled_next_run
 create index if not exists idx_global_task_sources_dispatcher
   on global_task_sources(dispatcher_skill);
 
--- RLS: anon DENIED INSERT/UPDATE/DELETE; service-role only.
+-- RLS: writes are service-role only; anon gets read-only visibility.
+-- service_role BYPASSES RLS, so the advancer (service DSN) needs no write
+-- policy. No policy grants INSERT/UPDATE/DELETE, so RLS denies writes to anon
+-- and authenticated alike. The previous "Allow all for authenticated" policy
+-- used `for all using (true)` with no TO clause — which defaults to PUBLIC and
+-- silently granted write to every authenticated JWT client. Dropped.
+-- DROP ... IF EXISTS + CREATE keeps policy setup idempotent (Postgres has no
+-- CREATE POLICY IF NOT EXISTS).
 alter table global_task_sources enable row level security;
 
-create policy "Allow all for authenticated" on global_task_sources
-  for all using (true) with check (true);
-
--- Anon can SELECT but not mutate.
+drop policy if exists "Allow all for authenticated" on global_task_sources;
+drop policy if exists "Anon select only" on global_task_sources;
 create policy "Anon select only" on global_task_sources
   for select to anon using (true);
