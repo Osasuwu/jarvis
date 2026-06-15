@@ -25,7 +25,7 @@ Usage::
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -90,9 +90,18 @@ def enqueue(
 
 
 def claim_next(
+    *,
+    assignee: str | None = None,
     client: Client | None = None,
 ) -> dict[str, Any] | None:
     """Claim the highest-priority pending task (priority desc, FIFO ties).
+
+    When ``assignee`` is given, only pending rows with that assignee are
+    eligible — the filter is applied in the SELECT, so a higher-priority
+    row owned by a different assignee never shadows an eligible one. The
+    task-dispatch loop (#909) passes ``assignee='sandcastle'`` so that
+    ``assignee='owner'`` escalation rows are never auto-claimed/spawned.
+    Omitting ``assignee`` preserves the original any-assignee behavior.
 
     Returns the claimed row with status updated to ``claimed``, or
     ``None`` if the queue is empty or another worker claimed the task
@@ -104,14 +113,11 @@ def claim_next(
     cli = client or get_client()
 
     # Read the highest-priority pending task
+    query = cli.table("task_queue").select("*").eq("status", "pending")
+    if assignee is not None:
+        query = query.eq("assignee", assignee)
     rows = (
-        cli.table("task_queue")
-        .select("*")
-        .eq("status", "pending")
-        .order("priority", desc=True)
-        .order("created_at", desc=False)
-        .limit(1)
-        .execute()
+        query.order("priority", desc=True).order("created_at", desc=False).limit(1).execute()
     ).data or []
 
     if not rows:
@@ -216,3 +222,127 @@ def transition(
         )
 
     return updated[0]
+
+
+def _cutoff_iso(older_than_seconds: float) -> str:
+    """ISO-8601 timestamp ``older_than_seconds`` in the past (UTC).
+
+    Used as the ``< claimed_at`` boundary for staleness queries. Computed
+    client-side; the few-ms client/server clock skew is irrelevant against
+    the 300s+ thresholds these helpers run with.
+    """
+    return (datetime.now(timezone.utc) - timedelta(seconds=older_than_seconds)).isoformat()
+
+
+def count_running(
+    *,
+    assignee: str,
+    client: Client | None = None,
+) -> int:
+    """Count tasks currently in ``running`` for the given assignee.
+
+    Backs the #909 concurrency cap: ``budget = cap − count_running(...)``,
+    sampled once at drain start. Bounded by the cap (plus a handful of
+    other-assignee rows), so a row count is cheap.
+    """
+    cli = client or get_client()
+    rows = (
+        cli.table("task_queue")
+        .select("id")
+        .eq("status", "running")
+        .eq("assignee", assignee)
+        .execute()
+    ).data or []
+    return len(rows)
+
+
+def reclaim_stale_claimed(
+    *,
+    assignee: str,
+    older_than_seconds: float,
+    client: Client | None = None,
+) -> int:
+    """Return stale ``claimed`` rows to ``pending`` via a direct UPDATE.
+
+    ``claimed`` strictly means *claimed but not yet spawned* under the #909
+    Ordering-B contract (claim → transition(running) → spawn). A row stuck
+    in ``claimed`` past ``older_than_seconds`` means the drainer died between
+    the claim and the running transition; returning it to ``pending`` lets a
+    later drain re-claim it. No process is running for it, so this is safe.
+
+    This deliberately bypasses the FSM (``pending`` is not a legal target
+    from ``claimed`` in :data:`_VALID_TRANSITIONS`) — it mirrors the events
+    watchdog's ``reclaim_stale``. It never touches ``running`` rows (those
+    have a live process; the reaper handles them). Returns the count
+    reclaimed.
+    """
+    cli = client or get_client()
+    result = (
+        cli.table("task_queue")
+        .update({"status": "pending", "claimed_at": None})
+        .eq("status", "claimed")
+        .eq("assignee", assignee)
+        .lt("claimed_at", _cutoff_iso(older_than_seconds))
+        .execute()
+    )
+    return len(result.data or [])
+
+
+def requeue_running(
+    task_id: str,
+    *,
+    client: Client | None = None,
+) -> bool:
+    """Return one ``running`` row to ``pending`` via a direct UPDATE (#921 AC4).
+
+    For the mid-drain quota flip: under Ordering B the row is transitioned
+    ``running`` *before* the spawn, so when the executor then declines to
+    launch (throttled — no process exists), the row would otherwise sit
+    ``running`` until the reaper fails it hours later. Requeueing it lets the
+    next drain pick it up as soon as quota recovers.
+
+    Like :func:`reclaim_stale_claimed`, this deliberately bypasses the FSM
+    (``pending`` is not a legal target from ``running``). The ``status``
+    filter is the optimistic lock: only a row still ``running`` is touched.
+    Returns ``True`` iff the row was requeued. Callers tolerate ``False``
+    (row changed under us) — the reaper remains the backstop.
+    """
+    cli = client or get_client()
+    result = (
+        cli.table("task_queue")
+        .update({"status": "pending", "claimed_at": None})
+        .eq("id", task_id)
+        .eq("status", "running")
+        .execute()
+    )
+    return bool(result.data)
+
+
+def list_stale_running(
+    *,
+    assignee: str,
+    older_than_seconds: float,
+    client: Client | None = None,
+) -> list[dict[str, Any]]:
+    """List ``running`` rows older than the reaper threshold for an assignee.
+
+    Age is measured from ``claimed_at`` — there is no ``running_at`` column,
+    and claimed→running is immediate under Ordering B, so ``claimed_at`` is
+    a faithful proxy for running-start. The reaper is liveness-aware as of
+    #921: the wake_driver filters out rows whose process it still tracks, so
+    only *orphans* (rows with no tracked process — e.g. after a driver
+    restart) are transitioned ``running → failed``. The threshold stays
+    deliberately generous (≫ normal task runtime) as a backstop.
+    """
+    cli = client or get_client()
+    # Only the id is needed — the reaper transitions by id; selecting "*" would
+    # ship every column over the wire for no reader.
+    rows = (
+        cli.table("task_queue")
+        .select("id")
+        .eq("status", "running")
+        .eq("assignee", assignee)
+        .lt("claimed_at", _cutoff_iso(older_than_seconds))
+        .execute()
+    ).data or []
+    return rows
