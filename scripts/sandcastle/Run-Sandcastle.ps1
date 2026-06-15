@@ -49,6 +49,24 @@ param(
     # the OOM-escalation chain stays available when this flag is off.
     [switch]$Tier2AsPrimary,
 
+    # 2026-06-15 (#972): run the Anthropic subscription Agent SDK credit as the
+    # PRIMARY tier and skip Ollama entirely. Bills the monthly Max Agent-SDK
+    # credit via CLAUDE_CODE_OAUTH_TOKEN (set in .sandcastle/.env), NOT the
+    # metered API. On any subscription-tier failure (credit exhausted ->
+    # hard-stop, or a transient API error) the run falls back to the DeepSeek
+    # Tier 2 endpoint for that iteration. Senior to -Tier2AsPrimary: when both
+    # are set, subscription is primary and DeepSeek becomes the fallback.
+    [switch]$SubscriptionPrimary,
+
+    # Subscription-tier model + effort. claude-opus-4-8 (regular, NOT 1M --
+    # extra billing) at medium effort: model = task depth, effort = task width;
+    # AFK slices are single sharpened verticals so depth-heavy / width-bounded
+    # is the right trade (decision rationale, #972).
+    [string]$SubscriptionModel = 'claude-opus-4-8',
+
+    [ValidateSet('low', 'medium', 'high', 'max')]
+    [string]$SubscriptionEffort = 'medium',
+
     # Runtime-dir retention: keep the N most-recent .sandcastle/runtime/<stamp>/
     # directories on watchdog entry, prune older ones. -1 disables the sweep.
     # Env var SANDCASTLE_RUNTIME_RETENTION overrides this if set (#572).
@@ -261,6 +279,15 @@ function Invoke-Sandcastle {
         # defaults via OLLAMA_BASE_URL / "ollama" auth.
         [string]$BaseUrl,
         [string]$AuthToken,
+        # Auth mode (#972). Default 'endpoint' is the REAL-MONEY GUARD: every
+        # Ollama/DeepSeek caller is auto-pinned to ANTHROPIC_BASE_URL/TOKEN, so
+        # the presence of CLAUDE_CODE_OAUTH_TOKEN in .env can never silently
+        # bill the subscription credit. Only the subscription tier passes
+        # -AuthMode subscription explicitly.
+        [ValidateSet('endpoint', 'subscription')]
+        [string]$AuthMode = 'endpoint',
+        # Effort (#972), subscription tier only. Empty => main.mts default.
+        [string]$Effort,
         # Forced-target issue (escalation retries). Empty => agent free-picks.
         [string]$TargetIssue
     )
@@ -277,6 +304,8 @@ function Invoke-Sandcastle {
         SANDCASTLE_AGENT_MODEL      = $env:SANDCASTLE_AGENT_MODEL
         SANDCASTLE_AGENT_BASE_URL   = $env:SANDCASTLE_AGENT_BASE_URL
         SANDCASTLE_AGENT_AUTH_TOKEN = $env:SANDCASTLE_AGENT_AUTH_TOKEN
+        SANDCASTLE_AGENT_AUTH_MODE  = $env:SANDCASTLE_AGENT_AUTH_MODE
+        SANDCASTLE_AGENT_EFFORT     = $env:SANDCASTLE_AGENT_EFFORT
         SANDCASTLE_TARGET_ISSUE     = $env:SANDCASTLE_TARGET_ISSUE
         OLLAMA_MODEL                = $env:OLLAMA_MODEL
     }
@@ -287,6 +316,10 @@ function Invoke-Sandcastle {
                         $env:OLLAMA_MODEL                = $Model }
     if ($BaseUrl)     { $env:SANDCASTLE_AGENT_BASE_URL   = $BaseUrl }
     if ($AuthToken)   { $env:SANDCASTLE_AGENT_AUTH_TOKEN = $AuthToken }
+    # AuthMode always set (defaults 'endpoint') — the real-money guard. Effort
+    # only when supplied (subscription tier); empty => main.mts default.
+    $env:SANDCASTLE_AGENT_AUTH_MODE = $AuthMode
+    if ($Effort)      { $env:SANDCASTLE_AGENT_EFFORT      = $Effort }
     # TargetIssue: pass empty string verbatim so retries can clear it.
     $env:SANDCASTLE_TARGET_ISSUE = "$TargetIssue"
 
@@ -304,6 +337,8 @@ function Invoke-Sandcastle {
         $env:SANDCASTLE_AGENT_MODEL      = $prev.SANDCASTLE_AGENT_MODEL
         $env:SANDCASTLE_AGENT_BASE_URL   = $prev.SANDCASTLE_AGENT_BASE_URL
         $env:SANDCASTLE_AGENT_AUTH_TOKEN = $prev.SANDCASTLE_AGENT_AUTH_TOKEN
+        $env:SANDCASTLE_AGENT_AUTH_MODE  = $prev.SANDCASTLE_AGENT_AUTH_MODE
+        $env:SANDCASTLE_AGENT_EFFORT     = $prev.SANDCASTLE_AGENT_EFFORT
         $env:SANDCASTLE_TARGET_ISSUE     = $prev.SANDCASTLE_TARGET_ISSUE
         $env:OLLAMA_MODEL                = $prev.OLLAMA_MODEL
     }
@@ -952,6 +987,13 @@ function Invoke-Watchdog {
         # ollama_bench_must_measure_tool_use_fidelity. Default $false preserves
         # the original OOM-escalation chain used by existing tests.
         [switch]$Tier2AsPrimary,
+        # #972: run the Anthropic subscription Agent SDK credit as the primary
+        # tier (skips Ollama like -Tier2AsPrimary) with DeepSeek as fallback.
+        # Senior to -Tier2AsPrimary when both are set.
+        [switch]$SubscriptionPrimary,
+        [string]$SubscriptionModel = 'claude-opus-4-8',
+        [ValidateSet('low', 'medium', 'high', 'max')]
+        [string]$SubscriptionEffort = 'medium',
         # #572: runtime-dir retention; env var SANDCASTLE_RUNTIME_RETENTION wins.
         [int]$RuntimeRetention = 30
     )
@@ -1058,8 +1100,27 @@ function Invoke-Watchdog {
         }
     }
 
-    # 3. Ollama (skipped when Tier 2 is primary — no local model will be invoked)
-    if (-not $tier2Primary) {
+    # 2b. Subscription primary (#972). The Anthropic Max Agent-SDK credit runs
+    #     as the primary tier (bills CLAUDE_CODE_OAUTH_TOKEN, NOT the metered
+    #     API) and Ollama is skipped — same rationale as Tier-2-primary. Senior
+    #     to -Tier2AsPrimary: when both are set, subscription is primary and the
+    #     configured Tier 2 (DeepSeek) becomes the credit-exhaustion fallback.
+    $subscriptionFallback = $null
+    if ($SubscriptionPrimary) {
+        $tier2Primary = $null   # subscription supersedes Tier-2-as-primary
+        $fallbackProvider = if ($Tier2Provider) { $Tier2Provider } else { 'deepseek' }
+        $subscriptionFallback = Resolve-Tier2Config -Provider $fallbackProvider -Issue 0 `
+            -RepoSlug $repoSlug -EnvVars $envVars
+        if ($subscriptionFallback -and $subscriptionFallback.AuthToken) {
+            Write-Host "[watchdog] Subscription ($SubscriptionModel, effort=$SubscriptionEffort) is primary — Ollama disabled; fallback=$($subscriptionFallback.Provider):$($subscriptionFallback.Model)."
+        } else {
+            $subscriptionFallback = $null
+            Write-Host "[watchdog] Subscription ($SubscriptionModel, effort=$SubscriptionEffort) is primary — Ollama disabled; no DeepSeek fallback configured (key missing)."
+        }
+    }
+
+    # 3. Ollama (skipped when Tier 2 or subscription is primary — no local model)
+    if (-not $tier2Primary -and -not $SubscriptionPrimary) {
         if (-not (Test-OllamaRunning)) {
             Write-Host "[watchdog] Ollama not running -- autostarting."
             Start-OllamaServer
@@ -1077,7 +1138,7 @@ function Invoke-Watchdog {
     $iter = 0
     $partialReason = $null
     $queueDrained = $false     # agent emitted the completion signal (queue empty)
-    $tierCompleted = $null    # 'tier0' | 'tier1' | 'tier2:deepseek' | 'tier2:claude'
+    $tierCompleted = $null    # 'subscription' | 'tier0' | 'tier1' | 'tier2:deepseek' | 'tier2:claude'
 
     while ($iter -lt $MaxIterations) {
         if (Test-WindowExpired -WindowEnd $windowEndDt) {
@@ -1088,7 +1149,36 @@ function Invoke-Watchdog {
         $iter++
         Write-Host "[watchdog] iteration $iter/$MaxIterations"
 
-        if ($tier2Primary) {
+        if ($SubscriptionPrimary) {
+            # ----- Subscription primary: Anthropic Max Agent-SDK credit -----
+            # -AuthMode subscription => main.mts injects ONLY the OAuth token; no
+            # BaseUrl/AuthToken (those would route to the metered API).
+            $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $SubscriptionModel `
+                -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
+                -AuthMode 'subscription' -Effort $SubscriptionEffort `
+                -TargetIssue ''
+            $tierUsed = 'subscription'
+            $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+            $oomDetected = $false
+
+            # Fallback: ANY subscription failure (credit exhausted -> hard-stop
+            # when overflow is disabled, or a transient API error) drops to the
+            # DeepSeek endpoint for this iteration. One bounded retry; self-heals
+            # transient failures, mild waste if the credit is truly exhausted.
+            # NB the exact credit-exhaustion signature is not yet characterized
+            # (mirror of the DeepSeek-402 silent-failure note) — monitor (#972).
+            if (-not $invocation.ok -and $subscriptionFallback) {
+                Write-Host "[watchdog] subscription tier failed ($($invocation.reason)) -- falling back to $($subscriptionFallback.Provider):$($subscriptionFallback.Model)"
+                $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $subscriptionFallback.Model `
+                    -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
+                    -BaseUrl $subscriptionFallback.BaseUrl -AuthToken $subscriptionFallback.AuthToken `
+                    -AuthMode 'endpoint' -TargetIssue ([string]$targetIssue)
+                $tierUsed = "tier2:$($subscriptionFallback.Provider)"
+                if (-not $targetIssue) {
+                    $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+                }
+            }
+        } elseif ($tier2Primary) {
             # ----- Tier 2 primary: remote Anthropic-compat endpoint (DeepSeek / Anthropic API) -----
             $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $tier2Primary.Model `
                 -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
@@ -1108,7 +1198,7 @@ function Invoke-Watchdog {
         }
 
         # ----- Tier 1: smaller Ollama model on OOM/crash (only when Tier 2 is NOT primary) -----
-        if (-not $tier2Primary -and -not $invocation.ok -and $Tier1Model -and $oomDetected) {
+        if (-not $tier2Primary -and -not $SubscriptionPrimary -and -not $invocation.ok -and $Tier1Model -and $oomDetected) {
             Write-Host "[watchdog] Tier 0 OOM detected -- escalating to Tier 1 model: $Tier1Model"
             $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $Tier1Model `
                 -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
@@ -1124,7 +1214,7 @@ function Invoke-Watchdog {
         # and the chain still hasn't recovered. Tier 1 may have been skipped
         # entirely (no $Tier1Model) or it may have run and failed for any
         # reason -- both qualify per AC #3 ("persistent failure after Tier 1").
-        if (-not $tier2Primary -and -not $invocation.ok -and $oomDetected -and $Tier2Provider) {
+        if (-not $tier2Primary -and -not $SubscriptionPrimary -and -not $invocation.ok -and $oomDetected -and $Tier2Provider) {
             $tier2 = Resolve-Tier2Config -Provider $Tier2Provider -Issue $targetIssue `
                 -RepoSlug $repoSlug -EnvVars $envVars
             if ($tier2 -and $tier2.AuthToken) {
@@ -1297,5 +1387,7 @@ if (-not $NoExecute -and $Repo) {
         -OllamaTimeoutSec $OllamaTimeoutSec `
         -Tier1Model $Tier1Model -Tier2Provider $Tier2Provider `
         -Tier2AsPrimary:$Tier2AsPrimary `
+        -SubscriptionPrimary:$SubscriptionPrimary `
+        -SubscriptionModel $SubscriptionModel -SubscriptionEffort $SubscriptionEffort `
         -RuntimeRetention $RuntimeRetention
 }

@@ -64,6 +64,26 @@
     API key from .env instead (carries Max-subscription quota risk -- prefer
     deepseek for unattended cron).
 
+    When -SubscriptionPrimary is on (the default), Tier2Provider is NOT promoted
+    to primary; it stays wired as the credit-exhaustion fallback only.
+
+.PARAMETER SubscriptionPrimary
+    #972. Default $true: register the AFK task with the Anthropic Max Agent-SDK
+    credit as the primary tier (Opus 4.8 @ medium effort, bills the $100/mo
+    credit via CLAUDE_CODE_OAUTH_TOKEN in .sandcastle/.env), DeepSeek as the
+    fallback. Requires CLAUDE_CODE_OAUTH_TOKEN set on the host. Pass
+    -SubscriptionPrimary:$false to revert to the legacy DeepSeek-as-primary
+    registration.
+
+.PARAMETER SubscriptionModel
+    Subscription-tier model. Default claude-opus-4-8 (regular, NOT the 1M
+    context variant — that carries extra billing).
+
+.PARAMETER SubscriptionEffort
+    Subscription-tier effort: low | medium | high | max. Default medium —
+    model = task depth, effort = task width; AFK slices are single sharpened
+    verticals, so depth-heavy / width-bounded.
+
 .PARAMETER RepoRoot
     Filesystem path to the target repo. Defaults to the jarvis repo discovered
     from this script's own path (../../). For -Repo redrobot, pass the
@@ -114,6 +134,17 @@ param(
     [ValidateSet('', 'deepseek', 'claude')]
     [string]$Tier2Provider = 'deepseek',
 
+    # #972: subscription Agent-SDK credit is the primary AFK tier by default
+    # (Opus 4.8 @ medium effort, bills the $100/mo Max credit). DeepSeek stays
+    # wired as the credit-exhaustion fallback. Pass -SubscriptionPrimary:$false
+    # to fall back to the legacy Tier-2-as-primary (DeepSeek) registration.
+    [bool]$SubscriptionPrimary = $true,
+
+    [string]$SubscriptionModel = 'claude-opus-4-8',
+
+    [ValidateSet('low', 'medium', 'high', 'max')]
+    [string]$SubscriptionEffort = 'medium',
+
     [string]$RepoRoot,
 
     [int]$MaxIterations = 5,
@@ -133,7 +164,10 @@ $ErrorActionPreference = 'Stop'
 
 function Get-ConfigDeviceName {
     param([string]$DeviceJsonPath)
-    if (Test-Path $DeviceJsonPath) {
+    # Guard empty/null path: Test-Path '' is a terminating parameter-binding
+    # error under Windows PowerShell 5.1 (tolerated in pwsh 7). An absent path
+    # means "no device.json" -> return null, never throw.
+    if ($DeviceJsonPath -and (Test-Path $DeviceJsonPath)) {
         try {
             return (Get-Content $DeviceJsonPath -Raw | ConvertFrom-Json).name
         } catch {
@@ -168,7 +202,10 @@ function Format-SandcastleActionArgs {
         [string]$Tier1Model,
         [string]$Tier2Provider,
         [int]$MaxIterations,
-        [string]$WindowEnd
+        [string]$WindowEnd,
+        [bool]$SubscriptionPrimary = $true,
+        [string]$SubscriptionModel = 'claude-opus-4-8',
+        [string]$SubscriptionEffort = 'medium'
     )
     $watchdogQuoted = '"' + $WatchdogPath + '"'
     $argParts = @(
@@ -181,7 +218,16 @@ function Format-SandcastleActionArgs {
         '-WindowEnd', $WindowEnd
     )
     if ($Tier1Model)    { $argParts += @('-Tier1Model', $Tier1Model) }
-    if ($Tier2Provider) {
+    if ($SubscriptionPrimary) {
+        # #972: subscription Agent-SDK credit is primary for AFK runs. DeepSeek
+        # stays wired as the credit-exhaustion fallback (-Tier2Provider) but NOT
+        # -Tier2AsPrimary — subscription is senior; the watchdog supersedes
+        # Tier-2-as-primary when both are present.
+        $argParts += '-SubscriptionPrimary'
+        $argParts += @('-SubscriptionModel', $SubscriptionModel)
+        $argParts += @('-SubscriptionEffort', $SubscriptionEffort)
+        if ($Tier2Provider) { $argParts += @('-Tier2Provider', $Tier2Provider) }
+    } elseif ($Tier2Provider) {
         $argParts += @('-Tier2Provider', $Tier2Provider)
         # 2026-05-14: Tier 2 runs as primary for AFK scheduled tasks. Local Ollama
         # tiers fail the real-Claude-Code tool_use fidelity check on qwen2.5-coder:14b
@@ -372,7 +418,9 @@ $pwshExe = Get-PowerShellExe
 $argParts = Format-SandcastleActionArgs -WatchdogPath $watchdog `
     -Repo $Repo -Model $Model -Tier1Model $Tier1Model `
     -Tier2Provider $Tier2Provider -MaxIterations $MaxIterations `
-    -WindowEnd $WindowEnd
+    -WindowEnd $WindowEnd `
+    -SubscriptionPrimary $SubscriptionPrimary `
+    -SubscriptionModel $SubscriptionModel -SubscriptionEffort $SubscriptionEffort
 
 $action = New-ScheduledTaskAction -Execute $pwshExe `
     -Argument ($argParts -join ' ') `
