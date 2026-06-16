@@ -9,6 +9,7 @@ helpers needed testing (see #254 rework).
 
 from __future__ import annotations
 
+import base64
 import os
 import sys
 import types
@@ -37,6 +38,7 @@ _mcp_types.Tool = MagicMock
 def _noop_decorator(*args, **kwargs):
     def decorator(fn):
         return fn
+
     return decorator
 
 
@@ -222,10 +224,129 @@ class _FakeTable:
 def make_mock_client():
     """Factory fixture: returns a function that creates a contract-style
     mock Supabase client with a _FakeTable wired to table()."""
+
     def _make(table_kwargs: dict | None = None):
         client = MagicMock()
         client._table = _FakeTable(**(table_kwargs or {}))
         client.table.return_value = client._table
         client.rpc.return_value.execute.return_value = MagicMock(data=[])
         return client
+
     return _make
+
+
+# ---------------------------------------------------------------------------
+# Shared fakes for repo-baseline gh/REST shell tests (#980)
+# ---------------------------------------------------------------------------
+# Previously defined in test_repo_baseline_auditor.py and pulled in by
+# test_repo_baseline_generate_snapshots.py via
+# `from test_repo_baseline_auditor import ...` — a sibling-test coupling that
+# only worked under pytest prepend mode and broke silently on rename. Centralised
+# here (the established shared-test-infra home) as plain importable helpers, so
+# every call site stays `FakeRunner(...)` / `_jarvis_responses()` unchanged.
+
+# Imported after the sys.path setup above — `scripts/` must already be on
+# sys.path, so this cannot sit with the top-of-file imports (E402).
+from scripts.repo_baseline.auditor import GhNotFound  # noqa: E402
+
+
+class FakeRunner:
+    """Stand-in for the live ``gh api`` runner.
+
+    ``responses`` maps an api path → parsed JSON. Paths listed in
+    ``not_found`` raise ``GhNotFound`` (simulating a 404, e.g. a repo with
+    no branch protection or no dependabot.yml).
+
+    Records each invocation as a ``(path, paginate)`` tuple in ``self.calls``
+    so tests can assert the paginate flag was passed correctly per endpoint —
+    ``_read_labels`` MUST paginate, every other reader MUST NOT (#978 MAJOR 4).
+    ``raise_for`` maps a path → exception to raise (simulating a transient
+    failure on a specific repo, for the ``audit_all`` isolation tests).
+    """
+
+    def __init__(
+        self,
+        responses: dict,
+        not_found: set[str] | None = None,
+        raise_for: dict | None = None,
+    ):
+        self.responses = responses
+        self.not_found = set(not_found or ())
+        self.raise_for = dict(raise_for or {})
+        self.calls: list[tuple[str, bool]] = []
+
+    def __call__(self, path: str, *, paginate: bool = False):
+        self.calls.append((path, paginate))
+        if path in self.raise_for:
+            raise self.raise_for[path]
+        if path in self.not_found:
+            raise GhNotFound(path)
+        try:
+            return self.responses[path]
+        except KeyError:
+            raise KeyError(
+                f"FakeRunner: no response for {path!r}. Registered: {sorted(self.responses)}"
+            ) from None
+
+    def paths(self) -> list[str]:
+        """Just the called paths, dropping the paginate flag."""
+        return [p for p, _ in self.calls]
+
+    def paginate_for(self, path: str) -> bool:
+        """The paginate flag the last call for *path* was made with."""
+        for p, pag in reversed(self.calls):
+            if p == path:
+                return pag
+        raise KeyError(path)
+
+
+def _dependabot_b64(*ecosystems: str) -> dict:
+    updates = "\n".join(
+        f'  - package-ecosystem: "{e}"\n    directory: "/"\n    schedule:\n      interval: "weekly"'
+        for e in ecosystems
+    )
+    text = f"version: 2\nupdates:\n{updates}\n"
+    return {
+        "content": base64.b64encode(text.encode()).decode(),
+        "encoding": "base64",
+    }
+
+
+def _jarvis_responses() -> dict:
+    return {
+        "repos/Osasuwu/jarvis": {
+            "allow_auto_merge": True,
+            "allow_squash_merge": True,
+            "allow_merge_commit": False,
+            "allow_rebase_merge": False,
+            "delete_branch_on_merge": True,
+            "visibility": "public",
+            "default_branch": "main",
+        },
+        "repos/Osasuwu/jarvis/labels": [
+            {"name": "priority:critical", "color": "b60205", "description": "Hotfix"},
+            {"name": "status:in-progress", "color": "fbca04", "description": ""},
+        ],
+        "repos/Osasuwu/jarvis/actions/workflows?per_page=100": {
+            "workflows": [
+                {"name": "Code Review", "path": ".github/workflows/code-review.yml"},
+                {"name": "pytest", "path": ".github/workflows/pytest.yml"},
+            ]
+        },
+        "repos/Osasuwu/jarvis/branches/main/protection": {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": ["review", "pytest"],
+            }
+        },
+        "repos/Osasuwu/jarvis/contents/.github/dependabot.yml": _dependabot_b64(
+            "pip", "github-actions"
+        ),
+    }
+
+
+class _FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
