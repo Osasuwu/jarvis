@@ -7,6 +7,21 @@ thin gh/REST shells. All dry-run safe — no network or filesystem mutation.
 from .manifest import FileClass, Manifest, AxisProfile
 from .renderer import Renderer, RenderError
 from .planner import Planner, Action, ActionKind
+from .label_migrator import (
+    ActualLabel,
+    AddAction,
+    LabelMigrator,
+    LabelPlan,
+    MergeAction,
+    OrphanLabel,
+    RenameAction,
+)
+from .label_schema import (
+    CLEAN_LABELS,
+    CleanLabel,
+    clean_label_by_name,
+    clean_label_names,
+)
 
 __all__ = [
     "FileClass",
@@ -17,4 +32,15 @@ __all__ = [
     "Planner",
     "Action",
     "ActionKind",
+    "ActualLabel",
+    "AddAction",
+    "LabelMigrator",
+    "LabelPlan",
+    "MergeAction",
+    "OrphanLabel",
+    "RenameAction",
+    "CLEAN_LABELS",
+    "CleanLabel",
+    "clean_label_by_name",
+    "clean_label_names",
 ]
