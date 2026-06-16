@@ -124,11 +124,13 @@ class Planner:
         return actions
 
     def _all_watched_paths(self) -> List[str]:
+        # Every entry in custom_files classifies as REPO_CUSTOM — class_for_file
+        # checks custom_files first — so no per-item filter is needed; the whole
+        # list is watched (and thus excluded from DELETE_FILE).
         return (
             self.manifest.resolved_managed_files
             + self.manifest.language_test_files
-            + [f for f in self.manifest.custom_files
-               if self.manifest.class_for_file(f) == FileClass.REPO_CUSTOM]
+            + list(self.manifest.custom_files)
         )
 
     def classify_file(self, path: str) -> FileClass:

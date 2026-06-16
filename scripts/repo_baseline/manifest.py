@@ -31,7 +31,6 @@ class AxisProfile:
     runs_on: List[str] = field(default_factory=lambda: ["ubuntu-latest"])
     ci_language: str = "python"
     code_review_marketplace: str = "anthropics/claude-code-action@v1"
-    dependabot_ecosystems: List[str] = field(default_factory=lambda: ["pip", "github-actions"])
     auto_merge: bool = True
     branch_protection: bool = True
     visibility: str = "public"
@@ -52,14 +51,6 @@ _MANAGED_FILES_DEFAULT = [
     ".github/ISSUE_TEMPLATE/config.yml",
     ".github/PULL_REQUEST_TEMPLATE.md",
 ]
-
-# Axes that every manifest MUST declare (no-profile default applicable).
-REQUIRED_AXES = frozenset({
-    "ci_language",
-    "code_review_marketplace",
-    "required_check_contexts",
-    "test_extras",
-})
 
 
 def _resolve_managed_files(override: list | None, profile: str,
@@ -87,7 +78,6 @@ class Manifest:
     runs_on: Optional[List[str]] = None
     ci_language: Optional[str] = None
     code_review_marketplace: Optional[str] = None
-    dependabot_ecosystems: Optional[List[str]] = None
     auto_merge: Optional[bool] = None
     branch_protection: Optional[bool] = None
     test_extras: Optional[str] = None
@@ -122,10 +112,9 @@ class Manifest:
     @classmethod
     def from_dict(cls, data: dict) -> Manifest:
         valid = {"repo", "profile", "visibility", "runs_on", "ci_language",
-                 "code_review_marketplace", "dependabot_ecosystems",
-                 "auto_merge", "branch_protection", "test_extras",
-                 "required_check_contexts", "managed_files", "custom_files",
-                 "language_test_files"}
+                 "code_review_marketplace", "auto_merge", "branch_protection",
+                 "test_extras", "required_check_contexts", "managed_files",
+                 "custom_files", "language_test_files"}
         extra = set(data) - valid
         if extra:
             raise ValueError(f"Unknown manifest keys: {sorted(extra)}")
@@ -137,7 +126,6 @@ class Manifest:
             runs_on=data.get("runs_on"),
             ci_language=data.get("ci_language"),
             code_review_marketplace=data.get("code_review_marketplace"),
-            dependabot_ecosystems=data.get("dependabot_ecosystems"),
             auto_merge=data.get("auto_merge"),
             branch_protection=data.get("branch_protection"),
             test_extras=data.get("test_extras"),

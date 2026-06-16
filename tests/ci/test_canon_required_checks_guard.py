@@ -53,15 +53,13 @@ EXPECTED_CHECK_CONTEXTS: Dict[str, tuple[str, str]] = {
     ),
 }
 
-# ── Workflows with no required check (meta-checks only, not gating) ──
-# These are deployed as MANAGED but don't contribute to required_check_contexts.
-NON_GATING_WORKFLOWS: List[str] = [
-    ".github/dependabot.yml",
-    ".github/ISSUE_TEMPLATE/bug.yml",
-    ".github/ISSUE_TEMPLATE/task.yml",
-    ".github/ISSUE_TEMPLATE/config.yml",
-    ".github/PULL_REQUEST_TEMPLATE.md",
-]
+# ── Workflows deployed as MANAGED but not contributing a required check ──
+# Currently empty: all four canon *workflows* produce a required check. The
+# non-workflow canon files (dependabot.yml, ISSUE_TEMPLATE/*, PR template) are
+# filtered out by the ``.github/workflows/`` prefix check below, so they never
+# reach this list. Add a path here only if a future canon *workflow* is
+# intentionally non-gating.
+NON_GATING_WORKFLOWS: List[str] = []
 
 
 def _extract_job_names(workflow_yaml: str, workflow_path: str) -> Dict[str, str]:
@@ -189,9 +187,7 @@ class TestRequiredCheckContextGuard:
                 for info in EXPECTED_CHECK_CONTEXTS.values()
             )
             if not produces_check:
-                assert path in NON_GATING_WORKFLOWS or any(
-                    path == w for w in NON_GATING_WORKFLOWS
-                ), (
+                assert path in NON_GATING_WORKFLOWS, (
                     f"Workflow {path} is not listed in EXPECTED_CHECK_CONTEXTS "
                     f"nor in NON_GATING_WORKFLOWS. Either add its check context "
                     f"mapping or list it as non-gating."

@@ -4,7 +4,7 @@ Pure decision core (Manifest, Renderer, Planner, LabelMigrator) behind
 thin gh/REST shells. All dry-run safe — no network or filesystem mutation.
 """
 
-from .manifest import FileClass, Manifest, AxisProfile, REQUIRED_AXES
+from .manifest import FileClass, Manifest, AxisProfile
 from .renderer import Renderer, RenderError
 from .planner import Planner, Action, ActionKind
 
@@ -12,7 +12,6 @@ __all__ = [
     "FileClass",
     "Manifest",
     "AxisProfile",
-    "REQUIRED_AXES",
     "Renderer",
     "RenderError",
     "Planner",

@@ -44,17 +44,6 @@ body:
     validations:
       required: true
 
-  - type: dropdown
-    id: phase
-    attributes:
-      label: "Phase"
-      options:
-        - "P1 OpenClaw Migration + PM Skills"
-        - "P2 Research Skills"
-        - "P3 Expansion"
-    validations:
-      required: true
-
   - type: textarea
     id: acceptance
     attributes:

@@ -24,8 +24,11 @@ class TestBasicSubstitution:
     def test_list_axis(self):
         """List axes produce inline YAML arrays."""
         renderer = Renderer()
-        result = renderer.render("ecosystems: {{ dependabot_ecosystems }}", _manifest())
-        assert "[pip, github-actions]" in result
+        result = renderer.render(
+            "contexts: {{ required_check_contexts }}",
+            _manifest(required_check_contexts=["review", "pytest"]),
+        )
+        assert "[review, pytest]" in result
 
     def test_multiple_axes(self):
         renderer = Renderer()
