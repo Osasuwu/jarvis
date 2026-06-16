@@ -15,8 +15,6 @@ from .auditor import (
     LabelSnapshot,
     RepoSettings,
     RepoSnapshot,
-    gh_runner,
-    scrub_topology,
     seed_manifest,
 )
 from .label_migrator import (
@@ -51,8 +49,6 @@ __all__ = [
     "LabelSnapshot",
     "RepoSettings",
     "RepoSnapshot",
-    "gh_runner",
-    "scrub_topology",
     "seed_manifest",
     "ActualLabel",
     "AddAction",

@@ -1,8 +1,10 @@
-repo: Osasuwu/jarvis
-profile: full
-visibility: public
 auto_merge: true
 branch_protection: true
+dependabot_ecosystems:
+- pip
+- github-actions
+profile: full
+repo: Osasuwu/jarvis
 required_check_contexts:
 - review
 - owner-queue-guard
@@ -10,6 +12,4 @@ required_check_contexts:
 - pytest
 - meta-tests
 - Detect secrets with gitleaks
-dependabot_ecosystems:
-- pip
-- github-actions
+visibility: public

@@ -1,7 +1,7 @@
-repo: Osasuwu/music-intel-mcp
-profile: minimal
-visibility: public
 auto_merge: false
 branch_protection: false
-required_check_contexts: []
 dependabot_ecosystems: []
+profile: minimal
+repo: Osasuwu/music-intel-mcp
+required_check_contexts: []
+visibility: public

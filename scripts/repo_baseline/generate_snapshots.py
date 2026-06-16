@@ -10,9 +10,10 @@ Runs the live :class:`~scripts.repo_baseline.auditor.Auditor` over every repo in
   a populated starting point the owner edits rather than authoring from scratch.
 
 Re-runnable: re-auditing is the whole point of a *re-syncable* baseline. Output is
-deterministic (sorted-key JSON, fixed-order YAML) so a no-op re-audit produces no
-diff. ``SergazyNarynov/redrobot`` is intentionally out of scope — different owner,
-credential-blocked under the Osasuwu token; deferred to issue #940.
+deterministic (sorted-key JSON *and* sorted-key YAML) so a no-op re-audit produces
+no diff regardless of the order keys are emitted in the source. ``SergazyNarynov/
+redrobot`` is intentionally out of scope — different owner, credential-blocked
+under the Osasuwu token; deferred to issue #940.
 
 Usage::
 
@@ -23,11 +24,17 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
 
 import yaml
 
-from .auditor import OSASUWU_REPOS, Auditor, gh_runner, scrub_topology, seed_manifest
+from .auditor import (
+    OSASUWU_REPOS,
+    Auditor,
+    GhRunner,
+    gh_runner,
+    scrub_topology,
+    seed_manifest,
+)
 
 _MODULE_DIR = Path(__file__).resolve().parent
 SNAPSHOTS_DIR = _MODULE_DIR / "snapshots"
@@ -39,32 +46,58 @@ def _slug(repo: str) -> str:
     return repo.replace("/", "__")
 
 
-def generate(repos: List[str], runner=gh_runner) -> List[str]:
-    """Audit each repo and write its snapshot + seeded manifest. Returns paths."""
-    SNAPSHOTS_DIR.mkdir(exist_ok=True)
-    MANIFESTS_DIR.mkdir(exist_ok=True)
+def generate(
+    repos: list[str],
+    runner: GhRunner = gh_runner,
+    *,
+    snapshots_dir: Path | None = None,
+    manifests_dir: Path | None = None,
+) -> list[str]:
+    """Audit each repo and write its snapshot + seeded manifest. Returns paths.
+
+    ``snapshots_dir`` / ``manifests_dir`` default to the package's committed
+    fixture dirs; tests pass a ``tmp_path`` so a generation run never touches
+    the real fixtures.
+
+    Like :meth:`Auditor.audit_all`, this does **not** fail fast: a single repo's
+    audit failure must not discard the files already written for its siblings.
+    Every repo is attempted; if any failed, a single :class:`RuntimeError` naming
+    all failures is raised at the end. Files for the repos that succeeded remain
+    on disk — a partial regen is recoverable, a lost batch is not.
+    """
+    snapshots_dir = snapshots_dir if snapshots_dir is not None else SNAPSHOTS_DIR
+    manifests_dir = manifests_dir if manifests_dir is not None else MANIFESTS_DIR
+    snapshots_dir.mkdir(parents=True, exist_ok=True)
+    manifests_dir.mkdir(parents=True, exist_ok=True)
 
     auditor = Auditor(runner)
-    written: List[str] = []
+    written: list[str] = []
+    errors: dict[str, Exception] = {}
     for repo in repos:
-        snapshot = auditor.audit(repo)
-        slug = _slug(repo)
+        try:
+            snapshot = auditor.audit(repo)
+            slug = _slug(repo)
 
-        snap_path = SNAPSHOTS_DIR / f"{slug}.snapshot.json"
-        scrubbed = scrub_topology(snapshot.to_dict())
-        snap_path.write_text(
-            json.dumps(scrubbed, sort_keys=True, indent=2) + "\n", encoding="utf-8"
-        )
-        written.append(str(snap_path))
+            snap_path = snapshots_dir / f"{slug}.snapshot.json"
+            scrubbed = scrub_topology(snapshot.to_dict())
+            snap_path.write_text(
+                json.dumps(scrubbed, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+            )
+            written.append(str(snap_path))
 
-        manifest_path = MANIFESTS_DIR / f"{slug}.manifest.yml"
-        seed = scrub_topology(seed_manifest(snapshot))
-        manifest_path.write_text(
-            yaml.safe_dump(seed, sort_keys=False, default_flow_style=False),
-            encoding="utf-8",
-        )
-        written.append(str(manifest_path))
+            manifest_path = manifests_dir / f"{slug}.manifest.yml"
+            seed = scrub_topology(seed_manifest(snapshot))
+            manifest_path.write_text(
+                yaml.safe_dump(seed, sort_keys=True, default_flow_style=False),
+                encoding="utf-8",
+            )
+            written.append(str(manifest_path))
+        except Exception as e:  # noqa: BLE001 — collect, don't fail-fast
+            errors[repo] = e
 
+    if errors:
+        detail = "; ".join(f"{r} ({e})" for r, e in errors.items())
+        raise RuntimeError(f"generate: {len(errors)} of {len(repos)} repo(s) failed — {detail}")
     return written
 
 

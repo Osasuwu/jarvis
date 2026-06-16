@@ -18,8 +18,8 @@ import base64
 import json
 import re
 import subprocess
-from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import asdict, dataclass, field, fields
+from typing import Any, Protocol
 
 import yaml
 
@@ -33,9 +33,16 @@ class GhNotFound(Exception):
     """
 
 
-# A runner takes a gh api path (e.g. ``repos/Osasuwu/jarvis/labels``) and
-# returns parsed JSON. ``paginate=True`` requests ``gh api --paginate``.
-GhRunner = Callable[..., Any]
+class GhRunner(Protocol):
+    """A runner takes a gh api path (e.g. ``repos/Osasuwu/jarvis/labels``) and
+    returns parsed JSON. ``paginate=True`` requests ``gh api --paginate``.
+
+    A ``Protocol`` (not a bare ``Callable[..., Any]`` alias) so the keyword-only
+    ``paginate`` parameter is part of the type — a runner missing it, or taking
+    it positionally, is a type error rather than silently accepted.
+    """
+
+    def __call__(self, path: str, *, paginate: bool = ...) -> Any: ...
 
 
 # The baseline audit scope — the five Osasuwu repos named in the milestone #48
@@ -43,7 +50,7 @@ GhRunner = Callable[..., Any]
 # daily-triage list of jarvis + redrobot). ``SergazyNarynov/redrobot`` is
 # out of scope here: a different owner, credential-blocked under the
 # Osasuwu-only token, and deferred to issue #940.
-OSASUWU_REPOS: List[str] = [
+OSASUWU_REPOS: list[str] = [
     "Osasuwu/jarvis",
     "Osasuwu/music-intel-mcp",
     "Osasuwu/like_spotify_mobile_app",
@@ -90,7 +97,7 @@ class BranchProtection:
     """Required-status-check config on the default branch."""
 
     strict: bool = False
-    contexts: List[str] = field(default_factory=list)
+    contexts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -99,12 +106,12 @@ class RepoSnapshot:
 
     repo: str
     settings: RepoSettings
-    labels: List[LabelSnapshot] = field(default_factory=list)
-    workflows: List[str] = field(default_factory=list)
-    branch_protection: Optional[BranchProtection] = None
-    dependabot_ecosystems: List[str] = field(default_factory=list)
+    labels: list[LabelSnapshot] = field(default_factory=list)
+    workflows: list[str] = field(default_factory=list)
+    branch_protection: BranchProtection | None = None
+    dependabot_ecosystems: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Structural dict for JSON serialization (no scrub — see
         :func:`scrub_topology`, applied at fixture-write time).
 
@@ -118,16 +125,36 @@ class RepoSnapshot:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RepoSnapshot":
+    def from_dict(cls, data: dict[str, Any]) -> "RepoSnapshot":
+        # Filter each nested dict to the dataclass's own fields before splatting.
+        # A snapshot written by a *newer* schema (extra keys on settings /
+        # branch_protection / a label) must round-trip through an older reader
+        # without a ``TypeError: unexpected keyword argument`` — forward
+        # compatibility for the committed fixtures. Unknown keys are dropped, not
+        # an error: the reader simply ignores axes it does not model yet.
         bp = data.get("branch_protection")
         return cls(
             repo=data["repo"],
-            settings=RepoSettings(**data["settings"]),
-            labels=[LabelSnapshot(**lb) for lb in data.get("labels", [])],
+            settings=RepoSettings(**_only_fields(RepoSettings, data["settings"])),
+            labels=[
+                LabelSnapshot(**_only_fields(LabelSnapshot, lb)) for lb in data.get("labels", [])
+            ],
             workflows=list(data.get("workflows", [])),
-            branch_protection=(BranchProtection(**bp) if bp is not None else None),
+            branch_protection=(
+                BranchProtection(**_only_fields(BranchProtection, bp)) if bp is not None else None
+            ),
             dependabot_ecosystems=list(data.get("dependabot_ecosystems", [])),
         )
+
+
+def _only_fields(cls: type, data: dict[str, Any]) -> dict[str, Any]:
+    """Project *data* onto the field names declared by dataclass *cls*.
+
+    Keeps :meth:`RepoSnapshot.from_dict` forward-compatible: a fixture carrying
+    keys a newer schema added is parsed by an older reader instead of raising.
+    """
+    valid = {f.name for f in fields(cls)}
+    return {k: v for k, v in data.items() if k in valid}
 
 
 # ── Auditor ──────────────────────────────────────────────────────────
@@ -140,24 +167,52 @@ class Auditor:
         self.runner = runner
 
     def audit(self, repo: str) -> RepoSnapshot:
-        """Build a full snapshot for *repo* (``owner/name``)."""
-        settings = self._read_settings(repo)
-        return RepoSnapshot(
-            repo=repo,
-            settings=settings,
-            labels=self._read_labels(repo),
-            workflows=self._read_workflows(repo),
-            branch_protection=self._read_branch_protection(repo, settings.default_branch),
-            dependabot_ecosystems=self._read_dependabot_ecosystems(repo),
-        )
+        """Build a full snapshot for *repo* (``owner/name``).
 
-    def audit_all(self, repos: List[str]) -> Dict[str, RepoSnapshot]:
+        Any reader failure (a malformed dependabot.yml, an unexpected gh error,
+        a missing core endpoint) is re-raised with the repo name prepended, so a
+        failure in a batch ``audit_all`` run is attributable to a specific repo
+        rather than an anonymous stack trace. The inner message is interpolated,
+        preserving the original detail (encoding mismatch, parser error, …).
+        """
+        try:
+            settings = self._read_settings(repo)
+            return RepoSnapshot(
+                repo=repo,
+                settings=settings,
+                labels=self._read_labels(repo),
+                workflows=self._read_workflows(repo),
+                branch_protection=self._read_branch_protection(repo, settings.default_branch),
+                dependabot_ecosystems=self._read_dependabot_ecosystems(repo),
+            )
+        except Exception as e:  # noqa: BLE001 — boundary: attribute to the repo
+            raise RuntimeError(f"Audit failed for {repo!r}: {e}") from e
+
+    def audit_all(self, repos: list[str]) -> dict[str, RepoSnapshot]:
         """Audit each repo in *repos*, returning a ``repo -> RepoSnapshot`` map.
 
         Iteration order follows *repos*; the dict preserves insertion order so
         the committed fixture set is deterministic.
+
+        Does **not** fail fast: a single repo's failure must not discard the
+        snapshots already built for its siblings (a dict comprehension would
+        throw out the whole batch on the first error). Every repo is attempted;
+        if any failed, a single :class:`RuntimeError` naming *all* failures is
+        raised at the end so one bad repo doesn't mask a second.
         """
-        return {repo: self.audit(repo) for repo in repos}
+        snapshots: dict[str, RepoSnapshot] = {}
+        errors: dict[str, Exception] = {}
+        for repo in repos:
+            try:
+                snapshots[repo] = self.audit(repo)
+            except Exception as e:  # noqa: BLE001 — collect, don't fail-fast
+                errors[repo] = e
+        if errors:
+            detail = "; ".join(f"{r} ({e})" for r, e in errors.items())
+            raise RuntimeError(
+                f"audit_all: {len(errors)} of {len(repos)} repo(s) failed — {detail}"
+            )
+        return snapshots
 
     # ── per-aspect readers ────────────────────────────────────────────
 
@@ -177,7 +232,7 @@ class Auditor:
             default_branch=data.get("default_branch", "main"),
         )
 
-    def _read_labels(self, repo: str) -> List[LabelSnapshot]:
+    def _read_labels(self, repo: str) -> list[LabelSnapshot]:
         data = self.runner(f"repos/{repo}/labels", paginate=True)
         return [
             LabelSnapshot(
@@ -188,11 +243,11 @@ class Auditor:
             for lb in data
         ]
 
-    def _read_workflows(self, repo: str) -> List[str]:
+    def _read_workflows(self, repo: str) -> list[str]:
         data = self.runner(f"repos/{repo}/actions/workflows")
         return [wf["path"] for wf in data.get("workflows", [])]
 
-    def _read_branch_protection(self, repo: str, default_branch: str) -> Optional[BranchProtection]:
+    def _read_branch_protection(self, repo: str, default_branch: str) -> BranchProtection | None:
         try:
             data = self.runner(f"repos/{repo}/branches/{default_branch}/protection")
         except GhNotFound:
@@ -210,7 +265,7 @@ class Auditor:
             contexts=contexts,
         )
 
-    def _read_dependabot_ecosystems(self, repo: str) -> List[str]:
+    def _read_dependabot_ecosystems(self, repo: str) -> list[str]:
         try:
             data = self.runner(f"repos/{repo}/contents/.github/dependabot.yml")
         except GhNotFound:
@@ -234,7 +289,7 @@ class Auditor:
 # ── Manifest seeding ─────────────────────────────────────────────────
 
 
-def seed_manifest(snapshot: RepoSnapshot) -> Dict[str, Any]:
+def seed_manifest(snapshot: RepoSnapshot) -> dict[str, Any]:
     """Derive a per-repo manifest dict from an observed snapshot.
 
     The seed captures *observed reality* as explicit axis values so the owner
@@ -254,6 +309,31 @@ def seed_manifest(snapshot: RepoSnapshot) -> Dict[str, Any]:
     so the skeleton reflects what the repo *is*, not an aspirational target —
     seeding ``full`` for a bare repo would prescribe a baseline rather than
     observe one (#978 MAJOR 2). Everything else seeds ``full``.
+
+    **Profile heuristic is binary against four real governance states (#978
+    MAJOR 7).** ``is_bare = not allow_auto_merge and branch_protection is None``
+    collapses a 2×2 space (auto-merge × branch-protection) onto two labels.
+    Against the milestone-#48 audit scope the buckets fall out as:
+
+    ===========================  ===========  ============  ========  =========
+    repo                         auto_merge   branch_prot   is_bare   profile
+    ===========================  ===========  ============  ========  =========
+    Osasuwu/jarvis               yes          yes           no        full
+    Osasuwu/like_spotify_..app   no           yes           no        full*
+    Osasuwu/music-intel-mcp      no           none          yes       minimal
+    Osasuwu/dnd-calendar         no           none          yes       minimal
+    Osasuwu/farming-evolution    no           none          yes       minimal
+    ===========================  ===========  ============  ========  =========
+
+    ``*`` — ``like_spotify_mobile_app`` is **partially governed** (branch
+    protection on, auto-merge off) yet seeds ``full`` because it is not bare.
+    The seed still emits ``auto_merge=False`` explicitly, so the partial state
+    is visible in the manifest body; only the coarse *profile label* rounds up.
+    The fourth logical state (auto-merge on, protection off) is unobserved in
+    scope. A dedicated third ``governed`` profile that distinguishes partial
+    from full governance is deliberately **deferred to #939** (the applier),
+    where the profile→action mapping is defined and a finer label earns its
+    keep — adding it here would be an unused indirection.
 
     Caveat for #939: the profile only governs the *governance* axes
     (auto-merge / branch-protection / managed-file set). The language axes
@@ -284,7 +364,7 @@ def seed_manifest(snapshot: RepoSnapshot) -> Dict[str, Any]:
     }
 
 
-def _dedupe(items: List[str]) -> List[str]:
+def _dedupe(items: list[str]) -> list[str]:
     """Deduplicate preserving first-seen order (``dict.fromkeys`` idiom)."""
     return list(dict.fromkeys(items))
 
@@ -295,7 +375,18 @@ def _dedupe(items: List[str]) -> List[str]:
 # infra topology. The username segment is matched *positionally* (any user, not
 # a hardcoded login) so the scrub survives a different operator on another
 # device. Over-redaction is the safe direction here.
-_TAILNET_IP_RE = re.compile(r"\b100\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+#
+# Scope boundary (intentional, documented for the audit trail): the POSIX home
+# pattern covers ``/home/<user>`` and ``/Users/<user>`` only. macOS-specific
+# topology paths — ``/private/Users``, ``/var/folders/...``, ``/run/user/<uid>``
+# — are NOT scrubbed. The auditor runs on the owner's Windows box and emits
+# GitHub-derived snapshots (no local paths in the payload), so these never
+# appear in practice; widening the pattern would risk redacting legitimate
+# repo content. Revisit if the auditor ever runs on macOS or ingests local FS
+# paths. Tailnet scrub matches the full ``100.x`` block (not narrowed to the
+# 100.64/10 CGNAT range) — over-redaction is the safe direction.
+_OCTET = r"(?:25[0-5]|2[0-4]\d|1?\d?\d)"  # 0–255, rejects 256+ / 3-digit junk
+_TAILNET_IP_RE = re.compile(rf"\b100\.{_OCTET}\.{_OCTET}\.{_OCTET}\b")
 _WIN_USER_RE = re.compile(r"([A-Za-z]:\\Users\\)([^\\]+)")
 _NIX_USER_RE = re.compile(r"(/(?:home|Users)/)([^/]+)")
 
@@ -323,7 +414,10 @@ def scrub_topology(data: Any) -> Any:
     if isinstance(data, str):
         return _scrub_str(data)
     if isinstance(data, dict):
-        return {k: scrub_topology(v) for k, v in data.items()}
+        # Recurse on keys as well as values — topology can hide in a dict key
+        # (e.g. a path used as a map key). Non-string keys pass through the
+        # ``return data`` tail untouched.
+        return {scrub_topology(k): scrub_topology(v) for k, v in data.items()}
     if isinstance(data, list):
         return [scrub_topology(v) for v in data]
     return data
@@ -332,7 +426,7 @@ def scrub_topology(data: Any) -> Any:
 # ── Live gh/REST runner ──────────────────────────────────────────────
 
 
-def _parse_concatenated_json(text: str) -> List[Any]:
+def _parse_concatenated_json(text: str) -> list[Any]:
     """Parse a stream of whitespace-separated JSON values into a list.
 
     ``gh api --paginate`` emits one JSON document per page with no separator,
@@ -342,7 +436,7 @@ def _parse_concatenated_json(text: str) -> List[Any]:
     ``--slurp`` behavior.
     """
     decoder = json.JSONDecoder()
-    values: List[Any] = []
+    values: list[Any] = []
     idx, n = 0, len(text)
     while idx < n:
         while idx < n and text[idx].isspace():
@@ -369,7 +463,13 @@ def gh_runner(path: str, *, paginate: bool = False) -> Any:
     args = ["gh", "api", path]
     if paginate:
         args.append("--paginate")
-    proc = subprocess.run(args, capture_output=True, text=True)
+    # A bounded timeout so a hung gh process (network stall, auth prompt waiting
+    # on a tty that will never arrive) fails loudly instead of blocking the whole
+    # audit_all batch indefinitely.
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"gh api {path!r} timed out after 60s") from e
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         # Match gh's actual not-found marker, not a bare "404" digit run — an
@@ -383,8 +483,13 @@ def gh_runner(path: str, *, paginate: bool = False) -> Any:
         return json.loads(proc.stdout)
 
     values = _parse_concatenated_json(proc.stdout)
-    if values and all(isinstance(v, list) for v in values):
-        flat: List[Any] = []
+    # An empty body (a repo with zero labels paginates to ``""``) yields no
+    # values — the natural result is an empty list, not the "unexpected page
+    # structure" error the all-arrays/single-doc checks below would raise on it.
+    if not values:
+        return []
+    if all(isinstance(v, list) for v in values):
+        flat: list[Any] = []
         for page in values:
             flat.extend(page)
         return flat
