@@ -123,21 +123,25 @@ CLEAN_LABELS: list[CleanLabel] = [
         "tier",
     ),
     CleanLabel(
+        # Distinct gold so it does not collide with needs-prd (ffc844) —
+        # same colour across semantic categories is ambiguous.
         "tier:2-review",
-        "ffc844",
+        "dbab09",
         "Tier 2: owner review required",
         "tier",
     ),
     CleanLabel(
+        # Distinct red so it does not collide with priority:high (d93f0b).
         "tier:3-human",
-        "d93f0b",
+        "d73a4a",
         "Tier 3: owner-driven only",
         "tier",
     ),
     # ── Special ───────────────────────────────────────────────────────
     CleanLabel(
+        # Distinct purple so it does not collide with area:skills (0052cc).
         "sandcastle",
-        "0052cc",
+        "5319e7",
         "AFK queue: safe for sandcastle agent",
         "special",
     ),
@@ -150,7 +154,10 @@ CLEAN_LABELS: list[CleanLabel] = [
     # ── Type ──────────────────────────────────────────────────────────
     # NOTE: no "epic" label — CLAUDE.md decision 2a7ae10e: milestone is the
     # only grouping primitive, the term "epic" is not used. Do not re-add.
-    CleanLabel("task", "0e8a16", "Task: one PR execution item", "type"),
+    CleanLabel(
+        # Distinct teal so it does not collide with priority:low (0e8a16).
+        "task", "006b75", "Task: one PR execution item", "type"
+    ),
     CleanLabel(
         "draft", "c5def5", "Rough idea, not ready for triage", "type"
     ),
@@ -160,20 +167,25 @@ CLEAN_LABELS: list[CleanLabel] = [
 ]
 
 
-# Validate the canonical schema at import time.
+# Validate the canonical schema at import time. Use raise, not assert — the
+# latter is silently stripped under `python -O` / `-OO`, and these are
+# correctness guards on the schema data, not debug-only checks.
 _HEX6 = re.compile(r"^[0-9a-f]{6}$")
 _names = [lb.name for lb in CLEAN_LABELS]
-assert len(_names) == len(set(_names)), (
-    f"Duplicate label names in CLEAN_LABELS: "
-    f"{[n for n in _names if _names.count(n) > 1]}"
-)
+_dupe_names = sorted({n for n in _names if _names.count(n) > 1})
+if _dupe_names:
+    raise ValueError(f"Duplicate label names in CLEAN_LABELS: {_dupe_names}")
 for lb in CLEAN_LABELS:
-    assert _HEX6.match(lb.color), (
-        f"{lb.name}: color {lb.color!r} must be 6 lowercase hex chars"
-    )
+    if not _HEX6.match(lb.color):
+        raise ValueError(
+            f"{lb.name}: color {lb.color!r} must be 6 lowercase hex chars"
+        )
 
 # Built once at import — O(1) name lookup instead of a linear scan per call.
 _CLEAN_BY_NAME: dict[str, CleanLabel] = {lb.name: lb for lb in CLEAN_LABELS}
+# Immutable, allocated once — clean_label_names() returns this directly rather
+# than building a fresh set per call.
+_CLEAN_NAMES: frozenset[str] = frozenset(_CLEAN_BY_NAME)
 
 
 def clean_label_by_name(name: str) -> CleanLabel | None:
@@ -181,6 +193,6 @@ def clean_label_by_name(name: str) -> CleanLabel | None:
     return _CLEAN_BY_NAME.get(name)
 
 
-def clean_label_names() -> set[str]:
-    """Return the set of all canonical clean label names."""
-    return set(_CLEAN_BY_NAME)
+def clean_label_names() -> frozenset[str]:
+    """Return the (immutable) set of all canonical clean label names."""
+    return _CLEAN_NAMES

@@ -50,12 +50,18 @@ class RenameAction:
 
 @dataclass(frozen=True)
 class MergeAction:
-    """Consolidate multiple source labels into a single target.
+    """Consolidate one or more source labels into a single target.
 
     Execution strategy differs from RenameAction: an executor must reassign
     all issues/PRs bearing each source label to the target, then delete the
     source labels (a multi-step destructive operation). Do not use ``gh label
     edit --name`` for merge actions — that only works for renames.
+
+    A single-source merge (``len(source_names) == 1``) is NOT a rename
+    optimisation. The planner emits it only when the rename target already
+    exists in the actual set, so it must still execute as re-tag-then-delete —
+    a plain rename would hit GitHub 422 (name already in use). An executor must
+    not special-case ``len == 1`` into a ``gh label edit --name`` rename.
     """
 
     source_names: tuple[str, ...]

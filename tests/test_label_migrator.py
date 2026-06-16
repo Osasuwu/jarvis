@@ -59,6 +59,31 @@ class TestSchemaInvariants:
             assert clean_label_by_name(lb.name) is lb
         assert clean_label_by_name("definitely-not-a-label") is None
 
+    def test_no_same_color_across_categories(self):
+        """No two labels in *different* categories share a hex color.
+
+        Same color across semantic categories is visually ambiguous — a blue
+        chip could be area:skills or sandcastle. Several pairs were de-duped by
+        hand (status:in-progress, area:ci-quality, tier:2-review, tier:3-human,
+        sandcastle, task); this pins the invariant so a future addition can't
+        silently reintroduce a collision. Labels within the *same* category may
+        share a color (the category context disambiguates), so the check is
+        scoped to cross-category pairs only.
+        """
+        first_seen: dict[str, CleanLabel] = {}
+        collisions: list[str] = []
+        for lb in CLEAN_LABELS:
+            prior = first_seen.get(lb.color)
+            if prior is not None and prior.category != lb.category:
+                collisions.append(
+                    f"{prior.name} ({prior.category}) and "
+                    f"{lb.name} ({lb.category}) share color {lb.color!r}"
+                )
+            first_seen.setdefault(lb.color, lb)
+        assert not collisions, (
+            "Cross-category color collisions:\n" + "\n".join(collisions)
+        )
+
 
 # ── Fixture helpers ──────────────────────────────────────────────────
 
