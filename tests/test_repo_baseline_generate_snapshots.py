@@ -13,9 +13,9 @@ contract is load-bearing:
 * **Round-trip** — the emitted manifest YAML must load back through
   :meth:`Manifest.from_dict` without massaging.
 
-Reuses ``FakeRunner`` + ``_jarvis_responses`` from the auditor test module
-(top-level importable — ``tests/`` is not a package, pytest prepend mode puts
-it on ``sys.path``) so the canned ``gh api`` JSON stays defined in one place.
+Reuses ``FakeRunner`` + ``_jarvis_responses`` from ``tests/conftest.py`` (the
+shared-test-infra home — importable as ``from conftest import ...``) so the
+canned ``gh api`` JSON stays defined in one place (#980).
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ import yaml
 from scripts.repo_baseline import Manifest
 from scripts.repo_baseline import generate_snapshots as gen
 
-from test_repo_baseline_auditor import FakeRunner, _jarvis_responses
+from conftest import FakeRunner, _jarvis_responses
 
 
 def _generate_jarvis(tmp_path, *, repos=("Osasuwu/jarvis",)):
