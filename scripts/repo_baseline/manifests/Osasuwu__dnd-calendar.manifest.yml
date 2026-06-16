@@ -1,0 +1,7 @@
+auto_merge: false
+branch_protection: false
+dependabot_ecosystems: []
+profile: minimal
+repo: Osasuwu/dnd-calendar
+required_check_contexts: []
+visibility: public

@@ -1,0 +1,161 @@
+{
+  "branch_protection": null,
+  "dependabot_ecosystems": [],
+  "labels": [
+    {
+      "color": "1d76db",
+      "description": "Data sources, loaders, caching (lastfm/spotify/mb/ab)",
+      "name": "area:data"
+    },
+    {
+      "color": "5319E7",
+      "description": "Root-derivation engine: enrichers, clustering, validation, RootProfile assembly",
+      "name": "area:engine"
+    },
+    {
+      "color": "ededed",
+      "description": "CI, deps, tooling, repo hygiene",
+      "name": "area:infra"
+    },
+    {
+      "color": "0052cc",
+      "description": "MCP server surface (Phase 2)",
+      "name": "area:mcp"
+    },
+    {
+      "color": "5319E7",
+      "description": "Recommendation engine, scoring, anti-bubble logic",
+      "name": "area:recommend"
+    },
+    {
+      "color": "a2eeef",
+      "description": "Output: HTML viewer, playlist push",
+      "name": "area:viewer"
+    },
+    {
+      "color": "d73a4a",
+      "description": "Something isn't working",
+      "name": "bug"
+    },
+    {
+      "color": "0E8A16",
+      "description": "Research done, decision documented (memory linked)",
+      "name": "decision-made"
+    },
+    {
+      "color": "0075ca",
+      "description": "Improvements or additions to documentation",
+      "name": "documentation"
+    },
+    {
+      "color": "cfd3d7",
+      "description": "This issue or pull request already exists",
+      "name": "duplicate"
+    },
+    {
+      "color": "a2eeef",
+      "description": "New feature or request",
+      "name": "enhancement"
+    },
+    {
+      "color": "6f42c1",
+      "description": "Epic / milestone-level grouping",
+      "name": "epic"
+    },
+    {
+      "color": "7057ff",
+      "description": "Good for newcomers",
+      "name": "good first issue"
+    },
+    {
+      "color": "008672",
+      "description": "Extra attention is needed",
+      "name": "help wanted"
+    },
+    {
+      "color": "e4e669",
+      "description": "This doesn't seem right",
+      "name": "invalid"
+    },
+    {
+      "color": "ededed",
+      "description": "Needs investigation before implementation",
+      "name": "needs-research"
+    },
+    {
+      "color": "7B0000",
+      "description": "Blocking, must fix now",
+      "name": "priority:critical"
+    },
+    {
+      "color": "d93f0b",
+      "description": "High priority",
+      "name": "priority:high"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Nice to have",
+      "name": "priority:low"
+    },
+    {
+      "color": "fbca04",
+      "description": "Normal priority",
+      "name": "priority:medium"
+    },
+    {
+      "color": "d876e3",
+      "description": "Further information is requested",
+      "name": "question"
+    },
+    {
+      "color": "B60205",
+      "description": "Security or secrets concern",
+      "name": "security"
+    },
+    {
+      "color": "b60205",
+      "description": "Blocked",
+      "name": "status:blocked"
+    },
+    {
+      "color": "fbca04",
+      "description": "Work in progress",
+      "name": "status:in-progress"
+    },
+    {
+      "color": "c2e0c6",
+      "description": "Ready to start",
+      "name": "status:ready"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "In review",
+      "name": "status:review"
+    },
+    {
+      "color": "0E8A16",
+      "description": "Task: one PR execution item",
+      "name": "task"
+    },
+    {
+      "color": "ffffff",
+      "description": "This will not be worked on",
+      "name": "wontfix"
+    }
+  ],
+  "repo": "Osasuwu/music-intel-mcp",
+  "settings": {
+    "allow_auto_merge": false,
+    "allow_merge_commit": true,
+    "allow_rebase_merge": true,
+    "allow_squash_merge": true,
+    "default_branch": "main",
+    "delete_branch_on_merge": false,
+    "visibility": "public"
+  },
+  "workflows": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/pr-body-check.yml",
+    "dynamic/dependabot/update-graph"
+  ]
+}

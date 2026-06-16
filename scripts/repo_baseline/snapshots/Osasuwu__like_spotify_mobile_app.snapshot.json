@@ -1,0 +1,142 @@
+{
+  "branch_protection": {
+    "contexts": [
+      "test",
+      "pytest"
+    ],
+    "strict": true
+  },
+  "dependabot_ecosystems": [],
+  "labels": [
+    {
+      "color": "FBCA04",
+      "description": "Android app implementation",
+      "name": "android"
+    },
+    {
+      "color": "1D76DB",
+      "description": "Backend architecture and services",
+      "name": "backend"
+    },
+    {
+      "color": "d73a4a",
+      "description": "Something isn't working",
+      "name": "bug"
+    },
+    {
+      "color": "0E8A16",
+      "description": "Child issue of an epic",
+      "name": "child"
+    },
+    {
+      "color": "0075ca",
+      "description": "Improvements or additions to documentation",
+      "name": "documentation"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "domain:android"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "domain:backend"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "domain:desktop"
+    },
+    {
+      "color": "cfd3d7",
+      "description": "This issue or pull request already exists",
+      "name": "duplicate"
+    },
+    {
+      "color": "a2eeef",
+      "description": "New feature or request",
+      "name": "enhancement"
+    },
+    {
+      "color": "5319E7",
+      "description": "Epic-level planning issue",
+      "name": "epic"
+    },
+    {
+      "color": "7057ff",
+      "description": "Good for newcomers",
+      "name": "good first issue"
+    },
+    {
+      "color": "008672",
+      "description": "Extra attention is needed",
+      "name": "help wanted"
+    },
+    {
+      "color": "e4e669",
+      "description": "This doesn't seem right",
+      "name": "invalid"
+    },
+    {
+      "color": "0052CC",
+      "description": "Logs, metrics, diagnostics",
+      "name": "observability"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "Priority:P1"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "Priority:P2"
+    },
+    {
+      "color": "d876e3",
+      "description": "Further information is requested",
+      "name": "question"
+    },
+    {
+      "color": "B60205",
+      "description": "Automation rules and logic",
+      "name": "rules-engine"
+    },
+    {
+      "color": "C2E0C6",
+      "description": "Spotify API integration",
+      "name": "spotify-api"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "status:ready"
+    },
+    {
+      "color": "D4C5F9",
+      "description": "UI and settings UX",
+      "name": "ux"
+    },
+    {
+      "color": "ffffff",
+      "description": "This will not be worked on",
+      "name": "wontfix"
+    }
+  ],
+  "repo": "Osasuwu/like_spotify_mobile_app",
+  "settings": {
+    "allow_auto_merge": false,
+    "allow_merge_commit": true,
+    "allow_rebase_merge": true,
+    "allow_squash_merge": true,
+    "default_branch": "main",
+    "delete_branch_on_merge": false,
+    "visibility": "public"
+  },
+  "workflows": [
+    ".github/workflows/ci.yml",
+    ".github/workflows/code-review.yml",
+    "dynamic/copilot-pull-request-reviewer/copilot-pull-request-reviewer"
+  ]
+}

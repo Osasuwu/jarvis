@@ -81,6 +81,13 @@ py-modules = ["risk_radar"]
 testpaths = ["tests"]
 pythonpath = ["src", "."]
 asyncio_mode = "auto"
+# Pin prepend import mode (today's pytest default) explicitly: tests/ is not a
+# package, and sibling test modules import each other as top-level names (e.g.
+# `from test_repo_baseline_auditor import FakeRunner`). That only works while the
+# test file's own directory is on sys.path[0], which prepend mode guarantees. If
+# pytest ever changes its default to importlib, this keeps the cross-module
+# imports working. (#978 round-3 MINOR 6.)
+addopts = "--import-mode=prepend"
 
 [tool.ruff]
 line-length = 100
