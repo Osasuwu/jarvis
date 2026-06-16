@@ -73,6 +73,14 @@ def generate(
     auditor = Auditor(runner)
     written: list[str] = []
     errors: dict[str, Exception] = {}
+    # NOTE: this loop deliberately does NOT delegate to ``Auditor.audit_all``.
+    # ``audit_all`` collects every snapshot in memory and only raises at the end —
+    # it never writes anything. Here the write *is* the per-repo work, and the
+    # isolation property we need is write-as-you-go: a sibling's mid-run failure
+    # must leave the already-written files on disk. Calling ``audit_all`` and
+    # writing afterwards would discard the whole batch if any single repo failed,
+    # regressing that property. The ``generate:`` error prefix is intentionally
+    # distinct from ``audit_all:`` so a failure is traceable to this writer path.
     for repo in repos:
         try:
             snapshot = auditor.audit(repo)
@@ -96,7 +104,7 @@ def generate(
             errors[repo] = e
 
     if errors:
-        detail = "; ".join(f"{r} ({e})" for r, e in errors.items())
+        detail = "; ".join(f"{r} ({type(e).__name__}: {e})" for r, e in errors.items())
         raise RuntimeError(f"generate: {len(errors)} of {len(repos)} repo(s) failed — {detail}")
     return written
 

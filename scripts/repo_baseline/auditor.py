@@ -42,7 +42,7 @@ class GhRunner(Protocol):
     it positionally, is a type error rather than silently accepted.
     """
 
-    def __call__(self, path: str, *, paginate: bool = ...) -> Any: ...
+    def __call__(self, path: str, *, paginate: bool = False) -> Any: ...
 
 
 # The baseline audit scope — the five Osasuwu repos named in the milestone #48
@@ -94,7 +94,16 @@ class RepoSettings:
 
 @dataclass
 class BranchProtection:
-    """Required-status-check config on the default branch."""
+    """Required-status-check config on the default branch.
+
+    Scope is deliberately narrow: only the ``required_status_checks`` slice of
+    GitHub's branch-protection payload (``strict`` flag + required context
+    names). The other protection axes — required PR reviews, enforce-admins,
+    restrictions, linear-history, force-push/deletion locks — are intentionally
+    **not** modelled here. The baseline cares whether the right CI checks gate
+    merges; the richer protection surface is out of scope for slice 1 and a
+    downstream slice can extend this dataclass if the applier needs those axes.
+    """
 
     strict: bool = False
     contexts: list[str] = field(default_factory=list)
@@ -172,8 +181,18 @@ class Auditor:
         Any reader failure (a malformed dependabot.yml, an unexpected gh error,
         a missing core endpoint) is re-raised with the repo name prepended, so a
         failure in a batch ``audit_all`` run is attributable to a specific repo
-        rather than an anonymous stack trace. The inner message is interpolated,
-        preserving the original detail (encoding mismatch, parser error, …).
+        rather than an anonymous stack trace. The inner message is interpolated
+        with its exception type, preserving the original detail (encoding
+        mismatch, parser error, …).
+
+        Note the asymmetry in how :class:`GhNotFound` is handled: the two
+        *optional*-feature readers (``_read_branch_protection``,
+        ``_read_dependabot_ecosystems``) catch it internally and report the
+        feature as off. A ``GhNotFound`` from a *core* endpoint — settings,
+        labels, workflows — is **not** expected (a real repo always has these),
+        so it propagates here and is wrapped as a ``RuntimeError`` like any
+        other failure. A 404 on a core endpoint means the repo name is wrong or
+        the token can't see it; surfacing it as a loud per-repo error is correct.
         """
         try:
             settings = self._read_settings(repo)
@@ -186,7 +205,7 @@ class Auditor:
                 dependabot_ecosystems=self._read_dependabot_ecosystems(repo),
             )
         except Exception as e:  # noqa: BLE001 — boundary: attribute to the repo
-            raise RuntimeError(f"Audit failed for {repo!r}: {e}") from e
+            raise RuntimeError(f"Audit failed for {repo!r}: {type(e).__name__}: {e}") from e
 
     def audit_all(self, repos: list[str]) -> dict[str, RepoSnapshot]:
         """Audit each repo in *repos*, returning a ``repo -> RepoSnapshot`` map.
@@ -208,7 +227,7 @@ class Auditor:
             except Exception as e:  # noqa: BLE001 — collect, don't fail-fast
                 errors[repo] = e
         if errors:
-            detail = "; ".join(f"{r} ({e})" for r, e in errors.items())
+            detail = "; ".join(f"{r} ({type(e).__name__}: {e})" for r, e in errors.items())
             raise RuntimeError(
                 f"audit_all: {len(errors)} of {len(repos)} repo(s) failed — {detail}"
             )
@@ -244,7 +263,15 @@ class Auditor:
         ]
 
     def _read_workflows(self, repo: str) -> list[str]:
-        data = self.runner(f"repos/{repo}/actions/workflows")
+        # The workflows endpoint returns a ``{total_count, workflows: [...]}``
+        # envelope, not a bare array, so the runner's array-paginate merge path
+        # cannot handle it — ``--paginate`` here would trip the "unexpected page
+        # structure" guard. Instead bump ``per_page`` to 100 (the API max) to get
+        # every workflow in a single page; the default page size is 30, which
+        # would silently truncate a repo with more than 30 workflows. 100 covers
+        # any realistic repo in scope; a repo exceeding it would need true
+        # envelope-aware pagination, which no current target requires.
+        data = self.runner(f"repos/{repo}/actions/workflows?per_page=100")
         return [wf["path"] for wf in data.get("workflows", [])]
 
     def _read_branch_protection(self, repo: str, default_branch: str) -> BranchProtection | None:
@@ -310,30 +337,23 @@ def seed_manifest(snapshot: RepoSnapshot) -> dict[str, Any]:
     seeding ``full`` for a bare repo would prescribe a baseline rather than
     observe one (#978 MAJOR 2). Everything else seeds ``full``.
 
-    **Profile heuristic is binary against four real governance states (#978
-    MAJOR 7).** ``is_bare = not allow_auto_merge and branch_protection is None``
-    collapses a 2×2 space (auto-merge × branch-protection) onto two labels.
-    Against the milestone-#48 audit scope the buckets fall out as:
+    **Profile heuristic is binary (#978 MAJOR 7).**
+    ``is_bare = not allow_auto_merge and branch_protection is None`` collapses the
+    2×2 governance space (auto-merge × branch-protection) onto two labels: a repo
+    with *neither* governance signal seeds ``minimal``; anything with *either*
+    seeds ``full``. The rule is empirical (which label fits the observed posture),
+    deliberately not enumerated per-repo here — concrete repo postures are state
+    that drifts and belongs in the committed snapshot/manifest fixtures, not in a
+    docstring.
 
-    ===========================  ===========  ============  ========  =========
-    repo                         auto_merge   branch_prot   is_bare   profile
-    ===========================  ===========  ============  ========  =========
-    Osasuwu/jarvis               yes          yes           no        full
-    Osasuwu/like_spotify_..app   no           yes           no        full*
-    Osasuwu/music-intel-mcp      no           none          yes       minimal
-    Osasuwu/dnd-calendar         no           none          yes       minimal
-    Osasuwu/farming-evolution    no           none          yes       minimal
-    ===========================  ===========  ============  ========  =========
-
-    ``*`` — ``like_spotify_mobile_app`` is **partially governed** (branch
-    protection on, auto-merge off) yet seeds ``full`` because it is not bare.
-    The seed still emits ``auto_merge=False`` explicitly, so the partial state
-    is visible in the manifest body; only the coarse *profile label* rounds up.
-    The fourth logical state (auto-merge on, protection off) is unobserved in
-    scope. A dedicated third ``governed`` profile that distinguishes partial
-    from full governance is deliberately **deferred to #939** (the applier),
-    where the profile→action mapping is defined and a finer label earns its
-    keep — adding it here would be an unused indirection.
+    A **partially governed** repo (e.g. branch protection on but auto-merge off)
+    is not bare, so it rounds up to ``full`` — but the seed still emits its actual
+    ``auto_merge`` / ``branch_protection`` values explicitly, so the partial state
+    stays visible in the manifest body; only the coarse *profile label* rounds up.
+    A dedicated third ``governed`` profile distinguishing partial from full
+    governance is deliberately **deferred to #939** (the applier), where the
+    profile→action mapping is defined and a finer label earns its keep — adding it
+    here would be an unused indirection.
 
     Caveat for #939: the profile only governs the *governance* axes
     (auto-merge / branch-protection / managed-file set). The language axes
@@ -480,6 +500,12 @@ def gh_runner(path: str, *, paginate: bool = False) -> Any:
         raise RuntimeError(f"gh api {path!r} failed (exit {proc.returncode}): {stderr}")
 
     if not paginate:
+        # An exit-0 call with an empty body is anomalous — these endpoints always
+        # return a JSON object. ``json.loads('')`` would raise an opaque
+        # JSONDecodeError deep in a caller; raise a clear error naming the path
+        # instead (mirrors the paginate-path empty-body guard below).
+        if not proc.stdout.strip():
+            raise RuntimeError(f"gh api {path!r} returned an empty response body (exit 0)")
         return json.loads(proc.stdout)
 
     values = _parse_concatenated_json(proc.stdout)

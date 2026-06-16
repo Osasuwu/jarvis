@@ -35,9 +35,7 @@ class AxisProfile:
     branch_protection: bool = True
     visibility: str = "public"
     test_extras: str = "[full,dev]"
-    dependabot_ecosystems: List[str] = field(
-        default_factory=lambda: ["pip", "github-actions"]
-    )
+    dependabot_ecosystems: List[str] = field(default_factory=lambda: ["pip", "github-actions"])
     managed_files: List[str] = field(default_factory=lambda: list(_MANAGED_FILES_DEFAULT))
     custom_files: List[str] = field(default_factory=list)
 
@@ -56,8 +54,9 @@ _MANAGED_FILES_DEFAULT = [
 ]
 
 
-def _resolve_managed_files(override: list | None, profile: str,
-                           profiles: dict[str, AxisProfile] | None = None) -> list[str]:
+def _resolve_managed_files(
+    override: list | None, profile: str, profiles: dict[str, AxisProfile] | None = None
+) -> list[str]:
     """Resolve managed_files: explicit override → profile default → hardcoded default."""
     if override is not None:
         return override
@@ -94,9 +93,11 @@ class Manifest:
     custom_files: List[str] = field(default_factory=list)
 
     # ── LANGUAGE-TEST class files ───────────────────────────────────────
-    language_test_files: List[str] = field(default_factory=lambda: [
-        ".github/workflows/pytest.yml",
-    ])
+    language_test_files: List[str] = field(
+        default_factory=lambda: [
+            ".github/workflows/pytest.yml",
+        ]
+    )
 
     # ── Profiles (class constant — not a field) ────────────────────────
     _PROFILES: ClassVar[Dict[str, AxisProfile]] = {
@@ -104,6 +105,7 @@ class Manifest:
         "minimal": AxisProfile(
             auto_merge=False,
             branch_protection=False,
+            dependabot_ecosystems=[],  # bare repo has no dependabot config
             managed_files=[
                 ".github/workflows/owner-queue-guard.yml",
                 ".github/workflows/pr-body-check.yml",
@@ -115,10 +117,22 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, data: dict) -> Manifest:
-        valid = {"repo", "profile", "visibility", "runs_on", "ci_language",
-                 "code_review_marketplace", "auto_merge", "branch_protection",
-                 "test_extras", "dependabot_ecosystems", "required_check_contexts",
-                 "managed_files", "custom_files", "language_test_files"}
+        valid = {
+            "repo",
+            "profile",
+            "visibility",
+            "runs_on",
+            "ci_language",
+            "code_review_marketplace",
+            "auto_merge",
+            "branch_protection",
+            "test_extras",
+            "dependabot_ecosystems",
+            "required_check_contexts",
+            "managed_files",
+            "custom_files",
+            "language_test_files",
+        }
         extra = set(data) - valid
         if extra:
             raise ValueError(f"Unknown manifest keys: {sorted(extra)}")
@@ -137,9 +151,12 @@ class Manifest:
             required_check_contexts=data.get("required_check_contexts", []),
             managed_files=data.get("managed_files"),
             custom_files=data.get("custom_files", []),
-            language_test_files=data.get("language_test_files", [
-                ".github/workflows/pytest.yml",
-            ]),
+            language_test_files=data.get(
+                "language_test_files",
+                [
+                    ".github/workflows/pytest.yml",
+                ],
+            ),
         )
 
     def resolve_axis(self, key: str) -> str | int | bool | list | None:

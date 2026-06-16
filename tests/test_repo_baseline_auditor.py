@@ -107,7 +107,7 @@ def _jarvis_responses() -> dict:
             {"name": "priority:critical", "color": "b60205", "description": "Hotfix"},
             {"name": "status:in-progress", "color": "fbca04", "description": ""},
         ],
-        "repos/Osasuwu/jarvis/actions/workflows": {
+        "repos/Osasuwu/jarvis/actions/workflows?per_page=100": {
             "workflows": [
                 {"name": "Code Review", "path": ".github/workflows/code-review.yml"},
                 {"name": "pytest", "path": ".github/workflows/pytest.yml"},
@@ -142,7 +142,7 @@ class TestRepoSnapshotParsing:
         assert runner.paginate_for("repos/Osasuwu/jarvis/labels") is True
         for path in (
             "repos/Osasuwu/jarvis",
-            "repos/Osasuwu/jarvis/actions/workflows",
+            "repos/Osasuwu/jarvis/actions/workflows?per_page=100",
             "repos/Osasuwu/jarvis/branches/main/protection",
             "repos/Osasuwu/jarvis/contents/.github/dependabot.yml",
         ):
@@ -178,6 +178,24 @@ class TestRepoSnapshotParsing:
         # dependabot ecosystems
         assert snap.dependabot_ecosystems == ["pip", "github-actions"]
 
+    def test_workflows_reader_uses_large_page_size(self):
+        """The workflows endpoint returns a ``{total_count, workflows}`` envelope,
+        not a bare array — the runner's array-paginate path cannot merge it, so
+        ``--paginate`` is unusable here. Bumping ``per_page`` to 100 fetches every
+        workflow in a single page instead of silently truncating at the 30-item
+        API default. (#978 round-3 MINOR 3.)"""
+        runner = FakeRunner(
+            {
+                "repos/Osasuwu/x/actions/workflows?per_page=100": {
+                    "workflows": [{"path": ".github/workflows/a.yml"}]
+                }
+            }
+        )
+        auditor = Auditor(runner)
+        assert auditor._read_workflows("Osasuwu/x") == [".github/workflows/a.yml"]
+        # Single, non-paginated request that carries the larger page size.
+        assert runner.paginate_for("repos/Osasuwu/x/actions/workflows?per_page=100") is False
+
     def test_bare_repo_absent_protection_and_dependabot(self):
         """A repo with no branch protection / no dependabot.yml audits cleanly:
         404 on those paths is 'feature off', not an error."""
@@ -192,7 +210,7 @@ class TestRepoSnapshotParsing:
                 "default_branch": "main",
             },
             "repos/Osasuwu/dnd-calendar/labels": [],
-            "repos/Osasuwu/dnd-calendar/actions/workflows": {"workflows": []},
+            "repos/Osasuwu/dnd-calendar/actions/workflows?per_page=100": {"workflows": []},
         }
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
@@ -296,7 +314,7 @@ class TestRepoSnapshotParsing:
         responses = {
             "repos/Osasuwu/x": {"visibility": "public", "default_branch": "main"},
             "repos/Osasuwu/x/labels": [],
-            "repos/Osasuwu/x/actions/workflows": {"workflows": []},
+            "repos/Osasuwu/x/actions/workflows?per_page=100": {"workflows": []},
         }
         not_found = {
             "repos/Osasuwu/x/branches/main/protection",
@@ -360,7 +378,7 @@ class TestSnapshotSerialization:
                 "default_branch": "main",
             },
             "repos/Osasuwu/dnd-calendar/labels": [],
-            "repos/Osasuwu/dnd-calendar/actions/workflows": {"workflows": []},
+            "repos/Osasuwu/dnd-calendar/actions/workflows?per_page=100": {"workflows": []},
         }
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
@@ -413,7 +431,7 @@ class TestSeedManifest:
                 "default_branch": "main",
             },
             "repos/Osasuwu/dnd-calendar/labels": [],
-            "repos/Osasuwu/dnd-calendar/actions/workflows": {"workflows": []},
+            "repos/Osasuwu/dnd-calendar/actions/workflows?per_page=100": {"workflows": []},
         }
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
@@ -476,7 +494,7 @@ class TestSeedManifest:
                 "default_branch": "main",
             },
             "repos/Osasuwu/dnd-calendar/labels": [],
-            "repos/Osasuwu/dnd-calendar/actions/workflows": {"workflows": []},
+            "repos/Osasuwu/dnd-calendar/actions/workflows?per_page=100": {"workflows": []},
         }
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
@@ -489,6 +507,32 @@ class TestSeedManifest:
         m = Manifest.from_dict(seed)
         assert m.resolve_axis("auto_merge") is False
         assert m.resolve_axis("branch_protection") is False
+
+    def test_seed_profile_full_for_auto_merge_without_protection(self):
+        """The 4th governance state — auto-merge ON, branch-protection NONE — is
+        not bare (it has one governance signal), so it rounds up to 'full', not
+        'minimal'. is_bare requires *both* signals absent. This state is
+        unobserved in the milestone-#48 scope but the heuristic must classify it
+        deterministically. (#978 round-3 NIT — 4th-state coverage.)"""
+        responses = {
+            "repos/Osasuwu/x": {
+                "allow_auto_merge": True,
+                "visibility": "public",
+                "default_branch": "main",
+            },
+            "repos/Osasuwu/x/labels": [],
+            "repos/Osasuwu/x/actions/workflows?per_page=100": {"workflows": []},
+        }
+        not_found = {
+            "repos/Osasuwu/x/branches/main/protection",
+            "repos/Osasuwu/x/contents/.github/dependabot.yml",
+        }
+        snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/x")
+        seed = seed_manifest(snap)
+        assert seed["profile"] == "full"
+        # The partial state stays visible in the body despite the rounded-up label.
+        assert seed["auto_merge"] is True
+        assert seed["branch_protection"] is False
 
 
 class TestScrubTopology:
@@ -561,7 +605,7 @@ class TestAuditAll:
                 "default_branch": "main",
             },
             "repos/Osasuwu/dnd-calendar/labels": [],
-            "repos/Osasuwu/dnd-calendar/actions/workflows": {"workflows": []},
+            "repos/Osasuwu/dnd-calendar/actions/workflows?per_page=100": {"workflows": []},
         }
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
@@ -745,3 +789,33 @@ class TestGhRunner:
         monkeypatch.setattr(auditor_mod.subprocess, "run", fake_run)
         with pytest.raises(RuntimeError, match="403"):
             gh_runner("repos/Osasuwu/error-404-demo")
+
+    def test_empty_stdout_non_paginate_raises_clear_error(self, monkeypatch):
+        """A non-paginated call that exits 0 with an empty body is anomalous —
+        gh produced no JSON for an endpoint that always returns an object.
+        ``json.loads('')`` would surface an opaque ``JSONDecodeError`` deep in a
+        caller; raise a clear RuntimeError naming the path instead, mirroring the
+        paginate-path empty-body guard. (#978 round-3 MINOR 7.)"""
+
+        def fake_run(args, **kwargs):
+            return _FakeProc(stdout="   ")
+
+        monkeypatch.setattr(auditor_mod.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError, match="empty response body"):
+            gh_runner("repos/Osasuwu/jarvis")
+
+    def test_paginate_single_non_array_document_returned_as_is(self, monkeypatch):
+        """A single-page response that is one *object* (not an array) under
+        ``--paginate`` hits the ``len(values) == 1`` branch and must be returned
+        verbatim — not flattened (the all-arrays branch is skipped) and not
+        rejected as a mixed-type stream. This is the envelope shape an
+        object-returning endpoint produces when paginated. (#978 round-3 NIT —
+        single-document paginate branch coverage.)"""
+
+        def fake_run(args, **kwargs):
+            assert "--paginate" in args
+            return _FakeProc(stdout='{"total_count": 1, "workflows": []}')
+
+        monkeypatch.setattr(auditor_mod.subprocess, "run", fake_run)
+        out = gh_runner("repos/Osasuwu/jarvis/actions/workflows", paginate=True)
+        assert out == {"total_count": 1, "workflows": []}
