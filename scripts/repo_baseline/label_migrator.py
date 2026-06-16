@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from repo_baseline.label_schema import CleanLabel
+from .label_schema import CleanLabel
 
 
 @dataclass(frozen=True)
