@@ -1,0 +1,159 @@
+# repo-baseline canon — code-review.yml (retry-wrapper)
+# attempt-1 → (on failure) attempt-2 → verify-verdict
+# NOT using continue-on-error — retry the cause, not the symptom.
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: PR number to review
+        required: true
+        type: string
+
+jobs:
+  attempt-1:
+    name: attempt-1
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       github.event.pull_request.user.login != 'dependabot[bot]')
+    runs-on: {{ runs_on }}
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run code review (attempt 1)
+        uses: {{ code_review_marketplace }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "*"
+          plugin_marketplaces: ./.claude/marketplace
+          plugins: code-review@jarvis-fork-plugins
+          prompt: |
+            Run /code-review for PR #${{ steps.pr.outputs.number }} in repo ${{ github.repository }}.
+
+            The /code-review slash command is provided by the code-review plugin
+            (loaded via the action's plugins input). Follow its instructions
+            verbatim — eligibility check, guideline-file gather, 8 parallel
+            reviewers, confidence scoring, post comment.
+
+            Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
+            (not available in this runner). This is plugin invocation only.
+          claude_args: |
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
+
+  attempt-2:
+    name: attempt-2
+    needs: [attempt-1]
+    if: |
+      always() && needs.attempt-1.result == 'failure' &&
+      (github.event_name == 'workflow_dispatch' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: {{ runs_on }}
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Resolve PR number
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "number=${{ inputs.pr_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run code review (attempt 2 — retry of cause)
+        uses: {{ code_review_marketplace }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "*"
+          plugin_marketplaces: ./.claude/marketplace
+          plugins: code-review@jarvis-fork-plugins
+          prompt: |
+            Run /code-review for PR #${{ steps.pr.outputs.number }} in repo ${{ github.repository }}.
+
+            The /code-review slash command is provided by the code-review plugin
+            (loaded via the action's plugins input). Follow its instructions
+            verbatim — eligibility check, guideline-file gather, 8 parallel
+            reviewers, confidence scoring, post comment.
+
+            Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
+            (not available in this runner). This is plugin invocation only.
+          claude_args: |
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
+
+  verify-verdict:
+    name: verify-verdict
+    needs: [attempt-1, attempt-2]
+    if: always() && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+    runs-on: {{ runs_on }}
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Verify review verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Selection happens in standalone jq, not gh's --jq:
+          # gh rejects --slurp with --jq, and without slurping --jq runs per
+          # page so .[-1] is per-page latest not global. Paginated arrays
+          # are flattened with add after slurping all pages.
+          body=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
+            | jq -rs 'add | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i"))) | (.[-1].body // "")')
+
+          if [ -z "$body" ]; then
+            echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
+            exit 0
+          fi
+
+          # Findings checks run before clean check: a findings comment may
+          # contain incidental "No issues found." — pass must never shadow fail.
+          if grep -qiE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|MINOR|BLOCKING)\b' <<<"$body"; then
+            echo "::error::Code review posted severity findings sections (CRITICAL/MAJOR/MINOR/BLOCKING); blocking auto-merge until addressed."
+            exit 1
+          fi
+
+          if grep -qE 'Found [0-9]+ issues?:' <<<"$body"; then
+            count=$(grep -oE 'Found [0-9]+ issues?:' <<<"$body" | head -1 | grep -oE '[0-9]+')
+            echo "::error::Code review found $count issue(s); blocking auto-merge until addressed."
+            exit 1
+          fi
+
+          if grep -qE '^No issues found\.' <<<"$body"; then
+            echo "::notice::Code review clean."
+            exit 0
+          fi
+
+          echo "::error::Could not parse /code-review verdict from latest review comment. Failing closed."
+          exit 1
