@@ -19,6 +19,7 @@ from scripts.repo_baseline.auditor import (
     Auditor,
     BranchProtection,
     GhNotFound,
+    RepoSettings,
     RepoSnapshot,
     gh_runner,
     scrub_topology,
@@ -163,6 +164,67 @@ class TestRepoSnapshotParsing:
         assert snap.workflows == []
         assert snap.settings.allow_auto_merge is False
 
+    def test_branch_protection_reads_modern_checks_field(self):
+        """GitHub deprecated required_status_checks.contexts in favour of
+        .checks ([{context, app_id}]). A repo configured after that migration
+        can have contexts=[] while checks holds the real names — reading only
+        contexts would report an apparently-protected repo with zero required
+        checks. Fall back to .checks when contexts is empty. (#978 MAJOR 1.)"""
+        responses = dict(_jarvis_responses())
+        responses["repos/Osasuwu/jarvis/branches/main/protection"] = {
+            "required_status_checks": {
+                "strict": True,
+                "contexts": [],
+                "checks": [
+                    {"context": "review", "app_id": 1},
+                    {"context": "pytest", "app_id": 2},
+                ],
+            }
+        }
+        snap = Auditor(FakeRunner(responses)).audit("Osasuwu/jarvis")
+        assert snap.branch_protection.strict is True
+        assert snap.branch_protection.contexts == ["review", "pytest"]
+
+    def test_dependabot_unexpected_encoding_raises(self):
+        """The Contents API sets encoding='none' with empty content for files
+        over ~1 MB. Silently base64-decoding '' yields [] — misreporting a repo
+        that HAS dependabot as having none. A present-but-unreadable file is an
+        audit failure, not 'feature off' — fail loud. (#978 MINOR 6.)"""
+        responses = dict(_jarvis_responses())
+        responses["repos/Osasuwu/jarvis/contents/.github/dependabot.yml"] = {
+            "content": "",
+            "encoding": "none",
+        }
+        with pytest.raises(RuntimeError, match="encoding"):
+            Auditor(FakeRunner(responses)).audit("Osasuwu/jarvis")
+
+    def test_repo_settings_merge_method_defaults_match_github(self):
+        """GitHub's real defaults for squash/merge-commit/rebase are all True;
+        auto-merge and delete-branch default False. A test double (or any caller)
+        that omits these fields must inherit GitHub's actual defaults, not a
+        blanket False that misreports the repo. (#978 MINOR 7.)"""
+        s = RepoSettings()
+        assert s.allow_squash_merge is True
+        assert s.allow_merge_commit is True
+        assert s.allow_rebase_merge is True
+        assert s.allow_auto_merge is False
+        assert s.delete_branch_on_merge is False
+
+        # _read_settings inherits the same defaults when the API omits a field.
+        responses = {
+            "repos/Osasuwu/x": {"visibility": "public", "default_branch": "main"},
+            "repos/Osasuwu/x/labels": [],
+            "repos/Osasuwu/x/actions/workflows": {"workflows": []},
+        }
+        not_found = {
+            "repos/Osasuwu/x/branches/main/protection",
+            "repos/Osasuwu/x/contents/.github/dependabot.yml",
+        }
+        snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/x")
+        assert snap.settings.allow_squash_merge is True
+        assert snap.settings.allow_merge_commit is True
+        assert snap.settings.allow_rebase_merge is True
+
 
 class TestSnapshotSerialization:
     """AC3 — structured JSON snapshot artifact, round-trippable + deterministic."""
@@ -205,6 +267,19 @@ class TestSnapshotSerialization:
         snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/dnd-calendar")
         assert RepoSnapshot.from_dict(snap.to_dict()) == snap
         assert snap.to_dict()["branch_protection"] is None
+
+    def test_to_dict_nested_lists_are_independent_copies(self):
+        """to_dict must deep-copy: mutating a nested list in the returned dict
+        (e.g. branch_protection.contexts) must NOT corrupt the live snapshot.
+        A shallow vars().copy() shares the list object. (#978 MINOR 5.)"""
+        snap = Auditor(FakeRunner(_jarvis_responses())).audit("Osasuwu/jarvis")
+        d = snap.to_dict()
+        d["branch_protection"]["contexts"].append("INJECTED")
+        d["dependabot_ecosystems"].append("INJECTED")
+        d["workflows"].append("INJECTED")
+        assert "INJECTED" not in snap.branch_protection.contexts
+        assert "INJECTED" not in snap.dependabot_ecosystems
+        assert "INJECTED" not in snap.workflows
 
 
 class TestSeedManifest:
@@ -279,6 +354,39 @@ class TestSeedManifest:
         assert seed["dependabot_ecosystems"] == ["pip", "github-actions"]
         m = Manifest.from_dict(seed)
         assert m.resolve_axis("dependabot_ecosystems") == ["pip", "github-actions"]
+
+    def test_seed_profile_full_for_baselined_repo(self):
+        """A repo with auto-merge AND branch protection is observably baselined
+        → profile 'full'. (#978 MAJOR 2.)"""
+        snap = Auditor(FakeRunner(_jarvis_responses())).audit("Osasuwu/jarvis")
+        assert seed_manifest(snap)["profile"] == "full"
+
+    def test_seed_profile_minimal_for_bare_repo(self):
+        """A bare repo (no auto-merge AND no branch protection) is observably
+        un-baselined → profile 'minimal', not 'full'. Hardcoding 'full' would
+        make it silently inherit the full profile's Python-shaped axes
+        (ci_language, test_extras) that seed_manifest omits — the seed must
+        reflect observed posture, not prescribe a target. (#978 MAJOR 2.)"""
+        responses = {
+            "repos/Osasuwu/dnd-calendar": {
+                "allow_auto_merge": False,
+                "visibility": "public",
+                "default_branch": "main",
+            },
+            "repos/Osasuwu/dnd-calendar/labels": [],
+            "repos/Osasuwu/dnd-calendar/actions/workflows": {"workflows": []},
+        }
+        not_found = {
+            "repos/Osasuwu/dnd-calendar/branches/main/protection",
+            "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+        }
+        snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/dnd-calendar")
+        seed = seed_manifest(snap)
+        assert seed["profile"] == "minimal"
+        # Explicit observed axes still win over the minimal profile defaults.
+        m = Manifest.from_dict(seed)
+        assert m.resolve_axis("auto_merge") is False
+        assert m.resolve_axis("branch_protection") is False
 
 
 class TestScrubTopology:
@@ -424,3 +532,27 @@ class TestGhRunner:
         monkeypatch.setattr(auditor_mod.subprocess, "run", fake_run)
         out = gh_runner("repos/Osasuwu/jarvis/labels", paginate=True)
         assert [d["name"] for d in out] == ["only"]
+
+    def test_paginate_raises_on_mixed_type_stream(self, monkeypatch):
+        """A page stream of mixed types (array + trailing object) is corrupt.
+        Returning the raw [list, dict] would fail deep in the caller with no
+        useful error — raise explicitly instead. (#978 MINOR 3.)"""
+
+        def fake_run(args, **kwargs):
+            return _FakeProc(stdout='[{"name": "a"}]{"cursor": "x"}')
+
+        monkeypatch.setattr(auditor_mod.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError, match="page structure"):
+            gh_runner("repos/Osasuwu/jarvis/labels", paginate=True)
+
+    def test_digit_404_in_non_notfound_error_does_not_map_to_gh_not_found(self, monkeypatch):
+        """A '404' digit run inside a non-NotFound error (e.g. a path or message
+        referencing 404) must NOT false-positive into GhNotFound — match gh's
+        actual 'HTTP 404' marker, not a bare digit run. (#978 MINOR 4.)"""
+
+        def fake_run(args, **kwargs):
+            return _FakeProc(returncode=1, stderr="gh: rate limited, see 404 widgets (HTTP 403)")
+
+        monkeypatch.setattr(auditor_mod.subprocess, "run", fake_run)
+        with pytest.raises(RuntimeError, match="403"):
+            gh_runner("repos/Osasuwu/error-404-demo")

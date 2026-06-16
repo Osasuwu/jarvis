@@ -1,5 +1,5 @@
 repo: Osasuwu/music-intel-mcp
-profile: full
+profile: minimal
 visibility: public
 auto_merge: false
 branch_protection: false
