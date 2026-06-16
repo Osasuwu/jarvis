@@ -7,6 +7,19 @@ thin gh/REST shells. All dry-run safe — no network or filesystem mutation.
 from .manifest import FileClass, Manifest, AxisProfile
 from .renderer import Renderer, RenderError
 from .planner import Planner, Action, ActionKind
+from .auditor import (
+    OSASUWU_REPOS,
+    Auditor,
+    BranchProtection,
+    GhNotFound,
+    GhRunner,
+    LabelSnapshot,
+    RepoSettings,
+    RepoSnapshot,
+    gh_runner,
+    scrub_topology,
+    seed_manifest,
+)
 from .label_migrator import (
     ActualLabel,
     AddAction,
@@ -32,6 +45,17 @@ __all__ = [
     "Planner",
     "Action",
     "ActionKind",
+    "OSASUWU_REPOS",
+    "Auditor",
+    "BranchProtection",
+    "GhNotFound",
+    "GhRunner",
+    "LabelSnapshot",
+    "RepoSettings",
+    "RepoSnapshot",
+    "gh_runner",
+    "scrub_topology",
+    "seed_manifest",
     "ActualLabel",
     "AddAction",
     "LabelMigrator",
