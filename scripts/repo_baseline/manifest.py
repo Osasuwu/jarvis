@@ -35,6 +35,9 @@ class AxisProfile:
     branch_protection: bool = True
     visibility: str = "public"
     test_extras: str = "[full,dev]"
+    dependabot_ecosystems: List[str] = field(
+        default_factory=lambda: ["pip", "github-actions"]
+    )
     managed_files: List[str] = field(default_factory=lambda: list(_MANAGED_FILES_DEFAULT))
     custom_files: List[str] = field(default_factory=list)
 
@@ -81,6 +84,7 @@ class Manifest:
     auto_merge: Optional[bool] = None
     branch_protection: Optional[bool] = None
     test_extras: Optional[str] = None
+    dependabot_ecosystems: Optional[List[str]] = None
 
     # ── Explicit check-contexts (required axis — no fallback) ──────────
     required_check_contexts: List[str] = field(default_factory=list)
@@ -113,8 +117,8 @@ class Manifest:
     def from_dict(cls, data: dict) -> Manifest:
         valid = {"repo", "profile", "visibility", "runs_on", "ci_language",
                  "code_review_marketplace", "auto_merge", "branch_protection",
-                 "test_extras", "required_check_contexts", "managed_files",
-                 "custom_files", "language_test_files"}
+                 "test_extras", "dependabot_ecosystems", "required_check_contexts",
+                 "managed_files", "custom_files", "language_test_files"}
         extra = set(data) - valid
         if extra:
             raise ValueError(f"Unknown manifest keys: {sorted(extra)}")
@@ -129,6 +133,7 @@ class Manifest:
             auto_merge=data.get("auto_merge"),
             branch_protection=data.get("branch_protection"),
             test_extras=data.get("test_extras"),
+            dependabot_ecosystems=data.get("dependabot_ecosystems"),
             required_check_contexts=data.get("required_check_contexts", []),
             managed_files=data.get("managed_files"),
             custom_files=data.get("custom_files", []),

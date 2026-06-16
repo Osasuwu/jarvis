@@ -1,0 +1,7 @@
+repo: Osasuwu/farming-evolution
+profile: full
+visibility: public
+auto_merge: false
+branch_protection: false
+required_check_contexts: []
+dependabot_ecosystems: []

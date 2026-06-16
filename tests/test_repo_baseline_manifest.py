@@ -113,6 +113,32 @@ class TestAxisResolution:
         m = Manifest.from_dict({"repo": "x", "managed_files": []})
         assert m.resolved_managed_files == []
 
+    def test_dependabot_ecosystems_default(self):
+        """Full profile defaults to the canon ecosystems (pip + github-actions)."""
+        m = Manifest.from_dict({"repo": "x"})
+        assert m.resolve_axis("dependabot_ecosystems") == ["pip", "github-actions"]
+
+    def test_dependabot_ecosystems_explicit_override(self):
+        m = Manifest.from_dict({
+            "repo": "x",
+            "dependabot_ecosystems": ["npm", "github-actions"],
+        })
+        assert m.resolve_axis("dependabot_ecosystems") == ["npm", "github-actions"]
+
+    def test_dependabot_ecosystems_explicit_empty_not_replaced(self):
+        """Empty list is a valid override meaning 'no dependabot updates'."""
+        m = Manifest.from_dict({"repo": "x", "dependabot_ecosystems": []})
+        assert m.resolve_axis("dependabot_ecosystems") == []
+
+    def test_dependabot_ecosystems_round_trips_through_from_dict(self):
+        """A seeded manifest carrying the new axis must not be rejected as an
+        unknown key (the from_dict valid-set must include it)."""
+        m = Manifest.from_dict({
+            "repo": "Osasuwu/jarvis",
+            "dependabot_ecosystems": ["pip", "github-actions"],
+        })
+        assert m.dependabot_ecosystems == ["pip", "github-actions"]
+
 
 class TestJarvisSplitPreserved:
     """jarvis's existing split: pytest=LANGUAGE-TEST, ci-meta=MANAGED,
