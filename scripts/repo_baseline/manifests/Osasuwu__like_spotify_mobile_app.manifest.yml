@@ -1,0 +1,9 @@
+auto_merge: false
+branch_protection: true
+dependabot_ecosystems: []
+profile: full
+repo: Osasuwu/like_spotify_mobile_app
+required_check_contexts:
+- test
+- pytest
+visibility: public
