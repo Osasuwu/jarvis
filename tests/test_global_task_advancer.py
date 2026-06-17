@@ -406,8 +406,13 @@ def db_connection() -> Any:
     skip cleanly only in local / non-DB runs where ``REQUIRE_DB`` is unset.
     """
     db_url = os.environ.get("DATABASE_URL")
+    # Treat REQUIRE_DB="0"/"" as OFF — matches the meta-test's config check
+    # (test_require_db_enforced) so the latch's truthiness can't drift between
+    # the fixture and the thing that pins it. A bare os.environ.get(...) truthy
+    # check would treat "0" as ON, a footgun.
+    require_db = os.environ.get("REQUIRE_DB", "").strip() not in ("", "0")
     if not db_url:
-        if os.environ.get("REQUIRE_DB"):
+        if require_db:
             pytest.fail(
                 "REQUIRE_DB is set but DATABASE_URL is missing — the DB-gated "
                 "advancer tests must run against real Postgres in this job, not "
@@ -421,9 +426,18 @@ def db_connection() -> Any:
     except ImportError:
         pytest.skip("psycopg not installed")
 
-    conn = psycopg.connect(db_url, row_factory=dict_row)
-    yield conn
-    conn.close()
+    # connect() can raise OperationalError (bad DSN, service down). Surface it as
+    # a clean failure — but never echo db_url, it carries the password (the
+    # advancer logs only type(e).__name__ for the same reason).
+    try:
+        conn = psycopg.connect(db_url, row_factory=dict_row)
+    except Exception as e:  # noqa: BLE001 — connection failure must fail loudly, not skip
+        pytest.fail(f"could not connect to DATABASE_URL: {type(e).__name__}")
+
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 class TestGlobalTaskSourcesSchema:

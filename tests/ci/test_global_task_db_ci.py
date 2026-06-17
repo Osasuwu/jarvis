@@ -93,6 +93,17 @@ class TestWorkflowConfigIntegrity:
             "bootstrap must seed the legacy events table + roles via "
             "tests/ci/global_task_schema_bootstrap.sql before the migration."
         )
+        # Order matters: the migration's `do $$ ... $$` guard raises if the
+        # events table is absent, and it references the roles the bootstrap
+        # creates. A reversed psql sequence passes a flat `in` check but fails
+        # at runtime — pin the order explicitly.
+        boot_pos = run_text.index("global_task_schema_bootstrap.sql")
+        mig_pos = run_text.index(REAL_MIGRATION)
+        assert boot_pos < mig_pos, (
+            "global_task_schema_bootstrap.sql must be applied BEFORE "
+            f"{REAL_MIGRATION} — the migration depends on the events table and "
+            "roles the bootstrap creates."
+        )
 
     def test_require_db_enforced(self) -> None:
         """REQUIRE_DB=1 turns a missing DATABASE_URL from a silent skip into a
