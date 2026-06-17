@@ -1024,10 +1024,12 @@ function Invoke-Watchdog {
     $supabaseKey = $envVars['SUPABASE_KEY']
     $tgToken     = $envVars['TELEGRAM_BOT_TOKEN']
     $tgChatId    = $envVars['TELEGRAM_CHAT_ID']
-    if ($env:SUPABASE_URL)        { $supabaseUrl = $env:SUPABASE_URL }
-    if ($env:SUPABASE_KEY)        { $supabaseKey = $env:SUPABASE_KEY }
-    if ($env:TELEGRAM_BOT_TOKEN)  { $tgToken     = $env:TELEGRAM_BOT_TOKEN }
-    if ($env:TELEGRAM_CHAT_ID)    { $tgChatId    = $env:TELEGRAM_CHAT_ID }
+    $oauthToken  = $envVars['CLAUDE_CODE_OAUTH_TOKEN']
+    if ($env:SUPABASE_URL)            { $supabaseUrl = $env:SUPABASE_URL }
+    if ($env:SUPABASE_KEY)            { $supabaseKey = $env:SUPABASE_KEY }
+    if ($env:TELEGRAM_BOT_TOKEN)      { $tgToken     = $env:TELEGRAM_BOT_TOKEN }
+    if ($env:TELEGRAM_CHAT_ID)        { $tgChatId    = $env:TELEGRAM_CHAT_ID }
+    if ($env:CLAUDE_CODE_OAUTH_TOKEN) { $oauthToken  = $env:CLAUDE_CODE_OAUTH_TOKEN }
 
     $windowEndDt = Resolve-WindowEnd -WindowEnd $WindowEnd
 
@@ -1165,7 +1167,12 @@ function Invoke-Watchdog {
                 -AuthMode 'subscription' -Effort $SubscriptionEffort `
                 -TargetIssue ''
             $tierUsed = 'subscription'
-            $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+            # Guard the property access: a failed run returns result=$null. This is
+            # harmless under default strictness (PS returns $null for $null.branch),
+            # but a future Set-StrictMode would turn it into a PropertyNotFound throw
+            # *before* the fallback block below — silently bypassing the DeepSeek
+            # safety net on credit exhaustion. Keep it explicit.
+            $targetIssue = if ($invocation.result) { Get-IssueFromBranch -Branch $invocation.result.branch } else { $null }
             $oomDetected = $false
 
             # Fallback: ANY subscription failure (credit exhausted -> hard-stop
@@ -1181,7 +1188,7 @@ function Invoke-Watchdog {
                     -BaseUrl $subscriptionFallback.BaseUrl -AuthToken $subscriptionFallback.AuthToken `
                     -AuthMode 'endpoint' -TargetIssue ([string]$targetIssue)
                 $tierUsed = "tier2:$($subscriptionFallback.Provider)"
-                if (-not $targetIssue) {
+                if (-not $targetIssue -and $invocation.result) {
                     $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
                 }
             }
@@ -1276,8 +1283,10 @@ function Invoke-Watchdog {
                 # signals (e.g. error_class=AgentError + provider_billing=true).
                 $errClass = ''
             }
-            $tier2Secrets = @($tier2Primary.AuthToken, $tier2.AuthToken) | Where-Object { $_ }
-            $logTail  = Protect-LogTail -Text $logTail -Secrets (@($supabaseKey, $supabaseUrl, $tgToken) + $tier2Secrets)
+            # #972: also redact the subscription OAuth token when present (tier2Primary
+            # and tier2 cover the DeepSeek/endpoint path; $oauthToken covers subscription).
+            $extraSecrets = @($tier2Primary.AuthToken, $tier2.AuthToken, $oauthToken) | Where-Object { $_ }
+            $logTail  = Protect-LogTail -Text $logTail -Secrets (@($supabaseKey, $supabaseUrl, $tgToken) + $extraSecrets)
             # Full chain failure: label the issue if we know which one was attempted.
             # Skip labeling on billing failures -- "too-large-for-local" means the
             # model is too small, not that the provider account is drained.

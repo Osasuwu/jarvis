@@ -1153,6 +1153,30 @@ Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, 
         $script:calls[0].Mode | Should Be 'subscription'
     }
 
+    It 'AC: subscription failure AND DeepSeek fallback also fails -> records failure + throws' {
+        # Both tiers down: subscription credit exhausted *and* DeepSeek 402/down.
+        # Must not silently swallow — the shared no-result handler records a
+        # 'failure' outcome and rethrows so the iteration is visibly broken.
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Mode = $AuthMode }
+            # ok=$false on BOTH the subscription call and the DeepSeek fallback.
+            [pscustomobject]@{ ok = $false; exitCode = 1; reason = 'exit=1'; result = $null }
+        }
+        Mock Test-IsOOM { $false }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        # Subscription first, then the DeepSeek fallback — two attempts, both failed.
+        Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
+        $script:calls[0].Mode | Should Be 'subscription'
+        $script:calls[1].Mode | Should Be 'endpoint'
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' }
+    }
+
     It 'AC: -SubscriptionPrimary supersedes -Tier2AsPrimary (both set -> subscription wins)' {
         $script:calls = @()
         Mock Invoke-Sandcastle {

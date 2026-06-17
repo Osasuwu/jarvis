@@ -72,8 +72,9 @@
     credit as the primary tier (Opus 4.8 @ medium effort, bills the $100/mo
     credit via CLAUDE_CODE_OAUTH_TOKEN in .sandcastle/.env), DeepSeek as the
     fallback. Requires CLAUDE_CODE_OAUTH_TOKEN set on the host. Pass
-    -SubscriptionPrimary:$false to revert to the legacy DeepSeek-as-primary
-    registration.
+    -SubscriptionPrimary $false to revert to the legacy DeepSeek-as-primary
+    registration. (Space form, not the colon `:$false` switch syntax — this is a
+    [bool] param; `:$false` is a binding error on Windows PowerShell 5.1.)
 
 .PARAMETER SubscriptionModel
     Subscription-tier model. Default claude-opus-4-8 (regular, NOT the 1M
@@ -136,7 +137,8 @@ param(
 
     # #972: subscription Agent-SDK credit is the primary AFK tier by default
     # (Opus 4.8 @ medium effort, bills the $100/mo Max credit). DeepSeek stays
-    # wired as the credit-exhaustion fallback. Pass -SubscriptionPrimary:$false
+    # wired as the credit-exhaustion fallback. Pass -SubscriptionPrimary $false
+    # (space form — `:$false` colon syntax is a [bool]-binding error on PS 5.1)
     # to fall back to the legacy Tier-2-as-primary (DeepSeek) registration.
     [bool]$SubscriptionPrimary = $true,
 
