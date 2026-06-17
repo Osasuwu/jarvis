@@ -61,7 +61,7 @@ try:
 except Exception:
     pass
 
-from comm_patterns.classifier import call_ollama  # noqa: E402
+from comm_patterns.classifier import call_ollama, OllamaUnavailable  # noqa: E402
 from comm_patterns.extractor import CONFIDENCE_THRESHOLD  # noqa: E402
 from comm_patterns.scrubber import scrub  # noqa: E402
 from comm_patterns.store import InMemoryStore, SupabaseStore  # noqa: E402
@@ -149,6 +149,7 @@ def run(
         "no_pattern": 0,
         "low_confidence": 0,
         "classifier_errors": 0,
+        "connection_errors": 0,
     }
     if not files:
         print(f"[backfill] no cache files at {cache_root}")
@@ -166,8 +167,14 @@ def run(
             return stats
     device = socket.gethostname()
     examples_processed = 0
+    # Circuit-breaker: Ollama being unreachable is a host-wide condition, not a
+    # per-example one. Once we see the first OllamaUnavailable we stop the whole
+    # run instead of hammering every remaining example with the same dead socket.
+    ollama_down = False
 
     for fp in files:
+        if ollama_down:
+            break
         try:
             payload = json.loads(fp.read_text(encoding="utf-8"))
         except Exception as e:
@@ -187,6 +194,13 @@ def run(
             examples_processed += 1
             try:
                 classified = call_ollama(user_text, prev)
+            except OllamaUnavailable:
+                # Host-wide condition — abort the run. The per-item line would
+                # duplicate the summary WARNING below for zero diagnostic gain,
+                # so we only count here and let the summary report it once.
+                stats["connection_errors"] += 1
+                ollama_down = True
+                break
             except Exception as e:
                 stats["classifier_errors"] += 1
                 print(f"[backfill] classifier error on {fp}#{idx}: {type(e).__name__}", file=sys.stderr)
@@ -212,6 +226,12 @@ def run(
     if dry_run and isinstance(store, InMemoryStore):
         print(f"[backfill] DRY RUN — would write {len(store.rows)} rows")
     print(f"[backfill] {stats}")
+    if stats["connection_errors"] > 0:
+        print(
+            f"[backfill] WARNING: Ollama unavailable — run aborted after first connection failure. "
+            f"Re-run after starting Ollama; results in this run are partial.",
+            file=sys.stderr,
+        )
     return stats
 
 
@@ -231,7 +251,9 @@ def main() -> int:
         help="Stop after N examples (across all files). Useful for incremental runs.",
     )
     args = ap.parse_args()
-    run(dry_run=args.dry_run, cache_root=args.cache_root, max_examples=args.max_examples)
+    stats = run(dry_run=args.dry_run, cache_root=args.cache_root, max_examples=args.max_examples)
+    if stats.get("connection_errors", 0) > 0:
+        return 3  # partial run — matches smoke scripts exit-code convention
     return 0
 
 

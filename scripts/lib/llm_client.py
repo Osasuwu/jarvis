@@ -61,6 +61,11 @@ def call_ollama(
     Returns None (bare) on any error or empty response.  *system_prompt* is
     passed as the ``system`` field (Ollama 0.3+).  When *format_json* is true
     (default) the request sets ``"format": "json"``.
+
+    Note: ``scripts/comm_patterns/classifier.py`` has a DIFFERENT ``call_ollama``
+    that raises ``OllamaUnavailable`` on network errors (not None). That one
+    serves the comm-patterns classifier pipeline. This one serves the Deriver
+    escalation chain. Do not confuse them — they have opposite error contracts.
     """
     host = host or os.environ.get("OLLAMA_HOST", DEFAULT_OLLAMA_HOST)
     model = model or os.environ.get("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
