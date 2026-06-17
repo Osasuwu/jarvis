@@ -11,8 +11,6 @@ one of four guard conditions:
 
 from __future__ import annotations
 
-import pytest
-
 from rework_policy import (
     LoopDecision,
     decide,
@@ -160,12 +158,12 @@ class TestNoConvergenceGuard:
         )
         assert result.decision == LoopDecision.STUCK_NO_CONVERGENCE
 
-    def test_strictly_decreasing_allows_continue(self):
-        """AC: history [(5,6),(3,4),(0,2)] → converged."""
+    def test_strictly_decreasing_to_zero_converges(self):
+        """Two-gate (#989): a clean descent to (0,0) converges."""
         history = [
             make_attempt(1, n_critical=5, n_major=6),
             make_attempt(2, n_critical=3, n_major=4),
-            make_attempt(3, n_critical=0, n_major=2),
+            make_attempt(3, n_critical=0, n_major=0),
         ]
         result = decide(
             attempts=3,
@@ -273,14 +271,21 @@ class TestConflictGuard:
 
 
 class TestConvergence:
-    """Convergence target: n_critical == 0 AND n_major <= 2 → converged."""
+    """Convergence target (two-gate, #989): n_critical == 0 AND n_major == 0.
+
+    This matches the MERGE gate in code-review.yml, which blocks on any
+    CRITICAL/MAJOR/BLOCKING heading. A PR is "rework-done" only when no
+    merge-blocking finding remains; minors never gate either side. Minors are
+    swept best-effort while /rework is already in context for a bug-triggered
+    round, never as a convergence requirement.
+    """
 
     def test_convergence_at_attempt_3(self):
-        """AC: history [(5,6),(2,3),(0,2)] → converged."""
+        """Descent to (0,0) by attempt 3 → converged."""
         history = [
             make_attempt(1, n_critical=5, n_major=6),
             make_attempt(2, n_critical=2, n_major=3),
-            make_attempt(3, n_critical=0, n_major=2),
+            make_attempt(3, n_critical=0, n_major=0),
         ]
         result = decide(
             attempts=3,
@@ -290,10 +295,10 @@ class TestConvergence:
         assert result.decision == LoopDecision.CONVERGED
 
     def test_convergence_at_attempt_2(self):
-        """Hitting the convergence target at attempt 2."""
+        """Hitting (0,0) at attempt 2 → converged."""
         history = [
             make_attempt(1, n_critical=3, n_major=4),
-            make_attempt(2, n_critical=0, n_major=2),
+            make_attempt(2, n_critical=0, n_major=0),
         ]
         result = decide(
             attempts=2,
@@ -315,21 +320,8 @@ class TestConvergence:
         )
         assert result.decision == LoopDecision.CONTINUE
 
-    def test_not_converged_with_too_many_majors(self):
-        """n_major > 2 means not converged."""
-        history = [
-            make_attempt(1, n_critical=3, n_major=4),
-            make_attempt(2, n_critical=0, n_major=3),
-        ]
-        result = decide(
-            attempts=2,
-            history=history,
-            initial_files={"a.py"},
-        )
-        assert result.decision == LoopDecision.CONTINUE
-
-    def test_convergence_with_exactly_2_majors(self):
-        """Edge: n_major exactly = 2 with n_critical = 0 → converged."""
+    def test_not_converged_with_any_major_remaining(self):
+        """Two-gate (#989): even one MAJOR blocks convergence (was ≤2 OK)."""
         history = [
             make_attempt(1, n_critical=3, n_major=4),
             make_attempt(2, n_critical=0, n_major=2),
@@ -339,7 +331,34 @@ class TestConvergence:
             history=history,
             initial_files={"a.py"},
         )
-        assert result.decision == LoopDecision.CONVERGED
+        assert result.decision == LoopDecision.CONTINUE
+
+    def test_single_major_does_not_converge(self):
+        """Regression (#989): n_major == 1 must NOT converge (target is 0)."""
+        history = [
+            make_attempt(1, n_critical=3, n_major=4),
+            make_attempt(2, n_critical=0, n_major=1),
+        ]
+        result = decide(
+            attempts=2,
+            history=history,
+            initial_files={"a.py"},
+        )
+        assert result.decision != LoopDecision.CONVERGED
+        assert result.decision == LoopDecision.CONTINUE
+
+    def test_two_majors_does_not_converge(self):
+        """Two-gate (#989): n_major == 2 no longer converges (old target ≤2)."""
+        history = [
+            make_attempt(1, n_critical=3, n_major=4),
+            make_attempt(2, n_critical=0, n_major=2),
+        ]
+        result = decide(
+            attempts=2,
+            history=history,
+            initial_files={"a.py"},
+        )
+        assert result.decision != LoopDecision.CONVERGED
 
 
 # ============================================================================
@@ -391,11 +410,11 @@ class TestBoundaryConditions:
         )
         assert result.decision != LoopDecision.STUCK_SCOPE
 
-    def test_n_major_exactly_2_converges(self):
-        """Edge: n_major exactly = 2 with n_critical = 0 → converged."""
+    def test_n_major_zero_converges(self):
+        """Edge (two-gate, #989): n_major == 0 with n_critical == 0 → converged."""
         history = [
             make_attempt(1, n_critical=3, n_major=5),
-            make_attempt(2, n_critical=0, n_major=2),
+            make_attempt(2, n_critical=0, n_major=0),
         ]
         result = decide(
             attempts=2,
@@ -436,10 +455,10 @@ class TestIntegration:
         )
 
     def test_happy_path_attempt_2_converging(self):
-        """Happy path: attempt 2, converging towards target."""
+        """Happy path: attempt 2 reaches (0,0) → converged (two-gate, #989)."""
         history = [
             make_attempt(1, n_critical=5, n_major=6),
-            make_attempt(2, n_critical=0, n_major=2),
+            make_attempt(2, n_critical=0, n_major=0),
         ]
         result = decide(
             attempts=2,
