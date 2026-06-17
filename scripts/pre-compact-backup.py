@@ -9,6 +9,11 @@ Invariants:
 - **Never** blocks compaction. Exits 0 on all paths, including failures.
 - Snapshot content stays under SIZE_BUDGET bytes (~30KB). Long transcripts
   keep only the last TAIL_KEEP entries with a dropped-head counter.
+- Every invocation appends one heartbeat line to
+  `.claude/session-snapshots/hook.log` — no line at compaction time means the
+  harness never ran the hook (e.g. the 2026-06-12 outage: rewriting
+  `~/.claude/settings.json` while the desktop app runs disables all hooks
+  until app restart).
 
 Registered in user-level `settings.json` under `PreCompact` (matchers `auto`,
 `manual`) and `SessionEnd` (all end reasons) — the same snapshot doubles as a
@@ -364,6 +369,10 @@ def _persist_supabase(
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
+        print(
+            "[pre-compact] SUPABASE_URL/SUPABASE_KEY not set — skipping Supabase",
+            file=sys.stderr,
+        )
         return False
     try:
         from supabase import create_client
@@ -388,11 +397,35 @@ def _persist_supabase(
         return False
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """True if ``path`` is ``root`` or nested under it.
+
+    Compares resolved path *components* (via ``Path.parents``), not string
+    prefixes, so a sibling sharing a name prefix ("session-snapshots-evil" vs
+    "session-snapshots") is correctly rejected. Deliberately avoids
+    ``Path.is_relative_to`` — that is 3.9+ only and this hook must not assume a
+    minimum interpreter past 3.8. Fails safe (returns False / "outside") if the
+    paths can't be resolved.
+    """
+    try:
+        path_r = path.resolve()
+        root_r = root.resolve()
+    except (OSError, ValueError):
+        return False
+    return path_r == root_r or root_r in path_r.parents
+
+
 def _persist_local(session_id: str, content: str) -> Path | None:
     try:
         out_dir = _root / ".claude" / "session-snapshots"
         out_dir.mkdir(parents=True, exist_ok=True)
-        out_file = out_dir / f"{session_id}.md"
+        out_file = (out_dir / f"{session_id}.md").resolve()
+        # Guard against path traversal: session_id from untrusted JSON.
+        # _is_within compares resolved path components (not string prefixes),
+        # so "session-snapshots-evil" can't masquerade as "session-snapshots".
+        if not _is_within(out_file, out_dir):
+            print("[pre-compact] suspicious session_id in local fallback", file=sys.stderr)
+            return None
         # Use binary write to avoid Windows \n→\r\n translation, which would
         # inflate size past SIZE_BUDGET by one byte per newline.
         out_file.write_bytes(content.encode("utf-8"))
@@ -403,10 +436,84 @@ def _persist_local(session_id: str, content: str) -> Path | None:
         return None
 
 
+# Heartbeat log is head-trimmed to its last _HOOK_LOG_KEEP_LINES once it grows
+# past _HOOK_LOG_MAX_BYTES, so a device with frequent compaction can't let it
+# accumulate without bound.
+_HOOK_LOG_MAX_BYTES = 1_000_000  # ~1 MB
+_HOOK_LOG_KEEP_LINES = 500
+
+
+def _sanitize_log_field(value: object) -> str:
+    """Escape CR/LF/NUL so a hostile field can't forge extra heartbeat lines.
+
+    `session_id` and `trigger` come verbatim from hook stdin (untrusted JSON),
+    so the value may not even be a `str` — `str(value)` coerces first. A literal
+    newline would otherwise split one heartbeat into several forged lines, the
+    exact opposite of the diagnostic contract.
+    """
+    return str(value).replace("\n", "\\n").replace("\r", "\\r").replace("\x00", "\\x00")
+
+
+def _trim_hook_log(log_path: Path) -> None:
+    """Keep only the last _HOOK_LOG_KEEP_LINES entries when file exceeds _HOOK_LOG_MAX_BYTES.
+
+    No-op until the file exceeds _HOOK_LOG_MAX_BYTES. Best-effort: a failure
+    here must never stop the heartbeat, so the single caller wraps it.
+    """
+    if not log_path.exists() or log_path.stat().st_size <= _HOOK_LOG_MAX_BYTES:
+        return
+    lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    trimmed = "".join(lines[-_HOOK_LOG_KEEP_LINES:])
+    # Atomic rename: avoids data loss if the process is killed mid-write.
+    tmp_path = log_path.with_suffix(".tmp")
+    tmp_path.write_text(trimmed, encoding="utf-8")
+    os.replace(str(tmp_path), str(log_path))
+
+
+def _append_hook_log(message: str) -> None:
+    """Heartbeat: one line per invocation to `.claude/session-snapshots/hook.log`.
+
+    Distinguishes "hook ran but persistence failed" from "harness never
+    executed the hook" — the latter was diagnosable only by the absence of
+    Supabase rows during the 2026-06-12 outage. Never raises.
+    """
+    out_dir = _root / ".claude" / "session-snapshots"
+    log_path = out_dir / "hook.log"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"{stamp} {message}\n")
+    except Exception as e:
+        # The one function whose job is observability must itself be
+        # observable on failure (disk full, bad perms). stderr does not
+        # raise, so the "never raises" contract holds.
+        print(f"[pre-compact] hook.log write failed: {e}", file=sys.stderr)
+        return
+    # Trim only after a successful append, so a trim failure can't cost us the
+    # heartbeat line we just wrote.
+    try:
+        _trim_hook_log(log_path)
+    except Exception as e:
+        # Catch broadly, not just OSError: _trim_hook_log reads the log with
+        # read_text(), which raises UnicodeDecodeError (an Exception, not an
+        # OSError) on a corrupted/partially-written file. Letting that escape
+        # would propagate out of the finally-block heartbeat and force the hook
+        # to exit non-zero — breaking the never-blocks-compaction invariant.
+        print(f"[pre-compact] hook.log trim failed: {e}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> int:
+    session_id = "unknown-session"
+    trigger = "unknown"
+    # Sentinel for the heartbeat: "init" means we entered main() but reached no
+    # explicit outcome. If an exception fires before any stage stamps `outcome`,
+    # the finally-block records "error-after:init" — distinguishing a crash at
+    # entry from one mid-persist (which carries the last stage's name).
+    outcome = "init"
     try:
         hook = _read_hook_input()
         session_id = hook.get("session_id") or hook.get("sessionId") or "unknown-session"
@@ -421,22 +528,49 @@ def main() -> int:
 
         if not transcript_path:
             print("[pre-compact] no transcript_path in hook input", file=sys.stderr)
+            outcome = "no-transcript-path"
             return 0
 
         p = Path(transcript_path)
+        # transcript_path is attacker-influenceable hook stdin. Confine reads to
+        # the dirs transcripts actually live in (~/.claude and the repo) so a
+        # crafted path (e.g. "/etc/passwd") can't be slurped into a snapshot and
+        # upserted to Supabase. Fail safe: skip with a logged outcome, never raise.
+        allowed_roots = [Path.home() / ".claude", _root]
+        if not any(_is_within(p, r) for r in allowed_roots):
+            print(f"[pre-compact] transcript_path outside allowed dirs: {p}", file=sys.stderr)
+            outcome = "transcript-path-rejected"
+            return 0
+
         if not p.exists():
             print(f"[pre-compact] transcript not found: {p}", file=sys.stderr)
+            outcome = "transcript-missing"
             return 0
 
         entries, total, dropped = _parse_transcript(p)
         content = _compose_markdown(session_id, trigger, cwd, entries, total, dropped)
         project = _detect_project(cwd)
 
-        if not _persist_supabase(session_id, project, trigger, content):
-            _persist_local(session_id, content)
+        if _persist_supabase(session_id, project, trigger, content):
+            outcome = "supabase"
+        elif _persist_local(session_id, content) is not None:
+            outcome = "local-fallback"
+        else:
+            outcome = "persist-failed"
     except Exception as e:
-        # Never block compaction — log and move on.
+        # Never block compaction — log and move on. Re-stamp the outcome so the
+        # heartbeat records that an exception fired (and how far we got) instead
+        # of a stale value left over from a partially-completed persist.
         print(f"[pre-compact] unhandled error: {e}", file=sys.stderr)
+        outcome = f"error-after:{outcome}"
+    finally:
+        # Sanitize the stdin-sourced fields before they enter the log line;
+        # `outcome` is always one of our own literals — safe.
+        _append_hook_log(
+            f"session={_sanitize_log_field(session_id)} "
+            f"trigger={_sanitize_log_field(trigger)} "
+            f"outcome={outcome}"
+        )
     return 0
 
 
