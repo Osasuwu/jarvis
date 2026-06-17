@@ -159,7 +159,9 @@ def _fixture_decision(database_url: str | None, require_db: str | None) -> str:
     """
     if database_url:
         return "connect"
-    if require_db:
+    # Match the fixture exactly: REQUIRE_DB="0" (and "") is OFF, not a hard fail.
+    # A bare `if require_db` would treat the string "0" as truthy and diverge.
+    if require_db and str(require_db).strip() not in ("", "0"):
         return "fail"
     return "skip"
 
@@ -179,6 +181,12 @@ class TestFixtureGatingLogic:
     def test_skips_when_neither(self) -> None:
         # Local dev with no Postgres — clean skip, not a failure.
         assert _fixture_decision(None, None) == "skip"
+
+    def test_require_db_zero_is_off(self) -> None:
+        # REQUIRE_DB="0" (and "") is OFF in the real fixture — a bare-truthiness
+        # mirror would wrongly "fail" here. Pins the sync the docstring claims.
+        assert _fixture_decision(None, "0") == "skip"
+        assert _fixture_decision(None, "") == "skip"
 
 
 if __name__ == "__main__":
