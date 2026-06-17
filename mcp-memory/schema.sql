@@ -3118,3 +3118,89 @@ create index if not exists idx_memories_merge_targets
 create index if not exists idx_memories_derivation_run_id
     on memories(derivation_run_id)
     where derivation_run_id is not null;
+
+
+-- =========================================================================
+-- Global Task Sources — Issue #679: AFK loop input registry
+-- Non-repo, recurring tasks. Advancer ticks due rows into events queue.
+-- =========================================================================
+
+create table if not exists global_task_sources (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  body text,
+  dispatcher_skill text not null
+    check (dispatcher_skill in ('research', 'self-improve', 'status-record', 'last-work-report')),
+  output_sink text not null
+    -- 'event_reemit' is RESERVED / NOT-YET-IMPLEMENTED: the enum value exists so
+    -- the dispatcher_sink_compatibility matrix below can already forbid the
+    -- nonsensical pairings, but no advancer/orchestrator path consumes it yet
+    -- (tracked under #679). Treat a row carrying it as inert until wired.
+    check (output_sink in ('memory', 'telegram_digest', 'event_reemit')),
+  payload jsonb default '{}',
+  -- cadence floor of 1 second: the advancer divides by EXTRACT(EPOCH FROM
+  -- cadence) when counting lapsed intervals, so a zero cadence is a
+  -- divide-by-zero that aborts the whole advance transaction, and a sub-second
+  -- cadence makes the int(epoch) dedup_key collide across ticks. NULL stays a
+  -- valid one-shot.
+  cadence interval check (cadence is null or cadence >= interval '1 second'),
+  last_run timestamptz,
+  next_run timestamptz,
+  enabled bool not null default true,
+  on_lapse text not null default 'coalesce'
+    check (on_lapse in ('coalesce', 'fire_per_interval')),
+  created_at timestamptz not null default now()
+);
+
+-- Dispatcher/sink compatibility matrix (enforced at DB level).
+-- status-record -> memory only (it only ever writes a status memory row);
+-- research -> any sink; self-improve / last-work-report -> any sink EXCEPT
+-- event_reemit (re-emitting an event back into the queue from a self-improve
+-- or report run would loop the advancer against its own output — neither skill
+-- produces an event-shaped result, so the pairing is incoherent, not just
+-- unimplemented).
+-- drop-then-add (not the add-only DO/EXCEPTION guard the sibling constraints use):
+-- this matrix was TIGHTENED to exclude event_reemit for self-improve /
+-- last-work-report, so a DB carrying the earlier, looser constraint must have it
+-- replaced. An add-only guard would hit duplicate_object and silently keep the
+-- old, permissive form. DROP ... IF EXISTS is a no-op on a fresh DB.
+alter table global_task_sources drop constraint if exists dispatcher_sink_compatibility;
+alter table global_task_sources add constraint dispatcher_sink_compatibility
+  check (
+    (dispatcher_skill = 'status-record' and output_sink = 'memory') or
+    (dispatcher_skill = 'research') or
+    (dispatcher_skill = 'self-improve' and output_sink <> 'event_reemit') or
+    (dispatcher_skill = 'last-work-report' and output_sink <> 'event_reemit')
+  );
+
+-- fire_per_interval needs a cadence to count intervals against; a one-shot
+-- (cadence IS NULL) with fire_per_interval is an incoherent state. Forbid it.
+do $$
+begin
+  alter table global_task_sources add constraint cadence_lapse_coherence
+    check (not (cadence is null and on_lapse = 'fire_per_interval'));
+exception when duplicate_object then null;
+end $$;
+
+-- Indexes for efficient due-row queries and enabled filtering.
+create index if not exists idx_global_task_sources_enabled_next_run
+  on global_task_sources(enabled, next_run)
+  where enabled = true;
+
+create index if not exists idx_global_task_sources_dispatcher
+  on global_task_sources(dispatcher_skill);
+
+-- RLS: writes are service-role only; anon gets read-only visibility.
+-- service_role BYPASSES RLS, so the advancer (service DSN) needs no write
+-- policy. No policy grants INSERT/UPDATE/DELETE, so RLS denies writes to anon
+-- and authenticated alike. The previous "Allow all for authenticated" policy
+-- used `for all using (true)` with no TO clause — which defaults to PUBLIC and
+-- silently granted write to every authenticated JWT client. Dropped.
+-- DROP ... IF EXISTS + CREATE keeps policy setup idempotent (Postgres has no
+-- CREATE POLICY IF NOT EXISTS).
+alter table global_task_sources enable row level security;
+
+drop policy if exists "Allow all for authenticated" on global_task_sources;
+drop policy if exists "Anon select only" on global_task_sources;
+create policy "Anon select only" on global_task_sources
+  for select to anon using (true);
