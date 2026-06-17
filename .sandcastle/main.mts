@@ -85,7 +85,9 @@ if (!subscription && process.env.SANDCASTLE_AGENT_EFFORT) {
   );
 }
 
-// Endpoint-mode connection (unused in subscription mode). Tier 0/1 use the
+// Endpoint-mode connection. Unused in subscription mode, but still computed
+// unconditionally so one startup code path covers both modes (the Ollama env
+// vars are only *consumed* on the endpoint branch below). Tier 0/1 use the
 // literal "ollama" auth token (Ollama's native Anthropic endpoint ignores it);
 // Tier 2 carries a real API key (DeepSeek / Claude API).
 const agentBaseUrl =
@@ -95,8 +97,9 @@ const agentBaseUrl =
 const agentAuthToken = process.env.SANDCASTLE_AGENT_AUTH_TOKEN ?? "ollama";
 if (subscription && !oauthToken) {
   // Unreachable via auto-detection (it only picks "subscription" when a token is
-  // present), but guards the explicit SANDCASTLE_AGENT_AUTH_MODE=subscription
-  // case so we never fall through to unauthenticated or paid-API billing.
+  // present) but reachable via the explicit SANDCASTLE_AGENT_AUTH_MODE=subscription
+  // override — this guards that case so we never fall through to unauthenticated
+  // or paid-API billing.
   throw new Error(
     "SANDCASTLE_AGENT_AUTH_MODE=subscription requires CLAUDE_CODE_OAUTH_TOKEN " +
       "(generate once on the host with `claude setup-token`). Refusing to run — " +

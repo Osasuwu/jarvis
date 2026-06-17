@@ -1153,6 +1153,13 @@ function Invoke-Watchdog {
             # ----- Subscription primary: Anthropic Max Agent-SDK credit -----
             # -AuthMode subscription => main.mts injects ONLY the OAuth token; no
             # BaseUrl/AuthToken (those would route to the metered API).
+            # -TargetIssue '' (free-pick) is intentional and matches the tier0 /
+            # tier2Primary primaries below: each *iteration* lets the agent grab a
+            # fresh AFK-queue issue. A within-iteration escalation (the fallback
+            # block just below) pins to $targetIssue so the SAME issue is retried;
+            # iteration N+1 only runs after iteration N succeeded (a failure throws
+            # at the shared handler below), so re-using the prior issue would
+            # re-attempt one that already has a PR.
             $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $SubscriptionModel `
                 -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
                 -AuthMode 'subscription' -Effort $SubscriptionEffort `
@@ -1178,6 +1185,11 @@ function Invoke-Watchdog {
                     $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
                 }
             }
+            # No explicit `else { throw }` for the no-fallback case: a failed
+            # $invocation with $subscriptionFallback = $null falls through to the
+            # shared failure handler below (`if (-not $invocation.ok)`), which
+            # records the 'failure' outcome AND throws. Throwing early here would
+            # skip that Record write — fail-fast is intentional, not accidental.
         } elseif ($tier2Primary) {
             # ----- Tier 2 primary: remote Anthropic-compat endpoint (DeepSeek / Anthropic API) -----
             $invocation = Invoke-Sandcastle -RepoRoot $repoRoot -Model $tier2Primary.Model `
