@@ -348,19 +348,133 @@ class TestPersistLocal:
         assert out.parent.name == "session-snapshots"
         assert out.read_text(encoding="utf-8") == "# Snapshot\n"
 
+    def test_path_traversal_blocked(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        assert pcb._persist_local("../../etc/passwd", "evil") is None
+
+    def test_prefix_collision_blocked(self, tmp_path, monkeypatch):
+        # "session-snapshots-evil" starts with "session-snapshots" but is a
+        # different directory — _is_within compares path components, so it
+        # catches this where a string startswith() would not.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        assert pcb._persist_local("../session-snapshots-evil/x", "evil") is None
+
 
 # ---------------------------------------------------------------------------
-# main — never raises, honours missing/absent inputs
+# _is_within — shared containment guard (M2: version-safe, no is_relative_to)
+# ---------------------------------------------------------------------------
+class TestIsWithin:
+    def test_nested_path_is_within(self, tmp_path):
+        assert pcb._is_within(tmp_path / "a" / "b", tmp_path) is True
+
+    def test_same_path_is_within(self, tmp_path):
+        assert pcb._is_within(tmp_path, tmp_path) is True
+
+    def test_sibling_not_within(self, tmp_path):
+        assert pcb._is_within(tmp_path / "a", tmp_path / "b") is False
+
+    def test_prefix_collision_not_within(self, tmp_path):
+        # "snapshots-evil" shares a string prefix with "snapshots" but is a
+        # different dir — component comparison (not startswith) must reject it.
+        assert pcb._is_within(tmp_path / "snapshots-evil", tmp_path / "snapshots") is False
+
+    def test_parent_not_within_child(self, tmp_path):
+        # Containment is one-directional: root is not "within" its own subdir.
+        assert pcb._is_within(tmp_path, tmp_path / "child") is False
+
+
+# ---------------------------------------------------------------------------
+# _persist_supabase — missing-env path must be loud, not silent
+# ---------------------------------------------------------------------------
+class TestPersistSupabaseMissingEnv:
+    def test_missing_env_returns_false_and_warns(self, monkeypatch, capsys):
+        monkeypatch.delenv("SUPABASE_URL", raising=False)
+        monkeypatch.delenv("SUPABASE_KEY", raising=False)
+        assert pcb._persist_supabase("s", "jarvis", "auto", "content") is False
+        assert "SUPABASE_URL/SUPABASE_KEY not set" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# _append_hook_log — heartbeat
+# ---------------------------------------------------------------------------
+def _read_hook_log(root: Path) -> str:
+    return (root / ".claude" / "session-snapshots" / "hook.log").read_text(encoding="utf-8")
+
+
+class TestAppendHookLog:
+    def test_appends_timestamped_line(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        pcb._append_hook_log("session=s1 trigger=auto outcome=supabase")
+        pcb._append_hook_log("session=s1 trigger=auto outcome=local-fallback")
+        lines = _read_hook_log(tmp_path).splitlines()
+        assert len(lines) == 2
+        assert lines[0].endswith("session=s1 trigger=auto outcome=supabase")
+        assert lines[1].endswith("session=s1 trigger=auto outcome=local-fallback")
+        # Each line starts with an ISO-8601 UTC stamp
+        assert lines[0].split(" ")[0].startswith("20")
+
+    def test_never_raises(self, tmp_path, monkeypatch):
+        # _root pointing at a regular file makes mkdir fail — must be swallowed
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", blocker)
+        pcb._append_hook_log("must not raise")
+
+    def test_write_failure_reports_to_stderr(self, tmp_path, monkeypatch, capsys):
+        # The observability log is itself observable on failure.
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", blocker)
+        pcb._append_hook_log("disk full")
+        assert "hook.log write failed" in capsys.readouterr().err
+
+    def test_trims_when_oversized(self, tmp_path, monkeypatch):
+        # Bounded growth: once past the byte cap the log keeps only its tail.
+        # Shrink the constants so the test stays fast.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_HOOK_LOG_MAX_BYTES", 120)
+        monkeypatch.setattr(pcb, "_HOOK_LOG_KEEP_LINES", 5)
+        for i in range(50):
+            pcb._append_hook_log(f"line-{i}")
+        log = _read_hook_log(tmp_path)
+        lines = log.splitlines()
+        # Stays bounded at the keep-window rather than growing to 50 lines…
+        assert len(lines) <= 5
+        # …always retains the newest entry…
+        assert lines[-1].endswith("line-49")
+        # …and the oldest forged-off entries are gone.
+        assert "line-0 " not in log and "line-0\n" not in log
+
+    def test_trim_on_corrupted_log_does_not_raise(self, tmp_path, monkeypatch):
+        # A partially-written/corrupted hook.log with invalid UTF-8 bytes must
+        # not crash. The trim uses errors="replace" to handle corrupt bytes
+        # gracefully, so it succeeds rather than raising UnicodeDecodeError.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_HOOK_LOG_MAX_BYTES", 8)
+        out_dir = tmp_path / ".claude" / "session-snapshots"
+        out_dir.mkdir(parents=True)
+        (out_dir / "hook.log").write_bytes(b"\x80" * 64)
+        # Must not raise despite the un-decodable existing content.
+        pcb._append_hook_log("after-corruption")
+        # Key invariant: heartbeat line is written regardless.
+        log_bytes = (out_dir / "hook.log").read_bytes()
+        assert b"after-corruption" in log_bytes
+
+
+# ---------------------------------------------------------------------------
+# main — never raises, honours missing/absent inputs, always heartbeats
 # ---------------------------------------------------------------------------
 class TestMain:
-    def test_missing_transcript_path_exits_zero(self, monkeypatch):
+    def test_missing_transcript_path_exits_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"session_id": "x"})))
-        # No Supabase creds → would take the fallback branch, but transcript_path is empty
-        monkeypatch.setenv("SUPABASE_URL", "")
-        monkeypatch.setenv("SUPABASE_KEY", "")
+        # Missing transcript_path exits early with outcome=no-transcript-path;
+        # Supabase state doesn't matter because we don't reach persistence code.
         assert pcb.main() == 0
+        assert "session=x trigger=unknown outcome=no-transcript-path" in _read_hook_log(tmp_path)
 
     def test_missing_transcript_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(
             sys,
             "stdin",
@@ -375,6 +489,9 @@ class TestMain:
             ),
         )
         assert pcb.main() == 0
+        # Full triplet, not just `outcome=` — keeps the heartbeat format
+        # contract auditable in line with every sibling test.
+        assert "session=x trigger=unknown outcome=transcript-missing" in _read_hook_log(tmp_path)
 
     def test_supabase_fail_triggers_local_fallback(self, tmp_path, monkeypatch):
         # Build a tiny transcript
@@ -403,7 +520,189 @@ class TestMain:
         text = out.read_text(encoding="utf-8")
         assert "Session Snapshot — sess-fallback" in text
         assert "**Trigger:** manual" in text
+        assert "session=sess-fallback trigger=manual outcome=local-fallback" in _read_hook_log(
+            tmp_path
+        )
 
-    def test_bad_hook_input_does_not_raise(self, monkeypatch):
+    def test_supabase_success_heartbeats(self, tmp_path, monkeypatch):
+        t = tmp_path / "t.jsonl"
+        t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_persist_supabase", lambda *a, **k: True)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "sess-ok",
+                        "transcript_path": str(t),
+                        "cwd": str(tmp_path),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert "session=sess-ok trigger=auto outcome=supabase" in _read_hook_log(tmp_path)
+        # Supabase succeeded — no local fallback file
+        assert not (tmp_path / ".claude" / "session-snapshots" / "sess-ok.md").exists()
+
+    def test_bad_hook_input_does_not_raise(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(sys, "stdin", io.StringIO("definitely not json"))
         assert pcb.main() == 0
+        # Unparseable input → empty hook dict → no transcript_path
+        assert "session=unknown-session trigger=unknown outcome=no-transcript-path" in (
+            _read_hook_log(tmp_path)
+        )
+
+    def test_persist_failed_heartbeats(self, tmp_path, monkeypatch):
+        # Both persist paths fail → `outcome=persist-failed`. This outcome value
+        # previously had zero coverage.
+        t = tmp_path / "t.jsonl"
+        t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(pcb, "_persist_supabase", lambda *a, **k: False)
+        monkeypatch.setattr(pcb, "_persist_local", lambda *a, **k: None)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "sess-pf",
+                        "transcript_path": str(t),
+                        "cwd": str(tmp_path),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert "session=sess-pf trigger=auto outcome=persist-failed" in _read_hook_log(tmp_path)
+
+    def test_transcript_path_outside_allowed_roots_rejected(self, tmp_path, monkeypatch):
+        # transcript_path is untrusted hook stdin. A path to a real file that
+        # lives outside ~/.claude and the repo root must be rejected *before* any
+        # read or upsert — even though the file exists — so it can't be slurped
+        # into a snapshot. The hook still exits 0 (never blocks compaction).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setattr(pcb, "_root", repo)
+        evil = tmp_path / "secret.jsonl"  # outside the repo and outside ~/.claude
+        evil.write_text(json.dumps(_user_entry("ts", "secret")) + "\n", encoding="utf-8")
+        called: list[int] = []
+        monkeypatch.setattr(
+            pcb, "_persist_supabase", lambda *a, **k: called.append(1) or True
+        )
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "evil-sess",
+                        "transcript_path": str(evil),
+                        "cwd": str(repo),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert called == []  # never reached persistence
+        assert (
+            "session=evil-sess trigger=auto outcome=transcript-path-rejected"
+            in _read_hook_log(repo)
+        )
+
+    def test_unhandled_error_still_heartbeats(self, tmp_path, monkeypatch):
+        # An exception mid-run still writes a heartbeat, re-stamped to record
+        # that it failed after the "init" sentinel (i.e. before any stage set a
+        # concrete outcome) — distinguishing an early crash from a mid-persist one.
+        t = tmp_path / "t.jsonl"
+        t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+
+        def _boom(*a, **k):
+            raise RuntimeError("compose blew up")
+
+        monkeypatch.setattr(pcb, "_compose_markdown", _boom)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "sess-err",
+                        "transcript_path": str(t),
+                        "cwd": str(tmp_path),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert (
+            "session=sess-err trigger=auto outcome=error-after:init"
+            in _read_hook_log(tmp_path)
+        )
+
+    def test_session_id_newline_is_escaped(self, tmp_path, monkeypatch):
+        # A `\n` in the stdin-sourced session_id must NOT split the heartbeat
+        # into a forged second line.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(json.dumps({"session_id": "real\ninjected outcome=supabase"})),
+        )
+        assert pcb.main() == 0
+        log = _read_hook_log(tmp_path)
+        # One physical line — the injected newline is escaped, not honoured.
+        assert len(log.splitlines()) == 1
+        assert (
+            "session=real\\ninjected outcome=supabase "
+            "trigger=unknown outcome=no-transcript-path"
+        ) in log
+
+    def test_trigger_newline_is_escaped(self, tmp_path, monkeypatch):
+        # `trigger` shares session_id's untrusted-stdin provenance and the same
+        # sanitizer — a `\n` here must not forge a second heartbeat line either.
+        monkeypatch.setattr(pcb, "_root", tmp_path)
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps({"session_id": "s", "trigger": "auto\nforged outcome=supabase"})
+            ),
+        )
+        assert pcb.main() == 0
+        log = _read_hook_log(tmp_path)
+        assert len(log.splitlines()) == 1
+        assert "trigger=auto\\nforged outcome=supabase" in log
+
+
+class TestSanitizeLogField:
+    """Direct unit coverage for the security-adjacent `_sanitize_log_field`."""
+
+    def test_newline_escaped(self):
+        assert pcb._sanitize_log_field("a\nb") == "a\\nb"
+
+    def test_carriage_return_escaped(self):
+        # CR alone (no LF) overwrites the line on legacy terminals — a distinct
+        # escape path from `\n` that the through-main tests don't exercise.
+        assert pcb._sanitize_log_field("a\rb") == "a\\rb"
+
+    def test_crlf_escaped(self):
+        assert pcb._sanitize_log_field("a\r\nb") == "a\\r\\nb"
+
+    def test_clean_value_untouched(self):
+        assert pcb._sanitize_log_field("plain-value") == "plain-value"
+
+    def test_non_str_is_coerced(self):
+        # stdin JSON can yield a non-str (null/number); the annotation is widened
+        # to object precisely so the str() coerce is the documented contract.
+        assert pcb._sanitize_log_field(None) == "None"
+        assert pcb._sanitize_log_field(42) == "42"
