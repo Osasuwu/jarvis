@@ -21,6 +21,13 @@ from typing import Any
 import urllib.error
 import urllib.request
 
+
+class OllamaUnavailable(RuntimeError):
+    """Ollama host unreachable / timed out. Distinct from a malformed reply."""
+
+    pass
+
+
 VALID_LABELS = {
     "correction_wrong_direction",
     "correction_incomplete",
@@ -115,9 +122,15 @@ def call_ollama(
 ) -> dict[str, Any] | None:
     """Call local Ollama and return the parsed classifier object.
 
-    Returns None on any error (timeout, parse failure, network).  Caller
-    decides what to do with None — typically: skip this turn, don't bump
+    Raises OllamaUnavailable on network/timeout failure (host unreachable).
+    Returns None on JSON-parse failures (successful HTTP but malformed body).
+    Caller decides what to do with None — typically: skip this turn, don't bump
     watermark for it.
+
+    Note: ``scripts/lib/llm_client.py`` has a DIFFERENT ``call_ollama`` that
+    returns None on network errors (no exception). That one serves the Deriver
+    escalation chain. This one serves the comm-patterns classifier. Do not
+    confuse them — they have opposite error contracts.
     """
     host = host or os.environ.get("OLLAMA_HOST", DEFAULT_HOST)
     model = model or os.environ.get("OLLAMA_MODEL", DEFAULT_MODEL)
@@ -141,8 +154,8 @@ def call_ollama(
     try:
         with urllib.request.urlopen(req, timeout=timeout_s) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise OllamaUnavailable(str(e)) from e
     try:
         envelope = json.loads(raw)
     except Exception:
