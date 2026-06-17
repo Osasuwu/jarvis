@@ -354,9 +354,33 @@ class TestPersistLocal:
 
     def test_prefix_collision_blocked(self, tmp_path, monkeypatch):
         # "session-snapshots-evil" starts with "session-snapshots" but is a
-        # different directory — is_relative_to catches this, startswith didn't.
+        # different directory — _is_within compares path components, so it
+        # catches this where a string startswith() would not.
         monkeypatch.setattr(pcb, "_root", tmp_path)
         assert pcb._persist_local("../session-snapshots-evil/x", "evil") is None
+
+
+# ---------------------------------------------------------------------------
+# _is_within — shared containment guard (M2: version-safe, no is_relative_to)
+# ---------------------------------------------------------------------------
+class TestIsWithin:
+    def test_nested_path_is_within(self, tmp_path):
+        assert pcb._is_within(tmp_path / "a" / "b", tmp_path) is True
+
+    def test_same_path_is_within(self, tmp_path):
+        assert pcb._is_within(tmp_path, tmp_path) is True
+
+    def test_sibling_not_within(self, tmp_path):
+        assert pcb._is_within(tmp_path / "a", tmp_path / "b") is False
+
+    def test_prefix_collision_not_within(self, tmp_path):
+        # "snapshots-evil" shares a string prefix with "snapshots" but is a
+        # different dir — component comparison (not startswith) must reject it.
+        assert pcb._is_within(tmp_path / "snapshots-evil", tmp_path / "snapshots") is False
+
+    def test_parent_not_within_child(self, tmp_path):
+        # Containment is one-directional: root is not "within" its own subdir.
+        assert pcb._is_within(tmp_path, tmp_path / "child") is False
 
 
 # ---------------------------------------------------------------------------
@@ -558,9 +582,45 @@ class TestMain:
         assert pcb.main() == 0
         assert "session=sess-pf trigger=auto outcome=persist-failed" in _read_hook_log(tmp_path)
 
+    def test_transcript_path_outside_allowed_roots_rejected(self, tmp_path, monkeypatch):
+        # transcript_path is untrusted hook stdin. A path to a real file that
+        # lives outside ~/.claude and the repo root must be rejected *before* any
+        # read or upsert — even though the file exists — so it can't be slurped
+        # into a snapshot. The hook still exits 0 (never blocks compaction).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        monkeypatch.setattr(pcb, "_root", repo)
+        evil = tmp_path / "secret.jsonl"  # outside the repo and outside ~/.claude
+        evil.write_text(json.dumps(_user_entry("ts", "secret")) + "\n", encoding="utf-8")
+        called: list[int] = []
+        monkeypatch.setattr(
+            pcb, "_persist_supabase", lambda *a, **k: called.append(1) or True
+        )
+        monkeypatch.setattr(
+            sys,
+            "stdin",
+            io.StringIO(
+                json.dumps(
+                    {
+                        "session_id": "evil-sess",
+                        "transcript_path": str(evil),
+                        "cwd": str(repo),
+                        "trigger": "auto",
+                    }
+                )
+            ),
+        )
+        assert pcb.main() == 0
+        assert called == []  # never reached persistence
+        assert (
+            "session=evil-sess trigger=auto outcome=transcript-path-rejected"
+            in _read_hook_log(repo)
+        )
+
     def test_unhandled_error_still_heartbeats(self, tmp_path, monkeypatch):
         # An exception mid-run still writes a heartbeat, re-stamped to record
-        # that it failed after the initial state.
+        # that it failed after the "init" sentinel (i.e. before any stage set a
+        # concrete outcome) — distinguishing an early crash from a mid-persist one.
         t = tmp_path / "t.jsonl"
         t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
         monkeypatch.setattr(pcb, "_root", tmp_path)
@@ -585,7 +645,7 @@ class TestMain:
         )
         assert pcb.main() == 0
         assert (
-            "session=sess-err trigger=auto outcome=error-after:unhandled-error"
+            "session=sess-err trigger=auto outcome=error-after:init"
             in _read_hook_log(tmp_path)
         )
 

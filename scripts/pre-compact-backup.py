@@ -397,15 +397,33 @@ def _persist_supabase(
         return False
 
 
+def _is_within(path: Path, root: Path) -> bool:
+    """True if ``path`` is ``root`` or nested under it.
+
+    Compares resolved path *components* (via ``Path.parents``), not string
+    prefixes, so a sibling sharing a name prefix ("session-snapshots-evil" vs
+    "session-snapshots") is correctly rejected. Deliberately avoids
+    ``Path.is_relative_to`` — that is 3.9+ only and this hook must not assume a
+    minimum interpreter past 3.8. Fails safe (returns False / "outside") if the
+    paths can't be resolved.
+    """
+    try:
+        path_r = path.resolve()
+        root_r = root.resolve()
+    except (OSError, ValueError):
+        return False
+    return path_r == root_r or root_r in path_r.parents
+
+
 def _persist_local(session_id: str, content: str) -> Path | None:
     try:
         out_dir = _root / ".claude" / "session-snapshots"
         out_dir.mkdir(parents=True, exist_ok=True)
         out_file = (out_dir / f"{session_id}.md").resolve()
         # Guard against path traversal: session_id from untrusted JSON.
-        # is_relative_to avoids the prefix-collision bypass that startswith
-        # has (e.g. "session-snapshots-evil" starts with "session-snapshots").
-        if not out_file.is_relative_to(out_dir.resolve()):
+        # _is_within compares resolved path components (not string prefixes),
+        # so "session-snapshots-evil" can't masquerade as "session-snapshots".
+        if not _is_within(out_file, out_dir):
             print("[pre-compact] suspicious session_id in local fallback", file=sys.stderr)
             return None
         # Use binary write to avoid Windows \n→\r\n translation, which would
@@ -491,7 +509,11 @@ def _append_hook_log(message: str) -> None:
 def main() -> int:
     session_id = "unknown-session"
     trigger = "unknown"
-    outcome = "unhandled-error"
+    # Sentinel for the heartbeat: "init" means we entered main() but reached no
+    # explicit outcome. If an exception fires before any stage stamps `outcome`,
+    # the finally-block records "error-after:init" — distinguishing a crash at
+    # entry from one mid-persist (which carries the last stage's name).
+    outcome = "init"
     try:
         hook = _read_hook_input()
         session_id = hook.get("session_id") or hook.get("sessionId") or "unknown-session"
@@ -510,6 +532,16 @@ def main() -> int:
             return 0
 
         p = Path(transcript_path)
+        # transcript_path is attacker-influenceable hook stdin. Confine reads to
+        # the dirs transcripts actually live in (~/.claude and the repo) so a
+        # crafted path (e.g. "/etc/passwd") can't be slurped into a snapshot and
+        # upserted to Supabase. Fail safe: skip with a logged outcome, never raise.
+        allowed_roots = [Path.home() / ".claude", _root]
+        if not any(_is_within(p, r) for r in allowed_roots):
+            print(f"[pre-compact] transcript_path outside allowed dirs: {p}", file=sys.stderr)
+            outcome = "transcript-path-rejected"
+            return 0
+
         if not p.exists():
             print(f"[pre-compact] transcript not found: {p}", file=sys.stderr)
             outcome = "transcript-missing"
