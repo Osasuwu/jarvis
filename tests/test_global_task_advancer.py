@@ -759,7 +759,7 @@ class TestCoalesceAdvancer:
         unambiguously into the future. The badly-lapsed case (lapsed by >1
         cadence) clamps next_run to ~now() under periods=1, leaving the row
         borderline-due and double-firing on the next tick — a real coalesce
-        semantics wart tracked separately, not asserted here.
+        semantics wart tracked in #983, not asserted here.
         """
         db_url = os.environ["DATABASE_URL"]
         with db_connection.cursor() as cur:
