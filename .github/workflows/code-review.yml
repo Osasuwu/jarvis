@@ -85,33 +85,43 @@ jobs:
           claude_args: |
             --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
 
-      # Auto-merge gate: the plugin's canonical comment begins with
-      # `### Code review` and either "No issues found." (clean) or
-      # "Found N issues:" (findings ≥80 confidence). Without this step the
-      # `review` check is SUCCESS as long as the bot ran — auto-merge can't
-      # distinguish "ran cleanly" from "found CRITICAL bugs". Failing the
-      # job on findings turns the `review` check into a real verdict.
+      # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). Without
+      # this step the `review` check is SUCCESS as long as the bot ran —
+      # auto-merge can't distinguish "ran cleanly" from "found CRITICAL bugs".
+      # This step turns the `review` check into a real verdict.
       #
-      # Incident (PR #957): the bot posted 10 findings under a deviant title
-      # "## Claude Code Review — PR #957" with "### MAJOR findings" /
-      # "### MINOR findings" sections. The old selector matched only the
-      # literal `### Code review` prefix, so the comment counted as
-      # "no comment → pass" and the PR auto-merged unreviewed. The deviation
-      # is routine, not a one-off — observed shapes: "### MAJOR findings"
-      # (#957), bare "### MAJOR" (#956), "### 🔴 BLOCKING" (#954). Hardened
-      # contract (mirrored by tests/ci/test_code_review_verdict_guard.py):
+      # TWO-GATE MODEL: the MERGE gate (here) blocks ONLY on a merge-blocking
+      # finding — an all-caps CRITICAL/MAJOR/BLOCKING severity heading. MINOR /
+      # NITPICK / LOW / INFO / MEDIUM and a bare "Found N issues:" line do NOT
+      # block. This matches the REWORK-done gate (scripts/rework_policy.py:
+      # n_critical==0 AND n_major==0): a PR clean of real bugs but carrying
+      # minor nits no longer ping-pongs between "rework thinks it's done" and
+      # "merge gate rejects it" (#976 — PRs were taking 3-5 rework rounds).
+      # Minors are swept best-effort by /rework only while it is already in
+      # context for a bug-triggered round; they never trigger rework alone.
+      #
+      # Incident still guarded (PR #957): the bot posted findings under a
+      # deviant title "## Claude Code Review — PR #957" with "### MAJOR
+      # findings" / "### MINOR findings" sections. The old selector matched
+      # only the literal `### Code review` prefix, so the comment counted as
+      # "no comment → pass" and the PR auto-merged unreviewed. The deviation is
+      # routine — observed shapes: "### MAJOR findings" (#957), bare
+      # "### MAJOR" (#956), "### 🔴 BLOCKING" (#954). Hardened contract
+      # (mirrored by tests/ci/test_code_review_verdict_guard.py):
       #   - SELECT the latest comment containing any heading line that looks
       #     like a code-review title (1-6 #'s, optional "Claude", any case,
       #     anywhere in the body — deviant bots may prepend preamble).
-      #   - Findings signals fail BEFORE the clean signal is consulted:
-      #     severity-section headings (CRITICAL/MAJOR/MINOR/BLOCKING after
-      #     1-6 #'s with optional decoration, optional findings/issues
-      #     suffix) and "Found N issues:".
-      #   - A line starting "No issues found." passes (the plugin spec's
-      #     clean example carries trailing prose on the same line — the old
-      #     end-anchored regex would have failed-closed on a spec-compliant
-      #     clean comment).
-      #   - Selected comment matching neither → exit 1, fail-closed.
+      #   - BLOCK signal checked FIRST so no pass signal can shadow it:
+      #     all-caps CRITICAL/MAJOR/BLOCKING severity heading (1-6 #'s,
+      #     optional decoration, optional findings/issues suffix). MINOR is
+      #     NOT in the alternation; the check is case-SENSITIVE (grep -qE, not
+      #     -qiE) so title-case "Blocking issues — None" (#962) is not a false
+      #     block (#976).
+      #   - PASS signals (all exit 0; reached only when no block heading):
+      #     "No issues found." (clean), "Blocking issues — None" (#962 APPROVE,
+      #     case-insensitive), "Found N issues:" (advisory findings, #956), and
+      #     MINOR/NITPICK/LOW/INFO/MEDIUM-only severity sections (#963).
+      #   - Selected comment matching none of the above → exit 1, fail-closed.
       #   - No selected comment at all → pass (plugin legitimately skips
       #     drafts / already-reviewed / not-eligible PRs). Residual risk: a
       #     review title with no "Code Review" wording at all still slips
@@ -157,25 +167,61 @@ jobs:
             exit 0
           fi
 
-          # Findings checks run before the clean check: a findings comment may
-          # contain an incidental "No issues found." line — pass must never
-          # shadow fail.
-          # [^[:alnum:]]* tolerates decoration between #'s and the severity
-          # word (emoji, whitespace — "### 🔴 BLOCKING" on #954); the
-          # findings/issues suffix is optional ("### MAJOR" bare on #956).
-          if grep -qiE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|MINOR|BLOCKING)\b' <<<"$body"; then
-            echo "::error::Code review posted severity findings sections (CRITICAL/MAJOR/MINOR/BLOCKING); blocking auto-merge until addressed."
+          # Two-gate model (#988): the MERGE gate blocks ONLY on a real merge-
+          # blocking finding — an all-caps CRITICAL/MAJOR/BLOCKING severity
+          # heading. The block check runs FIRST so no pass signal below can
+          # shadow it (a findings comment may carry an incidental
+          # "No issues found." or "Blocking issues — None" line).
+          #
+          # - [^[:alnum:]]* tolerates decoration between the #'s and the
+          #   severity word (emoji/whitespace — "### 🔴 BLOCKING" on #954); the
+          #   findings/issues suffix is optional ("### MAJOR" bare on #956).
+          # - grep -qE (NOT -qiE): the block check is case-SENSITIVE all-caps
+          #   (#976). Real plugin severity sections are all-caps; title-case
+          #   prose like "### Blocking issues — None" (#962) must NOT block.
+          # - MINOR is DROPPED from the alternation. Minors never block merge —
+          #   they are swept best-effort by /rework while it is already in
+          #   context for a bug-triggered round, not as a merge gate.
+          if grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING)\b' <<<"$body"; then
+            echo "::error::Code review posted blocking severity sections (CRITICAL/MAJOR/BLOCKING); blocking auto-merge until addressed."
             exit 1
           fi
 
-          if grep -qE 'Found [0-9]+ issues?:' <<<"$body"; then
-            count=$(grep -oE 'Found [0-9]+ issues?:' <<<"$body" | head -1 | grep -oE '[0-9]+')
-            echo "::error::Code review found $count issue(s); blocking auto-merge until addressed."
-            exit 1
-          fi
+          # No blocking severity heading. Any recognized non-blocking shape is
+          # a positive pass. Order among the pass checks is immaterial (all
+          # exit 0); only block-before-pass matters.
 
+          # Clean: line-start, NO end anchor (the plugin spec's clean example
+          # carries trailing prose on the same line).
           if grep -qE '^No issues found\.' <<<"$body"; then
             echo "::notice::Code review clean."
+            exit 0
+          fi
+
+          # APPROVE summary "Blocking issues — None" (#962). Case-insensitive —
+          # it is title-case prose, and it is only reached after the block
+          # check, so it can never shadow a real all-caps severity section.
+          if grep -qiE 'blocking issues\b[^[:alnum:]]*none\b' <<<"$body"; then
+            echo "::notice::Code review reports no blocking issues."
+            exit 0
+          fi
+
+          # Findings present but none blocking: canonical "Found N issues:".
+          # Under the two-gate model this is a PASS, not a block — in practice
+          # the plugin emits severity sections for real bugs (#963/#964/#965/
+          # #966) and bare Found-N has carried only advisory MEDIUM/LOW (#956).
+          # Residual risk (a no-severity-heading comment hiding real majors)
+          # accepted per #988.
+          if grep -qE 'Found [0-9]+ issues?:' <<<"$body"; then
+            count=$(grep -oE 'Found [0-9]+ issues?:' <<<"$body" | head -1 | grep -oE '[0-9]+')
+            echo "::notice::Code review found $count non-blocking issue(s); not blocking auto-merge (two-gate model)."
+            exit 0
+          fi
+
+          # Non-blocking severity sections only: MINOR-only (#963) or MEDIUM/
+          # LOW/INFO/NITPICK advisories with no Found-N line.
+          if grep -qE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b' <<<"$body"; then
+            echo "::notice::Code review posted only non-blocking severity sections; not blocking auto-merge."
             exit 0
           fi
 
