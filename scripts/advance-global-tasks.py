@@ -5,7 +5,8 @@ Intended to run every 5 min via Task Scheduler (Workshop only).
 
 Idempotent single-transaction advancer:
 - SELECT due rows WHERE enabled AND (next_run IS NULL OR next_run <= now()) FOR UPDATE SKIP LOCKED
-- INSERT events rows (dedup on sha256('global_task:'||id||':'||EXTRACT(EPOCH FROM next_run)))
+- INSERT events rows (dedup on sha256('global_task:'||mode||':'||id||':'||EXTRACT(EPOCH FROM next_run)),
+  where mode is the lapse namespace 'coalesce' | 'fire' — see compute_dedup_key)
 - UPDATE last_run, next_run, enabled
 - Handles both coalesce (one event per due row) and fire_per_interval (bounded to 24/row)
 
@@ -209,16 +210,38 @@ def _advance_due_rows(cur: Any) -> int:
         next_run = row["next_run"]
         on_lapse = row["on_lapse"]
 
+        # Belt-and-suspenders against a sub-1s cadence (the DB constraint
+        # global_task_sources_cadence_floor should already reject these at
+        # insert). _intervals_lapsed divides by EXTRACT(EPOCH FROM cadence), so a
+        # zero cadence is a divide-by-zero that aborts the whole transaction —
+        # one bad row would block every other due row in the same tick. A
+        # sub-second cadence collides dedup_keys across ticks. Skip + log rather
+        # than crash; the row stays due and is revisited once its cadence is
+        # corrected.
+        if cadence is not None and cadence.total_seconds() < 1.0:
+            logger.error(
+                f"Skipping global_task_source {source_id}: cadence "
+                f"{cadence.total_seconds()}s is below the 1s floor "
+                "(violates global_task_sources_cadence_floor)"
+            )
+            continue
+
         base_epoch = _next_run_epoch(next_run)
 
         if on_lapse == "fire_per_interval":
             # Fire once per lapsed interval, bounded by the cap.
             if next_run is None or cadence is None:
+                # First run or one-shot: a single fire at the base epoch. There is
+                # no cadence to step subsequent fires by, and fire_count == 1 means
+                # the loop below only ever uses i == 0 (fire_epoch == base_epoch),
+                # so cadence_seconds is never read as a real offset here.
                 fire_count = 1
+                cadence_seconds = 0.0
             else:
                 fire_count = min(
                     FIRE_PER_INTERVAL_CAP, _intervals_lapsed(cur, next_run, cadence)
                 )
+                cadence_seconds = cadence.total_seconds()
 
             if fire_count >= FIRE_PER_INTERVAL_CAP:
                 logger.warning(
@@ -226,7 +249,6 @@ def _advance_due_rows(cur: Any) -> int:
                     f"({fire_count} fires); remaining lapse drains next invocation"
                 )
 
-            cadence_seconds = cadence.total_seconds() if cadence is not None else 0.0
             for i in range(fire_count):
                 fire_epoch = base_epoch + i * cadence_seconds
                 dedup_key = compute_dedup_key(source_id, fire_epoch, "fire")
@@ -304,7 +326,11 @@ def advance_global_tasks(db_url: str | None = None) -> int:
         logger.info(f"Advanced global_task_sources: {total_events} events inserted")
         return total_events
     except Exception as e:
-        logger.error(f"advance_global_tasks transaction failed: {e}")
+        # Symmetric with the connect handler above: log only the exception type,
+        # never the payload. A psycopg error raised mid-transaction can echo the
+        # failing statement and, in some adapters, connection context that
+        # carries the DSN password into Task Scheduler logs.
+        logger.error(f"advance_global_tasks transaction failed: {type(e).__name__}")
         return -1
     finally:
         conn.close()

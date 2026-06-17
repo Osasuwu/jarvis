@@ -155,6 +155,11 @@ def _due_row(**overrides: Any) -> dict[str, Any]:
     return row
 
 
+# A concrete past next_run for guard tests that need the advancer to take the
+# recurring (cadence-counting) path rather than the next_run-IS-NULL shortcut.
+_FIXED_NEXT_RUN = datetime(2024, 4, 13, 12, 0, 0, tzinfo=timezone.utc)
+
+
 # =========================================================================
 # Pure-Python Unit Tests (no DB required)
 # =========================================================================
@@ -331,6 +336,41 @@ class TestAdvanceDueRowsFakeCursor:
         # params: (periods, cadence, source_id) — periods == fire_count.
         assert update[0] == 4
 
+    def test_zero_cadence_row_skipped_not_divided(self) -> None:
+        # CRITICAL #1: a cadence of 0 reaches _intervals_lapsed's
+        # `EXTRACT(EPOCH FROM (...)) / EXTRACT(EPOCH FROM cadence)` → divide-by-zero
+        # in Postgres, which aborts the whole advance transaction and takes every
+        # other due row down with it. The advancer must skip a sub-1s-cadence row
+        # (belt-and-suspenders behind the DB cadence floor): no event inserted, and
+        # critically no interval-division SELECT issued at all.
+        cur = _FakeCursor(
+            [_due_row(cadence=timedelta(0), next_run=_FIXED_NEXT_RUN)]
+        )
+        assert _mod._advance_due_rows(cur) == 0
+        assert self._inserts(cur) == [], "zero-cadence row must emit no event"
+        assert not any(
+            "intervals_missed" in sql for sql, _ in cur.statements
+        ), "zero-cadence row must never reach the interval-division SELECT"
+
+    def test_subsecond_cadence_row_skipped(self) -> None:
+        # MAJOR #1 (Python layer): a sub-second cadence collides int(epoch)
+        # dedup_keys across ticks, so it is rejected at the same 1s floor as the
+        # zero case rather than fired.
+        cur = _FakeCursor(
+            [_due_row(cadence=timedelta(milliseconds=500), next_run=_FIXED_NEXT_RUN)]
+        )
+        assert _mod._advance_due_rows(cur) == 0
+        assert self._inserts(cur) == []
+
+    def test_one_second_cadence_row_still_fires(self) -> None:
+        # Boundary: the floor is INCLUSIVE at 1s, so a 1-second cadence is valid
+        # and must still fire — the guard rejects below 1s, not at it.
+        cur = _FakeCursor(
+            [_due_row(cadence=timedelta(seconds=1), next_run=_FIXED_NEXT_RUN)]
+        )
+        assert _mod._advance_due_rows(cur) == 1
+        assert len(self._inserts(cur)) == 1
+
     def test_advance_global_tasks_returns_event_count(self, monkeypatch: Any) -> None:
         cur = _FakeCursor([_due_row(), _due_row(id="second-row")])
         conn = _FakeConn(cur)
@@ -429,12 +469,18 @@ class TestGlobalTaskSourcesSchema:
             """)
             (row_id,) = cur.fetchone()
 
-            # Invalid insert should fail
+            # Invalid insert should fail. A CHECK violation aborts the whole
+            # transaction (psycopg → InFailedSqlTransaction), so the cleanup
+            # DELETE below would itself raise unless we rewind to a savepoint
+            # taken before the failing statement.
+            cur.execute("SAVEPOINT before_bad_insert")
             with pytest.raises(Exception, match="dispatcher_skill"):
                 cur.execute("""
                     INSERT INTO global_task_sources (title, dispatcher_skill, output_sink)
                     VALUES ('test2', 'invalid_skill', 'memory')
                 """)
+            cur.execute("ROLLBACK TO SAVEPOINT before_bad_insert")
+            cur.execute("RELEASE SAVEPOINT before_bad_insert")
 
             # Clean up
             cur.execute("DELETE FROM global_task_sources WHERE id = %s", (row_id,))
@@ -451,12 +497,17 @@ class TestGlobalTaskSourcesSchema:
             """)
             (row_id,) = cur.fetchone()
 
-            # Invalid insert should fail
+            # Invalid insert should fail. Wrap in a savepoint so the aborted
+            # transaction is recovered before the cleanup DELETE (see
+            # test_dispatcher_skill_enum for the full rationale).
+            cur.execute("SAVEPOINT before_bad_insert")
             with pytest.raises(Exception, match="output_sink"):
                 cur.execute("""
                     INSERT INTO global_task_sources (title, dispatcher_skill, output_sink)
                     VALUES ('test2', 'research', 'invalid_sink')
                 """)
+            cur.execute("ROLLBACK TO SAVEPOINT before_bad_insert")
+            cur.execute("RELEASE SAVEPOINT before_bad_insert")
 
             # Clean up
             cur.execute("DELETE FROM global_task_sources WHERE id = %s", (row_id,))
@@ -485,13 +536,18 @@ class TestGlobalTaskSourcesSchema:
             """)
             (row_id2,) = cur.fetchone()
 
-            # Invalid insert should fail
+            # Invalid insert should fail. Wrap in a savepoint so the aborted
+            # transaction is recovered before the cleanup DELETE (see
+            # test_dispatcher_skill_enum for the full rationale).
+            cur.execute("SAVEPOINT before_bad_insert")
             with pytest.raises(Exception, match="on_lapse"):
                 cur.execute("""
                     INSERT INTO global_task_sources (
                         title, dispatcher_skill, output_sink, on_lapse
                     ) VALUES ('test3', 'research', 'memory', 'invalid_lapse')
                 """)
+            cur.execute("ROLLBACK TO SAVEPOINT before_bad_insert")
+            cur.execute("RELEASE SAVEPOINT before_bad_insert")
 
             # Clean up
             cur.execute("DELETE FROM global_task_sources WHERE id IN (%s, %s)", (row_id1, row_id2))
@@ -509,13 +565,18 @@ class TestGlobalTaskSourcesSchema:
             """)
             (row_id,) = cur.fetchone()
 
-            # status-record with non-memory should fail
+            # status-record with non-memory should fail. Wrap in a savepoint:
+            # without the rewind the aborted transaction would also sink the
+            # *valid* research insert below, not just the cleanup DELETE.
+            cur.execute("SAVEPOINT before_bad_insert")
             with pytest.raises(Exception, match="dispatcher_sink_compatibility"):
                 cur.execute("""
                     INSERT INTO global_task_sources (
                         title, dispatcher_skill, output_sink
                     ) VALUES ('status check 2', 'status-record', 'telegram_digest')
                 """)
+            cur.execute("ROLLBACK TO SAVEPOINT before_bad_insert")
+            cur.execute("RELEASE SAVEPOINT before_bad_insert")
 
             # research can use any sink (valid)
             cur.execute("""
@@ -526,8 +587,34 @@ class TestGlobalTaskSourcesSchema:
             """)
             (row_id2,) = cur.fetchone()
 
+            # self-improve -> event_reemit must fail: the tightened matrix allows
+            # self-improve / last-work-report any sink EXCEPT event_reemit (re-emitting
+            # an event from a report/self-improve run loops the advancer on its own
+            # output). Pins the M5 tightening.
+            cur.execute("SAVEPOINT before_self_improve_reemit")
+            with pytest.raises(Exception, match="dispatcher_sink_compatibility"):
+                cur.execute("""
+                    INSERT INTO global_task_sources (
+                        title, dispatcher_skill, output_sink
+                    ) VALUES ('self improve reemit', 'self-improve', 'event_reemit')
+                """)
+            cur.execute("ROLLBACK TO SAVEPOINT before_self_improve_reemit")
+            cur.execute("RELEASE SAVEPOINT before_self_improve_reemit")
+
+            # self-improve -> memory is still valid (only event_reemit is excluded)
+            cur.execute("""
+                INSERT INTO global_task_sources (
+                    title, dispatcher_skill, output_sink
+                ) VALUES ('self improve memory', 'self-improve', 'memory')
+                RETURNING id
+            """)
+            (row_id3,) = cur.fetchone()
+
             # Clean up
-            cur.execute("DELETE FROM global_task_sources WHERE id IN (%s, %s)", (row_id, row_id2))
+            cur.execute(
+                "DELETE FROM global_task_sources WHERE id IN (%s, %s, %s)",
+                (row_id, row_id2, row_id3),
+            )
             db_connection.commit()
 
     def test_rls_service_role_can_write(self, db_connection: Any) -> None:

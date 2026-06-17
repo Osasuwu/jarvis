@@ -3132,9 +3132,18 @@ create table if not exists global_task_sources (
   dispatcher_skill text not null
     check (dispatcher_skill in ('research', 'self-improve', 'status-record', 'last-work-report')),
   output_sink text not null
+    -- 'event_reemit' is RESERVED / NOT-YET-IMPLEMENTED: the enum value exists so
+    -- the dispatcher_sink_compatibility matrix below can already forbid the
+    -- nonsensical pairings, but no advancer/orchestrator path consumes it yet
+    -- (tracked under #679). Treat a row carrying it as inert until wired.
     check (output_sink in ('memory', 'telegram_digest', 'event_reemit')),
   payload jsonb default '{}',
-  cadence interval,                 -- NULL = one-shot
+  -- cadence floor of 1 second: the advancer divides by EXTRACT(EPOCH FROM
+  -- cadence) when counting lapsed intervals, so a zero cadence is a
+  -- divide-by-zero that aborts the whole advance transaction, and a sub-second
+  -- cadence makes the int(epoch) dedup_key collide across ticks. NULL stays a
+  -- valid one-shot.
+  cadence interval check (cadence is null or cadence >= interval '1 second'),
   last_run timestamptz,
   next_run timestamptz,
   enabled bool not null default true,
@@ -3144,20 +3153,25 @@ create table if not exists global_task_sources (
 );
 
 -- Dispatcher/sink compatibility matrix (enforced at DB level).
--- status-record -> memory only; research -> any sink; others flexible.
--- ALTER ... ADD CONSTRAINT is not idempotent (re-running this schema errors
--- with "constraint already exists"); the DO/EXCEPTION guard makes it a no-op.
-do $$
-begin
-  alter table global_task_sources add constraint dispatcher_sink_compatibility
-    check (
-      (dispatcher_skill = 'status-record' and output_sink = 'memory') or
-      (dispatcher_skill = 'research') or
-      (dispatcher_skill = 'self-improve') or
-      (dispatcher_skill = 'last-work-report')
-    );
-exception when duplicate_object then null;
-end $$;
+-- status-record -> memory only (it only ever writes a status memory row);
+-- research -> any sink; self-improve / last-work-report -> any sink EXCEPT
+-- event_reemit (re-emitting an event back into the queue from a self-improve
+-- or report run would loop the advancer against its own output — neither skill
+-- produces an event-shaped result, so the pairing is incoherent, not just
+-- unimplemented).
+-- drop-then-add (not the add-only DO/EXCEPTION guard the sibling constraints use):
+-- this matrix was TIGHTENED to exclude event_reemit for self-improve /
+-- last-work-report, so a DB carrying the earlier, looser constraint must have it
+-- replaced. An add-only guard would hit duplicate_object and silently keep the
+-- old, permissive form. DROP ... IF EXISTS is a no-op on a fresh DB.
+alter table global_task_sources drop constraint if exists dispatcher_sink_compatibility;
+alter table global_task_sources add constraint dispatcher_sink_compatibility
+  check (
+    (dispatcher_skill = 'status-record' and output_sink = 'memory') or
+    (dispatcher_skill = 'research') or
+    (dispatcher_skill = 'self-improve' and output_sink <> 'event_reemit') or
+    (dispatcher_skill = 'last-work-report' and output_sink <> 'event_reemit')
+  );
 
 -- fire_per_interval needs a cadence to count intervals against; a one-shot
 -- (cadence IS NULL) with fire_per_interval is an incoherent state. Forbid it.

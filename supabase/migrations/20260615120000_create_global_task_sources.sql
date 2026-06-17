@@ -25,9 +25,12 @@ create table if not exists global_task_sources (
   dispatcher_skill text not null
     check (dispatcher_skill in ('research', 'self-improve', 'status-record', 'last-work-report')),
   output_sink text not null
+    -- 'event_reemit' is RESERVED / NOT-YET-IMPLEMENTED (see #679): the enum value
+    -- exists so the dispatcher_sink_compatibility matrix can already forbid the
+    -- nonsensical pairings, but no advancer/orchestrator path consumes it yet.
     check (output_sink in ('memory', 'telegram_digest', 'event_reemit')),
   payload jsonb default '{}',
-  cadence interval,                 -- NULL = one-shot
+  cadence interval,                 -- NULL = one-shot; >= 1s floor added below
   last_run timestamptz,
   next_run timestamptz,
   enabled bool not null default true,
@@ -37,20 +40,34 @@ create table if not exists global_task_sources (
 );
 
 -- Dispatcher/sink compatibility matrix (enforced at DB level).
--- status-record -> memory only; research -> any sink; others flexible.
--- ALTER ... ADD CONSTRAINT is not idempotent (re-running the migration errors
--- with "constraint already exists"); the DO/EXCEPTION guard makes it a no-op.
-do $$
-begin
-  alter table global_task_sources add constraint dispatcher_sink_compatibility
-    check (
-      (dispatcher_skill = 'status-record' and output_sink = 'memory') or
-      (dispatcher_skill = 'research') or
-      (dispatcher_skill = 'self-improve') or
-      (dispatcher_skill = 'last-work-report')
-    );
-exception when duplicate_object then null;
-end $$;
+-- status-record -> memory only; research -> any sink; self-improve /
+-- last-work-report -> any sink EXCEPT event_reemit (re-emitting an event from a
+-- self-improve or report run loops the advancer against its own output; neither
+-- skill produces an event-shaped result, so the pairing is incoherent).
+-- drop-then-add (not the add-only DO/EXCEPTION guard): this matrix was tightened,
+-- so a DB carrying the earlier looser constraint must have it replaced — an
+-- add-only guard would hit duplicate_object and silently keep the old form.
+-- DROP ... IF EXISTS is a no-op on a fresh DB. create table-if-not-exists above
+-- no-ops when the table pre-exists, so the constraint ALTERs are what actually
+-- carry the change forward to an already-created table.
+alter table global_task_sources drop constraint if exists dispatcher_sink_compatibility;
+alter table global_task_sources add constraint dispatcher_sink_compatibility
+  check (
+    (dispatcher_skill = 'status-record' and output_sink = 'memory') or
+    (dispatcher_skill = 'research') or
+    (dispatcher_skill = 'self-improve' and output_sink <> 'event_reemit') or
+    (dispatcher_skill = 'last-work-report' and output_sink <> 'event_reemit')
+  );
+
+-- cadence floor of 1 second. The advancer divides by EXTRACT(EPOCH FROM cadence)
+-- when counting lapsed intervals, so a zero cadence is a divide-by-zero that
+-- aborts the whole advance transaction; a sub-second cadence makes the
+-- int(epoch) dedup_key collide across ticks. NULL stays a valid one-shot. Added
+-- as a separate named ALTER (not inline on the column) so it lands on a table
+-- that already exists from an earlier run of this migration.
+alter table global_task_sources drop constraint if exists global_task_sources_cadence_floor;
+alter table global_task_sources add constraint global_task_sources_cadence_floor
+  check (cadence is null or cadence >= interval '1 second');
 
 -- fire_per_interval needs a cadence to count intervals against; a one-shot
 -- (cadence IS NULL) with fire_per_interval is an incoherent state. Forbid it.
