@@ -1207,7 +1207,10 @@ function Invoke-Watchdog {
                 -BaseUrl $tier2Primary.BaseUrl -AuthToken $tier2Primary.AuthToken `
                 -TargetIssue ''
             $tierUsed = "tier2:$($tier2Primary.Provider)"
-            $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+            # Same null-guard as the subscription path: a failed run returns
+            # result=$null — harmless under default strictness, a PropertyNotFound
+            # throw under a future Set-StrictMode. Guard all three call sites.
+            $targetIssue = if ($invocation.result) { Get-IssueFromBranch -Branch $invocation.result.branch } else { $null }
             $oomDetected = $false
         } else {
             # ----- Tier 0: primary Ollama model -----
@@ -1215,7 +1218,7 @@ function Invoke-Watchdog {
                 -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
                 -TargetIssue ''
             $tierUsed = 'tier0'
-            $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
+            $targetIssue = if ($invocation.result) { Get-IssueFromBranch -Branch $invocation.result.branch } else { $null }
             $oomDetected = (-not $invocation.ok) -and (Test-IsOOM -Reason $invocation.reason -LogFile $logFile)
         }
 
@@ -1226,7 +1229,7 @@ function Invoke-Watchdog {
                 -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
                 -TargetIssue ([string]$targetIssue)
             $tierUsed = 'tier1'
-            if (-not $targetIssue) {
+            if (-not $targetIssue -and $invocation.result) {
                 $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
             }
         }

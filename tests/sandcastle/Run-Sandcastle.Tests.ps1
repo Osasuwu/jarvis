@@ -388,6 +388,17 @@ Describe 'Protect-LogTail' {
         $out | Should Not Match 'sk-ddd'
         $out | Should Match 'API-KEY-REDACTED'
     }
+    It 'redacts the subscription OAuth token passed explicitly in -Secrets' {
+        # The failure handler passes $oauthToken in -Secrets (Run-Sandcastle.ps1
+        # ~L1173). Even though the OAuth token also matches the sk-ant pattern,
+        # the literal-secret path must redact it so a credit-exhaustion log tail
+        # never persists the Agent-SDK credential to Supabase. Built at runtime
+        # so the token shape never appears as a source literal (gitleaks).
+        $oauth = 'sk-ant-oat01-' + ('z' * 40)
+        $out = Protect-LogTail -Text "CLAUDE_CODE_OAUTH_TOKEN=$oauth exhausted" -Secrets @($oauth)
+        $out | Should Not Match 'sk-ant-oat01-z'
+        $out | Should Match 'REDACTED'
+    }
     It 'returns empty string on empty input' {
         Protect-LogTail -Text '' | Should Be ''
     }
@@ -1173,8 +1184,11 @@ Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, 
         Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
         $script:calls[0].Mode | Should Be 'subscription'
         $script:calls[1].Mode | Should Be 'endpoint'
+        # The failure record must attribute the run to the tier that actually
+        # ran last (the DeepSeek fallback), not the subscription primary — so
+        # the outcome row is greppable by the tier that consumed the budget.
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
-            -ParameterFilter { $Status -eq 'failure' }
+            -ParameterFilter { $Status -eq 'failure' -and $LlmMetrics.tier -eq 'tier2:deepseek' }
     }
 
     It 'AC: -SubscriptionPrimary supersedes -Tier2AsPrimary (both set -> subscription wins)' {
