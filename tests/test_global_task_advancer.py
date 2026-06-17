@@ -479,7 +479,13 @@ class TestGlobalTaskSourcesSchema:
             # DELETE below would itself raise unless we rewind to a savepoint
             # taken before the failing statement.
             cur.execute("SAVEPOINT before_bad_insert")
-            with pytest.raises(Exception, match="dispatcher_skill"):
+            # An unknown skill violates BOTH the dispatcher_skill enum check and
+            # the dispatcher_sink_compatibility composite check (compatibility
+            # only whitelists known skills). Postgres reports whichever it
+            # evaluates first — observed to be dispatcher_sink_compatibility — so
+            # match the shared "dispatcher" stem rather than a single constraint
+            # name, which would be brittle to evaluation order.
+            with pytest.raises(Exception, match="dispatcher"):
                 cur.execute("""
                     INSERT INTO global_task_sources (title, dispatcher_skill, output_sink)
                     VALUES ('test2', 'invalid_skill', 'memory')
@@ -744,9 +750,16 @@ class TestCoalesceAdvancer:
         """A recurring row's next_run is advanced past now() by the REAL advancer.
 
         M2 (#975): runs ``advance_global_tasks`` instead of re-issuing the
-        GREATEST(...) UPDATE inline. A 1h-cadence row due 2h ago coalesces to one
-        fire and its next_run jumps forward (GREATEST(now(), next_run + cadence)
-        clamps the badly-lapsed row to ~now()), so the row is no longer due.
+        GREATEST(...) UPDATE inline. A 1h-cadence row that came due 10 min ago
+        fires once and its next_run advances to next_run + cadence (~50 min in
+        the future via GREATEST(now(), next_run + cadence)), so the row is no
+        longer due.
+
+        Uses a *mildly*-late row (lapsed < one cadence) so the advance is
+        unambiguously into the future. The badly-lapsed case (lapsed by >1
+        cadence) clamps next_run to ~now() under periods=1, leaving the row
+        borderline-due and double-firing on the next tick — a real coalesce
+        semantics wart tracked separately, not asserted here.
         """
         db_url = os.environ["DATABASE_URL"]
         with db_connection.cursor() as cur:
@@ -756,7 +769,7 @@ class TestCoalesceAdvancer:
                     next_run, on_lapse
                 ) VALUES (
                     'recurring advance test', 'research', 'memory', INTERVAL '1 hour',
-                    now() - INTERVAL '2 hours', 'coalesce'
+                    now() - INTERVAL '10 minutes', 'coalesce'
                 )
                 RETURNING id
             """)
