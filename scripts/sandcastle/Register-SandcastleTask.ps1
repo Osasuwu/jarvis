@@ -64,17 +64,20 @@
     API key from .env instead (carries Max-subscription quota risk -- prefer
     deepseek for unattended cron).
 
-    When -SubscriptionPrimary is on (the default), Tier2Provider is NOT promoted
-    to primary; it stays wired as the credit-exhaustion fallback only.
+    By default (-SubscriptionPrimary $false) Tier2Provider IS the AFK primary
+    via the auto-appended -Tier2AsPrimary. Only when -SubscriptionPrimary is
+    opted in does Tier2Provider step back to the credit-exhaustion fallback.
 
 .PARAMETER SubscriptionPrimary
-    #972. Default $true: register the AFK task with the Anthropic Max Agent-SDK
-    credit as the primary tier (Opus 4.8 @ medium effort, bills the $100/mo
-    credit via CLAUDE_CODE_OAUTH_TOKEN in .sandcastle/.env), DeepSeek as the
-    fallback. Requires CLAUDE_CODE_OAUTH_TOKEN set on the host. Pass
-    -SubscriptionPrimary $false to revert to the legacy DeepSeek-as-primary
-    registration. (Space form, not the colon `:$false` switch syntax — this is a
-    [bool] param; `:$false` is a binding error on Windows PowerShell 5.1.)
+    #972. Default $false: DeepSeek (Tier 2) is the AFK primary. Opt in with
+    -SubscriptionPrimary $true to register the Anthropic Max Agent-SDK credit
+    as the primary tier (Opus 4.8 @ medium effort, bills the $100/mo credit via
+    CLAUDE_CODE_OAUTH_TOKEN in .sandcastle/.env), DeepSeek as the fallback.
+    Requires CLAUDE_CODE_OAUTH_TOKEN set on the host. 2026-06-17: kept OFF —
+    Anthropic shelved the separate Agent-SDK automation quota at launch, so the
+    credit path is dormant code until that lands. (Space form, not the colon
+    `:$true` switch syntax — this is a [bool] param; `:$true` is a binding error
+    on Windows PowerShell 5.1.)
 
 .PARAMETER SubscriptionModel
     Subscription-tier model. Default claude-opus-4-8 (regular, NOT the 1M
@@ -135,12 +138,13 @@ param(
     [ValidateSet('', 'deepseek', 'claude')]
     [string]$Tier2Provider = 'deepseek',
 
-    # #972: subscription Agent-SDK credit is the primary AFK tier by default
-    # (Opus 4.8 @ medium effort, bills the $100/mo Max credit). DeepSeek stays
-    # wired as the credit-exhaustion fallback. Pass -SubscriptionPrimary $false
-    # (space form — `:$false` colon syntax is a [bool]-binding error on PS 5.1)
-    # to fall back to the legacy Tier-2-as-primary (DeepSeek) registration.
-    [bool]$SubscriptionPrimary = $true,
+    # #972: subscription Agent-SDK credit primary is an OPT-IN tier, default OFF.
+    # 2026-06-17: Anthropic shelved the separate Agent-SDK automation quota at
+    # launch, so the credit path stays in the code but is not used — DeepSeek
+    # (Tier 2) is the default AFK primary again. Pass -SubscriptionPrimary $true
+    # (space form — `:$true` colon syntax is a [bool]-binding error on PS 5.1)
+    # to opt back in once the credit is real and CLAUDE_CODE_OAUTH_TOKEN is set.
+    [bool]$SubscriptionPrimary = $false,
 
     [string]$SubscriptionModel = 'claude-opus-4-8',
 
@@ -205,7 +209,7 @@ function Format-SandcastleActionArgs {
         [string]$Tier2Provider,
         [int]$MaxIterations,
         [string]$WindowEnd,
-        [bool]$SubscriptionPrimary = $true,
+        [bool]$SubscriptionPrimary = $false,
         [string]$SubscriptionModel = 'claude-opus-4-8',
         [ValidateSet('low', 'medium', 'high', 'max')]
         [string]$SubscriptionEffort = 'medium'
@@ -426,10 +430,10 @@ $argParts = Format-SandcastleActionArgs -WatchdogPath $watchdog `
     -SubscriptionModel $SubscriptionModel -SubscriptionEffort $SubscriptionEffort
 
 # Surface the billing-impacting tier choice on every registration. The default
-# is -SubscriptionPrimary $true (#972) — a bare `Register-SandcastleTask.ps1
-# -Repo X` now registers a task that bills the Anthropic Max Agent-SDK credit,
-# a change from the prior DeepSeek-primary default. Make that explicit so it is
-# never a silent flip.
+# is -SubscriptionPrimary $false (#972) — a bare `Register-SandcastleTask.ps1
+# -Repo X` registers a DeepSeek-primary task; opting into the subscription
+# credit (which bills the Anthropic Max Agent-SDK credit) is explicit. Print the
+# resolved tier either way so a billing flip is never silent.
 if ($SubscriptionPrimary) {
     Write-Host "[register] PRIMARY tier: subscription ($SubscriptionModel, effort=$SubscriptionEffort) — bills the Agent-SDK credit; DeepSeek fallback=$(if ($Tier2Provider) { $Tier2Provider } else { '<none>' })." -ForegroundColor Yellow
 } else {

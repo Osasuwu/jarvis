@@ -174,9 +174,24 @@ Describe 'Format-SandcastleActionArgs' {
         ($args -contains '-Tier2AsPrimary') | Should Be $true
     }
 
-    It 'default: subscription primary emits -SubscriptionPrimary + model/effort, DeepSeek as fallback, NOT -Tier2AsPrimary' {
+    It 'default (no flag): DeepSeek is primary -- emits -Tier2AsPrimary, NOT -SubscriptionPrimary' {
+        # 2026-06-17: default reverted to DeepSeek-primary (#972). Anthropic
+        # shelved the separate Agent-SDK automation quota at launch, so the
+        # subscription path is dormant opt-in code, not the default tier.
         $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
             -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00'
+        ($args -contains '-SubscriptionPrimary') | Should Be $false
+        ($args -contains '-SubscriptionModel')   | Should Be $false
+        $tIdx = [array]::IndexOf($args, '-Tier2Provider')
+        $tIdx | Should Not Be -1
+        $args[$tIdx + 1] | Should Be 'deepseek'
+        ($args -contains '-Tier2AsPrimary') | Should Be $true
+    }
+
+    It 'opt-in: -SubscriptionPrimary $true emits -SubscriptionPrimary + model/effort, DeepSeek as fallback, NOT -Tier2AsPrimary' {
+        $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
+            -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00' `
+            -SubscriptionPrimary $true
         ($args -contains '-SubscriptionPrimary') | Should Be $true
         $mIdx = [array]::IndexOf($args, '-SubscriptionModel')
         $mIdx | Should Not Be -1
@@ -192,10 +207,10 @@ Describe 'Format-SandcastleActionArgs' {
         ($args -contains '-Tier2AsPrimary') | Should Be $false
     }
 
-    It 'default: subscription model/effort overridable' {
+    It 'opt-in: subscription model/effort overridable' {
         $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
             -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00' `
-            -SubscriptionModel 'claude-sonnet-4-6' -SubscriptionEffort 'high'
+            -SubscriptionPrimary $true -SubscriptionModel 'claude-sonnet-4-6' -SubscriptionEffort 'high'
         $mIdx = [array]::IndexOf($args, '-SubscriptionModel')
         $args[$mIdx + 1] | Should Be 'claude-sonnet-4-6'
         $eIdx = [array]::IndexOf($args, '-SubscriptionEffort')
