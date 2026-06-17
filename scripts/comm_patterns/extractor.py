@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from .classifier import OllamaUnavailable
 from .scrubber import scrub
 from .store import Store
 from .transcript import Turn, is_headless_cwd, is_interactive, parse_turns
@@ -92,7 +93,9 @@ def extract_session(
         "low_confidence_skipped": 0,
         # Definitive "model says no pattern" — watermark advances.
         "no_pattern_skipped": 0,
-        # Transient classifier failure (network, parse) — watermark stays put.
+        # Transient connection failure (Ollama unreachable) — watermark stays put.
+        "connection_errors": 0,
+        # Transient classifier failure (JSON parse) — watermark stays put.
         "classifier_errors": 0,
         # Hit the wall-clock cap; remaining turns retry on next pass.
         "wall_clock_aborted": False,
@@ -121,10 +124,14 @@ def extract_session(
         if time.monotonic() >= deadline:
             stats["wall_clock_aborted"] = True
             break
-        result = classify_fn(turn.user_text, turn.prev_assistant_text)
+        try:
+            result = classify_fn(turn.user_text, turn.prev_assistant_text)
+        except OllamaUnavailable:
+            stats["connection_errors"] += 1
+            break
         stats["turns_classified"] += 1
         # Two None-shaped outcomes — opposite retry semantics:
-        #   * result is None             — classifier failure (network/parse).
+        #   * result is None             — classifier failure (JSON parse).
         #     Halt the loop so the watermark is bounded by the last
         #     contiguously-processed turn; later turns in this transcript
         #     stay below the watermark for the next pass to retry. Without
