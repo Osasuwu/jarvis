@@ -133,7 +133,7 @@ def _insert_event(
             'global_task_due', 'low', '_global', 'global_task_advancer',
             %s, %s::jsonb, %s
         )
-        ON CONFLICT (dedup_key) DO NOTHING
+        ON CONFLICT (dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
         """,
         (title, json.dumps(event_payload, default=str), dedup_key),
     )
@@ -192,8 +192,8 @@ def _advance_due_rows(cur: Any) -> int:
         FROM global_task_sources
         WHERE enabled = true
           AND (next_run IS NULL OR next_run <= now())
-        FOR UPDATE SKIP LOCKED
         ORDER BY created_at ASC
+        FOR UPDATE SKIP LOCKED
         """
     )
     due_rows = cur.fetchall()

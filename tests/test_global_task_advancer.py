@@ -41,6 +41,7 @@ def _ensure_psycopg_importable() -> None:
     real driver is absent, so a real install is used verbatim where present."""
     try:
         import psycopg  # noqa: F401
+
         return
     except ModuleNotFoundError:
         pass
@@ -57,9 +58,7 @@ def _ensure_psycopg_importable() -> None:
     sys.modules["psycopg.rows"] = rows
 
 
-_MODULE_PATH = (
-    Path(__file__).resolve().parent.parent / "scripts" / "advance-global-tasks.py"
-)
+_MODULE_PATH = Path(__file__).resolve().parent.parent / "scripts" / "advance-global-tasks.py"
 _spec = importlib.util.spec_from_file_location("advance_global_tasks", _MODULE_PATH)
 assert _spec is not None and _spec.loader is not None
 _mod = importlib.util.module_from_spec(_spec)
@@ -239,9 +238,7 @@ class TestAdvanceDueRowsFakeCursor:
     @staticmethod
     def _inserts(cur: _FakeCursor) -> list[tuple[str, Any]]:
         return [
-            (s, p)
-            for s, p in cur.statements
-            if s.strip().upper().startswith("INSERT INTO EVENTS")
+            (s, p) for s, p in cur.statements if s.strip().upper().startswith("INSERT INTO EVENTS")
         ]
 
     def test_coalesce_one_shot_inserts_one_event(self) -> None:
@@ -256,10 +253,7 @@ class TestAdvanceDueRowsFakeCursor:
         # projection.
         cur = _FakeCursor([_due_row()])
         _mod._advance_due_rows(cur)
-        selects = [
-            s for s, _ in cur.statements
-            if "FROM GLOBAL_TASK_SOURCES" in s.strip().upper()
-        ]
+        selects = [s for s, _ in cur.statements if "FROM GLOBAL_TASK_SOURCES" in s.strip().upper()]
         assert selects, "no SELECT FROM global_task_sources issued"
         assert "body" in selects[0].lower(), "SELECT must project the body column"
 
@@ -343,31 +337,25 @@ class TestAdvanceDueRowsFakeCursor:
         # other due row down with it. The advancer must skip a sub-1s-cadence row
         # (belt-and-suspenders behind the DB cadence floor): no event inserted, and
         # critically no interval-division SELECT issued at all.
-        cur = _FakeCursor(
-            [_due_row(cadence=timedelta(0), next_run=_FIXED_NEXT_RUN)]
-        )
+        cur = _FakeCursor([_due_row(cadence=timedelta(0), next_run=_FIXED_NEXT_RUN)])
         assert _mod._advance_due_rows(cur) == 0
         assert self._inserts(cur) == [], "zero-cadence row must emit no event"
-        assert not any(
-            "intervals_missed" in sql for sql, _ in cur.statements
-        ), "zero-cadence row must never reach the interval-division SELECT"
+        assert not any("intervals_missed" in sql for sql, _ in cur.statements), (
+            "zero-cadence row must never reach the interval-division SELECT"
+        )
 
     def test_subsecond_cadence_row_skipped(self) -> None:
         # MAJOR #1 (Python layer): a sub-second cadence collides int(epoch)
         # dedup_keys across ticks, so it is rejected at the same 1s floor as the
         # zero case rather than fired.
-        cur = _FakeCursor(
-            [_due_row(cadence=timedelta(milliseconds=500), next_run=_FIXED_NEXT_RUN)]
-        )
+        cur = _FakeCursor([_due_row(cadence=timedelta(milliseconds=500), next_run=_FIXED_NEXT_RUN)])
         assert _mod._advance_due_rows(cur) == 0
         assert self._inserts(cur) == []
 
     def test_one_second_cadence_row_still_fires(self) -> None:
         # Boundary: the floor is INCLUSIVE at 1s, so a 1-second cadence is valid
         # and must still fire — the guard rejects below 1s, not at it.
-        cur = _FakeCursor(
-            [_due_row(cadence=timedelta(seconds=1), next_run=_FIXED_NEXT_RUN)]
-        )
+        cur = _FakeCursor([_due_row(cadence=timedelta(seconds=1), next_run=_FIXED_NEXT_RUN)])
         assert _mod._advance_due_rows(cur) == 1
         assert len(self._inserts(cur)) == 1
 
@@ -393,9 +381,7 @@ class TestAdvanceDueRowsFakeCursor:
 
         monkeypatch.setattr(_mod.psycopg, "connect", _boom)
         with caplog.at_level(logging.ERROR):
-            result = _mod.advance_global_tasks(
-                db_url="postgres://u:supersecret@host/db"
-            )
+            result = _mod.advance_global_tasks(db_url="postgres://u:supersecret@host/db")
         assert result == -1
         assert "supersecret" not in caplog.text, "DSN/password must not be logged"
 
@@ -407,18 +393,51 @@ class TestAdvanceDueRowsFakeCursor:
 
 @pytest.fixture
 def db_connection() -> Any:
-    """Provide a Postgres connection if DATABASE_URL is set."""
-    if not os.environ.get("DATABASE_URL"):
+    """Provide a Postgres connection if DATABASE_URL is set.
+
+    Uses ``row_factory=dict_row`` so tests access columns by name (``row["id"]``)
+    exactly as production code does (advance-global-tasks.py connects with
+    dict_row). The previous tuple-row fixture diverged from production access and
+    would silently break if a SELECT projection changed (MAJOR #3, #975).
+
+    When ``REQUIRE_DB`` is set (the postgres CI job sets it), a missing
+    ``DATABASE_URL`` is a hard FAILURE rather than a skip — the whole point of
+    #975 is that these DB-gated tests must not silently skip in the gate. They
+    skip cleanly only in local / non-DB runs where ``REQUIRE_DB`` is unset.
+    """
+    db_url = os.environ.get("DATABASE_URL")
+    # Treat REQUIRE_DB="0"/"" as OFF — matches the meta-test's config check
+    # (test_require_db_enforced) so the latch's truthiness can't drift between
+    # the fixture and the thing that pins it. A bare os.environ.get(...) truthy
+    # check would treat "0" as ON, a footgun.
+    require_db = os.environ.get("REQUIRE_DB", "").strip() not in ("", "0")
+    if not db_url:
+        if require_db:
+            pytest.fail(
+                "REQUIRE_DB is set but DATABASE_URL is missing — the DB-gated "
+                "advancer tests must run against real Postgres in this job, not "
+                "silently skip (#975)."
+            )
         pytest.skip("DATABASE_URL not set (no Postgres connection available)")
 
     try:
         import psycopg
-        db_url = os.environ["DATABASE_URL"]
-        conn = psycopg.connect(db_url)
-        yield conn
-        conn.close()
+        from psycopg.rows import dict_row
     except ImportError:
         pytest.skip("psycopg not installed")
+
+    # connect() can raise OperationalError (bad DSN, service down). Surface it as
+    # a clean failure — but never echo db_url, it carries the password (the
+    # advancer logs only type(e).__name__ for the same reason).
+    try:
+        conn = psycopg.connect(db_url, row_factory=dict_row)
+    except Exception as e:  # noqa: BLE001 — connection failure must fail loudly, not skip
+        pytest.fail(f"could not connect to DATABASE_URL: {type(e).__name__}")
+
+    try:
+        yield conn
+    finally:
+        conn.close()
 
 
 class TestGlobalTaskSourcesSchema:
@@ -433,7 +452,7 @@ class TestGlobalTaskSourcesSchema:
                     WHERE table_name = 'global_task_sources'
                 )
             """)
-            (exists,) = cur.fetchone()
+            exists = cur.fetchone()["exists"]
             assert exists, "global_task_sources table should exist"
 
     def test_schema_columns(self, db_connection: Any) -> None:
@@ -445,7 +464,7 @@ class TestGlobalTaskSourcesSchema:
                 WHERE table_name = 'global_task_sources'
                 ORDER BY ordinal_position
             """)
-            columns = {name: dtype for name, dtype in cur.fetchall()}
+            columns = {r["column_name"]: r["data_type"] for r in cur.fetchall()}
 
             assert "id" in columns
             assert "title" in columns
@@ -467,14 +486,20 @@ class TestGlobalTaskSourcesSchema:
                 VALUES ('test', 'research', 'memory')
                 RETURNING id
             """)
-            (row_id,) = cur.fetchone()
+            row_id = cur.fetchone()["id"]
 
             # Invalid insert should fail. A CHECK violation aborts the whole
             # transaction (psycopg → InFailedSqlTransaction), so the cleanup
             # DELETE below would itself raise unless we rewind to a savepoint
             # taken before the failing statement.
             cur.execute("SAVEPOINT before_bad_insert")
-            with pytest.raises(Exception, match="dispatcher_skill"):
+            # An unknown skill violates BOTH the dispatcher_skill enum check and
+            # the dispatcher_sink_compatibility composite check (compatibility
+            # only whitelists known skills). Postgres reports whichever it
+            # evaluates first — observed to be dispatcher_sink_compatibility — so
+            # match the shared "dispatcher" stem rather than a single constraint
+            # name, which would be brittle to evaluation order.
+            with pytest.raises(Exception, match="dispatcher"):
                 cur.execute("""
                     INSERT INTO global_task_sources (title, dispatcher_skill, output_sink)
                     VALUES ('test2', 'invalid_skill', 'memory')
@@ -495,7 +520,7 @@ class TestGlobalTaskSourcesSchema:
                 VALUES ('test', 'research', 'telegram_digest')
                 RETURNING id
             """)
-            (row_id,) = cur.fetchone()
+            row_id = cur.fetchone()["id"]
 
             # Invalid insert should fail. Wrap in a savepoint so the aborted
             # transaction is recovered before the cleanup DELETE (see
@@ -523,7 +548,7 @@ class TestGlobalTaskSourcesSchema:
                 ) VALUES ('test', 'research', 'memory', 'coalesce')
                 RETURNING id
             """)
-            (row_id1,) = cur.fetchone()
+            row_id1 = cur.fetchone()["id"]
 
             # Valid insert with fire_per_interval. fire_per_interval requires a
             # cadence (cadence_lapse_coherence CHECK forbids cadence IS NULL with
@@ -534,7 +559,7 @@ class TestGlobalTaskSourcesSchema:
                 ) VALUES ('test2', 'research', 'memory', 'fire_per_interval', INTERVAL '1 hour')
                 RETURNING id
             """)
-            (row_id2,) = cur.fetchone()
+            row_id2 = cur.fetchone()["id"]
 
             # Invalid insert should fail. Wrap in a savepoint so the aborted
             # transaction is recovered before the cleanup DELETE (see
@@ -563,7 +588,7 @@ class TestGlobalTaskSourcesSchema:
                 ) VALUES ('status check', 'status-record', 'memory')
                 RETURNING id
             """)
-            (row_id,) = cur.fetchone()
+            row_id = cur.fetchone()["id"]
 
             # status-record with non-memory should fail. Wrap in a savepoint:
             # without the rewind the aborted transaction would also sink the
@@ -585,7 +610,7 @@ class TestGlobalTaskSourcesSchema:
                 ) VALUES ('research task', 'research', 'event_reemit')
                 RETURNING id
             """)
-            (row_id2,) = cur.fetchone()
+            row_id2 = cur.fetchone()["id"]
 
             # self-improve -> event_reemit must fail: the tightened matrix allows
             # self-improve / last-work-report any sink EXCEPT event_reemit (re-emitting
@@ -608,7 +633,7 @@ class TestGlobalTaskSourcesSchema:
                 ) VALUES ('self improve memory', 'self-improve', 'memory')
                 RETURNING id
             """)
-            (row_id3,) = cur.fetchone()
+            row_id3 = cur.fetchone()["id"]
 
             # Clean up
             cur.execute(
@@ -625,7 +650,7 @@ class TestGlobalTaskSourcesSchema:
                 VALUES ('service role test', 'research', 'memory')
                 RETURNING id
             """)
-            (row_id,) = cur.fetchone()
+            row_id = cur.fetchone()["id"]
             assert row_id is not None
 
             # Clean up
@@ -637,75 +662,74 @@ class TestCoalesceAdvancer:
     """Test advancer behavior with coalesce lapse strategy (DB-gated)."""
 
     def test_due_coalesce_row_fires_once_with_lapse_intervals(self, db_connection: Any) -> None:
-        """Due coalesce row fires exactly once, payload carries lapse_intervals."""
+        """A due coalesce row, run through the REAL advancer, emits exactly one
+        global_task_due event whose payload forwards source fields + lapse_intervals.
+
+        M2 (#975): calls production ``advance_global_tasks`` instead of hand-rolling
+        the SELECT/INSERT, so the test breaks if the advancer's projection, dedup
+        key, or ON CONFLICT clause changes — the old inline-SQL version asserted
+        the schema was wired up but kept passing against a lie if the real SQL drifted.
+        """
+        db_url = os.environ["DATABASE_URL"]
         with db_connection.cursor() as cur:
-            # Create a due one-shot task
+            # Recurring (1h cadence) row due 2h ago → lapse_intervals = floor(2)+1 = 3.
             cur.execute("""
                 INSERT INTO global_task_sources (
-                    title, dispatcher_skill, output_sink, cadence,
+                    title, body, dispatcher_skill, output_sink, cadence,
                     next_run, on_lapse
                 ) VALUES (
-                    'one-shot task', 'research', 'memory', NULL,
-                    now() - INTERVAL '1 hour', 'coalesce'
+                    'coalesce fire test', 'do the thing', 'research', 'memory',
+                    INTERVAL '1 hour', now() - INTERVAL '2 hours', 'coalesce'
                 )
                 RETURNING id
             """)
-            (task_id,) = cur.fetchone()
+            task_id = str(cur.fetchone()["id"])
+        # Commit so the advancer's OWN connection (separate from this fixture's)
+        # sees the row.
+        db_connection.commit()
 
-            # Simulate advancer: fetch due row
-            cur.execute("""
-                SELECT id, title, dispatcher_skill, output_sink, payload,
-                       cadence, next_run, on_lapse
-                FROM global_task_sources
-                WHERE enabled = true AND (next_run IS NULL OR next_run <= now())
-                ORDER BY created_at ASC
-            """)
-            rows = cur.fetchall()
-            assert len(rows) >= 1
+        try:
+            inserted = _mod.advance_global_tasks(db_url=db_url)
+            assert inserted >= 1, "advancer must insert the due row's event"
 
-            row = [r for r in rows if r[0] == task_id][0]
-            next_run = row[6]
-
-            # Compute lapse_intervals (first run = 1)
-            lapse_intervals = 1
-
-            # Compute dedup_key
-            next_run_epoch = next_run.timestamp()
-            dedup_key = compute_dedup_key(str(task_id), next_run_epoch)
-
-            # Insert event
-            event_payload = {
-                "source_id": str(task_id),
-                "dispatcher_skill": "research",
-                "output_sink": "memory",
-                "payload": {},
-                "lapse_intervals": lapse_intervals,
-            }
-            cur.execute("""
-                INSERT INTO events (
-                    event_type, severity, repo, source, title, payload, dedup_key
-                ) VALUES (
-                    'global_task_due', 'low', '_global', 'global_task_advancer',
-                    %s, %s::jsonb, %s
+            # DB-side: the single event the advancer wrote for THIS source.
+            with db_connection.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT title, source, payload, dedup_key
+                    FROM events
+                    WHERE event_type = 'global_task_due'
+                      AND payload->>'source_id' = %s
+                    """,
+                    (task_id,),
                 )
-            """, ("one-shot task", json.dumps(event_payload), dedup_key))
-
-            # Verify event created
-            cur.execute(
-                "SELECT payload FROM events WHERE event_type = 'global_task_due' AND source = 'global_task_advancer' ORDER BY created_at DESC LIMIT 1"
+                events = cur.fetchall()
+            assert len(events) == 1, "exactly one global_task_due event for the source"
+            ev = events[0]
+            assert ev["source"] == "global_task_advancer"
+            assert ev["title"] == "coalesce fire test"
+            assert ev["payload"]["body"] == "do the thing"
+            assert ev["payload"]["source_id"] == task_id
+            assert ev["payload"]["lapse_intervals"] == 3, (
+                "coalesce row 2 intervals late carries floor(2)+1 == 3"
             )
-            (payload,) = cur.fetchone()
-            assert payload["lapse_intervals"] == 1
-
-            # Clean up
-            cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
-            cur.execute("DELETE FROM events WHERE title = 'one-shot task'")
+            assert ev["dedup_key"], "advancer must set a dedup_key for ON CONFLICT"
+        finally:
+            db_connection.rollback()
+            with db_connection.cursor() as cur:
+                cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
+                cur.execute("DELETE FROM events WHERE payload->>'source_id' = %s", (task_id,))
             db_connection.commit()
 
     def test_one_shot_row_disables_after_fire(self, db_connection: Any) -> None:
-        """One-shot (cadence=NULL) row is disabled (enabled=false) after update."""
+        """A one-shot (cadence=NULL) row is disabled by the REAL advancer after it fires.
+
+        M2 (#975): drives ``advance_global_tasks`` rather than hand-running the
+        disable UPDATE, so it verifies the advancer's actual one-shot teardown
+        (last_run stamped, next_run NULLed, enabled=false), not a copy of it.
+        """
+        db_url = os.environ["DATABASE_URL"]
         with db_connection.cursor() as cur:
-            # Create a one-shot task
             cur.execute("""
                 INSERT INTO global_task_sources (
                     title, dispatcher_skill, output_sink, cadence,
@@ -716,64 +740,115 @@ class TestCoalesceAdvancer:
                 )
                 RETURNING id
             """)
-            (task_id,) = cur.fetchone()
+            task_id = str(cur.fetchone()["id"])
+        db_connection.commit()
 
-            # Simulate advancer UPDATE
-            cur.execute("""
-                UPDATE global_task_sources
-                SET last_run = now(),
-                    next_run = NULL,
-                    enabled = false
-                WHERE id = %s
-            """, (task_id,))
+        try:
+            assert _mod.advance_global_tasks(db_url=db_url) >= 1
 
-            # Verify disabled
-            cur.execute("SELECT enabled FROM global_task_sources WHERE id = %s", (task_id,))
-            (enabled,) = cur.fetchone()
-            assert enabled is False
+            with db_connection.cursor() as cur:
+                cur.execute(
+                    "SELECT enabled, next_run, last_run FROM global_task_sources WHERE id = %s",
+                    (task_id,),
+                )
+                row = cur.fetchone()
+            assert row["enabled"] is False, "one-shot row must be disabled after firing"
+            assert row["next_run"] is None, "one-shot row's next_run must be cleared"
+            assert row["last_run"] is not None, "advancer must stamp last_run"
 
-            # Clean up
-            cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
+            # M3 (#975): the disable is only half the contract — the advancer
+            # must also have written exactly one due event for THIS source.
+            with db_connection.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT title, source
+                    FROM events
+                    WHERE event_type = 'global_task_due'
+                      AND payload->>'source_id' = %s
+                    """,
+                    (task_id,),
+                )
+                events = cur.fetchall()
+            assert len(events) == 1, "exactly one global_task_due event for the source"
+            assert events[0]["source"] == "global_task_advancer"
+            assert events[0]["title"] == "one-shot disable test"
+        finally:
+            db_connection.rollback()
+            with db_connection.cursor() as cur:
+                cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
+                cur.execute("DELETE FROM events WHERE payload->>'source_id' = %s", (task_id,))
             db_connection.commit()
 
     def test_recurring_row_advances_next_run_by_cadence(self, db_connection: Any) -> None:
-        """Recurring row's next_run advances by exactly one cadence period."""
+        """A recurring row's next_run is advanced past now() by the REAL advancer.
+
+        M2 (#975): runs ``advance_global_tasks`` instead of re-issuing the
+        GREATEST(...) UPDATE inline. A 1h-cadence row that came due 10 min ago
+        fires once and its next_run advances to next_run + cadence (~50 min in
+        the future via GREATEST(now(), next_run + cadence)), so the row is no
+        longer due.
+
+        Uses a *mildly*-late row (lapsed < one cadence) so the advance is
+        unambiguously into the future. The badly-lapsed case (lapsed by >1
+        cadence) clamps next_run to ~now() under periods=1, leaving the row
+        borderline-due and double-firing on the next tick — a real coalesce
+        semantics wart tracked in #983, not asserted here.
+        """
+        db_url = os.environ["DATABASE_URL"]
         with db_connection.cursor() as cur:
-            # Create a recurring task with 1-hour cadence, due 2 hours ago
             cur.execute("""
                 INSERT INTO global_task_sources (
                     title, dispatcher_skill, output_sink, cadence,
                     next_run, on_lapse
                 ) VALUES (
                     'recurring advance test', 'research', 'memory', INTERVAL '1 hour',
-                    now() - INTERVAL '2 hours', 'coalesce'
+                    now() - INTERVAL '10 minutes', 'coalesce'
                 )
                 RETURNING id
             """)
-            (task_id,) = cur.fetchone()
-
-            # Capture old next_run
+            task_id = str(cur.fetchone()["id"])
             cur.execute("SELECT next_run FROM global_task_sources WHERE id = %s", (task_id,))
-            (old_next_run,) = cur.fetchone()
+            old_next_run = cur.fetchone()["next_run"]
+        db_connection.commit()
 
-            # Simulate advancer UPDATE
-            cur.execute("""
-                UPDATE global_task_sources
-                SET last_run = now(),
-                    next_run = GREATEST(now(), next_run + INTERVAL '1 hour'::interval)
-                WHERE id = %s
-            """, (task_id,))
+        try:
+            assert _mod.advance_global_tasks(db_url=db_url) >= 1
 
-            # Verify next_run advanced
-            cur.execute("SELECT next_run FROM global_task_sources WHERE id = %s", (task_id,))
-            (new_next_run,) = cur.fetchone()
+            with db_connection.cursor() as cur:
+                cur.execute(
+                    "SELECT next_run, last_run, enabled FROM global_task_sources WHERE id = %s",
+                    (task_id,),
+                )
+                row = cur.fetchone()
+                # The advanced row must no longer be due (next_run > now()).
+                cur.execute("SELECT now() < %s AS advanced_past_now", (row["next_run"],))
+                advanced_past_now = cur.fetchone()["advanced_past_now"]
+            assert row["next_run"] > old_next_run, "next_run must advance forward"
+            assert advanced_past_now, "advanced next_run must be in the future (not still due)"
+            assert row["enabled"] is True, "recurring row stays enabled"
+            assert row["last_run"] is not None, "advancer must stamp last_run"
 
-            # new_next_run should be at least old_next_run + 1 hour
-            # (GREATEST ensures it's not in the past)
-            assert new_next_run > old_next_run
-
-            # Clean up
-            cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
+            # M3 (#975): advancing next_run is only half the contract — verify
+            # the advancer actually emitted one due event for THIS source.
+            with db_connection.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT title, source
+                    FROM events
+                    WHERE event_type = 'global_task_due'
+                      AND payload->>'source_id' = %s
+                    """,
+                    (task_id,),
+                )
+                events = cur.fetchall()
+            assert len(events) == 1, "exactly one global_task_due event for the source"
+            assert events[0]["source"] == "global_task_advancer"
+            assert events[0]["title"] == "recurring advance test"
+        finally:
+            db_connection.rollback()
+            with db_connection.cursor() as cur:
+                cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
+                cur.execute("DELETE FROM events WHERE payload->>'source_id' = %s", (task_id,))
             db_connection.commit()
 
     def test_concurrent_invocations_skip_locked(self, db_connection: Any) -> None:
@@ -782,6 +857,7 @@ class TestCoalesceAdvancer:
         double-fire the same source. Uses two real connections (a single-cursor
         test can't observe locking)."""
         import psycopg
+        from psycopg.rows import dict_row
 
         # Insert one due row, committed so the second connection can see it.
         with db_connection.cursor() as cur:
@@ -795,7 +871,7 @@ class TestCoalesceAdvancer:
                 )
                 RETURNING id
             """)
-            (task_id,) = cur.fetchone()
+            task_id = str(cur.fetchone()["id"])
         db_connection.commit()
 
         claim_sql = """
@@ -805,13 +881,13 @@ class TestCoalesceAdvancer:
             FOR UPDATE SKIP LOCKED
         """
 
-        conn_b = psycopg.connect(os.environ["DATABASE_URL"])
+        conn_b = psycopg.connect(os.environ["DATABASE_URL"], row_factory=dict_row)
         try:
             # Connection A claims the row and HOLDS it in an open transaction.
             with db_connection.cursor() as cur_a:
                 cur_a.execute(claim_sql, (task_id,))
                 claimed_a = cur_a.fetchall()
-                assert any(r[0] == task_id for r in claimed_a), "A should claim the row"
+                assert any(str(r["id"]) == task_id for r in claimed_a), "A should claim the row"
 
                 # Connection B, concurrently, must SKIP the locked row → empty.
                 with conn_b.cursor() as cur_b:
@@ -826,9 +902,9 @@ class TestCoalesceAdvancer:
             # Once A releases, B can claim it.
             with conn_b.cursor() as cur_b2:
                 cur_b2.execute(claim_sql, (task_id,))
-                assert any(
-                    r[0] == task_id for r in cur_b2.fetchall()
-                ), "B should claim the row after A releases"
+                assert any(str(r["id"]) == task_id for r in cur_b2.fetchall()), (
+                    "B should claim the row after A releases"
+                )
             conn_b.rollback()
         finally:
             with db_connection.cursor() as cur:
