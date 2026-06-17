@@ -1633,6 +1633,23 @@ Describe 'Invoke-Sandcastle' {
         $script:seen.Model  | Should Be 'claude-opus-4-8'
     }
 
+    It 'leaves SANDCASTLE_AGENT_EFFORT unset in the child when -Effort is omitted' {
+        # A prior run's value must not leak: omitting -Effort means the child
+        # process sees no effort override, not a stale carry-over from $env.
+        $env:SANDCASTLE_AGENT_EFFORT = 'stale-leak'
+        $script:seenEffort = 'sentinel'
+        Mock Invoke-NpmSandcastle {
+            $script:seenEffort = $env:SANDCASTLE_AGENT_EFFORT
+            [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 }
+        }
+        Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'qwen-large' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'no-eff' `
+            -BaseUrl 'http://ollama' -TargetIssue '' | Out-Null
+        $script:seenEffort | Should BeNullOrEmpty
+        # And the prior host value is restored afterwards (save/restore symmetry).
+        $env:SANDCASTLE_AGENT_EFFORT | Should Be 'stale-leak'
+    }
+
     It 'defaults AUTH_MODE to endpoint (real-money guard) when -AuthMode is omitted' {
         # Any Ollama/DeepSeek caller that does NOT pass -AuthMode must be pinned
         # to endpoint so the presence of CLAUDE_CODE_OAUTH_TOKEN in .env cannot

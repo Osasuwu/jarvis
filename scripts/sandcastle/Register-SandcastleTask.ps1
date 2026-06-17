@@ -207,6 +207,7 @@ function Format-SandcastleActionArgs {
         [string]$WindowEnd,
         [bool]$SubscriptionPrimary = $true,
         [string]$SubscriptionModel = 'claude-opus-4-8',
+        [ValidateSet('low', 'medium', 'high', 'max')]
         [string]$SubscriptionEffort = 'medium'
     )
     $watchdogQuoted = '"' + $WatchdogPath + '"'
@@ -423,6 +424,17 @@ $argParts = Format-SandcastleActionArgs -WatchdogPath $watchdog `
     -WindowEnd $WindowEnd `
     -SubscriptionPrimary $SubscriptionPrimary `
     -SubscriptionModel $SubscriptionModel -SubscriptionEffort $SubscriptionEffort
+
+# Surface the billing-impacting tier choice on every registration. The default
+# is -SubscriptionPrimary $true (#972) — a bare `Register-SandcastleTask.ps1
+# -Repo X` now registers a task that bills the Anthropic Max Agent-SDK credit,
+# a change from the prior DeepSeek-primary default. Make that explicit so it is
+# never a silent flip.
+if ($SubscriptionPrimary) {
+    Write-Host "[register] PRIMARY tier: subscription ($SubscriptionModel, effort=$SubscriptionEffort) — bills the Agent-SDK credit; DeepSeek fallback=$(if ($Tier2Provider) { $Tier2Provider } else { '<none>' })." -ForegroundColor Yellow
+} else {
+    Write-Host "[register] PRIMARY tier: $(if ($Tier2Provider) { "endpoint ($Tier2Provider)" } else { 'Ollama local' }) — subscription credit NOT used."
+}
 
 $action = New-ScheduledTaskAction -Execute $pwshExe `
     -Argument ($argParts -join ' ') `

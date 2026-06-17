@@ -317,9 +317,12 @@ function Invoke-Sandcastle {
     if ($BaseUrl)     { $env:SANDCASTLE_AGENT_BASE_URL   = $BaseUrl }
     if ($AuthToken)   { $env:SANDCASTLE_AGENT_AUTH_TOKEN = $AuthToken }
     # AuthMode always set (defaults 'endpoint') — the real-money guard. Effort
-    # only when supplied (subscription tier); empty => main.mts default.
+    # only when supplied (subscription tier); when omitted, CLEAR it so a prior
+    # run's value (or a host-set SANDCASTLE_AGENT_EFFORT) can't leak into this
+    # child — an endpoint tier must reach main.mts with no effort override.
     $env:SANDCASTLE_AGENT_AUTH_MODE = $AuthMode
-    if ($Effort)      { $env:SANDCASTLE_AGENT_EFFORT      = $Effort }
+    if ($Effort) { $env:SANDCASTLE_AGENT_EFFORT = $Effort }
+    else         { Remove-Item Env:SANDCASTLE_AGENT_EFFORT -ErrorAction SilentlyContinue }
     # TargetIssue: pass empty string verbatim so retries can clear it.
     $env:SANDCASTLE_TARGET_ISSUE = "$TargetIssue"
 

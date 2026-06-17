@@ -106,6 +106,11 @@ if (subscription && !oauthToken) {
       "without it Claude Code would fall back to paid API billing or fail auth.",
   );
 }
+// The guard above guarantees oauthToken is set whenever `subscription` is true.
+// TS cannot carry that narrowing across the intervening for-loop and the authEnv
+// ternary, so pin it to a non-null string here rather than asserting `!` at the
+// distant use site (where the safety is non-obvious).
+const oauthTokenStr: string = subscription ? oauthToken! : "";
 if (subscription) {
   // Real-money guard: withholding ANTHROPIC_* from authEnv (below) is not enough.
   // If any are already set on the HOST process (leftover endpoint-mode run, a
@@ -128,7 +133,7 @@ if (subscription) {
 // Auth env injected into the container — exactly one of the two paths, so the
 // ANTHROPIC_* vars are absent on the subscription path (precedence guard above).
 const authEnv: Record<string, string> = subscription
-  ? { CLAUDE_CODE_OAUTH_TOKEN: oauthToken! }
+  ? { CLAUDE_CODE_OAUTH_TOKEN: oauthTokenStr }
   : { ANTHROPIC_BASE_URL: agentBaseUrl, ANTHROPIC_AUTH_TOKEN: agentAuthToken };
 
 // Token never printed; mode/model/effort are safe and useful for "how much did
