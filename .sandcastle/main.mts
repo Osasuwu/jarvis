@@ -75,6 +75,15 @@ const agentEffort: Effort | undefined = subscription
       return e as Effort;
     })()
   : undefined;
+if (!subscription && process.env.SANDCASTLE_AGENT_EFFORT) {
+  // Endpoint mode may front Ollama, which 400s on --effort, so the flag is
+  // dropped. Warn rather than fail silently — an operator who set it deserves
+  // to know it had no effect.
+  console.warn(
+    "[sandcastle] SANDCASTLE_AGENT_EFFORT is set but ignored in endpoint mode " +
+      "(only the subscription/Claude path supports --effort).",
+  );
+}
 
 // Endpoint-mode connection (unused in subscription mode). Tier 0/1 use the
 // literal "ollama" auth token (Ollama's native Anthropic endpoint ignores it);
@@ -85,14 +94,32 @@ const agentBaseUrl =
   "http://host.docker.internal:11434";
 const agentAuthToken = process.env.SANDCASTLE_AGENT_AUTH_TOKEN ?? "ollama";
 if (subscription && !oauthToken) {
-  // Unreachable via the default (subscription default requires a token), but
-  // guard the explicit SANDCASTLE_AGENT_AUTH_MODE=subscription case so we never
-  // fall through to unauthenticated or paid-API billing.
+  // Unreachable via auto-detection (it only picks "subscription" when a token is
+  // present), but guards the explicit SANDCASTLE_AGENT_AUTH_MODE=subscription
+  // case so we never fall through to unauthenticated or paid-API billing.
   throw new Error(
     "SANDCASTLE_AGENT_AUTH_MODE=subscription requires CLAUDE_CODE_OAUTH_TOKEN " +
       "(generate once on the host with `claude setup-token`). Refusing to run — " +
       "without it Claude Code would fall back to paid API billing or fail auth.",
   );
+}
+if (subscription) {
+  // Real-money guard: withholding ANTHROPIC_* from authEnv (below) is not enough.
+  // If any are already set on the HOST process (leftover endpoint-mode run, a
+  // sourced .env, the commented Tier-2 block in .env.example), an ambient
+  // passthrough can leak them into the container, where they OUTRANK
+  // CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth order and silently route the
+  // run to paid pay-per-token billing. Refuse to start instead.
+  for (const key of ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]) {
+    if (process.env[key]) {
+      throw new Error(
+        `SANDCASTLE_AGENT_AUTH_MODE=subscription: ${key} is set in the host ` +
+          "environment — unset it first. ANTHROPIC_* take auth precedence over " +
+          "CLAUDE_CODE_OAUTH_TOKEN and would silently route this run to paid " +
+          "pay-per-token billing (real money).",
+      );
+    }
+  }
 }
 
 // Auth env injected into the container — exactly one of the two paths, so the
