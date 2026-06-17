@@ -492,7 +492,7 @@ def test_wall_clock_budget_aborts_loop_and_preserves_watermark(tmp_path: Path):
 
 
 def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
-    """A None return from classify_fn (network error, parse failure) is
+    """A None return from classify_fn (JSON parse failure) is
     treated as transient — the watermark stays put so the next run retries.
     Distinct from a result with primary_label=None, which is definitive."""
     fp = tmp_path / "s.jsonl"
@@ -511,6 +511,109 @@ def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
     # Counters distinguish transient (classifier_errors) from definitive
     # (no_pattern_skipped) — same shape as backfill.
     assert stats["classifier_errors"] == 1
+    assert stats["connection_errors"] == 0
     assert stats["no_pattern_skipped"] == 0
     # Watermark stays at -1 (the initial value) so the next run retries.
     assert store.get_watermark("dev1", "netfail") == -1
+
+
+def test_ollama_unavailable_does_not_advance_watermark(tmp_path: Path):
+    """OllamaUnavailable exception (connection failure) is treated as
+    transient — the watermark stays put so the next run retries. Distinct
+    from JSON-parse failures (None return) and definitive patterns."""
+    from comm_patterns.classifier import OllamaUnavailable
+
+    fp = tmp_path / "s.jsonl"
+    _write_jsonl(fp, [_asst_msg("a"), _user_msg("xx")])
+    store = InMemoryStore()
+
+    def boom(u, p):
+        raise OllamaUnavailable("connection refused")
+
+    stats = extract_session(
+        device="dev1",
+        session_id="ollama-fail",
+        transcript_path=fp,
+        cwd="/Users/petrk/GitHub/jarvis",
+        store=store,
+        classify_fn=boom,
+        source_provenance="extractor:stop-hook",
+    )
+    assert stats["rows_written"] == 0
+    # connection_errors distinct from classifier_errors (JSON parse)
+    assert stats["connection_errors"] == 1
+    assert stats["classifier_errors"] == 0
+    assert stats["no_pattern_skipped"] == 0
+    # Watermark stays at -1 (the initial value) so the next run retries.
+    assert store.get_watermark("dev1", "ollama-fail") == -1
+    # The returned stats dict is the observable contract for the Stop hook —
+    # it must report the same un-advanced watermark, not just the store.
+    assert stats["watermark_after"] == -1
+
+
+def test_ollama_unavailable_mid_pass_preserves_completed_turns(tmp_path: Path):
+    """OllamaUnavailable raised *after* a successful turn must not roll the
+    watermark back to -1. Turns completed before the connection dropped stay
+    confirmed; only the failing turn and those after it retry on the next pass.
+
+    Distinct from test_ollama_unavailable_does_not_advance_watermark, where the
+    very first turn fails so there is nothing to preserve. This guards the
+    mid-pass case: a single dropped connection must not discard prior good work.
+    """
+    from comm_patterns.classifier import OllamaUnavailable
+
+    fp = tmp_path / "s.jsonl"
+    _write_jsonl(
+        fp,
+        [
+            _asst_msg("a"),
+            _user_msg("u1"),  # idx 1 — succeeds, row written
+            _asst_msg("b"),
+            _user_msg("u2"),  # idx 3 — Ollama drops here
+            _asst_msg("c"),
+            _user_msg("u3"),  # idx 5 — never reached this pass
+        ],
+    )
+    store = InMemoryStore()
+
+    def flaky(user_text, prev):
+        if user_text == "u2":
+            raise OllamaUnavailable("connection refused mid-pass")
+        return {"primary_label": "affirmation", "subtype": None,
+                "confidence": 0.9, "anchor_quote": user_text}
+
+    common = dict(
+        device="dev1",
+        session_id="midpass",
+        transcript_path=fp,
+        cwd="/Users/petrk/GitHub/jarvis",
+        store=store,
+        classify_fn=flaky,
+        source_provenance="extractor:stop-hook",
+    )
+    stats = extract_session(**common)
+    # u1 written before the drop; u2/u3 deferred to the next pass.
+    assert stats["rows_written"] == 1
+    assert stats["connection_errors"] == 1
+    assert stats["classifier_errors"] == 0
+    # Watermark covers the completed turn (idx 1), NOT rolled back to -1 —
+    # the next run resumes at u2 instead of re-classifying u1.
+    assert store.get_watermark("dev1", "midpass") == 1
+    # Stats dict (the Stop hook's observable contract) reports the same
+    # advanced-but-only-to-idx-1 watermark.
+    assert stats["watermark_after"] == 1
+    # The one confirmed row is u1.
+    assert [r["anchor_quote"] for r in store.rows] == ["u1"]
+
+    # --- Pass 2: Ollama is back — retry picks up u2 and u3 ---
+    def healthy(user_text, prev):
+        return {"primary_label": "affirmation", "subtype": None,
+                "confidence": 0.9, "anchor_quote": user_text}
+
+    common["classify_fn"] = healthy
+    stats2 = extract_session(**common)
+    assert stats2["rows_written"] == 2  # u2 and u3
+    assert stats2["connection_errors"] == 0
+    assert store.get_watermark("dev1", "midpass") == 5
+    anchors = sorted(r["anchor_quote"] for r in store.rows)
+    assert anchors == ["u1", "u2", "u3"]

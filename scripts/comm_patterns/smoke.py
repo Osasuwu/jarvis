@@ -66,6 +66,13 @@ def main() -> int:
     print("--- pass 1 ---")
     stats1 = extract_session(**common)
     print(stats1)
+    if stats1.get("connection_errors"):
+        print(
+            "Ollama unavailable — classifier could not run. "
+            "Start Ollama (`ollama serve`) and re-run this smoke.",
+            file=sys.stderr,
+        )
+        return 3
     print(f"rows in store: {len(store.rows)}")
     for r in store.rows[:8]:
         print(
