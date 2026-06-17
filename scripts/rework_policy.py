@@ -24,12 +24,20 @@ Specifically: comparing attempt t to attempt t-1, both components must
 strictly decrease: (n_critical_t < n_critical_{t-1}) AND
 (n_major_t < n_major_{t-1}).
 
-Convergence target: n_critical == 0 AND n_major <= 2.
+Convergence target (two-gate model, #989): n_critical == 0 AND n_major == 0.
+This mirrors the MERGE gate in code-review.yml, which blocks on any
+CRITICAL/MAJOR/BLOCKING severity heading. A PR is "rework-done" only when no
+merge-blocking finding remains. MINOR findings never gate either side — they
+are swept best-effort while /rework is already in context for a bug-triggered
+round, never as a convergence requirement (was n_major <= 2 before #989, which
+let a PR self-declare done while the merge gate still rejected its majors —
+the #976 ping-pong).
 
-Constants (per #634):
+Constants (per #634, target revised #989):
     MAX_ATTEMPTS_THRESHOLD = 3
     LOC_DELTA_THRESHOLD = 50 (percent)
-    MAX_MAJOR_FINDINGS = 2
+    TARGET_CRITICAL = 0
+    TARGET_MAJOR = 0
 """
 
 from __future__ import annotations
@@ -44,8 +52,10 @@ from enum import Enum
 
 MAX_ATTEMPTS_THRESHOLD = 3
 LOC_DELTA_THRESHOLD_PERCENT = 50
-MAX_MAJOR_FINDINGS = 2
 TARGET_CRITICAL = 0
+# Two-gate model (#989): convergence requires ZERO majors, matching the merge
+# gate's CRITICAL/MAJOR/BLOCKING block. Was MAX_MAJOR_FINDINGS = 2.
+TARGET_MAJOR = 0
 
 
 # ============================================================================
@@ -207,7 +217,7 @@ def _check_conflict(history: list[dict]) -> tuple[bool, str]:
 def _check_convergence(history: list[dict]) -> bool:
     """Check if convergence target is met.
 
-    Convergence target: n_critical == 0 AND n_major <= 2.
+    Convergence target (two-gate, #989): n_critical == 0 AND n_major == 0.
 
     Returns:
         True if the latest attempt meets both targets.
@@ -219,7 +229,7 @@ def _check_convergence(history: list[dict]) -> bool:
     n_critical = latest.get("n_critical", 0)
     n_major = latest.get("n_major", 0)
 
-    return n_critical == TARGET_CRITICAL and n_major <= MAX_MAJOR_FINDINGS
+    return n_critical == TARGET_CRITICAL and n_major == TARGET_MAJOR
 
 
 # ============================================================================
@@ -260,8 +270,8 @@ def decide(
     if _check_convergence(history):
         reason = (
             f"Convergence target met: "
-            f"n_critical={history[-1].get('n_critical', 0)} (target=0), "
-            f"n_major={history[-1].get('n_major', 0)} (target≤{MAX_MAJOR_FINDINGS})"
+            f"n_critical={history[-1].get('n_critical', 0)} (target={TARGET_CRITICAL}), "
+            f"n_major={history[-1].get('n_major', 0)} (target={TARGET_MAJOR})"
         )
         return PolicyResult(decision=LoopDecision.CONVERGED, reason=reason)
 
