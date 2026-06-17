@@ -215,8 +215,13 @@ original PR diff (step 3 only produces CRITICAL / MAJOR / MINOR):
 gh pr comment <N> --body "Out-of-scope finding flagged: <description> — not addressed in this rework loop."
 ```
 
-Do not silently drop non-obvious findings. A MINOR suggestion about naming or
-style can be silently skipped.
+Do not silently drop non-obvious CRITICAL/MAJOR findings. MINOR findings never
+gate the loop (two-gate model, #989): they are neither a rework trigger nor a
+convergence blocker. But while already in context for a CRITICAL/MAJOR-triggered
+round, sweep MINOR findings **best-effort** — apply the cheap, in-scope ones in
+the same commit; skip any that would grow the diff or touch files outside the PR
+scope (those would trip the scope-creep guard). Never start or extend a rework
+round for MINOR findings alone — a minor-only review is a converged PR.
 
 ### 7. Diff statistics
 
@@ -256,7 +261,7 @@ result: PolicyResult = decide(
 
 The policy returns one of:
 - `CONTINUE` — loop may proceed to next attempt
-- `CONVERGED` — targets met (n_critical==0, n_major≤2)
+- `CONVERGED` — targets met (n_critical==0, n_major==0; two-gate, #989)
 - `STUCK_ATTEMPTS` — ≥3 attempts without convergence
 - `STUCK_SCOPE` — LOC delta >50% or files outside initial diff
 - `STUCK_NO_CONVERGENCE` — critical+major not strictly decreasing
@@ -291,7 +296,8 @@ Exit cleanly.
 
 #### 9b. CONVERGED
 
-Converged means the findings targets are met (`n_critical==0, n_major≤2`).
+Converged means the findings targets are met (`n_critical==0, n_major==0`;
+two-gate model, #989 — no merge-blocking finding remains).
 
 **Commit and push the fixes first** — steps 4–5 changed the working tree; without
 this block those fixes are abandoned on exit and the next review re-flags the same
@@ -322,12 +328,13 @@ outcome_record(
 )
 ```
 
-`tests_passed` reflects whether all remaining fixes (CRITICAL + allowed MAJOR)
-have green coverage. CONVERGED fires with n_major≤2, and MAJOR fixes carry no
-test mandate (§5). Set it `true` only when every CRITICAL fix has a green test
-AND all applied MAJOR fixes are tested or were zero; set it `false` whenever
-any fix lacks green coverage, so downstream `/verify` and calibration do not
-over-trust the row as fully test-validated.
+`tests_passed` reflects whether all applied fixes (CRITICAL + MAJOR) have green
+coverage. CONVERGED now fires only at n_major==0 (two-gate, #989), so every
+MAJOR was fixed this loop; MAJOR fixes still carry no hard test mandate (§5).
+Set it `true` only when every CRITICAL fix has a green test AND all applied
+MAJOR fixes are tested or were zero; set it `false` whenever any fix lacks green
+coverage, so downstream `/verify` and calibration do not over-trust the row as
+fully test-validated.
 
 Remove `status:rework-in-progress` label.
 Do NOT merge. The PR stays open for human merge.
