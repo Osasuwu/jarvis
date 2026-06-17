@@ -51,6 +51,9 @@ jobs:
   # revert to the silent-skip blind spot this issue closes.
   pytest-db:
     runs-on: ubuntu-latest
+    # Bound the job: a hung Postgres health-check or a deadlocked SKIP LOCKED
+    # test should fail fast, not idle until the org-wide 6h ceiling (m2, #975).
+    timeout-minutes: 10
     permissions:
       contents: read
     services:

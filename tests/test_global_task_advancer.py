@@ -715,6 +715,7 @@ class TestCoalesceAdvancer:
             )
             assert ev["dedup_key"], "advancer must set a dedup_key for ON CONFLICT"
         finally:
+            db_connection.rollback()
             with db_connection.cursor() as cur:
                 cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
                 cur.execute("DELETE FROM events WHERE payload->>'source_id' = %s", (task_id,))
@@ -754,7 +755,25 @@ class TestCoalesceAdvancer:
             assert row["enabled"] is False, "one-shot row must be disabled after firing"
             assert row["next_run"] is None, "one-shot row's next_run must be cleared"
             assert row["last_run"] is not None, "advancer must stamp last_run"
+
+            # M3 (#975): the disable is only half the contract — the advancer
+            # must also have written exactly one due event for THIS source.
+            with db_connection.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT title, source
+                    FROM events
+                    WHERE event_type = 'global_task_due'
+                      AND payload->>'source_id' = %s
+                    """,
+                    (task_id,),
+                )
+                events = cur.fetchall()
+            assert len(events) == 1, "exactly one global_task_due event for the source"
+            assert events[0]["source"] == "global_task_advancer"
+            assert events[0]["title"] == "one-shot disable test"
         finally:
+            db_connection.rollback()
             with db_connection.cursor() as cur:
                 cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
                 cur.execute("DELETE FROM events WHERE payload->>'source_id' = %s", (task_id,))
@@ -808,7 +827,25 @@ class TestCoalesceAdvancer:
             assert advanced_past_now, "advanced next_run must be in the future (not still due)"
             assert row["enabled"] is True, "recurring row stays enabled"
             assert row["last_run"] is not None, "advancer must stamp last_run"
+
+            # M3 (#975): advancing next_run is only half the contract — verify
+            # the advancer actually emitted one due event for THIS source.
+            with db_connection.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT title, source
+                    FROM events
+                    WHERE event_type = 'global_task_due'
+                      AND payload->>'source_id' = %s
+                    """,
+                    (task_id,),
+                )
+                events = cur.fetchall()
+            assert len(events) == 1, "exactly one global_task_due event for the source"
+            assert events[0]["source"] == "global_task_advancer"
+            assert events[0]["title"] == "recurring advance test"
         finally:
+            db_connection.rollback()
             with db_connection.cursor() as cur:
                 cur.execute("DELETE FROM global_task_sources WHERE id = %s", (task_id,))
                 cur.execute("DELETE FROM events WHERE payload->>'source_id' = %s", (task_id,))

@@ -29,6 +29,7 @@ the #326 convention regardless, because the failure mode it guards against
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -85,13 +86,17 @@ class TestWorkflowConfigIntegrity:
         tests exercise production DDL (constraints, RLS, indexes)."""
         steps = _job().get("steps", [])
         run_text = "\n".join(str(s.get("run", "")) for s in steps)
-        assert REAL_MIGRATION in run_text, (
-            f"bootstrap must apply {REAL_MIGRATION} — applying a hand-rolled "
-            "table copy would let the schema drift from production silently."
+        # M2 (round 2): require `psql -f <migration>`, not merely the path
+        # appearing somewhere (a comment or echo mentioning the file would pass a
+        # bare substring check while the migration was never actually applied).
+        assert re.search(r"-f\s+" + re.escape(REAL_MIGRATION), run_text), (
+            f"bootstrap must apply {REAL_MIGRATION} via `psql -f` — applying a "
+            "hand-rolled table copy (or merely naming the file) would let the "
+            "schema drift from production silently."
         )
-        assert "global_task_schema_bootstrap.sql" in run_text, (
+        assert re.search(r"-f\s+\S*global_task_schema_bootstrap\.sql", run_text), (
             "bootstrap must seed the legacy events table + roles via "
-            "tests/ci/global_task_schema_bootstrap.sql before the migration."
+            "`psql -f tests/ci/global_task_schema_bootstrap.sql` before the migration."
         )
         # Order matters: the migration's `do $$ ... $$` guard raises if the
         # events table is absent, and it references the roles the bootstrap
@@ -107,14 +112,23 @@ class TestWorkflowConfigIntegrity:
 
     def test_require_db_enforced(self) -> None:
         """REQUIRE_DB=1 turns a missing DATABASE_URL from a silent skip into a
-        hard failure — the anti-regression latch for this whole issue."""
+        hard failure — the anti-regression latch for this whole issue.
+
+        Narrowed (M1, round 2): REQUIRE_DB must be set on the *same* step that
+        actually runs the advancer test file. A job-level or unrelated-step
+        REQUIRE_DB would satisfy a loose ``any(...)`` while the pytest invocation
+        ran without it — the latch would be cosmetically present but inert.
+        """
         steps = _job().get("steps", [])
-        require_db_set = any(
-            str(s.get("env", {}).get("REQUIRE_DB", "")).strip() not in ("", "0") for s in steps
+        require_db_on_advancer_step = any(
+            ADVANCER_TEST_FILE in str(s.get("run", ""))
+            and str(s.get("env", {}).get("REQUIRE_DB", "")).strip() not in ("", "0")
+            for s in steps
         )
-        assert require_db_set, (
-            "the run step must set REQUIRE_DB so a future change that drops the "
-            "Postgres service fails CI loudly instead of reverting to silent skip."
+        assert require_db_on_advancer_step, (
+            "the step that runs the advancer test file must itself set REQUIRE_DB "
+            "so a future change that drops the Postgres service fails CI loudly "
+            "instead of reverting to silent skip."
         )
 
     def test_targets_advancer_file(self) -> None:
