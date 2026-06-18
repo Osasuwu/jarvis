@@ -64,6 +64,30 @@
     API key from .env instead (carries Max-subscription quota risk -- prefer
     deepseek for unattended cron).
 
+    By default (-SubscriptionPrimary $false) Tier2Provider IS the AFK primary
+    via the auto-appended -Tier2AsPrimary. Only when -SubscriptionPrimary is
+    opted in does Tier2Provider step back to the credit-exhaustion fallback.
+
+.PARAMETER SubscriptionPrimary
+    #972. Default $false: DeepSeek (Tier 2) is the AFK primary. Opt in with
+    -SubscriptionPrimary $true to register the Anthropic Max Agent-SDK credit
+    as the primary tier (Opus 4.8 @ medium effort, bills the $100/mo credit via
+    CLAUDE_CODE_OAUTH_TOKEN in .sandcastle/.env), DeepSeek as the fallback.
+    Requires CLAUDE_CODE_OAUTH_TOKEN set on the host. 2026-06-17: kept OFF —
+    Anthropic shelved the separate Agent-SDK automation quota at launch, so the
+    credit path is dormant code until that lands. (Space form, not the colon
+    `:$true` switch syntax — this is a [bool] param; `:$true` is a binding error
+    on Windows PowerShell 5.1.)
+
+.PARAMETER SubscriptionModel
+    Subscription-tier model. Default claude-opus-4-8 (regular, NOT the 1M
+    context variant — that carries extra billing).
+
+.PARAMETER SubscriptionEffort
+    Subscription-tier effort: low | medium | high | max. Default medium —
+    model = task depth, effort = task width; AFK slices are single sharpened
+    verticals, so depth-heavy / width-bounded.
+
 .PARAMETER RepoRoot
     Filesystem path to the target repo. Defaults to the jarvis repo discovered
     from this script's own path (../../). For -Repo redrobot, pass the
@@ -114,6 +138,19 @@ param(
     [ValidateSet('', 'deepseek', 'claude')]
     [string]$Tier2Provider = 'deepseek',
 
+    # #972: subscription Agent-SDK credit primary is an OPT-IN tier, default OFF.
+    # 2026-06-17: Anthropic shelved the separate Agent-SDK automation quota at
+    # launch, so the credit path stays in the code but is not used — DeepSeek
+    # (Tier 2) is the default AFK primary again. Pass -SubscriptionPrimary $true
+    # (space form — `:$true` colon syntax is a [bool]-binding error on PS 5.1)
+    # to opt back in once the credit is real and CLAUDE_CODE_OAUTH_TOKEN is set.
+    [bool]$SubscriptionPrimary = $false,
+
+    [string]$SubscriptionModel = 'claude-opus-4-8',
+
+    [ValidateSet('low', 'medium', 'high', 'max')]
+    [string]$SubscriptionEffort = 'medium',
+
     [string]$RepoRoot,
 
     [int]$MaxIterations = 5,
@@ -133,7 +170,11 @@ $ErrorActionPreference = 'Stop'
 
 function Get-ConfigDeviceName {
     param([string]$DeviceJsonPath)
-    if (Test-Path $DeviceJsonPath) {
+    # Guard null/empty path. Under Windows PowerShell 5.1 a $null bound to
+    # Test-Path -Path throws NullNotAllowed (an empty string instead returns
+    # $false harmlessly). The `$DeviceJsonPath -and ...` short-circuit covers
+    # both: an absent path means "no device.json" -> return null, never throw.
+    if ($DeviceJsonPath -and (Test-Path $DeviceJsonPath)) {
         try {
             return (Get-Content $DeviceJsonPath -Raw | ConvertFrom-Json).name
         } catch {
@@ -168,7 +209,11 @@ function Format-SandcastleActionArgs {
         [string]$Tier1Model,
         [string]$Tier2Provider,
         [int]$MaxIterations,
-        [string]$WindowEnd
+        [string]$WindowEnd,
+        [bool]$SubscriptionPrimary = $false,
+        [string]$SubscriptionModel = 'claude-opus-4-8',
+        [ValidateSet('low', 'medium', 'high', 'max')]
+        [string]$SubscriptionEffort = 'medium'
     )
     $watchdogQuoted = '"' + $WatchdogPath + '"'
     $argParts = @(
@@ -181,7 +226,16 @@ function Format-SandcastleActionArgs {
         '-WindowEnd', $WindowEnd
     )
     if ($Tier1Model)    { $argParts += @('-Tier1Model', $Tier1Model) }
-    if ($Tier2Provider) {
+    if ($SubscriptionPrimary) {
+        # #972: subscription Agent-SDK credit is primary for AFK runs. DeepSeek
+        # stays wired as the credit-exhaustion fallback (-Tier2Provider) but NOT
+        # -Tier2AsPrimary — subscription is senior; the watchdog supersedes
+        # Tier-2-as-primary when both are present.
+        $argParts += '-SubscriptionPrimary'
+        $argParts += @('-SubscriptionModel', $SubscriptionModel)
+        $argParts += @('-SubscriptionEffort', $SubscriptionEffort)
+        if ($Tier2Provider) { $argParts += @('-Tier2Provider', $Tier2Provider) }
+    } elseif ($Tier2Provider) {
         $argParts += @('-Tier2Provider', $Tier2Provider)
         # 2026-05-14: Tier 2 runs as primary for AFK scheduled tasks. Local Ollama
         # tiers fail the real-Claude-Code tool_use fidelity check on qwen2.5-coder:14b
@@ -372,7 +426,20 @@ $pwshExe = Get-PowerShellExe
 $argParts = Format-SandcastleActionArgs -WatchdogPath $watchdog `
     -Repo $Repo -Model $Model -Tier1Model $Tier1Model `
     -Tier2Provider $Tier2Provider -MaxIterations $MaxIterations `
-    -WindowEnd $WindowEnd
+    -WindowEnd $WindowEnd `
+    -SubscriptionPrimary $SubscriptionPrimary `
+    -SubscriptionModel $SubscriptionModel -SubscriptionEffort $SubscriptionEffort
+
+# Surface the billing-impacting tier choice on every registration. The default
+# is -SubscriptionPrimary $false (#972) — a bare `Register-SandcastleTask.ps1
+# -Repo X` registers a DeepSeek-primary task; opting into the subscription
+# credit (which bills the Anthropic Max Agent-SDK credit) is explicit. Print the
+# resolved tier either way so a billing flip is never silent.
+if ($SubscriptionPrimary) {
+    Write-Host "[register] PRIMARY tier: subscription ($SubscriptionModel, effort=$SubscriptionEffort) — bills the Agent-SDK credit; DeepSeek fallback=$(if ($Tier2Provider) { $Tier2Provider } else { '<none>' })." -ForegroundColor Yellow
+} else {
+    Write-Host "[register] PRIMARY tier: $(if ($Tier2Provider) { "endpoint ($Tier2Provider)" } else { 'Ollama local' }) — subscription credit NOT used."
+}
 
 $action = New-ScheduledTaskAction -Execute $pwshExe `
     -Argument ($argParts -join ' ') `

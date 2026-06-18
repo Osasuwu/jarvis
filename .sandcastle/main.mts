@@ -10,23 +10,174 @@ import { dirname } from "node:path";
 // 436f9549, 228a2d9b, 0c3017c6 referenced from epic #534. Watchdog + schedule
 // land in slice 4 — this file stays config-only.
 
-// Agent model + endpoint. Slice 5 (#543) introduces multi-tier escalation:
-// the PS1 watchdog re-invokes us with SANDCASTLE_AGENT_{MODEL,BASE_URL,AUTH_TOKEN}
+// Agent model + auth. Slice 5 (#543) introduces multi-tier escalation: the PS1
+// watchdog re-invokes us with SANDCASTLE_AGENT_{MODEL,BASE_URL,AUTH_TOKEN}
 // overridden when retrying on a smaller Ollama model (Tier 1) or a remote
-// DeepSeek/Claude API endpoint (Tier 2). Falls back to the slice-1/2 Ollama
-// defaults when the watchdog isn't driving — single-shot manual smoke runs
-// keep working unchanged.
+// DeepSeek/Claude API endpoint (Tier 2). Issue #972 adds a third auth path —
+// the Claude subscription Agent SDK credit. Two mutually exclusive modes
+// (SANDCASTLE_AGENT_AUTH_MODE):
+//   "endpoint"     — ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN point Claude Code
+//                    at an Anthropic-compatible endpoint: local Ollama (Tier
+//                    0/1) or remote DeepSeek/Claude API (Tier 2). Pay-per-token
+//                    or local. The slice-1/2 behavior.
+//   "subscription" — CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`)
+//                    authenticates Claude Code with the Max subscription, so
+//                    headless usage draws the monthly Agent SDK credit (API
+//                    rates, hard-stop on exhaustion) instead of the metered API.
+//                    ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY
+//                    and the CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY} provider
+//                    switches MUST be unset here — they all resolve auth before
+//                    CLAUDE_CODE_OAUTH_TOKEN in Claude Code's order and would
+//                    silently route to PAID pay-per-token billing or a cloud
+//                    provider (real money). Enforced by the denylist guard below.
+//                    The two modes never share env keys.
+//
+// Default: honor an explicit watchdog/operator SANDCASTLE_AGENT_AUTH_MODE; else
+// "endpoint" whenever the watchdog is driving an endpoint tier
+// (SANDCASTLE_AGENT_BASE_URL set) or no OAuth token is present; "subscription"
+// only for an un-driven manual run that carries CLAUDE_CODE_OAUTH_TOKEN. This
+// keeps the nightly Ollama/DeepSeek tiers byte-for-byte unchanged even if a
+// token sits in .env, while letting a manual `npm run sandcastle` exercise the
+// credit.
+const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+// Treat a blank value (`SANDCASTLE_AGENT_AUTH_MODE=` in a misconfigured .env)
+// the same as unset: `??` only coalesces null/undefined, so without the
+// trim()+`||` a blank would skip auto-detection and throw the opaque `got ""`.
+// `||` lets "" fall through to the BaseUrl/OAuth auto-detect below instead.
+const explicitAuthMode = process.env.SANDCASTLE_AGENT_AUTH_MODE?.trim();
+const authMode =
+  explicitAuthMode ||
+  (process.env.SANDCASTLE_AGENT_BASE_URL
+    ? "endpoint"
+    : oauthToken
+      ? "subscription"
+      : "endpoint");
+if (authMode !== "endpoint" && authMode !== "subscription") {
+  throw new Error(
+    `SANDCASTLE_AGENT_AUTH_MODE must be "endpoint" or "subscription", got "${authMode}".`,
+  );
+}
+const subscription = authMode === "subscription";
+
 const agentModel =
   process.env.SANDCASTLE_AGENT_MODEL ??
-  process.env.OLLAMA_MODEL ??
-  "qwen3-coder:30b";
+  (subscription
+    ? // Regular Opus 4.8 — NOT the 1M-context variant (extra billing per owner
+      // policy; AFK slices never need 1M).
+      "claude-opus-4-8"
+    : (process.env.OLLAMA_MODEL ?? "qwen3-coder:30b"));
+
+// Thinking effort. Only meaningful on the subscription/Claude path — the
+// endpoint path may front Ollama, which 400s on an unknown --effort flag — so
+// it stays undefined for "endpoint" to preserve current behavior exactly.
+const EFFORT_LEVELS = ["low", "medium", "high", "max"] as const;
+type Effort = (typeof EFFORT_LEVELS)[number];
+const agentEffort: Effort | undefined = subscription
+  ? (() => {
+      const e = process.env.SANDCASTLE_AGENT_EFFORT ?? "medium";
+      if (!EFFORT_LEVELS.includes(e as Effort)) {
+        throw new Error(
+          `SANDCASTLE_AGENT_EFFORT must be one of ${EFFORT_LEVELS.join(", ")}, got "${e}".`,
+        );
+      }
+      return e as Effort;
+    })()
+  : undefined;
+if (!subscription && process.env.SANDCASTLE_AGENT_EFFORT) {
+  // Endpoint mode may front Ollama, which 400s on --effort, so the flag is
+  // dropped. Warn rather than fail silently — an operator who set it deserves
+  // to know it had no effect.
+  console.warn(
+    "[sandcastle] SANDCASTLE_AGENT_EFFORT is set but ignored in endpoint mode " +
+      "(only the subscription/Claude path supports --effort).",
+  );
+}
+
+// Endpoint-mode connection. Unused in subscription mode, but still computed
+// unconditionally so one startup code path covers both modes (the Ollama env
+// vars are only *consumed* on the endpoint branch below). Tier 0/1 use the
+// literal "ollama" auth token (Ollama's native Anthropic endpoint ignores it);
+// Tier 2 carries a real API key (DeepSeek / Claude API).
 const agentBaseUrl =
   process.env.SANDCASTLE_AGENT_BASE_URL ??
   process.env.OLLAMA_BASE_URL ??
   "http://host.docker.internal:11434";
-// Tier 0/1 use the literal "ollama" auth token (Ollama's native Anthropic
-// endpoint ignores it); Tier 2 carries a real API key (DeepSeek / Claude).
 const agentAuthToken = process.env.SANDCASTLE_AGENT_AUTH_TOKEN ?? "ollama";
+if (subscription && !oauthToken) {
+  // Unreachable via auto-detection (it only picks "subscription" when a token is
+  // present) but reachable via the explicit SANDCASTLE_AGENT_AUTH_MODE=subscription
+  // override — this guards that case so we never fall through to unauthenticated
+  // or paid-API billing.
+  throw new Error(
+    "SANDCASTLE_AGENT_AUTH_MODE=subscription requires CLAUDE_CODE_OAUTH_TOKEN " +
+      "(generate once on the host with `claude setup-token`). Refusing to run — " +
+      "without it Claude Code would fall back to paid API billing or fail auth.",
+  );
+}
+// The guard above guarantees oauthToken is set whenever `subscription` is true.
+// TS cannot carry that narrowing across the intervening for-loop and the authEnv
+// ternary, so pin it to a non-null string here rather than asserting `!` at the
+// distant use site (where the safety is non-obvious).
+const oauthTokenStr: string = subscription ? oauthToken! : "";
+if (subscription) {
+  // Real-money guard: withholding these from authEnv (below) is not enough.
+  // If any are already set on the HOST process (leftover endpoint-mode run, a
+  // sourced .env, the commented Tier-2 block in .env.example), an ambient
+  // passthrough can leak them into the container, where they OUTRANK
+  // CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth order and silently route the
+  // run to paid pay-per-token billing (or a cloud-provider account). Refuse to
+  // start instead.
+  //
+  // Denylist = every var that resolves auth BEFORE step 5 (CLAUDE_CODE_OAUTH_TOKEN)
+  // in Claude Code's precedence chain (docs: code.claude.com/docs/en/authentication,
+  // /env-vars, /third-party-integrations — verified 2026-06-18):
+  //   1. CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY} — flip auth to a cloud provider,
+  //      bypassing the subscription token entirely (and billing AWS/GCP/Azure).
+  //   2. ANTHROPIC_AUTH_TOKEN — gateway/proxy bearer token.
+  //   3. ANTHROPIC_API_KEY — Console pay-per-token key (highest billing risk).
+  //   + ANTHROPIC_BASE_URL — redirects all calls to a custom endpoint; not strictly
+  //      an auth step, but a set base-url is a misconfig that must not ride along.
+  // NOT included on purpose: CLAUDE_API_KEY / CLAUDE_BASE_URL are NOT Claude Code
+  // env vars (the ANTHROPIC_-prefixed ones are the real names) — Claude Code's auth
+  // resolution never reads them, so blocking them would be cargo-cult. Provider
+  // sub-keys (AWS_*, ANTHROPIC_VERTEX_*, ANTHROPIC_FOUNDRY_*) only matter once a
+  // CLAUDE_CODE_USE_* flag is set, which we already block, so the flag is the
+  // sufficient gate.
+  const billingOverrideKeys = [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+  ];
+  for (const key of billingOverrideKeys) {
+    if (process.env[key]) {
+      throw new Error(
+        `SANDCASTLE_AGENT_AUTH_MODE=subscription: ${key} is set in the host ` +
+          "environment — unset it first. It takes auth precedence over " +
+          "CLAUDE_CODE_OAUTH_TOKEN and would silently route this run to paid " +
+          "pay-per-token billing or a cloud provider (real money).",
+      );
+    }
+  }
+}
+
+// Auth env injected into the container — exactly one of the two paths, so the
+// ANTHROPIC_* vars are absent on the subscription path (precedence guard above).
+const authEnv: Record<string, string> = subscription
+  ? { CLAUDE_CODE_OAUTH_TOKEN: oauthTokenStr }
+  : { ANTHROPIC_BASE_URL: agentBaseUrl, ANTHROPIC_AUTH_TOKEN: agentAuthToken };
+
+// Token never printed; mode/model/effort are safe and useful for "how much did
+// it eat" run accounting.
+console.error(
+  `[sandcastle] auth=${authMode} model=${agentModel}` +
+    (agentEffort ? ` effort=${agentEffort}` : "") +
+    (subscription
+      ? " billing=max-agent-sdk-credit"
+      : ` endpoint=${agentBaseUrl}`),
+);
 // When the watchdog retries on the same issue (escalation chain, AC #3),
 // it sets SANDCASTLE_TARGET_ISSUE so prompt.md can pin the agent to that
 // issue instead of picking afresh from the queue.
@@ -81,10 +232,15 @@ const result = await run({
   sandbox: docker({
     imageName: "sandcastle:jarvis",
     env: {
-      // Native Anthropic-compatible endpoint exposed by Ollama ≥ 0.14 (Jan 2026)
-      // for Tier 0/1; remote provider URL + key for Tier 2 (slice 5, #543).
-      ANTHROPIC_BASE_URL: agentBaseUrl,
-      ANTHROPIC_AUTH_TOKEN: agentAuthToken,
+      // Auth path (issue #972): exactly one of
+      //   endpoint mode     → ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (Ollama
+      //                       Tier 0/1 via the native Anthropic endpoint, or
+      //                       remote DeepSeek/Claude API Tier 2, slice 5 #543), or
+      //   subscription mode → CLAUDE_CODE_OAUTH_TOKEN (Max Agent SDK credit).
+      // ANTHROPIC_* and CLAUDE_CODE_OAUTH_TOKEN are never set together — the
+      // former take precedence in Claude Code auth order and would route the
+      // subscription path to paid pay-per-token billing.
+      ...authEnv,
       // Forward host-side gh credentials so the agent can claim issues + open PRs.
       GH_TOKEN: ghToken,
       // Memory MCP bridge — Claude Code expands ${...} in the project-scope
@@ -103,7 +259,7 @@ const result = await run({
       SANDCASTLE_TARGET_PR: targetPr,
     },
   }),
-  agent: claudeCode(agentModel),
+  agent: claudeCode(agentModel, agentEffort ? { effort: agentEffort } : undefined),
   promptFile: "./.sandcastle/prompt.md",
   maxIterations,
   branchStrategy: { type: "merge-to-head" },
