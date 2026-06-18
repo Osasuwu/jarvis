@@ -200,6 +200,16 @@ jobs:
             exit 1
           fi
 
+          # Severity greps below classify each byte of heading decoration via the
+          # POSIX class [^[:alnum:]]. Under the runner's default LANG=C.UTF-8 a
+          # multibyte decoration (emoji "### 🔴 BLOCKING", #954) is read as ONE
+          # alnum-ambiguous rune that [^[:alnum:]] does NOT consume, so the block
+          # check silently misses and a coexisting "### MINOR" can flip the gate
+          # to PASS. Forcing the C locale makes grep treat every decoration byte
+          # individually (non-alnum), restoring the emoji-heading match. Set after
+          # the jq body extraction so JSON decoding stays UTF-8 aware.
+          export LC_ALL=C
+
           # Two-gate model (#988): the MERGE gate blocks ONLY on a real merge-
           # blocking finding — an all-caps CRITICAL/MAJOR/BLOCKING severity
           # heading. The block check runs FIRST so no pass signal below can
