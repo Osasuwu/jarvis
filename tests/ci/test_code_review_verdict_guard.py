@@ -50,6 +50,13 @@ TITLE_RE = re.compile(r"^#{1,6}[ \t]*(?:Claude[ \t]+)?Code[ \t]+Review", re.I | 
 # prose ("### Blocking issues — None", #962) must NOT match. Decoration between
 # the #'s and the keyword is tolerated; the class excludes \n so the decoration
 # run cannot span lines under re.M (grep matches per-line).
+#
+# Locale faithfulness: Python's `[^A-Za-z0-9\n]` consumes a multibyte emoji
+# rune-by-rune, so this mirror matches "### 🔴 BLOCKING". The bash grep only
+# behaves the same once the verdict step exports LC_ALL=C — pinned by
+# test_severity_greps_run_under_c_locale. Without that export the bash diverges
+# (emoji match 0 while this mirror says 1), which is exactly the merge-gate hole
+# the locale fix closes; the pin keeps this mirror truthful at runtime.
 BLOCK_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING)\b", re.M)
 
 # Clean signal: line-start anchored, NO end anchor — the plugin spec's clean
@@ -545,6 +552,26 @@ class TestVerdictStepWiring:
             "MINOR must be DROPPED from the block alternation (two-gate, #988) "
             "— minors never block merge."
         )
+
+    def test_severity_greps_run_under_c_locale(self, verdict_step):
+        # The block/nonblock greps classify heading decoration with POSIX
+        # [^[:alnum:]]. Under the runner default LANG=C.UTF-8 a multibyte emoji
+        # ("### 🔴 BLOCKING", #954) is one rune that [^[:alnum:]] won't consume,
+        # so the block check misses and a coexisting "### MINOR" can flip the
+        # MERGE gate to PASS — auto-merging a PR the bot blocked. `export
+        # LC_ALL=C` (set after the jq body extraction so JSON stays UTF-8 aware)
+        # makes grep byte-oriented and restores the emoji match. Verified at
+        # runtime: LANG=C.UTF-8 → emoji match 0, LC_ALL=C → emoji match 1.
+        run = verdict_step["run"]
+        assert "export LC_ALL=C" in run, (
+            "Severity greps must run under LC_ALL=C — otherwise an emoji-"
+            "decorated CRITICAL/MAJOR/BLOCKING heading (#954) escapes the block "
+            "check under the runner's C.UTF-8 default and a coexisting MINOR "
+            "section flips the merge gate to a false PASS."
+        )
+        assert run.index("export LC_ALL=C") < run.index(
+            "(CRITICAL|MAJOR|BLOCKING)"
+        ), "LC_ALL=C must be exported before the first severity grep."
 
     def test_block_check_is_case_sensitive_allcaps(self, verdict_step):
         # #976: the block grep must be `-qE` (case-sensitive), NOT `-qiE` —

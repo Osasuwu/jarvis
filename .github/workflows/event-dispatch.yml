@@ -299,6 +299,15 @@ jobs:
           # Read comment body from the event payload (safe — no shell expansion of comment content)
           COMMENT_BODY="$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")"
 
+          # Force the C locale for every grep below. The severity-heading greps
+          # classify decoration bytes with POSIX [^[:alnum:]]; under the runner's
+          # default LANG=C.UTF-8 a multibyte emoji ("### 🔴 BLOCKING", #954) is one
+          # rune that [^[:alnum:]] won't consume, so a genuinely blocking review
+          # fails to raise review_negative — diverging from the merge gate this
+          # parser is meant to mirror (#992). C locale makes grep byte-oriented so
+          # the emoji decoration matches. Set after jq so JSON stays UTF-8 aware.
+          export LC_ALL=C
+
           # Only act on the Claude code-review verdict comment. claude[bot]
           # posts other comment kinds (simplification opportunities, /rework
           # progress, orchestrator-watcher dispatches). Mirror the SAME title
