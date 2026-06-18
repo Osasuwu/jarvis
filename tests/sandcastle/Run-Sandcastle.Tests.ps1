@@ -388,6 +388,17 @@ Describe 'Protect-LogTail' {
         $out | Should Not Match 'sk-ddd'
         $out | Should Match 'API-KEY-REDACTED'
     }
+    It 'redacts the subscription OAuth token passed explicitly in -Secrets' {
+        # The failure handler passes $oauthToken in -Secrets (Run-Sandcastle.ps1
+        # ~L1173). Even though the OAuth token also matches the sk-ant pattern,
+        # the literal-secret path must redact it so a credit-exhaustion log tail
+        # never persists the Agent-SDK credential to Supabase. Built at runtime
+        # so the token shape never appears as a source literal (gitleaks).
+        $oauth = 'sk-ant-oat01-' + ('z' * 40)
+        $out = Protect-LogTail -Text "CLAUDE_CODE_OAUTH_TOKEN=$oauth exhausted" -Secrets @($oauth)
+        $out | Should Not Match 'sk-ant-oat01-z'
+        $out | Should Match 'REDACTED'
+    }
     It 'returns empty string on empty input' {
         Protect-LogTail -Text '' | Should Be ''
     }
@@ -1029,6 +1040,222 @@ Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
     }
 }
 
+Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, #972)' {
+    # When -SubscriptionPrimary is set, the watchdog runs the subscription tier
+    # (AuthMode=subscription, no BaseUrl/Token) as primary, skips Ollama, and
+    # falls back to the DeepSeek endpoint on any subscription failure.
+    BeforeEach {
+        Mock Test-DockerRunning { $true }
+        Mock Test-OllamaRunning { $true }
+        Mock Start-DockerDesktop { }
+        Mock Start-OllamaServer  { }
+        Mock Get-RepoRoot { $env:TEMP }
+        Mock Read-DotEnvFile {
+            @{
+                SUPABASE_URL       = 'https://x'
+                SUPABASE_KEY       = 'k'
+                TELEGRAM_BOT_TOKEN = 't'
+                TELEGRAM_CHAT_ID   = '1'
+                DEEPSEEK_API_KEY   = 'ds-key'
+            }
+        }
+        Mock New-RuntimeDir { Join-Path $env:TEMP "sandcastle-subprimary-$([guid]::NewGuid())" }
+        Mock Invoke-RuntimeSweep { @() }
+        Mock Write-OutcomeRecord { 'mocked' }
+        Mock Send-TelegramAlert  { 'mocked' }
+        Mock Add-IssueLabel      { $true }
+        Mock Get-IssueLabels     { @() }
+    }
+
+    It 'AC: subscription primary -> single call with AuthMode=subscription, no BaseUrl/Token, no Ollama' {
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model; Mode = $AuthMode; Effort = $Effort; BaseUrl = $BaseUrl; Token = $AuthToken }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/900-sub'; commits = @(); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+            -SubscriptionModel 'claude-opus-4-8' -SubscriptionEffort 'medium' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 1 -Exactly -Scope It
+        $script:calls[0].Model   | Should Be 'claude-opus-4-8'
+        $script:calls[0].Mode    | Should Be 'subscription'
+        $script:calls[0].Effort  | Should Be 'medium'
+        $script:calls[0].BaseUrl | Should BeNullOrEmpty
+        $script:calls[0].Token   | Should BeNullOrEmpty
+        Assert-MockCalled Start-OllamaServer -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'subscription' }
+    }
+
+    It 'AC: subscription primary across 2 iterations -> re-invokes subscription each iter, accumulates usage' {
+        # Guards the multi-iteration loop state for the subscription path: with
+        # no completionSignal the watchdog must re-run the subscription tier on
+        # iteration 2 (a fresh free-pick), and $totalUsage must accumulate across
+        # both iterations rather than reset. A regression in iteration-N reuse or
+        # token accumulation would otherwise pass silently (all other subscription
+        # tests use MaxIterations=1).
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Mode = $AuthMode; Target = $TargetIssue }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = "feat/90$($script:calls.Count)-iter"; commits = @('c'); iterations = @(
+                        [pscustomobject]@{ usage = [pscustomobject]@{
+                            inputTokens = 10; outputTokens = 5
+                            cacheReadInputTokens = 0; cacheCreationInputTokens = 0 } }
+                    )
+                    # no completionSignal -> loop continues to iteration 2
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 2 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+            -SubscriptionModel 'claude-opus-4-8' -SubscriptionEffort 'medium' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
+        $script:calls[0].Mode | Should Be 'subscription'
+        $script:calls[1].Mode | Should Be 'subscription'   # iteration 2 stays on the subscription primary
+        # Usage accumulated across both iterations (10+10 in, 5+5 out), tier preserved.
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Status -eq 'success' -and $LlmMetrics.tier -eq 'subscription' -and
+                $LlmMetrics.input_tokens -eq 20 -and $LlmMetrics.output_tokens -eq 10
+            }
+    }
+
+    It 'AC: subscription primary skips Ollama daemon check (Ollama down does not matter)' {
+        Mock Test-OllamaRunning { $false }
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/901-no-ollama'; commits = @(); iterations = @() }
+            }
+        }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Start-OllamaServer -Times 0 -Exactly -Scope It
+        Assert-MockCalled Invoke-Sandcastle  -Times 1 -Exactly -Scope It
+    }
+
+    It 'AC: subscription failure -> falls back to DeepSeek for that iteration' {
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model; Mode = $AuthMode; BaseUrl = $BaseUrl; Token = $AuthToken }
+            if ($AuthMode -eq 'subscription') {
+                [pscustomobject]@{ ok = $false; exitCode = 1; reason = 'exit=1'; result = $null }
+            } else {
+                [pscustomobject]@{
+                    ok = $true; exitCode = 0; reason = $null
+                    result = [pscustomobject]@{ branch = 'feat/902-fallback'; commits = @(); iterations = @() }
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
+        $script:calls[0].Mode    | Should Be 'subscription'
+        $script:calls[1].Mode    | Should Be 'endpoint'
+        $script:calls[1].Token   | Should Be 'ds-key'
+        $script:calls[1].BaseUrl | Should Be 'https://api.deepseek.com/anthropic'
+        # Compound tier: the subscription tier was attempted first, then the
+        # DeepSeek fallback succeeded -- the outcome row must show BOTH so a
+        # trace can distinguish this from a pure DeepSeek-primary success.
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'subscription>tier2:deepseek' }
+    }
+
+    It 'AC: subscription failure with no DeepSeek fallback configured -> throws (no silent skip)' {
+        Mock Read-DotEnvFile {
+            @{
+                SUPABASE_URL       = 'https://x'
+                SUPABASE_KEY       = 'k'
+                TELEGRAM_BOT_TOKEN = 't'
+                TELEGRAM_CHAT_ID   = '1'
+                # no DEEPSEEK_API_KEY -> no fallback
+            }
+        }
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Mode = $AuthMode }
+            [pscustomobject]@{ ok = $false; exitCode = 1; reason = 'exit=1'; result = $null }
+        }
+        Mock Test-IsOOM { $false }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        Assert-MockCalled Invoke-Sandcastle -Times 1 -Exactly -Scope It
+        $script:calls[0].Mode | Should Be 'subscription'
+    }
+
+    It 'AC: subscription failure AND DeepSeek fallback also fails -> records failure + throws' {
+        # Both tiers down: subscription credit exhausted *and* DeepSeek 402/down.
+        # Must not silently swallow — the shared no-result handler records a
+        # 'failure' outcome and rethrows so the iteration is visibly broken.
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Mode = $AuthMode }
+            # ok=$false on BOTH the subscription call and the DeepSeek fallback.
+            [pscustomobject]@{ ok = $false; exitCode = 1; reason = 'exit=1'; result = $null }
+        }
+        Mock Test-IsOOM { $false }
+
+        { Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+              -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+              -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5 } | Should Throw
+
+        # Subscription first, then the DeepSeek fallback — two attempts, both failed.
+        Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
+        $script:calls[0].Mode | Should Be 'subscription'
+        $script:calls[1].Mode | Should Be 'endpoint'
+        # The failure record must carry the COMPOUND tier so the outcome row
+        # shows subscription was attempted first THEN the DeepSeek fallback ran
+        # — a bare "tier2:deepseek" would be indistinguishable from a plain
+        # DeepSeek-primary double-failure (the round-5 reviewer's point).
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter { $Status -eq 'failure' -and $LlmMetrics.tier -eq 'subscription>tier2:deepseek' }
+    }
+
+    It 'AC: -SubscriptionPrimary supersedes -Tier2AsPrimary (both set -> subscription wins)' {
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Model = $Model; Mode = $AuthMode }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/903-super'; commits = @(); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -Tier2AsPrimary -SubscriptionPrimary `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 1 -Exactly -Scope It
+        $script:calls[0].Mode  | Should Be 'subscription'
+        $script:calls[0].Model | Should Be 'claude-opus-4-8'
+    }
+}
+
 Describe 'Invoke-Watchdog daemon-state matrix' {
     BeforeEach {
         Mock Start-DockerDesktop { }
@@ -1422,20 +1649,78 @@ Describe 'Invoke-Sandcastle' {
         $env:SANDCASTLE_AGENT_MODEL      = 'prev-model'
         $env:SANDCASTLE_AGENT_BASE_URL   = 'prev-url'
         $env:SANDCASTLE_AGENT_AUTH_TOKEN = 'prev-token'
+        $env:SANDCASTLE_AGENT_AUTH_MODE  = 'prev-mode'
+        $env:SANDCASTLE_AGENT_EFFORT     = 'prev-effort'
         $env:SANDCASTLE_TARGET_ISSUE     = 'prev-target'
         $env:OLLAMA_MODEL                = 'prev-ollama'
         Mock Invoke-NpmSandcastle { [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 } }
         Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'new-m' -MaxIterations 5 `
             -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'new-run' `
-            -BaseUrl 'http://new' -AuthToken 'new-tok' -TargetIssue '42' | Out-Null
+            -BaseUrl 'http://new' -AuthToken 'new-tok' -AuthMode 'subscription' `
+            -Effort 'max' -TargetIssue '42' | Out-Null
         $env:SANDCASTLE_RESULT_FILE      | Should Be 'prev-result'
         $env:SANDCASTLE_MAX_ITERATIONS   | Should Be 'prev-max'
         $env:SANDCASTLE_RUN_ID           | Should Be 'prev-run'
         $env:SANDCASTLE_AGENT_MODEL      | Should Be 'prev-model'
         $env:SANDCASTLE_AGENT_BASE_URL   | Should Be 'prev-url'
         $env:SANDCASTLE_AGENT_AUTH_TOKEN | Should Be 'prev-token'
+        $env:SANDCASTLE_AGENT_AUTH_MODE  | Should Be 'prev-mode'
+        $env:SANDCASTLE_AGENT_EFFORT     | Should Be 'prev-effort'
         $env:SANDCASTLE_TARGET_ISSUE     | Should Be 'prev-target'
         $env:OLLAMA_MODEL                | Should Be 'prev-ollama'
+    }
+
+    It 'injects AUTH_MODE=subscription + EFFORT during a subscription-tier call' {
+        # The real-money guard inverted: when -AuthMode subscription is passed,
+        # main.mts must see SANDCASTLE_AGENT_AUTH_MODE=subscription and the
+        # effort value -- assert via Invoke-NpmSandcastle observing live env.
+        $script:seen = $null
+        Mock Invoke-NpmSandcastle {
+            $script:seen = @{
+                Mode   = $env:SANDCASTLE_AGENT_AUTH_MODE
+                Effort = $env:SANDCASTLE_AGENT_EFFORT
+                Model  = $env:SANDCASTLE_AGENT_MODEL
+            }
+            [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 }
+        }
+        Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'claude-opus-4-8' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'sub' `
+            -AuthMode 'subscription' -Effort 'medium' -TargetIssue '' | Out-Null
+        $script:seen.Mode   | Should Be 'subscription'
+        $script:seen.Effort | Should Be 'medium'
+        $script:seen.Model  | Should Be 'claude-opus-4-8'
+    }
+
+    It 'leaves SANDCASTLE_AGENT_EFFORT unset in the child when -Effort is omitted' {
+        # A prior run's value must not leak: omitting -Effort means the child
+        # process sees no effort override, not a stale carry-over from $env.
+        $env:SANDCASTLE_AGENT_EFFORT = 'stale-leak'
+        $script:seenEffort = 'sentinel'
+        Mock Invoke-NpmSandcastle {
+            $script:seenEffort = $env:SANDCASTLE_AGENT_EFFORT
+            [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 }
+        }
+        Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'qwen-large' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'no-eff' `
+            -BaseUrl 'http://ollama' -TargetIssue '' | Out-Null
+        $script:seenEffort | Should BeNullOrEmpty
+        # And the prior host value is restored afterwards (save/restore symmetry).
+        $env:SANDCASTLE_AGENT_EFFORT | Should Be 'stale-leak'
+    }
+
+    It 'defaults AUTH_MODE to endpoint (real-money guard) when -AuthMode is omitted' {
+        # Any Ollama/DeepSeek caller that does NOT pass -AuthMode must be pinned
+        # to endpoint so the presence of CLAUDE_CODE_OAUTH_TOKEN in .env cannot
+        # silently bill the subscription credit.
+        $script:seenMode = $null
+        Mock Invoke-NpmSandcastle {
+            $script:seenMode = $env:SANDCASTLE_AGENT_AUTH_MODE
+            [pscustomobject]@{ cmdNotFound = $false; exitCode = 0 }
+        }
+        Invoke-Sandcastle -RepoRoot $script:tmpRoot -Model 'qwen-large' -MaxIterations 1 `
+            -ResultFile $script:resultFile -LogFile $script:logFile -RunId 'ep' `
+            -BaseUrl 'http://ollama' -TargetIssue '' | Out-Null
+        $script:seenMode | Should Be 'endpoint'
     }
 
     It 'returns json-parse-error when result.json is malformed' {
