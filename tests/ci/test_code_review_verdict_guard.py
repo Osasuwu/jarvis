@@ -100,6 +100,35 @@ def verdict(comment_bodies: list[str]) -> str:
     return "fail"  # unrecognized review comment — fail closed
 
 
+def verdict_fresh(comments: list[tuple[str, str]], head_time: str) -> str:
+    """Mirror of the verdict step INCLUDING the #993 freshness gate.
+
+    A /code-review comment is a verdict only for the CURRENT head commit. The
+    review action sometimes errors on turn 1 and posts nothing for the head SHA;
+    a stale comment from a PRIOR head SHA must not be consumed as this head's
+    verdict (it would wrongly block a clean head or wrongly pass a dirty one).
+
+    Args:
+        comments: ``(body, created_at)`` pairs, oldest→newest (issue-comments API
+            order). ``created_at`` is an ISO-8601 UTC string (…Z), comparable as
+            a plain string against ``head_time``.
+        head_time: committer time of the current head commit (ISO-8601 UTC).
+
+    Returns 'pass' (exit 0) or 'fail' (exit 1). Three-way disambiguation:
+      - no code-review comment at all → 'pass' (plugin legitimately skipped);
+      - code-review comment(s) exist but ALL predate the head commit →
+        'fail' (latest review errored / never posted for this SHA — #993);
+      - a fresh code-review comment exists → existing two-gate content verdict.
+    """
+    review = [(b, t) for (b, t) in comments if TITLE_RE.search(b)]
+    if not review:
+        return "pass"  # no review comment at all — plugin skipped (no regression)
+    fresh = [b for (b, t) in review if t >= head_time]
+    if not fresh:
+        return "fail"  # only stale prior-SHA comment(s) — fail closed (#993)
+    return verdict([fresh[-1]])  # latest fresh comment → content verdict
+
+
 # The literal shape that false-passed the gate on PR #957: MAJOR + MINOR
 # sections. MAJOR still blocks.
 PR_957_COMMENT = """\
@@ -354,6 +383,80 @@ class TestVerdictLogic:
         assert verdict(["### Code review\n"]) == "fail"
 
 
+class TestFreshnessLogic:
+    """#993: a comment is a verdict only for the current head SHA.
+
+    The review action errors on turn 1 sometimes (is_error, ~$0, num_turns=1)
+    and posts NO comment for the head SHA. Without anchoring on the head commit
+    time the verdict step consumes a STALE prior-SHA comment — false-blocking a
+    clean head (stale MAJOR) or false-PASSING a dirty head (stale clean). The
+    second direction is the dangerous one: it auto-merges code the plugin never
+    reviewed. The gate fails closed when no comment is fresh for the head.
+    """
+
+    HEAD = "2026-06-18T12:00:00Z"  # current head commit's committer time
+    OLD = "2026-06-17T00:00:00Z"  # a comment from a prior head SHA
+    NEW = "2026-06-18T12:30:00Z"  # a comment posted for the current head SHA
+
+    def test_stale_major_only_fails_closed(self):
+        # False-BLOCK direction: a stale MAJOR from a prior SHA must NOT be
+        # consumed as this head's verdict. With no fresh comment → fail closed.
+        assert verdict_fresh([(BLOCKING_COMMENT, self.OLD)], self.HEAD) == "fail"
+
+    def test_stale_clean_only_fails_closed(self):
+        # False-PASS direction (the dangerous one, #993): a stale "No issues
+        # found." from a prior SHA must NOT pass the current (possibly dirty)
+        # head. Pre-fix this returned a PASS and auto-merged unreviewed code.
+        assert verdict_fresh([(CANONICAL_CLEAN_SPEC, self.OLD)], self.HEAD) == "fail"
+
+    def test_fresh_clean_passes(self):
+        assert verdict_fresh([(CANONICAL_CLEAN_SPEC, self.NEW)], self.HEAD) == "pass"
+
+    def test_fresh_major_fails(self):
+        assert verdict_fresh([(BLOCKING_COMMENT, self.NEW)], self.HEAD) == "fail"
+
+    def test_no_review_comment_at_all_passes(self):
+        # Plugin legitimately skipped — no regression vs. the pre-#993 behavior.
+        assert verdict_fresh([("LGTM, merging", self.NEW)], self.HEAD) == "pass"
+        assert verdict_fresh([], self.HEAD) == "pass"
+
+    def test_comment_at_exactly_head_time_is_fresh(self):
+        # created_at == head_time is treated as fresh (>=), not stale.
+        assert verdict_fresh([(CANONICAL_CLEAN_SPEC, self.HEAD)], self.HEAD) == "pass"
+
+    def test_fresh_wins_over_stale(self):
+        # Stale MAJOR + fresh clean → use the fresh comment → pass (the stale
+        # MAJOR from the prior SHA is correctly ignored).
+        assert (
+            verdict_fresh(
+                [(BLOCKING_COMMENT, self.OLD), (CANONICAL_CLEAN_SPEC, self.NEW)],
+                self.HEAD,
+            )
+            == "pass"
+        )
+        # Stale clean + fresh MAJOR → use the fresh comment → fail.
+        assert (
+            verdict_fresh(
+                [(CANONICAL_CLEAN_SPEC, self.OLD), (BLOCKING_COMMENT, self.NEW)],
+                self.HEAD,
+            )
+            == "fail"
+        )
+
+    def test_latest_fresh_comment_wins_among_fresh(self):
+        # Two fresh comments: the newest (last) decides, matching the bash
+        # `map(select(.created_at >= $head)) | .[-1].body`.
+        early_fresh = "2026-06-18T12:10:00Z"
+        late_fresh = "2026-06-18T12:40:00Z"
+        assert (
+            verdict_fresh(
+                [(BLOCKING_COMMENT, early_fresh), (CANONICAL_CLEAN_SPEC, late_fresh)],
+                self.HEAD,
+            )
+            == "pass"
+        )
+
+
 # -- Workflow wiring ----------------------------------------------------------
 
 
@@ -416,9 +519,13 @@ class TestVerdictStepWiring:
     def test_selector_slurps_pagination_via_standalone_jq(self, verdict_step):
         run = verdict_step["run"]
         assert "--paginate" in run
-        assert "jq -rs 'add" in run, (
+        # Pages must be slurped (-s) and flattened (add) in standalone jq so the
+        # latest review comment is the global-latest, not per-page. The freshness
+        # gate (#993) threads `--arg head` between `-rs` and the program, so the
+        # `add` flatten is no longer adjacent to `jq -rs` — match it tolerantly.
+        assert re.search(r"jq -rs\b.*'add", run), (
             "Pages must be slurped (-s) and flattened (add) in standalone jq "
-            "so .[-1] is the global-latest review comment, not per-page."
+            "so the latest review comment is the global-latest, not per-page."
         )
         code_lines = "\n".join(
             line for line in run.splitlines() if not line.lstrip().startswith("#")
@@ -513,4 +620,56 @@ class TestVerdictStepWiring:
         assert verdict_step["run"].strip().endswith("exit 1"), (
             "Unrecognized verdict format must fail closed (exit 1), not fall "
             "through to success — that fall-through is how #957 auto-merged."
+        )
+
+
+class TestFreshnessGateWiring:
+    """#993: the verdict step must anchor on the head commit and reject stale
+    prior-SHA comments. A SHA-agnostic selector consumes a leftover comment when
+    the latest review errors and posts nothing — false-block or false-pass."""
+
+    def test_resolves_head_commit_and_committer_time(self, verdict_step):
+        run = verdict_step["run"]
+        assert "headRefOid" in run, (
+            "Must resolve the PR head SHA (gh pr view --json headRefOid) to "
+            "anchor comment freshness."
+        )
+        assert ".commit.committer.date" in run, (
+            "Must read the head commit's committer time as the freshness "
+            "anchor (a comment older than the head commit is not its verdict)."
+        )
+
+    def test_selection_filters_comments_to_fresh_only(self, verdict_step):
+        run = verdict_step["run"]
+        assert ".created_at >= $head" in run, (
+            "The jq selection must drop comments created before the head "
+            "commit (stale prior-SHA comments are not this head's verdict)."
+        )
+
+    def test_no_comment_at_all_still_passes(self, verdict_step):
+        # total == 0 (plugin skipped) must remain a pass — no regression.
+        run = verdict_step["run"]
+        marker = 'if [ "$total" -eq 0 ]; then'
+        assert marker in run, (
+            "Must distinguish 'no review comment at all' (total 0 → pass) from "
+            "'comment(s) exist but all stale' (→ fail closed)."
+        )
+        skip_branch = run[run.index(marker) : run.index(marker) + 400]
+        assert "exit 0" in skip_branch, (
+            "No review comment at all = legitimate skip → pass (no regression)."
+        )
+
+    def test_stale_only_fails_closed(self, verdict_step):
+        # total > 0 but no fresh body ($body empty) → fail closed (#993).
+        run = verdict_step["run"]
+        marker = 'if [ -z "$body" ]; then'
+        assert marker in run, (
+            "Must have a stale-only branch: review comment(s) exist but none "
+            "is newer than the head commit."
+        )
+        stale_branch = run[run.index(marker) : run.index(marker) + 600]
+        assert "exit 1" in stale_branch and "exit 0" not in stale_branch, (
+            "Stale-only (no comment fresh for the head SHA) must FAIL CLOSED "
+            "(exit 1) — the latest review errored; do not consume a prior-SHA "
+            "verdict (#993)."
         )
