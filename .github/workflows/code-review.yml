@@ -145,8 +145,22 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # Freshness anchor (#993): a /code-review comment is a verdict only for
+          # the CURRENT head commit. The review action sometimes errors on turn 1
+          # (is_error, ~$0 cost, no comment posted for this SHA). Without a
+          # freshness check the selection below falls back to a STALE comment
+          # from a PRIOR head SHA — wrongly BLOCKING a clean head (a stale MAJOR
+          # lingers) or, worse, wrongly PASSING a dirty head (a stale "No issues
+          # found." green-lights code the plugin never saw). So we anchor on the
+          # head commit's committer time and treat any comment older than it as
+          # not-a-verdict-for-this-head. ISO-8601 UTC timestamps (…Z) from the
+          # API compare correctly as plain strings.
+          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
+
           # Selection happens in standalone jq, not gh's --jq:
           #   - gh rejects `--slurp` combined with `--jq` (despite the help
           #     text), and without slurping, --jq runs per page so `.[-1]`
@@ -157,14 +171,33 @@ jobs:
           #     only. The (^|\n) anchor is line-anchored in every engine —
           #     keep it even under Oniguruma jq, so the pattern survives
           #     being moved between the two.
-          body=$(gh api "repos/${{ github.repository }}/issues/$PR/comments" --paginate \
-            | jq -rs 'add | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i"))) | (.[-1].body // "")')
+          # `total` = all code-review-titled comments (any age); `freshBody` =
+          # body of the latest one created at/after the head commit ($head).
+          sel=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            | jq -rs --arg head "$HEAD_TIME" 'add
+                | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
+                | { total: length,
+                    freshBody: ( map(select(.created_at >= $head)) | (.[-1].body // "") ) }
+                | @json')
+          total=$(jq -r '.total' <<<"$sel")
+          body=$(jq -r '.freshBody' <<<"$sel")
 
-          if [ -z "$body" ]; then
-            # Plugin skipped (draft / closed / already reviewed / not-eligible).
-            # No new verdict — leave merge gating to the eligibility logic upstream.
+          if [ "$total" -eq 0 ]; then
+            # No /code-review comment at all — the plugin legitimately skipped
+            # this PR (draft / closed / already reviewed / not-eligible). No
+            # verdict expected; leave merge gating to the eligibility logic
+            # upstream. (No regression: skipped PRs still pass.)
             echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
             exit 0
+          fi
+
+          if [ -z "$body" ]; then
+            # The plugin HAS reviewed this PR before, but no comment is newer
+            # than the current head commit — the latest review run errored or
+            # never posted for $HEAD_SHA. A stale prior-SHA comment is not a
+            # verdict for this head (#993). Fail closed; re-run code-review.
+            echo "::error::/code-review has prior comments on this PR but none newer than head commit $HEAD_SHA ($HEAD_TIME) — the latest review likely errored. Failing closed; re-run code-review."
+            exit 1
           fi
 
           # Two-gate model (#988): the MERGE gate blocks ONLY on a real merge-
