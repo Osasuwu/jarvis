@@ -50,6 +50,13 @@ TITLE_RE = re.compile(r"^#{1,6}[ \t]*(?:Claude[ \t]+)?Code[ \t]+Review", re.I | 
 # tests/ci/test_code_review_verdict_guard.py. Case-SENSITIVE (no re.I): real
 # plugin severity sections are all-caps; title-case prose ("### Blocking issues
 # — None", #962) must NOT match. MINOR dropped — minors never block.
+#
+# Locale faithfulness: Python's `[^A-Za-z0-9\n]` consumes a multibyte emoji
+# rune-by-rune, so this mirror matches "### 🔴 BLOCKING". The bash grep only
+# behaves the same once the step exports LC_ALL=C (test_severity_greps_run_
+# under_c_locale pins that). Without LC_ALL=C the bash would diverge — match 0
+# on the emoji while this mirror says 1 — so the locale pin is what keeps the
+# `test_emoji_decorated_blocking_emits` expectation truthful at runtime.
 BLOCK_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING)\b", re.M)
 
 # Back-compat count derivation (blocking-heading counts).
@@ -298,3 +305,20 @@ class TestParserWiring:
             "The blocking-heading gate must run before count derivation — "
             "counts are only meaningful once a block is confirmed."
         )
+
+    def test_severity_greps_run_under_c_locale(self, parser_run):
+        # The [^[:alnum:]] decoration class only consumes a multibyte emoji
+        # ("### 🔴 BLOCKING", #954) per-byte under the C locale; under the
+        # runner default LANG=C.UTF-8 it reads the emoji as one non-consumed
+        # rune and the block check silently misses. `export LC_ALL=C` must be
+        # set, AND it must precede the severity greps (after jq, so JSON stays
+        # UTF-8 aware). Verified at runtime: LANG=C.UTF-8 → emoji match 0,
+        # LC_ALL=C → emoji match 1.
+        assert "export LC_ALL=C" in parser_run, (
+            "Severity greps must run under LC_ALL=C — otherwise an emoji-"
+            "decorated CRITICAL/MAJOR/BLOCKING heading (#954) escapes the "
+            "block check under the runner's C.UTF-8 default."
+        )
+        assert parser_run.index("export LC_ALL=C") < parser_run.index(
+            "(CRITICAL|MAJOR|BLOCKING)"
+        ), "LC_ALL=C must be exported before the first severity grep."
