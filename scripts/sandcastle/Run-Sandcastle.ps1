@@ -1190,7 +1190,11 @@ function Invoke-Watchdog {
                     -MaxIterations 1 -ResultFile $resultFile -LogFile $logFile -RunId $runId `
                     -BaseUrl $subscriptionFallback.BaseUrl -AuthToken $subscriptionFallback.AuthToken `
                     -AuthMode 'endpoint' -TargetIssue ([string]$targetIssue)
-                $tierUsed = "tier2:$($subscriptionFallback.Provider)"
+                # Compound attribution: a bare "tier2:deepseek" would hide that the
+                # subscription tier was attempted first, so a Supabase trace on a
+                # double-failure run could not tell "DeepSeek-primary failed" from
+                # "subscription failed THEN DeepSeek failed". Preserve both.
+                $tierUsed = "subscription>tier2:$($subscriptionFallback.Provider)"
                 if (-not $targetIssue -and $invocation.result) {
                     $targetIssue = Get-IssueFromBranch -Branch $invocation.result.branch
                 }

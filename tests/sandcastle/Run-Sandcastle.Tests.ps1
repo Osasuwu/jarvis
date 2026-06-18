@@ -1094,6 +1094,46 @@ Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, 
             -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'subscription' }
     }
 
+    It 'AC: subscription primary across 2 iterations -> re-invokes subscription each iter, accumulates usage' {
+        # Guards the multi-iteration loop state for the subscription path: with
+        # no completionSignal the watchdog must re-run the subscription tier on
+        # iteration 2 (a fresh free-pick), and $totalUsage must accumulate across
+        # both iterations rather than reset. A regression in iteration-N reuse or
+        # token accumulation would otherwise pass silently (all other subscription
+        # tests use MaxIterations=1).
+        $script:calls = @()
+        Mock Invoke-Sandcastle {
+            $script:calls += @{ Mode = $AuthMode; Target = $TargetIssue }
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{
+                    branch = "feat/90$($script:calls.Count)-iter"; commits = @('c'); iterations = @(
+                        [pscustomobject]@{ usage = [pscustomobject]@{
+                            inputTokens = 10; outputTokens = 5
+                            cacheReadInputTokens = 0; cacheCreationInputTokens = 0 } }
+                    )
+                    # no completionSignal -> loop continues to iteration 2
+                }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 2 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' -SubscriptionPrimary `
+            -SubscriptionModel 'claude-opus-4-8' -SubscriptionEffort 'medium' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
+        $script:calls[0].Mode | Should Be 'subscription'
+        $script:calls[1].Mode | Should Be 'subscription'   # iteration 2 stays on the subscription primary
+        # Usage accumulated across both iterations (10+10 in, 5+5 out), tier preserved.
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
+            -ParameterFilter {
+                $Status -eq 'success' -and $LlmMetrics.tier -eq 'subscription' -and
+                $LlmMetrics.input_tokens -eq 20 -and $LlmMetrics.output_tokens -eq 10
+            }
+    }
+
     It 'AC: subscription primary skips Ollama daemon check (Ollama down does not matter)' {
         Mock Test-OllamaRunning { $false }
         Mock Invoke-Sandcastle {
@@ -1135,8 +1175,11 @@ Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, 
         $script:calls[1].Mode    | Should Be 'endpoint'
         $script:calls[1].Token   | Should Be 'ds-key'
         $script:calls[1].BaseUrl | Should Be 'https://api.deepseek.com/anthropic'
+        # Compound tier: the subscription tier was attempted first, then the
+        # DeepSeek fallback succeeded -- the outcome row must show BOTH so a
+        # trace can distinguish this from a pure DeepSeek-primary success.
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
-            -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'tier2:deepseek' }
+            -ParameterFilter { $Status -eq 'success' -and $LlmMetrics.tier -eq 'subscription>tier2:deepseek' }
     }
 
     It 'AC: subscription failure with no DeepSeek fallback configured -> throws (no silent skip)' {
@@ -1184,11 +1227,12 @@ Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, 
         Assert-MockCalled Invoke-Sandcastle -Times 2 -Exactly -Scope It
         $script:calls[0].Mode | Should Be 'subscription'
         $script:calls[1].Mode | Should Be 'endpoint'
-        # The failure record must attribute the run to the tier that actually
-        # ran last (the DeepSeek fallback), not the subscription primary — so
-        # the outcome row is greppable by the tier that consumed the budget.
+        # The failure record must carry the COMPOUND tier so the outcome row
+        # shows subscription was attempted first THEN the DeepSeek fallback ran
+        # — a bare "tier2:deepseek" would be indistinguishable from a plain
+        # DeepSeek-primary double-failure (the round-5 reviewer's point).
         Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It `
-            -ParameterFilter { $Status -eq 'failure' -and $LlmMetrics.tier -eq 'tier2:deepseek' }
+            -ParameterFilter { $Status -eq 'failure' -and $LlmMetrics.tier -eq 'subscription>tier2:deepseek' }
     }
 
     It 'AC: -SubscriptionPrimary supersedes -Tier2AsPrimary (both set -> subscription wins)' {

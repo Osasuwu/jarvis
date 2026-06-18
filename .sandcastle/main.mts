@@ -37,8 +37,13 @@ import { dirname } from "node:path";
 // token sits in .env, while letting a manual `npm run sandcastle` exercise the
 // credit.
 const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+// Treat a blank value (`SANDCASTLE_AGENT_AUTH_MODE=` in a misconfigured .env)
+// the same as unset: `??` only coalesces null/undefined, so without the
+// trim()+`||` a blank would skip auto-detection and throw the opaque `got ""`.
+// `||` lets "" fall through to the BaseUrl/OAuth auto-detect below instead.
+const explicitAuthMode = process.env.SANDCASTLE_AGENT_AUTH_MODE?.trim();
 const authMode =
-  process.env.SANDCASTLE_AGENT_AUTH_MODE ??
+  explicitAuthMode ||
   (process.env.SANDCASTLE_AGENT_BASE_URL
     ? "endpoint"
     : oauthToken

@@ -170,9 +170,10 @@ $ErrorActionPreference = 'Stop'
 
 function Get-ConfigDeviceName {
     param([string]$DeviceJsonPath)
-    # Guard empty/null path: Test-Path '' is a terminating parameter-binding
-    # error under Windows PowerShell 5.1 (tolerated in pwsh 7). An absent path
-    # means "no device.json" -> return null, never throw.
+    # Guard null/empty path. Under Windows PowerShell 5.1 a $null bound to
+    # Test-Path -Path throws NullNotAllowed (an empty string instead returns
+    # $false harmlessly). The `$DeviceJsonPath -and ...` short-circuit covers
+    # both: an absent path means "no device.json" -> return null, never throw.
     if ($DeviceJsonPath -and (Test-Path $DeviceJsonPath)) {
         try {
             return (Get-Content $DeviceJsonPath -Raw | ConvertFrom-Json).name
