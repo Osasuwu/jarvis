@@ -8,7 +8,12 @@
 #   Invoke-Pester -Path tests/sandcastle/Register-SandcastleTask.Tests.ps1
 
 $script:TaskPath = Join-Path $PSScriptRoot '..\..\scripts\sandcastle\Register-SandcastleTask.ps1'
-. $script:TaskPath -NoExecute
+# -Repo is mandatory in the default 'Sandcastle' parameter set; supply it at
+# load so the script dot-sources under Windows PowerShell 5.1 / Pester 3.4
+# (where an unsatisfied mandatory param blocks the load). -NoExecute short-
+# circuits before any scheduler call, and the helper functions take -Repo
+# explicitly, so this load-time value never leaks into a test assertion.
+. $script:TaskPath -Repo jarvis -NoExecute
 
 # ---------------------------------------------------------------------------
 # Per-repo defaults
@@ -120,22 +125,24 @@ Describe 'Get-PowerShellExe' {
 
 Describe 'Format-SandcastleActionArgs' {
     It 'builds minimal args for jarvis (no tiers)' {
+        # -SubscriptionPrimary:$false isolates the base arg shape from the
+        # default subscription block (covered separately below).
         $args = Format-SandcastleActionArgs -WatchdogPath 'D:\repo\scripts\sandcastle\Run-Sandcastle.ps1' `
             -Repo 'jarvis' -Model 'qwen3-coder:30b' -Tier1Model '' -Tier2Provider '' `
-            -MaxIterations 5 -WindowEnd '01:00'
+            -MaxIterations 5 -WindowEnd '01:00' -SubscriptionPrimary $false
         $args[0] | Should Be '-NoProfile'
         $args[2] | Should Be 'Bypass'
         $args[3] | Should Be '-File'
         $args[4] | Should Be '"D:\repo\scripts\sandcastle\Run-Sandcastle.ps1"'
         $args[5] | Should Be '-Repo'
         $args[6] | Should Be 'jarvis'
-        $args[8] | Should Be '-Model'
-        $args[9] | Should Be 'qwen3-coder:30b'
-        $args[10] | Should Be '-MaxIterations'
-        $args[11] | Should Be 5
-        $args[12] | Should Be '-WindowEnd'
-        $args[13] | Should Be '01:00'
-        $args.Count | Should Be 14   # 7 parameter pairs
+        $args[7] | Should Be '-Model'
+        $args[8] | Should Be 'qwen3-coder:30b'
+        $args[9] | Should Be '-MaxIterations'
+        $args[10] | Should Be 5
+        $args[11] | Should Be '-WindowEnd'
+        $args[12] | Should Be '01:00'
+        $args.Count | Should Be 13   # lone -NoProfile switch + 6 parameter pairs
     }
 
     It 'includes -Tier1Model when specified' {
@@ -146,22 +153,68 @@ Describe 'Format-SandcastleActionArgs' {
         $args[$idx + 1] | Should Be 'qwen2.5-coder:7b'
     }
 
-    It 'includes -Tier2Provider and -Tier2AsPrimary when provider is set' {
+    It 'legacy: -SubscriptionPrimary:$false + provider set -> -Tier2Provider and -Tier2AsPrimary' {
         $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
-            -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00'
+            -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00' `
+            -SubscriptionPrimary $false
         $idx = [array]::IndexOf($args, '-Tier2Provider')
         $idx | Should Not Be -1
         $args[$idx + 1] | Should Be 'deepseek'
-        ($args -contains '-Tier2AsPrimary') | Should Be $true
+        ($args -contains '-Tier2AsPrimary')    | Should Be $true
+        ($args -contains '-SubscriptionPrimary') | Should Be $false
     }
 
-    It 'uses claude as Tier2 provider when specified' {
+    It 'legacy: uses claude as Tier2 provider when specified (-SubscriptionPrimary:$false)' {
         $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
-            -Tier1Model '' -Tier2Provider 'claude' -MaxIterations 3 -WindowEnd '01:00'
+            -Tier1Model '' -Tier2Provider 'claude' -MaxIterations 3 -WindowEnd '01:00' `
+            -SubscriptionPrimary $false
         $idx = [array]::IndexOf($args, '-Tier2Provider')
         $idx | Should Not Be -1
         $args[$idx + 1] | Should Be 'claude'
         ($args -contains '-Tier2AsPrimary') | Should Be $true
+    }
+
+    It 'default (no flag): DeepSeek is primary -- emits -Tier2AsPrimary, NOT -SubscriptionPrimary' {
+        # 2026-06-17: default reverted to DeepSeek-primary (#972). Anthropic
+        # shelved the separate Agent-SDK automation quota at launch, so the
+        # subscription path is dormant opt-in code, not the default tier.
+        $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
+            -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00'
+        ($args -contains '-SubscriptionPrimary') | Should Be $false
+        ($args -contains '-SubscriptionModel')   | Should Be $false
+        $tIdx = [array]::IndexOf($args, '-Tier2Provider')
+        $tIdx | Should Not Be -1
+        $args[$tIdx + 1] | Should Be 'deepseek'
+        ($args -contains '-Tier2AsPrimary') | Should Be $true
+    }
+
+    It 'opt-in: -SubscriptionPrimary $true emits -SubscriptionPrimary + model/effort, DeepSeek as fallback, NOT -Tier2AsPrimary' {
+        $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
+            -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00' `
+            -SubscriptionPrimary $true
+        ($args -contains '-SubscriptionPrimary') | Should Be $true
+        $mIdx = [array]::IndexOf($args, '-SubscriptionModel')
+        $mIdx | Should Not Be -1
+        $args[$mIdx + 1] | Should Be 'claude-opus-4-8'
+        $eIdx = [array]::IndexOf($args, '-SubscriptionEffort')
+        $eIdx | Should Not Be -1
+        $args[$eIdx + 1] | Should Be 'medium'
+        # DeepSeek stays wired as fallback...
+        $tIdx = [array]::IndexOf($args, '-Tier2Provider')
+        $tIdx | Should Not Be -1
+        $args[$tIdx + 1] | Should Be 'deepseek'
+        # ...but NOT promoted to primary.
+        ($args -contains '-Tier2AsPrimary') | Should Be $false
+    }
+
+    It 'opt-in: subscription model/effort overridable' {
+        $args = Format-SandcastleActionArgs -WatchdogPath 'w.ps1' -Repo 'jarvis' -Model 'm' `
+            -Tier1Model '' -Tier2Provider 'deepseek' -MaxIterations 3 -WindowEnd '01:00' `
+            -SubscriptionPrimary $true -SubscriptionModel 'claude-sonnet-4-6' -SubscriptionEffort 'high'
+        $mIdx = [array]::IndexOf($args, '-SubscriptionModel')
+        $args[$mIdx + 1] | Should Be 'claude-sonnet-4-6'
+        $eIdx = [array]::IndexOf($args, '-SubscriptionEffort')
+        $args[$eIdx + 1] | Should Be 'high'
     }
 
     It 'builds redrobot args with correct repo value' {
@@ -193,7 +246,7 @@ Describe 'Format-QuotaProbeActionArgs' {
         $args[4] | Should Be '"D:\repo\scripts\sandcastle\Quota-Probe.ps1"'
         $args[5] | Should Be '-CacheTTLMinutes'
         $args[6] | Should Be 35
-        $args.Count | Should Be 8   # 4 parameter pairs
+        $args.Count | Should Be 7   # lone -NoProfile switch + 3 parameter pairs
     }
 
     It 'accepts custom interval-based cache TTL' {
