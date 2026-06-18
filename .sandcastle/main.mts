@@ -25,9 +25,12 @@ import { dirname } from "node:path";
 //                    headless usage draws the monthly Agent SDK credit (API
 //                    rates, hard-stop on exhaustion) instead of the metered API.
 //                    ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY
-//                    MUST be unset here — they take precedence in Claude Code's
-//                    auth order and would silently route to PAID pay-per-token
-//                    billing (real money). The two modes never share env keys.
+//                    and the CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY} provider
+//                    switches MUST be unset here — they all resolve auth before
+//                    CLAUDE_CODE_OAUTH_TOKEN in Claude Code's order and would
+//                    silently route to PAID pay-per-token billing or a cloud
+//                    provider (real money). Enforced by the denylist guard below.
+//                    The two modes never share env keys.
 //
 // Default: honor an explicit watchdog/operator SANDCASTLE_AGENT_AUTH_MODE; else
 // "endpoint" whenever the watchdog is driving an endpoint tier
@@ -117,19 +120,44 @@ if (subscription && !oauthToken) {
 // distant use site (where the safety is non-obvious).
 const oauthTokenStr: string = subscription ? oauthToken! : "";
 if (subscription) {
-  // Real-money guard: withholding ANTHROPIC_* from authEnv (below) is not enough.
+  // Real-money guard: withholding these from authEnv (below) is not enough.
   // If any are already set on the HOST process (leftover endpoint-mode run, a
   // sourced .env, the commented Tier-2 block in .env.example), an ambient
   // passthrough can leak them into the container, where they OUTRANK
   // CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth order and silently route the
-  // run to paid pay-per-token billing. Refuse to start instead.
-  for (const key of ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"]) {
+  // run to paid pay-per-token billing (or a cloud-provider account). Refuse to
+  // start instead.
+  //
+  // Denylist = every var that resolves auth BEFORE step 5 (CLAUDE_CODE_OAUTH_TOKEN)
+  // in Claude Code's precedence chain (docs: code.claude.com/docs/en/authentication,
+  // /env-vars, /third-party-integrations — verified 2026-06-18):
+  //   1. CLAUDE_CODE_USE_{BEDROCK,VERTEX,FOUNDRY} — flip auth to a cloud provider,
+  //      bypassing the subscription token entirely (and billing AWS/GCP/Azure).
+  //   2. ANTHROPIC_AUTH_TOKEN — gateway/proxy bearer token.
+  //   3. ANTHROPIC_API_KEY — Console pay-per-token key (highest billing risk).
+  //   + ANTHROPIC_BASE_URL — redirects all calls to a custom endpoint; not strictly
+  //      an auth step, but a set base-url is a misconfig that must not ride along.
+  // NOT included on purpose: CLAUDE_API_KEY / CLAUDE_BASE_URL are NOT Claude Code
+  // env vars (the ANTHROPIC_-prefixed ones are the real names) — Claude Code's auth
+  // resolution never reads them, so blocking them would be cargo-cult. Provider
+  // sub-keys (AWS_*, ANTHROPIC_VERTEX_*, ANTHROPIC_FOUNDRY_*) only matter once a
+  // CLAUDE_CODE_USE_* flag is set, which we already block, so the flag is the
+  // sufficient gate.
+  const billingOverrideKeys = [
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "CLAUDE_CODE_USE_FOUNDRY",
+  ];
+  for (const key of billingOverrideKeys) {
     if (process.env[key]) {
       throw new Error(
         `SANDCASTLE_AGENT_AUTH_MODE=subscription: ${key} is set in the host ` +
-          "environment — unset it first. ANTHROPIC_* take auth precedence over " +
+          "environment — unset it first. It takes auth precedence over " +
           "CLAUDE_CODE_OAUTH_TOKEN and would silently route this run to paid " +
-          "pay-per-token billing (real money).",
+          "pay-per-token billing or a cloud provider (real money).",
       );
     }
   }
