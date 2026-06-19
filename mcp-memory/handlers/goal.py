@@ -15,6 +15,7 @@ from datetime import datetime, timezone  # noqa: F401
 from mcp.types import TextContent  # noqa: F401
 
 import server  # noqa: F401  — late-bound for monkeypatch propagation
+import write_scrubber  # #999: Tier-2 write-path secret-scrubber gate
 
 GOAL_FIELDS = (
     "slug",
@@ -113,6 +114,20 @@ async def _handle_goal_set(args: dict) -> list[TextContent]:
     client = server._get_client()
     slug = args["slug"]
 
+    # #999: Tier-2 write-path scrubber backstop. Scan user-supplied free-text
+    # fields before any DB write.
+    block = write_scrubber.check_write(
+        client,
+        {
+            k: args[k]
+            for k in ("title", "why", "success_criteria", "risks", "owner_focus", "jarvis_focus", "outcome", "lessons")
+            if k in args
+        },
+        write_path="goal_set",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
+
     data = {k: args[k] for k in GOAL_FIELDS if k in args}
 
     # Convert JSONB fields
@@ -177,6 +192,19 @@ async def _handle_goal_get(args: dict) -> list[TextContent]:
 async def _handle_goal_update(args: dict) -> list[TextContent]:
     client = server._get_client()
     slug = args["slug"]
+
+    # #999: Tier-2 write-path scrubber backstop.
+    block = write_scrubber.check_write(
+        client,
+        {
+            k: args[k]
+            for k in ("title", "why", "success_criteria", "risks", "owner_focus", "jarvis_focus", "outcome", "lessons")
+            if k in args
+        },
+        write_path="goal_update",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
 
     data = {k: args[k] for k in GOAL_FIELDS if k in args and k != "slug"}
 
