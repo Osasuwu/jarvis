@@ -243,6 +243,10 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     # no UUID validation, so it is a free-text sink that must be scanned too).
     # `project` persists to the episode payload (line ~275) and can carry a
     # user path — scan it too, matching `_handle_store`'s gate.
+    # `memories_used` is scanned BEFORE resolution: any entry that is not a real
+    # UUID/name is preserved verbatim in `payload.memories_used_unresolved` AND
+    # echoed in the success text, so an unresolved secret-shaped entry (e.g. a
+    # raw `sk-ant-*` key) would otherwise bypass the gate and land in the DB.
     block = write_scrubber.check_write(
         client,
         {
@@ -252,6 +256,7 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             "actor": actor,
             "outcomes_referenced": args.get("outcomes_referenced") or [],
             "project": project,
+            "memories_used": args.get("memories_used") or [],
         },
         write_path="record_decision",
     )

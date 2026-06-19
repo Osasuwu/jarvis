@@ -100,6 +100,24 @@ def test_aws_key_negative():
     assert fires == {}
 
 
+def test_voyageai_key_redacted():
+    """VoyageAI `pa-<entropy>` keys must be caught — this codebase reads
+    VOYAGE_API_KEY, so a Voyage key is a realistic leak vector here."""
+    k = "pa-" + "0123456789abcdefghijABCDEFGHIJ0123456789"
+    cleaned, fires = scrub(f"export VOYAGE_API_KEY={k}")
+    assert "<<REDACTED:api_key_voyageai>>" in cleaned
+    assert fires["api_key_voyageai"] == 1
+    assert k not in cleaned
+
+
+def test_voyageai_key_negative():
+    """Short `pa-` runs (a word like 'pa-11' or prose) must NOT fire — the
+    {32,} entropy floor keeps the false-positive surface near zero."""
+    cleaned, fires = scrub("pa-11 is a typo for the pa-system")
+    assert cleaned == "pa-11 is a typo for the pa-system"
+    assert fires == {}
+
+
 # ── .env blocks ──────────────────────────────────────────────────────────
 
 ENV_BLOCK_SAMPLE = """Here is my config:

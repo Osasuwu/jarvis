@@ -42,6 +42,11 @@ PAT_API_KEY_GITHUB = re.compile(r"ghp_[A-Za-z0-9]{30,}")
 PAT_API_KEY_SLACK = re.compile(r"xox[baprs]-[A-Za-z0-9-]{12,}")
 PAT_API_KEY_JWT = re.compile(r"eyJ[A-Za-z0-9_=-]+\.eyJ[A-Za-z0-9_=-]+\.[A-Za-z0-9_=-]+")
 PAT_API_KEY_AWS = re.compile(r"AKIA[0-9A-Z]{16}")
+# VoyageAI keys (`pa-<entropy>`) — this codebase actively reads VOYAGE_API_KEY
+# for embeddings, so a Voyage key is a realistic leak vector here. Require
+# {32,} alphanumerics after the `pa-` prefix (real keys carry ~40+) to keep the
+# false-positive surface near zero — the short prefix alone would be too eager.
+PAT_API_KEY_VOYAGEAI = re.compile(r"pa-[A-Za-z0-9]{32,}")
 
 # Combined API key patterns for counting. Anthropic is first so `sk-ant-*` is
 # attributed to its own pattern, not partially mangled by the OpenAI pass.
@@ -52,6 +57,7 @@ API_KEY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("api_key_slack", PAT_API_KEY_SLACK),
     ("api_key_jwt", PAT_API_KEY_JWT),
     ("api_key_aws", PAT_API_KEY_AWS),
+    ("api_key_voyageai", PAT_API_KEY_VOYAGEAI),
 ]
 
 # Non-API-key pattern names emitted by scrub() (the env-block + path passes).

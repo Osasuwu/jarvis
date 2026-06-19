@@ -19,11 +19,13 @@ handlers also persist user free-text (``goal_set``/``goal_update``,
 ``outcome_record``/``outcome_update``, ``credential_add``); extending the gate
 to ``goal``/``outcome`` is tracked as a follow-up slice (#999).
 ``credential_add`` is deliberately NOT a candidate — it is the one write path
-whose domain is credentials. It stores credential *metadata* (env var names,
-provider, expiry — the schema rejects raw secret values), so its references to
-key-shaped names are legitimate; a secret-reject gate there would fight the
-handler's own purpose. That path relies on the ``credential_registry`` access
-model, not scrubbing.
+whose entire *domain* is credentials. It records credential metadata (env var
+names, provider, expiry) plus free-text note fields (``notes`` /
+``rotation_notes``) that legitimately discuss key-shaped values; a
+secret-reject gate there would fight the handler's own purpose (it exists to
+catalogue credentials, so naming one is expected, not a leak). The structured
+value columns reject raw secrets at the schema level; the notes fields rely on
+the ``credential_registry`` access model, not scrubbing.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -99,8 +102,9 @@ SCRUB_ONLY_PATTERNS = frozenset({"path_username"})
 # there, this warns loudly at import instead of letting the frozenset become a
 # no-op that starts hard-blocking every path-containing write. We warn rather
 # than raise: a startup crash would take down the whole (shared) MCP server —
-# disproportionate for a drift whose worst case is over-blocking path writes
-# (fail-safe), not leaking secrets (fail-open). Loud-but-alive beats dead.
+# disproportionate for a drift whose worst case is a functional regression
+# (path writes hard-blocked), not a secret leak (fail-open). Loud-but-alive
+# beats dead.
 _KNOWN_PATTERN_NAMES = {name for name, _ in API_KEY_PATTERNS} | set(EXTRA_PATTERN_NAMES)
 if scrub is not None and not SCRUB_ONLY_PATTERNS <= _KNOWN_PATTERN_NAMES:
     print(
@@ -192,6 +196,8 @@ _HIGH_SEVERITY_PATTERNS = frozenset(
         # A leaked JWT is typically a Supabase service-role token — full DB
         # access, so high-sensitivity alongside the raw API keys.
         "api_key_jwt",
+        # VoyageAI embedding key — a real live credential for this codebase.
+        "api_key_voyageai",
     }
 )
 
@@ -199,6 +205,16 @@ _HIGH_SEVERITY_PATTERNS = frozenset(
 def _event_severity(patterns: dict[str, int]) -> str:
     """Map fired patterns → event severity for orchestrator triage indexing."""
     return "high" if any(p in _HIGH_SEVERITY_PATTERNS for p in patterns) else "medium"
+
+
+# Serialize the audit insert: concurrent blocked writes dispatch their block
+# events via asyncio.to_thread, which runs them on separate executor threads
+# against the *same* Supabase client singleton. httpx.Client is generally
+# thread-safe for concurrent requests, but the surrounding supabase-py
+# query-builder is not documented as such, and a corrupted/dropped audit event
+# is a security-signal loss. The insert is a single short round-trip on a rare
+# path (only fires on a detected secret), so serializing it is cheap insurance.
+_BLOCK_LOG_LOCK = threading.Lock()
 
 
 def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> None:
@@ -210,18 +226,22 @@ def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> Non
     env-overridable so cross-repo (redrobot) blocks are attributed correctly.
     Severity reflects which pattern fired (see ``_event_severity``) so an
     ``sk-ant-*`` catch is not buried at the same priority as an env-block.
+
+    Serialized via ``_BLOCK_LOG_LOCK`` so concurrent ``to_thread`` dispatches
+    don't drive the shared client singleton from two threads at once.
     """
     try:
-        client.table("events").insert(
-            {
-                "event_type": "mcp_write_scrubber_block",
-                "severity": _event_severity(patterns),
-                "repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
-                "source": "mcp_memory",
-                "title": f"Write blocked by secret scrubber ({write_path})",
-                "payload": {"write_path": write_path, "patterns": patterns},
-            }
-        ).execute()
+        with _BLOCK_LOG_LOCK:
+            client.table("events").insert(
+                {
+                    "event_type": "mcp_write_scrubber_block",
+                    "severity": _event_severity(patterns),
+                    "repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
+                    "source": "mcp_memory",
+                    "title": f"Write blocked by secret scrubber ({write_path})",
+                    "payload": {"write_path": write_path, "patterns": patterns},
+                }
+            ).execute()
     except Exception as exc:  # noqa: BLE001 — logging must never block the rejection
         # Loud-but-non-fatal: a silent pass hides "why are there no block
         # events in the table?" during debugging. Log only the exception type —

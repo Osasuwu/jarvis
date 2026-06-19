@@ -42,9 +42,14 @@ FAKE_GITHUB_TOKEN = "ghp_" + "ABCDEFGHIJKLM" + "NOPQRSTUVWXYZabcdefghij123456"
 FAKE_SLACK_TOKEN = "xoxb" + "-1111111111-aaaaaaaaaaaaaaaaaaaa"
 FAKE_JWT = "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".signature_part_here"
 FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+FAKE_VOYAGE_KEY = "pa-" + "0123456789abcdefghijABCDEFGHIJ0123456789"
 FAKE_ENV_BLOCK = "```env\nDB_PASSWORD=supersecretpassword123\n```"
 
 # (pattern name, text that fires exactly that blocking pattern)
+# `path_username` is intentionally absent — it is a scrub-and-keep
+# normalization, NOT a write-blocking leak (see SCRUB_ONLY_PATTERNS); a
+# separate test (``test_user_path_does_not_block``) covers its non-blocking
+# behavior. Listing it here would assert the opposite of the intended policy.
 BLOCKING_PATTERN_CASES = [
     ("api_key_anthropic", FAKE_ANTHROPIC_KEY),
     ("api_key_openai", FAKE_OPENAI_KEY),
@@ -52,12 +57,13 @@ BLOCKING_PATTERN_CASES = [
     ("api_key_slack", FAKE_SLACK_TOKEN),
     ("api_key_jwt", FAKE_JWT),
     ("api_key_aws", FAKE_AWS_KEY),
+    ("api_key_voyageai", FAKE_VOYAGE_KEY),
     ("env_block", FAKE_ENV_BLOCK),
 ]
 
 
 @pytest.fixture(autouse=True)
-def _clear_pending():
+async def _clear_pending():
     """Isolate the module-level ``_PENDING_BLOCK_LOGS`` set between tests.
 
     The set pins in-flight detached block-log tasks (GC-pinning, see
@@ -65,12 +71,20 @@ def _clear_pending():
     scheduled by one test bleeds into the next — making
     ``test_block_event_is_actually_logged_on_async_path`` able to pass
     *vacuously* off a stale task, and letting TestDecisionGate's blocking
-    tests leak tasks forward. Clearing before AND after each test gives every
-    test a clean view; the per-test event loop teardown cancels any tasks we
-    drop the strong ref to here.
+    tests leak tasks forward.
+
+    On teardown we DRAIN before clearing: a block-log task wraps
+    ``asyncio.to_thread`` and an event-loop teardown cannot cancel the worker
+    thread already running the insert. Just ``.clear()``-ing the pins would let
+    that thread finish against the next test's mock client (a cross-test bleed).
+    Awaiting the snapshot lets every in-flight insert complete first; only then
+    do we drop the pins. ``async`` fixture runs under ``asyncio_mode=auto``.
     """
     write_scrubber._PENDING_BLOCK_LOGS.clear()
     yield
+    pending = list(write_scrubber._PENDING_BLOCK_LOGS)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
     write_scrubber._PENDING_BLOCK_LOGS.clear()
 
 
@@ -196,11 +210,17 @@ class TestLogBlockEvent:
         write_scrubber.log_block_event(client, {"api_key_jwt": 1}, write_path="memory_store")
         assert client.table.return_value.insert.call_args.args[0]["severity"] == "high"
 
-    def test_swallows_db_errors(self):
+    def test_swallows_db_errors(self, capsys):
         client = MagicMock()
-        client.table.side_effect = Exception("DB down")
+        client.table.side_effect = Exception("DB down: secret-bearing context")
         # Must not raise — logging is fire-and-forget.
         write_scrubber.log_block_event(client, {"x": 1}, write_path="memory_store")
+        # Privacy: the stderr diagnostic must carry the exception *type* only,
+        # never str(exc) (which could echo request context). Pins the invariant
+        # so a future `print(exc)` regression goes red (round-10 m3).
+        err = capsys.readouterr().err
+        assert "Exception" in err
+        assert "secret-bearing context" not in err
 
 
 # ── _dispatch_block_log fallback branches ─────────────────────────────────
@@ -497,6 +517,13 @@ class TestStoreGate:
         assert tbl.upsert.called, "clean write never reached the memories upsert"
         assert "ok-1" in result[0].text
         assert "error" not in result[0].text
+        # A clean write must NOT emit a block event — the gate only logs on a
+        # detected secret. Guards against an over-eager log_block_event firing
+        # on every write (round-10 m2).
+        events_calls = [
+            c for c in self.client.table.call_args_list if c.args and c.args[0] == "events"
+        ]
+        assert not events_calls, "clean write spuriously emitted a block event"
 
 
 # ── _handle_record_decision integration ───────────────────────────────────

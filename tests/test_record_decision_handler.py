@@ -216,6 +216,37 @@ class TestRecordDecisionInsert:
             f"episode was written despite a blocked project field: {insert_payloads!r}"
         )
 
+    @pytest.mark.asyncio
+    async def test_secret_in_memories_used_blocks_write(self, monkeypatch):
+        """#555 round-10 M1: an unresolved entry in ``memories_used`` is
+        preserved verbatim in ``payload.memories_used_unresolved`` and echoed in
+        the response, so a secret there bypasses the gate unless scanned. The
+        gate must scan ``memories_used`` BEFORE resolution and reject."""
+        client = make_client("ep-blocked")
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        fake_key = "sk-ant-" + "api03-" + "0123456789abcdefghijABCDEFG"
+        result = await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "memories_used": [fake_key],
+            }
+        )
+        text = result[0].text
+        assert "secret_pattern_detected" in text
+        assert "api_key_anthropic" in text
+        assert fake_key not in text
+        insert_payloads = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        assert not any("decision" in p for p in insert_payloads), (
+            f"episode written despite a blocked memories_used entry: {insert_payloads!r}"
+        )
+
     # ---- End-to-end: memories_used resolution ----
 
     @pytest.mark.asyncio
