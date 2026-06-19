@@ -306,9 +306,12 @@ class TestStoreGate:
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
 
-        # Let the detached _log_block_event_async task run to completion.
-        for _ in range(5):
-            await asyncio.sleep(0)
+        # Drain the detached _log_block_event_async task(s). The insert runs via
+        # asyncio.to_thread, so awaiting the pending-task set (not bare sleep(0)
+        # ticks) is what guarantees the executor thread finished before we assert.
+        pending = list(write_scrubber._PENDING_BLOCK_LOGS)
+        assert pending, "no block-log task was scheduled on the async path"
+        await asyncio.gather(*pending)
 
         events_inserts = [
             c for c in self.client.table.call_args_list if c.args and c.args[0] == "events"

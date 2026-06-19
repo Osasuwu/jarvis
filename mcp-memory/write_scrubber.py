@@ -184,9 +184,15 @@ def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> Non
 
 
 async def _log_block_event_async(client, patterns: dict[str, int], *, write_path: str) -> None:
-    """Coroutine wrapper so the blocking insert can run as a detached task
-    (mirrors ``_emit_recall_event``) instead of stalling the handler response."""
-    log_block_event(client, patterns, write_path=write_path)
+    """Run the blocking insert off the event-loop thread.
+
+    ``log_block_event`` does synchronous Supabase HTTP I/O. Scheduling it via
+    ``create_task`` alone only defers *when* it starts — it would still run the
+    50–200 ms round-trip on the loop thread and stall every other coroutine.
+    ``asyncio.to_thread`` hands it to the default executor so the loop stays
+    free. (The codebase's older fire-and-forget helpers — ``_emit_recall_event``
+    — block the loop directly; this path is the corrected pattern.)"""
+    await asyncio.to_thread(log_block_event, client, patterns, write_path=write_path)
 
 
 # Strong references to in-flight block-log tasks. CPython holds only a *weak*
