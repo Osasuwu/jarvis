@@ -18,6 +18,18 @@ from mcp.types import TextContent  # noqa: F401
 import server  # noqa: F401  — late-bound for monkeypatch propagation
 import write_scrubber  # #555: Tier-2 write-path secret-scrubber gate
 
+# Strong references to fire-and-forget tasks. CPython holds only a weak ref to
+# a bare ``asyncio.create_task`` result, so without an external strong ref the
+# task can be GC-collected mid-flight before it completes (same pattern as
+# write_scrubber._PENDING_BLOCK_LOGS). Discard via the done-callback below.
+_PENDING_TASKS: set[asyncio.Task] = set()
+
+
+def _pin_task(task: asyncio.Task) -> None:
+    """Strong-ref *task* until completion so it can't be GC-collected mid-flight."""
+    _PENDING_TASKS.add(task)
+    task.add_done_callback(_PENDING_TASKS.discard)
+
 
 def _looks_like_uuid(s: str) -> bool:
     """True if s is a canonical UUID string (case-insensitive, hyphenated)."""
@@ -229,6 +241,8 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     # `_handle_store`'s `source_provenance`, both namespace strings), and
     # `outcomes_referenced` (persisted raw into the episode payload below with
     # no UUID validation, so it is a free-text sink that must be scanned too).
+    # `project` persists to the episode payload (line ~275) and can carry a
+    # user path — scan it too, matching `_handle_store`'s gate.
     block = write_scrubber.check_write(
         client,
         {
@@ -237,6 +251,7 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             "alternatives_considered": args.get("alternatives_considered") or [],
             "actor": actor,
             "outcomes_referenced": args.get("outcomes_referenced") or [],
+            "project": project,
         },
         write_path="record_decision",
     )
@@ -293,9 +308,11 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     # decision response on N+1 Supabase round-trips inside the linker; the
     # linker itself swallows exceptions, so a detached task is correct.
     if decision_timestamp and resolved_memories and outcome_ids:
-        asyncio.create_task(
-            _link_fok_judgments_to_outcomes(
-                client, outcome_ids, resolved_memories, decision_timestamp, project
+        _pin_task(
+            asyncio.create_task(
+                _link_fok_judgments_to_outcomes(
+                    client, outcome_ids, resolved_memories, decision_timestamp, project
+                )
             )
         )
 

@@ -169,6 +169,10 @@ def rejection_error(patterns: dict[str, int]) -> str:
     """Build the structured rejection payload as a JSON string.
 
     Carries ONLY pattern names + counts — never any payload value.
+
+    Returns a JSON *string* (handlers wrap it in a TextContent). #1000 will
+    migrate the MCP write paths to a structured ``dict`` error return; when that
+    lands, this returns the dict directly and the json.dumps moves to the edge.
     """
     return json.dumps({"error": "secret_pattern_detected", "patterns": patterns})
 
@@ -179,7 +183,16 @@ def rejection_error(patterns: dict[str, int]) -> str:
 # itself prevented the leak, so these are never "critical" (no incident
 # occurred), but severity must reflect *what* was caught for triage indexing.
 _HIGH_SEVERITY_PATTERNS = frozenset(
-    {"api_key_anthropic", "api_key_openai", "api_key_aws", "api_key_github", "api_key_slack"}
+    {
+        "api_key_anthropic",
+        "api_key_openai",
+        "api_key_aws",
+        "api_key_github",
+        "api_key_slack",
+        # A leaked JWT is typically a Supabase service-role token — full DB
+        # access, so high-sensitivity alongside the raw API keys.
+        "api_key_jwt",
+    }
 )
 
 

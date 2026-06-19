@@ -183,6 +183,39 @@ class TestRecordDecisionInsert:
         assert "RuntimeError" in result[0].text
         assert "boom" not in result[0].text
 
+    @pytest.mark.asyncio
+    async def test_secret_in_project_field_blocks_write(self, monkeypatch):
+        """#555 round-10 MINOR-2: the decision gate scans ``project`` (it
+        persists to episodes.payload.project), so a secret there is rejected —
+        no episode insert — matching the store gate's field coverage."""
+        client = make_client("ep-blocked")
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        fake_key = "sk-ant-" + "api03-" + "0123456789abcdefghijABCDEFG"
+        result = await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "project": fake_key,
+            }
+        )
+        text = result[0].text
+        assert "secret_pattern_detected" in text
+        assert "api_key_anthropic" in text
+        # Privacy: the offending value never appears in the rejection.
+        assert fake_key not in text
+        # Rejected before the episode write: no insert carries a decision-shaped
+        # payload (the only other insert that may fire is the events block-log).
+        insert_payloads = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        assert not any("decision" in p for p in insert_payloads), (
+            f"episode was written despite a blocked project field: {insert_payloads!r}"
+        )
+
     # ---- End-to-end: memories_used resolution ----
 
     @pytest.mark.asyncio

@@ -189,6 +189,13 @@ class TestLogBlockEvent:
         write_scrubber.log_block_event(client, {"env_block": 1}, write_path="memory_store")
         assert client.table.return_value.insert.call_args.args[0]["severity"] == "medium"
 
+        # A leaked JWT is a Supabase service-role token (full DB access) — it
+        # must triage as "high" alongside the raw API keys, not as a medium
+        # env-block. Pins the round-10 MINOR-3 fix.
+        client.reset_mock()
+        write_scrubber.log_block_event(client, {"api_key_jwt": 1}, write_path="memory_store")
+        assert client.table.return_value.insert.call_args.args[0]["severity"] == "high"
+
     def test_swallows_db_errors(self):
         client = MagicMock()
         client.table.side_effect = Exception("DB down")
