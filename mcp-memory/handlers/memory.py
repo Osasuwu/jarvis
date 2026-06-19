@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from mcp.types import TextContent
 
 import server  # late-bound — see module docstring
+import write_scrubber  # #555: Tier-2 write-path secret-scrubber gate
 
 # Recall pipeline constants and primitive helpers live in mcp-memory/recall.py
 # (deep-module split, #496). Aliased back to the legacy private names so that
@@ -913,6 +914,27 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 ),
             )
         ]
+
+    # Tier-2 write-path secret-scrubber gate; see write_scrubber module
+    # docstring. Run AFTER validation but BEFORE any embedding/insert so a
+    # blocked write generates no embedding and lands no row. Reject (not
+    # silent-scrub) — the write is intent-bearing. Scan every caller-supplied
+    # field that persists free text, including `project` (a caller string
+    # written to the memories row).
+    block = write_scrubber.check_write(
+        client,
+        {
+            "name": mem_name,
+            "content": content,
+            "description": description,
+            "tags": tags,
+            "source_provenance": source_provenance,
+            "project": project,
+        },
+        write_path="memory_store",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
 
     # Phase 2a: canonical-form embedding — include name + tags + description + content.
     # Name and tags carry high-signal lexical cues that raw content often dilutes
