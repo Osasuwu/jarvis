@@ -51,6 +51,24 @@ BLOCKING_PATTERN_CASES = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def _clear_pending():
+    """Isolate the module-level ``_PENDING_BLOCK_LOGS`` set between tests.
+
+    The set pins in-flight detached block-log tasks (GC-pinning, see
+    write_scrubber). It is process-global, so without this fixture a task
+    scheduled by one test bleeds into the next — making
+    ``test_block_event_is_actually_logged_on_async_path`` able to pass
+    *vacuously* off a stale task, and letting TestDecisionGate's blocking
+    tests leak tasks forward. Clearing before AND after each test gives every
+    test a clean view; the per-test event loop teardown cancels any tasks we
+    drop the strong ref to here.
+    """
+    write_scrubber._PENDING_BLOCK_LOGS.clear()
+    yield
+    write_scrubber._PENDING_BLOCK_LOGS.clear()
+
+
 # ── scan_fields ───────────────────────────────────────────────────────────
 
 
@@ -139,7 +157,9 @@ class TestLogBlockEvent:
         client.table.assert_called_with("events")
         row = client.table.return_value.insert.call_args.args[0]
         assert row["event_type"] == "mcp_write_scrubber_block"
-        assert row["severity"] in ("critical", "high", "medium", "low", "info")
+        # Block events are a low-severity counter signal, not an alert — pinned
+        # exactly so a future bump to a noisier severity is a deliberate change.
+        assert row["severity"] == "low"
         assert row["repo"] == "Osasuwu/jarvis"
         assert row["payload"]["patterns"] == {"api_key_openai": 2}
         assert row["payload"]["write_path"] == "memory_store"
@@ -334,6 +354,29 @@ class TestStoreGate:
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
 
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("description", f"see {FAKE_OPENAI_KEY}"),
+            ("tags", ["fine", FAKE_OPENAI_KEY]),
+            ("source_provenance", f"external:{FAKE_OPENAI_KEY}"),
+        ],
+    )
+    async def test_secret_in_other_scanned_fields_blocks(self, field, value):
+        """Every field the store gate scans must block, not just name/content —
+        otherwise a secret could slip in through description/tags/provenance."""
+        args = {
+            "type": "project",
+            "name": "fine",
+            "content": "clean content",
+            "project": "jarvis",
+            "source_provenance": "session:test",
+        }
+        args[field] = value
+        result = await _handle_store(args)
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+        assert self.embed_calls == []
+
     async def test_clean_store_passes_gate(self):
         tbl = MagicMock()
         tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "ok-1"}])
@@ -410,6 +453,26 @@ class TestDecisionGate:
             }
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_actor_blocks(self, monkeypatch):
+        """``actor`` is in the decision gate's scanned set — a secret there must
+        block just like decision/rationale/alternatives."""
+        client = make_client("ep-blocked")
+        monkeypatch.setattr(server_module, "_get_client", lambda: client)
+
+        result = await _handle_record_decision(
+            {
+                "decision": "clean decision",
+                "rationale": "clean rationale",
+                "reversibility": "reversible",
+                "actor": f"session:{FAKE_OPENAI_KEY}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+        episode_inserts = [
+            c for c in client.table.call_args_list if c.args and c.args[0] == "episodes"
+        ]
+        assert episode_inserts == []
 
     async def test_clean_decision_passes_gate(self, monkeypatch):
         client = make_client("ep-ok")

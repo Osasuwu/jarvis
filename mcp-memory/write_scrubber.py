@@ -211,17 +211,25 @@ def _dispatch_block_log(client, patterns: dict[str, int], *, write_path: str) ->
     detached task so the rejection returns immediately — the MCP event loop is
     never stalled on a 50–200 ms Supabase round-trip. The task is held in
     ``_PENDING_BLOCK_LOGS`` until done so it cannot be GC-dropped mid-insert.
-    Called synchronously with no running loop (direct unit-test calls) it falls
-    back to an inline insert.
+    Two paths fall back to a synchronous inline insert: (1) no loop is running
+    (direct unit-test calls), and (2) a loop *was* running but is now closing,
+    so ``create_task`` itself raises ``RuntimeError`` during teardown. In both
+    cases the audit event must still be written, so we insert inline.
     """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         log_block_event(client, patterns, write_path=write_path)
-    else:
+        return
+    try:
         task = asyncio.create_task(_log_block_event_async(client, patterns, write_path=write_path))
-        _PENDING_BLOCK_LOGS.add(task)
-        task.add_done_callback(_PENDING_BLOCK_LOGS.discard)
+    except RuntimeError:
+        # Loop is closing (teardown race) — create_task rejects. The audit event
+        # is non-negotiable, so fall back to a blocking inline insert.
+        log_block_event(client, patterns, write_path=write_path)
+        return
+    _PENDING_BLOCK_LOGS.add(task)
+    task.add_done_callback(_PENDING_BLOCK_LOGS.discard)
 
 
 def check_write(client, fields: dict[str, object], *, write_path: str) -> str | None:
