@@ -13,12 +13,9 @@ Privacy invariant: no value from a blocked payload ever leaves this module.
 Only pattern names + fire counts appear in the rejection error, the
 ``mcp_write_scrubber_block`` counter event, or any log line.
 
-Scope (#555 AC): this gate covers the two free-text write paths named in the
-acceptance criteria — ``memory_store`` and ``record_decision``. Three other
-handlers also persist user free-text (``goal_set``/``goal_update``,
-``outcome_record``/``outcome_update``, ``credential_add``); extending the gate
-to ``goal``/``outcome`` is tracked as a follow-up slice (#999).
-``credential_add`` is deliberately NOT a candidate — it is the one write path
+Scope (#555 AC + #999 follow-up): this gate covers ``memory_store``,
+``record_decision``, ``goal_set``, ``goal_update``, ``outcome_record``, and
+``outcome_update``. ``credential_add`` is deliberately NOT a candidate — it is the one write path
 whose entire *domain* is credentials. It records credential metadata (env var
 names, provider, expiry) plus free-text note fields (``notes`` /
 ``rotation_notes``) that legitimately discuss key-shaped values; a

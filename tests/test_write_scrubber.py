@@ -21,7 +21,14 @@ from unittest.mock import MagicMock
 import pytest
 
 import write_scrubber
-from server import _handle_store, _handle_record_decision
+from server import (
+    _handle_store,
+    _handle_record_decision,
+    _handle_goal_set,
+    _handle_goal_update,
+    _handle_outcome_record,
+    _handle_outcome_update,
+)
 import server as server_module
 
 from test_record_decision_helpers import make_client
@@ -637,4 +644,274 @@ class TestDecisionGate:
         )
         # Reaches the normal path → episode id surfaced, no error.
         assert "ep-ok" in result[0].text
+        assert "secret_pattern_detected" not in result[0].text
+
+
+# ── _handle_goal_set / _handle_goal_update integration ───────────────────
+
+
+class TestGoalGate:
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        self.client = MagicMock()
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+    async def test_secret_in_title_blocks_no_insert(self):
+        """A secret in the goal title must block — no row written."""
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": f"my key {FAKE_OPENAI_KEY}",
+                "why": "clean why",
+            }
+        )
+        body = json.loads(result[0].text)
+        assert body["error"] == "secret_pattern_detected"
+        assert "api_key_openai" in body["patterns"]
+        # No goal insert/update reached.
+        goals_writes = [
+            c for c in self.client.table.call_args_list if c.args and c.args[0] == "goals"
+        ]
+        assert not goals_writes
+        assert FAKE_OPENAI_KEY not in result[0].text
+
+    async def test_secret_in_why_blocks(self):
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "why": f"because {FAKE_GITHUB_TOKEN} is used",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_success_criteria_blocks(self):
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "success_criteria": [f"need {FAKE_ANTHROPIC_KEY}"],
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_risks_blocks(self):
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "risks": [f"token {FAKE_AWS_KEY} exposed"],
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_owner_focus_blocks(self):
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "owner_focus": f"rotate {FAKE_SLACK_TOKEN}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_jarvis_focus_blocks(self):
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "jarvis_focus": f"use {FAKE_VOYAGE_KEY}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_outcome_blocks(self):
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "outcome": f"completed with {FAKE_JWT}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_lessons_blocks(self):
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "lessons": f"never hardcode {FAKE_OPENAI_KEY}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_user_path_does_not_block_goal(self):
+        """AC#4: absolute user paths must not block a goal write."""
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "why": r"config at C:\Users\alice\.claude\settings.json",
+            }
+        )
+        assert "secret_pattern_detected" not in result[0].text
+
+    async def test_clean_goal_set_passes_gate(self):
+        """A clean goal_set must reach the normal handler path."""
+        # The handler checks for existing slug — return empty so it creates.
+        tbl = MagicMock()
+        chain = MagicMock()
+        chain.limit.return_value.execute.return_value = MagicMock(data=[])
+        tbl.select.return_value.eq.return_value = chain
+        self.client.table.return_value = tbl
+
+        result = await _handle_goal_set(
+            {
+                "slug": "test-goal",
+                "title": "clean title",
+                "why": "clean why",
+            }
+        )
+        # Reaches the normal path → goal created.
+        assert "created" in result[0].text
+        assert "secret_pattern_detected" not in result[0].text
+
+    # ── goal_update ─────────────────────────────────────────────────
+
+    async def test_update_secret_in_title_blocks(self):
+        result = await _handle_goal_update(
+            {
+                "slug": "test-goal",
+                "title": f"updated with {FAKE_OPENAI_KEY}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_update_clean_passes_gate(self):
+        """A clean goal_update must reach the normal handler path."""
+        tbl = MagicMock()
+        tbl.update.return_value.eq.return_value.execute.return_value = MagicMock(
+            data=[{"slug": "test-goal"}]
+        )
+        self.client.table.return_value = tbl
+
+        result = await _handle_goal_update(
+            {
+                "slug": "test-goal",
+                "title": "updated title",
+                "why": "updated why",
+            }
+        )
+        assert "updated" in result[0].text
+        assert "secret_pattern_detected" not in result[0].text
+
+
+# ── _handle_outcome_record / _handle_outcome_update integration ─────────
+
+
+class TestOutcomeGate:
+    @pytest.fixture(autouse=True)
+    def _patch(self, monkeypatch):
+        self.client = MagicMock()
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+    async def test_secret_in_task_description_blocks_no_insert(self):
+        result = await _handle_outcome_record(
+            {
+                "task_type": "fix",
+                "task_description": f"rotate {FAKE_OPENAI_KEY}",
+                "outcome_status": "success",
+            }
+        )
+        body = json.loads(result[0].text)
+        assert body["error"] == "secret_pattern_detected"
+        assert FAKE_OPENAI_KEY not in result[0].text
+        # No outcome insert reached.
+        outcome_writes = [
+            c for c in self.client.table.call_args_list if c.args and c.args[0] == "task_outcomes"
+        ]
+        assert not outcome_writes
+
+    async def test_secret_in_outcome_summary_blocks(self):
+        result = await _handle_outcome_record(
+            {
+                "task_type": "fix",
+                "task_description": "clean task",
+                "outcome_status": "success",
+                "outcome_summary": f"used {FAKE_GITHUB_TOKEN}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_lessons_blocks(self):
+        result = await _handle_outcome_record(
+            {
+                "task_type": "fix",
+                "task_description": "clean task",
+                "outcome_status": "success",
+                "lessons": f"never hardcode {FAKE_OPENAI_KEY}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_user_path_does_not_block_outcome(self):
+        result = await _handle_outcome_record(
+            {
+                "task_type": "fix",
+                "task_description": r"updated C:\Users\bob\.env",
+                "outcome_status": "success",
+            }
+        )
+        assert "secret_pattern_detected" not in result[0].text
+
+    async def test_clean_outcome_record_passes_gate(self):
+        tbl = MagicMock()
+        tbl.insert.return_value.execute.return_value = MagicMock(data=[{"id": "out-1"}])
+        self.client.table.return_value = tbl
+
+        result = await _handle_outcome_record(
+            {
+                "task_type": "fix",
+                "task_description": "clean task",
+                "outcome_status": "success",
+                "outcome_summary": "all good",
+            }
+        )
+        assert "out-1" in result[0].text
+        assert "secret_pattern_detected" not in result[0].text
+
+    # ── outcome_update ──────────────────────────────────────────────
+
+    async def test_update_secret_in_outcome_summary_blocks(self):
+        result = await _handle_outcome_update(
+            {
+                "id": "out-1",
+                "outcome_summary": f"breach with {FAKE_OPENAI_KEY}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_update_secret_in_lessons_blocks(self):
+        result = await _handle_outcome_update(
+            {
+                "id": "out-1",
+                "lessons": f"leaked {FAKE_AWS_KEY}",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_update_clean_passes_gate(self):
+        tbl = MagicMock()
+        tbl.update.return_value.eq.return_value.execute.return_value = MagicMock(
+            data=[{"id": "out-1"}]
+        )
+        self.client.table.return_value = tbl
+
+        result = await _handle_outcome_update(
+            {
+                "id": "out-1",
+                "outcome_summary": "clean update",
+            }
+        )
+        assert "out-1" in result[0].text
         assert "secret_pattern_detected" not in result[0].text

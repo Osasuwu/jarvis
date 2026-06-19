@@ -14,11 +14,25 @@ from datetime import datetime, timezone  # noqa: F401
 from mcp.types import TextContent  # noqa: F401
 
 import server  # noqa: F401  — late-bound for monkeypatch propagation
+import write_scrubber  # #999: Tier-2 write-path secret-scrubber gate
 
 
 async def _handle_outcome_record(args: dict) -> list[TextContent]:
     """Record a task outcome to task_outcomes table."""
     client = server._get_client()
+
+    # #999: Tier-2 write-path scrubber backstop.
+    block = write_scrubber.check_write(
+        client,
+        {
+            k: args[k]
+            for k in ("task_description", "outcome_summary", "lessons")
+            if k in args and args[k] is not None
+        },
+        write_path="outcome_record",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
 
     row = {
         "task_type": args["task_type"],
@@ -54,6 +68,19 @@ async def _handle_outcome_update(args: dict) -> list[TextContent]:
     """Update a task outcome (verification, status flip, lessons)."""
     client = server._get_client()
     oid = args["id"]
+
+    # #999: Tier-2 write-path scrubber backstop.
+    block = write_scrubber.check_write(
+        client,
+        {
+            k: args[k]
+            for k in ("outcome_summary", "lessons")
+            if k in args and args[k] is not None
+        },
+        write_path="outcome_update",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
 
     updates: dict = {}
     for key in (
