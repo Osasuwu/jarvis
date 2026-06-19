@@ -34,6 +34,10 @@ FAKE_OPENAI_KEY = "sk-proj" + "AbCdEfGhIjKlMnOpQrStUvWxYz"
 # One fake per remaining blocking pattern (same split-construction convention as
 # tests/test_secret_scrubber.py) so a regression in any single scrubber pattern
 # is caught at the write-gate layer, not just for api_key_openai.
+# Anthropic key: sk-ant-api03-<entropy>. The `-` after `sk-ant` breaks the
+# OpenAI pattern's run at 3 chars, so this is caught ONLY by the dedicated
+# api_key_anthropic pattern — the regression this case guards.
+FAKE_ANTHROPIC_KEY = "sk-ant-" + "api03-" + "0123456789abcdefghijABCDEFG"
 FAKE_GITHUB_TOKEN = "ghp_" + "ABCDEFGHIJKLM" + "NOPQRSTUVWXYZabcdefghij123456"
 FAKE_SLACK_TOKEN = "xoxb" + "-1111111111-aaaaaaaaaaaaaaaaaaaa"
 FAKE_JWT = "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".signature_part_here"
@@ -42,6 +46,7 @@ FAKE_ENV_BLOCK = "```env\nDB_PASSWORD=supersecretpassword123\n```"
 
 # (pattern name, text that fires exactly that blocking pattern)
 BLOCKING_PATTERN_CASES = [
+    ("api_key_anthropic", FAKE_ANTHROPIC_KEY),
     ("api_key_openai", FAKE_OPENAI_KEY),
     ("api_key_github", FAKE_GITHUB_TOKEN),
     ("api_key_slack", FAKE_SLACK_TOKEN),
@@ -261,12 +266,30 @@ class TestScrubUnavailable:
 
 class TestScrubOnlyCoupling:
     def test_scrub_only_names_are_real_pattern_names(self):
-        """The import-time drift guard warns (no longer crashes) if
-        SCRUB_ONLY_PATTERNS names a pattern secret_scrubber no longer emits.
-        This test pins the invariant in committed code so a rename in
-        secret_scrubber.py that silently turns path exclusion into a no-op
-        (re-blocking ~26% of path-bearing writes) fails CI here."""
-        assert write_scrubber.SCRUB_ONLY_PATTERNS <= write_scrubber._KNOWN_PATTERN_NAMES
+        """Drift guard, LIVE-FIRE: assert SCRUB_ONLY_PATTERNS names are names the
+        real scrubber emits on real path input. A static subset check against
+        ``_KNOWN_PATTERN_NAMES`` would pass vacuously — that set *also* hardcodes
+        ``path_username``, so a rename in secret_scrubber.py would leave both
+        stale in lockstep and never go red. Calling scrub() closes that loop:
+        if path_username is renamed, the live fires key changes and this fails."""
+        assert write_scrubber.scrub is not None, "only meaningful when scrubber is available"
+        _, fires = write_scrubber.scrub(r"config at C:\Users\alice\.claude\settings.json")
+        assert write_scrubber.SCRUB_ONLY_PATTERNS <= set(fires.keys()), (
+            "SCRUB_ONLY_PATTERNS references names the live scrubber does not emit "
+            f"on path input: {write_scrubber.SCRUB_ONLY_PATTERNS - set(fires.keys())}"
+        )
+
+    def test_env_block_pattern_name_is_live(self):
+        """Companion live-fire guard for the non-path EXTRA_PATTERN_NAMES entry.
+        ``env_block`` rides in _KNOWN_PATTERN_NAMES via EXTRA_PATTERN_NAMES but
+        is not in SCRUB_ONLY_PATTERNS, so the subset guard above never exercises
+        it. Fire the real scrubber on an env block and assert the emitted key is
+        still ``env_block`` — catches a rename that would silently stop blocking
+        env writes with no operator signal."""
+        assert write_scrubber.scrub is not None, "only meaningful when scrubber is available"
+        _, fires = write_scrubber.scrub(FAKE_ENV_BLOCK)
+        assert "env_block" in fires
+        assert "env_block" in write_scrubber._KNOWN_PATTERN_NAMES
 
 
 # ── _handle_store integration ─────────────────────────────────────────────
@@ -315,6 +338,13 @@ class TestStoreGate:
         block-event insert is dispatched as a detached task. Without draining,
         no test ever observes it. Drain with ``asyncio.sleep(0)`` and assert the
         ``events`` insert fired with the value-free counter row."""
+        # Route each table() to its own mock so the events row is extracted from
+        # the events table specifically — not from a shared insert.call_args that
+        # grabs the last insert on ANY table (which would make the privacy check
+        # vacuous if a future insert followed the block event).
+        tables: dict = {}
+        self.client.table.side_effect = lambda name: tables.setdefault(name, MagicMock())
+
         result = await _handle_store(
             {
                 "type": "project",
@@ -333,11 +363,8 @@ class TestStoreGate:
         assert pending, "no block-log task was scheduled on the async path"
         await asyncio.gather(*pending)
 
-        events_inserts = [
-            c for c in self.client.table.call_args_list if c.args and c.args[0] == "events"
-        ]
-        assert events_inserts, "block event was never inserted on the async path"
-        row = self.client.table.return_value.insert.call_args.args[0]
+        assert "events" in tables, "block event was never inserted on the async path"
+        row = tables["events"].insert.call_args.args[0]
         assert row["event_type"] == "mcp_write_scrubber_block"
         assert row["payload"]["write_path"] == "memory_store"
         assert FAKE_OPENAI_KEY not in json.dumps(row)
@@ -453,6 +480,26 @@ class TestDecisionGate:
             }
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+    async def test_secret_in_outcomes_referenced_blocks(self, monkeypatch):
+        """``outcomes_referenced`` is persisted raw into the episode payload with
+        no UUID validation, so a secret smuggled there must block too."""
+        client = make_client("ep-blocked")
+        monkeypatch.setattr(server_module, "_get_client", lambda: client)
+
+        result = await _handle_record_decision(
+            {
+                "decision": "clean decision",
+                "rationale": "clean rationale",
+                "reversibility": "reversible",
+                "outcomes_referenced": [f"outcome {FAKE_OPENAI_KEY}"],
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+        episode_inserts = [
+            c for c in client.table.call_args_list if c.args and c.args[0] == "episodes"
+        ]
+        assert episode_inserts == []
 
     async def test_secret_in_actor_blocks(self, monkeypatch):
         """``actor`` is in the decision gate's scanned set — a secret there must

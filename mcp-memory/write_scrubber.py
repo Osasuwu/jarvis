@@ -45,21 +45,39 @@ if _SCRIPTS.is_dir() and str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 try:
-    from lib.secret_scrubber import scrub, API_KEY_PATTERNS  # type: ignore
-except Exception:  # noqa: BLE001 — cross-repo (redrobot) may lack scripts/lib
+    from lib.secret_scrubber import scrub, API_KEY_PATTERNS, EXTRA_PATTERN_NAMES  # type: ignore
+except (ImportError, ModuleNotFoundError):
+    # redrobot path: scripts/lib genuinely absent. Fail-open is intentional
+    # (availability > over-blocking) but MUST be loud: a silent no-op would
+    # erase the Tier-2 layer with zero operator signal. Suppressible via
+    # WRITE_SCRUBBER_QUIET so repos that legitimately lack scripts/lib don't
+    # print this on every cold start forever.
     scrub = None  # type: ignore
     API_KEY_PATTERNS = []  # type: ignore
-    # Fail-open is intentional (availability > over-blocking) but MUST be loud:
-    # a silent no-op would erase the Tier-2 layer with zero operator signal.
-    # Suppressible via WRITE_SCRUBBER_QUIET so repos that legitimately lack
-    # scripts/lib (redrobot) don't print this on every cold start forever.
+    EXTRA_PATTERN_NAMES = frozenset()  # type: ignore
     if not os.environ.get("WRITE_SCRUBBER_QUIET"):
         print(
-            "[write_scrubber] WARNING: secret_scrubber unavailable — the Tier-2 "
-            "MCP write-path gate is DISABLED; writes will NOT be scanned for "
-            "secrets. Set WRITE_SCRUBBER_QUIET=1 to silence (e.g. on redrobot).",
+            "[write_scrubber] WARNING: secret_scrubber unavailable (module absent) "
+            "— the Tier-2 MCP write-path gate is DISABLED; writes will NOT be "
+            "scanned for secrets. Set WRITE_SCRUBBER_QUIET=1 to silence (e.g. on "
+            "redrobot).",
             file=sys.stderr,
         )
+except Exception as exc:  # noqa: BLE001 — module FOUND but broken (syntax error, etc.)
+    # On jarvis scripts/lib exists, so this branch means secret_scrubber.py
+    # itself failed to import (merge-conflict marker, syntax error, bad ref).
+    # Surfacing the actual error type — not the misleading "unavailable" —
+    # is what tells the developer to fix the module rather than hunt a phantom
+    # missing dependency. Type only (no str(exc)) to honour the privacy stance.
+    scrub = None  # type: ignore
+    API_KEY_PATTERNS = []  # type: ignore
+    EXTRA_PATTERN_NAMES = frozenset()  # type: ignore
+    print(
+        "[write_scrubber] ERROR: secret_scrubber import failed — the module was "
+        f"found but is broken ({type(exc).__name__}); the Tier-2 gate is DISABLED. "
+        "Fix scripts/lib/secret_scrubber.py.",
+        file=sys.stderr,
+    )
 
 
 # Patterns the scrubber detects but that must NOT hard-block an MCP write.
@@ -80,7 +98,7 @@ SCRUB_ONLY_PATTERNS = frozenset({"path_username"})
 # than raise: a startup crash would take down the whole (shared) MCP server —
 # disproportionate for a drift whose worst case is over-blocking path writes
 # (fail-safe), not leaking secrets (fail-open). Loud-but-alive beats dead.
-_KNOWN_PATTERN_NAMES = {name for name, _ in API_KEY_PATTERNS} | {"env_block", "path_username"}
+_KNOWN_PATTERN_NAMES = {name for name, _ in API_KEY_PATTERNS} | set(EXTRA_PATTERN_NAMES)
 if scrub is not None and not SCRUB_ONLY_PATTERNS <= _KNOWN_PATTERN_NAMES:
     print(
         "[write_scrubber] WARNING: SCRUB_ONLY_PATTERNS references pattern name(s) "

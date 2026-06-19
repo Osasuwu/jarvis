@@ -225,8 +225,10 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     # BEFORE resolving refs / inserting the episode. AC names `rationale`; the
     # privacy invariant ("MCP writes still cannot land secrets") extends the
     # scan to every field that persists free text — `decision`,
-    # `alternatives_considered`, and `actor` (the symmetric partner of
-    # `_handle_store`'s `source_provenance`, both namespace strings).
+    # `alternatives_considered`, `actor` (the symmetric partner of
+    # `_handle_store`'s `source_provenance`, both namespace strings), and
+    # `outcomes_referenced` (persisted raw into the episode payload below with
+    # no UUID validation, so it is a free-text sink that must be scanned too).
     block = write_scrubber.check_write(
         client,
         {
@@ -234,6 +236,7 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             "rationale": rationale,
             "alternatives_considered": args.get("alternatives_considered") or [],
             "actor": actor,
+            "outcomes_referenced": args.get("outcomes_referenced") or [],
         },
         write_path="record_decision",
     )
