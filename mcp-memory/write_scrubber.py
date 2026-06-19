@@ -41,7 +41,10 @@ from pathlib import Path
 # instead of silently degrading to a no-op. Tests already put scripts/ on the
 # path (conftest), so the insert is idempotent there.
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-if _SCRIPTS.is_dir() and str(_SCRIPTS) not in sys.path:
+# Gate on the target FILE existing, not merely a scripts/ dir: a host that has
+# an unrelated scripts/ directory (or a redrobot layout) must not get scripts/
+# prepended to sys.path, where it could shadow a stdlib/site module named `lib`.
+if (_SCRIPTS / "lib" / "secret_scrubber.py").is_file() and str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
 try:
@@ -170,6 +173,21 @@ def rejection_error(patterns: dict[str, int]) -> str:
     return json.dumps({"error": "secret_pattern_detected", "patterns": patterns})
 
 
+# High-entropy credential patterns — a fire here means a real, live-key-shaped
+# secret was caught, which the orchestrator should triage above an env-block or
+# (already non-blocking) path. Anything not listed maps to "medium". The block
+# itself prevented the leak, so these are never "critical" (no incident
+# occurred), but severity must reflect *what* was caught for triage indexing.
+_HIGH_SEVERITY_PATTERNS = frozenset(
+    {"api_key_anthropic", "api_key_openai", "api_key_aws", "api_key_github", "api_key_slack"}
+)
+
+
+def _event_severity(patterns: dict[str, int]) -> str:
+    """Map fired patterns → event severity for orchestrator triage indexing."""
+    return "high" if any(p in _HIGH_SEVERITY_PATTERNS for p in patterns) else "medium"
+
+
 def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> None:
     """Best-effort: write an ``mcp_write_scrubber_block`` counter event.
 
@@ -177,12 +195,14 @@ def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> Non
     identifies which handler blocked (``memory_store`` / ``record_decision``)
     so ``/learn`` can surface eager-pattern false positives. Repo slug is
     env-overridable so cross-repo (redrobot) blocks are attributed correctly.
+    Severity reflects which pattern fired (see ``_event_severity``) so an
+    ``sk-ant-*`` catch is not buried at the same priority as an env-block.
     """
     try:
         client.table("events").insert(
             {
                 "event_type": "mcp_write_scrubber_block",
-                "severity": "low",
+                "severity": _event_severity(patterns),
                 "repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
                 "source": "mcp_memory",
                 "title": f"Write blocked by secret scrubber ({write_path})",
@@ -222,6 +242,24 @@ async def _log_block_event_async(client, patterns: dict[str, int], *, write_path
 _PENDING_BLOCK_LOGS: set[asyncio.Task] = set()
 
 
+def _on_block_log_done(task: asyncio.Task) -> None:
+    """Unpin a finished block-log task and surface any exception eagerly.
+
+    Without retrieving ``task.exception()`` here, a failure inside the detached
+    insert would surface only as a late, value-bearing "Task exception was never
+    retrieved" warning at GC time. We log the exception *type* (privacy) and
+    drop the pin.
+    """
+    _PENDING_BLOCK_LOGS.discard(task)
+    if not task.cancelled():
+        exc = task.exception()
+        if exc is not None:
+            print(
+                f"[write_scrubber] block-log task failed: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+
+
 def _dispatch_block_log(client, patterns: dict[str, int], *, write_path: str) -> None:
     """Emit the block event off the hot path.
 
@@ -247,7 +285,7 @@ def _dispatch_block_log(client, patterns: dict[str, int], *, write_path: str) ->
         log_block_event(client, patterns, write_path=write_path)
         return
     _PENDING_BLOCK_LOGS.add(task)
-    task.add_done_callback(_PENDING_BLOCK_LOGS.discard)
+    task.add_done_callback(_on_block_log_done)
 
 
 def check_write(client, fields: dict[str, object], *, write_path: str) -> str | None:

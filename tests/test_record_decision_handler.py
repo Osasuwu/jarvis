@@ -165,7 +165,9 @@ class TestRecordDecisionInsert:
     @pytest.mark.asyncio
     async def test_db_failure_returns_error_text(self, monkeypatch):
         client = MagicMock()
-        client.table.return_value.insert.return_value.execute.side_effect = RuntimeError("boom")
+        client.table.return_value.insert.return_value.execute.side_effect = RuntimeError(
+            "boom: secret-bearing context"
+        )
         monkeypatch.setattr("server._get_client", lambda: client)
 
         result = await _handle_record_decision(
@@ -175,7 +177,11 @@ class TestRecordDecisionInsert:
                 "reversibility": "reversible",
             }
         )
-        assert "boom" in result[0].text
+        # Privacy: the error surfaces the exception *type* only, never str(exc).
+        # A DB-layer error str() can echo the failed row (which carries the
+        # caller's free text), so the leaky `{exc}` was replaced by the type.
+        assert "RuntimeError" in result[0].text
+        assert "boom" not in result[0].text
 
     # ---- End-to-end: memories_used resolution ----
 

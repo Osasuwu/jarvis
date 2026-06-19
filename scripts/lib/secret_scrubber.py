@@ -34,7 +34,9 @@ from typing import Tuple
 # length 3, so the OpenAI pattern never catches an Anthropic key. This is the
 # credential type most likely to surface in *this* codebase (every Claude Code
 # session handles `sk-ant-*` keys), so a dedicated pattern is non-negotiable.
-PAT_API_KEY_ANTHROPIC = re.compile(r"sk-ant-[A-Za-z0-9-]{20,}")
+# Real sk-ant-api03 keys carry ~60-90 entropy chars after the 12-char prefix;
+# require {30,} (like the GitHub pattern) to keep the false-positive surface low.
+PAT_API_KEY_ANTHROPIC = re.compile(r"sk-ant-[A-Za-z0-9-]{30,}")
 PAT_API_KEY_OPENAI = re.compile(r"sk-[A-Za-z0-9]{20,}")
 PAT_API_KEY_GITHUB = re.compile(r"ghp_[A-Za-z0-9]{30,}")
 PAT_API_KEY_SLACK = re.compile(r"xox[baprs]-[A-Za-z0-9-]{12,}")

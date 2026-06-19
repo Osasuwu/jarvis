@@ -915,9 +915,12 @@ async def _handle_store(args: dict) -> list[TextContent]:
             )
         ]
 
-    # #555: Tier-2 write-path scrubber backstop. Run AFTER validation but
-    # BEFORE any embedding/insert so a blocked write generates no embedding
-    # and lands no row. Reject (not silent-scrub) — the write is intent-bearing.
+    # Tier-2 write-path secret-scrubber gate; see write_scrubber module
+    # docstring. Run AFTER validation but BEFORE any embedding/insert so a
+    # blocked write generates no embedding and lands no row. Reject (not
+    # silent-scrub) — the write is intent-bearing. Scan every caller-supplied
+    # field that persists free text, including `project` (a caller string
+    # written to the memories row).
     block = write_scrubber.check_write(
         client,
         {
@@ -926,6 +929,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
             "description": description,
             "tags": tags,
             "source_provenance": source_provenance,
+            "project": project,
         },
         write_path="memory_store",
     )

@@ -3,6 +3,7 @@
 Covers each pattern: positive (redacts) + negative (no false positive on
 natural text).
 """
+
 from __future__ import annotations
 
 import sys
@@ -15,6 +16,7 @@ from lib.secret_scrubber import scrub
 
 # ── API keys ────────────────────────────────────────────────────────────
 
+
 def test_openai_key_redacted():
     k = "sk-proj" + "AbCdEfGhIjKlMnOpQrStUvWxYz"
     cleaned, fires = scrub(f"my key is {k}")
@@ -26,6 +28,26 @@ def test_openai_key_negative():
     """Short sk- prefix (not enough entropy) should NOT fire."""
     cleaned, fires = scrub("sk-test")
     assert cleaned == "sk-test"
+    assert fires == {}
+
+
+def test_anthropic_key_redacted():
+    """sk-ant-api03-<entropy> must be caught by the dedicated Anthropic pattern.
+    The `-` after `sk-ant` breaks the OpenAI run at 3 chars, so without this
+    pattern the key would slip the gate entirely (the bug round-7 surfaced)."""
+    k = "sk-ant-" + "api03-" + "0123456789abcdefghijABCDEFG"
+    cleaned, fires = scrub(f"export ANTHROPIC_API_KEY={k}")
+    assert "<<REDACTED:api_key_anthropic>>" in cleaned
+    assert fires.get("api_key_anthropic") == 1
+    # Attributed to its own pattern — not partially mangled as api_key_openai.
+    assert "api_key_openai" not in fires
+    assert k not in cleaned
+
+
+def test_anthropic_key_negative():
+    """Short sk-ant- prefix without enough entropy ({30,}) should NOT fire."""
+    cleaned, fires = scrub("sk-ant-test")
+    assert cleaned == "sk-ant-test"
     assert fires == {}
 
 
@@ -116,6 +138,7 @@ def test_env_block_negative():
 
 # ── Path normalisation ───────────────────────────────────────────────────
 
+
 def test_linux_path_redacted():
     cleaned, fires = scrub("I work at /home/alice/projects/jarvis")
     assert "<USER_PATH>/projects/jarvis" in cleaned
@@ -152,6 +175,7 @@ def test_multiple_paths():
 
 
 # ── Empty / no-op ────────────────────────────────────────────────────────
+
 
 def test_clean_text_unchanged():
     cleaned, fires = scrub("Hello world, this is normal text.")

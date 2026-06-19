@@ -106,17 +106,22 @@ class TestScanFields:
     def test_scrub_raising_is_contained_per_field(self, monkeypatch):
         """MAJOR-fix: a scrub() crash on one field must fail OPEN (skip that
         field, keep scanning the rest) — never propagate and crash the write.
-        Also asserts the field name is logged but the value is not."""
+        The surviving field still contributes its fires, proving containment
+        skips only the crashing field and does not abort the whole scan."""
 
         def _boom(text):
             if "BOOM" in text:
                 raise ValueError("scrubber exploded")
-            return text, {}
+            n = text.count(FAKE_OPENAI_KEY)
+            return text, ({"api_key_openai": n} if n else {})
 
         monkeypatch.setattr(write_scrubber, "scrub", _boom)
-        # First field raises, second is clean → no exception, empty totals.
-        fires = write_scrubber.scan_fields({"bad": "trigger BOOM here", "good": "ordinary text"})
-        assert fires == {}
+        # First field raises (skipped), second still fires → the secret in the
+        # surviving field is reported despite the sibling crash.
+        fires = write_scrubber.scan_fields(
+            {"bad": "trigger BOOM here", "good": f"key {FAKE_OPENAI_KEY}"}
+        )
+        assert fires == {"api_key_openai": 1}
 
     def test_scrub_raising_does_not_leak_value_to_stderr(self, monkeypatch, capsys):
         """Privacy invariant: the per-field crash log carries the exception
@@ -162,20 +167,76 @@ class TestLogBlockEvent:
         client.table.assert_called_with("events")
         row = client.table.return_value.insert.call_args.args[0]
         assert row["event_type"] == "mcp_write_scrubber_block"
-        # Block events are a low-severity counter signal, not an alert — pinned
-        # exactly so a future bump to a noisier severity is a deliberate change.
-        assert row["severity"] == "low"
+        # An API-key fire is high-severity for triage indexing (see
+        # _event_severity) — a live-key-shaped catch must not be buried at the
+        # same priority as an env-block.
+        assert row["severity"] == "high"
         assert row["repo"] == "Osasuwu/jarvis"
         assert row["payload"]["patterns"] == {"api_key_openai": 2}
         assert row["payload"]["write_path"] == "memory_store"
         # No payload value leaks into the event row.
         assert FAKE_OPENAI_KEY not in json.dumps(row)
 
+    def test_severity_reflects_caught_pattern(self):
+        """High-entropy credential patterns → "high"; everything else (e.g. an
+        env block) → "medium". Pinned so the triage-index mapping is a
+        deliberate change, not an accidental flatten back to one severity."""
+        client = MagicMock()
+        write_scrubber.log_block_event(client, {"api_key_anthropic": 1}, write_path="memory_store")
+        assert client.table.return_value.insert.call_args.args[0]["severity"] == "high"
+
+        client.reset_mock()
+        write_scrubber.log_block_event(client, {"env_block": 1}, write_path="memory_store")
+        assert client.table.return_value.insert.call_args.args[0]["severity"] == "medium"
+
     def test_swallows_db_errors(self):
         client = MagicMock()
         client.table.side_effect = Exception("DB down")
         # Must not raise — logging is fire-and-forget.
         write_scrubber.log_block_event(client, {"x": 1}, write_path="memory_store")
+
+
+# ── _dispatch_block_log fallback branches ─────────────────────────────────
+
+
+class TestDispatchBlockLog:
+    def test_no_loop_runs_inline(self, monkeypatch):
+        """Called outside any running loop (direct unit-test / sync caller) →
+        the audit insert runs inline rather than being lost to a create_task
+        that has no loop to schedule on."""
+        called: list = []
+        monkeypatch.setattr(
+            write_scrubber,
+            "log_block_event",
+            lambda c, p, *, write_path: called.append((p, write_path)),
+        )
+        write_scrubber._dispatch_block_log(
+            MagicMock(), {"api_key_openai": 1}, write_path="memory_store"
+        )
+        assert called == [({"api_key_openai": 1}, "memory_store")]
+
+    async def test_teardown_race_falls_back_to_inline(self, monkeypatch):
+        """A loop IS running but create_task raises RuntimeError (loop closing
+        during teardown). The audit event is non-negotiable, so the dispatcher
+        must fall back to a synchronous inline insert rather than swallow it."""
+        called: list = []
+        monkeypatch.setattr(
+            write_scrubber,
+            "log_block_event",
+            lambda c, p, *, write_path: called.append((p, write_path)),
+        )
+
+        def _raise(coro):
+            coro.close()  # avoid "coroutine was never awaited" noise
+            raise RuntimeError("loop is closing")
+
+        monkeypatch.setattr(write_scrubber.asyncio, "create_task", _raise)
+        write_scrubber._dispatch_block_log(
+            MagicMock(), {"api_key_aws": 1}, write_path="record_decision"
+        )
+        assert called == [({"api_key_aws": 1}, "record_decision")]
+        # Nothing was pinned — the task was never created.
+        assert not write_scrubber._PENDING_BLOCK_LOGS
 
 
 # ── check_write (combined gate) ───────────────────────────────────────────
@@ -359,6 +420,10 @@ class TestStoreGate:
         # Drain the detached _log_block_event_async task(s). The insert runs via
         # asyncio.to_thread, so awaiting the pending-task set (not bare sleep(0)
         # ticks) is what guarantees the executor thread finished before we assert.
+        # Snapshot the set BEFORE awaiting: the done-callback discards completed
+        # tasks, so reading it after a yield could race to empty even though a
+        # task ran. The gate returns without yielding, so the task is scheduled
+        # but not yet started here — the set is reliably populated.
         pending = list(write_scrubber._PENDING_BLOCK_LOGS)
         assert pending, "no block-log task was scheduled on the async path"
         await asyncio.gather(*pending)
@@ -418,8 +483,12 @@ class TestStoreGate:
                 "source_provenance": "session:test",
             }
         )
-        # Reaches the normal store path → embedding spy was called.
+        # Reaches the normal store path → embedding spy was called AND the DB
+        # upsert was actually reached (guards against an early return between
+        # embed and insert that would still pass an embed-only assertion).
         assert self.embed_calls
+        assert tbl.upsert.called, "clean write never reached the memories upsert"
+        assert "ok-1" in result[0].text
         assert "error" not in result[0].text
 
 

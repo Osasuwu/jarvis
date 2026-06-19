@@ -277,7 +277,10 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             .execute()
         )
     except Exception as exc:
-        return [TextContent(type="text", text=f"Error recording decision: {exc}")]
+        # Privacy (#555): postgrest/httpx exception str() can embed the request
+        # body (decision/rationale/etc.). If a secret ever slips the Tier-2 gate,
+        # echoing {exc} to the MCP caller would leak it — surface the type only.
+        return [TextContent(type="text", text=f"Error recording decision: {type(exc).__name__}")]
 
     if not result.data:
         return [TextContent(type="text", text="Failed to record decision.")]
@@ -360,7 +363,7 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             import sys as _sys
 
             print(
-                f"[decision.py] events_canonical dual-write skipped: {exc}",
+                f"[decision.py] events_canonical dual-write skipped: {type(exc).__name__}",
                 file=_sys.stderr,
             )
 
