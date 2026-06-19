@@ -30,6 +30,25 @@ from test_record_decision_helpers import make_client
 # sk-[A-Za-z0-9]{20,}). Split so the static scanner never sees a whole token.
 FAKE_OPENAI_KEY = "sk-proj" + "AbCdEfGhIjKlMnOpQrStUvWxYz"
 
+# One fake per remaining blocking pattern (same split-construction convention as
+# tests/test_secret_scrubber.py) so a regression in any single scrubber pattern
+# is caught at the write-gate layer, not just for api_key_openai.
+FAKE_GITHUB_TOKEN = "ghp_" + "ABCDEFGHIJKLM" + "NOPQRSTUVWXYZabcdefghij123456"
+FAKE_SLACK_TOKEN = "xoxb" + "-1111111111-aaaaaaaaaaaaaaaaaaaa"
+FAKE_JWT = "eyJhbGciOiJIUzI1NiJ9" + "." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".signature_part_here"
+FAKE_AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
+FAKE_ENV_BLOCK = "```env\nDB_PASSWORD=supersecretpassword123\n```"
+
+# (pattern name, text that fires exactly that blocking pattern)
+BLOCKING_PATTERN_CASES = [
+    ("api_key_openai", FAKE_OPENAI_KEY),
+    ("api_key_github", FAKE_GITHUB_TOKEN),
+    ("api_key_slack", FAKE_SLACK_TOKEN),
+    ("api_key_jwt", FAKE_JWT),
+    ("api_key_aws", FAKE_AWS_KEY),
+    ("env_block", FAKE_ENV_BLOCK),
+]
+
 
 # ── scan_fields ───────────────────────────────────────────────────────────
 
@@ -50,9 +69,7 @@ class TestScanFields:
         assert fires.get("api_key_openai") == 1
 
     def test_counts_aggregate_across_fields(self):
-        fires = write_scrubber.scan_fields(
-            {"name": FAKE_OPENAI_KEY, "content": FAKE_OPENAI_KEY}
-        )
+        fires = write_scrubber.scan_fields({"name": FAKE_OPENAI_KEY, "content": FAKE_OPENAI_KEY})
         assert fires.get("api_key_openai") == 2
 
     def test_non_string_values_skipped(self):
@@ -84,9 +101,7 @@ class TestRejectionError:
 class TestLogBlockEvent:
     def test_inserts_counter_event_no_values(self):
         client = MagicMock()
-        write_scrubber.log_block_event(
-            client, {"api_key_openai": 2}, write_path="memory_store"
-        )
+        write_scrubber.log_block_event(client, {"api_key_openai": 2}, write_path="memory_store")
 
         client.table.assert_called_with("events")
         row = client.table.return_value.insert.call_args.args[0]
@@ -154,6 +169,40 @@ class TestCheckWrite:
         assert "path_username" not in payload["patterns"]
 
 
+# ── every blocking pattern is exercised, not just api_key_openai ──────────
+
+
+class TestAllBlockingPatterns:
+    @pytest.mark.parametrize("pattern_name,text", BLOCKING_PATTERN_CASES)
+    def test_each_blocking_pattern_blocks(self, pattern_name, text):
+        client = MagicMock()
+        out = write_scrubber.check_write(client, {"content": text}, write_path="memory_store")
+        assert out is not None, f"{pattern_name} did not block the write"
+        assert pattern_name in json.loads(out)["patterns"]
+        # The raw token never leaks into the rejection payload.
+        assert text not in out
+
+
+# ── fail-open when the scrubber lib is unavailable ────────────────────────
+
+
+class TestScrubUnavailable:
+    def test_scan_fields_fail_open_when_scrub_none(self, monkeypatch):
+        """Security invariant: when scrub is unavailable the gate fails OPEN
+        (availability > over-blocking) — documented + must stay covered."""
+        monkeypatch.setattr(write_scrubber, "scrub", None)
+        assert write_scrubber.scan_fields({"content": FAKE_OPENAI_KEY}) == {}
+
+    def test_check_write_fail_open_when_scrub_none(self, monkeypatch):
+        monkeypatch.setattr(write_scrubber, "scrub", None)
+        client = MagicMock()
+        out = write_scrubber.check_write(
+            client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store"
+        )
+        assert out is None
+        client.table.assert_not_called()
+
+
 # ── _handle_store integration ─────────────────────────────────────────────
 
 
@@ -171,7 +220,6 @@ class TestStoreGate:
 
         monkeypatch.setattr(server_module, "_compute_write_embeddings", _spy_embed)
 
-    @pytest.mark.asyncio
     async def test_secret_in_content_blocks_no_embed_no_insert(self):
         result = await _handle_store(
             {
@@ -196,7 +244,6 @@ class TestStoreGate:
         # The secret never appears in the returned error text.
         assert FAKE_OPENAI_KEY not in result[0].text
 
-    @pytest.mark.asyncio
     async def test_secret_in_name_blocks(self):
         result = await _handle_store(
             {
@@ -209,7 +256,6 @@ class TestStoreGate:
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
 
-    @pytest.mark.asyncio
     async def test_clean_store_passes_gate(self):
         tbl = MagicMock()
         tbl.upsert.return_value.execute.return_value = MagicMock(data=[{"id": "ok-1"}])
@@ -233,7 +279,6 @@ class TestStoreGate:
 
 
 class TestDecisionGate:
-    @pytest.mark.asyncio
     async def test_secret_in_rationale_blocks_no_episode(self, monkeypatch):
         client = make_client("ep-blocked")
         monkeypatch.setattr(server_module, "_get_client", lambda: client)
@@ -250,11 +295,30 @@ class TestDecisionGate:
         body = json.loads(result[0].text)
         assert body["error"] == "secret_pattern_detected"
         # No episode written.
-        episode_inserts = [c for c in client.table.call_args_list if c.args and c.args[0] == "episodes"]
+        episode_inserts = [
+            c for c in client.table.call_args_list if c.args and c.args[0] == "episodes"
+        ]
         assert episode_inserts == []
         assert FAKE_OPENAI_KEY not in result[0].text
 
-    @pytest.mark.asyncio
+    async def test_secret_in_decision_blocks(self, monkeypatch):
+        client = make_client("ep-blocked")
+        monkeypatch.setattr(server_module, "_get_client", lambda: client)
+
+        result = await _handle_record_decision(
+            {
+                "decision": f"adopt {FAKE_OPENAI_KEY} as the key",
+                "rationale": "clean rationale",
+                "reversibility": "reversible",
+            }
+        )
+        body = json.loads(result[0].text)
+        assert body["error"] == "secret_pattern_detected"
+        episode_inserts = [
+            c for c in client.table.call_args_list if c.args and c.args[0] == "episodes"
+        ]
+        assert episode_inserts == []
+
     async def test_secret_in_alternatives_blocks(self, monkeypatch):
         client = make_client("ep-blocked")
         monkeypatch.setattr(server_module, "_get_client", lambda: client)
@@ -269,7 +333,6 @@ class TestDecisionGate:
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
 
-    @pytest.mark.asyncio
     async def test_clean_decision_passes_gate(self, monkeypatch):
         client = make_client("ep-ok")
         monkeypatch.setattr(server_module, "_get_client", lambda: client)

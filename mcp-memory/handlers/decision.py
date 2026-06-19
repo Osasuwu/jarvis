@@ -84,7 +84,13 @@ def _resolve_memory_refs(client, refs: list, project: str | None) -> tuple[list[
     return resolved, unresolved
 
 
-async def _link_fok_judgments_to_outcomes(client, outcome_ids: list[str], memory_ids: list[str], decision_timestamp: str, project: str | None) -> None:
+async def _link_fok_judgments_to_outcomes(
+    client,
+    outcome_ids: list[str],
+    memory_ids: list[str],
+    decision_timestamp: str,
+    project: str | None,
+) -> None:
     """Retroactively link FOK judgments to outcomes via memory linkage (#445).
 
     Primary heuristic — time-window match:
@@ -106,7 +112,7 @@ async def _link_fok_judgments_to_outcomes(client, outcome_ids: list[str], memory
         outcome_id = outcome_ids[0] if isinstance(outcome_ids, list) else outcome_ids
 
         # Parse decision timestamp
-        decision_dt = datetime.fromisoformat(decision_timestamp.replace('Z', '+00:00'))
+        decision_dt = datetime.fromisoformat(decision_timestamp.replace("Z", "+00:00"))
         cutoff_dt = decision_dt - timedelta(minutes=30)
 
         # Build a set of memory IDs to check (normalize to strings)
@@ -157,9 +163,9 @@ async def _link_fok_judgments_to_outcomes(client, outcome_ids: list[str], memory
                         # Check if this memory_id is in the returned set
                         if mem_id in returned_ids_str:
                             # Update the judgment with the outcome_id
-                            client.table("fok_judgments").update(
-                                {"outcome_id": outcome_id}
-                            ).eq("id", judgment_id).execute()
+                            client.table("fok_judgments").update({"outcome_id": outcome_id}).eq(
+                                "id", judgment_id
+                            ).execute()
                     except Exception:
                         # Skip individual check errors
                         pass
@@ -218,13 +224,16 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     # #555: Tier-2 write-path scrubber backstop. Scan the user-supplied text
     # BEFORE resolving refs / inserting the episode. AC names `rationale`; the
     # privacy invariant ("MCP writes still cannot land secrets") extends the
-    # scan to `decision` + `alternatives_considered`, which also persist text.
+    # scan to every field that persists free text — `decision`,
+    # `alternatives_considered`, and `actor` (the symmetric partner of
+    # `_handle_store`'s `source_provenance`, both namespace strings).
     block = write_scrubber.check_write(
         client,
         {
             "decision": decision,
             "rationale": rationale,
             "alternatives_considered": args.get("alternatives_considered") or [],
+            "actor": actor,
         },
         write_path="record_decision",
     )
@@ -311,13 +320,9 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
                     "response_model", llm_meta["model"]
                 )
             if "input_tokens" in llm_meta:
-                canonical_payload["gen_ai.usage.input_tokens"] = llm_meta[
-                    "input_tokens"
-                ]
+                canonical_payload["gen_ai.usage.input_tokens"] = llm_meta["input_tokens"]
             if "output_tokens" in llm_meta:
-                canonical_payload["gen_ai.usage.output_tokens"] = llm_meta[
-                    "output_tokens"
-                ]
+                canonical_payload["gen_ai.usage.output_tokens"] = llm_meta["output_tokens"]
             if "cost_usd" in llm_meta:
                 canonical_payload["gen_ai.usage.cost_usd"] = llm_meta["cost_usd"]
                 try:
