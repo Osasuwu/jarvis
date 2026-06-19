@@ -395,6 +395,52 @@ def test_health_check_timeout_with_grandchild_returns_promptly(
     assert size_before == size_after, "grandchild still writing after tree-kill"
 
 
+def test_kill_window_posix_self_exit_nonzero_is_failure() -> None:
+    """MAJOR (#963 review): on POSIX a positive returncode means the process
+    self-exited non-zero during the kill window — a genuine FAIL, not an
+    inconclusive timeout. Classifying it 'timeout' would leave a broken apply
+    in place with no rollback."""
+    assert installer._kill_window_is_failure(3, "posix") is True
+
+
+def test_kill_window_posix_signal_kill_is_not_failure() -> None:
+    """A negative returncode is our SIGKILL (the real timeout path) — it must
+    NOT be read as a self-failure, else a normal timeout triggers a rollback."""
+    assert installer._kill_window_is_failure(-9, "posix") is False
+
+
+def test_kill_window_posix_clean_exit_is_not_failure() -> None:
+    """returncode 0 (or still-None) in the kill window is not a failure."""
+    assert installer._kill_window_is_failure(0, "posix") is False
+    assert installer._kill_window_is_failure(None, "posix") is False
+
+
+def test_kill_window_windows_stays_timeout() -> None:
+    """On Windows TerminateProcess yields exit 1, indistinguishable from a real
+    failure — so the kill-window reclassification is POSIX-only and Windows
+    stays conservatively a timeout (no false rollback on the target platform)."""
+    assert installer._kill_window_is_failure(1, "nt") is False
+
+
+# ---------- malformed health-check command (#963 review) ----------
+
+
+def test_health_check_malformed_command_is_fail(fake_repo: Path) -> None:
+    """MAJOR (#963 review): an unterminated quote in a health_check command
+    raises ValueError from shlex.split — it must be caught as a clean 'fail',
+    not propagate as an unformatted traceback out of run_health_check."""
+    m = {
+        "health_check": {
+            "enabled": True,
+            "timeout": 5,
+            "commands": ["python scripts/foo.py --arg 'bar"],  # unterminated quote
+        }
+    }
+    status, logs = installer.run_health_check(m, fake_repo)
+    assert status == "fail"
+    assert any("malformed command" in line for line in logs)
+
+
 # ---------- orphan-skill cleanup (#576) ----------
 
 

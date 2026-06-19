@@ -924,6 +924,32 @@ def _rollback_failed_apply(plan: Plan) -> None:
 HEALTH_CHECK_TIMEOUT_DEFAULT = 30
 
 
+# SIGKILL is POSIX-only — absent on Windows. _kill_tree references it solely
+# inside an ``os.name != "nt"`` branch, so it is never evaluated on Windows
+# today. Bind it through getattr at module load so a future refactor that hoists
+# the signal to a default arg / constant can't raise AttributeError at import
+# time on Windows (the platform this installer exists to support). Falls back to
+# SIGTERM, which always exists, if SIGKILL is ever unavailable.
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _kill_window_is_failure(returncode: int | None, os_name: str) -> bool:
+    """True when a timed-out process self-exited non-zero in the kill window.
+
+    A process can self-exit non-zero in the race between the timeout firing and
+    _kill_tree landing (e.g. a slow venv import that crashes at t=timeout+ε).
+    That is a genuine FAIL, not an inconclusive timeout — classifying it
+    "timeout" leaves a broken apply in place with no rollback.
+
+    On POSIX a positive returncode means the process exited on its own; a
+    negative returncode is our SIGKILL (the real timeout path). On Windows
+    there is no signal convention — TerminateProcess yields exit 1,
+    indistinguishable from a real failure — so we stay conservative there and
+    keep treating it as a timeout.
+    """
+    return os_name != "nt" and returncode is not None and returncode > 0
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     """Terminate proc AND its descendants; must never raise.
 
@@ -966,7 +992,7 @@ def _kill_tree(proc: subprocess.Popen) -> None:
     else:
         try:
             # start_new_session=True at spawn made proc a group leader.
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(proc.pid, _SIGKILL)
         except (OSError, ProcessLookupError):
             try:
                 proc.kill()
@@ -993,8 +1019,14 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, li
     logs: list[str] = []
     for cmd in hc.get("commands") or []:
         # Use shlex so paths with spaces survive — `cmd.split()` breaks them.
-        # posix=False on Windows keeps backslashes intact.
-        argv = shlex.split(cmd, posix=(os.name != "nt"))
+        # posix=False on Windows keeps backslashes intact. A malformed entry
+        # (unterminated quote) raises ValueError — catch it as a clean "fail"
+        # rather than letting an unformatted traceback escape run_health_check.
+        try:
+            argv = shlex.split(cmd, posix=(os.name != "nt"))
+        except ValueError as exc:
+            logs.append(f"FAIL {cmd}: malformed command: {exc}")
+            return "fail", logs
         # Resolve portable python/python3 tokens to the running interpreter.
         # On Windows python3 is absent; on some Linux distros python is absent.
         if argv and argv[0] in ("python", "python3"):
@@ -1030,6 +1062,17 @@ def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, li
                             proc.wait(timeout=10)  # reap zombie; bounded to avoid re-hang
                         except subprocess.TimeoutExpired:
                             pass  # unkillable (D-state) — proceed, zombie reaped at exit
+                        # A timed-out process that self-exited non-zero in the
+                        # kill window is a real failure, not an inconclusive
+                        # timeout — see _kill_window_is_failure for the platform
+                        # reasoning. Don't leave a broken apply unrolled-back.
+                        if _kill_window_is_failure(proc.returncode, os.name):
+                            logs.append(
+                                f"FAIL {cmd} exit={proc.returncode} — exited "
+                                f"non-zero during kill window (timed out then "
+                                f"self-failed)"
+                            )
+                            return "fail", logs
                         timed_out = True
                 # Decode like the old capture path: locale-independent UTF-8,
                 # errors="replace" survives rogue bytes on cp1251 consoles (#352).
@@ -1244,7 +1287,7 @@ def main(argv: list[str] | None = None) -> int:
             # place and tell the operator to verify by hand.
             print(
                 "\nhealth check timed out — apply left in place (NOT rolled back); "
-                "verify manually or re-run install.ps1",
+                "verify manually or re-run the installer (install.ps1 / install.sh)",
                 file=sys.stderr,
             )
             return 4
