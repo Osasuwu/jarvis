@@ -14,6 +14,7 @@ tests/test_secret_scrubber.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from unittest.mock import MagicMock
 
@@ -78,6 +79,38 @@ class TestScanFields:
             {"confidence": 0.9, "flag": None, "meta": {"x": 1}, "content": "clean"}
         )
         assert fires == {}
+
+    def test_scrub_raising_is_contained_per_field(self, monkeypatch):
+        """MAJOR-fix: a scrub() crash on one field must fail OPEN (skip that
+        field, keep scanning the rest) — never propagate and crash the write.
+        Also asserts the field name is logged but the value is not."""
+
+        def _boom(text):
+            if "BOOM" in text:
+                raise ValueError("scrubber exploded")
+            return text, {}
+
+        monkeypatch.setattr(write_scrubber, "scrub", _boom)
+        # First field raises, second is clean → no exception, empty totals.
+        fires = write_scrubber.scan_fields({"bad": "trigger BOOM here", "good": "ordinary text"})
+        assert fires == {}
+
+    def test_scrub_raising_does_not_leak_value_to_stderr(self, monkeypatch, capsys):
+        """Privacy invariant: the per-field crash log carries the exception
+        *type* + field name only — never the raised exception's str() (which
+        could embed the input text)."""
+
+        secret_marker = "S3CR3T_" + "PAYLOAD_VALUE"
+
+        def _boom(text):
+            raise ValueError(text)  # exception str() == the input text
+
+        monkeypatch.setattr(write_scrubber, "scrub", _boom)
+        write_scrubber.scan_fields({"content": secret_marker})
+        err = capsys.readouterr().err
+        assert "ValueError" in err
+        assert "content" in err
+        assert secret_marker not in err
 
 
 # ── rejection_error ───────────────────────────────────────────────────────
@@ -203,6 +236,19 @@ class TestScrubUnavailable:
         client.table.assert_not_called()
 
 
+# ── SCRUB_ONLY_PATTERNS coupling invariant ────────────────────────────────
+
+
+class TestScrubOnlyCoupling:
+    def test_scrub_only_names_are_real_pattern_names(self):
+        """The import-time drift guard warns (no longer crashes) if
+        SCRUB_ONLY_PATTERNS names a pattern secret_scrubber no longer emits.
+        This test pins the invariant in committed code so a rename in
+        secret_scrubber.py that silently turns path exclusion into a no-op
+        (re-blocking ~26% of path-bearing writes) fails CI here."""
+        assert write_scrubber.SCRUB_ONLY_PATTERNS <= write_scrubber._KNOWN_PATTERN_NAMES
+
+
 # ── _handle_store integration ─────────────────────────────────────────────
 
 
@@ -243,6 +289,35 @@ class TestStoreGate:
         assert memory_writes == []
         # The secret never appears in the returned error text.
         assert FAKE_OPENAI_KEY not in result[0].text
+
+    async def test_block_event_is_actually_logged_on_async_path(self):
+        """MAJOR-fix: under asyncio_mode=auto the handler runs in a loop, so the
+        block-event insert is dispatched as a detached task. Without draining,
+        no test ever observes it. Drain with ``asyncio.sleep(0)`` and assert the
+        ``events`` insert fired with the value-free counter row."""
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "leaky",
+                "content": f"my key {FAKE_OPENAI_KEY}",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+            }
+        )
+        assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
+
+        # Let the detached _log_block_event_async task run to completion.
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+        events_inserts = [
+            c for c in self.client.table.call_args_list if c.args and c.args[0] == "events"
+        ]
+        assert events_inserts, "block event was never inserted on the async path"
+        row = self.client.table.return_value.insert.call_args.args[0]
+        assert row["event_type"] == "mcp_write_scrubber_block"
+        assert row["payload"]["write_path"] == "memory_store"
+        assert FAKE_OPENAI_KEY not in json.dumps(row)
 
     async def test_secret_in_name_blocks(self):
         result = await _handle_store(
