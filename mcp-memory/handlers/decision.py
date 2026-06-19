@@ -16,6 +16,7 @@ from datetime import datetime, timezone  # noqa: F401
 from mcp.types import TextContent  # noqa: F401
 
 import server  # noqa: F401  — late-bound for monkeypatch propagation
+import write_scrubber  # #555: Tier-2 write-path secret-scrubber gate
 
 
 def _looks_like_uuid(s: str) -> bool:
@@ -213,6 +214,22 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     project = args.get("project")
 
     client = server._get_client()
+
+    # #555: Tier-2 write-path scrubber backstop. Scan the user-supplied text
+    # BEFORE resolving refs / inserting the episode. AC names `rationale`; the
+    # privacy invariant ("MCP writes still cannot land secrets") extends the
+    # scan to `decision` + `alternatives_considered`, which also persist text.
+    block = write_scrubber.check_write(
+        client,
+        {
+            "decision": decision,
+            "rationale": rationale,
+            "alternatives_considered": args.get("alternatives_considered") or [],
+        },
+        write_path="record_decision",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
 
     resolved_memories, unresolved_memories = _resolve_memory_refs(
         client, args.get("memories_used") or [], project
