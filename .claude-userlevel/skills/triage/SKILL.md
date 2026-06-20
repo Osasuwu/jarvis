@@ -39,6 +39,10 @@ These are canonical role names — the actual label strings used in the issue tr
 
 State transitions: an unlabeled issue normally goes to `needs-triage` first; from there it moves to `needs-info`, `ready-for-agent`, `ready-for-human`, or `wontfix`. `needs-info` returns to `needs-triage` once the reporter replies. The maintainer can override at any time — flag transitions that look unusual and ask before proceeding.
 
+### Downstream: how triaged state feeds an AFK loop
+
+`ready-for-agent` is the state an automated AFK loop consumes — the maintainer's signal that an unattended agent may pick the issue up. In a project with a reactive-core event/task substrate (jarvis: `events` → `task_queue`), triaged issues and automatically-emitted tasks share the **same** AFK-fit gate (`/to-issues` §3a): an issue that passes routes to an autonomous agent, one that fails lands in `ready-for-human` (jarvis: also the `status:owner-queue` label when a dispatch was refused). Triage never enqueues a task itself — it sets the issue **state**; the project's dispatcher/orchestrator is what turns a `ready-for-agent` issue into a running task, and that is also where work *enters* the loop and where loop-closure happens. The concrete state vocabulary and fill-rules live in the project's CLAUDE.md / CONTEXT.md, not in this skill.
+
 ## Invocation
 
 The maintainer invokes `/triage` and describes what they want in natural language. Interpret the request and act. Examples:
