@@ -49,6 +49,8 @@ This checklist is the upstream pair of the `/delegate` pre-dispatch gate. The ga
 
 Record the AFK decision per slice (yes/no + the one question that flipped it, when applicable) so the quiz in §4 can show the owner *why* a slice is HITL.
 
+**The AFK-fit verdict is the single source of AFK-truth — for manual *and* automated emission.** The `/delegate` pre-dispatch gate is not the only consumer: any **automated task emitter** the project runs must honor the same verdict rather than trust a label blindly. In jarvis this is the reactive-core orchestrator's `emit_task` route — an orchestrator-emitted `task_queue` row carries the same AFK-fit semantics as a manually-triaged slice: AFK-safe ⇒ `assignee=sandcastle` (auto-spawned by the task-dispatch loop), AFK-unsafe ⇒ `assignee=owner` (routed for owner attention, never auto-spawned), mirroring the `status:owner-queue` landing zone where a refused `/delegate` parks. The binding (event/task state vocabulary, who enqueues with what priority) lives in the project's CLAUDE.md *Responsibility split* and CONTEXT.md `task_queue` glossary — not here, so this checklist stays project-agnostic.
+
 ### 4. Quiz the user
 
 Present the proposed breakdown as a numbered list. For each slice, show:
