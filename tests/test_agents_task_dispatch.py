@@ -120,6 +120,23 @@ class _FakeProc:
         return self._rc
 
 
+class _AdoptedProc:
+    """``psutil.Process``-shaped handle as folded in by boot adoption (#952).
+
+    Deliberately exposes ONLY ``is_running()`` — NO ``poll()``, NO
+    ``returncode`` — exactly like a real ``psutil.Process``. This is the handle
+    kind that wedged ``running`` rows before the poll_exit fix: a bare
+    ``.poll()`` in poll_completions/kill_runaways AttributeErrors on it.
+    """
+
+    def __init__(self, *, running: bool, pid: int = 4242) -> None:
+        self._running = running
+        self.pid = pid
+
+    def is_running(self) -> bool:
+        return self._running
+
+
 class _ThrottledResult:
     """Stand-in for ``executor.SpawnResult`` when quota is near-exhaustion.
 
@@ -930,6 +947,51 @@ class TestPollCompletions:
         assert res.done == 1  # only 'ok' counted
         assert ("ok", "done", None) in q.transitions
         assert procs == {}  # both dropped — 'bad' falls to the reaper backstop
+
+
+class TestPollCompletionsAdoptedProcess:
+    """#952 regression — adopted psutil.Process handles (no poll()) must flow
+    through poll_completions, not AttributeError-wedge the row in ``running``.
+
+    Before the poll_exit fix, boot adoption folded raw psutil.Process handles
+    into ``procs``; ``tracked.proc.poll()`` raised AttributeError (swallowed by
+    the driver's tick guard), so adopted rows NEVER completed, were NEVER
+    orphan-reaped (still in live_task_ids), and leaked a cap slot forever —
+    strictly worse than the pre-sidecar empty-map self-heal.
+    """
+
+    def test_exited_adopted_proc_closes_failed_unknown_exit(self) -> None:
+        # AC5: the true exit code of a process we did not spawn is unknowable,
+        # so an exited adopted process closes ``failed`` (never ``done``).
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_AdoptedProc(running=False), started_at=0.0)}
+        res = poll_completions(q, procs)
+        assert res.done == 0
+        assert res.failed_exit == 1
+        failed = [t for t in q.transitions if t[1] == "failed"]
+        assert len(failed) == 1 and failed[0][0] == "t0"
+        assert procs == {}
+
+    def test_running_adopted_proc_kept_no_transition(self) -> None:
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_AdoptedProc(running=True), started_at=0.0)}
+        res = poll_completions(q, procs)
+        assert res.done == 0 and res.failed_exit == 0
+        assert "t0" in procs
+        assert q.transitions == []
+
+    def test_runaway_adopted_proc_is_tree_killed(self) -> None:
+        # kill_runaways must also tolerate the adopted handle — a still-running
+        # adopted process past max runtime is killed, not skipped on a raise.
+        q = FakeTaskQueue()
+        kills: list[Any] = []
+        procs = {"t0": TrackedProc(_AdoptedProc(running=True), started_at=0.0)}
+        n = kill_runaways(q, procs, max_runtime_seconds=100, now=lambda: 200.0, kill=kills.append)
+        assert n == 1
+        assert len(kills) == 1
+        failed = [t for t in q.transitions if t[1] == "failed"]
+        assert failed and failed[0][0] == "t0"
+        assert procs == {}
 
 
 # ---------------------------------------------------------------------------
