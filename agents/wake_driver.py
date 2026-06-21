@@ -59,6 +59,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from dotenv import load_dotenv
 
 from agents.config import load_config
+from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
@@ -99,6 +100,11 @@ CLAIMER = "wake_driver"
 
 # The NOTIFY channel from the #739 substrate (notify_events_insert).
 EVENTS_CHANNEL = "events"
+
+# The NOTIFY channel from the #922 task_queue substrate (notify_task_queue_insert).
+# Fires when a task row reaches ``pending`` after a cap-freed transition or fresh
+# insert, waking the driver to drain without waiting for the idle timeout.
+TASK_QUEUE_CHANNEL = "task_queue"
 
 # Orchestrator stub returns whatever it likes; the driver only cares that it
 # returned without raising before committing ``processed``.
@@ -212,6 +218,7 @@ def tick(
     task_procs: dict[str, TrackedProc] | None = None,
     task_clock: Callable[[], float] = time.monotonic,
     task_kill: Callable[[Any], None] = kill_process_tree,
+    task_sidecar: Sidecar | None = None,
 ) -> TickResult:
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
 
@@ -261,7 +268,7 @@ def tick(
     runaways_killed = 0
     if task_port is not None and task_procs is not None:
         try:
-            completions = poll_completions(task_port, task_procs)
+            completions = poll_completions(task_port, task_procs, sidecar=task_sidecar)
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
         try:
@@ -271,6 +278,7 @@ def tick(
                 max_runtime_seconds=task_running_reap_after_seconds,
                 now=task_clock,
                 kill=task_kill,
+                sidecar=task_sidecar,
             )
         except Exception:  # noqa: BLE001 — same isolation for the runaway killer
             logger.exception("[wake_driver] runaway kill failed; live rows retry next tick")
@@ -327,6 +335,7 @@ def tick(
                 task_spawn,
                 resolve_binary=task_resolve_binary,
                 read_usage=task_read_usage,
+                sidecar=task_sidecar,
             )
             if task_procs is not None:
                 for task_id, proc in task_drain.procs:
@@ -394,6 +403,20 @@ def run(
     """
     keep_going = should_continue or (lambda: True)
     procs = task_procs if task_procs is not None else ({} if task_port is not None else None)
+
+    # AC3 (#952) — boot adoption: re-adopt live processes from the sidecar directory.
+    # Only in resident mode (task_port supplied, procs map exists).
+    if task_port is not None and procs is not None and should_continue is None:
+        try:
+            sidecar = Sidecar()
+            for task_id, proc in sidecar.adopt_live_processes():
+                procs[task_id] = TrackedProc(proc=proc, started_at=task_clock())
+        except Exception:  # noqa: BLE001 — boot adoption failure is non-fatal
+            logger.exception("[wake_driver] boot adoption failed; will treat all rows as orphans")
+            sidecar = None
+    else:
+        sidecar = None
+
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
         try:
@@ -411,6 +434,7 @@ def run(
                 task_procs=procs,
                 task_clock=task_clock,
                 task_kill=task_kill,
+                task_sidecar=sidecar,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
@@ -425,14 +449,16 @@ class PsycopgEventQueue:
     PostgREST (supabase-py) cannot ``LISTEN``, so this is the one place the
     agents reach Postgres directly.
 
-    Not unit-tested (needs a live DB); kept thin so the tested loop above
-    carries the logic.
+    The RPC methods need a live DB and are not unit-tested; the constructor's
+    LISTEN wiring is (a recording conn, no DB). Kept thin so the tested loop
+    above carries the logic.
     """
 
     def __init__(self, conn: psycopg.Connection, *, claimer: str = CLAIMER) -> None:
         self._conn = conn
         self._claimer = claimer
         self._conn.execute(f"LISTEN {EVENTS_CHANNEL}")
+        self._conn.execute(f"LISTEN {TASK_QUEUE_CHANNEL}")
         self._conn.commit()
 
     def claim_next(self) -> dict[str, Any] | None:

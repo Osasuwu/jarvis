@@ -39,7 +39,8 @@ memory = [
 # no graph runtime. APScheduler + SQLAlchemy were retired with agents/scheduler.py
 # in #743 — wake_driver is event-driven (LISTEN/NOTIFY), not a resident poller.
 # psycopg stays: wake_driver uses it for the LISTEN socket the PostgREST client
-# can't open.
+# can't open. psutil is conditional (lazy import in pid_sidecar #952) — used to
+# re-adopt live processes across driver restarts.
 agents = [
   "psycopg[binary,pool]>=3.1",
   "ollama>=0.4.0",
@@ -50,6 +51,8 @@ agents = [
   # but agents/github_client.py depends on it unconditionally — declare it
   # explicitly so the contract doesn't depend on a transitive.
   "httpx>=0.27",
+  # Process liveness tracking — survives driver restarts via PID sidecar (#952).
+  "psutil>=5.9.0",
 ]
 # All runtime components
 full = [

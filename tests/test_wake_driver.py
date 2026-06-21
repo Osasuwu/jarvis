@@ -967,3 +967,45 @@ def test_run_forwards_task_read_usage_to_the_drain():
     )
 
     assert calls["n"] == 1
+
+
+# --- #922: task_queue NOTIFY channel for cap-freed task dispatch --------
+
+
+def test_task_queue_channel_constant_distinct_from_events():
+    """AC1: the task_queue NOTIFY channel constant exists and is distinct
+    from the events channel (cap-freed signals must not collide)."""
+    assert wake_driver.TASK_QUEUE_CHANNEL == "task_queue"
+    assert wake_driver.TASK_QUEUE_CHANNEL != wake_driver.EVENTS_CHANNEL
+
+
+class _RecordingConn:
+    """Minimal psycopg.Connection stand-in that records execute() SQL.
+
+    PsycopgEventQueue.__init__ only calls conn.execute(...) + conn.commit();
+    no live DB is needed to verify the LISTEN wiring it issues at construction.
+    """
+
+    def __init__(self):
+        self.executed: list[str] = []
+        self.commits = 0
+
+    def execute(self, sql, *args):
+        self.executed.append(sql)
+        return self
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_psycopg_event_queue_listens_on_both_channels_at_construction():
+    """AC2: constructing PsycopgEventQueue issues LISTEN on BOTH the events
+    channel and the task_queue channel, then commits — so a cap-freed NOTIFY
+    actually wakes the loop. Behavioral check, not just constant existence."""
+    conn = _RecordingConn()
+
+    wake_driver.PsycopgEventQueue(conn)
+
+    assert f"LISTEN {wake_driver.EVENTS_CHANNEL}" in conn.executed
+    assert f"LISTEN {wake_driver.TASK_QUEUE_CHANNEL}" in conn.executed
+    assert conn.commits >= 1
