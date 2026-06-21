@@ -190,6 +190,56 @@ def test_workflow_uses_app_token_not_github_token():
         "merge-train must mint a GitHub App token — GITHUB_TOKEN-pushed "
         "updates do not re-trigger required checks (recursion prevention)."
     )
+    # Minting isn't enough: the update-branch step must USE the App token. If
+    # GH_TOKEN reverts to GITHUB_TOKEN while the mint step stays, update-branch
+    # stops re-triggering checks and auto-merge stalls again (the original bug).
+    assert "steps.app-token.outputs.token" in text, (
+        "GH_TOKEN must use the minted App token output (steps.app-token.outputs.token)."
+    )
+    # Match the regression VECTOR (the interpolated expression), not the bare
+    # substring: a comment mentioning secrets.GITHUB_TOKEN would false-positive
+    # the broad check (#1006 review, MINOR).
+    assert "${{ secrets.GITHUB_TOKEN }}" not in text, (
+        "merge-train must never pass ${{ secrets.GITHUB_TOKEN }} to gh — recursion "
+        "prevention would stop update-branch from re-triggering required checks."
+    )
+
+
+def test_workflow_app_token_is_sha_pinned():
+    import re
+
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Supply-chain hardening: the action must be pinned to a full 40-hex commit
+    # SHA, not a mutable tag (@v3). Match the SHANESS, not the exact commit, so a
+    # Dependabot pin bump doesn't red this test (the sibling auto-merge-enable
+    # guard follows the same intent-not-literal pattern).
+    assert re.search(r"create-github-app-token@[0-9a-f]{40}", text), (
+        "create-github-app-token must be SHA-pinned (supply-chain), not tag-pinned."
+    )
+
+
+def test_workflow_scopes_token_to_this_repo():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Least-privilege: the App is shared across repos (jarvis + redrobot), so the
+    # minted token must be scoped to this repo only. Derived from GITHUB_REPOSITORY
+    # because github.event.repository.name is empty on the schedule trigger — an
+    # empty scope falls back to ALL installed repos, leaking write scopes.
+    assert "REPO_NAME=${GITHUB_REPOSITORY#*/}" in text, (
+        "token must be scoped via env REPO_NAME derived from GITHUB_REPOSITORY."
+    )
+    assert "repositories: ${{ env.REPO_NAME }}" in text, (
+        "create-github-app-token must pass repositories: env.REPO_NAME for least-privilege."
+    )
+
+
+def test_workflow_repo_name_guard_is_load_bearing():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # An empty REPO_NAME makes create-github-app-token fall back to ALL installed
+    # repos, leaking write scopes to redrobot. The guard must fail loud instead.
+    assert "GITHUB_REPOSITORY:?" in text, (
+        "the REPO_NAME derivation must guard against an empty GITHUB_REPOSITORY "
+        "(empty scope re-opens the cross-repo token leak)."
+    )
 
 
 def test_workflow_filters_match_selection_rule():
