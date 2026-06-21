@@ -100,6 +100,11 @@ CLAIMER = "wake_driver"
 # The NOTIFY channel from the #739 substrate (notify_events_insert).
 EVENTS_CHANNEL = "events"
 
+# The NOTIFY channel from the #922 task_queue substrate (notify_task_queue_insert).
+# Fires when a task row reaches ``pending`` after a cap-freed transition or fresh
+# insert, waking the driver to drain without waiting for the idle timeout.
+TASK_QUEUE_CHANNEL = "task_queue"
+
 # Orchestrator stub returns whatever it likes; the driver only cares that it
 # returned without raising before committing ``processed``.
 Orchestrator = Callable[[dict[str, Any]], Any]
@@ -433,6 +438,7 @@ class PsycopgEventQueue:
         self._conn = conn
         self._claimer = claimer
         self._conn.execute(f"LISTEN {EVENTS_CHANNEL}")
+        self._conn.execute(f"LISTEN {TASK_QUEUE_CHANNEL}")
         self._conn.commit()
 
     def claim_next(self) -> dict[str, Any] | None:
