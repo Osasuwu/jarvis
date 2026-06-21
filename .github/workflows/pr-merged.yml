@@ -1,35 +1,77 @@
 name: PR Merged
 
+# Explicitly closes a merged PR's linked issues. GitHub's NATIVE linked-issue
+# auto-close does NOT fire for automated (bot / GitHub-App) merges — its
+# recursion-prevention suppresses the close even with a valid `Closes #N`, the
+# repo setting ON, and `closingIssuesReferences` populated (#948 Bug A; proven
+# live on #1006/#1005; decision 1b0cbbcc; memory
+# github_token_merge_suppresses_native_issue_autoclose). The App-token merge in
+# auto-merge-enable.yml un-suppresses THIS `pull_request: closed` event (a
+# GITHUB_TOKEN merge would suppress it too), so this workflow is the deterministic
+# close path. It uses the authoritative `closingIssuesReferences` linkage — the
+# exact set native auto-close would have closed — not a body regex.
+
 on:
   pull_request:
     types: [closed]
     branches: [main]
 
 jobs:
-  comment-on-linked-issues:
+  close-linked-issues:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      MERGED_AT: ${{ github.event.pull_request.merged_at }}
     steps:
-      - uses: actions/github-script@v9
-        with:
-          script: |
-            const body = context.payload.pull_request.body || '';
-            const regex = /(?:closes|fixes|resolves)\s+#(\d+)/gi;
-            const issues = [...body.matchAll(regex)].map(m => parseInt(m[1]));
+      - name: Close linked issues
+        run: |
+          set -euo pipefail
+          : "${MERGED_AT:?merged_at missing on a merged PR event}"
 
-            const pr = context.payload.pull_request;
-            for (const issueNum of issues) {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issueNum,
-                body: [
-                  `Closed via PR #${pr.number} (${pr.title})`,
-                  `Merge SHA: \`${pr.merge_commit_sha}\``,
-                  `Date: ${new Date().toISOString().split('T')[0]}`,
-                ].join('\n'),
-              });
-            }
+          # Authoritative closing linkage (same set GitHub's native auto-close
+          # targets) — not a body regex, so cross-repo/malformed refs can't leak in.
+          mapfile -t issues < <(
+            gh pr view "$PR_NUMBER" --repo "$REPO" \
+              --json closingIssuesReferences \
+              -q '.closingIssuesReferences[].number'
+          )
+          if [ "${#issues[@]}" -eq 0 ]; then
+            echo "::notice::PR #$PR_NUMBER has no closing issue references — nothing to close."
+            exit 0
+          fi
+
+          for n in "${issues[@]}"; do
+            state=$(gh issue view "$n" --repo "$REPO" --json state -q .state 2>/dev/null || echo "")
+            if [ -z "$state" ]; then
+              echo "::warning::Could not read issue #$n state — skipping."
+              continue
+            fi
+            if [ "$state" = "CLOSED" ]; then
+              echo "::notice::Issue #$n already closed — skipping (idempotent)."
+              continue
+            fi
+
+            # Reopen guard: respect a deliberate human reopen. If the issue was
+            # reopened AFTER this PR merged, leave it open — do not re-close.
+            latest_reopen=$(
+              gh api "repos/$REPO/issues/$n/timeline" --paginate \
+                -q '[.[] | select(.event=="reopened") | .created_at] | last // ""' \
+                2>/dev/null || echo ""
+            )
+            if [ -n "$latest_reopen" ] && [[ "$latest_reopen" > "$MERGED_AT" ]]; then
+              echo "::notice::Issue #$n reopened after PR #$PR_NUMBER merged ($MERGED_AT) — leaving open."
+              continue
+            fi
+
+            gh issue close "$n" --repo "$REPO" --reason completed \
+              --comment "$(printf 'Auto-closed on merge of #%s (%s).\nMerge SHA: `%s`\nNative linked-issue auto-close does not fire for automated merges (#948); closed here.' "$PR_NUMBER" "$PR_TITLE" "$MERGE_SHA")"
+            echo "::notice::Closed issue #$n (completed) via PR #$PR_NUMBER."
+          done
