@@ -89,8 +89,9 @@ jobs:
       - name: Mint App installation token
         id: app-token
         # Defense-in-depth: if the Derive step above is ever deleted/reordered so
-        # REPO_NAME is unset, fail this step rather than minting an unscoped token
-        # over ALL installed repos (the cross-repo Issues:write leak). Belt to the
+        # REPO_NAME is unset, skip minting rather than fall back to an unscoped
+        # token over ALL installed repos (the cross-repo Issues:write leak). The
+        # downstream Enable step then has no token and fails loud. Belt to the
         # Derive step's `:?` braces.
         if: env.REPO_NAME != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
