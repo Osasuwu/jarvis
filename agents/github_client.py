@@ -7,14 +7,23 @@ it doesn't act.
 Uses ``httpx``, declared as a direct dependency of the ``[agents]`` extra
 in ``pyproject.toml``. (It was originally picked up transitively via
 ``supabase-py`` — see #183 for why the contract was tightened.)
+
+PR-evidence checking for issue #953: deterministic checks for PR existence
+and activity to decide whether a task produced actionable work.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import os
-from typing import Any
+import re
+from datetime import datetime
+from typing import Any, Protocol
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 # Events we care about for classification. Everything else (WatchEvent,
 # ForkEvent, CreateEvent of a branch…) is pure noise for the Sprint 1
@@ -152,3 +161,149 @@ def summarise_event(event: dict[str, Any]) -> str:
         detail = "(details omitted)"
 
     return f"[{event_type}] {repo_name} by {actor}: {detail}"
+
+
+# =============================================================================
+# PR-Evidence Checking for Issue #953 — Event-Driven Task Completion
+# =============================================================================
+
+
+class GitHubClient(Protocol):
+    """Protocol for GitHub API calls needed by PR-evidence checks (AC4 #953).
+
+    Used for mocking in tests; real implementation injected from orchestrator.
+    """
+
+    def get_pull_by_head_branch(self, branch: str) -> dict[str, Any] | None:
+        """Fetch PR by head branch name; returns None if not found."""
+
+    def get_pull_by_number(self, pr_number: int) -> dict[str, Any] | None:
+        """Fetch PR by number; returns None if not found."""
+
+    def list_commits_for_pull(self, pr_number: int) -> list[dict[str, Any]]:
+        """List commits for a PR; returns empty list if not found."""
+
+
+def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
+    """Parse executor stdout JSON and extract PR number if present (AC3 #953).
+
+    Executor spawned with ``--output-format json`` writes to
+    ``logs/executor/<task_id>.stdout.json``. If the agent claimed a PR URL,
+    extract and return {number: <pr_number>}; otherwise None.
+
+    Handles malformed JSON gracefully — returns None rather than raising.
+    """
+    if not stdout_text:
+        return None
+    try:
+        data = json.loads(stdout_text)
+    except (json.JSONDecodeError, ValueError):
+        logger.debug("parse_executor_stdout: malformed JSON in stdout")
+        return None
+
+    # Look for PR URL in common fields
+    for field in ("pr_url", "pull_request_url", "url"):
+        url = data.get(field)
+        if url and isinstance(url, str):
+            # Extract PR number from URL like https://github.com/owner/repo/pull/999
+            match = re.search(r"/pull/(\d+)", url)
+            if match:
+                return {"number": int(match.group(1))}
+
+    return None
+
+
+def check_pr_evidence_fresh_shape(
+    task_id: str,
+    goal: str,
+    spawned_at: datetime,
+    *,
+    client: GitHubClient | None = None,
+) -> bool | None:
+    """Check PR evidence for fresh-shape goals (AC2 #953).
+
+    Fresh-shape goals use the convention: create your working branch as
+    `task/<task_id>` unless an explicit directive like (branch=...) appears.
+
+    Returns:
+    - True: PR exists with head branch `task/<task_id>` (or explicit branch)
+    - False: No PR found
+    - None: Unparseable goal (degenerate case; treated as escalate)
+    """
+    if client is None:
+        logger.warning("check_pr_evidence_fresh_shape: no client provided")
+        return None
+
+    # Look for explicit branch directive in goal (e.g., "(branch=feature-xyz)")
+    branch_match = re.search(r"\(branch=([^)]+)\)", goal)
+    if branch_match:
+        branch = branch_match.group(1).strip()
+    else:
+        # Default convention
+        branch = f"task/{task_id}"
+
+    try:
+        pr = client.get_pull_by_head_branch(branch)
+        return pr is not None
+    except Exception as e:
+        logger.exception(f"check_pr_evidence_fresh_shape: client error for {task_id}: {e}")
+        return None
+
+
+def check_pr_evidence_rework_shape(
+    task_id: str,
+    goal: str,
+    pr_number: int,
+    spawned_at: datetime,
+    *,
+    client: GitHubClient | None = None,
+) -> bool | None:
+    """Check PR evidence for rework-shape goals (AC2 #953).
+
+    Rework-shape goals directly reference a PR number (e.g., '/rework #42').
+    Evidence check: PR #N exists AND has activity (commits/updatedAt) after
+    the sidecar's spawned_at timestamp.
+
+    Returns:
+    - True: PR exists with new activity since spawned_at
+    - False: PR missing or no new activity
+    - None: Error/unparseable (treated as escalate)
+    """
+    if client is None:
+        logger.warning("check_pr_evidence_rework_shape: no client provided")
+        return None
+
+    try:
+        pr = client.get_pull_by_number(pr_number)
+        if not pr:
+            return False
+
+        # Check if PR was updated after spawned_at
+        updated_at_str = pr.get("updated_at")
+        if updated_at_str:
+            try:
+                updated_at = datetime.fromisoformat(updated_at_str.replace("Z", "+00:00"))
+                if updated_at > spawned_at:
+                    return True
+            except (ValueError, AttributeError):
+                logger.debug(f"check_pr_evidence_rework_shape: unparseable updated_at for PR #{pr_number}")
+
+        # Check if there are new commits since spawned_at
+        try:
+            commits = client.list_commits_for_pull(pr_number)
+            for commit in commits:
+                commit_date_str = commit.get("commit", {}).get("author", {}).get("date")
+                if commit_date_str:
+                    try:
+                        commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
+                        if commit_date > spawned_at:
+                            return True
+                    except (ValueError, AttributeError):
+                        continue
+        except Exception:
+            pass  # If commit check fails, fall through
+
+        return False
+    except Exception as e:
+        logger.exception(f"check_pr_evidence_rework_shape: client error for PR #{pr_number}: {e}")
+        return None

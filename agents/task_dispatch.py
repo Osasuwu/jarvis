@@ -174,6 +174,7 @@ def poll_completions(
     procs: dict[str, TrackedProc],
     *,
     sidecar: Sidecar | None = None,
+    event_emit: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> CompletionResult:
     """Close ``running`` rows whose process has exited (#921 AC2, Model P).
 
@@ -187,6 +188,10 @@ def poll_completions(
     **``done`` means the process exited 0 — nothing more.** Not task success,
     not PR merged; the child may have produced garbage and exited cleanly.
     Outcome truth re-enters externally via Path-A GitHub events.
+
+    AC1 (#953): Events are emitted BEFORE state transitions occur, ensuring
+    event-first ordering. The ``event_emit`` callback is called with
+    (event_type, payload) — if not provided, no events are emitted.
 
     Per-row isolation: a ``transition`` raising logs, drops the entry, and
     continues — the row stays ``running`` in the store with no live handle, so
@@ -202,11 +207,40 @@ def poll_completions(
         rc = poll_exit(tracked.proc)
         if rc is None:
             continue
+
+        # AC1 (#953) — emit event BEFORE transition for event-first ordering.
+        spawned_at = None
+        if sidecar is not None:
+            sidecar_entry = sidecar.read_sidecar(task_id)
+            if sidecar_entry:
+                spawned_at = sidecar_entry.spawned_at
+
         try:
             if rc == 0:
+                if event_emit:
+                    event_emit(
+                        "task_done",
+                        {
+                            "task_id": task_id,
+                            "pr_evidence": None,  # Placeholder; caller fills this
+                            "goal": "",  # Placeholder; caller fills this
+                        },
+                    )
                 port.transition(task_id, "done")
                 done += 1
             else:
+                if event_emit:
+                    event_emit(
+                        "task_failed",
+                        {
+                            "task_id": task_id,
+                            "exit_code": rc,
+                            "exit_confirmed": True,
+                            "pr_evidence": None,  # Placeholder
+                            "failure_reason": f"exit {rc}",
+                            "goal": "",  # Placeholder
+                        },
+                    )
                 port.transition(task_id, "failed", reason=f"exit {rc}")
                 failed_exit += 1
         except Exception:  # noqa: BLE001 — isolate one bad row, reaper backstops it
@@ -330,7 +364,7 @@ def kill_runaways(
     return killed
 
 
-def default_spawn(goal: str) -> Any:
+def default_spawn(goal: str, *, task_id: str | None = None) -> Any:
     """Production spawn adapter — fire-and-forget ``claude -p`` via the executor.
 
     Returns the :class:`executor.SpawnResult`. A throttled result (quota
@@ -338,10 +372,12 @@ def default_spawn(goal: str) -> Any:
     ``throttled`` flag and stops the drain rather than counting a phantom spawn.
     Imported lazily so the tested drain logic (which injects its own spawn) need
     not pull executor's subprocess/usage-probe dependencies.
+
+    AC3 (#953): passes task_id to the executor for stdout JSON capture.
     """
     from agents.executor import spawn as executor_spawn
 
-    return executor_spawn(goal)
+    return executor_spawn(goal, task_id=task_id)
 
 
 def default_resolve_binary() -> str:
@@ -456,7 +492,7 @@ def drain_tasks(
             continue
 
         try:
-            result = spawn(row["goal"])  # AC8 billing-trap rides executor._sanitize_env
+            result = spawn(row["goal"], task_id=task_id)  # AC3 (#953) — capture stdout JSON
         except Exception as exc:  # noqa: BLE001 — AC7b: isolate one bad spawn
             # AC7b — terminal failure; no internal retry, external loop re-drives.
             try:

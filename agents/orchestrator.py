@@ -211,6 +211,81 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
             goal = f"{goal} — {body}"
         return _emit(event_type, severity, target, key, goal=goal)
 
+    # Issue #953 — task completion events (task_done / task_failed).
+    if event_type == "task_done":
+        pr_evidence = payload.get("pr_evidence")
+        # task_done + pr_evidence=true → inline no-op (PR exists, done).
+        if pr_evidence is True:
+            return _inline_noop(event_type, severity, target, key)
+        # task_done + pr_evidence=false/null + attempt < 2 → re-drive (EMIT_TASK).
+        attempt = payload.get("attempt", 1)
+        if pr_evidence is False and attempt < 2:
+            goal = f"Re-drive task {target or payload.get('task_id', '?')} (attempt {attempt + 1})"
+            return _emit(event_type, severity, target, key, goal=goal)
+        # task_done + pr_evidence=false/null + attempt >= 2 → escalate (no more re-drives).
+        if pr_evidence is False and attempt >= 2:
+            return _escalate(
+                event_type,
+                severity,
+                target,
+                key,
+                reason=f"task_done with no PR evidence after {attempt} attempts",
+            )
+        # task_done + pr_evidence=null → unparseable goal, escalate.
+        if pr_evidence is None:
+            return _escalate(
+                event_type,
+                severity,
+                target,
+                key,
+                reason="task_done with unparseable goal (pr_evidence=null)",
+            )
+
+    if event_type == "task_failed":
+        pr_evidence = payload.get("pr_evidence")
+        exit_confirmed = payload.get("exit_confirmed", False)
+        attempt = payload.get("attempt", 1)
+        failure_reason = payload.get("failure_reason", "unknown")
+
+        # task_failed + pr_evidence=true → inline no-op (work landed).
+        if pr_evidence is True:
+            return _inline_noop(event_type, severity, target, key)
+
+        # task_failed + exit_confirmed=false → unconfirmed death, escalate (never re-drive).
+        if not exit_confirmed:
+            return _escalate(
+                event_type,
+                severity,
+                target,
+                key,
+                reason=f"task_failed with unconfirmed exit: {failure_reason}",
+            )
+
+        # task_failed + pr_evidence=null → unparseable, escalate.
+        if pr_evidence is None:
+            return _escalate(
+                event_type,
+                severity,
+                target,
+                key,
+                reason="task_failed with unparseable goal (pr_evidence=null)",
+            )
+
+        # task_failed + exit_confirmed=true + pr_evidence=false + attempt < 2 → re-drive.
+        if pr_evidence is False and attempt < 2:
+            goal = f"Re-drive task {target or payload.get('task_id', '?')} (attempt {attempt + 1})"
+            return _emit(event_type, severity, target, key, goal=goal)
+
+        # task_failed + exit_confirmed=true + pr_evidence=false + attempt >= 2 → escalate.
+        if pr_evidence is False and attempt >= 2:
+            return _escalate(
+                event_type,
+                severity,
+                target,
+                key,
+                reason=f"task_failed with no PR evidence after {attempt} attempts: {failure_reason}",
+            )
+
     # 3. Pure-pipeline events → acknowledge, no work (AC1).
     if event_type in _NOOP_EVENT_TYPES:
         return _inline_noop(event_type, severity, target, key)

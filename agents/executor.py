@@ -185,6 +185,7 @@ class SpawnResult:
 def spawn(
     task_text: str,
     *,
+    task_id: str | None = None,
     stderr_log_dir: str | None = None,
     popen: Any = None,  # noqa: ANN401 — injectable for tests
     probe: UsageProbe | None = None,
@@ -200,6 +201,10 @@ def spawn(
     the caller does not wait; the child session writes its own outcomes.
     Stderr is captured to a log file (never ``DEVNULL``) so silent failures
     are observable.
+
+    When ``task_id`` is provided, stdout is captured to JSON format at
+    ``logs/executor/<task_id>.stdout.json`` for secondary evidence extraction
+    (issue #953 AC3).
 
     ``popen`` is injectable so tests can capture the env dict without
     shelling out to a real ``claude`` binary; production wiring goes through
@@ -234,6 +239,10 @@ def spawn(
         *_SPAWN_ALLOWED_TOOLS,
     ]
 
+    # AC3 (#953) — capture stdout to JSON when task_id is provided
+    if task_id:
+        argv.extend(["--output-format", "json"])
+
     # Capture stderr to file — fire-and-forget subprocesses must never use
     # DEVNULL (see ``fire_and_forget_subprocess_capture_stderr`` memory).
     log_dir = stderr_log_dir or _STDERR_LOG_DIR
@@ -244,21 +253,33 @@ def spawn(
     )
     stderr_file = open(stderr_path, "w", encoding="utf-8")  # noqa: SIM115 — closed below after Popen dup2
 
+    # AC3 (#953) — capture stdout to JSON file for the task
+    stdout_file = None
+    if task_id:
+        stdout_path = os.path.join(log_dir, f"{task_id}.stdout.json")
+        stdout_file = open(stdout_path, "w", encoding="utf-8")
+        stdout_target = stdout_file
+    else:
+        stdout_target = subprocess.DEVNULL
+
     spawn_fn = popen or subprocess.Popen
     proc = spawn_fn(
         argv,
         env=env,
-        stdout=subprocess.DEVNULL,
+        stdout=stdout_target,
         stderr=stderr_file,
         close_fds=True,
     )
-    # Popen dup2'd the fd into the child; the parent handle is no longer
-    # needed. Without this, a long-running scheduler leaks one fd per spawn.
+    # Popen dup2'd the fds into the child; the parent handles are no longer
+    # needed. Without this, a long-running scheduler leaks fds per spawn.
     stderr_file.close()
+    if stdout_file:
+        stdout_file.close()
 
     logger.info(
-        "spawned claude -p (pid=%d) stderr=%s argv=%r",
+        "spawned claude -p (pid=%d) task_id=%s stderr=%s argv=%r",
         proc.pid,
+        task_id or "none",
         stderr_path,
         argv,
     )

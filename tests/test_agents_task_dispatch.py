@@ -198,7 +198,7 @@ class TestConcurrencyCap:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),  # AC3 #953 — spawn now accepts task_id
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -212,7 +212,7 @@ class TestConcurrencyCap:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -238,7 +238,7 @@ class TestAssigneeRouting:
         )
         spawns: list[str] = []
         drain_tasks(
-            q, lambda g: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert q.claimed == ["sand"]
         assert spawns == ["do sand"]
@@ -267,7 +267,7 @@ class TestOrderingB:
 
         drain_tasks(
             q,
-            lambda g: events.append(("spawn", g)),
+            lambda g, task_id=None: events.append(("spawn", g)),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
@@ -288,7 +288,7 @@ class TestAtomicClaim:
         q = FakeTaskQueue(pending=[], running_count=0)
         spawns: list[str] = []
         res = drain_tasks(
-            q, lambda g: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert spawns == []
         assert res.spawned == 0
@@ -302,7 +302,7 @@ class TestAtomicClaim:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -324,7 +324,7 @@ class TestBinaryPreflight:
         def resolve_missing() -> str:
             raise FileNotFoundError("claude binary not found")
 
-        res = drain_tasks(q, lambda g: spawns.append(g), resolve_binary=resolve_missing)
+        res = drain_tasks(q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_missing)
 
         assert q.claimed == []  # zero claims — no row touched
         assert spawns == []
@@ -341,7 +341,7 @@ class TestBinaryPreflight:
         def resolve_denied() -> str:
             raise PermissionError("claude is not executable")
 
-        res = drain_tasks(q, lambda g: spawns.append(g), resolve_binary=resolve_denied)
+        res = drain_tasks(q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_denied)
 
         assert res.skipped_no_binary is True
         assert q.claimed == []
@@ -355,7 +355,7 @@ class TestBinaryPreflight:
         def resolve_broken() -> str:
             raise ImportError("executor dependency missing")
 
-        res = drain_tasks(q, lambda g: None, resolve_binary=resolve_broken)
+        res = drain_tasks(q, lambda g, task_id=None: None, resolve_binary=resolve_broken)
 
         assert res.skipped_no_binary is True
         assert q.claimed == []
@@ -374,7 +374,7 @@ class TestQuotaPreflight:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             resolve_binary=_always_resolve,
             read_usage=_exhausted_reading,
         )
@@ -394,7 +394,7 @@ class TestQuotaPreflight:
 
         q = FakeTaskQueue(pending=[_row(f"t{i}") for i in range(3)], running_count=0)
         res = drain_tasks(
-            q, lambda g: None, cap=5, resolve_binary=_always_resolve, read_usage=usage
+            q, lambda g, task_id=None: None, cap=5, resolve_binary=_always_resolve, read_usage=usage
         )
         assert calls["n"] == 1
         assert res.spawned == 3
@@ -410,7 +410,7 @@ class TestSpawnFailureIsTerminal:
         q = FakeTaskQueue(pending=[_row("boom"), _row("ok")], running_count=0)
         spawns: list[str] = []
 
-        def spawn(goal: str) -> None:
+        def spawn(goal: str, task_id: str | None = None) -> None:
             if goal == "do boom":
                 raise RuntimeError("spawn blew up")
             spawns.append(goal)
@@ -445,7 +445,7 @@ class TestSpawnFailureIsTerminal:
         handle = object()
         q = Q(pending=[_row("boom"), _row("ok")], running_count=0)
 
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             if goal == "do boom":
                 raise RuntimeError("spawn blew up")
             return _HealthySpawnResult(handle)
@@ -473,7 +473,7 @@ class TestThrottledSpawn:
         q = FakeTaskQueue(pending=[_row(f"t{i}") for i in range(4)], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -494,7 +494,7 @@ class TestThrottledSpawn:
         # healthy spawn still counts; the drain then stops on the throttle.
         calls = {"n": 0}
 
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             calls["n"] += 1
             return None if calls["n"] == 1 else _ThrottledResult()
 
@@ -524,7 +524,7 @@ class TestThrottleRequeue:
         q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -545,7 +545,7 @@ class TestThrottleRequeue:
         q = Q(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -563,7 +563,7 @@ class TestThrottleRequeue:
         q = Q(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -575,7 +575,7 @@ class TestThrottleRequeue:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         drain_tasks(
             q,
-            lambda g: _HealthySpawnResult(object()),
+            lambda g, task_id=None: _HealthySpawnResult(object()),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
@@ -600,7 +600,7 @@ class TestRunningTransitionFailureIsSafe:
         q = Q(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -627,7 +627,7 @@ class TestRunningTransitionFailureIsSafe:
         q = Q(pending=[_row("bad"), _row("good")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -678,7 +678,7 @@ class TestBillingTrapThroughDrain:
 
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
 
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             return executor.spawn(
                 goal,
                 popen=captured,
@@ -828,7 +828,7 @@ class TestSpawnedProcPairs:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _HealthySpawnResult(handle),
+            lambda g, task_id=None: _HealthySpawnResult(handle),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
@@ -840,7 +840,7 @@ class TestSpawnedProcPairs:
         q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _HealthySpawnResult(handles[g]),
+            lambda g, task_id=None: _HealthySpawnResult(handles[g]),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -852,14 +852,14 @@ class TestSpawnedProcPairs:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
         assert res.procs == ()
 
     def test_raising_spawn_contributes_no_pair(self) -> None:
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             raise RuntimeError("spawn blew up")
 
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
@@ -872,7 +872,7 @@ class TestSpawnedProcPairs:
         # driver can poll — counted as spawned, but no pair.
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
-            q, lambda g: None, resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: None, resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert res.procs == ()
         assert res.spawned == 1
@@ -1132,7 +1132,7 @@ class TestInjectablePortArchitecture:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         spawns: list[str] = []
         drain_tasks(
-            q, lambda g: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert spawns == ["do t0"]
         assert os.environ is not None  # sanity — no monkeypatch leaked
