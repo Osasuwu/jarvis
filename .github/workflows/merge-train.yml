@@ -55,7 +55,7 @@ jobs:
             echo "::error::merge-train requires the 'jarvis-ci' GitHub App, but APP_ID and/or APP_PRIVATE_KEY repo secrets are unset."
             echo "Why: update-branch pushed by the default GITHUB_TOKEN does not re-trigger required checks (GitHub recursion prevention), so auto-merge stalls. A GitHub App installation token is required."
             echo "Setup (one-time per repo):"
-            echo "  1. Create a GitHub App with permissions: Contents=Read&write, Pull requests=Read&write."
+            echo "  1. Create/extend the 'jarvis-ci' GitHub App with permissions: Contents=Read&write, Pull requests=Read&write, Issues=Read&write."
             echo "  2. Install the App on this repository."
             echo "  3. Add repo secrets: APP_ID (the App's numeric id) and APP_PRIVATE_KEY (the .pem private key)."
             echo "Until then the merge train cannot run on this repo."

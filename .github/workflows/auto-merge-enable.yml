@@ -12,9 +12,10 @@
 #   `Closes #N` issue stays open. Proven empirically (9/9 human merges auto-close,
 #   0 bot merges do). Same token rule already documented in merge-train.yml for
 #   update-branch (decision 2ccfa29a). Enabling auto-merge with the 'jarvis-ci'
-#   App installation token makes the merge a real identity, so native auto-close
-#   fires. Precondition: the App needs Issues:Read&write (plus the existing
-#   Contents + Pull requests) for the close to be permitted.
+#   App installation token makes the merge a real (non-github-actions[bot])
+#   identity, so native auto-close fires. The App should also carry Issues:Read&
+#   write alongside Contents + Pull requests — the close is attributed to the
+#   merge actor, and the extra scope avoids any permission edge.
 name: auto-merge-enable
 
 on:
@@ -26,10 +27,22 @@ on:
 permissions:
   contents: read
 
+# Rapid draft->ready transitions or event re-deliveries can spawn two parallel
+# runs racing on `gh pr merge --auto` for the same PR. Serialize per-PR.
+concurrency:
+  group: auto-merge-enable-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   enable:
     # Skip drafts — a draft is the manual "owner attention owed" hold.
-    if: github.event.pull_request.draft == false
+    # Skip fork PRs — repo secrets (APP_ID/APP_PRIVATE_KEY) are withheld from
+    # forked-PR events, so the App token can't be minted; auto-merge on a fork
+    # PR isn't meaningful anyway. Without this guard the Assert step below would
+    # hard-fail every fork PR.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - name: Assert App credentials present
@@ -60,4 +73,17 @@ jobs:
       - name: Enable squash auto-merge
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: gh pr merge "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --auto --squash
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Idempotent: the 'ready_for_review' trigger can fire after 'opened'
+          # already enabled auto-merge; re-calling `gh pr merge --auto` then exits
+          # non-zero ("already enabled"), which the loud Assert step above would
+          # make easy to mistake for a credential failure. Check first.
+          am=$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest -q '.autoMergeRequest')
+          if [ "$am" = "null" ]; then
+            gh pr merge "$PR" --repo "$REPO" --auto --squash
+          else
+            echo "::notice::Auto-merge already enabled on #$PR — nothing to do."
+          fi
