@@ -110,6 +110,17 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          # Token-presence guard (#1006 review, MAJOR): the Mint step is skipped
+          # when REPO_NAME is empty (its defense-in-depth `if:`), which leaves
+          # GH_TOKEN as the empty string here. `gh` with an empty GH_TOKEN may fall
+          # back to the ambient GITHUB_TOKEN rather than erroring — re-attributing
+          # the eventual merge to github-actions[bot] and suppressing native
+          # auto-close, the exact #948 Bug A this workflow exists to prevent. Fail
+          # loud before any gh call instead of risking a bot-attributed merge.
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::App token is empty — the Mint step was skipped (REPO_NAME unset?). Refusing to call gh, which could fall back to GITHUB_TOKEN and re-attribute the merge to github-actions[bot] (#948 Bug A)."
+            exit 1
+          fi
           # Idempotent: the 'ready_for_review' trigger can fire after 'opened'
           # already enabled auto-merge; re-calling `gh pr merge --auto` then exits
           # non-zero ("already enabled"), which the loud Assert step above would
@@ -145,12 +156,26 @@ jobs:
             # this call. A "not open" failure here is benign (auto-merge's job is
             # already done), so swallow it after confirming the PR really closed.
             if ! gh pr merge "$PR" --repo "$REPO" --auto --squash; then
+              # Re-check state to tell a benign TOCTOU race from a real failure.
+              # Keep the empty-state case DISTINCT from "still OPEN" (#1006 review,
+              # MAJOR): an empty re-check is an unknown, not a confirmed-open PR, so
+              # the old `[ "$st" = "OPEN" ] || [ -z "$st" ]` conflation surfaced a
+              # misleading "on open PR" error.
               st=$(gh pr view "$PR" --repo "$REPO" --json state -q '.state' 2>/dev/null || echo "")
-              if [ "$st" = "OPEN" ] || [ -z "$st" ]; then
-                echo "::error::Failed to enable auto-merge on open PR #$PR."
+              if [ "$st" = "OPEN" ]; then
+                echo "::error::Failed to enable auto-merge on still-open PR #$PR."
                 exit 1
+              elif [ -z "$st" ]; then
+                # Couldn't confirm state — fail closed (not exit 0). Auto-merge
+                # ENABLEMENT has no downstream self-heal: merge-train only updates
+                # branches of PRs that already have auto-merge enabled, it never
+                # enables it. A silently-missed enablement would stall the PR
+                # forever, so an unconfirmed failure must stay visible.
+                echo "::error::auto-merge enable failed on #$PR and re-checking its state also failed — cannot confirm; failing closed so this stays visible."
+                exit 1
+              else
+                echo "::notice::PR #$PR closed ($st) before auto-merge could be enabled — nothing to do."
               fi
-              echo "::notice::PR #$PR closed ($st) before auto-merge could be enabled — nothing to do."
             fi
           else
             echo "::notice::Auto-merge already enabled on #$PR — nothing to do."

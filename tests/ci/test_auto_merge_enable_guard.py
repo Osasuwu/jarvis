@@ -101,8 +101,12 @@ def test_closed_pr_is_noop():
     assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", state="CLOSED") == "NOOP"
 
 
-def test_draft_fork_still_noop():
-    assert decide(draft=True, head_repo="fork/r", base_repo="o/r", am="null") == "NOOP"
+def test_fork_precedes_empty_output_fail():
+    # Fork guard is evaluated before the empty-output FAIL path: a fork PR with
+    # degraded output must NOOP (the `if:` skips the steps entirely), not FAIL.
+    # Replaces a draft+fork case that duplicated the draft-only path (#1006 review,
+    # NIT) — this one actually reaches the fork branch with am="".
+    assert decide(draft=False, head_repo="fork/r", base_repo="o/r", am="") == "NOOP"
 
 
 # ---- config dimension (keep YAML and test in lockstep) ----------------------
@@ -130,9 +134,12 @@ def test_workflow_uses_app_token_not_github_token():
         "GH_TOKEN for `gh pr merge --auto` must use the minted App token output "
         "(steps.app-token.outputs.token), not GITHUB_TOKEN — reverting is #948 Bug A."
     )
-    assert "secrets.GITHUB_TOKEN" not in text, (
-        "auto-merge-enable must never pass secrets.GITHUB_TOKEN to gh — it would "
-        "re-attribute the merge to github-actions[bot] and suppress auto-close."
+    # Match the regression VECTOR (the interpolated expression), not the bare
+    # substring: a comment mentioning secrets.GITHUB_TOKEN would false-positive
+    # the broad check (#1006 review, MINOR).
+    assert "${{ secrets.GITHUB_TOKEN }}" not in text, (
+        "auto-merge-enable must never pass ${{ secrets.GITHUB_TOKEN }} to gh — it "
+        "would re-attribute the merge to github-actions[bot] and suppress auto-close."
     )
 
 
@@ -174,9 +181,28 @@ def test_workflow_guards_drafts_and_forks():
 
 def test_workflow_has_empty_output_guard():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # The guard is compound: `[ -z "$am" ] || [ -z "$state" ]`. Assert BOTH halves
+    # (#1006 review, MINOR) — dropping the `$state` half would leave the
+    # state-emptiness path unguarded while this test still passed on the `$am` half.
     assert '[ -z "$am" ]' in text, (
         "empty-output guard dropped — a degraded `gh pr view` would be misread as "
         "'already enabled', silently leaving the PR un-enrolled."
+    )
+    assert '[ -z "$state" ]' in text, (
+        "state empty-guard half dropped — a degraded `gh pr view` could leave "
+        "$state empty and the merged-PR guard would misfire."
+    )
+
+
+def test_workflow_guards_empty_app_token():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # If the Mint step is skipped (REPO_NAME empty), GH_TOKEN is "" and gh could
+    # fall back to the ambient GITHUB_TOKEN — re-attributing the merge to the bot
+    # (#948 Bug A). The Enable step must fail loud on an empty token before any gh
+    # call (#1006 review, MAJOR).
+    assert '[ -z "${GH_TOKEN:-}" ]' in text, (
+        "Enable step must fail loud when the App token is empty — an empty GH_TOKEN "
+        "risks a GITHUB_TOKEN fallback and a bot-attributed merge (#948 Bug A)."
     )
 
 

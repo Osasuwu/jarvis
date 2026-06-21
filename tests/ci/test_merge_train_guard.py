@@ -196,8 +196,11 @@ def test_workflow_uses_app_token_not_github_token():
     assert "steps.app-token.outputs.token" in text, (
         "GH_TOKEN must use the minted App token output (steps.app-token.outputs.token)."
     )
-    assert "secrets.GITHUB_TOKEN" not in text, (
-        "merge-train must never pass secrets.GITHUB_TOKEN to gh — recursion "
+    # Match the regression VECTOR (the interpolated expression), not the bare
+    # substring: a comment mentioning secrets.GITHUB_TOKEN would false-positive
+    # the broad check (#1006 review, MINOR).
+    assert "${{ secrets.GITHUB_TOKEN }}" not in text, (
+        "merge-train must never pass ${{ secrets.GITHUB_TOKEN }} to gh — recursion "
         "prevention would stop update-branch from re-triggering required checks."
     )
 
