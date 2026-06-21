@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from agents import task_queue
-from agents.pid_sidecar import Sidecar
+from agents.pid_sidecar import Sidecar, poll_exit
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +195,11 @@ def poll_completions(
     done = 0
     failed_exit = 0
     for task_id, tracked in list(procs.items()):
-        rc = tracked.proc.poll()
+        # poll_exit handles both handle kinds: a freshly-spawned Popen (real exit
+        # code) and an adopted psutil.Process (no poll()/returncode — exited maps
+        # to a non-zero sentinel → failed, #952). A bare .poll() here would
+        # AttributeError on every adopted handle and wedge the row in running.
+        rc = poll_exit(tracked.proc)
         if rc is None:
             continue
         try:
@@ -291,8 +295,8 @@ def kill_runaways(
     """
     killed = 0
     for task_id, tracked in list(procs.items()):
-        if tracked.proc.poll() is not None:
-            continue  # exited — poll_completions closes it with the real rc
+        if poll_exit(tracked.proc) is not None:
+            continue  # exited — poll_completions closes it (real rc or sentinel)
         if now() - tracked.started_at <= max_runtime_seconds:
             continue
         try:
@@ -498,8 +502,12 @@ def drain_tasks(
             # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
             if sidecar is not None:
                 try:
-                    pid = proc.pid if hasattr(proc, "pid") else proc.pid
-                    create_time = proc.create_time() if hasattr(proc, "create_time") else time.time()
+                    # proc here is always the executor's Popen-shaped handle, which
+                    # has no create_time(); we record wall-clock spawn time as the
+                    # adoption key. adopt_task tolerates ≤1s skew vs the OS-reported
+                    # create_time on restart (#952 AC2/AC3).
+                    pid = proc.pid
+                    create_time = time.time()
                     sidecar.record_spawn(task_id, pid, create_time)
                 except Exception:  # noqa: BLE001 — sidecar write is best-effort
                     logger.exception(

@@ -147,20 +147,38 @@ class TestPollExit:
         assert poll_exit(mock_proc) == 42
 
     def test_poll_exit_from_psutil_running(self):
-        """poll_exit returns None if psutil.Process.is_running()."""
+        """poll_exit returns None for a still-running adopted psutil.Process.
+
+        Spec deliberately omits ``poll`` and ``returncode`` — a real
+        ``psutil.Process`` has neither; ``is_running()`` is the only signal.
+        """
         pytest.importorskip("psutil")
-        mock_proc = MagicMock(spec=["is_running", "returncode"])
+        mock_proc = MagicMock(spec=["is_running"])
         mock_proc.is_running.return_value = True
-        # poll_exit checks is_running first, so it returns None.
         assert poll_exit(mock_proc) is None
 
-    def test_poll_exit_from_psutil_exited(self):
-        """poll_exit returns returncode if psutil.Process not running."""
+    def test_poll_exit_from_psutil_exited_returns_unknown_sentinel(self):
+        """An exited adopted psutil.Process returns the non-zero unknown-exit
+        sentinel (AC5: unknown exit → failed, never done) — NOT a real exit code,
+        which is unknowable for a process we did not spawn."""
         pytest.importorskip("psutil")
-        mock_proc = MagicMock(spec=["is_running", "returncode"])
+        from agents.pid_sidecar import ADOPTED_PROCESS_UNKNOWN_EXIT
+
+        mock_proc = MagicMock(spec=["is_running"])
         mock_proc.is_running.return_value = False
-        mock_proc.returncode = 1
-        assert poll_exit(mock_proc) == 1
+        rc = poll_exit(mock_proc)
+        assert rc == ADOPTED_PROCESS_UNKNOWN_EXIT
+        assert rc != 0  # must route to failed, never done
+
+    def test_poll_exit_matches_real_psutil_api(self):
+        """Guard against the original defect: poll_exit must not touch ``poll`` or
+        ``returncode`` on a real psutil.Process (it has neither). Drives the
+        live-process branch through the actual psutil object, no mocks."""
+        psutil = pytest.importorskip("psutil")
+        proc = psutil.Process()  # this very interpreter — guaranteed running
+        assert not hasattr(proc, "poll")
+        assert not hasattr(proc, "returncode")
+        assert poll_exit(proc) is None  # running → None, no AttributeError
 
 
 class TestAdoptTask:
@@ -169,30 +187,32 @@ class TestAdoptTask:
     def test_adopt_task_alive_and_matching(self):
         """adopt_task succeeds when process alive and create_time matches."""
         pytest.importorskip("psutil")
-        with patch("agents.pid_sidecar.psutil.Process") as MockProcess:
+        with patch("psutil.Process") as MockProcess:
             mock_proc = MagicMock()
             mock_proc.is_running.return_value = True
             mock_proc.create_time.return_value = 100.5
             MockProcess.return_value = mock_proc
 
-            result = adopt_task("task1", 1234, create_time_tolerance_sec=1.0)
+            # create_time within tolerance of the OS-reported value → adopt.
+            result = adopt_task("task1", 1234, 100.5, create_time_tolerance_sec=1.0)
             assert result is mock_proc
 
     def test_adopt_task_dead_process(self):
         """adopt_task returns None if process not running."""
         pytest.importorskip("psutil")
-        with patch("agents.pid_sidecar.psutil.Process") as MockProcess:
+        with patch("psutil.Process") as MockProcess:
             mock_proc = MagicMock()
             mock_proc.is_running.return_value = False
             MockProcess.return_value = mock_proc
 
-            result = adopt_task("task1", 1234)
+            # Dead process → None regardless of create_time.
+            result = adopt_task("task1", 1234, 100.5)
             assert result is None
 
     def test_adopt_task_create_time_mismatch(self):
         """adopt_task returns None if create_time mismatch exceeds tolerance."""
         pytest.importorskip("psutil")
-        with patch("agents.pid_sidecar.psutil.Process") as MockProcess:
+        with patch("psutil.Process") as MockProcess:
             mock_proc = MagicMock()
             mock_proc.is_running.return_value = True
             mock_proc.create_time.return_value = 105.0  # Differs by >1.0s
@@ -200,6 +220,19 @@ class TestAdoptTask:
 
             result = adopt_task("task1", 1234, create_time=100.0, create_time_tolerance_sec=1.0)
             assert result is None
+
+    def test_adopt_task_create_time_within_tolerance(self):
+        """adopt_task adopts when create_time drift is within tolerance (AC2 —
+        ≤1s clock skew between spawn and boot is tolerated, not rejected)."""
+        pytest.importorskip("psutil")
+        with patch("psutil.Process") as MockProcess:
+            mock_proc = MagicMock()
+            mock_proc.is_running.return_value = True
+            mock_proc.create_time.return_value = 100.6  # 0.6s drift < 1.0s tol
+            MockProcess.return_value = mock_proc
+
+            result = adopt_task("task1", 1234, create_time=100.0, create_time_tolerance_sec=1.0)
+            assert result is mock_proc
 
     def test_adopt_task_no_psutil(self):
         """adopt_task returns None if psutil not available."""
@@ -216,7 +249,7 @@ class TestKillOrphanProcess:
     def test_kill_orphan_deletes_sidecar(self):
         """kill_orphan_process deletes sidecar after kill."""
         pytest.importorskip("psutil")
-        with patch("agents.pid_sidecar.psutil.Process") as MockProcess:
+        with patch("psutil.Process") as MockProcess:
             with patch("agents.pid_sidecar.delete_sidecar") as mock_delete:
                 mock_proc = MagicMock()
                 mock_proc.is_running.return_value = True
@@ -229,7 +262,7 @@ class TestKillOrphanProcess:
     def test_kill_orphan_dead_process(self):
         """kill_orphan_process handles process already dead."""
         pytest.importorskip("psutil")
-        with patch("agents.pid_sidecar.psutil.Process") as MockProcess:
+        with patch("psutil.Process") as MockProcess:
             with patch("agents.pid_sidecar.delete_sidecar") as mock_delete:
                 mock_proc = MagicMock()
                 mock_proc.is_running.return_value = False
@@ -314,7 +347,7 @@ class TestSidecarClass:
     def test_sidecar_kill_orphan(self, tmp_path):
         """Sidecar.kill_orphan delegates to kill_orphan_process."""
         pytest.importorskip("psutil")
-        with patch("agents.pid_sidecar.psutil.Process") as MockProcess:
+        with patch("psutil.Process") as MockProcess:
             with patch("agents.pid_sidecar.delete_sidecar") as mock_delete:
                 mock_proc = MagicMock()
                 mock_proc.is_running.return_value = True

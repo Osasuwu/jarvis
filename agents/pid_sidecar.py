@@ -124,34 +124,68 @@ def delete_sidecar(task_id: str) -> None:
         logger.exception("delete_sidecar failed task_id=%s: %s", task_id, e)
 
 
-def poll_exit(proc: Any) -> int | None:
-    """Check if process exited, return exit code or None.
+# Sentinel exit code reported for an *adopted* process that has exited. We
+# cannot read the true exit status of a process we did not spawn — a real
+# ``psutil.Process`` has no ``returncode`` and no ``poll()``, only liveness via
+# ``is_running()``. Per #952 AC5 ("unknown exit → failed, never done") a
+# completed adopted process must close its row as ``failed``, so poll_exit
+# returns this non-zero sentinel (any non-zero value routes to ``failed`` in
+# task_dispatch.poll_completions). Path A re-drives the real outcome via events.
+ADOPTED_PROCESS_UNKNOWN_EXIT = -1
 
-    Duck-typed adapter: handles both subprocess.Popen and psutil.Process.
-    - Popen: proc.poll() returns exit code or None (still running).
-    - psutil.Process: proc.poll() returns exit code; proc.is_running() is the check.
+
+def poll_exit(proc: Any) -> int | None:
+    """Return a tracked process's exit code, or None while it is still running.
+
+    Duck-typed across the two handle kinds the driver tracks:
+
+    - ``subprocess.Popen`` (freshly spawned): ``proc.poll()`` gives the real exit
+      code — 0 clean, non-zero failure — or None while running.
+    - ``psutil.Process`` (adopted on restart): a real ``psutil.Process`` exposes
+      neither ``poll()`` nor ``returncode``; ``is_running()`` is the only signal
+      available, and the true exit code of a process we did not spawn is
+      unknowable. A still-running adopted process returns None; an exited one
+      returns :data:`ADOPTED_PROCESS_UNKNOWN_EXIT` (non-zero) so the caller marks
+      the row ``failed`` rather than ``done`` (#952 AC5).
+
+    Popen is checked first because it is the common (freshly-spawned) handle; the
+    two real types are disjoint (Popen has no ``is_running``, psutil.Process has
+    no ``poll``), so order only affects which branch a permissive mock takes.
+
+    Exceptions from the underlying ``poll()`` / ``is_running()`` are **not**
+    swallowed here — they propagate so the callers' per-row isolation
+    (``poll_completions`` / ``kill_runaways`` drop the bad entry, and
+    ``wake_driver.tick`` isolates the completion-poll half from the runaway-killer
+    half — review #957-6) decides what to do with a broken handle. Converting a
+    poll blowup into a false ``None`` ("still running") here would let the runaway
+    killer act on a process whose state we never actually read.
     """
-    try:
-        if hasattr(proc, "is_running"):
-            # psutil.Process
-            if proc.is_running():
-                return None
-            else:
-                return proc.returncode
-        else:
-            # subprocess.Popen
-            return proc.poll()
-    except Exception as e:
-        logger.exception("poll_exit failed: %s", e)
-        return None
+    if hasattr(proc, "poll"):
+        # subprocess.Popen — real exit code (or None while running).
+        return proc.poll()
+    if hasattr(proc, "is_running"):
+        # psutil.Process (adopted) — no real exit code; running → None,
+        # exited → non-zero sentinel so the row closes as ``failed``.
+        return None if proc.is_running() else ADOPTED_PROCESS_UNKNOWN_EXIT
+    # Unrecognized handle kind — treat as still running; the runaway and
+    # orphan reapers are the backstop rather than a false ``done``.
+    logger.warning("poll_exit: unrecognized process handle type %r", type(proc))
+    return None
 
 
 def adopt_task(
-    task_id: str, pid: int, *, create_time_tolerance_sec: float = 1.0
+    task_id: str, pid: int, create_time: float, *, create_time_tolerance_sec: float = 1.0
 ) -> Any | None:
     """Re-adopt a process on boot.
 
-    Checks if pid is alive and create_time matches (within tolerance).
+    Checks if ``pid`` is alive AND its OS-reported ``create_time`` matches the
+    sidecar's recorded ``create_time`` within ``create_time_tolerance_sec``.
+    Both checks are required: a live PID alone is not enough, because PIDs are
+    recycled — without the create_time match we could adopt an unrelated process
+    that happened to inherit the recycled PID (#952 AC3). ``create_time`` is a
+    required argument for exactly this reason; a default would silently disable
+    PID-recycle protection if a caller forgot to pass it.
+
     Returns a psutil.Process if adoption succeeds, None otherwise.
 
     Requires psutil. If it's not available, logs a warning and returns None.
@@ -281,7 +315,9 @@ class Sidecar:
         """
         adopted_procs = []
         for task_id, pid, create_time in boot_scan_sidecars():
-            proc = adopt_task(task_id, pid)
+            # Pass the sidecar's recorded create_time so adopt_task can verify it
+            # against the OS-reported value — guards against PID recycle (#952 AC3).
+            proc = adopt_task(task_id, pid, create_time)
             if proc:
                 adopted_procs.append((task_id, proc))
             else:
