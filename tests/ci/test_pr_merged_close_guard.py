@@ -19,10 +19,13 @@ Decision rule mirrored here (see the bash loop in the YAML):
   - issue reopened AFTER the PR's merged_at     -> skip (respect human reopen)
   - otherwise                                   -> close (state_reason=completed)
 The candidate set is `closingIssuesReferences` (authoritative linkage), not a
-body regex, projected WITH each ref's own repo (`repository.nameWithOwner`) so
-cross-repo refs are closed in their own repo, never collapsed into $REPO. The
-linkage read fails LOUD on a gh error rather than treating an empty result as
-"nothing to close" (a silent green that would re-open Bug A).
+body regex, projected WITH each ref's own repo (`repository.nameWithOwner`).
+GITHUB_TOKEN is scoped to $REPO, so a cross-repo ref CANNOT be closed here — it
+is SKIPPED with a warning, never collapsed into $REPO (which would close the
+wrong same-numbered issue). The linkage read fails LOUD on a gh error rather
+than treating an empty result as "nothing to close" (a silent green that would
+re-open Bug A). A single close failure mid-loop does not abort the run — every
+issue is attempted, then the job fails if any close failed.
 """
 
 from __future__ import annotations
@@ -134,6 +137,11 @@ def test_workflow_fails_loud_on_linkage_read_failure():
         "linkage read must not use `mapfile < <(gh ...)` — it swallows gh's exit "
         "code, turning a gh failure into a silent green no-op (#948 Bug A)."
     )
+    assert "if ! refs=$(" in text, (
+        "linkage read must capture-then-check (`if ! refs=$(gh pr view ...)`) so "
+        "gh's exit code is visible to set -e — not a process-substitution read "
+        "that swallows it (#948 Bug A)."
+    )
     assert "gh pr view failed" in text, (
         "linkage read must fail loud (explicit exit 1) when gh pr view errors, "
         "not assume zero linked issues."
@@ -142,17 +150,39 @@ def test_workflow_fails_loud_on_linkage_read_failure():
 
 def test_workflow_is_cross_repo_aware():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    # closingIssuesReferences can include cross-repo issues; native auto-close
-    # closes each in its OWN repo. The workflow must carry each ref's repo and
-    # close/inspect it there, not collapse every number into $REPO (which would
-    # close the same-numbered issue in the wrong repo).
+    # closingIssuesReferences can include cross-repo issues. GITHUB_TOKEN is
+    # scoped to $REPO, so a foreign ref CANNOT be closed here — it must be SKIPPED
+    # with a warning, never collapsed into $REPO (which would close the wrong
+    # same-numbered issue), and never silently dropped.
     assert "nameWithOwner" in text, (
-        "linkage projection must include repository.nameWithOwner so cross-repo "
-        "refs are closed in their own repo, not collapsed into $REPO."
+        "linkage projection must include repository.nameWithOwner so a foreign "
+        "ref is detected (then skipped), not collapsed into $REPO."
+    )
+    assert '"$irepo" != "$REPO"' in text, (
+        "the loop must guard `$irepo != $REPO` and skip+warn — GITHUB_TOKEN is "
+        "repo-scoped and cannot close a cross-repo issue (it would 403)."
     )
     assert 'repos/$irepo/issues' in text, (
         "the reopen-guard timeline lookup must be keyed on the issue's own repo "
         "($irepo), not the PR's repo."
+    )
+    assert '--repo "$irepo"' in text, (
+        "gh issue close must target the ref's own repo ($irepo), not a hardcoded $REPO."
+    )
+
+
+def test_workflow_continues_past_a_single_close_failure():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # One `gh issue close` failure must not abort the loop under set -e and
+    # strand the remaining linked issues unattempted. The loop records the
+    # failure (failed=1) and the job fails AFTER every issue is attempted.
+    assert "failed=1" in text, (
+        "a mid-loop close failure must set failed=1 and continue, not abort the "
+        "loop and leave later issues open (#948 Bug A — partial close)."
+    )
+    assert 'if [ "$failed" -ne 0 ]' in text, (
+        "the job must fail after the loop when any close failed, so a partial "
+        "close still surfaces a red signal."
     )
 
 
