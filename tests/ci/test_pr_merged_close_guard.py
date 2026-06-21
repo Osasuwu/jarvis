@@ -19,7 +19,10 @@ Decision rule mirrored here (see the bash loop in the YAML):
   - issue reopened AFTER the PR's merged_at     -> skip (respect human reopen)
   - otherwise                                   -> close (state_reason=completed)
 The candidate set is `closingIssuesReferences` (authoritative linkage), not a
-body regex.
+body regex, projected WITH each ref's own repo (`repository.nameWithOwner`) so
+cross-repo refs are closed in their own repo, never collapsed into $REPO. The
+linkage read fails LOUD on a gh error rather than treating an empty result as
+"nothing to close" (a silent green that would re-open Bug A).
 """
 
 from __future__ import annotations
@@ -115,9 +118,41 @@ def test_workflow_actually_closes_not_just_comments():
 def test_workflow_uses_authoritative_linkage_not_regex():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     # Use closingIssuesReferences (the set native auto-close targets), not a body
-    # regex — avoids cross-repo / malformed-ref leakage.
+    # regex — avoids malformed-ref leakage.
     assert "closingIssuesReferences" in text, (
         "candidate issues must come from closingIssuesReferences (authoritative linkage)."
+    )
+
+
+def test_workflow_fails_loud_on_linkage_read_failure():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # A `mapfile -t ... < <(gh pr view ...)` swallows gh's exit code (process
+    # substitution is invisible to set -e), so a transient gh failure yields zero
+    # refs -> green "nothing to close" with the issue still open (Bug A, silently).
+    # The read must capture-then-check and exit non-zero on gh failure.
+    assert "mapfile -t issues < <(" not in text, (
+        "linkage read must not use `mapfile < <(gh ...)` — it swallows gh's exit "
+        "code, turning a gh failure into a silent green no-op (#948 Bug A)."
+    )
+    assert "gh pr view failed" in text, (
+        "linkage read must fail loud (explicit exit 1) when gh pr view errors, "
+        "not assume zero linked issues."
+    )
+
+
+def test_workflow_is_cross_repo_aware():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # closingIssuesReferences can include cross-repo issues; native auto-close
+    # closes each in its OWN repo. The workflow must carry each ref's repo and
+    # close/inspect it there, not collapse every number into $REPO (which would
+    # close the same-numbered issue in the wrong repo).
+    assert "nameWithOwner" in text, (
+        "linkage projection must include repository.nameWithOwner so cross-repo "
+        "refs are closed in their own repo, not collapsed into $REPO."
+    )
+    assert 'repos/$irepo/issues' in text, (
+        "the reopen-guard timeline lookup must be keyed on the issue's own repo "
+        "($irepo), not the PR's repo."
     )
 
 
