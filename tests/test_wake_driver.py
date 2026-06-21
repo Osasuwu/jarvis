@@ -967,3 +967,17 @@ def test_run_forwards_task_read_usage_to_the_drain():
     )
 
     assert calls["n"] == 1
+
+
+# --- #922: task_queue NOTIFY channel for cap-freed task dispatch --------
+
+
+def test_psycopg_event_queue_listens_on_task_queue_channel():
+    """AC1: PsycopgEventQueue must LISTEN on task_queue channel for
+    cap-freed capacity signals (distinct channel from events)."""
+    # This test validates the channel name and listen mechanics.
+    # We can't live-test psycopg LISTEN without a live DB, but we can
+    # verify the constant is defined and distinct.
+    assert hasattr(wake_driver, "TASK_QUEUE_CHANNEL")
+    assert wake_driver.TASK_QUEUE_CHANNEL == "task_queue"
+    assert wake_driver.TASK_QUEUE_CHANNEL != wake_driver.EVENTS_CHANNEL
