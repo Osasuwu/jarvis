@@ -42,8 +42,10 @@ WORKFLOW_PATH = (
 # ---- logic dimension --------------------------------------------------------
 #
 # The decision has three terminal states: ENABLE, SKIP, FAIL. `am` is the
-# stringified `.autoMergeRequest` field as gh emits it: "null" when unset, a
-# non-empty JSON object when enabled, and "" only on a degraded API call.
+# auto-merge token the workflow's jq emits: "null" when unset, "set" when
+# already enabled, and "" only on degraded (whitespace-only) API output. The
+# workflow reduces the raw autoMergeRequest object to this bare token via @tsv
+# so `read` can't mis-split on spaces inside commitHeadline.
 
 
 def decide(*, draft: bool, head_repo: str, base_repo: str, am: str, state: str = "OPEN") -> str:
@@ -70,7 +72,7 @@ def test_ready_non_fork_with_no_automerge_enables():
 
 
 def test_already_enabled_is_idempotent_skip():
-    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am='{"enabledAt":"x"}') == "SKIP"
+    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="set") == "SKIP"
 
 
 def test_draft_is_noop():
@@ -186,6 +188,23 @@ def test_workflow_enables_only_when_unset():
     )
 
 
+def test_workflow_emits_clean_automerge_token():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # The raw autoMergeRequest object carries a commitHeadline that can contain
+    # spaces; interpolating it into `read -r am state` mis-splits state. The jq
+    # must reduce it to a bare "null"/"set" token and emit with @tsv so `read`
+    # splits only on the tab. Regressing to `\(.autoMergeRequest)` re-opens the
+    # whitespace bug (#948 review round 6).
+    assert 'if .autoMergeRequest == null then "null" else "set" end' in text, (
+        "auto-merge status must be reduced to a bare null/set token, not the raw "
+        "autoMergeRequest object (whitespace in commitHeadline mis-splits `read`)."
+    )
+    assert "| @tsv" in text, (
+        "the read inputs must be tab-separated (@tsv) so `read` can't mis-split "
+        "on spaces inside a field."
+    )
+
+
 def test_workflow_skips_non_open_pr():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     # cancel-in-progress:false allows a run to land after the PR merged; the state
@@ -216,9 +235,12 @@ def test_workflow_repo_name_guard_is_load_bearing():
 
 def test_workflow_has_concurrency_guard():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "concurrency:" in text and "cancel-in-progress: false" in text, (
-        "auto-merge-enable must queue per-PR runs without cancelling one mid-enable "
-        "(a cancel after token mint but before `gh pr merge` leaves the PR un-enrolled)."
+    assert "concurrency:" in text, (
+        "auto-merge-enable must declare a concurrency group to serialize per-PR runs."
+    )
+    assert "cancel-in-progress: false" in text, (
+        "auto-merge-enable must not cancel an in-flight run mid-enable — a cancel "
+        "after token mint but before `gh pr merge` leaves the PR un-enrolled."
     )
 
 

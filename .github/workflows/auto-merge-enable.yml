@@ -29,7 +29,11 @@ on:
     types: [opened, ready_for_review, reopened]
 
 # The merge is performed with the App token below, not GITHUB_TOKEN, so this
-# job's default token needs no write scope.
+# job's *default* token needs no write scope. NOTE: this block scopes ONLY the
+# default GITHUB_TOKEN — the minted App token's effective permissions
+# (Contents / Pull requests / Issues: write) are defined in the 'jarvis-ci'
+# GitHub App configuration, not here. `contents: read` is not the job's true
+# write ceiling.
 permissions:
   contents: read
 
@@ -84,6 +88,11 @@ jobs:
 
       - name: Mint App installation token
         id: app-token
+        # Defense-in-depth: if the Derive step above is ever deleted/reordered so
+        # REPO_NAME is unset, fail this step rather than minting an unscoped token
+        # over ALL installed repos (the cross-repo Issues:write leak). Belt to the
+        # Derive step's `:?` braces.
+        if: env.REPO_NAME != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
@@ -105,18 +114,23 @@ jobs:
           # non-zero ("already enabled"), which the loud Assert step above would
           # make easy to mistake for a credential failure. Check first.
           #
-          # State is fetched alongside autoMergeRequest because cancel-in-progress:
+          # State is fetched alongside auto-merge status because cancel-in-progress:
           # false lets a run queued near merge time execute AFTER the PR is already
-          # merged. On a merged PR autoMergeRequest reads "null" (auto-merge
-          # completed), so without this guard we'd call `gh pr merge --auto` on a
-          # closed PR and surface a spurious red ("#N is not open").
+          # merged. On a merged PR auto-merge reads as completed (am=null), so
+          # without the state guard we'd call `gh pr merge --auto` on a closed PR
+          # and surface a spurious red ("#N is not open").
+          #
+          # am is reduced to a bare "null"/"set" token (not the raw
+          # autoMergeRequest object, whose commitHeadline can contain spaces) and
+          # emitted with @tsv, so `read` splits cleanly on the tab regardless of
+          # field contents.
           read -r am state < <(
             gh pr view "$PR" --repo "$REPO" --json autoMergeRequest,state \
-              -q '"\(.autoMergeRequest) \(.state)"'
+              -q '[(if .autoMergeRequest == null then "null" else "set" end), .state] | @tsv'
           )
-          # gh can exit 0 with empty stdout on transient API/auth degradation;
-          # set -e won't catch that. An empty $am must NOT be read as "already
-          # enabled" (silent false negative — PR left un-enrolled). Fail loud.
+          # gh can exit 0 with whitespace-only stdout on transient API/auth
+          # degradation, leaving am/state empty without tripping set -e. Treat
+          # either empty as a hard failure rather than misreading auto-merge state.
           if [ -z "$am" ] || [ -z "$state" ]; then
             echo "::error::gh pr view returned empty output for #$PR — possible auth or API failure; not assuming auto-merge state."
             exit 1
@@ -126,7 +140,17 @@ jobs:
             exit 0
           fi
           if [ "$am" = "null" ]; then
-            gh pr merge "$PR" --repo "$REPO" --auto --squash
+            # TOCTOU: the PR can merge externally between the state check above and
+            # this call. A "not open" failure here is benign (auto-merge's job is
+            # already done), so swallow it after confirming the PR really closed.
+            if ! gh pr merge "$PR" --repo "$REPO" --auto --squash; then
+              st=$(gh pr view "$PR" --repo "$REPO" --json state -q '.state' 2>/dev/null || echo "")
+              if [ "$st" = "OPEN" ] || [ -z "$st" ]; then
+                echo "::error::Failed to enable auto-merge on open PR #$PR."
+                exit 1
+              fi
+              echo "::notice::PR #$PR closed ($st) before auto-merge could be enabled — nothing to do."
+            fi
           else
             echo "::notice::Auto-merge already enabled on #$PR — nothing to do."
           fi
