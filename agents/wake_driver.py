@@ -430,8 +430,9 @@ class PsycopgEventQueue:
     PostgREST (supabase-py) cannot ``LISTEN``, so this is the one place the
     agents reach Postgres directly.
 
-    Not unit-tested (needs a live DB); kept thin so the tested loop above
-    carries the logic.
+    The RPC methods need a live DB and are not unit-tested; the constructor's
+    LISTEN wiring is (a recording conn, no DB). Kept thin so the tested loop
+    above carries the logic.
     """
 
     def __init__(self, conn: psycopg.Connection, *, claimer: str = CLAIMER) -> None:
