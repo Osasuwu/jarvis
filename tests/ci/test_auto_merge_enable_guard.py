@@ -1,0 +1,161 @@
+"""Meta-test for .github/workflows/auto-merge-enable.yml.
+
+Reimplements the auto-merge-enable's per-PR enable decision in Python and
+asserts it enables/skips the PRs the workflow promises, plus a config dimension
+that keeps the YAML and this test in lockstep.
+
+Why this test exists (CLAUDE.md §326 + #948 Bug A): auto-merge-enable.yml is the
+fix for #948 Bug A — a PR auto-merged with the default GITHUB_TOKEN is attributed
+to github-actions[bot], and GitHub's recursion-prevention then SUPPRESSES native
+linked-issue auto-close (the merged PR leaves its `Closes #N` issue open). The fix
+is to enable auto-merge with a GitHub App installation token so the merge's
+`enabledBy` actor is the App, not the bot. That correctness hinges entirely on
+config the diff can silently regress:
+  - reverting the App token back to GITHUB_TOKEN reintroduces the exact bug,
+  - dropping the draft/fork guard hard-fails fork PRs or enrols held drafts,
+  - dropping the empty-output guard silently leaves a PR un-enrolled,
+  - dropping cancel-in-progress:false can kill a run mid-enable.
+None of those produce a red signal on their own — this test is that signal.
+
+Enable rule mirrored here (see the `if:` guard + bash step in the YAML):
+  eligible   = non-draft AND head repo == base repo (not a fork)
+  enable     = eligible AND auto-merge not already enabled (autoMergeRequest null)
+  skip       = eligible AND auto-merge already enabled (idempotent re-trigger)
+  fail-loud  = eligible AND `gh pr view` returned empty (auth/API degradation)
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+
+WORKFLOW_PATH = (
+    Path(__file__).resolve().parents[2]
+    / ".github"
+    / "workflows"
+    / "auto-merge-enable.yml"
+)
+
+
+# ---- logic dimension --------------------------------------------------------
+#
+# The decision has three terminal states: ENABLE, SKIP, FAIL. `am` is the
+# stringified `.autoMergeRequest` field as gh emits it: "null" when unset, a
+# non-empty JSON object when enabled, and "" only on a degraded API call.
+
+
+def decide(*, draft: bool, head_repo: str, base_repo: str, am: str) -> str:
+    """Mirror the workflow's enable decision. Returns ENABLE / SKIP / FAIL / NOOP."""
+    # `if:` guard — drafts and forks never reach the steps.
+    if draft:
+        return "NOOP"
+    if head_repo != base_repo:
+        return "NOOP"
+    # Empty-output guard — fail loud rather than misread as "already enabled".
+    if am == "":
+        return "FAIL"
+    if am == "null":
+        return "ENABLE"
+    return "SKIP"
+
+
+def test_ready_non_fork_with_no_automerge_enables():
+    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="null") == "ENABLE"
+
+
+def test_already_enabled_is_idempotent_skip():
+    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am='{"enabledAt":"x"}') == "SKIP"
+
+
+def test_draft_is_noop():
+    assert decide(draft=True, head_repo="o/r", base_repo="o/r", am="null") == "NOOP"
+
+
+def test_fork_pr_is_noop():
+    assert decide(draft=False, head_repo="fork/r", base_repo="o/r", am="null") == "NOOP"
+
+
+def test_empty_output_fails_loud():
+    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="") == "FAIL"
+
+
+def test_draft_fork_still_noop():
+    assert decide(draft=True, head_repo="fork/r", base_repo="o/r", am="null") == "NOOP"
+
+
+# ---- config dimension (keep YAML and test in lockstep) ----------------------
+
+
+def test_workflow_exists():
+    assert WORKFLOW_PATH.is_file(), "auto-merge-enable.yml missing"
+
+
+def test_workflow_uses_app_token_not_github_token():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "create-github-app-token" in text, (
+        "auto-merge-enable must mint a GitHub App token — auto-merge enabled with "
+        "GITHUB_TOKEN attributes the merge to github-actions[bot], which suppresses "
+        "native linked-issue auto-close (#948 Bug A)."
+    )
+
+
+def test_workflow_app_token_is_sha_pinned():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Supply-chain hardening: the action must be pinned to a full commit SHA,
+    # not a mutable tag (@v3). A 40-hex SHA on the create-github-app-token line.
+    assert "create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" in text, (
+        "create-github-app-token must be SHA-pinned (supply-chain), not tag-pinned."
+    )
+
+
+def test_workflow_scopes_token_to_this_repo():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Least-privilege: the App is shared across repos (jarvis + redrobot), so the
+    # minted token must be scoped to this repo only. Derived from GITHUB_REPOSITORY
+    # so it's populated on every trigger.
+    assert "REPO_NAME=${GITHUB_REPOSITORY#*/}" in text, (
+        "token must be scoped via env REPO_NAME derived from GITHUB_REPOSITORY."
+    )
+    assert "repositories: ${{ env.REPO_NAME }}" in text, (
+        "create-github-app-token must pass repositories: env.REPO_NAME for least-privilege."
+    )
+
+
+def test_workflow_guards_drafts_and_forks():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "github.event.pull_request.draft == false" in text, (
+        "draft guard dropped — held drafts would get auto-merge enabled."
+    )
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in text, (
+        "fork guard dropped — fork PRs (no secrets) would hard-fail the token step."
+    )
+
+
+def test_workflow_has_empty_output_guard():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert '[ -z "$am" ]' in text, (
+        "empty-output guard dropped — a degraded `gh pr view` would be misread as "
+        "'already enabled', silently leaving the PR un-enrolled."
+    )
+
+
+def test_workflow_enables_only_when_unset():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert '[ "$am" = "null" ]' in text, (
+        "idempotency check dropped — re-triggers would re-call `gh pr merge --auto` "
+        "and surface a spurious failure."
+    )
+
+
+def test_workflow_has_concurrency_guard():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "concurrency:" in text and "cancel-in-progress: false" in text, (
+        "auto-merge-enable must queue per-PR runs without cancelling one mid-enable "
+        "(a cancel after token mint but before `gh pr merge` leaves the PR un-enrolled)."
+    )
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -70,17 +70,24 @@ jobs:
           fi
           echo "App credentials present."
 
+      - name: Derive repo name for least-privilege token scoping
+        # GITHUB_REPOSITORY ("owner/repo") is populated on EVERY event type;
+        # strip the owner to get the bare repo name. (This workflow only fires on
+        # pull_request, where github.event.repository.name is also populated, but
+        # deriving from GITHUB_REPOSITORY keeps the scoping identical to
+        # merge-train.yml, which DOES run on schedule where that field is empty.)
+        run: echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+
       - name: Mint App installation token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
-          # Least-privilege: scope the token to THIS repo only, so the added
-          # Issues:write scope never leaks to other repos the App is installed
-          # on (CLAUDE.md: App is shared). Empty on rare event types falls back
-          # to all-installed-repos — no worse than the unscoped default.
-          repositories: ${{ github.event.repository.name }}
+          # Least-privilege: scope to THIS repo only (REPO_NAME is set on all
+          # triggers, see step above) so the added Issues:write scope never leaks
+          # to other repos the App is installed on (CLAUDE.md: App is shared).
+          repositories: ${{ env.REPO_NAME }}
 
       - name: Enable squash auto-merge
         env:
