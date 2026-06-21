@@ -46,7 +46,7 @@ WORKFLOW_PATH = (
 # non-empty JSON object when enabled, and "" only on a degraded API call.
 
 
-def decide(*, draft: bool, head_repo: str, base_repo: str, am: str) -> str:
+def decide(*, draft: bool, head_repo: str, base_repo: str, am: str, state: str = "OPEN") -> str:
     """Mirror the workflow's enable decision. Returns ENABLE / SKIP / FAIL / NOOP."""
     # `if:` guard — drafts and forks never reach the steps.
     if draft:
@@ -54,8 +54,12 @@ def decide(*, draft: bool, head_repo: str, base_repo: str, am: str) -> str:
     if head_repo != base_repo:
         return "NOOP"
     # Empty-output guard — fail loud rather than misread as "already enabled".
-    if am == "":
+    if am == "" or state == "":
         return "FAIL"
+    # cancel-in-progress:false lets a run queued near merge time execute after the
+    # PR is already merged; on a merged PR am reads "null" but state is not OPEN.
+    if state != "OPEN":
+        return "NOOP"
     if am == "null":
         return "ENABLE"
     return "SKIP"
@@ -81,6 +85,20 @@ def test_empty_output_fails_loud():
     assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="") == "FAIL"
 
 
+def test_empty_state_fails_loud():
+    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", state="") == "FAIL"
+
+
+def test_already_merged_pr_is_noop():
+    # Queued run executes after merge: am=="null" (auto-merge completed) but the
+    # PR is no longer OPEN — must NOT call `gh pr merge` on a closed PR.
+    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", state="MERGED") == "NOOP"
+
+
+def test_closed_pr_is_noop():
+    assert decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", state="CLOSED") == "NOOP"
+
+
 def test_draft_fork_still_noop():
     assert decide(draft=True, head_repo="fork/r", base_repo="o/r", am="null") == "NOOP"
 
@@ -92,7 +110,7 @@ def test_workflow_exists():
     assert WORKFLOW_PATH.is_file(), "auto-merge-enable.yml missing"
 
 
-def test_workflow_uses_app_token_not_github_token():
+def test_workflow_mints_app_token():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "create-github-app-token" in text, (
         "auto-merge-enable must mint a GitHub App token — auto-merge enabled with "
@@ -101,11 +119,30 @@ def test_workflow_uses_app_token_not_github_token():
     )
 
 
-def test_workflow_app_token_is_sha_pinned():
+def test_workflow_uses_app_token_not_github_token():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    # Supply-chain hardening: the action must be pinned to a full commit SHA,
-    # not a mutable tag (@v3). A 40-hex SHA on the create-github-app-token line.
-    assert "create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1" in text, (
+    # Minting the App token is not enough: Bug A reappears if GH_TOKEN on the
+    # `gh pr merge` step reverts to secrets.GITHUB_TOKEN while the mint step stays
+    # (token minted then discarded). Pin the *usage*, not just the presence.
+    assert "steps.app-token.outputs.token" in text, (
+        "GH_TOKEN for `gh pr merge --auto` must use the minted App token output "
+        "(steps.app-token.outputs.token), not GITHUB_TOKEN — reverting is #948 Bug A."
+    )
+    assert "secrets.GITHUB_TOKEN" not in text, (
+        "auto-merge-enable must never pass secrets.GITHUB_TOKEN to gh — it would "
+        "re-attribute the merge to github-actions[bot] and suppress auto-close."
+    )
+
+
+def test_workflow_app_token_is_sha_pinned():
+    import re
+
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Supply-chain hardening: the action must be pinned to a full 40-hex commit
+    # SHA, not a mutable tag (@v3). Match the SHANESS, not the exact commit, so a
+    # Dependabot pin bump doesn't red this test (the sibling merge-train guard
+    # follows the same intent-not-literal pattern).
+    assert re.search(r"create-github-app-token@[0-9a-f]{40}", text), (
         "create-github-app-token must be SHA-pinned (supply-chain), not tag-pinned."
     )
 
@@ -146,6 +183,34 @@ def test_workflow_enables_only_when_unset():
     assert '[ "$am" = "null" ]' in text, (
         "idempotency check dropped — re-triggers would re-call `gh pr merge --auto` "
         "and surface a spurious failure."
+    )
+
+
+def test_workflow_skips_non_open_pr():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # cancel-in-progress:false allows a run to land after the PR merged; the state
+    # guard prevents calling `gh pr merge` on a closed PR (spurious red).
+    assert '[ "$state" != "OPEN" ]' in text, (
+        "merged-PR guard dropped — a queued run after merge would call "
+        "`gh pr merge` on a closed PR and surface a spurious failure."
+    )
+
+
+def test_workflow_triggers_on_ready_for_review_and_reopened():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Dropping ready_for_review → draft→ready PRs never enrol; dropping reopened →
+    # a reopened sandcastle never re-enrols. Both are silent failures.
+    for trigger in ("opened", "ready_for_review", "reopened"):
+        assert trigger in text, f"auto-merge-enable must trigger on {trigger!r}."
+
+
+def test_workflow_repo_name_guard_is_load_bearing():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # An empty REPO_NAME makes create-github-app-token fall back to ALL installed
+    # repos, leaking Issues:write to redrobot. The guard must fail loud instead.
+    assert "GITHUB_REPOSITORY:?" in text, (
+        "the REPO_NAME derivation must guard against an empty GITHUB_REPOSITORY "
+        "(empty scope re-opens the cross-repo token leak)."
     )
 
 

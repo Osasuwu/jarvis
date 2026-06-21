@@ -190,6 +190,16 @@ def test_workflow_uses_app_token_not_github_token():
         "merge-train must mint a GitHub App token — GITHUB_TOKEN-pushed "
         "updates do not re-trigger required checks (recursion prevention)."
     )
+    # Minting isn't enough: the update-branch step must USE the App token. If
+    # GH_TOKEN reverts to GITHUB_TOKEN while the mint step stays, update-branch
+    # stops re-triggering checks and auto-merge stalls again (the original bug).
+    assert "steps.app-token.outputs.token" in text, (
+        "GH_TOKEN must use the minted App token output (steps.app-token.outputs.token)."
+    )
+    assert "secrets.GITHUB_TOKEN" not in text, (
+        "merge-train must never pass secrets.GITHUB_TOKEN to gh — recursion "
+        "prevention would stop update-branch from re-triggering required checks."
+    )
 
 
 def test_workflow_filters_match_selection_rule():

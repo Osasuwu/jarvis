@@ -24,7 +24,9 @@ name: auto-merge-enable
 
 on:
   pull_request:
-    types: [opened, ready_for_review]
+    # reopened: a closed-then-reopened PR (e.g. a temporarily-closed sandcastle)
+    # must get auto-merge re-enabled, else it silently never merges on its own.
+    types: [opened, ready_for_review, reopened]
 
 # The merge is performed with the App token below, not GITHUB_TOKEN, so this
 # job's default token needs no write scope.
@@ -62,7 +64,7 @@ jobs:
             echo "::error::auto-merge-enable requires the 'jarvis-ci' GitHub App, but APP_ID and/or APP_PRIVATE_KEY repo secrets are unset."
             echo "Why: auto-merge enabled with the default GITHUB_TOKEN suppresses native linked-issue auto-close (GitHub recursion prevention), so merged PRs leave their Closes #N issues open. A GitHub App installation token is required (#1005)."
             echo "Setup (one-time per repo):"
-            echo "  1. Create/extend the 'jarvis-ci' GitHub App with permissions: Contents=Read&write, Pull requests=Read&write, Issues=Read&write."
+            echo "  1. Create/extend the 'jarvis-ci' GitHub App with these permissions (as labelled in the GitHub App UI): Contents: Read and write, Pull requests: Read and write, Issues: Read and write."
             echo "  2. Install the App on this repository."
             echo "  3. Add repo secrets: APP_ID (the App's numeric id) and APP_PRIVATE_KEY (the .pem private key)."
             echo "Until then auto-merge cannot be enabled on this repo."
@@ -71,12 +73,14 @@ jobs:
           echo "App credentials present."
 
       - name: Derive repo name for least-privilege token scoping
-        # GITHUB_REPOSITORY ("owner/repo") is populated on EVERY event type;
-        # strip the owner to get the bare repo name. (This workflow only fires on
-        # pull_request, where github.event.repository.name is also populated, but
-        # deriving from GITHUB_REPOSITORY keeps the scoping identical to
-        # merge-train.yml, which DOES run on schedule where that field is empty.)
-        run: echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+        # Derived from GITHUB_REPOSITORY ("owner/repo", set on every event) for
+        # consistency with merge-train.yml. The empty guard is load-bearing: an
+        # empty REPO_NAME would make create-github-app-token fall back to ALL
+        # installed repos, leaking the App's Issues:write scope to redrobot.
+        run: |
+          set -euo pipefail
+          : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is unset or empty}"
+          echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
 
       - name: Mint App installation token
         id: app-token
@@ -100,13 +104,26 @@ jobs:
           # already enabled auto-merge; re-calling `gh pr merge --auto` then exits
           # non-zero ("already enabled"), which the loud Assert step above would
           # make easy to mistake for a credential failure. Check first.
-          am=$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest -q '.autoMergeRequest')
+          #
+          # State is fetched alongside autoMergeRequest because cancel-in-progress:
+          # false lets a run queued near merge time execute AFTER the PR is already
+          # merged. On a merged PR autoMergeRequest reads "null" (auto-merge
+          # completed), so without this guard we'd call `gh pr merge --auto` on a
+          # closed PR and surface a spurious red ("#N is not open").
+          read -r am state < <(
+            gh pr view "$PR" --repo "$REPO" --json autoMergeRequest,state \
+              -q '"\(.autoMergeRequest) \(.state)"'
+          )
           # gh can exit 0 with empty stdout on transient API/auth degradation;
           # set -e won't catch that. An empty $am must NOT be read as "already
           # enabled" (silent false negative — PR left un-enrolled). Fail loud.
-          if [ -z "$am" ]; then
+          if [ -z "$am" ] || [ -z "$state" ]; then
             echo "::error::gh pr view returned empty output for #$PR — possible auth or API failure; not assuming auto-merge state."
             exit 1
+          fi
+          if [ "$state" != "OPEN" ]; then
+            echo "::notice::PR #$PR is $state (not OPEN) — nothing to enable."
+            exit 0
           fi
           if [ "$am" = "null" ]; then
             gh pr merge "$PR" --repo "$REPO" --auto --squash
