@@ -4,15 +4,27 @@
 # GitHub then merges it once every required gate (review / pytest / meta-tests /
 # gitleaks / require-linked-issue / owner-queue-guard) is green. Owner holds a PR
 # by keeping it a draft or applying status:owner-queue (owner-queue-guard stays red).
+#
+# CRITICAL — why a GitHub App token, not GITHUB_TOKEN (#1005, Bug A of #948):
+#   Auto-merge enabled with the default GITHUB_TOKEN makes GitHub attribute the
+#   eventual squash merge to github-actions[bot]. GitHub's recursion-prevention
+#   then SUPPRESSES native linked-issue auto-close — the PR merges but its
+#   `Closes #N` issue stays open. Proven empirically (9/9 human merges auto-close,
+#   0 bot merges do). Same token rule already documented in merge-train.yml for
+#   update-branch (decision 2ccfa29a). Enabling auto-merge with the 'jarvis-ci'
+#   App installation token makes the merge a real identity, so native auto-close
+#   fires. Precondition: the App needs Issues:Read&write (plus the existing
+#   Contents + Pull requests) for the close to be permitted.
 name: auto-merge-enable
 
 on:
   pull_request:
     types: [opened, ready_for_review]
 
+# The merge is performed with the App token below, not GITHUB_TOKEN, so this
+# job's default token needs no write scope.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   enable:
@@ -20,7 +32,32 @@ jobs:
     if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
+      - name: Assert App credentials present
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_ID}" ] || [ -z "${APP_PRIVATE_KEY}" ]; then
+            echo "::error::auto-merge-enable requires the 'jarvis-ci' GitHub App, but APP_ID and/or APP_PRIVATE_KEY repo secrets are unset."
+            echo "Why: auto-merge enabled with the default GITHUB_TOKEN suppresses native linked-issue auto-close (GitHub recursion prevention), so merged PRs leave their Closes #N issues open. A GitHub App installation token is required (#1005)."
+            echo "Setup (one-time per repo):"
+            echo "  1. Create/extend the 'jarvis-ci' GitHub App with permissions: Contents=Read&write, Pull requests=Read&write, Issues=Read&write."
+            echo "  2. Install the App on this repository."
+            echo "  3. Add repo secrets: APP_ID (the App's numeric id) and APP_PRIVATE_KEY (the .pem private key)."
+            echo "Until then auto-merge cannot be enabled on this repo."
+            exit 1
+          fi
+          echo "App credentials present."
+
+      - name: Mint App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
       - name: Enable squash auto-merge
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: gh pr merge "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --auto --squash
