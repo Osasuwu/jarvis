@@ -12,10 +12,14 @@
 #   `Closes #N` issue stays open. Proven empirically (9/9 human merges auto-close,
 #   0 bot merges do). Same token rule already documented in merge-train.yml for
 #   update-branch (decision 2ccfa29a). Enabling auto-merge with the 'jarvis-ci'
-#   App installation token makes the merge a real (non-github-actions[bot])
-#   identity, so native auto-close fires. The App should also carry Issues:Read&
-#   write alongside Contents + Pull requests — the close is attributed to the
-#   merge actor, and the extra scope avoids any permission edge.
+#   App token makes the merge's `enabledBy` actor the App rather than
+#   github-actions[bot]; empirically that is enough for native auto-close to
+#   fire (9/9 human/App-enabled merges auto-close, 0 github-actions[bot] merges
+#   do). The exact causal chain inside GitHub's platform auto-merge is
+#   undocumented — the App token is the right fix regardless of the precise
+#   mechanism; don't over-generalize the rule from this one observation. The App
+#   should also carry Issues:Read&write alongside Contents + Pull requests so the
+#   close has no permission edge to trip on.
 name: auto-merge-enable
 
 on:
@@ -28,10 +32,13 @@ permissions:
   contents: read
 
 # Rapid draft->ready transitions or event re-deliveries can spawn two parallel
-# runs racing on `gh pr merge --auto` for the same PR. Serialize per-PR.
+# runs racing on `gh pr merge --auto` for the same PR. Queue them per-PR rather
+# than supersede: cancel-in-progress:true could kill a run after the App token
+# was minted but before `gh pr merge`, leaving the PR un-enrolled if no further
+# event arrives. The idempotency check below absorbs duplicate queued runs.
 concurrency:
   group: auto-merge-enable-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   enable:
@@ -69,6 +76,11 @@ jobs:
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Least-privilege: scope the token to THIS repo only, so the added
+          # Issues:write scope never leaks to other repos the App is installed
+          # on (CLAUDE.md: App is shared). Empty on rare event types falls back
+          # to all-installed-repos — no worse than the unscoped default.
+          repositories: ${{ github.event.repository.name }}
 
       - name: Enable squash auto-merge
         env:
@@ -82,6 +94,13 @@ jobs:
           # non-zero ("already enabled"), which the loud Assert step above would
           # make easy to mistake for a credential failure. Check first.
           am=$(gh pr view "$PR" --repo "$REPO" --json autoMergeRequest -q '.autoMergeRequest')
+          # gh can exit 0 with empty stdout on transient API/auth degradation;
+          # set -e won't catch that. An empty $am must NOT be read as "already
+          # enabled" (silent false negative — PR left un-enrolled). Fail loud.
+          if [ -z "$am" ]; then
+            echo "::error::gh pr view returned empty output for #$PR — possible auth or API failure; not assuming auto-merge state."
+            exit 1
+          fi
           if [ "$am" = "null" ]; then
             gh pr merge "$PR" --repo "$REPO" --auto --squash
           else
