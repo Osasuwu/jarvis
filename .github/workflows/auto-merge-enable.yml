@@ -5,21 +5,30 @@
 # gitleaks / require-linked-issue / owner-queue-guard) is green. Owner holds a PR
 # by keeping it a draft or applying status:owner-queue (owner-queue-guard stays red).
 #
-# CRITICAL — why a GitHub App token, not GITHUB_TOKEN (#1005, Bug A of #948):
+# Why a GitHub App token, not GITHUB_TOKEN (#1005, #1012, Bug A of #948):
 #   Auto-merge enabled with the default GITHUB_TOKEN makes GitHub attribute the
-#   eventual squash merge to github-actions[bot]. GitHub's recursion-prevention
-#   then SUPPRESSES native linked-issue auto-close — the PR merges but its
-#   `Closes #N` issue stays open. Proven empirically (9/9 human merges auto-close,
-#   0 bot merges do). Same token rule already documented in merge-train.yml for
-#   update-branch (decision 2ccfa29a). Enabling auto-merge with the 'jarvis-ci'
-#   App token makes the merge's `enabledBy` actor the App rather than
-#   github-actions[bot]; empirically that is enough for native auto-close to
-#   fire (9/9 human/App-enabled merges auto-close, 0 github-actions[bot] merges
-#   do). The exact causal chain inside GitHub's platform auto-merge is
-#   undocumented — the App token is the right fix regardless of the precise
-#   mechanism; don't over-generalize the rule from this one observation. The App
-#   should also carry Issues:Read&write alongside Contents + Pull requests so the
-#   close has no permission edge to trip on.
+#   eventual squash merge to github-actions[bot]. That triggers GitHub's
+#   recursion-prevention, which (a) SUPPRESSES native linked-issue auto-close and
+#   (b) suppresses downstream `pull_request: closed` workflows — so neither the
+#   native close NOR a compensating closed-event workflow fires; the `Closes #N`
+#   issue stays open. Same token rule documented in merge-train.yml for
+#   update-branch (decision 2ccfa29a).
+#
+#   CORRECTION (#1012, decision 1b0cbbcc): minting the 'jarvis-ci' App token does
+#   NOT make native auto-close fire. Falsified live on 2026-06-21 — PR #1006
+#   merged with enabledBy/mergedBy = app/osasuwu-ci, valid `Closes #1005`, setting
+#   ON, closingIssuesReferences=[1005], yet #1005 stayed OPEN (no ClosedEvent 3h
+#   later). A GitHub App is a Bot-type actor, so native auto-close stays
+#   suppressed exactly as for github-actions[bot]. (The earlier "9/9 auto-close"
+#   proof was HUMAN merges only.)
+#
+#   What the App token DOES buy: the App-attributed merge is no longer a
+#   GITHUB_TOKEN merge, so the `pull_request: closed` event is NOT suppressed —
+#   pr-merged.yml fires and closes the linked issues EXPLICITLY (proven: it ran 9s
+#   after #1006 merged). So the close path is App-token merge (here) +
+#   explicit close (pr-merged.yml), not native auto-close. The App still needs
+#   Contents + Pull requests write to enable auto-merge; pr-merged.yml does the
+#   close with its own job-scoped issues:write GITHUB_TOKEN.
 name: auto-merge-enable
 
 on:
