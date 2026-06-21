@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from agents import task_queue
+from agents.pid_sidecar import Sidecar
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,12 @@ class CompletionResult:
     failed_exit: int = 0
 
 
-def poll_completions(port: TaskQueuePort, procs: dict[str, TrackedProc]) -> CompletionResult:
+def poll_completions(
+    port: TaskQueuePort,
+    procs: dict[str, TrackedProc],
+    *,
+    sidecar: Sidecar | None = None,
+) -> CompletionResult:
     """Close ``running`` rows whose process has exited (#921 AC2, Model P).
 
     For each tracked pair: ``poll() is None`` → still running, kept;
@@ -206,6 +212,15 @@ def poll_completions(port: TaskQueuePort, procs: dict[str, TrackedProc]) -> Comp
                 task_id,
             )
         finally:
+            # AC6 (#952) — delete sidecar on terminal transition.
+            if sidecar is not None:
+                try:
+                    sidecar.delete_sidecar_file(task_id)
+                except Exception:  # noqa: BLE001 — sidecar delete is best-effort
+                    logger.exception(
+                        "[task_dispatch] sidecar delete failed for task %s",
+                        task_id,
+                    )
             procs.pop(task_id, None)
     return CompletionResult(done=done, failed_exit=failed_exit)
 
@@ -257,6 +272,7 @@ def kill_runaways(
     max_runtime_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
     now: Callable[[], float] = time.monotonic,
     kill: Callable[[Any], None] = kill_process_tree,
+    sidecar: Sidecar | None = None,
 ) -> int:
     """Tree-kill live processes that exceeded the max runtime (#921 AC6).
 
@@ -297,6 +313,15 @@ def kill_runaways(
                 task_id,
             )
         finally:
+            # AC4 (#952) — delete sidecar when tree-killing orphan.
+            if sidecar is not None:
+                try:
+                    sidecar.delete_sidecar_file(task_id)
+                except Exception:  # noqa: BLE001 — sidecar delete is best-effort
+                    logger.exception(
+                        "[task_dispatch] sidecar delete failed for runaway task %s",
+                        task_id,
+                    )
             procs.pop(task_id, None)
     return killed
 
@@ -342,6 +367,7 @@ def drain_tasks(
     cap: int = DEFAULT_CONCURRENCY_CAP,
     resolve_binary: ResolveBinary = default_resolve_binary,
     read_usage: ReadUsage = default_read_usage,
+    sidecar: Sidecar | None = None,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -469,6 +495,18 @@ def drain_tasks(
         proc = getattr(result, "proc", None)
         if proc is not None:
             procs.append((task_id, proc))
+            # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
+            if sidecar is not None:
+                try:
+                    pid = proc.pid if hasattr(proc, "pid") else proc.pid
+                    create_time = proc.create_time() if hasattr(proc, "create_time") else time.time()
+                    sidecar.record_spawn(task_id, pid, create_time)
+                except Exception:  # noqa: BLE001 — sidecar write is best-effort
+                    logger.exception(
+                        "[task_dispatch] sidecar record_spawn failed for task %s; "
+                        "liveness tracking degraded but task continues",
+                        task_id,
+                    )
 
     return DrainResult(spawned=spawned, failed=failed, procs=tuple(procs))
 
