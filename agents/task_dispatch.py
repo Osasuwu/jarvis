@@ -47,6 +47,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from agents import task_queue
+from agents.pid_sidecar import Sidecar, poll_exit
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +169,12 @@ class CompletionResult:
     failed_exit: int = 0
 
 
-def poll_completions(port: TaskQueuePort, procs: dict[str, TrackedProc]) -> CompletionResult:
+def poll_completions(
+    port: TaskQueuePort,
+    procs: dict[str, TrackedProc],
+    *,
+    sidecar: Sidecar | None = None,
+) -> CompletionResult:
     """Close ``running`` rows whose process has exited (#921 AC2, Model P).
 
     For each tracked pair: ``poll() is None`` → still running, kept;
@@ -189,7 +195,11 @@ def poll_completions(port: TaskQueuePort, procs: dict[str, TrackedProc]) -> Comp
     done = 0
     failed_exit = 0
     for task_id, tracked in list(procs.items()):
-        rc = tracked.proc.poll()
+        # poll_exit handles both handle kinds: a freshly-spawned Popen (real exit
+        # code) and an adopted psutil.Process (no poll()/returncode — exited maps
+        # to a non-zero sentinel → failed, #952). A bare .poll() here would
+        # AttributeError on every adopted handle and wedge the row in running.
+        rc = poll_exit(tracked.proc)
         if rc is None:
             continue
         try:
@@ -206,6 +216,15 @@ def poll_completions(port: TaskQueuePort, procs: dict[str, TrackedProc]) -> Comp
                 task_id,
             )
         finally:
+            # AC6 (#952) — delete sidecar on terminal transition.
+            if sidecar is not None:
+                try:
+                    sidecar.delete_sidecar_file(task_id)
+                except Exception:  # noqa: BLE001 — sidecar delete is best-effort
+                    logger.exception(
+                        "[task_dispatch] sidecar delete failed for task %s",
+                        task_id,
+                    )
             procs.pop(task_id, None)
     return CompletionResult(done=done, failed_exit=failed_exit)
 
@@ -257,6 +276,7 @@ def kill_runaways(
     max_runtime_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
     now: Callable[[], float] = time.monotonic,
     kill: Callable[[Any], None] = kill_process_tree,
+    sidecar: Sidecar | None = None,
 ) -> int:
     """Tree-kill live processes that exceeded the max runtime (#921 AC6).
 
@@ -275,8 +295,8 @@ def kill_runaways(
     """
     killed = 0
     for task_id, tracked in list(procs.items()):
-        if tracked.proc.poll() is not None:
-            continue  # exited — poll_completions closes it with the real rc
+        if poll_exit(tracked.proc) is not None:
+            continue  # exited — poll_completions closes it (real rc or sentinel)
         if now() - tracked.started_at <= max_runtime_seconds:
             continue
         try:
@@ -297,6 +317,15 @@ def kill_runaways(
                 task_id,
             )
         finally:
+            # AC4 (#952) — delete sidecar when tree-killing orphan.
+            if sidecar is not None:
+                try:
+                    sidecar.delete_sidecar_file(task_id)
+                except Exception:  # noqa: BLE001 — sidecar delete is best-effort
+                    logger.exception(
+                        "[task_dispatch] sidecar delete failed for runaway task %s",
+                        task_id,
+                    )
             procs.pop(task_id, None)
     return killed
 
@@ -342,6 +371,7 @@ def drain_tasks(
     cap: int = DEFAULT_CONCURRENCY_CAP,
     resolve_binary: ResolveBinary = default_resolve_binary,
     read_usage: ReadUsage = default_read_usage,
+    sidecar: Sidecar | None = None,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -469,6 +499,22 @@ def drain_tasks(
         proc = getattr(result, "proc", None)
         if proc is not None:
             procs.append((task_id, proc))
+            # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
+            if sidecar is not None:
+                try:
+                    # proc here is always the executor's Popen-shaped handle, which
+                    # has no create_time(); we record wall-clock spawn time as the
+                    # adoption key. adopt_task tolerates ≤1s skew vs the OS-reported
+                    # create_time on restart (#952 AC2/AC3).
+                    pid = proc.pid
+                    create_time = time.time()
+                    sidecar.record_spawn(task_id, pid, create_time)
+                except Exception:  # noqa: BLE001 — sidecar write is best-effort
+                    logger.exception(
+                        "[task_dispatch] sidecar record_spawn failed for task %s; "
+                        "liveness tracking degraded but task continues",
+                        task_id,
+                    )
 
     return DrainResult(spawned=spawned, failed=failed, procs=tuple(procs))
 
