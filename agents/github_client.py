@@ -340,7 +340,11 @@ def check_pr_evidence_rework_shape(
                 if updated_at > spawned_at:
                     return True
             except (ValueError, AttributeError):
-                logger.debug(f"check_pr_evidence_rework_shape: unparseable updated_at for PR #{pr_number}")
+                logger.warning(
+                    "check_pr_evidence_rework_shape: unparseable updated_at for PR #%s; "
+                    "falling through to commit-activity channel",
+                    pr_number,
+                )
 
         # Check if there are new commits since spawned_at. The commit list is
         # the only remaining evidence channel here (updated_at gave no positive

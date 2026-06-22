@@ -663,6 +663,14 @@ def main() -> int:
         )
     except KeyboardInterrupt:
         logger.info("[wake_driver] KeyboardInterrupt — stopping")
+    finally:
+        # Release the pooled HTTP connections on EVERY exit path — normal return,
+        # KeyboardInterrupt, or any exception (e.g. a SIGTERM handler raising).
+        # The driver holds one HttpxGitHubClient for its whole lifetime; without
+        # this the pooled TCP/TLS sockets leak on shutdown, and a supervised
+        # restart loop (the M44 deployment shape) accumulates them across cycles
+        # (MEDIUM, PR #1011 round 3). close() is idempotent.
+        evidence_client.close()
     return 0
 
 

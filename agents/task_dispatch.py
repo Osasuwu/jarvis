@@ -95,7 +95,14 @@ ReadUsage = Callable[[], Any]
 
 # Directory the executor writes per-task stdout JSON to (#953 AC3). Mirrors
 # executor._STDERR_LOG_DIR; kept local so the reader has no executor import.
-_EXECUTOR_LOG_DIR = "logs/executor"
+# Anchored to the repo root (this module lives in ``agents/``) so reader and
+# writer resolve to the SAME absolute dir regardless of the daemon's CWD — a
+# CWD-relative default would silently break the AC3 channel when the wake_driver
+# and executor run from different directories (LOW, PR #1011 round 3 —
+# sibling-anchored with executor._STDERR_LOG_DIR).
+_EXECUTOR_LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "executor"
+)
 
 # An idempotency key carries lineage as ``<lineage_key>:r<attempt>``. A root
 # task (first spawn) has no ``:rN`` suffix and is attempt 1. ``_LINEAGE_SEP`` is
@@ -223,6 +230,11 @@ def _compute_pr_evidence(
     if shape == "empty":
         return None
     if shape == "rework":
+        # parse_goal_shape guarantees a non-None pr_number for the "rework" shape
+        # (it only classifies the goal as rework once it has parsed the PR number
+        # out). The assert narrows int|None → int for the typed call below and
+        # fails loud if that invariant is ever broken upstream (LOW, PR #1011 r3).
+        assert pr_number is not None  # noqa: S101 — invariant guard, not input validation
         return check_pr_evidence_rework_shape(
             task_id, goal, pr_number, spawned_at, client=client
         )

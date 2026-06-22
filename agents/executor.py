@@ -94,10 +94,19 @@ _CLAUDE_DEFAULT_WINDOWS_PATHS: tuple[str, ...] = (
     r"{APPDATA}\npm\claude.exe",
 )
 
-# Default stderr log directory for spawned subprocesses. Per
+# Default stderr/stdout log directory for spawned subprocesses. Per
 # ``fire_and_forget_subprocess_capture_stderr``: fire-and-forget subprocesses
 # MUST capture stderr to a file — DEVNULL hides production failures.
-_STDERR_LOG_DIR = "logs/executor"
+#
+# Anchored to the repo root (this module lives in ``agents/``) rather than left
+# CWD-relative: the AC3 stdout-evidence channel only lines up if THIS writer and
+# the wake_driver reader (``task_dispatch._EXECUTOR_LOG_DIR``) resolve to the
+# SAME absolute directory. A CWD-relative default silently breaks that channel
+# whenever the daemon's working directory differs from the executor's
+# (LOW, PR #1011 round 3 — sibling-anchored with _EXECUTOR_LOG_DIR).
+_STDERR_LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "executor"
+)
 
 
 def _resolve_claude_binary(override: str | None = None) -> str:

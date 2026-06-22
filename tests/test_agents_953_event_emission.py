@@ -792,6 +792,14 @@ class TestParseLineage:
         # a colon that is not a ``:rN`` attempt marker is part of the root.
         assert parse_lineage("task_done:abc123") == ("task_done:abc123", 1)
 
+    def test_colon_root_with_single_attempt_suffix(self) -> None:
+        # a colon-containing root with EXACTLY ONE ``:rN`` suffix: peel only the
+        # outermost ``:r2`` and keep ``task_done:abc123`` intact — the colon in
+        # the root must not be mistaken for an attempt separator (LOW #1011 r3;
+        # the no-suffix and multi-suffix colon-root cases were covered, this
+        # single-depth one was the gap).
+        assert parse_lineage("task_done:abc123:r2") == ("task_done:abc123", 2)
+
     def test_format_lineage_key_round_trips_through_parse(self) -> None:
         """``format_lineage_key`` and ``parse_lineage`` share the separator (MEDIUM #1011).
 
