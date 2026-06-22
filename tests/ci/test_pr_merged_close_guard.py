@@ -169,6 +169,14 @@ def test_workflow_is_cross_repo_aware():
     assert '--repo "$irepo"' in text, (
         "gh issue close must target the ref's own repo ($irepo), not a hardcoded $REPO."
     )
+    # `--repo "$irepo"` appears on both the state read and the close; pin the
+    # STATE read specifically. A regression that reverted only the state read to
+    # $REPO (closing the wrong same-numbered issue's state-check) would slip past
+    # the generic assertion above (#1021 review).
+    assert 'gh issue view "$n" --repo "$irepo"' in text, (
+        "the state read must use the ref's own repo ($irepo), not $REPO — else a "
+        "cross-repo ref's state is read from the wrong repo."
+    )
 
 
 def test_workflow_continues_past_a_single_close_failure():
@@ -183,6 +191,13 @@ def test_workflow_continues_past_a_single_close_failure():
     assert 'if [ "$failed" -ne 0 ]' in text, (
         "the job must fail after the loop when any close failed, so a partial "
         "close still surfaces a red signal."
+    )
+    # The load-bearing mechanism is the `if gh issue close …; then … else
+    # failed=1; fi` wrapper: without the `if` guard, `set -e` aborts the loop on
+    # the FIRST close failure and `failed=1` is never reached (#1021 review).
+    assert "if gh issue close" in text, (
+        "gh issue close must be wrapped in `if … ; then … else failed=1; fi` so "
+        "set -e cannot abort the loop on the first close failure."
     )
 
 

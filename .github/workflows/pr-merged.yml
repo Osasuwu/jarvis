@@ -86,7 +86,13 @@ jobs:
             fi
             state=$(gh issue view "$n" --repo "$irepo" --json state -q .state 2>/dev/null || echo "")
             if [ -z "$state" ]; then
-              echo "::warning::Could not read $irepo#$n state — skipping."
+              # Can't determine state (transient rate-limit / network). Skipping
+              # silently here would leave the issue open under a GREEN job — the
+              # same Bug A failure mode as a close failure (#1021). Record it so
+              # the post-loop check fails the job (red signal -> retry), rather
+              # than a false success that strands the issue open.
+              echo "::error::Could not read $irepo#$n state — leaving for retry (failing job)."
+              failed=1
               continue
             fi
             if [ "$state" = "CLOSED" ]; then
@@ -96,14 +102,25 @@ jobs:
 
             # Reopen guard: respect a deliberate human reopen. If the issue was
             # reopened AFTER this PR merged, leave it open — do not re-close.
-            # If `gh api` fails (rate limit, outage), latest_reopen="" — which is
-            # indistinguishable from "no reopen events", so we fall through and
+            #
+            # `gh api --paginate -q '<jq>'` runs the jq filter ONCE PER PAGE and
+            # streams results — it does NOT concatenate pages first. So an
+            # aggregating expression (`[…] | last`) would emit one line PER PAGE
+            # (the page-local last, or "" for pages with no reopen); on a
+            # multi-page timeline `latest_reopen` would be multi-line / page-local
+            # and the guard would misfire (#1021). Emit one timestamp per reopened
+            # event across all pages, then take the chronologically latest with
+            # `sort | tail -1` (ISO-8601 Z sorts lexicographically = chronologically)
+            # — always a single line or empty.
+            #
+            # If the pipeline fails (rate limit, outage), latest_reopen="" — which
+            # is indistinguishable from "no reopen events", so we fall through and
             # close. Safe default: close > leave-open (#948 is about issues stuck
             # OPEN). Do NOT "fix" the `|| echo ""` away without changing that bias.
             latest_reopen=$(
               gh api "repos/$irepo/issues/$n/timeline" --paginate \
-                -q '[.[] | select(.event=="reopened") | .created_at] | last // ""' \
-                2>/dev/null || echo ""
+                -q '.[] | select(.event=="reopened") | .created_at' \
+                2>/dev/null | sort | tail -1 || echo ""
             )
             if [ -n "$latest_reopen" ] && [[ "$latest_reopen" > "$MERGED_AT" ]]; then
               echo "::notice::$irepo#$n reopened after PR #$PR_NUMBER merged ($MERGED_AT) — leaving open."
