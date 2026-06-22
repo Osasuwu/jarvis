@@ -209,6 +209,49 @@ def test_workflow_has_reopen_guard():
     )
 
 
+def test_workflow_reopen_guard_uses_global_sort_not_page_local_last():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # The reopen guard is the subtlest change in this workflow. `gh api --paginate
+    # -q '<jq>'` evaluates the jq filter ONCE PER PAGE and streams — so an
+    # aggregating jq expression (`[.[] | …] | last`) emits one page-local result
+    # PER PAGE, not the global chronological max. On a multi-page timeline that
+    # picks the wrong "latest reopen" and the guard misfires (#1021). The fix emits
+    # one timestamp per reopened event across all pages, then takes the global max
+    # with `sort | tail -1` (ISO-8601 Z sorts lexicographically = chronologically).
+    # A future revert to `| last` would pass every other test and silently
+    # re-introduce the page-local bug — so pin it here.
+    assert '[.[] | select(.event=="reopened") | .created_at] | last' not in text, (
+        "reopen guard must NOT use jq `| last` over a paginated stream — --paginate "
+        "runs jq per-page, so `last` yields the page-local max, not the global "
+        "chronological max (#1021)."
+    )
+    assert "sort | tail -1" in text, (
+        "reopen guard must collect reopened timestamps across all pages then "
+        "`sort | tail -1` for the global chronological max (#1021)."
+    )
+
+
+def test_workflow_state_read_failure_fails_loud_not_silent():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # An unreadable issue state (transient rate-limit / network) must NOT be a
+    # silent skip — that leaves the issue OPEN under a GREEN job, the same Bug A
+    # failure mode as a close failure. The state-read tolerates the transient error
+    # (`|| echo ""`) and the empty guard routes to failed=1 (red signal -> retry),
+    # rather than a `continue` that strands the issue. Pin both halves so a revert
+    # to a silent skip reds this test (#1021 review).
+    assert (
+        'state=$(gh issue view "$n" --repo "$irepo" --json state -q .state 2>/dev/null || echo "")'
+        in text
+    ), (
+        "state read must tolerate a transient gh error (`|| echo \"\"`) then be "
+        "checked — not abort the loop under set -e nor silently skip."
+    )
+    assert "Could not read" in text, (
+        "the empty-state branch must emit a diagnostic and set failed=1 (fail the "
+        "job for retry), not silently continue and leave the issue open (#1021)."
+    )
+
+
 def test_workflow_needs_issues_write():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "issues: write" in text, "closing issues requires issues: write permission."
