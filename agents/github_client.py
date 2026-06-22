@@ -227,7 +227,13 @@ def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
         logger.debug("parse_executor_stdout: malformed JSON in stdout")
         return None
 
-    # Look for PR URL in common fields
+    # Top-level JSON must be an object — a list/scalar has no fields to scan
+    # and ``data.get`` would AttributeError into the poll loop. Real Claude CLI
+    # output is always an object; anything else degrades to the None sentinel.
+    if not isinstance(data, dict):
+        return None
+
+    # Direct fields first — for structured / hand-written agent payloads.
     for field in ("pr_url", "pull_request_url", "url"):
         url = data.get(field)
         if url and isinstance(url, str):
@@ -235,6 +241,17 @@ def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
             match = re.search(r"/pull/(\d+)", url)
             if match:
                 return {"number": int(match.group(1))}
+
+    # ``claude --output-format json`` envelope (the shape ``spawn()`` actually
+    # produces when a task_id is set): the agent's free-text answer — including
+    # any PR URL — lives in the ``result`` string, not a top-level field. Scan
+    # it for a /pull/<n> link. Without this the AC3 secondary channel is dead in
+    # production while flat-JSON fixtures keep CI green (MAJOR, PR #1011).
+    result_text = data.get("result")
+    if isinstance(result_text, str):
+        match = re.search(r"/pull/(\d+)", result_text)
+        if match:
+            return {"number": int(match.group(1))}
 
     return None
 

@@ -293,6 +293,7 @@ def tick(
                 now=task_clock,
                 kill=task_kill,
                 sidecar=task_sidecar,
+                event_emit=task_event_emit,
             )
         except Exception:  # noqa: BLE001 — same isolation for the runaway killer
             logger.exception("[wake_driver] runaway kill failed; live rows retry next tick")

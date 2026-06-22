@@ -422,6 +422,41 @@ class TestExecutorStdoutParsing:
         pr_info = parse_executor_stdout("garbage data")
         assert pr_info is None
 
+    def test_parse_executor_stdout_claude_cli_envelope(self) -> None:
+        """Real ``claude --output-format json`` envelope — the PR URL lives in
+        the ``result`` text field, not a top-level key (MAJOR, PR #1011 round-4).
+
+        ``spawn()`` adds ``--output-format json`` when a ``task_id`` is set; the
+        CLI then emits ``{"type":"result","result":"<agent text>", ...}`` and the
+        agent's PR URL is *inside* that text. Scanning only top-level
+        ``pr_url``/``pull_request_url``/``url`` made the AC3 secondary channel
+        dead in production while flat-JSON fixtures kept CI green.
+        """
+        envelope = {
+            "type": "result",
+            "subtype": "success",
+            "result": "Done. Opened PR #888 at https://github.com/Osasuwu/jarvis/pull/888",
+            "session_id": "abc",
+            "usage": {"input_tokens": 10},
+        }
+        pr_info = parse_executor_stdout(json.dumps(envelope))
+        assert pr_info is not None
+        assert pr_info["number"] == 888
+
+    def test_parse_executor_stdout_envelope_without_pull_link(self) -> None:
+        """A result envelope whose text has no /pull/ link yields no PR number."""
+        envelope = {"type": "result", "result": "Could not open a PR; tests failed."}
+        assert parse_executor_stdout(json.dumps(envelope)) is None
+
+    def test_parse_executor_stdout_non_dict_json(self) -> None:
+        """Top-level JSON that is not an object (list/scalar) → None, no crash.
+
+        ``data.get(...)`` would ``AttributeError`` on a list; the guard degrades
+        to the best-effort ``None`` instead of raising into the poll loop.
+        """
+        assert parse_executor_stdout("[1, 2, 3]") is None
+        assert parse_executor_stdout("42") is None
+
 
 class TestStdoutReaderPathSafety:
     """``default_stdout_reader`` must not let a crafted task_id escape the log dir (LOW #1011)."""

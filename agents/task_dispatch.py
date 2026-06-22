@@ -576,6 +576,7 @@ def kill_runaways(
     now: Callable[[], float] = time.monotonic,
     kill: Callable[[Any], None] = kill_process_tree,
     sidecar: Sidecar | None = None,
+    event_emit: EventEmit | None = None,
 ) -> int:
     """Tree-kill live processes that exceeded the max runtime (#921 AC6).
 
@@ -591,6 +592,16 @@ def kill_runaways(
     raising keeps the entry (the process may still be alive; failing the row
     would lie — retried next tick); a *transition* raising after a successful
     kill drops the entry to the reaper backstop, like ``poll_completions``.
+
+    AC1 (#953): a runaway-reaped task is the worst-case stuck class the
+    reconciliation exists to catch, so — like :func:`poll_completions` — it
+    emits ``task_failed`` (``exit_confirmed=True``, ``pr_evidence=None``,
+    ``failure_reason="killed: exceeded max runtime"``) when ``event_emit`` is
+    wired, so the orchestrator can re-drive or escalate. Without the emit the
+    killed task vanishes silently (MAJOR, PR #1011). The emit is DECOUPLED from
+    the transition (its own try/except): an emit blowup must not strand the kill
+    in ``running`` — a dropped event self-heals on re-observation via the
+    ``dedup_key``. With no ``event_emit`` the #921 behavior is unchanged.
     """
     killed = 0
     for task_id, tracked in list(procs.items()):
@@ -606,6 +617,35 @@ def kill_runaways(
                 task_id,
             )
             continue
+        # AC1 (#953) — emit task_failed BEFORE the transition (event-first), and
+        # DECOUPLED from it: a runaway is the worst-case stuck class, so the
+        # orchestrator must hear about it even if the transition later fails. The
+        # emit's own try/except keeps an emit blowup (Supabase down) from
+        # stranding the kill in ``running`` — a dropped event self-heals on
+        # re-observation via the dedup_key.
+        lineage_key, attempt = parse_lineage(tracked.idempotency_key)
+        if event_emit:
+            try:
+                event_emit(
+                    "task_failed",
+                    _severity_for("task_failed", None),
+                    {
+                        "task_id": task_id,
+                        "lineage_key": lineage_key,
+                        "attempt": attempt,
+                        "exit_confirmed": True,
+                        "pr_evidence": None,
+                        "failure_reason": "killed: exceeded max runtime",
+                        "goal": tracked.goal,
+                    },
+                    dedup_key=f"task_failed:{task_id}:a{attempt}",
+                )
+            except Exception:  # noqa: BLE001 — emit failure must not block transition
+                logger.exception(
+                    "[task_dispatch] runaway task %s event emit failed; "
+                    "proceeding with transition (event self-heals on re-observation)",
+                    task_id,
+                )
         try:
             port.transition(task_id, "failed", reason="killed: exceeded max runtime")
             killed += 1

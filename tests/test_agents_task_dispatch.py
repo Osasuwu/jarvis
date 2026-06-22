@@ -1034,6 +1034,85 @@ class TestKillRunaways:
         assert kills == []
         assert "t0" in procs
 
+    def test_runaway_kill_emits_task_failed(self) -> None:
+        # AC1 (#953): a runaway-reaped task is the worst-case stuck class the
+        # reconciliation exists to catch — it MUST emit task_failed so the
+        # orchestrator can re-drive/escalate. poll_completions emits at its
+        # terminal boundary but kill_runaways did not (MAJOR, PR #1011 round-4).
+        q = FakeTaskQueue()
+        emitted: list[dict[str, Any]] = []
+
+        def emit(
+            event_type: str, severity: str, payload: dict[str, Any], *, dedup_key: str | None = None
+        ) -> None:
+            emitted.append(
+                {
+                    "event_type": event_type,
+                    "severity": severity,
+                    "payload": payload,
+                    "dedup_key": dedup_key,
+                }
+            )
+
+        procs = {
+            "t0": TrackedProc(
+                _FakeProc(rc=None),
+                started_at=0.0,
+                goal="implement #5",
+                idempotency_key="task_done:lin5:r2",
+            )
+        }
+        n = kill_runaways(
+            q,
+            procs,
+            max_runtime_seconds=100,
+            now=lambda: 200.0,
+            kill=lambda _p: None,
+            event_emit=emit,
+        )
+        assert n == 1
+        assert len(emitted) == 1
+        ev = emitted[0]
+        assert ev["event_type"] == "task_failed"
+        assert ev["payload"]["exit_confirmed"] is True
+        assert ev["payload"]["pr_evidence"] is None
+        assert "killed" in ev["payload"]["failure_reason"]
+        # lineage/attempt parsed from the idempotency key (re-drive keying).
+        assert ev["payload"]["lineage_key"] == "task_done:lin5"
+        assert ev["payload"]["attempt"] == 2
+        assert ev["dedup_key"] == "task_failed:t0:a2"
+
+    def test_runaway_kill_emit_failure_does_not_block_transition(self) -> None:
+        # Decoupled emit (MAJOR, PR #1011): a raising event_emit must NOT stop
+        # the FSM transition — else the killed row wedges in `running` until the
+        # 6h reaper, exactly the stall poll_completions' decoupling avoids.
+        q = FakeTaskQueue()
+
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("supabase down")
+
+        procs = {"t0": TrackedProc(_FakeProc(rc=None), started_at=0.0)}
+        n = kill_runaways(
+            q,
+            procs,
+            max_runtime_seconds=100,
+            now=lambda: 200.0,
+            kill=lambda _p: None,
+            event_emit=boom,
+        )
+        assert n == 1
+        assert {t[0] for t in q.transitions if t[1] == "failed"} == {"t0"}
+        assert procs == {}
+
+    def test_runaway_kill_no_emit_when_emitter_absent(self) -> None:
+        # With no event_emit wired the #921 behavior is unchanged: kill + fail,
+        # no events (the dispatch loop runs eventless until wake_driver wires it).
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_FakeProc(rc=None), started_at=0.0)}
+        n = kill_runaways(q, procs, max_runtime_seconds=100, now=lambda: 200.0, kill=lambda _p: None)
+        assert n == 1
+        assert procs == {}
+
     def test_kill_raise_isolated_keeps_entry(self) -> None:
         # A failed kill leaves a possibly-alive process — do NOT fail the row
         # (that would lie); keep the entry and retry next tick.
