@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -63,6 +64,7 @@ from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
+    EventEmit,
     ReadUsage,
     ResolveBinary,
     Spawn,
@@ -72,6 +74,7 @@ from agents.task_dispatch import (
     default_read_usage,
     default_resolve_binary,
     default_spawn,
+    default_stdout_reader,
     drain_tasks,
     kill_process_tree,
     kill_runaways,
@@ -219,6 +222,9 @@ def tick(
     task_clock: Callable[[], float] = time.monotonic,
     task_kill: Callable[[Any], None] = kill_process_tree,
     task_sidecar: Sidecar | None = None,
+    task_event_emit: EventEmit | None = None,
+    task_evidence_client: Any | None = None,
+    task_stdout_reader: Callable[[str], str | None] | None = None,
 ) -> TickResult:
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
 
@@ -268,7 +274,14 @@ def tick(
     runaways_killed = 0
     if task_port is not None and task_procs is not None:
         try:
-            completions = poll_completions(task_port, task_procs, sidecar=task_sidecar)
+            completions = poll_completions(
+                task_port,
+                task_procs,
+                sidecar=task_sidecar,
+                event_emit=task_event_emit,
+                evidence_client=task_evidence_client,
+                stdout_reader=task_stdout_reader,
+            )
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
         try:
@@ -339,7 +352,19 @@ def tick(
             )
             if task_procs is not None:
                 for task_id, proc in task_drain.procs:
-                    task_procs[task_id] = TrackedProc(proc=proc, started_at=started)
+                    # Enrich with the spawn metadata (#953): goal +
+                    # idempotency_key + tz-aware spawned_at are what the next
+                    # tick's completion poll needs to compute PR evidence and
+                    # emit a terminal event. Adopted-after-restart procs carry no
+                    # meta → empty goal → null evidence → escalate (documented).
+                    meta = task_drain.spawned_meta.get(task_id, {})
+                    task_procs[task_id] = TrackedProc(
+                        proc=proc,
+                        started_at=started,
+                        goal=meta.get("goal", ""),
+                        idempotency_key=meta.get("idempotency_key", ""),
+                        spawned_at=meta.get("spawned_at"),
+                    )
         except Exception:  # noqa: BLE001 — task-store outage must not crash the tick
             logger.exception(
                 "[wake_driver] task drain failed; pending tasks left for the next tick"
@@ -374,6 +399,9 @@ def run(
     task_procs: dict[str, TrackedProc] | None = None,
     task_clock: Callable[[], float] = time.monotonic,
     task_kill: Callable[[Any], None] = kill_process_tree,
+    task_event_emit: EventEmit | None = None,
+    task_evidence_client: Any | None = None,
+    task_stdout_reader: Callable[[str], str | None] | None = None,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -435,6 +463,9 @@ def run(
                 task_clock=task_clock,
                 task_kill=task_kill,
                 task_sidecar=sidecar,
+                task_event_emit=task_event_emit,
+                task_evidence_client=task_evidence_client,
+                task_stdout_reader=task_stdout_reader,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
@@ -505,6 +536,42 @@ def _build_psycopg_queue() -> PsycopgEventQueue:
     return PsycopgEventQueue(conn)
 
 
+def _default_event_emit(*, repo: str, client: Any | None = None) -> EventEmit:
+    """Build the production terminal-event emitter (#953 AC1).
+
+    Returns an ``emit(event_type, severity, payload, *, dedup_key=None)``
+    closure that inserts into the ``events`` FSM table via
+    :func:`agents.supabase_client.store_event` — the same inbox the driver
+    drains, so a re-driven task is born from a real, dedup-keyed row. The
+    title is derived from the payload's ``task_id`` for at-a-glance triage;
+    everything else (lineage_key, attempt, pr_evidence, goal) rides in the
+    ``payload``. ``store_event`` is imported lazily so a missing Supabase
+    config doesn't break ``import wake_driver`` for the event-only path.
+    """
+
+    def emit(
+        event_type: str,
+        severity: str,
+        payload: dict[str, Any],
+        *,
+        dedup_key: str | None = None,
+    ) -> Any:
+        from agents.supabase_client import store_event
+
+        task_id = payload.get("task_id", "?")
+        return store_event(
+            event_type=event_type,
+            repo=repo,
+            title=f"{event_type}: task {task_id}",
+            severity=severity,
+            payload=payload,
+            dedup_key=dedup_key,
+            client=client,
+        )
+
+    return emit
+
+
 def main() -> int:
     load_dotenv()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -527,6 +594,18 @@ def main() -> int:
 
     queue = _build_psycopg_queue()
     task_port = SupabaseTaskQueue()  # tasks ride supabase-py; events ride psycopg
+
+    # #953 — evidence + terminal-event emission wiring. The repo scopes both the
+    # GitHub evidence client (PR lookups) and the emitted events; the stdout
+    # reader recovers a claimed PR number from the executor's JSON log when the
+    # fresh-shape branch lookup comes up empty (AC3). The orchestrator stays the
+    # out-of-scope stub — #953 is detection + emission, not live routing.
+    from agents.github_client import default_github_client
+
+    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
+    evidence_client = default_github_client()
+    event_emit = _default_event_emit(repo=repo)
+
     if args.once:
         # Deliberately no task_procs: a one-shot tick has no map from a prior
         # tick to poll, so completion-poll/runaway-kill are skipped and the
@@ -562,6 +641,9 @@ def main() -> int:
             default_orchestrator,
             stale_after_seconds=args.watchdog_seconds,
             task_port=task_port,
+            task_event_emit=event_emit,
+            task_evidence_client=evidence_client,
+            task_stdout_reader=default_stdout_reader,
         )
     except KeyboardInterrupt:
         logger.info("[wake_driver] KeyboardInterrupt — stopping")

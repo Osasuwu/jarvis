@@ -402,7 +402,7 @@ def test_tick_runs_the_four_steps_in_order():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
     )
@@ -442,7 +442,7 @@ def test_tick_reports_task_counts():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
     )
@@ -560,7 +560,7 @@ def test_run_forwards_task_spawn_and_resolver_to_tick():
         wake_driver.default_orchestrator,
         should_continue=should_continue,
         task_port=tq,
-        task_spawn=lambda goal: spawned.append(goal),
+        task_spawn=lambda goal, **_: spawned.append(goal),
         task_resolve_binary=fake_resolve,
         task_read_usage=_healthy_usage,
     )
@@ -633,7 +633,7 @@ def test_tick_completion_poll_runs_before_watchdogs_and_drains():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -662,7 +662,7 @@ def test_tick_reports_completion_counts_and_drops_closed_entries():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -745,7 +745,7 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -768,7 +768,7 @@ def test_tick_stamps_the_clock_before_spawning():
         order.append("clock")
         return 0.0
 
-    def spawn(goal: str) -> _SpawnHandle:
+    def spawn(goal: str, **_: object) -> _SpawnHandle:
         order.append("spawn")
         return _SpawnHandle(_TickProc(rc=None))
 
@@ -899,7 +899,7 @@ def test_run_retains_the_tracking_map_across_ticks():
         wake_driver.default_orchestrator,
         should_continue=should_continue,
         task_port=tq,
-        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -931,7 +931,7 @@ def test_run_creates_and_retains_a_map_when_not_injected():
         wake_driver.default_orchestrator,
         should_continue=should_continue,
         task_port=tq,
-        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_clock=lambda: 0.0,

@@ -25,6 +25,13 @@ from datetime import datetime
 from typing import Any, Callable, Mapping
 
 from agents import safety, task_queue
+from agents.github_client import parse_goal_shape
+
+# Re-drive ceiling (#953 AC7). A task that produced no PR evidence is re-driven
+# at most once; ``attempt >= MAX_ATTEMPTS`` escalates to the owner instead of
+# looping. ``attempt`` is carried on the event payload (1 for the first spawn),
+# so the ceiling is enforced from data, not from a counter the router holds.
+MAX_ATTEMPTS = 2
 
 # Severity ordering — strictly monotonic so priority never ties across tiers.
 _SEVERITY_RANK: dict[str, int] = {
@@ -147,6 +154,59 @@ def _inline_noop(event_type: str, severity: str, target: str, key: str) -> Decis
     )
 
 
+def _redrive_goal(original_goal: str, root_task_id: str, next_attempt: int) -> str:
+    """Build the goal for a re-drive (#953 AC7).
+
+    The shape of the *original* goal decides augmentation:
+
+    - **rework** (``/rework #N``) — the PR already exists; the re-drive just
+      re-runs the rework on the same PR. No branch directive (it would be wrong:
+      the rework's evidence is *new activity on PR #N*, not a fresh branch).
+    - **fresh** — the re-drive embeds ``(branch=task/<root_task_id>)`` so the new
+      attempt opens its PR on the *root* task's branch, which is also where the
+      terminal-boundary evidence check looks. The re-driven task's own
+      ``task/<new_id>`` branch is never created, so without this pin the next
+      evidence check would look at the wrong (non-existent) branch.
+    """
+    shape, pr_number = parse_goal_shape(original_goal)
+    if shape == "rework" and pr_number is not None:
+        return f"Re-drive (attempt {next_attempt}): /rework #{pr_number}"
+    base = f"Re-drive (attempt {next_attempt}): {original_goal}".rstrip()
+    if "(branch=" not in base and root_task_id:
+        base = f"{base}\n\n(branch=task/{root_task_id})"
+    return base
+
+
+def _redrive(
+    event_type: str,
+    severity: str,
+    target: str,
+    payload: Mapping[str, Any],
+    attempt: int,
+) -> Decision:
+    """Emit a re-drive task with the AC7 lineage idempotency key.
+
+    The key is ``<lineage_key>:r<next_attempt>`` — NOT the event's content hash —
+    so a re-driven attempt is idempotent on the *lineage*, and a duplicate
+    re-observation of the same terminal event collapses onto the same task row
+    (the ``task_queue`` unique index absorbs it). ``lineage_key`` falls back to
+    the target then the task id when the payload omits it (older emitters)."""
+    next_attempt = attempt + 1
+    lineage_key = str(payload.get("lineage_key") or target or payload.get("task_id") or "")
+    root_task_id = str(payload.get("task_id") or target or "")
+    goal = _redrive_goal(str(payload.get("goal", "") or ""), root_task_id, next_attempt)
+    return Decision(
+        route=Route.EMIT_TASK,
+        event_type=event_type,
+        severity=severity,
+        target=target,
+        idempotency_key=f"{lineage_key}:r{next_attempt}",
+        priority=priority_for(severity),
+        goal=goal,
+        assignee=_ASSIGNEE_WORKER,
+    )
+
+
 def handle_event(event: Mapping[str, Any]) -> Decision:
     """Route one ``events`` row to a :class:`Decision`. Pure, no side effects.
 
@@ -217,13 +277,12 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         # task_done + pr_evidence=true → inline no-op (PR exists, done).
         if pr_evidence is True:
             return _inline_noop(event_type, severity, target, key)
-        # task_done + pr_evidence=false/null + attempt < 2 → re-drive (EMIT_TASK).
-        attempt = payload.get("attempt", 1)
-        if pr_evidence is False and attempt < 2:
-            goal = f"Re-drive task {target or payload.get('task_id', '?')} (attempt {attempt + 1})"
-            return _emit(event_type, severity, target, key, goal=goal)
-        # task_done + pr_evidence=false/null + attempt >= 2 → escalate (no more re-drives).
-        if pr_evidence is False and attempt >= 2:
+        # task_done + pr_evidence=false + attempt < MAX_ATTEMPTS → re-drive (AC7).
+        attempt = int(payload.get("attempt", 1) or 1)
+        if pr_evidence is False and attempt < MAX_ATTEMPTS:
+            return _redrive(event_type, severity, target, payload, attempt)
+        # task_done + pr_evidence=false + attempt >= MAX_ATTEMPTS → escalate (no more re-drives).
+        if pr_evidence is False and attempt >= MAX_ATTEMPTS:
             return _escalate(
                 event_type,
                 severity,
@@ -244,7 +303,7 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
     if event_type == "task_failed":
         pr_evidence = payload.get("pr_evidence")
         exit_confirmed = payload.get("exit_confirmed", False)
-        attempt = payload.get("attempt", 1)
+        attempt = int(payload.get("attempt", 1) or 1)
         failure_reason = payload.get("failure_reason", "unknown")
 
         # task_failed + pr_evidence=true → inline no-op (work landed).
@@ -271,13 +330,12 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
                 reason="task_failed with unparseable goal (pr_evidence=null)",
             )
 
-        # task_failed + exit_confirmed=true + pr_evidence=false + attempt < 2 → re-drive.
-        if pr_evidence is False and attempt < 2:
-            goal = f"Re-drive task {target or payload.get('task_id', '?')} (attempt {attempt + 1})"
-            return _emit(event_type, severity, target, key, goal=goal)
+        # task_failed + exit_confirmed=true + pr_evidence=false + attempt < MAX_ATTEMPTS → re-drive.
+        if pr_evidence is False and attempt < MAX_ATTEMPTS:
+            return _redrive(event_type, severity, target, payload, attempt)
 
-        # task_failed + exit_confirmed=true + pr_evidence=false + attempt >= 2 → escalate.
-        if pr_evidence is False and attempt >= 2:
+        # task_failed + exit_confirmed=true + pr_evidence=false + attempt >= MAX_ATTEMPTS → escalate.
+        if pr_evidence is False and attempt >= MAX_ATTEMPTS:
             return _escalate(
                 event_type,
                 severity,

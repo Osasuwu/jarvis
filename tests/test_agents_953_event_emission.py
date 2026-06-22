@@ -21,15 +21,17 @@ from unittest import mock
 
 import pytest
 
-from agents import task_queue
 from agents.github_client import (
     check_pr_evidence_fresh_shape,
     check_pr_evidence_rework_shape,
     parse_executor_stdout,
 )
 from agents.orchestrator import Route, handle_event
-from agents.task_dispatch import TaskQueuePort
-from agents.wake_driver import TickResult
+from agents.task_dispatch import (
+    TrackedProc,
+    _augment_branch_directive,
+    poll_completions,
+)
 
 
 # =============================================================================
@@ -62,6 +64,60 @@ class FakeEventQueue:
         }
         self.emitted.append(row)
         return row
+
+
+class _FakeProc:
+    """A process handle whose ``poll()`` reports a fixed exit code (exited)."""
+
+    def __init__(self, rc: int) -> None:
+        self._rc = rc
+
+    def poll(self) -> int:
+        return self._rc
+
+
+class _RecordingPort:
+    """Minimal task-queue port stand-in that records transition order.
+
+    ``poll_completions`` only ever calls ``transition`` on the port; the other
+    Protocol methods are unused here, so they raise to catch accidental use.
+    """
+
+    def __init__(self, order_log: list[tuple[str, ...]]) -> None:
+        self._order = order_log
+        self.transitions: list[tuple[str, str, str | None]] = []
+
+    def transition(
+        self, task_id: str, to_status: str, *, reason: str | None = None
+    ) -> dict[str, Any]:
+        self._order.append(("transition", task_id, to_status))
+        self.transitions.append((task_id, to_status, reason))
+        return {"id": task_id, "status": to_status}
+
+
+def _recording_emit(
+    order_log: list[tuple[str, ...]], sink: list[dict[str, Any]]
+) -> Any:
+    """Build an ``event_emit`` callback that records emit order and payloads."""
+
+    def emit(
+        event_type: str,
+        severity: str,
+        payload: dict[str, Any],
+        *,
+        dedup_key: str | None = None,
+    ) -> dict[str, Any]:
+        order_log.append(("event", event_type, dedup_key))
+        row = {
+            "event_type": event_type,
+            "severity": severity,
+            "payload": payload,
+            "dedup_key": dedup_key,
+        }
+        sink.append(row)
+        return row
+
+    return emit
 
 
 # =============================================================================
@@ -344,17 +400,45 @@ class TestRedriveIdempotency:
     """Test re-drive key structure and idempotency collision handling."""
 
     def test_redrive_key_structure(self) -> None:
-        """Re-drive key format: <root_key>:r<attempt>."""
-        # First attempt: t123:r1
-        # Second attempt (re-drive): t123:r2
-        # The attempt number is parsed from the suffix
-        root_key = "t123"
-        attempt_1_key = f"{root_key}:r1"
-        attempt_2_key = f"{root_key}:r2"
+        """Re-drive Decision carries idempotency key ``<lineage_key>:r<next_attempt>``.
 
-        # Parse attempt from key
-        assert int(attempt_1_key.split(":r")[-1]) == 1
-        assert int(attempt_2_key.split(":r")[-1]) == 2
+        Drives the real ``handle_event`` re-drive branch (task_done + no PR
+        evidence + attempt < MAX_ATTEMPTS) and asserts on the product key, not a
+        re-derived string. ``lineage_key`` on the payload is what the key keys
+        off — incrementing the attempt by one each re-drive.
+        """
+        event = {
+            "event_type": "task_done",
+            "severity": "medium",
+            "payload": {
+                "task_id": "t123",
+                "lineage_key": "t123",
+                "attempt": 1,
+                "pr_evidence": False,
+                "goal": "implement feature",
+            },
+        }
+        decision = handle_event(event)
+        assert decision.route == Route.EMIT_TASK
+        # attempt 1 → next attempt 2 → key suffix :r2
+        assert decision.idempotency_key == "t123:r2"
+
+    def test_redrive_key_falls_back_to_task_id_without_lineage_key(self) -> None:
+        """Older emitters omit ``lineage_key`` → re-drive keys off ``task_id``."""
+        event = {
+            "event_type": "task_failed",
+            "severity": "medium",
+            "payload": {
+                "task_id": "t999",
+                "attempt": 1,
+                "exit_confirmed": True,
+                "pr_evidence": False,
+                "goal": "implement feature",
+            },
+        }
+        decision = handle_event(event)
+        assert decision.route == Route.EMIT_TASK
+        assert decision.idempotency_key == "t999:r2"
 
     def test_max_attempts_exhausted(self) -> None:
         """Attempt ≥ 2 (MAX_ATTEMPTS=2) and pr_evidence=false → escalate, no re-drive."""
@@ -382,33 +466,76 @@ class TestEventEmission:
     """Test event-first emission with dedup on re-observation."""
 
     def test_event_emitted_before_transition(self) -> None:
-        """Events table gets new row before task_queue transitions occur.
+        """``poll_completions`` emits the terminal event BEFORE the FSM transition.
 
-        This is implicit in the architecture but critical: if a crash occurs
-        between event emit and task transition, re-observation sees the event
-        again and dedup_key prevents double-processing.
+        Event-first ordering is the crash-safety contract: if the driver dies in
+        the window, re-observation re-emits and the ``dedup_key`` absorbs the
+        duplicate. Verified on a real ``poll_completions`` call by recording the
+        interleaving of emit vs transition into one ordered log.
         """
-        # The test here is structural: the wake_driver polls completions,
-        # which should emit events BEFORE updating task_queue rows.
-        # This is verified in the integration tests (test_agents_smoke.py).
-        pass
+        order: list[tuple[str, ...]] = []
+        emitted: list[dict[str, Any]] = []
+        port = _RecordingPort(order)
+        procs = {
+            "t123": TrackedProc(
+                proc=_FakeProc(0),
+                started_at=0.0,
+                goal="implement feature X",
+                idempotency_key="t123",
+                spawned_at=datetime.now(UTC),
+            )
+        }
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = {"id": 1, "number": 42}
+
+        result = poll_completions(
+            port,
+            procs,
+            event_emit=_recording_emit(order, emitted),
+            evidence_client=client,
+        )
+
+        assert result.done == 1
+        # exactly one event then one transition, event first
+        assert order == [
+            ("event", "task_done", "task_done:t123:a1"),
+            ("transition", "t123", "done"),
+        ]
 
     def test_dedup_key_collision_idempotent(self) -> None:
-        """Re-delivery of the same event (same dedup_key) is a no-op."""
-        # dedup_key = hash(task_id, attempt, event_type)
-        # If emit again with same key, the DB unique constraint absorbs it.
+        """Re-observation of the same terminal task emits an identical dedup_key.
 
-        event1 = {
-            "task_id": "t123",
-            "attempt": 1,
-            "event_type": "task_done",
-            "pr_evidence": False,
-        }
-        # Same dedup_key on re-observation
-        dedup_key_1 = f"task_done_t123_1_False"
-        dedup_key_1_again = f"task_done_t123_1_False"
+        The key is ``<event_type>:<task_id>:a<attempt>`` — derived from the
+        task's identity and attempt, not from observation time — so two
+        independent ``poll_completions`` passes over the same exited task produce
+        byte-identical keys. The DB unique index then collapses the duplicate.
+        """
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = None  # no PR → pr_evidence False
 
-        assert dedup_key_1 == dedup_key_1_again
+        def observe() -> str | None:
+            emitted: list[dict[str, Any]] = []
+            procs = {
+                "t123": TrackedProc(
+                    proc=_FakeProc(0),
+                    started_at=0.0,
+                    goal="implement feature X",
+                    idempotency_key="t123",  # root → attempt 1
+                    spawned_at=datetime.now(UTC),
+                )
+            }
+            poll_completions(
+                _RecordingPort([]),
+                procs,
+                event_emit=_recording_emit([], emitted),
+                evidence_client=client,
+            )
+            return emitted[0]["dedup_key"]
+
+        first = observe()
+        second = observe()
+        assert first == "task_done:t123:a1"
+        assert first == second
 
 
 # =============================================================================
@@ -420,23 +547,21 @@ class TestBranchContract:
     """Test branch directive in goal for fresh-shape tasks."""
 
     def test_fresh_shape_augmented_goal_convention(self) -> None:
-        """Fresh-shape goal lacking explicit directive gets augmented with task/<task_id> convention."""
-        # The goal before augmentation: "implement feature X"
-        # After augmentation: "implement feature X\n[branch] create your working branch as `task/abc123`"
-        original_goal = "implement feature X"
-        task_id = "abc123"
-        # Simulate augmentation
-        augmented = f"{original_goal}\n[branch] create your working branch as `task/{task_id}`"
+        """Real ``_augment_branch_directive`` pins a fresh-shape goal to ``task/<task_id>``."""
+        augmented = _augment_branch_directive("implement feature X", "abc123")
+        assert augmented != "implement feature X"  # it WAS augmented
+        assert "(branch=task/abc123)" in augmented
 
-        # Verify the convention is present
-        assert f"task/{task_id}" in augmented
+    def test_fresh_shape_with_explicit_branch_not_re_augmented(self) -> None:
+        """A goal already naming a branch is left exactly as the author wrote it (AC5)."""
+        goal = "implement feature X (branch=feature-xyz)"
+        assert _augment_branch_directive(goal, "abc123") == goal
 
     def test_rework_shape_no_augmentation(self) -> None:
-        """Rework-shape goal (e.g., '/rework #42') is never augmented with branch directive."""
-        original_goal = "/rework #42"
-        # Rework never gets augmented — the PR already has a branch
-        # No directive added
-        assert "[branch]" not in original_goal
+        """Real ``_augment_branch_directive`` never touches a rework-shape goal (AC5)."""
+        goal = "/rework #42"
+        # Rework targets an existing PR's branch — augmenting it would be wrong.
+        assert _augment_branch_directive(goal, "abc123") == goal
 
 
 # =============================================================================
@@ -448,10 +573,73 @@ class TestEventEmissionInTick:
     """Integration test: events are emitted during completion polling in tick()."""
 
     def test_completion_poll_emits_task_done_event(self) -> None:
-        """When a task exits 0, poll_completions emits task_done event before transition."""
-        # This will be tested in test_agents_smoke.py with real orchestrator
-        # Here we just verify the interface is available
-        pass
+        """A clean exit emits ``task_done`` carrying the COMPUTED pr_evidence.
+
+        Full integration through real ``poll_completions``: a fresh-shape goal
+        whose injected evidence client finds the PR yields ``pr_evidence=True``
+        (computed at the boundary, not handed in), plus the lineage/attempt
+        parsed from the idempotency key and the AC1 dedup_key.
+        """
+        emitted: list[dict[str, Any]] = []
+        procs = {
+            "abc123": TrackedProc(
+                proc=_FakeProc(0),
+                started_at=0.0,
+                goal="implement feature X",
+                idempotency_key="abc123:r2",  # lineage abc123, attempt 2
+                spawned_at=datetime.now(UTC),
+            )
+        }
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = {"id": 1, "number": 7}
+
+        result = poll_completions(
+            _RecordingPort([]),
+            procs,
+            event_emit=_recording_emit([], emitted),
+            evidence_client=client,
+        )
+
+        assert result.done == 1
+        assert len(emitted) == 1
+        event = emitted[0]
+        assert event["event_type"] == "task_done"
+        # PR evidence was COMPUTED from the injected client, not passed in.
+        assert event["payload"]["pr_evidence"] is True
+        assert event["payload"]["lineage_key"] == "abc123"
+        assert event["payload"]["attempt"] == 2
+        assert event["dedup_key"] == "task_done:abc123:a2"
+        # The evidence check used the task/<task_id> convention branch.
+        client.get_pull_by_head_branch.assert_called_with("task/abc123")
+
+    def test_completion_poll_emits_task_failed_on_nonzero_exit(self) -> None:
+        """A non-zero exit emits ``task_failed`` with exit_confirmed + exit_code."""
+        emitted: list[dict[str, Any]] = []
+        procs = {
+            "abc123": TrackedProc(
+                proc=_FakeProc(1),
+                started_at=0.0,
+                goal="implement feature X",
+                idempotency_key="abc123",
+                spawned_at=datetime.now(UTC),
+            )
+        }
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = None  # no PR → pr_evidence False
+
+        result = poll_completions(
+            _RecordingPort([]),
+            procs,
+            event_emit=_recording_emit([], emitted),
+            evidence_client=client,
+        )
+
+        assert result.failed_exit == 1
+        event = emitted[0]
+        assert event["event_type"] == "task_failed"
+        assert event["payload"]["exit_confirmed"] is True
+        assert event["payload"]["exit_code"] == 1
+        assert event["payload"]["pr_evidence"] is False
 
 
 if __name__ == "__main__":

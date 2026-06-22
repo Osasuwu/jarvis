@@ -168,6 +168,32 @@ def summarise_event(event: dict[str, Any]) -> str:
 # =============================================================================
 
 
+# A rework goal directly names the PR to continue (e.g. "/rework #42"). The
+# pattern is unanchored on purpose: a re-driven goal is prefixed ("Re-drive
+# (attempt 2): /rework #42"), so anchoring to the start would misclassify it
+# as fresh-shape and break the AC5 no-augmentation rule.
+_REWORK_GOAL_RE = re.compile(r"(?i)/rework\s+#?(\d+)")
+
+
+def parse_goal_shape(goal: str) -> tuple[str, int | None]:
+    """Classify a task goal into its evidence shape (AC2 #953).
+
+    Returns ``(shape, pr_number)``:
+
+    - ``("empty", None)`` — blank/whitespace goal; no evidence can be computed.
+    - ``("rework", N)`` — goal references PR #N via ``/rework #N``; evidence is
+      *new activity on PR #N* since spawn.
+    - ``("fresh", None)`` — anything else; evidence is *a PR exists* on the
+      task's working branch (``task/<task_id>`` or an explicit ``(branch=...)``).
+    """
+    if not goal or not goal.strip():
+        return ("empty", None)
+    m = _REWORK_GOAL_RE.search(goal)
+    if m:
+        return ("rework", int(m.group(1)))
+    return ("fresh", None)
+
+
 class GitHubClient(Protocol):
     """Protocol for GitHub API calls needed by PR-evidence checks (AC4 #953).
 
@@ -307,3 +333,69 @@ def check_pr_evidence_rework_shape(
     except Exception as e:
         logger.exception(f"check_pr_evidence_rework_shape: client error for PR #{pr_number}: {e}")
         return None
+
+
+class HttpxGitHubClient:
+    """Concrete :class:`GitHubClient` over the GitHub REST API (AC4 #953).
+
+    The driver computes PR evidence through this — *no* ``gh`` CLI subprocess
+    (AC4). It is the production injection point; the pure evidence checks in
+    this module take a ``GitHubClient`` so tests inject fakes and never touch
+    the network. The three methods are thin GETs; 404 is normalized to the
+    "absent" sentinel each caller expects (``None`` / ``None`` / ``[]``).
+    """
+
+    def __init__(self, repo: str, *, token: str | None = None, timeout: float = 10.0) -> None:
+        self._repo = repo
+        self._token = token if token is not None else os.environ.get("GITHUB_TOKEN")
+        self._timeout = timeout
+
+    @property
+    def _owner(self) -> str:
+        return self._repo.split("/", 1)[0]
+
+    def get_pull_by_head_branch(self, branch: str) -> dict[str, Any] | None:
+        # head filter wants ``owner:branch``; state=all so a merged/closed PR
+        # still counts as evidence that work landed.
+        resp = httpx.get(
+            f"https://api.github.com/repos/{self._repo}/pulls",
+            headers=_headers(self._token),
+            params={"head": f"{self._owner}:{branch}", "state": "all", "per_page": 1},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data[0] if data else None
+
+    def get_pull_by_number(self, pr_number: int) -> dict[str, Any] | None:
+        resp = httpx.get(
+            f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}",
+            headers=_headers(self._token),
+            timeout=self._timeout,
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_commits_for_pull(self, pr_number: int) -> list[dict[str, Any]]:
+        resp = httpx.get(
+            f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}/commits",
+            headers=_headers(self._token),
+            params={"per_page": 100},
+            timeout=self._timeout,
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        return resp.json()
+
+
+def default_github_client() -> HttpxGitHubClient:
+    """Production :class:`GitHubClient` — repo from ``GITHUB_REPO`` env (AC4).
+
+    Defaults to ``Osasuwu/jarvis``; token resolved from ``GITHUB_TOKEN`` inside
+    :class:`HttpxGitHubClient`. Needs live network, so it is wired from
+    :func:`wake_driver.main` and never exercised by unit tests (which inject
+    fakes into the pure checks above)."""
+    return HttpxGitHubClient(os.environ.get("GITHUB_REPO", "Osasuwu/jarvis"))

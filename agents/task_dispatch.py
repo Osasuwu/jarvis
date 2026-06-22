@@ -39,14 +39,24 @@ would let the claimed-reclaimer (AC5) hand the same task to a second spawn.
 from __future__ import annotations
 
 import logging
+import os
+import re
 import subprocess
 import sys
 import time
 from collections.abc import Callable, Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from agents import task_queue
+from agents.github_client import (
+    GitHubClient,
+    check_pr_evidence_fresh_shape,
+    check_pr_evidence_rework_shape,
+    parse_executor_stdout,
+    parse_goal_shape,
+)
 from agents.pid_sidecar import Sidecar, poll_exit
 
 logger = logging.getLogger(__name__)
@@ -72,13 +82,133 @@ DEFAULT_CLAIMED_STALE_SECONDS = 300
 DEFAULT_RUNNING_REAP_SECONDS = 6 * 60 * 60
 
 # Spawn a task's goal, fire-and-forget. Raises on a hard launch failure (AC7b).
-Spawn = Callable[[str], Any]
+# Called as ``spawn(goal, task_id=<id>)`` — the executor needs the id to write
+# the per-task stdout JSON the #953 AC3 evidence channel reads, so the contract
+# carries the keyword (``Callable[..., Any]`` to keep the kwarg in the type).
+Spawn = Callable[..., Any]
 # Resolve the claude binary; raises FileNotFoundError when unresolved (AC7a).
 ResolveBinary = Callable[[], str]
 # Quota probe — returns a UsageReading-shaped object with .near_exhaustion
 # (#921 AC4). The production default is false-safe: it never raises, a probe
 # error reads as near-exhaustion, so a broken probe pauses dispatch.
 ReadUsage = Callable[[], Any]
+
+# Directory the executor writes per-task stdout JSON to (#953 AC3). Mirrors
+# executor._STDERR_LOG_DIR; kept local so the reader has no executor import.
+_EXECUTOR_LOG_DIR = "logs/executor"
+
+# An idempotency key carries lineage as ``<lineage_key>:r<attempt>``. A root
+# task (first spawn) has no ``:rN`` suffix and is attempt 1.
+_LINEAGE_RE = re.compile(r"^(.*):r(\d+)$")
+
+
+def parse_lineage(idempotency_key: str) -> tuple[str, int]:
+    """Split an idempotency key into ``(lineage_key, attempt)`` (#953 AC7).
+
+    ``"abc:r2"`` → ``("abc", 2)``; a bare key or empty string is the root
+    attempt → ``(key, 1)``. The lineage key is stable across re-drives so
+    every attempt of one task shares it; the attempt number gates MAX_ATTEMPTS.
+    """
+    if not idempotency_key:
+        return ("", 1)
+    m = _LINEAGE_RE.match(idempotency_key)
+    if m:
+        return (m.group(1), int(m.group(2)))
+    return (idempotency_key, 1)
+
+
+def _augment_branch_directive(goal: str, task_id: str) -> str:
+    """Append the ``task/<task_id>`` branch directive to a fresh-shape goal (AC5).
+
+    Only fresh-shape goals lacking an explicit ``(branch=...)`` directive are
+    augmented — a rework goal (``/rework #N``) already targets an existing PR's
+    branch and must NEVER be augmented (AC5), and a goal that already names a
+    branch is left as the author wrote it. The directive embeds the convention
+    the evidence check (:func:`check_pr_evidence_fresh_shape`) looks for, so
+    spawn-side and evidence-side agree on where the PR should be.
+    """
+    if "(branch=" in goal:
+        return goal
+    shape, _ = parse_goal_shape(goal)
+    if shape != "fresh":
+        return goal
+    return f"{goal}\n\n(branch=task/{task_id})"
+
+
+def default_stdout_reader(task_id: str) -> str | None:
+    """Read the executor's stdout JSON for ``task_id`` (#953 AC3 secondary).
+
+    Returns the file text, or ``None`` when it is absent/unreadable — the
+    secondary-evidence path is best-effort, so a missing log degrades the
+    check to its primary verdict rather than raising.
+    """
+    path = os.path.join(_EXECUTOR_LOG_DIR, f"{task_id}.stdout.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
+def _compute_pr_evidence(
+    task_id: str,
+    goal: str,
+    spawned_at: datetime | None,
+    *,
+    client: GitHubClient | None,
+    stdout_reader: Callable[[str], str | None] | None = None,
+) -> bool | None:
+    """Compute PR evidence for one completed task (#953 AC2/AC3/AC4).
+
+    Returns the tri-state the orchestrator routes on:
+
+    - ``True`` — a PR exists (fresh) or PR #N got new activity (rework).
+    - ``False`` — no PR / no new activity.
+    - ``None`` — evidence cannot be computed (no client, no spawn time, or an
+      empty/unparseable goal) → orchestrator escalates rather than re-driving.
+
+    Fresh-shape ``False`` triggers the AC3 secondary channel: if the agent's
+    stdout JSON claimed a PR number, that PR is verified directly (an agent can
+    open a PR on a non-convention branch the head-branch lookup misses).
+    """
+    if client is None or spawned_at is None:
+        return None
+    shape, pr_number = parse_goal_shape(goal)
+    if shape == "empty":
+        return None
+    if shape == "rework":
+        return check_pr_evidence_rework_shape(
+            task_id, goal, pr_number, spawned_at, client=client
+        )
+
+    evidence = check_pr_evidence_fresh_shape(task_id, goal, spawned_at, client=client)
+    if evidence is False and stdout_reader is not None:
+        # AC3 — the head-branch lookup found nothing; fall back to whatever PR
+        # the agent claimed in its stdout, then verify it actually exists.
+        try:
+            text = stdout_reader(task_id)
+        except Exception:  # noqa: BLE001 — secondary channel is best-effort
+            text = None
+        claimed = parse_executor_stdout(text) if text else None
+        if claimed and claimed.get("number"):
+            try:
+                pr = client.get_pull_by_number(int(claimed["number"]))
+            except Exception:  # noqa: BLE001 — a claimed-PR lookup error is non-fatal
+                pr = None
+            if pr:
+                return True
+    return evidence
+
+
+def _severity_for(event_type: str, pr_evidence: bool | None) -> str:
+    """Severity for a terminal event, satisfying the events CHECK constraint.
+
+    A clean ``task_done`` with PR evidence is ``info`` (pure-pipeline no-op);
+    every other terminal outcome is ``medium`` so it outranks noise but is not
+    treated as an incident."""
+    if event_type == "task_done" and pr_evidence is True:
+        return "info"
+    return "medium"
 
 
 @runtime_checkable
@@ -138,6 +268,13 @@ class DrainResult:
     # wake_driver folds these pairs into its {task_id: TrackedProc} liveness
     # map to close running→done on process exit.
     procs: tuple[tuple[str, Any], ...] = ()
+    # Per-task spawn metadata keyed by task_id (#953): the original ``goal``,
+    # the ``idempotency_key`` (lineage + attempt), and a tz-aware ``spawned_at``
+    # stamp. The wake_driver folds these into each :class:`TrackedProc` so the
+    # completion poll can compute PR evidence at the terminal boundary. Kept
+    # separate from ``procs`` so the existing (task_id, proc) contract — and the
+    # drain tests that assert on it — stay byte-for-byte unchanged.
+    spawned_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -155,10 +292,21 @@ class TrackedProc:
     ``proc`` is the ``Popen``-shaped handle from :class:`executor.SpawnResult`;
     ``started_at`` is a monotonic-clock stamp taken when the wake_driver folded
     the pair into its map (the runaway check measures age against it, AC6).
+
+    The #953 fields carry the spawn context the completion poll needs to compute
+    PR evidence at the terminal boundary: the original ``goal`` (shape + branch),
+    the ``idempotency_key`` (lineage + attempt for re-drive keying), and a
+    tz-aware ``spawned_at`` (the rework evidence check compares PR activity
+    against it — a naive datetime would raise on the aware/naive compare). They
+    default empty/``None`` so an adopted-after-restart proc with no recovered
+    metadata yields ``pr_evidence=null`` → escalate (documented #921 limitation).
     """
 
     proc: Any
     started_at: float
+    goal: str = ""
+    idempotency_key: str = ""
+    spawned_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -169,12 +317,21 @@ class CompletionResult:
     failed_exit: int = 0
 
 
+# An ``event_emit`` callback: (event_type, severity, payload, *, dedup_key).
+# Mirrors wake_driver's production emitter and the tests' FakeEventQueue —
+# severity is explicit (events CHECK constraint), dedup_key absorbs a
+# re-observed terminal event at the DB unique index (#953 AC1/AC9).
+EventEmit = Callable[..., Any]
+
+
 def poll_completions(
     port: TaskQueuePort,
     procs: dict[str, TrackedProc],
     *,
     sidecar: Sidecar | None = None,
-    event_emit: Callable[[str, dict[str, Any]], None] | None = None,
+    event_emit: EventEmit | None = None,
+    evidence_client: GitHubClient | None = None,
+    stdout_reader: Callable[[str], str | None] | None = None,
 ) -> CompletionResult:
     """Close ``running`` rows whose process has exited (#921 AC2, Model P).
 
@@ -189,9 +346,17 @@ def poll_completions(
     not PR merged; the child may have produced garbage and exited cleanly.
     Outcome truth re-enters externally via Path-A GitHub events.
 
-    AC1 (#953): Events are emitted BEFORE state transitions occur, ensuring
-    event-first ordering. The ``event_emit`` callback is called with
-    (event_type, payload) — if not provided, no events are emitted.
+    AC1/AC2/AC3 (#953): at the terminal boundary the poll computes **PR
+    evidence** for the task — parsing the goal shape carried on the
+    :class:`TrackedProc` and querying ``evidence_client`` (a real PR exists for
+    a fresh task / PR #N got new activity for a rework), with the executor
+    stdout (``stdout_reader``) as the AC3 secondary channel. The resulting
+    tri-state plus the task's ``lineage_key``/``attempt`` (parsed from its
+    idempotency key) go into the payload, and the event is emitted **before**
+    the FSM transition so a crash in the window self-heals on re-observation —
+    the ``dedup_key`` (``<event_type>:<task_id>:a<attempt>``) absorbs the
+    duplicate. With no ``event_emit`` wired, no events are emitted (the #921
+    completion behavior is unchanged).
 
     Per-row isolation: a ``transition`` raising logs, drops the entry, and
     continues — the row stays ``running`` in the store with no live handle, so
@@ -208,23 +373,34 @@ def poll_completions(
         if rc is None:
             continue
 
-        # AC1 (#953) — emit event BEFORE transition for event-first ordering.
-        spawned_at = None
-        if sidecar is not None:
-            sidecar_entry = sidecar.read_sidecar(task_id)
-            if sidecar_entry:
-                spawned_at = sidecar_entry.spawned_at
+        # AC1/AC2/AC3 (#953) — compute evidence and lineage at the boundary, then
+        # emit the event BEFORE the transition (event-first ordering). spawned_at
+        # rides on the TrackedProc as tz-aware (folded in by the wake_driver);
+        # an adopted-after-restart proc has no goal/spawned_at → evidence is null.
+        goal = tracked.goal
+        lineage_key, attempt = parse_lineage(tracked.idempotency_key)
+        pr_evidence = _compute_pr_evidence(
+            task_id,
+            goal,
+            tracked.spawned_at,
+            client=evidence_client,
+            stdout_reader=stdout_reader,
+        )
 
         try:
             if rc == 0:
                 if event_emit:
                     event_emit(
                         "task_done",
+                        _severity_for("task_done", pr_evidence),
                         {
                             "task_id": task_id,
-                            "pr_evidence": None,  # Placeholder; caller fills this
-                            "goal": "",  # Placeholder; caller fills this
+                            "lineage_key": lineage_key,
+                            "attempt": attempt,
+                            "pr_evidence": pr_evidence,
+                            "goal": goal,
                         },
+                        dedup_key=f"task_done:{task_id}:a{attempt}",
                     )
                 port.transition(task_id, "done")
                 done += 1
@@ -232,14 +408,18 @@ def poll_completions(
                 if event_emit:
                     event_emit(
                         "task_failed",
+                        _severity_for("task_failed", pr_evidence),
                         {
                             "task_id": task_id,
+                            "lineage_key": lineage_key,
+                            "attempt": attempt,
                             "exit_code": rc,
                             "exit_confirmed": True,
-                            "pr_evidence": None,  # Placeholder
+                            "pr_evidence": pr_evidence,
                             "failure_reason": f"exit {rc}",
-                            "goal": "",  # Placeholder
+                            "goal": goal,
                         },
+                        dedup_key=f"task_failed:{task_id}:a{attempt}",
                     )
                 port.transition(task_id, "failed", reason=f"exit {rc}")
                 failed_exit += 1
@@ -374,10 +554,19 @@ def default_spawn(goal: str, *, task_id: str | None = None) -> Any:
     not pull executor's subprocess/usage-probe dependencies.
 
     AC3 (#953): passes task_id to the executor for stdout JSON capture.
+
+    AC5 (#953): a **fresh-shape** goal with no explicit ``(branch=...)`` directive
+    gets ``(branch=task/<task_id>)`` appended before spawn, so the child opens its
+    PR on a deterministic head branch the terminal-boundary evidence check can find.
+    Rework-shape goals (``/rework #N``) and goals that already pin a branch are left
+    untouched — augmentation is purely additive and never rewrites an operator's
+    branch choice. The un-augmented goal is what ``drain_tasks`` records in
+    ``spawned_meta`` for evidence (the default head ``task/<task_id>`` matches).
     """
     from agents.executor import spawn as executor_spawn
 
-    return executor_spawn(goal, task_id=task_id)
+    spawn_goal = _augment_branch_directive(goal, task_id) if task_id else goal
+    return executor_spawn(spawn_goal, task_id=task_id)
 
 
 def default_resolve_binary() -> str:
@@ -472,6 +661,12 @@ def drain_tasks(
     spawned = 0
     failed = 0
     procs: list[tuple[str, Any]] = []
+    # AC1/AC2 (#953) — carry each spawned task's goal + idempotency key + tz-aware
+    # spawn time out to the wake_driver, which folds them onto the TrackedProc so
+    # the terminal-boundary poll can compute PR evidence and lineage. spawned_at
+    # MUST be tz-aware (datetime.now(UTC)) — the rework-shape evidence check
+    # compares it against a tz-aware PR ``updated_at`` and a naive value raises.
+    spawned_meta: dict[str, dict[str, Any]] = {}
     for _ in range(budget):
         row = port.claim_next(assignee=assignee)  # AC2 routing; AC9 lost-race → None
         if row is None:
@@ -526,7 +721,13 @@ def drain_tasks(
                 task_id,
                 "requeued to pending" if requeued else "left running for the reaper",
             )
-            return DrainResult(spawned=spawned, failed=failed, throttled=True, procs=tuple(procs))
+            return DrainResult(
+                spawned=spawned,
+                failed=failed,
+                throttled=True,
+                procs=tuple(procs),
+                spawned_meta=spawned_meta,
+            )
 
         spawned += 1
         # AC1 (#921) — retain the process handle so the wake_driver can poll
@@ -535,6 +736,15 @@ def drain_tasks(
         proc = getattr(result, "proc", None)
         if proc is not None:
             procs.append((task_id, proc))
+            # AC1/AC2 (#953) — capture original goal + lineage key + tz-aware spawn
+            # time for the terminal-boundary evidence/lineage computation. Store the
+            # *un-augmented* goal: default_spawn's AC5 branch directive points at the
+            # same default head (task/<task_id>) the fresh-shape check derives.
+            spawned_meta[task_id] = {
+                "goal": row["goal"],
+                "idempotency_key": str(row.get("idempotency_key", "") or ""),
+                "spawned_at": datetime.now(UTC),
+            }
             # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
             if sidecar is not None:
                 try:
@@ -552,7 +762,7 @@ def drain_tasks(
                         task_id,
                     )
 
-    return DrainResult(spawned=spawned, failed=failed, procs=tuple(procs))
+    return DrainResult(spawned=spawned, failed=failed, procs=tuple(procs), spawned_meta=spawned_meta)
 
 
 def reclaim_stale_tasks(
