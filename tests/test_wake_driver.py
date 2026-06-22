@@ -757,6 +757,48 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
     assert procs["t1"].started_at == 42.0
 
 
+def test_tick_batch_shares_one_started_at_stamp():
+    # #957 MAJOR (#1011): every proc drained in ONE tick shares the single
+    # pre-drain stamp — the clock is sampled once, before the drain, NOT
+    # per-task. This is deliberate (clock-first avoids orphaning just-spawned
+    # handles if the clock raises mid-fold); the bounded skew across a batch is
+    # negligible vs the multi-hour runaway threshold. Pin it so a future
+    # "per-task accuracy" refactor can't silently regress the safety property
+    # the TrackedProc docstring now documents.
+    clock_calls: list = []
+
+    def counting_clock() -> float:
+        clock_calls.append(1)
+        return 7.0
+
+    tq = _RecordingTaskQueue(
+        [],
+        pending=[
+            {"id": "t1", "goal": "g1", "assignee": "sandcastle"},
+            {"id": "t2", "goal": "g2", "assignee": "sandcastle"},
+        ],
+    )
+    procs: dict = {}
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: _SpawnHandle(_TickProc(rc=None)),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=counting_clock,
+    )
+
+    assert set(procs) == {"t1", "t2"}
+    # Both procs carry the same pre-drain stamp …
+    assert procs["t1"].started_at == procs["t2"].started_at == 7.0
+    # … because the clock was sampled exactly once for the whole batch.
+    assert len(clock_calls) == 1
+
+
 def test_tick_stamps_the_clock_before_spawning():
     # review #957-4 (MAJOR): the started_at stamp must be taken BEFORE the
     # drain runs. Taken after, a raising clock discards the just-spawned

@@ -51,21 +51,6 @@ def _headers(token: str | None) -> dict[str, str]:
     return headers
 
 
-def _parse_last_page(link_header: str | None) -> int | None:
-    """Extract the ``rel="last"`` page number from an RFC 5988 ``Link`` header.
-
-    Returns ``None`` when the header is absent or carries no ``last`` relation
-    (i.e. a single-page response). Used to walk paginated commit listings to the
-    final page so the newest commits are visible to the freshness check.
-    """
-    if not link_header:
-        return None
-    m = re.search(r'[?&]page=(\d+)[^>]*>;\s*rel="last"', link_header)
-    if m:
-        return int(m.group(1))
-    return None
-
-
 # GitHub's /events endpoint serves at most ~300 events total across up to
 # 3 pages. ``per_page=100`` is the maximum the API accepts.
 _MAX_EVENTS_PAGES = 3
@@ -298,12 +283,20 @@ def check_pr_evidence_fresh_shape(
                 created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
                 return created_at > spawned_at
             except (ValueError, AttributeError):
-                logger.debug(
-                    "check_pr_evidence_fresh_shape: unparseable created_at for %s; "
-                    "treating branch-match as evidence",
+                # Present-but-unparseable timestamp: freshness CANNOT be verified,
+                # so evidence is genuinely unknown → escalate (None), NOT True.
+                # Silently treating a garbage timestamp as fresh evidence would
+                # let a stale reused-branch PR pass the gate (MEDIUM, PR #1011).
+                # This is distinct from an ABSENT created_at below, where the
+                # per-task-unique branch name is a legitimate fallback signal.
+                logger.warning(
+                    "check_pr_evidence_fresh_shape: unparseable created_at %r for %s; "
+                    "cannot verify freshness — escalating (None)",
+                    created_at_str,
                     task_id,
                 )
-        # No parseable created_at: the per-task-unique branch name is itself
+                return None
+        # No created_at field at all: the per-task-unique branch name is itself
         # strong evidence, so fall back to treating existence as evidence.
         return True
     except Exception:
@@ -349,20 +342,28 @@ def check_pr_evidence_rework_shape(
             except (ValueError, AttributeError):
                 logger.debug(f"check_pr_evidence_rework_shape: unparseable updated_at for PR #{pr_number}")
 
-        # Check if there are new commits since spawned_at
+        # Check if there are new commits since spawned_at. The commit list is
+        # the only remaining evidence channel here (updated_at gave no positive
+        # signal). If the fetch fails we do NOT know whether new commits exist —
+        # falling through to ``return False`` would be a confident "no activity"
+        # verdict built on an unknown, spuriously re-driving. Tri-state demands
+        # None so the orchestrator escalates instead (MAJOR, #1011).
         try:
             commits = client.list_commits_for_pull(pr_number)
-            for commit in commits:
-                commit_date_str = commit.get("commit", {}).get("author", {}).get("date")
-                if commit_date_str:
-                    try:
-                        commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
-                        if commit_date > spawned_at:
-                            return True
-                    except (ValueError, AttributeError):
-                        continue
         except Exception:
-            pass  # If commit check fails, fall through
+            logger.exception(
+                "check_pr_evidence_rework_shape: commit fetch failed for PR #%s", pr_number
+            )
+            return None
+        for commit in commits:
+            commit_date_str = commit.get("commit", {}).get("author", {}).get("date")
+            if commit_date_str:
+                try:
+                    commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
+                    if commit_date > spawned_at:
+                        return True
+                except (ValueError, AttributeError):
+                    continue
 
         return False
     except Exception:
@@ -384,6 +385,15 @@ class HttpxGitHubClient:
         self._repo = repo
         self._token = token if token is not None else os.environ.get("GITHUB_TOKEN")
         self._timeout = timeout
+        # A pooled client reuses TCP/TLS connections across the (potentially
+        # several, paginated) GETs each evidence check fires. The wake_driver
+        # holds one instance for its lifetime, so per-request connection setup
+        # was pure overhead. Headers/timeout are baked in so call sites stay thin.
+        self._client = httpx.Client(headers=_headers(self._token), timeout=self._timeout)
+
+    def close(self) -> None:
+        """Release the pooled connections. Idempotent — safe to call twice."""
+        self._client.close()
 
     @property
     def _owner(self) -> str:
@@ -392,21 +402,17 @@ class HttpxGitHubClient:
     def get_pull_by_head_branch(self, branch: str) -> dict[str, Any] | None:
         # head filter wants ``owner:branch``; state=all so a merged/closed PR
         # still counts as evidence that work landed.
-        resp = httpx.get(
+        resp = self._client.get(
             f"https://api.github.com/repos/{self._repo}/pulls",
-            headers=_headers(self._token),
             params={"head": f"{self._owner}:{branch}", "state": "all", "per_page": 1},
-            timeout=self._timeout,
         )
         resp.raise_for_status()
         data = resp.json()
         return data[0] if data else None
 
     def get_pull_by_number(self, pr_number: int) -> dict[str, Any] | None:
-        resp = httpx.get(
+        resp = self._client.get(
             f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}",
-            headers=_headers(self._token),
-            timeout=self._timeout,
         )
         if resp.status_code == 404:
             return None
@@ -414,36 +420,32 @@ class HttpxGitHubClient:
         return resp.json()
 
     def list_commits_for_pull(self, pr_number: int) -> list[dict[str, Any]]:
-        # The commits endpoint returns oldest-first and is capped at 250 total
-        # over paginated requests. A naive ``per_page=100`` fetches only the
-        # OLDEST 100 — exactly the commits that predate ``spawned_at`` — so on a
-        # >100-commit PR the freshness check would miss every recent commit and
-        # falsely report "no new activity" (MAJOR, PR #1011). Walk to the LAST
-        # page so the caller sees the newest commits, which is what the
-        # ``commit_date > spawned_at`` gate needs.
+        # The PR commits endpoint returns commits OLDEST-first, paginated at
+        # per_page<=100 and capped at 250 total (<=3 pages at the cap). A single
+        # ``per_page=100`` GET returns only the OLDEST 100 — exactly the commits
+        # that predate ``spawned_at`` — so on a >100-commit PR the freshness
+        # check would miss every recent commit and falsely report "no new
+        # activity", spuriously re-driving (CRITICAL, PR #1011 round 2; the
+        # round-1 "page 1 + last page" fix silently dropped every intermediate
+        # page). This endpoint does NOT accept a ``?since=`` filter (that exists
+        # only on the repo-level /commits endpoint), so the only correct fix is
+        # to walk every page and let the caller apply the timestamp gate. At the
+        # 250 cap that is <=3 GETs.
         url = f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}/commits"
-        headers = _headers(self._token)
-        resp = httpx.get(
-            url,
-            headers=headers,
-            params={"per_page": 100, "page": 1},
-            timeout=self._timeout,
-        )
-        if resp.status_code == 404:
-            return []
-        resp.raise_for_status()
-        commits = resp.json()
-        # Follow RFC 5988 ``Link: rel="last"`` to the final page if paginated.
-        last_page = _parse_last_page(resp.headers.get("link"))
-        if last_page and last_page > 1:
-            resp = httpx.get(
-                url,
-                headers=headers,
-                params={"per_page": 100, "page": last_page},
-                timeout=self._timeout,
-            )
+        commits: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            resp = self._client.get(url, params={"per_page": 100, "page": page})
+            if resp.status_code == 404:
+                return []
             resp.raise_for_status()
-            commits = resp.json()
+            page_commits = resp.json()
+            if not page_commits:
+                break
+            commits.extend(page_commits)
+            if len(page_commits) < 100:
+                break
+            page += 1
         return commits
 
 

@@ -98,8 +98,24 @@ ReadUsage = Callable[[], Any]
 _EXECUTOR_LOG_DIR = "logs/executor"
 
 # An idempotency key carries lineage as ``<lineage_key>:r<attempt>``. A root
-# task (first spawn) has no ``:rN`` suffix and is attempt 1.
-_LINEAGE_RE = re.compile(r"^(.*):r(\d+)$")
+# task (first spawn) has no ``:rN`` suffix and is attempt 1. ``_LINEAGE_SEP`` is
+# the single source of truth for the separator: both the builder
+# (:func:`format_lineage_key`) and the parser (:func:`parse_lineage` via
+# ``_LINEAGE_RE``) derive from it so the two can never drift (MEDIUM, PR #1011 —
+# previously the orchestrator hard-coded ``f"{key}:r{n}"`` while the parser owned
+# its own regex; a change to one would silently desync the other).
+_LINEAGE_SEP = ":r"
+_LINEAGE_RE = re.compile(rf"^(.*){re.escape(_LINEAGE_SEP)}(\d+)$")
+
+
+def format_lineage_key(lineage_key: str, attempt: int) -> str:
+    """Build an idempotency key for a re-drive: ``<lineage_key>:r<attempt>`` (#953 AC7).
+
+    Inverse of :func:`parse_lineage` — they share ``_LINEAGE_SEP`` so the wire
+    format stays symmetric. Use this anywhere a re-drive key is minted instead of
+    interpolating the separator by hand.
+    """
+    return f"{lineage_key}{_LINEAGE_SEP}{attempt}"
 
 
 def parse_lineage(idempotency_key: str) -> tuple[str, int]:
@@ -108,13 +124,25 @@ def parse_lineage(idempotency_key: str) -> tuple[str, int]:
     ``"abc:r2"`` → ``("abc", 2)``; a bare key or empty string is the root
     attempt → ``(key, 1)``. The lineage key is stable across re-drives so
     every attempt of one task shares it; the attempt number gates MAX_ATTEMPTS.
+
+    The attempt is the OUTERMOST ``:rN`` suffix (the most recent re-drive), and
+    the root has *every* ``:rN`` suffix peeled off — so a doubly-suffixed key
+    like ``"abc:r2:r3"`` resolves to ``("abc", 3)``, not ``("abc:r2", 3)``. A
+    non-greedy single-strip would leave an inner ``:rN`` in the root and split
+    one task's lineage across distinct root keys (MAJOR, #1011).
     """
     if not idempotency_key:
         return ("", 1)
     m = _LINEAGE_RE.match(idempotency_key)
-    if m:
-        return (m.group(1), int(m.group(2)))
-    return (idempotency_key, 1)
+    if not m:
+        return (idempotency_key, 1)
+    attempt = int(m.group(2))
+    root = m.group(1)
+    inner = _LINEAGE_RE.match(root)
+    while inner:
+        root = inner.group(1)
+        inner = _LINEAGE_RE.match(root)
+    return (root, attempt)
 
 
 def _augment_branch_directive(goal: str, task_id: str) -> str:
@@ -135,13 +163,31 @@ def _augment_branch_directive(goal: str, task_id: str) -> str:
     return f"{goal}\n\n(branch=task/{task_id})"
 
 
+# A task_id is interpolated into the executor-log path, so it must be confined
+# to a charset that cannot escape the directory — no ``/``, ``\``, ``.`` (hence
+# no ``..``), or other path-significant characters. UUIDs and the alnum ids used
+# elsewhere both satisfy this; a crafted ``../../etc/passwd`` does not (LOW,
+# PR #1011 — path-traversal hardening on the AC3 secondary channel).
+_SAFE_TASK_ID_RE = re.compile(r"\A[A-Za-z0-9_-]+\Z")
+
+
 def default_stdout_reader(task_id: str) -> str | None:
     """Read the executor's stdout JSON for ``task_id`` (#953 AC3 secondary).
 
     Returns the file text, or ``None`` when it is absent/unreadable — the
     secondary-evidence path is best-effort, so a missing log degrades the
     check to its primary verdict rather than raising.
+
+    A ``task_id`` outside the safe ``[A-Za-z0-9_-]`` charset (e.g. one carrying
+    ``..`` or a path separator) is rejected up front and returns ``None`` — it
+    never reaches the filesystem, closing the path-traversal vector (LOW #1011).
     """
+    if not _SAFE_TASK_ID_RE.match(task_id):
+        logger.warning(
+            "default_stdout_reader: refusing unsafe task_id %r (path-traversal guard)",
+            task_id,
+        )
+        return None
     path = os.path.join(_EXECUTOR_LOG_DIR, f"{task_id}.stdout.json")
     try:
         with open(path, encoding="utf-8") as fh:
@@ -290,8 +336,20 @@ class TrackedProc:
     """A live spawn under liveness tracking (#921 AC2).
 
     ``proc`` is the ``Popen``-shaped handle from :class:`executor.SpawnResult`;
-    ``started_at`` is a monotonic-clock stamp taken when the wake_driver folded
-    the pair into its map (the runaway check measures age against it, AC6).
+    ``started_at`` is a monotonic-clock stamp the runaway check measures age
+    against (AC6). It is a **per-batch** stamp, not per-task: the wake_driver
+    samples ``task_clock()`` **once, before** the drain and assigns that same
+    value to every proc folded into the map on that tick (wake_driver.tick Step
+    4). The pre-drain single sample is deliberate — stamping after the drain
+    would discard the just-spawned handles if the clock raised mid-fold,
+    orphaning live children onto the 6h reaper (the exact regression
+    ``test_tick_stamps_the_clock_before_spawning`` /
+    ``test_tick_with_a_broken_clock_spawns_nothing`` guard against). The
+    resulting age skew across a batch is bounded by the drain's own duration
+    (≤ ``cap`` spawns) and is negligible against the multi-hour
+    ``task_running_reap_after_seconds`` threshold, so per-task accuracy buys
+    nothing and would reintroduce the orphan risk. Pinned by
+    ``test_tick_batch_shares_one_started_at_stamp``.
 
     The #953 fields carry the spawn context the completion poll needs to compute
     PR evidence at the terminal boundary: the original ``goal`` (shape + branch),

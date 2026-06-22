@@ -90,6 +90,7 @@ from agents.poller import poll as poll_parked
 if TYPE_CHECKING:
     import psycopg
 
+    from agents.github_client import GitHubClient
     from agents.poller import PollerPort
 
 logger = logging.getLogger(__name__)
@@ -223,7 +224,7 @@ def tick(
     task_kill: Callable[[Any], None] = kill_process_tree,
     task_sidecar: Sidecar | None = None,
     task_event_emit: EventEmit | None = None,
-    task_evidence_client: Any | None = None,
+    task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
 ) -> TickResult:
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
@@ -400,7 +401,7 @@ def run(
     task_clock: Callable[[], float] = time.monotonic,
     task_kill: Callable[[Any], None] = kill_process_tree,
     task_event_emit: EventEmit | None = None,
-    task_evidence_client: Any | None = None,
+    task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.

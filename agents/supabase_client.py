@@ -165,8 +165,13 @@ def store_event(
 
     ``dedup_key`` (#953 AC1/AC9) is written only when set — the column is
     unique-when-present, so emitting it on a re-observed terminal event lets
-    the DB absorb the duplicate. Omitting it (``None``) keeps the row out of
-    the unique index, preserving the existing behavior for non-dedup callers.
+    the DB absorb the duplicate. When a ``dedup_key`` is supplied we ``upsert``
+    on that column: a genuine duplicate resolves cleanly (idempotent
+    re-observation) while real backend errors still propagate. The round-1 code
+    used a plain ``insert`` and relied on a swallowed 409 to absorb the
+    duplicate — which also masked legitimate insert failures (CRITICAL, #1011).
+    Omitting ``dedup_key`` (``None``) keeps the row out of the unique index and
+    uses a plain ``insert``, preserving behavior for non-dedup callers.
     """
     cli = client or get_client(config)
     row = {
@@ -179,10 +184,14 @@ def store_event(
     }
     if dedup_key is not None:
         row["dedup_key"] = dedup_key
-    result = cli.table("events").insert(row).execute()
+        result = cli.table("events").upsert(row, on_conflict="dedup_key").execute()
+        verb = "upserting"
+    else:
+        result = cli.table("events").insert(row).execute()
+        verb = "inserting"
     data = result.data or []
     if not data:
-        raise RuntimeError(f"Supabase returned no row after inserting event: {row!r}")
+        raise RuntimeError(f"Supabase returned no row after {verb} event: {row!r}")
     return data[0]
 
 

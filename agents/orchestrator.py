@@ -26,6 +26,7 @@ from typing import Any, Callable, Mapping
 
 from agents import safety, task_queue
 from agents.github_client import parse_goal_shape
+from agents.task_dispatch import format_lineage_key
 
 # Re-drive ceiling (#953 AC7). A task that produced no PR evidence is re-driven
 # at most once; ``attempt >= MAX_ATTEMPTS`` escalates to the owner instead of
@@ -177,6 +178,19 @@ def _redrive_goal(original_goal: str, root_task_id: str, next_attempt: int) -> s
     return base
 
 
+def _attempt_of(payload: Mapping[str, Any]) -> int:
+    """Read the attempt counter from a task-completion payload.
+
+    Defaults to ``1`` only when the key is **absent or None** — an explicit
+    ``0`` is a legitimate attempt number (first-ever attempt in a 0-based
+    emitter) and must be preserved. The round-1 code used
+    ``int(payload.get("attempt", 1) or 1)``, where ``0 or 1`` silently
+    coerced an explicit 0 to 1, mis-numbering the re-drive lineage key as
+    ``:r2`` instead of ``:r1`` (MAJOR, PR #1011)."""
+    raw = payload.get("attempt", 1)
+    return int(raw) if raw is not None else 1
+
+
 def _redrive(
     event_type: str,
     severity: str,
@@ -200,7 +214,7 @@ def _redrive(
         event_type=event_type,
         severity=severity,
         target=target,
-        idempotency_key=f"{lineage_key}:r{next_attempt}",
+        idempotency_key=format_lineage_key(lineage_key, next_attempt),
         priority=priority_for(severity),
         goal=goal,
         assignee=_ASSIGNEE_WORKER,
@@ -278,7 +292,10 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         if pr_evidence is True:
             return _inline_noop(event_type, severity, target, key)
         # task_done + pr_evidence=false + attempt < MAX_ATTEMPTS → re-drive (AC7).
-        attempt = int(payload.get("attempt", 1) or 1)
+        # Default to 1 only when absent/None — an explicit 0 is a valid attempt
+        # number and must NOT be coerced (``0 or 1`` → 1 mis-numbered lineage,
+        # MAJOR #1011).
+        attempt = _attempt_of(payload)
         if pr_evidence is False and attempt < MAX_ATTEMPTS:
             return _redrive(event_type, severity, target, payload, attempt)
         # task_done + pr_evidence=false + attempt >= MAX_ATTEMPTS → escalate (no more re-drives).
@@ -315,7 +332,7 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
     if event_type == "task_failed":
         pr_evidence = payload.get("pr_evidence")
         exit_confirmed = payload.get("exit_confirmed", False)
-        attempt = int(payload.get("attempt", 1) or 1)
+        attempt = _attempt_of(payload)
         failure_reason = payload.get("failure_reason", "unknown")
 
         # task_failed + pr_evidence=true → inline no-op (work landed).
