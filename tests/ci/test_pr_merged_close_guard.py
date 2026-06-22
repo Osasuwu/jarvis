@@ -19,7 +19,13 @@ Decision rule mirrored here (see the bash loop in the YAML):
   - issue reopened AFTER the PR's merged_at     -> skip (respect human reopen)
   - otherwise                                   -> close (state_reason=completed)
 The candidate set is `closingIssuesReferences` (authoritative linkage), not a
-body regex.
+body regex, projected WITH each ref's own repo (`repository.nameWithOwner`).
+GITHUB_TOKEN is scoped to $REPO, so a cross-repo ref CANNOT be closed here — it
+is SKIPPED with a warning, never collapsed into $REPO (which would close the
+wrong same-numbered issue). The linkage read fails LOUD on a gh error rather
+than treating an empty result as "nothing to close" (a silent green that would
+re-open Bug A). A single close failure mid-loop does not abort the run — every
+issue is attempted, then the job fails if any close failed.
 """
 
 from __future__ import annotations
@@ -115,9 +121,83 @@ def test_workflow_actually_closes_not_just_comments():
 def test_workflow_uses_authoritative_linkage_not_regex():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     # Use closingIssuesReferences (the set native auto-close targets), not a body
-    # regex — avoids cross-repo / malformed-ref leakage.
+    # regex — avoids malformed-ref leakage.
     assert "closingIssuesReferences" in text, (
         "candidate issues must come from closingIssuesReferences (authoritative linkage)."
+    )
+
+
+def test_workflow_fails_loud_on_linkage_read_failure():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # A `mapfile -t ... < <(gh pr view ...)` swallows gh's exit code (process
+    # substitution is invisible to set -e), so a transient gh failure yields zero
+    # refs -> green "nothing to close" with the issue still open (Bug A, silently).
+    # The read must capture-then-check and exit non-zero on gh failure.
+    assert "mapfile -t issues < <(" not in text, (
+        "linkage read must not use `mapfile < <(gh ...)` — it swallows gh's exit "
+        "code, turning a gh failure into a silent green no-op (#948 Bug A)."
+    )
+    assert "if ! refs=$(" in text, (
+        "linkage read must capture-then-check (`if ! refs=$(gh pr view ...)`) so "
+        "gh's exit code is visible to set -e — not a process-substitution read "
+        "that swallows it (#948 Bug A)."
+    )
+    assert "gh pr view failed" in text, (
+        "linkage read must fail loud (explicit exit 1) when gh pr view errors, "
+        "not assume zero linked issues."
+    )
+
+
+def test_workflow_is_cross_repo_aware():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # closingIssuesReferences can include cross-repo issues. GITHUB_TOKEN is
+    # scoped to $REPO, so a foreign ref CANNOT be closed here — it must be SKIPPED
+    # with a warning, never collapsed into $REPO (which would close the wrong
+    # same-numbered issue), and never silently dropped.
+    assert "nameWithOwner" in text, (
+        "linkage projection must include repository.nameWithOwner so a foreign "
+        "ref is detected (then skipped), not collapsed into $REPO."
+    )
+    assert '"$irepo" != "$REPO"' in text, (
+        "the loop must guard `$irepo != $REPO` and skip+warn — GITHUB_TOKEN is "
+        "repo-scoped and cannot close a cross-repo issue (it would 403)."
+    )
+    assert 'repos/$irepo/issues' in text, (
+        "the reopen-guard timeline lookup must be keyed on the issue's own repo "
+        "($irepo), not the PR's repo."
+    )
+    assert '--repo "$irepo"' in text, (
+        "gh issue close must target the ref's own repo ($irepo), not a hardcoded $REPO."
+    )
+    # `--repo "$irepo"` appears on both the state read and the close; pin the
+    # STATE read specifically. A regression that reverted only the state read to
+    # $REPO (closing the wrong same-numbered issue's state-check) would slip past
+    # the generic assertion above (#1021 review).
+    assert 'gh issue view "$n" --repo "$irepo"' in text, (
+        "the state read must use the ref's own repo ($irepo), not $REPO — else a "
+        "cross-repo ref's state is read from the wrong repo."
+    )
+
+
+def test_workflow_continues_past_a_single_close_failure():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # One `gh issue close` failure must not abort the loop under set -e and
+    # strand the remaining linked issues unattempted. The loop records the
+    # failure (failed=1) and the job fails AFTER every issue is attempted.
+    assert "failed=1" in text, (
+        "a mid-loop close failure must set failed=1 and continue, not abort the "
+        "loop and leave later issues open (#948 Bug A — partial close)."
+    )
+    assert 'if [ "$failed" -ne 0 ]' in text, (
+        "the job must fail after the loop when any close failed, so a partial "
+        "close still surfaces a red signal."
+    )
+    # The load-bearing mechanism is the `if gh issue close …; then … else
+    # failed=1; fi` wrapper: without the `if` guard, `set -e` aborts the loop on
+    # the FIRST close failure and `failed=1` is never reached (#1021 review).
+    assert "if gh issue close" in text, (
+        "gh issue close must be wrapped in `if … ; then … else failed=1; fi` so "
+        "set -e cannot abort the loop on the first close failure."
     )
 
 
@@ -126,6 +206,49 @@ def test_workflow_has_reopen_guard():
     # A deliberate human reopen after merge must not be re-closed.
     assert "reopened" in text and "MERGED_AT" in text, (
         "reopen-after-merge guard (compare reopened event time vs merged_at) drifted."
+    )
+
+
+def test_workflow_reopen_guard_uses_global_sort_not_page_local_last():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # The reopen guard is the subtlest change in this workflow. `gh api --paginate
+    # -q '<jq>'` evaluates the jq filter ONCE PER PAGE and streams — so an
+    # aggregating jq expression (`[.[] | …] | last`) emits one page-local result
+    # PER PAGE, not the global chronological max. On a multi-page timeline that
+    # picks the wrong "latest reopen" and the guard misfires (#1021). The fix emits
+    # one timestamp per reopened event across all pages, then takes the global max
+    # with `sort | tail -1` (ISO-8601 Z sorts lexicographically = chronologically).
+    # A future revert to `| last` would pass every other test and silently
+    # re-introduce the page-local bug — so pin it here.
+    assert '[.[] | select(.event=="reopened") | .created_at] | last' not in text, (
+        "reopen guard must NOT use jq `| last` over a paginated stream — --paginate "
+        "runs jq per-page, so `last` yields the page-local max, not the global "
+        "chronological max (#1021)."
+    )
+    assert "sort | tail -1" in text, (
+        "reopen guard must collect reopened timestamps across all pages then "
+        "`sort | tail -1` for the global chronological max (#1021)."
+    )
+
+
+def test_workflow_state_read_failure_fails_loud_not_silent():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # An unreadable issue state (transient rate-limit / network) must NOT be a
+    # silent skip — that leaves the issue OPEN under a GREEN job, the same Bug A
+    # failure mode as a close failure. The state-read tolerates the transient error
+    # (`|| echo ""`) and the empty guard routes to failed=1 (red signal -> retry),
+    # rather than a `continue` that strands the issue. Pin both halves so a revert
+    # to a silent skip reds this test (#1021 review).
+    assert (
+        'state=$(gh issue view "$n" --repo "$irepo" --json state -q .state 2>/dev/null || echo "")'
+        in text
+    ), (
+        "state read must tolerate a transient gh error (`|| echo \"\"`) then be "
+        "checked — not abort the loop under set -e nor silently skip."
+    )
+    assert "Could not read" in text, (
+        "the empty-state branch must emit a diagnostic and set failed=1 (fail the "
+        "job for retry), not silently continue and leave the issue open (#1021)."
     )
 
 
