@@ -263,18 +263,22 @@ def spawn(
         stdout_target = subprocess.DEVNULL
 
     spawn_fn = popen or subprocess.Popen
-    proc = spawn_fn(
-        argv,
-        env=env,
-        stdout=stdout_target,
-        stderr=stderr_file,
-        close_fds=True,
-    )
-    # Popen dup2'd the fds into the child; the parent handles are no longer
-    # needed. Without this, a long-running scheduler leaks fds per spawn.
-    stderr_file.close()
-    if stdout_file:
-        stdout_file.close()
+    try:
+        proc = spawn_fn(
+            argv,
+            env=env,
+            stdout=stdout_target,
+            stderr=stderr_file,
+            close_fds=True,
+        )
+    finally:
+        # Popen dup2'd the fds into the child; the parent handles are no longer
+        # needed. The ``finally`` is load-bearing: if spawn_fn raises (binary
+        # missing, EMFILE, etc.) the open handles would otherwise leak per spawn
+        # and a long-running scheduler exhausts the fd table (MAJOR, PR #1011).
+        stderr_file.close()
+        if stdout_file:
+            stdout_file.close()
 
     logger.info(
         "spawned claude -p (pid=%d) task_id=%s stderr=%s argv=%r",

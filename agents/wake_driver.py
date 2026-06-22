@@ -604,13 +604,28 @@ def main() -> int:
 
     repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
     evidence_client = default_github_client()
-    event_emit = _default_event_emit(repo=repo)
+    # Build the Supabase client ONCE and inject it into the emitter (MAJOR, PR
+    # #1011). With client=None, store_event calls get_client() per event — a fresh
+    # create_client() (and its connection setup) on every terminal event. A
+    # long-running driver emits thousands; one shared client amortizes that.
+    from agents.supabase_client import get_client
+
+    event_client = get_client()
+    event_emit = _default_event_emit(repo=repo, client=event_client)
 
     if args.once:
         # Deliberately no task_procs: a one-shot tick has no map from a prior
         # tick to poll, so completion-poll/runaway-kill are skipped and the
         # orphan reaper sees an empty live set — i.e. the #921 restart
         # semantics (stale running rows fail via the backstop).
+        #
+        # CONSTRAINT (#953): because completion-poll is skipped, the one-shot
+        # path NEVER computes PR evidence nor emits task_done/task_failed events
+        # — the evidence_client / event_emit / stdout_reader wiring above is
+        # intentionally unused here. ``--once`` is a drain/watchdog smoke test
+        # only; the #953 detection→emission path lives exclusively in the
+        # long-running ``run(...)`` loop below. Do not "fix" this by threading
+        # the wiring in — there is no prior-tick proc map for it to act on.
         result = tick(
             queue,
             default_orchestrator,

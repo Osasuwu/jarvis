@@ -387,9 +387,15 @@ def poll_completions(
             stdout_reader=stdout_reader,
         )
 
-        try:
-            if rc == 0:
-                if event_emit:
+        # Event emission and the FSM transition are DECOUPLED (MAJOR, PR #1011).
+        # event-first ordering is the happy path, but if the emit raises (Supabase
+        # down, network blip) the transition MUST still fire — otherwise the task
+        # is stuck in ``running`` until the 6h reaper sweeps it. A dropped event
+        # self-heals on re-observation; a stuck transition does not. So the emit
+        # gets its own try/except and never blocks the transition below.
+        if event_emit:
+            try:
+                if rc == 0:
                     event_emit(
                         "task_done",
                         _severity_for("task_done", pr_evidence),
@@ -402,10 +408,7 @@ def poll_completions(
                         },
                         dedup_key=f"task_done:{task_id}:a{attempt}",
                     )
-                port.transition(task_id, "done")
-                done += 1
-            else:
-                if event_emit:
+                else:
                     event_emit(
                         "task_failed",
                         _severity_for("task_failed", pr_evidence),
@@ -421,6 +424,18 @@ def poll_completions(
                         },
                         dedup_key=f"task_failed:{task_id}:a{attempt}",
                     )
+            except Exception:  # noqa: BLE001 — emit failure must not block transition
+                logger.exception(
+                    "[task_dispatch] event emit for task %s failed; "
+                    "proceeding with transition (event self-heals on re-observation)",
+                    task_id,
+                )
+
+        try:
+            if rc == 0:
+                port.transition(task_id, "done")
+                done += 1
+            else:
                 port.transition(task_id, "failed", reason=f"exit {rc}")
                 failed_exit += 1
         except Exception:  # noqa: BLE001 — isolate one bad row, reaper backstops it
@@ -686,6 +701,12 @@ def drain_tasks(
             )
             continue
 
+        # Capture spawn time BEFORE launching (MAJOR, PR #1011). The terminal
+        # evidence check counts PR/commit activity with timestamp > spawned_at;
+        # recording it AFTER spawn() returns would let any commit the child makes
+        # in that window read as older-than-spawn and be missed as evidence. Take
+        # the lower bound: the instant just before the process starts.
+        spawn_started_at = datetime.now(UTC)
         try:
             result = spawn(row["goal"], task_id=task_id)  # AC3 (#953) — capture stdout JSON
         except Exception as exc:  # noqa: BLE001 — AC7b: isolate one bad spawn
@@ -743,7 +764,7 @@ def drain_tasks(
             spawned_meta[task_id] = {
                 "goal": row["goal"],
                 "idempotency_key": str(row.get("idempotency_key", "") or ""),
-                "spawned_at": datetime.now(UTC),
+                "spawned_at": spawn_started_at,
             }
             # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
             if sidecar is not None:

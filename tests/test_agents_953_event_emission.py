@@ -22,6 +22,7 @@ from unittest import mock
 import pytest
 
 from agents.github_client import (
+    _parse_last_page,
     check_pr_evidence_fresh_shape,
     check_pr_evidence_rework_shape,
     parse_executor_stdout,
@@ -37,33 +38,6 @@ from agents.task_dispatch import (
 # =============================================================================
 # Fakes and Mocks
 # =============================================================================
-
-
-class FakeEventQueue:
-    """In-memory event queue for testing event emission."""
-
-    def __init__(self) -> None:
-        self.emitted: list[dict[str, Any]] = []
-
-    def emit_event(
-        self,
-        event_type: str,
-        severity: str,
-        payload: dict[str, Any],
-        *,
-        dedup_key: str | None = None,
-    ) -> dict[str, Any]:
-        """Emit an event, returning the inserted row."""
-        row = {
-            "id": len(self.emitted),
-            "event_type": event_type,
-            "severity": severity,
-            "payload": payload,
-            "dedup_key": dedup_key or f"{event_type}:{len(self.emitted)}",
-            "created_at": datetime.now(UTC),
-        }
-        self.emitted.append(row)
-        return row
 
 
 class _FakeProc:
@@ -170,6 +144,45 @@ class TestPREvidenceFreshShape:
         mock_client.get_pull_by_head_branch.assert_called_with("feature-xyz")
         assert evidence is True
 
+    def test_pr_created_after_spawn_is_evidence(self) -> None:
+        """Fresh shape: PR on the branch created AFTER spawn → fresh evidence (True)."""
+        mock_client = mock.MagicMock()
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        mock_client.get_pull_by_head_branch.return_value = {
+            "id": 1,
+            "number": 42,
+            "created_at": "2026-06-21T10:30:00Z",  # after spawn
+        }
+        evidence = check_pr_evidence_fresh_shape(
+            task_id="abc123",
+            goal="implement feature X",
+            spawned_at=spawned_at,
+            client=mock_client,
+        )
+        assert evidence is True
+
+    def test_stale_pr_predating_spawn_is_not_evidence(self) -> None:
+        """Fresh shape: a PR reusing the branch but created BEFORE spawn → not evidence (False).
+
+        Guards the MAJOR finding (PR #1011): without the spawned_at gate a stale
+        pre-existing PR on the same branch name would falsely read as evidence
+        that *this* spawn produced work.
+        """
+        mock_client = mock.MagicMock()
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        mock_client.get_pull_by_head_branch.return_value = {
+            "id": 1,
+            "number": 7,
+            "created_at": "2026-06-20T09:00:00Z",  # predates spawn
+        }
+        evidence = check_pr_evidence_fresh_shape(
+            task_id="abc123",
+            goal="implement feature X",
+            spawned_at=spawned_at,
+            client=mock_client,
+        )
+        assert evidence is False
+
 
 # =============================================================================
 # AC2: PR-Evidence Check — Rework Shape
@@ -235,6 +248,26 @@ class TestPREvidenceReworkShape:
             client=mock_client,
         )
         assert evidence is False
+
+
+class TestCommitPaginationLastPage:
+    """``_parse_last_page`` drives the >100-commit pagination fix (MAJOR, PR #1011)."""
+
+    def test_no_link_header_is_single_page(self) -> None:
+        assert _parse_last_page(None) is None
+        assert _parse_last_page("") is None
+
+    def test_link_header_without_last_rel(self) -> None:
+        # Only a "next" relation (e.g. first page of a 2-page set seen without last) → None
+        link = '<https://api.github.com/x?page=2>; rel="next"'
+        assert _parse_last_page(link) is None
+
+    def test_link_header_with_last_rel(self) -> None:
+        link = (
+            '<https://api.github.com/repos/o/r/pulls/1/commits?per_page=100&page=2>; rel="next", '
+            '<https://api.github.com/repos/o/r/pulls/1/commits?per_page=100&page=4>; rel="last"'
+        )
+        assert _parse_last_page(link) == 4
 
 
 # =============================================================================
@@ -376,12 +409,19 @@ class TestOrchestratorRoutingTable:
         assert decision.assignee == "owner"
 
     def test_task_failed_pr_evidence_null_escalate(self) -> None:
-        """task_failed + pr_evidence=null (unparseable goal) → ESCALATE, never re-drive."""
+        """task_failed + confirmed exit + pr_evidence=null (unparseable goal) → ESCALATE.
+
+        ``exit_confirmed=True`` is load-bearing: without it the event hits the
+        unconfirmed-exit branch *before* the pr_evidence=null branch, so the test
+        would assert ESCALATE for the wrong reason and silently stop covering the
+        null-evidence path (MAJOR finding, PR #1011).
+        """
         event = {
             "event_type": "task_failed",
             "severity": "medium",
             "payload": {
                 "task_id": "t123",
+                "exit_confirmed": True,
                 "pr_evidence": None,  # unparseable goal
                 "failure_reason": "exit 1",
                 "goal": "some unparseable text",
@@ -389,6 +429,54 @@ class TestOrchestratorRoutingTable:
         }
         decision = handle_event(event)
         assert decision.route == Route.ESCALATE
+        assert decision.escalated_reason is not None
+        assert "pr_evidence=null" in decision.escalated_reason
+
+    def test_task_done_non_bool_pr_evidence_escalates(self) -> None:
+        """task_done + non-bool/non-None pr_evidence → ESCALATE naming the type fault.
+
+        A malformed emitter sending ``pr_evidence="true"`` (string) or ``1`` must
+        not fall through every ``is True / is False / is None`` arm to the generic
+        Step-4 "no deterministic route" fail-safe — that reason misattributes a
+        data-shape bug to an unknown event type (CRITICAL finding, PR #1011).
+        """
+        for bad in ("true", 1, {}, [], 0.0):
+            event = {
+                "event_type": "task_done",
+                "severity": "medium",
+                "payload": {
+                    "task_id": "t123",
+                    "attempt": 1,
+                    "pr_evidence": bad,
+                    "goal": "implement feature",
+                },
+            }
+            decision = handle_event(event)
+            assert decision.route == Route.ESCALATE, f"pr_evidence={bad!r}"
+            assert decision.escalated_reason is not None
+            assert "pr_evidence" in decision.escalated_reason
+            assert "no deterministic route" not in decision.escalated_reason
+
+    def test_task_failed_non_bool_pr_evidence_escalates(self) -> None:
+        """task_failed + confirmed exit + non-bool/non-None pr_evidence → ESCALATE naming the fault."""
+        for bad in ("false", 1, {}, [], 0.0):
+            event = {
+                "event_type": "task_failed",
+                "severity": "medium",
+                "payload": {
+                    "task_id": "t123",
+                    "attempt": 1,
+                    "exit_confirmed": True,
+                    "pr_evidence": bad,
+                    "failure_reason": "exit 1",
+                    "goal": "implement feature",
+                },
+            }
+            decision = handle_event(event)
+            assert decision.route == Route.ESCALATE, f"pr_evidence={bad!r}"
+            assert decision.escalated_reason is not None
+            assert "pr_evidence" in decision.escalated_reason
+            assert "no deterministic route" not in decision.escalated_reason
 
 
 # =============================================================================

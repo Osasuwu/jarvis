@@ -299,6 +299,18 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
                 key,
                 reason="task_done with unparseable goal (pr_evidence=null)",
             )
+        # Exhaustive fall-through: pr_evidence is neither True/False/None — a
+        # malformed emitter sent a string/int/etc. Escalate naming the data fault
+        # instead of silently dropping past the Step-4 "no deterministic route"
+        # fail-safe, which would misattribute a payload-shape bug to an unknown
+        # event type (CRITICAL #1, PR #1011).
+        return _escalate(
+            event_type,
+            severity,
+            target,
+            key,
+            reason=f"task_done with malformed pr_evidence: {pr_evidence!r}",
+        )
 
     if event_type == "task_failed":
         pr_evidence = payload.get("pr_evidence")
@@ -343,6 +355,16 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
                 key,
                 reason=f"task_failed with no PR evidence after {attempt} attempts: {failure_reason}",
             )
+        # Exhaustive fall-through: pr_evidence is neither True/False/None (and the
+        # exit was confirmed). Malformed payload — escalate naming the data fault
+        # rather than dropping to the Step-4 generic fail-safe (CRITICAL #1, PR #1011).
+        return _escalate(
+            event_type,
+            severity,
+            target,
+            key,
+            reason=f"task_failed with malformed pr_evidence: {pr_evidence!r}",
+        )
 
     # 3. Pure-pipeline events → acknowledge, no work (AC1).
     if event_type in _NOOP_EVENT_TYPES:
