@@ -153,6 +153,7 @@ def store_event(
     severity: str = "info",
     payload: dict[str, Any] | None = None,
     source: str = "langgraph-agent",
+    dedup_key: str | None = None,
     client: Client | None = None,
     config: AgentConfig | None = None,
 ) -> dict[str, Any]:
@@ -161,6 +162,16 @@ def store_event(
     Same queue Claude Code polls via ``events_list`` — agents can emit
     findings here and the orchestrator picks them up in its next loop.
     Returns the inserted row (includes the generated ``id``).
+
+    ``dedup_key`` (#953 AC1/AC9) is written only when set — the column is
+    unique-when-present, so emitting it on a re-observed terminal event lets
+    the DB absorb the duplicate. When a ``dedup_key`` is supplied we ``upsert``
+    on that column: a genuine duplicate resolves cleanly (idempotent
+    re-observation) while real backend errors still propagate. The round-1 code
+    used a plain ``insert`` and relied on a swallowed 409 to absorb the
+    duplicate — which also masked legitimate insert failures (CRITICAL, #1011).
+    Omitting ``dedup_key`` (``None``) keeps the row out of the unique index and
+    uses a plain ``insert``, preserving behavior for non-dedup callers.
     """
     cli = client or get_client(config)
     row = {
@@ -171,10 +182,16 @@ def store_event(
         "title": title,
         "payload": payload or {},
     }
-    result = cli.table("events").insert(row).execute()
+    if dedup_key is not None:
+        row["dedup_key"] = dedup_key
+        result = cli.table("events").upsert(row, on_conflict="dedup_key").execute()
+        verb = "upserting"
+    else:
+        result = cli.table("events").insert(row).execute()
+        verb = "inserting"
     data = result.data or []
     if not data:
-        raise RuntimeError(f"Supabase returned no row after inserting event: {row!r}")
+        raise RuntimeError(f"Supabase returned no row after {verb} event: {row!r}")
     return data[0]
 
 
