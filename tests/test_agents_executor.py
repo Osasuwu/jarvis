@@ -152,10 +152,18 @@ def test_resolve_claude_binary_raises_with_actionable_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import shutil as _shutil
+
+    import agents.executor as _executor
     from agents.executor import _resolve_claude_binary
 
     monkeypatch.delenv("JARVIS_CLAUDE_BIN", raising=False)
     monkeypatch.setattr(_shutil, "which", lambda _name: None)
+    # On Windows the 4th resolution step probes documented install paths
+    # (#385). On a dev box where `claude` lives at one of those defaults,
+    # the function would return that path instead of raising — a local-only
+    # false failure. Neutralize the fallback so all four steps fail
+    # regardless of host OS / installed binaries.
+    monkeypatch.setattr(_executor, "_CLAUDE_DEFAULT_WINDOWS_PATHS", ())
 
     with pytest.raises(FileNotFoundError, match="JARVIS_CLAUDE_BIN"):
         _resolve_claude_binary()
