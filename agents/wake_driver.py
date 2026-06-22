@@ -22,6 +22,9 @@ Behavior:
   model). wake_driver deliberately does **not** import
   :func:`agents.orchestrator.handle_event` — the driver is a decisionless
   program and the router is a separate concern.
+- **Path B (#745)** — the tick optionally runs the parked-event re-queue poller
+  before draining, so events that were parked because their blocking task
+  completed are re-queued to ``pending`` and picked up on the same tick.
 - **Task completion loop (#921).** When a ``task_port`` is wired in, each tick
   also polls the processes spawned by earlier ticks (the in-memory liveness
   map owned by :func:`run`) and closes their ``task_queue`` rows: exit 0 →
@@ -56,6 +59,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 from dotenv import load_dotenv
 
 from agents.config import load_config
+from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
@@ -75,8 +79,15 @@ from agents.task_dispatch import (
     reclaim_stale_tasks,
 )
 
+# Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
+# no import cycle to defer around. The Path B poll step runs every tick when a
+# poller_port is wired, so a per-call import bought nothing but obscurity.
+from agents.poller import poll as poll_parked
+
 if TYPE_CHECKING:
     import psycopg
+
+    from agents.poller import PollerPort
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +100,11 @@ CLAIMER = "wake_driver"
 
 # The NOTIFY channel from the #739 substrate (notify_events_insert).
 EVENTS_CHANNEL = "events"
+
+# The NOTIFY channel from the #922 task_queue substrate (notify_task_queue_insert).
+# Fires when a task row reaches ``pending`` after a cap-freed transition or fresh
+# insert, waking the driver to drain without waiting for the idle timeout.
+TASK_QUEUE_CHANNEL = "task_queue"
 
 # Orchestrator stub returns whatever it likes; the driver only cares that it
 # returned without raising before committing ``processed``.
@@ -122,16 +138,18 @@ class EventQueuePort(Protocol):
 class TickResult:
     """What one :func:`tick` did — completion poll, watchdogs, then both drains.
 
-    The ``tasks_*`` fields default to 0 so an event-only tick (no ``task_port``)
-    constructs unchanged. ``tasks_done`` / ``tasks_failed_exit`` count rows
-    closed by the #921 completion poll (Model P: *done* = process exited 0,
-    nothing more — not task success, not PR merged). Runaways tree-killed by
-    the same step fold into ``tasks_failed_exit`` (their rows end ``failed``
-    just like a non-zero exit).
+    ``requeued`` counts ``parked`` events the Path B poller (#745) returned to
+    ``pending`` this tick. The ``tasks_*`` fields default to 0 so an event-only
+    tick (no ``task_port``) constructs unchanged. ``tasks_done`` /
+    ``tasks_failed_exit`` count rows closed by the #921 completion poll (Model P:
+    *done* = process exited 0, nothing more — not task success, not PR merged).
+    Runaways tree-killed by the same step fold into ``tasks_failed_exit`` (their
+    rows end ``failed`` just like a non-zero exit).
     """
 
     reclaimed: int
     processed: int
+    requeued: int = 0
     tasks_reclaimed: int = 0
     tasks_reaped: int = 0
     tasks_spawned: int = 0
@@ -190,6 +208,7 @@ def tick(
     orchestrator: Orchestrator,
     *,
     stale_after_seconds: float,
+    poller_port: PollerPort | None = None,
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
     task_resolve_binary: ResolveBinary = default_resolve_binary,
@@ -199,12 +218,16 @@ def tick(
     task_procs: dict[str, TrackedProc] | None = None,
     task_clock: Callable[[], float] = time.monotonic,
     task_kill: Callable[[Any], None] = kill_process_tree,
+    task_sidecar: Sidecar | None = None,
 ) -> TickResult:
-    """One unit of work — five ordered steps (#909 AC1, #921 AC3)::
+    """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
 
         poll_completions() + kill_runaways()                  # Step 0, #921
-        → reclaim_stale(events) → reclaim_stale_tasks()       # watchdogs
-        → drain_pending(events) → drain_tasks()               # drains
+        → reclaim_stale(events)                               # Step 1, event watchdog
+        → reclaim_stale_tasks()                               # Step 2, task watchdog
+        → poll(parked events)                                 # Step 2b, Path B #745
+        → drain_pending(events)                               # Step 3, event drain
+        → drain_tasks()                                       # Step 4, task drain
 
     Step 0 closes ``running`` rows whose tracked process exited (rc 0 → done,
     rc ≠0 → failed) and tree-kills live processes past the reap threshold —
@@ -245,7 +268,7 @@ def tick(
     runaways_killed = 0
     if task_port is not None and task_procs is not None:
         try:
-            completions = poll_completions(task_port, task_procs)
+            completions = poll_completions(task_port, task_procs, sidecar=task_sidecar)
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
         try:
@@ -255,6 +278,7 @@ def tick(
                 max_runtime_seconds=task_running_reap_after_seconds,
                 now=task_clock,
                 kill=task_kill,
+                sidecar=task_sidecar,
             )
         except Exception:  # noqa: BLE001 — same isolation for the runaway killer
             logger.exception("[wake_driver] runaway kill failed; live rows retry next tick")
@@ -277,6 +301,23 @@ def tick(
                 "[wake_driver] task watchdog failed; stale task rows left for the next tick"
             )
 
+    # Step 2b — Path B parked-event re-queue (#745). Runs after the completion
+    # poll (Step 0) has closed done/failed task rows and before the event drain,
+    # so an event whose blocking task just finished is re-queued to ``pending``
+    # and drained in this same tick rather than waiting for the next wake.
+    requeued = 0
+    if poller_port is not None:
+        # Isolated like the task steps (0/2/4): a poller outage must not skip the
+        # event drain (Step 3). Without this guard a single poll() raise would
+        # propagate out of tick(), strand every event claimed earlier this pass,
+        # and bypass drain_pending entirely — the primary wake path.
+        try:
+            requeued = poll_parked(poller_port)
+        except Exception:  # noqa: BLE001 — poller outage must not block the event drain
+            logger.exception(
+                "[wake_driver] parked-event poller failed; parked events retry next tick"
+            )
+
     # Step 3 — event drain.
     processed = drain_pending(port, orchestrator)
 
@@ -294,6 +335,7 @@ def tick(
                 task_spawn,
                 resolve_binary=task_resolve_binary,
                 read_usage=task_read_usage,
+                sidecar=task_sidecar,
             )
             if task_procs is not None:
                 for task_id, proc in task_drain.procs:
@@ -306,6 +348,7 @@ def tick(
     return TickResult(
         reclaimed=reclaimed,
         processed=processed,
+        requeued=requeued,
         tasks_reclaimed=task_reclaim.reclaimed_claimed if task_reclaim else 0,
         tasks_reaped=task_reclaim.reaped_running if task_reclaim else 0,
         tasks_spawned=task_drain.spawned if task_drain else 0,
@@ -321,6 +364,7 @@ def run(
     *,
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
     should_continue: Callable[[], bool] | None = None,
+    poller_port: PollerPort | None = None,
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
     task_resolve_binary: ResolveBinary = default_resolve_binary,
@@ -339,6 +383,9 @@ def run(
     busy sleep-poll; ``should_continue`` (default: forever) lets tests bound
     the loop.
 
+    When ``poller_port`` is provided, each tick also re-queues ``parked``
+    events whose blocking task has completed (Path B, #745).
+
     When ``task_port`` is supplied, each tick also sweeps and drains the
     ``task_queue`` (#909) and the loop owns the **liveness map** (#921): one
     ``{task_id: TrackedProc}`` dict created here (or injected via
@@ -356,6 +403,20 @@ def run(
     """
     keep_going = should_continue or (lambda: True)
     procs = task_procs if task_procs is not None else ({} if task_port is not None else None)
+
+    # AC3 (#952) — boot adoption: re-adopt live processes from the sidecar directory.
+    # Only in resident mode (task_port supplied, procs map exists).
+    if task_port is not None and procs is not None and should_continue is None:
+        try:
+            sidecar = Sidecar()
+            for task_id, proc in sidecar.adopt_live_processes():
+                procs[task_id] = TrackedProc(proc=proc, started_at=task_clock())
+        except Exception:  # noqa: BLE001 — boot adoption failure is non-fatal
+            logger.exception("[wake_driver] boot adoption failed; will treat all rows as orphans")
+            sidecar = None
+    else:
+        sidecar = None
+
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
         try:
@@ -363,6 +424,7 @@ def run(
                 port,
                 orchestrator,
                 stale_after_seconds=stale_after_seconds,
+                poller_port=poller_port,
                 task_port=task_port,
                 task_spawn=task_spawn,
                 task_resolve_binary=task_resolve_binary,
@@ -372,6 +434,7 @@ def run(
                 task_procs=procs,
                 task_clock=task_clock,
                 task_kill=task_kill,
+                task_sidecar=sidecar,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
@@ -386,14 +449,16 @@ class PsycopgEventQueue:
     PostgREST (supabase-py) cannot ``LISTEN``, so this is the one place the
     agents reach Postgres directly.
 
-    Not unit-tested (needs a live DB); kept thin so the tested loop above
-    carries the logic.
+    The RPC methods need a live DB and are not unit-tested; the constructor's
+    LISTEN wiring is (a recording conn, no DB). Kept thin so the tested loop
+    above carries the logic.
     """
 
     def __init__(self, conn: psycopg.Connection, *, claimer: str = CLAIMER) -> None:
         self._conn = conn
         self._claimer = claimer
         self._conn.execute(f"LISTEN {EVENTS_CHANNEL}")
+        self._conn.execute(f"LISTEN {TASK_QUEUE_CHANNEL}")
         self._conn.commit()
 
     def claim_next(self) -> dict[str, Any] | None:
@@ -474,10 +539,11 @@ def main() -> int:
             task_port=task_port,
         )
         logger.info(
-            "[wake_driver] one-shot tick: reclaimed=%d processed=%d "
+            "[wake_driver] one-shot tick: reclaimed=%d processed=%d requeued=%d "
             "tasks_reclaimed=%d tasks_reaped=%d tasks_spawned=%d tasks_failed=%d",
             result.reclaimed,
             result.processed,
+            result.requeued,
             result.tasks_reclaimed,
             result.tasks_reaped,
             result.tasks_spawned,

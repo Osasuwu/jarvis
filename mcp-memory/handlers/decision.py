@@ -16,6 +16,19 @@ from datetime import datetime, timezone  # noqa: F401
 from mcp.types import TextContent  # noqa: F401
 
 import server  # noqa: F401  — late-bound for monkeypatch propagation
+import write_scrubber  # #555: Tier-2 write-path secret-scrubber gate
+
+# Strong references to fire-and-forget tasks. CPython holds only a weak ref to
+# a bare ``asyncio.create_task`` result, so without an external strong ref the
+# task can be GC-collected mid-flight before it completes (same pattern as
+# write_scrubber._PENDING_BLOCK_LOGS). Discard via the done-callback below.
+_PENDING_TASKS: set[asyncio.Task] = set()
+
+
+def _pin_task(task: asyncio.Task) -> None:
+    """Strong-ref *task* until completion so it can't be GC-collected mid-flight."""
+    _PENDING_TASKS.add(task)
+    task.add_done_callback(_PENDING_TASKS.discard)
 
 
 def _looks_like_uuid(s: str) -> bool:
@@ -83,7 +96,13 @@ def _resolve_memory_refs(client, refs: list, project: str | None) -> tuple[list[
     return resolved, unresolved
 
 
-async def _link_fok_judgments_to_outcomes(client, outcome_ids: list[str], memory_ids: list[str], decision_timestamp: str, project: str | None) -> None:
+async def _link_fok_judgments_to_outcomes(
+    client,
+    outcome_ids: list[str],
+    memory_ids: list[str],
+    decision_timestamp: str,
+    project: str | None,
+) -> None:
     """Retroactively link FOK judgments to outcomes via memory linkage (#445).
 
     Primary heuristic — time-window match:
@@ -105,7 +124,7 @@ async def _link_fok_judgments_to_outcomes(client, outcome_ids: list[str], memory
         outcome_id = outcome_ids[0] if isinstance(outcome_ids, list) else outcome_ids
 
         # Parse decision timestamp
-        decision_dt = datetime.fromisoformat(decision_timestamp.replace('Z', '+00:00'))
+        decision_dt = datetime.fromisoformat(decision_timestamp.replace("Z", "+00:00"))
         cutoff_dt = decision_dt - timedelta(minutes=30)
 
         # Build a set of memory IDs to check (normalize to strings)
@@ -156,9 +175,9 @@ async def _link_fok_judgments_to_outcomes(client, outcome_ids: list[str], memory
                         # Check if this memory_id is in the returned set
                         if mem_id in returned_ids_str:
                             # Update the judgment with the outcome_id
-                            client.table("fok_judgments").update(
-                                {"outcome_id": outcome_id}
-                            ).eq("id", judgment_id).execute()
+                            client.table("fok_judgments").update({"outcome_id": outcome_id}).eq(
+                                "id", judgment_id
+                            ).execute()
                     except Exception:
                         # Skip individual check errors
                         pass
@@ -214,6 +233,36 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
 
     client = server._get_client()
 
+    # #555: Tier-2 write-path scrubber backstop. Scan the user-supplied text
+    # BEFORE resolving refs / inserting the episode. AC names `rationale`; the
+    # privacy invariant ("MCP writes still cannot land secrets") extends the
+    # scan to every field that persists free text — `decision`,
+    # `alternatives_considered`, `actor` (the symmetric partner of
+    # `_handle_store`'s `source_provenance`, both namespace strings), and
+    # `outcomes_referenced` (persisted raw into the episode payload below with
+    # no UUID validation, so it is a free-text sink that must be scanned too).
+    # `project` persists to the episode payload (line ~275) and can carry a
+    # user path — scan it too, matching `_handle_store`'s gate.
+    # `memories_used` is scanned BEFORE resolution: any entry that is not a real
+    # UUID/name is preserved verbatim in `payload.memories_used_unresolved` AND
+    # echoed in the success text, so an unresolved secret-shaped entry (e.g. a
+    # raw `sk-ant-*` key) would otherwise bypass the gate and land in the DB.
+    block = write_scrubber.check_write(
+        client,
+        {
+            "decision": decision,
+            "rationale": rationale,
+            "alternatives_considered": args.get("alternatives_considered") or [],
+            "actor": actor,
+            "outcomes_referenced": args.get("outcomes_referenced") or [],
+            "project": project,
+            "memories_used": args.get("memories_used") or [],
+        },
+        write_path="record_decision",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
+
     resolved_memories, unresolved_memories = _resolve_memory_refs(
         client, args.get("memories_used") or [], project
     )
@@ -248,7 +297,10 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             .execute()
         )
     except Exception as exc:
-        return [TextContent(type="text", text=f"Error recording decision: {exc}")]
+        # Privacy (#555): postgrest/httpx exception str() can embed the request
+        # body (decision/rationale/etc.). If a secret ever slips the Tier-2 gate,
+        # echoing {exc} to the MCP caller would leak it — surface the type only.
+        return [TextContent(type="text", text=f"Error recording decision: {type(exc).__name__}")]
 
     if not result.data:
         return [TextContent(type="text", text="Failed to record decision.")]
@@ -261,9 +313,11 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     # decision response on N+1 Supabase round-trips inside the linker; the
     # linker itself swallows exceptions, so a detached task is correct.
     if decision_timestamp and resolved_memories and outcome_ids:
-        asyncio.create_task(
-            _link_fok_judgments_to_outcomes(
-                client, outcome_ids, resolved_memories, decision_timestamp, project
+        _pin_task(
+            asyncio.create_task(
+                _link_fok_judgments_to_outcomes(
+                    client, outcome_ids, resolved_memories, decision_timestamp, project
+                )
             )
         )
 
@@ -294,13 +348,9 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
                     "response_model", llm_meta["model"]
                 )
             if "input_tokens" in llm_meta:
-                canonical_payload["gen_ai.usage.input_tokens"] = llm_meta[
-                    "input_tokens"
-                ]
+                canonical_payload["gen_ai.usage.input_tokens"] = llm_meta["input_tokens"]
             if "output_tokens" in llm_meta:
-                canonical_payload["gen_ai.usage.output_tokens"] = llm_meta[
-                    "output_tokens"
-                ]
+                canonical_payload["gen_ai.usage.output_tokens"] = llm_meta["output_tokens"]
             if "cost_usd" in llm_meta:
                 canonical_payload["gen_ai.usage.cost_usd"] = llm_meta["cost_usd"]
                 try:
@@ -335,7 +385,7 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             import sys as _sys
 
             print(
-                f"[decision.py] events_canonical dual-write skipped: {exc}",
+                f"[decision.py] events_canonical dual-write skipped: {type(exc).__name__}",
                 file=_sys.stderr,
             )
 
