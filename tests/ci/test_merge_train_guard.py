@@ -242,6 +242,28 @@ def test_workflow_repo_name_guard_is_load_bearing():
     )
 
 
+def test_workflow_reads_candidates_loud_not_swallowed():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # `mapfile -t candidates < <(gh pr list …)` swallows gh's exit code (process
+    # substitution is invisible to set -e, and mapfile returns 0), so a transient
+    # gh failure yields an empty array -> "Nothing to do" -> a GREEN run while the
+    # train silently stalls and PRs pile up behind main (#1021, sibling of the
+    # pr-merged.yml Bug A). The candidate read must capture-then-check and exit
+    # non-zero on a gh error.
+    assert "mapfile -t candidates < <(" not in text, (
+        "candidate read must not use `mapfile < <(gh pr list …)` — it swallows "
+        "gh's exit code, turning a gh failure into a silent green no-op (#1021)."
+    )
+    assert "if ! candidates_raw=$(" in text, (
+        "candidate read must capture-then-check (`if ! candidates_raw=$(gh pr "
+        "list …)`) so gh's exit code is visible to set -e (#1021)."
+    )
+    assert "gh pr list failed" in text, (
+        "candidate read must fail loud (explicit exit 1) when gh pr list errors, "
+        "not assume zero eligible PRs and stall the train silently."
+    )
+
+
 def test_workflow_filters_match_selection_rule():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     for token in ("isDraft", "autoMergeRequest", "status:owner-queue", "BEHIND", "update-branch"):
