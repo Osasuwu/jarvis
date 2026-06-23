@@ -122,3 +122,15 @@ gh api -X PUT /repos/<owner>/<repo>/branches/<default>/protection -F required_st
 - **Gate is broken, blocking real work**: admin-merge (`gh pr merge --admin`) is fine. Note in the PR comment which gate you bypassed and why.
 - **A PR modifies `code-review.yml` itself**: `anthropics/claude-code-action@v1` refuses to run on self-modifying PRs ("Workflow validation failed" — documented behavior). The `review` check fails as expected; admin-merge.
 - **Self-hosted runner is down (redrobot)**: review/CI can't run. Verify locally, admin-merge per `redrobot_billing_blocked_manual_merge_protocol` precedent.
+
+## Tooling — MCP servers
+
+User-scope MCP servers (registered by the installer from `.claude-userlevel/.mcp.json`): `memory`, `github`, `context7`, `sequential-thinking`, `obsidian`, plus device-gated `uml` (only where `UML_MCP_HOME` is set — the workshop PC with the local Kroki backend). A server may declare `"x-jarvis-requires-env": "<VAR>"`; the installer skips it on devices where that var is unset, so the same source installs correctly everywhere.
+
+### context7 — use it, don't forget it
+
+`context7` provides **live, version-current library docs** (via `resolve-library-id` → `query-docs`). Reach for it BEFORE answering from memory whenever a task touches a library, framework, SDK, API, CLI, or cloud service — even ones you "know" (React/Three.js/FastAPI/mujoco/etc.). Training data lags; context7 doesn't. Prefer it over web search for library docs. Triggers: API syntax, config, version-migration, library-specific debugging, setup/CLI usage.
+
+Do **not** use it for: refactoring, writing scripts from scratch, debugging business logic, code review, or general programming concepts — that's reasoning, not docs lookup.
+
+Rule of thumb: about to state a library's API surface or config from memory → pull context7 first and cite what it returns.
