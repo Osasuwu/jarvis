@@ -211,6 +211,56 @@ def test_store_event_inserts_full_payload() -> None:
     assert payload["severity"] == "medium"
     assert payload["source"] == "langgraph-monitor"
     assert payload["payload"] == {"foo": 1}
+    # No dedup_key ⇒ plain insert path; upsert must NOT be used.
+    assert "upsert" not in _names(cli.chains["events"][0])
+
+
+def test_store_event_with_dedup_key_upserts_on_conflict() -> None:
+    """A dedup_key MUST drive an ``upsert(on_conflict="dedup_key")`` (CRITICAL #1011 r2).
+
+    The round-1 code used a plain ``insert`` and leaned on a swallowed 409 to
+    absorb re-observed terminal events. That swallowing also masked genuine
+    insert errors. An explicit upsert makes a true duplicate succeed cleanly
+    (idempotent re-observation) while real failures still propagate.
+    """
+    from agents import supabase_client
+
+    cli = _FakeClient()
+    cli.preset("events", _FakeResult(data=[{"id": "dedup-row"}]))
+
+    row = supabase_client.store_event(
+        event_type="task_done",
+        repo="o/r",
+        title="t",
+        dedup_key="task_done:abc123:a2",
+        client=cli,
+    )
+
+    assert row == {"id": "dedup-row"}
+    chain = cli.chains["events"][0]
+    # upsert, not insert, and the conflict target is the dedup_key column.
+    assert "insert" not in _names(chain)
+    upsert_call = _find(chain, "upsert")
+    (payload,) = upsert_call[1]
+    assert payload["dedup_key"] == "task_done:abc123:a2"
+    assert upsert_call[2].get("on_conflict") == "dedup_key"
+
+
+def test_store_event_with_dedup_key_raises_when_no_row() -> None:
+    """Upsert that returns no row still fails loud — no silent dedup no-op."""
+    from agents import supabase_client
+
+    cli = _FakeClient()
+    cli.preset("events", _FakeResult(data=[]))
+
+    with pytest.raises(RuntimeError, match="no row"):
+        supabase_client.store_event(
+            event_type="task_done",
+            repo="o/r",
+            title="t",
+            dedup_key="task_done:abc123:a2",
+            client=cli,
+        )
 
 
 # -- mark_event_processed --------------------------------------------------

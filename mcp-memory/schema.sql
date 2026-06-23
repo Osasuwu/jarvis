@@ -2630,6 +2630,30 @@ create trigger task_queue_updated_at
   before update on task_queue
   for each row execute function update_task_queue_updated_at();
 
+-- NOTIFY trigger on INSERT — wake signal for cap-freed dispatch (#922).
+-- When a task reaches pending (insert or after cap-freed transition), fire
+-- NOTIFY on 'task_queue' channel so wake_driver wakes immediately instead of
+-- waiting for the idle-timeout watchdog.
+create or replace function notify_task_queue_insert()
+returns trigger as $$
+begin
+  perform pg_notify(
+    'task_queue',
+    json_build_object(
+      'id',     new.id,
+      'goal',   new.goal,
+      'status', new.status
+    )::text
+  );
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists task_queue_notify on task_queue;
+create trigger task_queue_notify
+  after insert on task_queue
+  for each row execute function notify_task_queue_insert();
+
 -- RLS -- matches the Pillar 7 convention (allow-all under service/anon
 -- key; app-layer gatekeeping is the interface functions). Hardening
 -- to per-role policies is its own sweep.

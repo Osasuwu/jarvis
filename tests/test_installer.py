@@ -192,6 +192,57 @@ def test_template_content_mcp_json_rewrites_args(fake_repo: Path) -> None:
     assert args[0].startswith(fake_repo.as_posix() + "/scripts/")
 
 
+def _write_gated_mcp_source(repo: Path) -> Path:
+    src = repo / "gated.mcp.json"
+    src.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plain": {"command": "npx", "args": ["plain-server"]},
+                    "gated": {
+                        "command": "python",
+                        "args": ["${GATED_HOME}/server.py"],
+                        "x-jarvis-requires-env": "GATED_HOME",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return src
+
+
+def _planned_server_names(actions: list) -> list[str]:
+    return [a.dest for a in actions if a.kind == "register_mcp_user"]
+
+
+def test_mcp_gate_skips_server_when_required_env_unset(
+    fake_repo: Path, monkeypatch
+) -> None:
+    """A server with x-jarvis-requires-env is skipped where that var is unset."""
+    monkeypatch.delenv("GATED_HOME", raising=False)
+    src = _write_gated_mcp_source(fake_repo)
+    actions = installer._plan_mcp_user_registrations(src, fake_repo, fake_repo / "t")
+    planned = _planned_server_names(actions)
+    assert "plain" in planned
+    assert "gated" not in planned
+
+
+def test_mcp_gate_registers_server_and_strips_marker_when_env_set(
+    fake_repo: Path, monkeypatch
+) -> None:
+    """When the required env IS set, the server registers and the marker key is
+    stripped from the spec so it never reaches `claude mcp add`."""
+    monkeypatch.setenv("GATED_HOME", "/opt/gated")
+    src = _write_gated_mcp_source(fake_repo)
+    actions = installer._plan_mcp_user_registrations(src, fake_repo, fake_repo / "t")
+    gated = [a for a in actions if a.kind == "register_mcp_user" and a.dest == "gated"]
+    assert len(gated) == 1
+    spec = json.loads(gated[0].note)["spec"]
+    assert "x-jarvis-requires-env" not in spec
+    assert spec["command"] == "python"
+
+
 def test_build_plan_state_fresh_has_writes_no_backup(manifest: Path, fake_repo: Path) -> None:
     m = installer.load_manifest(manifest)
     plan = installer.build_plan(m, fake_repo)
@@ -1291,6 +1342,84 @@ def test_register_mcp_user_raises_on_add_failure(monkeypatch) -> None:
     monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
     with pytest.raises(RuntimeError, match="claude mcp add failed"):
         installer._register_mcp_user("x", {"command": "y", "args": []})
+
+
+def test_register_mcp_user_passes_timeout(monkeypatch) -> None:
+    """Both the remove and add calls must carry a timeout so a child that
+    inherits the capture pipe and never exits can't hang the installer."""
+    timeouts: list[float | None] = []
+
+    def fake_run(cmd, **kwargs):
+        timeouts.append(kwargs.get("timeout"))
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
+    installer._register_mcp_user("memory", {"command": "python", "args": ["/abs/run.py"]})
+
+    assert timeouts == [installer._MCP_SUBPROCESS_TIMEOUT, installer._MCP_SUBPROCESS_TIMEOUT]
+
+
+def test_register_mcp_user_raises_on_add_timeout(monkeypatch) -> None:
+    """A hung `claude mcp add` surfaces as RuntimeError, not a silent hang."""
+
+    def fake_run(cmd, **kwargs):
+        # remove (no `add` token) succeeds; the add call times out.
+        if "add" in cmd:
+            raise installer.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
+    with pytest.raises(RuntimeError, match="claude mcp add timed out"):
+        installer._register_mcp_user("x", {"command": "y", "args": []})
+
+
+def test_register_mcp_user_tolerates_remove_timeout(monkeypatch) -> None:
+    """A hung idempotent-remove must not block the add that follows it."""
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        if "remove" in cmd:
+            raise installer.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
+    # Should NOT raise — the add still runs after the remove times out.
+    installer._register_mcp_user("simple", {"command": "uvx", "args": ["foo-mcp"]})
+    assert any("add" in c for c in calls), "add must still run after remove timeout"
+
+
+def test_set_env_tolerates_setx_timeout(monkeypatch, capsys) -> None:
+    """A hung `setx` is reported and skipped, not propagated as a crash."""
+
+    def fake_run(cmd, **kwargs):
+        raise installer.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    # Must not raise.
+    installer._set_env("FOO", "bar", "windows")
+    assert "timed out" in capsys.readouterr().err
 
 
 def test_resolve_claude_cli_uses_pathext_when_available(monkeypatch, tmp_path) -> None:

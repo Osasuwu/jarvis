@@ -120,6 +120,23 @@ class _FakeProc:
         return self._rc
 
 
+class _AdoptedProc:
+    """``psutil.Process``-shaped handle as folded in by boot adoption (#952).
+
+    Deliberately exposes ONLY ``is_running()`` — NO ``poll()``, NO
+    ``returncode`` — exactly like a real ``psutil.Process``. This is the handle
+    kind that wedged ``running`` rows before the poll_exit fix: a bare
+    ``.poll()`` in poll_completions/kill_runaways AttributeErrors on it.
+    """
+
+    def __init__(self, *, running: bool, pid: int = 4242) -> None:
+        self._running = running
+        self.pid = pid
+
+    def is_running(self) -> bool:
+        return self._running
+
+
 class _ThrottledResult:
     """Stand-in for ``executor.SpawnResult`` when quota is near-exhaustion.
 
@@ -181,7 +198,7 @@ class TestConcurrencyCap:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),  # AC3 #953 — spawn now accepts task_id
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -195,7 +212,7 @@ class TestConcurrencyCap:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -221,7 +238,7 @@ class TestAssigneeRouting:
         )
         spawns: list[str] = []
         drain_tasks(
-            q, lambda g: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert q.claimed == ["sand"]
         assert spawns == ["do sand"]
@@ -250,7 +267,7 @@ class TestOrderingB:
 
         drain_tasks(
             q,
-            lambda g: events.append(("spawn", g)),
+            lambda g, task_id=None: events.append(("spawn", g)),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
@@ -271,7 +288,7 @@ class TestAtomicClaim:
         q = FakeTaskQueue(pending=[], running_count=0)
         spawns: list[str] = []
         res = drain_tasks(
-            q, lambda g: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert spawns == []
         assert res.spawned == 0
@@ -285,7 +302,7 @@ class TestAtomicClaim:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -307,7 +324,7 @@ class TestBinaryPreflight:
         def resolve_missing() -> str:
             raise FileNotFoundError("claude binary not found")
 
-        res = drain_tasks(q, lambda g: spawns.append(g), resolve_binary=resolve_missing)
+        res = drain_tasks(q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_missing)
 
         assert q.claimed == []  # zero claims — no row touched
         assert spawns == []
@@ -324,7 +341,7 @@ class TestBinaryPreflight:
         def resolve_denied() -> str:
             raise PermissionError("claude is not executable")
 
-        res = drain_tasks(q, lambda g: spawns.append(g), resolve_binary=resolve_denied)
+        res = drain_tasks(q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_denied)
 
         assert res.skipped_no_binary is True
         assert q.claimed == []
@@ -338,7 +355,7 @@ class TestBinaryPreflight:
         def resolve_broken() -> str:
             raise ImportError("executor dependency missing")
 
-        res = drain_tasks(q, lambda g: None, resolve_binary=resolve_broken)
+        res = drain_tasks(q, lambda g, task_id=None: None, resolve_binary=resolve_broken)
 
         assert res.skipped_no_binary is True
         assert q.claimed == []
@@ -357,7 +374,7 @@ class TestQuotaPreflight:
         spawns: list[str] = []
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             resolve_binary=_always_resolve,
             read_usage=_exhausted_reading,
         )
@@ -377,7 +394,7 @@ class TestQuotaPreflight:
 
         q = FakeTaskQueue(pending=[_row(f"t{i}") for i in range(3)], running_count=0)
         res = drain_tasks(
-            q, lambda g: None, cap=5, resolve_binary=_always_resolve, read_usage=usage
+            q, lambda g, task_id=None: None, cap=5, resolve_binary=_always_resolve, read_usage=usage
         )
         assert calls["n"] == 1
         assert res.spawned == 3
@@ -393,7 +410,7 @@ class TestSpawnFailureIsTerminal:
         q = FakeTaskQueue(pending=[_row("boom"), _row("ok")], running_count=0)
         spawns: list[str] = []
 
-        def spawn(goal: str) -> None:
+        def spawn(goal: str, task_id: str | None = None) -> None:
             if goal == "do boom":
                 raise RuntimeError("spawn blew up")
             spawns.append(goal)
@@ -428,7 +445,7 @@ class TestSpawnFailureIsTerminal:
         handle = object()
         q = Q(pending=[_row("boom"), _row("ok")], running_count=0)
 
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             if goal == "do boom":
                 raise RuntimeError("spawn blew up")
             return _HealthySpawnResult(handle)
@@ -456,7 +473,7 @@ class TestThrottledSpawn:
         q = FakeTaskQueue(pending=[_row(f"t{i}") for i in range(4)], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -477,7 +494,7 @@ class TestThrottledSpawn:
         # healthy spawn still counts; the drain then stops on the throttle.
         calls = {"n": 0}
 
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             calls["n"] += 1
             return None if calls["n"] == 1 else _ThrottledResult()
 
@@ -507,7 +524,7 @@ class TestThrottleRequeue:
         q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -528,7 +545,7 @@ class TestThrottleRequeue:
         q = Q(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -546,7 +563,7 @@ class TestThrottleRequeue:
         q = Q(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -558,7 +575,7 @@ class TestThrottleRequeue:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         drain_tasks(
             q,
-            lambda g: _HealthySpawnResult(object()),
+            lambda g, task_id=None: _HealthySpawnResult(object()),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
@@ -583,7 +600,7 @@ class TestRunningTransitionFailureIsSafe:
         q = Q(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -610,7 +627,7 @@ class TestRunningTransitionFailureIsSafe:
         q = Q(pending=[_row("bad"), _row("good")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: spawns.append(g),
+            lambda g, task_id=None: spawns.append(g),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -661,7 +678,7 @@ class TestBillingTrapThroughDrain:
 
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
 
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             return executor.spawn(
                 goal,
                 popen=captured,
@@ -811,7 +828,7 @@ class TestSpawnedProcPairs:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _HealthySpawnResult(handle),
+            lambda g, task_id=None: _HealthySpawnResult(handle),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
@@ -823,7 +840,7 @@ class TestSpawnedProcPairs:
         q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _HealthySpawnResult(handles[g]),
+            lambda g, task_id=None: _HealthySpawnResult(handles[g]),
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
@@ -835,14 +852,14 @@ class TestSpawnedProcPairs:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
             q,
-            lambda g: _ThrottledResult(),
+            lambda g, task_id=None: _ThrottledResult(),
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
         )
         assert res.procs == ()
 
     def test_raising_spawn_contributes_no_pair(self) -> None:
-        def spawn(goal: str) -> Any:
+        def spawn(goal: str, task_id: str | None = None) -> Any:
             raise RuntimeError("spawn blew up")
 
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
@@ -855,7 +872,7 @@ class TestSpawnedProcPairs:
         # driver can poll — counted as spawned, but no pair.
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
-            q, lambda g: None, resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: None, resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert res.procs == ()
         assert res.spawned == 1
@@ -932,6 +949,51 @@ class TestPollCompletions:
         assert procs == {}  # both dropped — 'bad' falls to the reaper backstop
 
 
+class TestPollCompletionsAdoptedProcess:
+    """#952 regression — adopted psutil.Process handles (no poll()) must flow
+    through poll_completions, not AttributeError-wedge the row in ``running``.
+
+    Before the poll_exit fix, boot adoption folded raw psutil.Process handles
+    into ``procs``; ``tracked.proc.poll()`` raised AttributeError (swallowed by
+    the driver's tick guard), so adopted rows NEVER completed, were NEVER
+    orphan-reaped (still in live_task_ids), and leaked a cap slot forever —
+    strictly worse than the pre-sidecar empty-map self-heal.
+    """
+
+    def test_exited_adopted_proc_closes_failed_unknown_exit(self) -> None:
+        # AC5: the true exit code of a process we did not spawn is unknowable,
+        # so an exited adopted process closes ``failed`` (never ``done``).
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_AdoptedProc(running=False), started_at=0.0)}
+        res = poll_completions(q, procs)
+        assert res.done == 0
+        assert res.failed_exit == 1
+        failed = [t for t in q.transitions if t[1] == "failed"]
+        assert len(failed) == 1 and failed[0][0] == "t0"
+        assert procs == {}
+
+    def test_running_adopted_proc_kept_no_transition(self) -> None:
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_AdoptedProc(running=True), started_at=0.0)}
+        res = poll_completions(q, procs)
+        assert res.done == 0 and res.failed_exit == 0
+        assert "t0" in procs
+        assert q.transitions == []
+
+    def test_runaway_adopted_proc_is_tree_killed(self) -> None:
+        # kill_runaways must also tolerate the adopted handle — a still-running
+        # adopted process past max runtime is killed, not skipped on a raise.
+        q = FakeTaskQueue()
+        kills: list[Any] = []
+        procs = {"t0": TrackedProc(_AdoptedProc(running=True), started_at=0.0)}
+        n = kill_runaways(q, procs, max_runtime_seconds=100, now=lambda: 200.0, kill=kills.append)
+        assert n == 1
+        assert len(kills) == 1
+        failed = [t for t in q.transitions if t[1] == "failed"]
+        assert failed and failed[0][0] == "t0"
+        assert procs == {}
+
+
 # ---------------------------------------------------------------------------
 # #921 AC6 — runaway live processes are tree-killed and failed
 # ---------------------------------------------------------------------------
@@ -971,6 +1033,85 @@ class TestKillRunaways:
         assert n == 0
         assert kills == []
         assert "t0" in procs
+
+    def test_runaway_kill_emits_task_failed(self) -> None:
+        # AC1 (#953): a runaway-reaped task is the worst-case stuck class the
+        # reconciliation exists to catch — it MUST emit task_failed so the
+        # orchestrator can re-drive/escalate. poll_completions emits at its
+        # terminal boundary but kill_runaways did not (MAJOR, PR #1011 round-4).
+        q = FakeTaskQueue()
+        emitted: list[dict[str, Any]] = []
+
+        def emit(
+            event_type: str, severity: str, payload: dict[str, Any], *, dedup_key: str | None = None
+        ) -> None:
+            emitted.append(
+                {
+                    "event_type": event_type,
+                    "severity": severity,
+                    "payload": payload,
+                    "dedup_key": dedup_key,
+                }
+            )
+
+        procs = {
+            "t0": TrackedProc(
+                _FakeProc(rc=None),
+                started_at=0.0,
+                goal="implement #5",
+                idempotency_key="task_done:lin5:r2",
+            )
+        }
+        n = kill_runaways(
+            q,
+            procs,
+            max_runtime_seconds=100,
+            now=lambda: 200.0,
+            kill=lambda _p: None,
+            event_emit=emit,
+        )
+        assert n == 1
+        assert len(emitted) == 1
+        ev = emitted[0]
+        assert ev["event_type"] == "task_failed"
+        assert ev["payload"]["exit_confirmed"] is True
+        assert ev["payload"]["pr_evidence"] is None
+        assert "killed" in ev["payload"]["failure_reason"]
+        # lineage/attempt parsed from the idempotency key (re-drive keying).
+        assert ev["payload"]["lineage_key"] == "task_done:lin5"
+        assert ev["payload"]["attempt"] == 2
+        assert ev["dedup_key"] == "task_failed:t0:a2"
+
+    def test_runaway_kill_emit_failure_does_not_block_transition(self) -> None:
+        # Decoupled emit (MAJOR, PR #1011): a raising event_emit must NOT stop
+        # the FSM transition — else the killed row wedges in `running` until the
+        # 6h reaper, exactly the stall poll_completions' decoupling avoids.
+        q = FakeTaskQueue()
+
+        def boom(*_a: Any, **_k: Any) -> None:
+            raise RuntimeError("supabase down")
+
+        procs = {"t0": TrackedProc(_FakeProc(rc=None), started_at=0.0)}
+        n = kill_runaways(
+            q,
+            procs,
+            max_runtime_seconds=100,
+            now=lambda: 200.0,
+            kill=lambda _p: None,
+            event_emit=boom,
+        )
+        assert n == 1
+        assert {t[0] for t in q.transitions if t[1] == "failed"} == {"t0"}
+        assert procs == {}
+
+    def test_runaway_kill_no_emit_when_emitter_absent(self) -> None:
+        # With no event_emit wired the #921 behavior is unchanged: kill + fail,
+        # no events (the dispatch loop runs eventless until wake_driver wires it).
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_FakeProc(rc=None), started_at=0.0)}
+        n = kill_runaways(q, procs, max_runtime_seconds=100, now=lambda: 200.0, kill=lambda _p: None)
+        assert n == 1
+        assert procs == {}
 
     def test_kill_raise_isolated_keeps_entry(self) -> None:
         # A failed kill leaves a possibly-alive process — do NOT fail the row
@@ -1070,7 +1211,7 @@ class TestInjectablePortArchitecture:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         spawns: list[str] = []
         drain_tasks(
-            q, lambda g: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert spawns == ["do t0"]
         assert os.environ is not None  # sanity — no monkeypatch leaked

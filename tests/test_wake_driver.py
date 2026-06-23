@@ -402,7 +402,7 @@ def test_tick_runs_the_four_steps_in_order():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
     )
@@ -442,7 +442,7 @@ def test_tick_reports_task_counts():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
     )
@@ -560,7 +560,7 @@ def test_run_forwards_task_spawn_and_resolver_to_tick():
         wake_driver.default_orchestrator,
         should_continue=should_continue,
         task_port=tq,
-        task_spawn=lambda goal: spawned.append(goal),
+        task_spawn=lambda goal, **_: spawned.append(goal),
         task_resolve_binary=fake_resolve,
         task_read_usage=_healthy_usage,
     )
@@ -633,7 +633,7 @@ def test_tick_completion_poll_runs_before_watchdogs_and_drains():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -662,7 +662,7 @@ def test_tick_reports_completion_counts_and_drops_closed_entries():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: None,
+        task_spawn=lambda goal, **_: None,
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -734,10 +734,24 @@ def test_tick_kills_runaway_live_processes():
 
 def test_tick_merges_spawned_procs_into_the_tracking_map():
     # AC2: a successful spawn's (task_id, proc) pair lands in the map, stamped
-    # with the injected clock — so the NEXT tick can poll it to completion.
+    # with the injected clock — so the NEXT tick can poll it to completion. The
+    # #953 spawn context (goal, idempotency_key, tz-aware spawned_at) must fold
+    # through too, because the terminal completion poll reads it off TrackedProc
+    # to compute PR evidence and lineage; asserting only proc/started_at would
+    # let a regression that drops those fields pass unnoticed (MEDIUM #1011 r3).
     log: list = []
     proc = _TickProc(rc=None)
-    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        log,
+        pending=[
+            {
+                "id": "t1",
+                "goal": "g",
+                "assignee": "sandcastle",
+                "idempotency_key": "task_done:abc123:r2",
+            }
+        ],
+    )
     procs: dict = {}
 
     wake_driver.tick(
@@ -745,7 +759,7 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
         task_port=tq,
-        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -755,6 +769,55 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
     assert set(procs) == {"t1"}
     assert procs["t1"].proc is proc
     assert procs["t1"].started_at == 42.0
+    # #953 spawn context folded through for the terminal-boundary poll.
+    assert procs["t1"].goal == "g"
+    assert procs["t1"].idempotency_key == "task_done:abc123:r2"
+    assert procs["t1"].spawned_at is not None
+    # spawned_at MUST be tz-aware — the rework-shape evidence check compares it
+    # against a tz-aware PR timestamp, and a naive value would raise.
+    assert procs["t1"].spawned_at.tzinfo is not None
+
+
+def test_tick_batch_shares_one_started_at_stamp():
+    # #957 MAJOR (#1011): every proc drained in ONE tick shares the single
+    # pre-drain stamp — the clock is sampled once, before the drain, NOT
+    # per-task. This is deliberate (clock-first avoids orphaning just-spawned
+    # handles if the clock raises mid-fold); the bounded skew across a batch is
+    # negligible vs the multi-hour runaway threshold. Pin it so a future
+    # "per-task accuracy" refactor can't silently regress the safety property
+    # the TrackedProc docstring now documents.
+    clock_calls: list = []
+
+    def counting_clock() -> float:
+        clock_calls.append(1)
+        return 7.0
+
+    tq = _RecordingTaskQueue(
+        [],
+        pending=[
+            {"id": "t1", "goal": "g1", "assignee": "sandcastle"},
+            {"id": "t2", "goal": "g2", "assignee": "sandcastle"},
+        ],
+    )
+    procs: dict = {}
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: _SpawnHandle(_TickProc(rc=None)),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=counting_clock,
+    )
+
+    assert set(procs) == {"t1", "t2"}
+    # Both procs carry the same pre-drain stamp …
+    assert procs["t1"].started_at == procs["t2"].started_at == 7.0
+    # … because the clock was sampled exactly once for the whole batch.
+    assert len(clock_calls) == 1
 
 
 def test_tick_stamps_the_clock_before_spawning():
@@ -768,7 +831,7 @@ def test_tick_stamps_the_clock_before_spawning():
         order.append("clock")
         return 0.0
 
-    def spawn(goal: str) -> _SpawnHandle:
+    def spawn(goal: str, **_: object) -> _SpawnHandle:
         order.append("spawn")
         return _SpawnHandle(_TickProc(rc=None))
 
@@ -799,7 +862,12 @@ def test_tick_with_a_broken_clock_spawns_nothing():
     def bad_clock() -> float:
         raise RuntimeError("clock broken")
 
-    def spawn(goal: str) -> _SpawnHandle:
+    # Signature mirrors the production spawn call ``spawn(goal, task_id=...)``
+    # (drain_tasks). With a bare ``def spawn(goal)`` a regression that reordered
+    # the clock AFTER the drain would crash here with a TypeError on the missing
+    # task_id kwarg — masking the real assertion (spawned == []) behind an
+    # unrelated error (MEDIUM #1011 r3).
+    def spawn(goal: str, **_: object) -> _SpawnHandle:
         spawned.append(goal)
         return _SpawnHandle(_TickProc(rc=None))
 
@@ -899,7 +967,7 @@ def test_run_retains_the_tracking_map_across_ticks():
         wake_driver.default_orchestrator,
         should_continue=should_continue,
         task_port=tq,
-        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_procs=procs,
@@ -931,7 +999,7 @@ def test_run_creates_and_retains_a_map_when_not_injected():
         wake_driver.default_orchestrator,
         should_continue=should_continue,
         task_port=tq,
-        task_spawn=lambda goal: _SpawnHandle(proc),
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
         task_resolve_binary=lambda: "claude",
         task_read_usage=_healthy_usage,
         task_clock=lambda: 0.0,
@@ -967,3 +1035,102 @@ def test_run_forwards_task_read_usage_to_the_drain():
     )
 
     assert calls["n"] == 1
+
+
+# --- #922: task_queue NOTIFY channel for cap-freed task dispatch --------
+
+
+def test_task_queue_channel_constant_distinct_from_events():
+    """AC1: the task_queue NOTIFY channel constant exists and is distinct
+    from the events channel (cap-freed signals must not collide)."""
+    assert wake_driver.TASK_QUEUE_CHANNEL == "task_queue"
+    assert wake_driver.TASK_QUEUE_CHANNEL != wake_driver.EVENTS_CHANNEL
+
+
+class _RecordingConn:
+    """Minimal psycopg.Connection stand-in that records execute() SQL.
+
+    PsycopgEventQueue.__init__ only calls conn.execute(...) + conn.commit();
+    no live DB is needed to verify the LISTEN wiring it issues at construction.
+    """
+
+    def __init__(self):
+        self.executed: list[str] = []
+        self.commits = 0
+
+    def execute(self, sql, *args):
+        self.executed.append(sql)
+        return self
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_psycopg_event_queue_listens_on_both_channels_at_construction():
+    """AC2: constructing PsycopgEventQueue issues LISTEN on BOTH the events
+    channel and the task_queue channel, then commits — so a cap-freed NOTIFY
+    actually wakes the loop. Behavioral check, not just constant existence."""
+    conn = _RecordingConn()
+
+    wake_driver.PsycopgEventQueue(conn)
+
+    assert f"LISTEN {wake_driver.EVENTS_CHANNEL}" in conn.executed
+    assert f"LISTEN {wake_driver.TASK_QUEUE_CHANNEL}" in conn.executed
+    assert conn.commits >= 1
+
+
+# --- main() resource management (#953 PR #1011 round 3) ---------------------
+
+
+class _CloseRecordingClient:
+    """Stand-in for the lifetime HttpxGitHubClient that records close() calls."""
+
+    def __init__(self) -> None:
+        self.closed = 0
+
+    def close(self) -> None:
+        self.closed += 1
+
+
+def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
+    """Patch out main()'s heavy wiring; return the evidence client it builds.
+
+    main() resolves ``default_github_client`` / ``get_client`` via
+    function-local imports, so they are patched at their source modules (the
+    local import rebinds the name from there at call time)."""
+    client = _CloseRecordingClient()
+    monkeypatch.setattr("sys.argv", ["wake_driver"])
+    monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda: object())
+    monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", lambda *a, **k: object())
+    monkeypatch.setattr(
+        wake_driver, "_default_event_emit", lambda **k: (lambda *a, **kk: None)
+    )
+    monkeypatch.setattr("agents.github_client.default_github_client", lambda: client)
+    monkeypatch.setattr("agents.supabase_client.get_client", lambda: object())
+    monkeypatch.setattr(wake_driver, "run", run_impl)
+    return client
+
+
+def test_main_closes_evidence_client_on_normal_exit(monkeypatch):
+    # MEDIUM (#1011 r3): the driver holds ONE HttpxGitHubClient for its whole
+    # lifetime; main() must release its pooled TCP/TLS connections when the loop
+    # returns normally — otherwise a supervised restart loop leaks sockets.
+    client = _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+
+    assert wake_driver.main() == 0
+    assert client.closed == 1
+
+
+def test_main_closes_evidence_client_when_run_raises(monkeypatch):
+    # The leak is worst exactly when the loop dies unexpectedly (a SIGTERM
+    # handler raising, an unhandled error). The finally must fire on the
+    # exception path too, then let the error propagate for crash-restart.
+    def boom(*a, **k):
+        raise RuntimeError("loop died")
+
+    client = _wire_main(monkeypatch, run_impl=boom)
+
+    with pytest.raises(RuntimeError, match="loop died"):
+        wake_driver.main()
+    assert client.closed == 1

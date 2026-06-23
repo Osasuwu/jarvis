@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from mcp.types import TextContent
 
 import server  # late-bound — see module docstring
+import write_scrubber  # #555: Tier-2 write-path secret-scrubber gate
 
 # Recall pipeline constants and primitive helpers live in mcp-memory/recall.py
 # (deep-module split, #496). Aliased back to the legacy private names so that
@@ -88,6 +89,22 @@ MAX_CLASSIFIER_NEIGHBORS = 5
 
 GAP_THRESHOLD = 0.45  # known-unknowns: log gaps when top_similarity < this
 GAP_DEDUP_SIM = 0.9
+
+
+# Strong references to fire-and-forget tasks. CPython holds only a weak ref to
+# a bare ``asyncio.create_task`` result, so without an external strong ref the
+# task can be GC-collected mid-flight before it completes (same pattern as
+# write_scrubber._PENDING_BLOCK_LOGS and decision._PENDING_TASKS). Every
+# detached task in this module — recall touch/backfill/recall-event, store-path
+# auto-link/known-unknown resolution — is pinned here. Discard via the
+# done-callback below.
+_PENDING_TASKS: set[asyncio.Task] = set()
+
+
+def _pin_task(task: asyncio.Task) -> None:
+    """Strong-ref *task* until completion so it can't be GC-collected mid-flight."""
+    _PENDING_TASKS.add(task)
+    task.add_done_callback(_PENDING_TASKS.discard)
 
 
 async def _upsert_known_unknown(
@@ -244,7 +261,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
                     if "always_load" not in (row.get("tags") or [])
                 ]
                 if ids_to_touch:
-                    asyncio.create_task(_touch_memories(client, ids_to_touch))
+                    _pin_task(asyncio.create_task(_touch_memories(client, ids_to_touch)))
             return results
 
     # Fallback: keyword-only search (embed failure or empty hybrid result).
@@ -263,7 +280,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
 
     # Lazily backfill embeddings for records missing them (fire-and-forget)
     if os.environ.get("VOYAGE_API_KEY"):
-        asyncio.create_task(_backfill_missing_embeddings(client, project))
+        _pin_task(asyncio.create_task(_backfill_missing_embeddings(client, project)))
 
     return results
 
@@ -351,7 +368,7 @@ async def _hybrid_recall(
         "type_filter": mem_type,
         "show_history": show_history,
     }
-    asyncio.create_task(_emit_recall_event(client, payload))
+    _pin_task(asyncio.create_task(_emit_recall_event(client, payload)))
 
     # Touch fans out across the whole displayed set (direct + linked) so
     # access-frequency boost matches what the user actually saw.
@@ -914,6 +931,27 @@ async def _handle_store(args: dict) -> list[TextContent]:
             )
         ]
 
+    # Tier-2 write-path secret-scrubber gate; see write_scrubber module
+    # docstring. Run AFTER validation but BEFORE any embedding/insert so a
+    # blocked write generates no embedding and lands no row. Reject (not
+    # silent-scrub) — the write is intent-bearing. Scan every caller-supplied
+    # field that persists free text, including `project` (a caller string
+    # written to the memories row).
+    block = write_scrubber.check_write(
+        client,
+        {
+            "name": mem_name,
+            "content": content,
+            "description": description,
+            "tags": tags,
+            "source_provenance": source_provenance,
+            "project": project,
+        },
+        write_path="memory_store",
+    )
+    if block is not None:
+        return [TextContent(type="text", text=block)]
+
     # Phase 2a: canonical-form embedding — include name + tags + description + content.
     # Name and tags carry high-signal lexical cues that raw content often dilutes
     # (long narrative memories where the key topic is only in the name).
@@ -1012,13 +1050,15 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     "content": content,
                     "tags": tags,
                 }
-                asyncio.create_task(
-                    _create_auto_links(
-                        client,
-                        stored_id,
-                        similar_rows,
-                        mem_type,
-                        candidate=candidate_for_classifier,
+                _pin_task(
+                    asyncio.create_task(
+                        _create_auto_links(
+                            client,
+                            stored_id,
+                            similar_rows,
+                            mem_type,
+                            candidate=candidate_for_classifier,
+                        )
                     )
                 )
 
@@ -1048,7 +1088,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
         # Resolve known unknowns: if stored memory matches any open unknown > 0.7 similarity,
         # mark as resolved (fire-and-forget, best-effort)
-        asyncio.create_task(_resolve_known_unknowns(client, embedding, stored_id))
+        _pin_task(asyncio.create_task(_resolve_known_unknowns(client, embedding, stored_id)))
 
     # #658: structured envelope. `stored=True` is the unambiguous success
     # signal; callers must not infer success/failure from `message` prose.

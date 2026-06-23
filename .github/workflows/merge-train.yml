@@ -55,7 +55,7 @@ jobs:
             echo "::error::merge-train requires the 'jarvis-ci' GitHub App, but APP_ID and/or APP_PRIVATE_KEY repo secrets are unset."
             echo "Why: update-branch pushed by the default GITHUB_TOKEN does not re-trigger required checks (GitHub recursion prevention), so auto-merge stalls. A GitHub App installation token is required."
             echo "Setup (one-time per repo):"
-            echo "  1. Create a GitHub App with permissions: Contents=Read&write, Pull requests=Read&write."
+            echo "  1. Create/extend the 'jarvis-ci' GitHub App with these permissions (as labelled in the GitHub App UI): Contents: Read and write, Pull requests: Read and write, Issues: Read and write."
             echo "  2. Install the App on this repository."
             echo "  3. Add repo secrets: APP_ID (the App's numeric id) and APP_PRIVATE_KEY (the .pem private key)."
             echo "Until then the merge train cannot run on this repo."
@@ -63,12 +63,35 @@ jobs:
           fi
           echo "App credentials present."
 
+      - name: Derive repo name for least-privilege token scoping
+        # GITHUB_REPOSITORY ("owner/repo") is populated on EVERY event type.
+        # github.event.repository.name is NOT — on the `schedule` trigger the
+        # event payload has no `repository` key, so it evaluates to empty and
+        # create-github-app-token falls back to ALL installed repos. With the
+        # App now carrying Issues:write, that empty fallback would mint an
+        # Issues:write token on redrobot too, every 15 min. Strip the owner to
+        # scope the token to THIS repo on all triggers. The empty guard makes the
+        # least-privilege invariant explicit (an empty REPO_NAME re-opens the leak).
+        run: |
+          set -euo pipefail
+          : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is unset or empty}"
+          echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> "$GITHUB_ENV"
+
       - name: Mint App installation token
         id: app-token
-        uses: actions/create-github-app-token@v3
+        # Defense-in-depth: if the Derive step above is ever deleted/reordered so
+        # REPO_NAME is unset, skip minting rather than fall back to an unscoped
+        # token over ALL installed repos (the cross-repo write-scope leak). Belt
+        # to the Derive step's `:?` braces.
+        if: env.REPO_NAME != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          # Least-privilege: scope to THIS repo only (REPO_NAME is set on all
+          # triggers, see step above) so the App's write scopes never leak to
+          # other repos it's installed on (CLAUDE.md: App shared with redrobot).
+          repositories: ${{ env.REPO_NAME }}
 
       - name: Update stale auto-merge PR branches
         env:
@@ -81,7 +104,16 @@ jobs:
 
           # Candidate PRs: open, non-draft, auto-merge enabled, not parked for
           # the owner. Sorted oldest-first (FIFO — deterministic, no starvation).
-          mapfile -t candidates < <(
+          #
+          # Capture-then-check, NOT a `mapfile`-from-process-substitution read
+          # (`< <(gh pr list …)`): a process-substitution failure is invisible to
+          # `set -e` and mapfile itself returns 0, so a transient `gh pr list`
+          # failure would yield an
+          # empty array -> "Nothing to do" -> a GREEN run while the train silently
+          # stalls and PRs pile up behind main (the exact jam this workflow exists
+          # to prevent, now with no red signal; #1021, sibling of pr-merged.yml).
+          # Fail loud on a gh error instead.
+          if ! candidates_raw=$(
             gh pr list --repo "$REPO" --state open \
               --json number,isDraft,autoMergeRequest,labels,createdAt \
               --jq 'sort_by(.createdAt) | .[]
@@ -89,12 +121,17 @@ jobs:
                     | select(.autoMergeRequest != null)
                     | select([.labels[].name] | index("status:owner-queue") | not)
                     | .number'
-          )
+          ); then
+            echo "::error::gh pr list failed — refusing to assume zero eligible PRs (a swallowed gh failure would stall the merge train silently; #1021)."
+            exit 1
+          fi
 
-          if [ "${#candidates[@]}" -eq 0 ]; then
+          if [ -z "$candidates_raw" ]; then
             echo "::notice::No eligible auto-merge PRs. Nothing to do."
             exit 0
           fi
+
+          mapfile -t candidates <<< "$candidates_raw"
 
           echo "Candidates (oldest-first): ${candidates[*]}"
           updated=0
