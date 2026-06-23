@@ -22,6 +22,15 @@
     "obsidian": {
       "command": "npx",
       "args": ["-y", "@bitbonsai/mcpvault@latest", "${OBSIDIAN_VAULT_PATH}"]
+    },
+    "uml": {
+      "command": "python",
+      "args": ["${UML_MCP_HOME}/server.py"],
+      "env": {
+        "KROKI_SERVER": "http://localhost:8000",
+        "USE_LOCAL_KROKI": "true"
+      },
+      "x-jarvis-requires-env": "UML_MCP_HOME"
     }
   }
 }

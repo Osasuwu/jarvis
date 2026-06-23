@@ -329,6 +329,21 @@ def _plan_mcp_user_registrations(
     data = json.loads(rendered)
     actions: list[Action] = []
     for name, spec in (data.get("mcpServers") or {}).items():
+        # Device-capability gate (#uml): a server may declare an env var it
+        # cannot run without (e.g. uml needs UML_MCP_HOME pointing at the local
+        # uml-mcp + Kroki backend, present only on the workshop PC). On devices
+        # where that var is unset, skip registration instead of installing a
+        # server that would fail to launch. `pop` also strips the marker so it
+        # never reaches `claude mcp add`. Set the var on another device and the
+        # next install picks the server up automatically — no source change.
+        required_env = spec.pop("x-jarvis-requires-env", None)
+        if required_env and not os.environ.get(required_env):
+            print(
+                f"  skip mcp {name!r}: requires env {required_env} "
+                f"(unset on this device)",
+                file=sys.stderr,
+            )
+            continue
         payload = json.dumps({"name": name, "spec": spec}, ensure_ascii=False)
         actions.append(
             Action(
