@@ -33,6 +33,14 @@ import yaml
 
 DEFAULT_MANIFEST = "install-manifest.yaml"
 
+# Bound external-command calls so a child that inherits the capture pipe and
+# never exits can't hang the installer forever (latent grandchild-pipe hang —
+# `capture_output=True` keeps reading until every writer closes the fd). The
+# health check already uses a 30s bound; `claude mcp add` may spin up Node and
+# hit the network, so it gets more headroom than the instant local `setx`.
+_MCP_SUBPROCESS_TIMEOUT = 120
+_ENV_SUBPROCESS_TIMEOUT = 30
+
 
 # ---------- data model ----------
 
@@ -405,11 +413,20 @@ def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
     `--` is safe.
     """
     claude = _resolve_claude_cli()
-    subprocess.run(
-        [claude, "mcp", "remove", "-s", "user", name],
-        check=False,
-        capture_output=True,
-    )
+    try:
+        subprocess.run(
+            [claude, "mcp", "remove", "-s", "user", name],
+            check=False,
+            capture_output=True,
+            timeout=_MCP_SUBPROCESS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        # Best-effort cleanup — a hung remove must not block the add below.
+        print(
+            f"  warn: `claude mcp remove {name}` timed out "
+            f"after {_MCP_SUBPROCESS_TIMEOUT}s; continuing",
+            file=sys.stderr,
+        )
     cmd: list[str] = [claude, "mcp", "add", "-s", "user"]
     transport = spec.get("type")
     if transport in {"http", "sse"}:
@@ -426,7 +443,18 @@ def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
         for ek, ev in (spec.get("env") or {}).items():
             cmd += ["-e", f"{ek}={ev}"]
         cmd += ["--", spec["command"], *spec.get("args", [])]
-    result = subprocess.run(cmd, check=False, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_MCP_SUBPROCESS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"claude mcp add timed out after {_MCP_SUBPROCESS_TIMEOUT}s for {name!r}"
+        ) from exc
     if result.returncode != 0:
         raise RuntimeError(
             f"claude mcp add failed for {name!r}: {result.stderr.strip() or result.stdout.strip()}"
@@ -737,7 +765,19 @@ def _merge_json_file(
 
 def _set_env(name: str, value: str, platform: str) -> None:
     if platform == "windows":
-        result = subprocess.run(["setx", name, value], check=False, capture_output=True)
+        try:
+            result = subprocess.run(
+                ["setx", name, value],
+                check=False,
+                capture_output=True,
+                timeout=_ENV_SUBPROCESS_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            print(
+                f"setx {name} timed out after {_ENV_SUBPROCESS_TIMEOUT}s",
+                file=sys.stderr,
+            )
+            return
         if result.returncode != 0:
             stderr_msg = result.stderr.decode(errors="replace").strip()
             print(f"setx {name} failed (rc={result.returncode}): {stderr_msg}", file=sys.stderr)
@@ -1021,6 +1061,16 @@ def format_plan(plan: Plan) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Line-buffer stdout/stderr so per-action progress shows in real time even
+    # when output is captured through a pipe (install.ps1 tees it). Otherwise
+    # Python block-buffers a piped stdout and the whole run appears only at
+    # exit — which reads as a hang on slow steps like `claude mcp add`.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass  # replaced/non-TextIOWrapper stream (e.g. pytest capture)
+
     parser = argparse.ArgumentParser(
         prog="jarvis-installer",
         description="Install/sync Jarvis agent machinery into ~/.claude/.",
