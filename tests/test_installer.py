@@ -192,6 +192,57 @@ def test_template_content_mcp_json_rewrites_args(fake_repo: Path) -> None:
     assert args[0].startswith(fake_repo.as_posix() + "/scripts/")
 
 
+def _write_gated_mcp_source(repo: Path) -> Path:
+    src = repo / "gated.mcp.json"
+    src.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plain": {"command": "npx", "args": ["plain-server"]},
+                    "gated": {
+                        "command": "python",
+                        "args": ["${GATED_HOME}/server.py"],
+                        "x-jarvis-requires-env": "GATED_HOME",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return src
+
+
+def _planned_server_names(actions: list) -> list[str]:
+    return [a.dest for a in actions if a.kind == "register_mcp_user"]
+
+
+def test_mcp_gate_skips_server_when_required_env_unset(
+    fake_repo: Path, monkeypatch
+) -> None:
+    """A server with x-jarvis-requires-env is skipped where that var is unset."""
+    monkeypatch.delenv("GATED_HOME", raising=False)
+    src = _write_gated_mcp_source(fake_repo)
+    actions = installer._plan_mcp_user_registrations(src, fake_repo, fake_repo / "t")
+    planned = _planned_server_names(actions)
+    assert "plain" in planned
+    assert "gated" not in planned
+
+
+def test_mcp_gate_registers_server_and_strips_marker_when_env_set(
+    fake_repo: Path, monkeypatch
+) -> None:
+    """When the required env IS set, the server registers and the marker key is
+    stripped from the spec so it never reaches `claude mcp add`."""
+    monkeypatch.setenv("GATED_HOME", "/opt/gated")
+    src = _write_gated_mcp_source(fake_repo)
+    actions = installer._plan_mcp_user_registrations(src, fake_repo, fake_repo / "t")
+    gated = [a for a in actions if a.kind == "register_mcp_user" and a.dest == "gated"]
+    assert len(gated) == 1
+    spec = json.loads(gated[0].note)["spec"]
+    assert "x-jarvis-requires-env" not in spec
+    assert spec["command"] == "python"
+
+
 def test_build_plan_state_fresh_has_writes_no_backup(manifest: Path, fake_repo: Path) -> None:
     m = installer.load_manifest(manifest)
     plan = installer.build_plan(m, fake_repo)
