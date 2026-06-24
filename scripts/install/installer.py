@@ -49,7 +49,7 @@ _ENV_SUBPROCESS_TIMEOUT = 30
 class Action:
     """One planned filesystem action."""
 
-    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "prune_orphan" | "register_mcp_user" | "write_version" | "set_env"
+    kind: str  # "copy_file" | "copy_dir" | "merge_json" | "quarantine_file" | "prune_orphan" | "register_mcp_user" | "prune_mcp_user" | "write_version" | "set_env"
     source: str | None
     dest: str
     template: bool = False
@@ -311,10 +311,34 @@ def _quarantine_dest(path: Path) -> Path:
     return _backup_dest(path, "pre-jarvis-migration")
 
 
+def _user_mcp_config_path() -> Path:
+    """Path to the live user-scope MCP config that `claude mcp add -s user`
+    writes to (`~/.claude.json` → top-level `mcpServers` block)."""
+    return Path.home() / ".claude.json"
+
+
+def _read_user_mcp_servers(config_path: Path) -> dict[str, Any]:
+    """Return the `mcpServers` block from a live user-scope config, or {}.
+
+    Tolerant of a missing or unparseable file — both mean "no servers known"
+    rather than an error: the installer must still run on a fresh machine
+    where `~/.claude.json` doesn't exist yet.
+    """
+    if not config_path.is_file():
+        return {}
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    return servers if isinstance(servers, dict) else {}
+
+
 def _plan_mcp_user_registrations(
     source: Path,
     repo_root: Path,
     target_root: Path,
+    user_mcp_config: Path | None = None,
 ) -> list[Action]:
     """Generate a `register_mcp_user` action per server in `source` (.mcp.json).
 
@@ -331,10 +355,21 @@ def _plan_mcp_user_registrations(
 
     Also schedules a quarantine of any pre-existing `target_root/.mcp.json`
     left over from the dead file-drop strategy.
+
+    When `user_mcp_config` is given (the live `~/.claude.json`), also plans
+    `prune_mcp_user` actions for user-scope servers present there but absent
+    from `source` (#3 — drift: servers dropped from source were left
+    registered forever, e.g. a `bambu` server that outlived its manifest
+    entry). Source is authoritative for user-scope MCP. Device-gated servers
+    (skipped here because their env is unset) are NOT pruned — they remain in
+    `source`, so they're excluded from the orphan set. Prune is opt-in via the
+    param so the per-spec unit tests stay hermetic; the default `None` plans
+    no prune.
     """
     rendered = template_content(source, repo_root, target_root).decode("utf-8")
     data = json.loads(rendered)
     actions: list[Action] = []
+    source_names = set(data.get("mcpServers") or {})
     for name, spec in (data.get("mcpServers") or {}).items():
         # Device-capability gate (#uml): a server may declare an env var it
         # cannot run without (e.g. uml needs UML_MCP_HOME pointing at the local
@@ -346,8 +381,7 @@ def _plan_mcp_user_registrations(
         required_env = spec.pop("x-jarvis-requires-env", None)
         if required_env and not os.environ.get(required_env):
             print(
-                f"  skip mcp {name!r}: requires env {required_env} "
-                f"(unset on this device)",
+                f"  skip mcp {name!r}: requires env {required_env} (unset on this device)",
                 file=sys.stderr,
             )
             continue
@@ -373,6 +407,21 @@ def _plan_mcp_user_registrations(
                 note="superseded by user-scope MCP registrations",
             )
         )
+    if user_mcp_config is not None:
+        live = _read_user_mcp_servers(user_mcp_config)
+        for orphan in sorted(set(live) - source_names):
+            # Stash the orphan's full live spec in the note so a mistaken prune
+            # is recoverable from the dry-run log / plan output.
+            note = json.dumps(live[orphan], ensure_ascii=False)
+            actions.append(
+                Action(
+                    kind="prune_mcp_user",
+                    source=str(user_mcp_config),
+                    dest=orphan,
+                    group="mcp_config",
+                    note=note,
+                )
+            )
     return actions
 
 
@@ -461,6 +510,40 @@ def _register_mcp_user(name: str, spec: dict[str, Any]) -> None:
         )
 
 
+def _prune_mcp_user(name: str) -> None:
+    """Remove an orphan user-scope server via `claude mcp remove -s user`.
+
+    Cleanup, not a load-bearing install step: a failure (or timeout) warns to
+    stderr and returns rather than raising, so a stuck `claude mcp remove`
+    never rolls back an otherwise-good install. The server simply stays
+    registered until the next run retries the prune.
+    """
+    claude = _resolve_claude_cli()
+    try:
+        result = subprocess.run(
+            [claude, "mcp", "remove", "-s", "user", name],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_MCP_SUBPROCESS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"  warn: prune of orphan mcp {name!r} timed out "
+            f"after {_MCP_SUBPROCESS_TIMEOUT}s; leaving it registered",
+            file=sys.stderr,
+        )
+        return
+    if result.returncode != 0:
+        print(
+            f"  warn: prune of orphan mcp {name!r} failed: "
+            f"{result.stderr.strip() or result.stdout.strip()}",
+            file=sys.stderr,
+        )
+        return
+    print(f"  pruned orphan user-scope mcp {name!r}", file=sys.stderr)
+
+
 def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> str:
     return text.replace("{{JARVIS_HOME}}", repo_root.as_posix()).replace(
         "{{CLAUDE_USER_HOME}}", claude_home.as_posix()
@@ -524,7 +607,11 @@ def build_plan(
             src = repo_root / entry["source"]
             install_as = entry.get("install_as")
             if install_as == "user_mcp_registrations":
-                actions.extend(_plan_mcp_user_registrations(src, repo_root, target_root))
+                actions.extend(
+                    _plan_mcp_user_registrations(
+                        src, repo_root, target_root, _user_mcp_config_path()
+                    )
+                )
                 continue
             if install_as is not None:
                 raise ValueError(f"manifest group {gid!r}: unknown install_as {install_as!r}")
@@ -697,7 +784,15 @@ def _deep_merge_jarvis_json(existing: Any, source: Any) -> Any:
       wholesale replaces the same key in `existing`; children in
       `existing` not mentioned by `source` are preserved.
     - For other dicts: recurse.
-    - For non-dicts at the leaf: `source` wins.
+    - For list-valued leaves (either side a list): stable-dedup union,
+      existing entries first. Claude Code treats `settings.json` arrays like
+      `permissions.allow`/`permissions.deny` and `fallbackModel` (up to three
+      model ids) as user-owned and does NOT merge them across scopes, so a
+      wholesale source-wins replace silently drops every entry the user added
+      (#4 — a user's multi-element `fallbackModel` array collapsed to the
+      source's single scalar). A scalar on either side is coerced to a
+      1-element list so a scalar/array mismatch unions cleanly.
+    - For other non-dicts at the leaf: `source` wins.
 
     Not a general-purpose deep-merge — tuned for the two files M3 ships.
     """
@@ -716,9 +811,30 @@ def _deep_merge_jarvis_json(existing: Any, source: Any) -> Any:
             out[key] = merged_child
         elif isinstance(src_val, dict) and isinstance(out.get(key), dict):
             out[key] = _deep_merge_jarvis_json(out[key], src_val)
+        elif isinstance(src_val, list) or isinstance(out.get(key), list):
+            out[key] = _union_list_leaf(out.get(key), src_val)
         else:
             out[key] = src_val
     return out
+
+
+def _union_list_leaf(existing: Any, source: Any) -> list[Any]:
+    """Stable-dedup union of two list-valued leaves, existing entries first.
+
+    Either argument may be a scalar (coerced to a 1-element list) or absent
+    (``None`` → empty list). Preserves order and drops duplicates by value,
+    so re-applying the installer is idempotent. See `_deep_merge_jarvis_json`
+    for why list leaves union rather than source-wins.
+    """
+    existing_items = (
+        existing if isinstance(existing, list) else ([] if existing is None else [existing])
+    )
+    source_items = source if isinstance(source, list) else ([] if source is None else [source])
+    merged: list[Any] = list(existing_items)
+    for item in source_items:
+        if item not in merged:
+            merged.append(item)
+    return merged
 
 
 def _merge_json_file(
@@ -839,6 +955,7 @@ def apply_plan(
     manifest: dict[str, Any],
     run_env: Callable[[str, str, str], None] | None = _set_env,
     register_mcp: Callable[[str, dict[str, Any]], None] | None = _register_mcp_user,
+    prune_mcp: Callable[[str], None] | None = _prune_mcp_user,
 ) -> None:
     if plan.state == "current":
         return
@@ -897,6 +1014,9 @@ def apply_plan(
             if register_mcp is not None:
                 payload = json.loads(action.note)
                 register_mcp(payload["name"], payload["spec"])
+        elif action.kind == "prune_mcp_user":
+            if prune_mcp is not None:
+                prune_mcp(action.dest)
         elif action.kind == "write_version":
             Path(action.dest).write_text(action.note + "\n", encoding="utf-8")
         elif action.kind == "set_env":
@@ -1050,6 +1170,11 @@ def format_plan(plan: Plan) -> str:
                 )
             elif a.kind == "register_mcp_user":
                 lines.append(f"  mcp_user   [{a.group:>14}] claude mcp add -s user {a.dest}")
+            elif a.kind == "prune_mcp_user":
+                lines.append(
+                    f"  mcp_prune  [{a.group:>14}] claude mcp remove -s user {a.dest}"
+                    "  (orphan: not in source)"
+                )
             elif a.kind == "write_version":
                 lines.append(f"  write_ver  -> {a.dest}  sha={a.note[:12]}")
             elif a.kind == "set_env":
