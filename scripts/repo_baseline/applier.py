@@ -185,17 +185,40 @@ class Applier:
             if a.kind == ActionKind.WRITE_FILE and _canon_name(a.path) not in self.canon
         ]
 
+    def _basename_collisions(self, plan: list[Action]) -> list[str]:
+        """Canon basenames shared by two+ WRITE paths in *plan*.
+
+        :func:`_canon_name` keys canon templates by basename, which is only safe
+        while managed-set basenames are unique. Two managed paths sharing a
+        basename (``a/x.yml`` and ``b/x.yml``) would both render the *same*
+        template — silent wrong-content. This makes that invariant checkable.
+        """
+        names = [_canon_name(a.path) for a in plan if a.kind == ActionKind.WRITE_FILE]
+        return sorted({n for n in names if names.count(n) > 1})
+
     def translate(self, plan: list[Action], actual: ActualState) -> list[GhCall]:
         """Translate a rendered plan into the idempotency-filtered call sequence.
 
         Order is preserved from the plan (the Planner already encodes the
         files-before-protection ordering invariant, PRD story 10).
 
-        Callers should invoke :meth:`missing_canon` first: a WRITE_FILE path with
-        no canon template raises :class:`ApplyError` mid-loop (with a partially
-        built call list discarded). :func:`plan_account_pass` enforces this
-        pre-flight automatically; direct callers must do so themselves.
+        Self-enforcing pre-flight (so a direct caller can't get a partially built
+        list silently discarded): raises :class:`ApplyError` upfront if any
+        WRITE path lacks a canon template (mirrors :meth:`missing_canon`) or if
+        two WRITE paths collide on a canon basename — *before* emitting any call.
         """
+        gaps = self.missing_canon(plan)
+        if gaps:
+            raise ApplyError(
+                f"No canon template for managed paths {gaps!r} "
+                f"(repo={self.manifest.repo!r}); run missing_canon() pre-flight"
+            )
+        collisions = self._basename_collisions(plan)
+        if collisions:
+            raise ApplyError(
+                f"Canon basename collision among managed paths {collisions!r} "
+                f"(repo={self.manifest.repo!r}); basenames must be unique"
+            )
         calls: list[GhCall] = []
         for action in plan:
             if action.kind == ActionKind.WRITE_FILE:
@@ -377,6 +400,13 @@ def plan_account_pass(
     This performs **no live writes**: it is the planning half of slice 5. The
     live sync-PR executor that consumes these ``RepoPlan``\\ s is the supervised
     follow-up.
+
+    The ``canon`` argument has two deliberately distinct values:
+    ``None`` (the default) loads the committed canon set from disk; an explicit
+    dict is used verbatim — so ``canon={}`` means "no templates available" and
+    every managed-file WRITE becomes a ``canon_gaps`` entry (a fully-gapped
+    no-op run), *not* "load from disk". Pass ``None``, never ``{}``, to mean
+    "use the real canon".
     """
     canon = canon if canon is not None else load_canon()
     plans: list[RepoPlan] = []

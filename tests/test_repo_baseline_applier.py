@@ -189,6 +189,13 @@ def test_translate_set_contexts_idempotent_order_insensitive():
     assert calls == []  # same set, different order → no-op
 
 
+def test_translate_set_contexts_both_empty_is_noop():
+    # Desired empty + actual empty → already reconciled → no call.
+    plan = [Action(kind=ActionKind.SET_CHECK_CONTEXTS, path="<repo-settings>", context_names=[])]
+    calls = Applier(_manifest(), _TEST_CANON).translate(plan, ActualState())
+    assert calls == []
+
+
 def test_translate_set_contexts_emitted_to_clean_up_actual_duplicate():
     # A live repo whose contexts came back with a duplicate (GitHub API quirk)
     # must be detected as drift and reconciled to the de-duplicated desired set —
@@ -246,11 +253,10 @@ def test_missing_canon_flags_uncovered_writes():
     assert gaps == [".github/workflows/pytest.yml"]  # delete is not a canon need
 
 
-def test_translate_raises_on_missing_canon_mid_plan():
-    # translate() does not pre-flight: a WRITE for an uncovered path raises
-    # mid-loop. The orchestrator runs missing_canon() first to avoid this; a
-    # direct caller that skips the pre-flight gets a loud ApplyError naming the
-    # path, not a silently dropped write.
+def test_translate_raises_on_missing_canon_upfront():
+    # translate() self-enforces the pre-flight: a WRITE for an uncovered path
+    # raises BEFORE any call is emitted (no partial list discarded). A direct
+    # caller that skips missing_canon() still gets a loud ApplyError naming it.
     plan = [
         Action(kind=ActionKind.WRITE_FILE, path=".github/workflows/code-review.yml"),
         Action(kind=ActionKind.WRITE_FILE, path=".github/workflows/pytest.yml"),
@@ -258,6 +264,18 @@ def test_translate_raises_on_missing_canon_mid_plan():
     with pytest.raises(ApplyError) as exc:
         Applier(_manifest(), _TEST_CANON).translate(plan, ActualState())
     assert "pytest.yml" in str(exc.value)
+
+
+def test_translate_raises_on_basename_collision():
+    # Two managed paths sharing a canon basename would both render the same
+    # template — the invariant is enforced, not silently mis-rendered.
+    canon = {"code-review.yml": "x\n"}
+    plan = [
+        Action(kind=ActionKind.WRITE_FILE, path=".github/workflows/code-review.yml"),
+        Action(kind=ActionKind.WRITE_FILE, path=".github/other/code-review.yml"),
+    ]
+    with pytest.raises(ApplyError, match="basename collision"):
+        Applier(_manifest(), canon).translate(plan, ActualState())
 
 
 # ── snapshot → actual-state bridge ────────────────────────────────────
