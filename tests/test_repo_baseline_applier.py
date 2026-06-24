@@ -111,6 +111,28 @@ def test_translate_write_file_emitted_when_hash_unknown():
     assert [c.kind for c in calls] == [GhCallKind.PUT_FILE]
 
 
+def test_translate_write_file_emitted_when_hash_differs():
+    # A known-but-wrong hash (real tagged hash, different content) must emit the
+    # PUT — guards against a mutation that drops the equality check.
+    path = ".github/workflows/code-review.yml"
+    plan = [Action(kind=ActionKind.WRITE_FILE, path=path, file_class="managed")]
+    actual = ActualState(files={path: _hash("stale body that does not match\n")})
+    calls = Applier(_manifest(), _TEST_CANON).translate(plan, actual)
+    assert [c.kind for c in calls] == [GhCallKind.PUT_FILE]
+
+
+def test_translate_raises_on_untagged_hash():
+    # An actual hash missing the sha256: tag (e.g. a raw git-blob SHA1 from a
+    # future auditor) would compare unequal forever — the contract guard must
+    # reject it loudly rather than emit a spurious write every run.
+    path = ".github/workflows/code-review.yml"
+    plan = [Action(kind=ActionKind.WRITE_FILE, path=path, file_class="managed")]
+    actual = ActualState(files={path: "deadbeef" * 5})  # 40-hex, untagged SHA1 shape
+    with pytest.raises(ApplyError) as exc:
+        Applier(_manifest(), _TEST_CANON).translate(plan, actual)
+    assert "sha256:" in str(exc.value)
+
+
 # ── translate: DELETE_FILE ────────────────────────────────────────────
 
 
@@ -165,6 +187,28 @@ def test_translate_set_contexts_idempotent_order_insensitive():
     actual = ActualState(required_check_contexts=["owner-queue-guard", "review"])
     calls = Applier(_manifest(), _TEST_CANON).translate(plan, actual)
     assert calls == []  # same set, different order → no-op
+
+
+def test_translate_set_contexts_emitted_to_clean_up_actual_duplicate():
+    # A live repo whose contexts came back with a duplicate (GitHub API quirk)
+    # must be detected as drift and reconciled to the de-duplicated desired set —
+    # a set() comparison would wrongly collapse the dup and skip the fix.
+    plan = [
+        Action(
+            kind=ActionKind.SET_CHECK_CONTEXTS,
+            path="<repo-settings>",
+            context_names=["review", "owner-queue-guard"],
+        )
+    ]
+    actual = ActualState(required_check_contexts=["review", "review", "owner-queue-guard"])
+    calls = Applier(_manifest(), _TEST_CANON).translate(plan, actual)
+    assert calls == [
+        GhCall(
+            kind=GhCallKind.SET_CHECK_CONTEXTS,
+            path="<repo-settings>",
+            contexts=("review", "owner-queue-guard"),
+        )
+    ]
 
 
 # ── ordering ──────────────────────────────────────────────────────────
@@ -263,6 +307,21 @@ def test_load_manifest_and_snapshot_round_trip(repo):
     assert snapshot.repo == repo
 
 
+def test_load_manifest_raises_on_non_mapping_yaml(tmp_path):
+    # A list/scalar-shaped manifest is a defect, not an empty manifest — the
+    # loader must raise rather than silently constructing an empty Manifest.
+    (tmp_path / "Osasuwu__test.manifest.yml").write_text("- item1\n- item2")
+    with pytest.raises(ApplyError, match="not a mapping"):
+        load_manifest("Osasuwu/test", manifests_dir=tmp_path)
+
+
+def test_load_manifest_empty_document_is_empty_manifest(tmp_path):
+    # An empty YAML document (None) is a valid empty manifest, not an error.
+    (tmp_path / "Osasuwu__test.manifest.yml").write_text("")
+    manifest = load_manifest("Osasuwu/test", manifests_dir=tmp_path)
+    assert manifest.repo == ""
+
+
 # ── per-account-pass orchestrator (dry-run) ───────────────────────────
 
 
@@ -277,10 +336,10 @@ def test_plan_account_pass_surfaces_pytest_canon_gap():
     # no canon template yet — the orchestrator must flag it, not crash, and must
     # leave that repo's calls empty (not partially applied).
     plans = {p.repo: p for p in plan_account_pass(OSASUWU_REPOS)}
-    flagged = [p for p in plans.values() if p.missing_canon]
+    flagged = [p for p in plans.values() if p.canon_gaps]
     assert flagged, "expected at least one repo to surface the pytest.yml canon gap"
     for p in flagged:
-        assert ".github/workflows/pytest.yml" in p.missing_canon
+        assert ".github/workflows/pytest.yml" in p.canon_gaps
         assert p.calls == []
 
 
@@ -290,9 +349,25 @@ def test_plan_account_pass_injected_canon_makes_repo_applyable():
     full_canon = dict(load_canon())
     full_canon["pytest.yml"] = "name: pytest on {{ runs_on }}\n"
     plans = plan_account_pass(OSASUWU_REPOS, canon=full_canon)
-    assert any(p.calls and not p.missing_canon for p in plans)
+    assert any(p.calls and not p.canon_gaps for p in plans)
     for p in plans:
-        assert p.missing_canon == []
+        assert p.canon_gaps == []
+        assert p.error is None
+
+
+def test_plan_account_pass_isolates_a_bad_repo(tmp_path):
+    # A malformed manifest for ONE repo must surface as that repo's `error`
+    # without discarding the rest of the account pass (PRD story 9).
+    bad = "Osasuwu/jarvis"
+    (tmp_path / f"{bad.replace('/', '__')}.manifest.yml").write_text("- not-a-mapping")
+    plans = {p.repo: p for p in plan_account_pass([bad], manifests_dir=tmp_path)}
+    assert plans[bad].error is not None
+    assert "not a mapping" in plans[bad].error
+    assert plans[bad].calls == []
+
+
+def test_plan_account_pass_empty_repo_list():
+    assert plan_account_pass([]) == []
 
 
 def test_plan_account_pass_is_idempotent_against_synced_state():

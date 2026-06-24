@@ -50,7 +50,7 @@ import yaml
 from .auditor import OSASUWU_REPOS, RepoSnapshot
 from .manifest import Manifest
 from .planner import Action, ActionKind, ActualState, Planner
-from .renderer import Renderer
+from .renderer import RenderError, Renderer
 
 # The Osasuwu account pass (PRD story 7): redrobot is a different owner and
 # credential-blocked under the Osasuwu token — its SergazyNarynov pass is #940,
@@ -207,6 +207,16 @@ class Applier:
                 #   tag  -> known hash; skip iff it matches -> idempotent
                 # None and "" are both falsy but semantically different, so the
                 # guard is explicit rather than relying on truthiness.
+                if actual_hash and not actual_hash.startswith(HASH_PREFIX):
+                    # Enforce the cross-slice hash contract at runtime (see
+                    # HASH_PREFIX): an untagged value (e.g. a raw git-blob SHA1
+                    # from a future auditor) would compare unequal forever and
+                    # silently defeat idempotency. Fail loud instead.
+                    raise ApplyError(
+                        f"Content hash for {action.path!r} lacks the {HASH_PREFIX!r} "
+                        f"algorithm tag (got {actual_hash!r}); #979 must emit tagged "
+                        f"sha256 hashes — see HASH_PREFIX."
+                    )
                 if (
                     actual_hash is not None
                     and actual_hash != ""
@@ -229,13 +239,18 @@ class Applier:
                     calls.append(GhCall(kind=GhCallKind.DELETE_FILE, path=action.path))
             elif action.kind == ActionKind.SET_CHECK_CONTEXTS:
                 desired = list(action.context_names)
-                if set(desired) == set(actual.required_check_contexts):
+                # Sorted-list (not set) comparison so a duplicate on the actual
+                # side — a real GitHub API quirk where contexts come back with
+                # repeats — is detected as drift and gets cleaned up, instead of
+                # being collapsed away by set() and left on the repo forever. The
+                # emitted call carries the de-duplicated desired set.
+                if sorted(desired) == sorted(actual.required_check_contexts):
                     continue  # idempotent: required gates already match
                 calls.append(
                     GhCall(
                         kind=GhCallKind.SET_CHECK_CONTEXTS,
                         path=action.path,
-                        contexts=tuple(desired),
+                        contexts=tuple(dict.fromkeys(desired)),
                     )
                 )
             else:  # pragma: no cover — defensive against a new ActionKind
@@ -260,6 +275,8 @@ def load_canon(canon_dir: Path = CANON_DIR) -> dict[str, str]:
     ``__init__.py`` package marker and any non-template stray are skipped).
     Sorted for deterministic iteration in error messages.
     """
+    if not canon_dir.is_dir():
+        raise ApplyError(f"Canon directory not found: {canon_dir}")
     return {
         p.name: p.read_text(encoding="utf-8")
         for p in sorted(canon_dir.iterdir())
@@ -275,7 +292,13 @@ def _slug(repo: str) -> str:
 def load_manifest(repo: str, manifests_dir: Path = MANIFESTS_DIR) -> Manifest:
     """Load the committed seeded manifest for *repo*."""
     path = manifests_dir / f"{_slug(repo)}.manifest.yml"
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # Only an empty document (``None``) defaults to an empty manifest. A
+    # list/scalar-shaped YAML (copy-paste slip, anchor regression) is a defect,
+    # not an empty manifest — ``data or {}`` would silently swallow ``[]`` (falsy)
+    # into ``{}``, so guard the type explicitly rather than via truthiness.
+    if data is None:
+        data = {}
     if not isinstance(data, dict):
         raise ApplyError(
             f"Manifest for {repo!r} is not a mapping (got {type(data).__name__}): {path}"
@@ -320,9 +343,18 @@ class RepoPlan:
 
     repo: str
     calls: list[GhCall] = field(default_factory=list)
-    missing_canon: list[str] = field(default_factory=list)
+    canon_gaps: list[str] = field(default_factory=list)
     """Managed-write paths with no canon template — a gap to fill before any
-    live run; when non-empty the repo's calls are left empty (not translated)."""
+    live run; when non-empty the repo's calls are left empty (not translated).
+
+    Named ``canon_gaps`` (not ``missing_canon``) so it never collides with the
+    :meth:`Applier.missing_canon` *method*: ``if plan.canon_gaps:`` can't be
+    confused with a forgotten method call (a bound method is always truthy)."""
+
+    error: Optional[str] = None
+    """Set when this repo's plan could not be built at all (bad fixture,
+    malformed manifest/snapshot, render defect). Isolated per-repo so one bad
+    repo never discards the rest of the account pass (PRD story 9)."""
 
 
 def plan_account_pass(
@@ -337,9 +369,10 @@ def plan_account_pass(
     For each repo: load its seeded manifest + committed snapshot, run the
     Planner to get the action plan, then the Applier to translate it into the
     idempotency-filtered ``GhCall`` sequence. A repo with a canon gap is
-    reported (``missing_canon`` populated, ``calls`` empty) rather than aborting
-    the whole pass — staged blast-radius (PRD story 9) starts with knowing which
-    repos are even applyable.
+    reported (``canon_gaps`` populated, ``calls`` empty) rather than aborting
+    the whole pass; a repo that fails to load/translate at all is reported with
+    ``error`` set. Either way the rest of the account pass continues — staged
+    blast-radius (PRD story 9) starts with knowing which repos are applyable.
 
     This performs **no live writes**: it is the planning half of slice 5. The
     live sync-PR executor that consumes these ``RepoPlan``\\ s is the supervised
@@ -348,14 +381,19 @@ def plan_account_pass(
     canon = canon if canon is not None else load_canon()
     plans: list[RepoPlan] = []
     for repo in repos:
-        manifest = load_manifest(repo, manifests_dir)
-        snapshot = load_snapshot(repo, snapshots_dir)
-        actual = actual_state_from_snapshot(snapshot)
-        plan = Planner(manifest).plan(actual)
-        applier = Applier(manifest, canon)
-        gaps = applier.missing_canon(plan)
-        if gaps:
-            plans.append(RepoPlan(repo=repo, calls=[], missing_canon=gaps))
-            continue
-        plans.append(RepoPlan(repo=repo, calls=applier.translate(plan, actual)))
+        try:
+            manifest = load_manifest(repo, manifests_dir)
+            snapshot = load_snapshot(repo, snapshots_dir)
+            actual = actual_state_from_snapshot(snapshot)
+            plan = Planner(manifest).plan(actual)
+            applier = Applier(manifest, canon)
+            gaps = applier.missing_canon(plan)
+            if gaps:
+                plans.append(RepoPlan(repo=repo, calls=[], canon_gaps=gaps))
+                continue
+            plans.append(RepoPlan(repo=repo, calls=applier.translate(plan, actual)))
+        except (ApplyError, RenderError, OSError, ValueError, json.JSONDecodeError) as exc:
+            # Per-repo isolation: a bad fixture / malformed manifest / render
+            # defect for one repo must not sink the whole account pass.
+            plans.append(RepoPlan(repo=repo, error=str(exc)))
     return plans
