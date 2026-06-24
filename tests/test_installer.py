@@ -79,7 +79,18 @@ def fake_repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
     subprocess.run(
-        ["git", "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-qm", "init"],
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "init",
+        ],
         cwd=repo,
         check=True,
     )
@@ -216,9 +227,7 @@ def _planned_server_names(actions: list) -> list[str]:
     return [a.dest for a in actions if a.kind == "register_mcp_user"]
 
 
-def test_mcp_gate_skips_server_when_required_env_unset(
-    fake_repo: Path, monkeypatch
-) -> None:
+def test_mcp_gate_skips_server_when_required_env_unset(fake_repo: Path, monkeypatch) -> None:
     """A server with x-jarvis-requires-env is skipped where that var is unset."""
     monkeypatch.delenv("GATED_HOME", raising=False)
     src = _write_gated_mcp_source(fake_repo)
@@ -1440,6 +1449,205 @@ def test_resolve_claude_cli_falls_back_to_bare_name(monkeypatch) -> None:
     assert installer._resolve_claude_cli() == "claude"
 
 
+# ---------- #4: list-leaf union merge ----------
+
+
+def test_deep_merge_unions_list_leaf_preserving_user_entries() -> None:
+    """A user's multi-element `fallbackModel` array must survive a source scalar
+    (regression #4: source-wins collapsed the array to one string)."""
+    existing = {"fallbackModel": ["claude-opus-4-8", "claude-sonnet-4-6"]}
+    source = {"fallbackModel": "claude-haiku-4-5"}
+    merged = installer._deep_merge_jarvis_json(existing, source)
+    assert merged["fallbackModel"] == [
+        "claude-opus-4-8",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+    ]
+
+
+def test_deep_merge_unions_nested_permission_lists_with_dedup() -> None:
+    """`permissions.allow`/`deny` are user-owned arrays — union, don't replace,
+    and don't duplicate entries present on both sides (idempotency)."""
+    existing = {"permissions": {"allow": ["Bash(ls)", "Read(*)"], "deny": ["Bash(rm)"]}}
+    source = {"permissions": {"allow": ["Read(*)", "Bash(git status)"]}}
+    merged = installer._deep_merge_jarvis_json(existing, source)
+    assert merged["permissions"]["allow"] == ["Bash(ls)", "Read(*)", "Bash(git status)"]
+    # User-only key under the same dict parent is untouched.
+    assert merged["permissions"]["deny"] == ["Bash(rm)"]
+
+
+def test_deep_merge_scalar_leaf_still_source_wins() -> None:
+    """Non-list leaves keep source-wins semantics (no behavior change)."""
+    merged = installer._deep_merge_jarvis_json({"theme": "dark"}, {"theme": "light"})
+    assert merged["theme"] == "light"
+
+
+def test_deep_merge_list_leaf_when_existing_absent() -> None:
+    """Source list with no existing counterpart is taken as-is."""
+    merged = installer._deep_merge_jarvis_json({}, {"fallbackModel": ["a", "b"]})
+    assert merged["fallbackModel"] == ["a", "b"]
+
+
+# ---------- #3: prune orphan user-scope MCP servers ----------
+
+
+def _write_mcp_source_with_gate(repo: Path) -> Path:
+    src = repo / "user.mcp.json"
+    src.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "memory": {"command": "python", "args": ["mem-server"]},
+                    "uml": {
+                        "command": "python",
+                        "args": ["uml-server"],
+                        "x-jarvis-requires-env": "UML_GATE_HOME",
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return src
+
+
+def _write_live_user_config(path: Path, servers: dict) -> None:
+    path.write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
+
+
+def test_plan_prunes_orphan_user_scope_server(fake_repo: Path, monkeypatch) -> None:
+    """A live user-scope server absent from source is planned for prune;
+    source servers — including device-gated ones skipped this run — are not."""
+    monkeypatch.delenv("UML_GATE_HOME", raising=False)  # uml gated off here
+    src = _write_mcp_source_with_gate(fake_repo)
+    live = fake_repo / "live.claude.json"
+    _write_live_user_config(
+        live,
+        {
+            "memory": {"command": "python", "args": ["mem-server"]},
+            "uml": {"command": "python", "args": ["uml-server"]},
+            "bambu": {"command": "npx", "args": ["bambu-mcp"]},
+        },
+    )
+    actions = installer._plan_mcp_user_registrations(src, fake_repo, fake_repo / "t", live)
+    pruned = [a.dest for a in actions if a.kind == "prune_mcp_user"]
+    assert pruned == ["bambu"]  # orphan only
+    # The orphan's live spec is stashed in the note for recoverability.
+    bambu_action = next(a for a in actions if a.kind == "prune_mcp_user")
+    assert json.loads(bambu_action.note)["args"] == ["bambu-mcp"]
+
+
+def test_plan_no_prune_without_live_config(fake_repo: Path, monkeypatch) -> None:
+    """Default (no live config path) plans zero prune actions — keeps the
+    per-spec unit path hermetic."""
+    monkeypatch.setenv("UML_GATE_HOME", "/opt/uml")
+    src = _write_mcp_source_with_gate(fake_repo)
+    actions = installer._plan_mcp_user_registrations(src, fake_repo, fake_repo / "t")
+    assert not [a for a in actions if a.kind == "prune_mcp_user"]
+
+
+def test_read_user_mcp_servers_tolerates_missing_and_corrupt(tmp_path: Path) -> None:
+    assert installer._read_user_mcp_servers(tmp_path / "nope.json") == {}
+    corrupt = tmp_path / "c.json"
+    corrupt.write_text("{not json", encoding="utf-8")
+    assert installer._read_user_mcp_servers(corrupt) == {}
+
+
+def test_prune_mcp_user_runs_remove_with_timeout(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(list(cmd))
+        assert kwargs.get("timeout") == installer._MCP_SUBPROCESS_TIMEOUT
+
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
+    installer._prune_mcp_user("bambu")
+    assert calls == [["claude", "mcp", "remove", "-s", "user", "bambu"]]
+
+
+def test_prune_mcp_user_tolerates_failure(monkeypatch, capsys) -> None:
+    """A failed prune warns and returns — cleanup must not abort the install."""
+
+    def fake_run(cmd, **kwargs):
+        class R:
+            returncode = 1
+            stdout = ""
+            stderr = "no such server"
+
+        return R()
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
+    installer._prune_mcp_user("bambu")  # must not raise
+    assert "failed" in capsys.readouterr().err
+
+
+def test_prune_mcp_user_tolerates_timeout(monkeypatch, capsys) -> None:
+    def fake_run(cmd, **kwargs):
+        raise installer.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+
+    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer, "_resolve_claude_cli", lambda: "claude")
+    installer._prune_mcp_user("bambu")  # must not raise
+    assert "timed out" in capsys.readouterr().err
+
+
+def test_apply_plan_dispatches_prune_mcp_user(tmp_path: Path) -> None:
+    """A prune_mcp_user action invokes the injected prune callable with the
+    server name."""
+    pruned: list[str] = []
+    plan = installer.Plan(
+        state="outdated",
+        actions=[
+            installer.Action(
+                kind="prune_mcp_user",
+                source=str(tmp_path / "live.json"),
+                dest="bambu",
+                group="mcp_config",
+                note="{}",
+            )
+        ],
+        backup_path=None,
+        current_sha="sha",
+        previous_sha="old",
+        target_root=tmp_path / "t",
+        repo_root=tmp_path,
+    )
+    installer.apply_plan(plan, {}, run_env=None, register_mcp=None, prune_mcp=pruned.append)
+    assert pruned == ["bambu"]
+
+
+def test_format_plan_renders_prune_mcp_user(tmp_path: Path) -> None:
+    plan = installer.Plan(
+        state="outdated",
+        actions=[
+            installer.Action(
+                kind="prune_mcp_user",
+                source="live.json",
+                dest="bambu",
+                group="mcp_config",
+                note="{}",
+            )
+        ],
+        backup_path=None,
+        current_sha="sha",
+        previous_sha="old",
+        target_root=tmp_path / "t",
+        repo_root=tmp_path,
+    )
+    out = installer.format_plan(plan)
+    assert "mcp_prune" in out
+    assert "claude mcp remove -s user bambu" in out
+
+
 def test_unknown_install_as_raises(fake_repo: Path, tmp_path: Path) -> None:
     target = tmp_path / "claude_home"
     bad = {
@@ -1614,9 +1822,7 @@ class TestEnvEncodingScan:
         except (OSError, NotImplementedError):
             pytest.skip("symlink creation denied (Windows non-admin)")
         findings = installer._scan_env_encoding(claude_home, repo_root)
-        assert findings == [], (
-            "symlink escape must be skipped, not surfaced as a fixable finding"
-        )
+        assert findings == [], "symlink escape must be skipped, not surfaced as a fixable finding"
         # Original target untouched (proves _fix_env_encoding never ran on it).
         assert target.read_bytes() == b"\xef\xbb\xbfPROD_SECRET=value\n"
 
@@ -1803,9 +2009,23 @@ class TestEnvEncodingScan:
         repo = tmp_path / "repo"
         repo.mkdir()
         subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-        subprocess.run(["git", "-c", "user.email=t@t", "-c", "user.name=t",
-                        "-c", "commit.gpgsign=false",
-                        "commit", "--allow-empty", "-m", "init"], cwd=repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+            cwd=repo,
+            check=True,
+        )
         plan = installer.build_plan(manifest, repo)
         set_env_names = {a.dest for a in plan.actions if a.kind == "set_env"}
         if installer._platform() == "windows":
