@@ -13,6 +13,7 @@ import hashlib
 import pytest
 
 from scripts.repo_baseline.applier import (
+    HASH_PREFIX,
     OSASUWU_REPOS,
     ApplyError,
     Applier,
@@ -31,7 +32,9 @@ from scripts.repo_baseline.planner import Action, ActionKind, ActualState, Plann
 
 
 def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    # Must mirror the Applier's algorithm-tagged hash exactly, else the
+    # idempotency comparison would never match (the tag is part of the contract).
+    return HASH_PREFIX + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 # A canon map keyed by basename, covering exactly the paths a tiny test plan
@@ -121,6 +124,14 @@ def test_translate_delete_only_when_present():
     assert calls == [GhCall(kind=GhCallKind.DELETE_FILE, path=".github/workflows/old.yml")]
 
 
+def test_translate_delete_noop_when_actual_files_empty():
+    # A repo whose snapshot recorded no files (bare repo) must yield no deletes —
+    # the existence guard makes every DELETE a no-op rather than a spurious call.
+    plan = [Action(kind=ActionKind.DELETE_FILE, path=".github/workflows/old.yml")]
+    calls = Applier(_manifest(), _TEST_CANON).translate(plan, ActualState())
+    assert calls == []
+
+
 # ── translate: SET_CHECK_CONTEXTS ─────────────────────────────────────
 
 
@@ -191,6 +202,20 @@ def test_missing_canon_flags_uncovered_writes():
     assert gaps == [".github/workflows/pytest.yml"]  # delete is not a canon need
 
 
+def test_translate_raises_on_missing_canon_mid_plan():
+    # translate() does not pre-flight: a WRITE for an uncovered path raises
+    # mid-loop. The orchestrator runs missing_canon() first to avoid this; a
+    # direct caller that skips the pre-flight gets a loud ApplyError naming the
+    # path, not a silently dropped write.
+    plan = [
+        Action(kind=ActionKind.WRITE_FILE, path=".github/workflows/code-review.yml"),
+        Action(kind=ActionKind.WRITE_FILE, path=".github/workflows/pytest.yml"),
+    ]
+    with pytest.raises(ApplyError) as exc:
+        Applier(_manifest(), _TEST_CANON).translate(plan, ActualState())
+    assert "pytest.yml" in str(exc.value)
+
+
 # ── snapshot → actual-state bridge ────────────────────────────────────
 
 
@@ -259,7 +284,7 @@ def test_plan_account_pass_surfaces_pytest_canon_gap():
         assert p.calls == []
 
 
-def test_plan_account_pass_injected_canon_makes_repo_applyable(tmp_path):
+def test_plan_account_pass_injected_canon_makes_repo_applyable():
     # With a canon map that covers every planned write (including pytest.yml),
     # a repo translates to a non-empty call sequence and no gaps.
     full_canon = dict(load_canon())
@@ -270,7 +295,7 @@ def test_plan_account_pass_injected_canon_makes_repo_applyable(tmp_path):
         assert p.missing_canon == []
 
 
-def test_plan_account_pass_is_idempotent_against_synced_state(tmp_path):
+def test_plan_account_pass_is_idempotent_against_synced_state():
     # A repo whose actual state already carries every rendered managed body and
     # the required contexts must translate to an empty call sequence — a re-run
     # on a fully-synced repo is a no-op (PRD story 23).

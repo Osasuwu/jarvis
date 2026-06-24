@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import enum
 import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -114,9 +115,21 @@ class GhCall:
     """Desired required-check contexts (SET_CHECK_CONTEXTS only)."""
 
 
+HASH_PREFIX = "sha256:"
+"""Algorithm tag on every stored content hash. The format is part of the
+cross-slice contract: when the auditor (#979) starts recording file-body
+hashes into ``ActualState.files`` it MUST emit ``"sha256:<hex of utf-8 bytes>"``
+— NOT the GitHub Contents-API ``sha`` (a git blob SHA1 over
+``"blob {size}\\0{content}"``). Without the tag a SHA1-vs-SHA256 mismatch would
+compare unequal *silently* and every managed file would emit a spurious write on
+an already-synced repo, defeating idempotency forever with no CI signal. The
+tag makes the format explicit so any future divergence is visible at the call
+site, not buried in an always-false comparison."""
+
+
 def _content_hash(text: str) -> str:
-    """Stable content hash used for write-idempotency comparison."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    """Stable, algorithm-tagged content hash for write-idempotency comparison."""
+    return HASH_PREFIX + hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _canon_name(repo_path: str) -> str:
@@ -139,8 +152,10 @@ class Applier:
         renderer: Optional[Renderer] = None,
     ):
         self.manifest = manifest
+        # Canon templates keyed by basename (see ``load_canon``). A string
+        # literal here would NOT be picked up as an attribute docstring by
+        # Python tooling, so it stays a real comment.
         self.canon = canon
-        """Canon templates keyed by basename (see :func:`load_canon`)."""
         self.renderer = renderer or Renderer()
 
     def render_content(self, repo_path: str) -> str:
@@ -175,13 +190,28 @@ class Applier:
 
         Order is preserved from the plan (the Planner already encodes the
         files-before-protection ordering invariant, PRD story 10).
+
+        Callers should invoke :meth:`missing_canon` first: a WRITE_FILE path with
+        no canon template raises :class:`ApplyError` mid-loop (with a partially
+        built call list discarded). :func:`plan_account_pass` enforces this
+        pre-flight automatically; direct callers must do so themselves.
         """
         calls: list[GhCall] = []
         for action in plan:
             if action.kind == ActionKind.WRITE_FILE:
                 content = self.render_content(action.path)
                 actual_hash = actual.files.get(action.path)
-                if actual_hash and actual_hash == _content_hash(content):
+                # Three distinct states, only the third is idempotent:
+                #   None -> path absent (new file)         -> emit PUT
+                #   ""   -> present but body unknown        -> emit PUT (git dedupes)
+                #   tag  -> known hash; skip iff it matches -> idempotent
+                # None and "" are both falsy but semantically different, so the
+                # guard is explicit rather than relying on truthiness.
+                if (
+                    actual_hash is not None
+                    and actual_hash != ""
+                    and actual_hash == _content_hash(content)
+                ):
                     continue  # idempotent: already byte-identical on the repo
                 calls.append(
                     GhCall(
@@ -216,16 +246,24 @@ class Applier:
 # ── Loaders ──────────────────────────────────────────────────────────
 
 
+_CANON_SUFFIXES = (".yml", ".yaml", ".md")
+"""Template extensions a canon entry may carry. An allowlist (not a
+``__init__.py`` denylist) so a stray ``.py`` helper or ``.DS_Store`` dropped in
+``canon/`` can never be picked up as a renderable template — the basename would
+silently shadow a real managed path otherwise."""
+
+
 def load_canon(canon_dir: Path = CANON_DIR) -> dict[str, str]:
     """Load canon templates as a ``{basename: text}`` map.
 
-    Skips ``__init__.py`` (package marker, not a template). Sorted for
-    deterministic iteration in error messages.
+    Only files whose suffix is in :data:`_CANON_SUFFIXES` are loaded (so the
+    ``__init__.py`` package marker and any non-template stray are skipped).
+    Sorted for deterministic iteration in error messages.
     """
     return {
         p.name: p.read_text(encoding="utf-8")
         for p in sorted(canon_dir.iterdir())
-        if p.is_file() and p.name != "__init__.py"
+        if p.is_file() and p.suffix in _CANON_SUFFIXES
     }
 
 
@@ -238,13 +276,15 @@ def load_manifest(repo: str, manifests_dir: Path = MANIFESTS_DIR) -> Manifest:
     """Load the committed seeded manifest for *repo*."""
     path = manifests_dir / f"{_slug(repo)}.manifest.yml"
     data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(data, dict):
+        raise ApplyError(
+            f"Manifest for {repo!r} is not a mapping (got {type(data).__name__}): {path}"
+        )
     return Manifest.from_dict(data)
 
 
 def load_snapshot(repo: str, snapshots_dir: Path = SNAPSHOTS_DIR) -> RepoSnapshot:
     """Load the committed audit snapshot for *repo*."""
-    import json
-
     path = snapshots_dir / f"{_slug(repo)}.snapshot.json"
     return RepoSnapshot.from_dict(json.loads(path.read_text(encoding="utf-8")))
 
@@ -258,6 +298,13 @@ def actual_state_from_snapshot(snapshot: RepoSnapshot) -> ActualState:
     check contexts. Template/community-health file presence and file bodies are
     not yet captured by the auditor (#979 deepens this), so write-idempotency on
     those falls through to the git layer.
+
+    Consequence for DELETE_FILE: ``translate`` emits a delete only for a path
+    present in ``files`` (the existence guard), and ``files`` here is exactly the
+    snapshot's ``workflows`` list. So DELETE coverage is currently limited to
+    ``.github/workflows/*`` paths — a stale non-workflow file outside the managed
+    set cannot be detected for deletion until the auditor enumerates those paths
+    (#979). Not a correctness bug (no spurious deletes), a coverage gap.
     """
     files = {path: "" for path in snapshot.workflows}
     contexts = list(snapshot.branch_protection.contexts) if snapshot.branch_protection else []
