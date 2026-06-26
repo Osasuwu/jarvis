@@ -117,6 +117,31 @@ git checkout -b feat/<N>-<slug>
 
 Then emit `mcp__memory__record_decision` per the contract in user-level CLAUDE.md `### 3. record_decision contract`. Issue implementation always satisfies trigger #1 — the call is non-optional. `memories_used` carries UUIDs from the session-start recall map.
 
+#### 3a. Process preflight gate (mandatory — run before opening PR)
+
+Process findings that surface in code-review round 1 inflate the rework count with zero-value cycles. Fix them before the PR opens:
+
+```bash
+# Milestone set?
+gh issue view <N> --repo <owner/repo> --json milestone --jq '.milestone.title // "MISSING"'
+
+# Domain label present? (software/hardware/integration/safety for redrobot; equivalent for others)
+gh issue view <N> --repo <owner/repo> --json labels --jq '[.labels[].name] | join(",")'
+
+# Branch name matches convention?
+git branch --show-current  # must be feat/<N>-<slug>
+
+# PR body draft will have Closes #<N> on its own line?
+# Verify by checking the PR template / your draft
+```
+
+Fix any gap now:
+- Missing milestone → `gh issue edit <N> --milestone "<name>"`
+- Missing domain label → `gh issue edit <N> --add-label "software"` (or whichever applies)
+- Wrong branch name → rename before first push: `git branch -m feat/<N>-<correct-slug>`
+
+Process issues are not code bugs — they take 10 seconds to fix here vs. a full rework round if caught by the reviewer.
+
 ### 4. Implement
 
 **Protected files — policy depends on who is editing.** The canonical list (repo-level + user-level `~/.claude/*`) lives in [`docs/security/agent-boundaries.md`](../../../docs/security/agent-boundaries.md). Don't duplicate it here — check that file before editing.
@@ -146,6 +171,7 @@ Why this is a gate, not a suggestion: recurring pattern (#237 closed as dup of #
 - Run lint: `ruff check --fix && ruff format` (Python), `npx tsc --noEmit` (TS)
 - Run relevant tests: `pytest tests/test_<module>.py -x -q`
 - Build frontend: `npm run build`
+- **Normalize EOL** (Windows only, before first commit): `git add --renormalize .` — prevents CRLF phantom diffs from appearing as changes on the Linux CI runner and triggering spurious re-reviews
 
 #### 4c. E2E smoke before claiming done (I/O-heavy / schema-touching work)
 
@@ -165,6 +191,36 @@ Rule: if the change touches any of the above, run one real-input smoke **before*
 - Subprocess/scheduler — run in a separate shell long enough to confirm restart / pickle behavior
 
 If unit tests green but smoke fails → outcome is `partial`, and the `lessons` field must describe the gap so a future session knows what the unit tests did not catch.
+
+#### 4d. Post-implementation AC gate (mandatory — run before §5)
+
+Root cause of PR #1011's 5 rework rounds: acceptance criteria were present in the issue but the implementation was stubbed — call sites existed nowhere outside the tests. This gate catches "written but not wired" before the PR opens.
+
+For each acceptance criterion bullet in the issue body:
+
+1. **Symbol grep** — extract the key symbol (function, class, flag, field) and verify it exists:
+   ```bash
+   rg -n "<symbol>" --type py   # or --type ts
+   ```
+
+2. **Call-site check** — if the AC says "X is invoked when Y", verify call sites exist outside test files:
+   ```bash
+   rg -n "<symbol>" --type py | grep -v "^tests/"
+   ```
+   Zero hits outside tests → the feature is unreachable; fix before pushing.
+
+3. **AC test pass** — run the test(s) specifically covering this AC:
+   ```bash
+   pytest tests/ -k "<ac_keyword>" -x -q
+   ```
+
+If ANY AC fails this triple-check → fix now (takes minutes) vs. rework round (takes hours).
+
+Also: for any new function or class added, run a minimal call/instantiation sanity check:
+```bash
+python -c "from <module> import <Symbol>; <Symbol>()  # or whatever the simplest valid call is"
+```
+A `TypeError` or `AttributeError` on first call is the most embarrassing rework trigger. It takes 5 seconds to catch here.
 
 ### 4-TDD. Implement in TDD-mode
 
