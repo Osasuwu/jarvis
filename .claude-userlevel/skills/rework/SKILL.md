@@ -170,6 +170,43 @@ not attempt fixes, do not push.
 If all CRITICAL findings pass the reality check (or there are zero CRITICAL
 findings), continue to classification.
 
+#### 3b. Design-decision oscillation guard
+
+Root cause of PR #1256's 7 rework rounds: the AI reviewer re-litigated the same architectural design question across rounds 3–7 instead of accepting a recorded decision. `record_decision` is the circuit-breaker.
+
+Before classifying any **design-level finding** (API shape, algorithmic approach, architectural pattern, naming convention — anything that is a style or design choice rather than a correctness bug):
+
+1. Check the decision log:
+   ```
+   memory_recall(query="<PR title> <topic keyword> design decision", type="decision", brief=true, limit=5)
+   ```
+
+2. **If a `record_decision` entry exists for this exact design question** → mark the finding `DESIGN_LOCKED`:
+   - Do NOT apply the fix
+   - Post a PR comment using this format (the HTML comment is machine-readable by the code-review plugin's step 3.5):
+     ```
+     <!-- DESIGN_LOCKED: <UUID> | <one-line summary> -->
+     Skipping design finding "<one-line summary>" — decision <UUID> already resolved this:
+     "<one-line rationale from the decision record>".
+     Re-opening this design question requires the owner to update the decision record first.
+     ```
+   - Remove the finding from the classification pipeline entirely
+
+3. **If this is the FIRST time this design question surfaces** AND it is a genuine architectural choice (not a bug) → emit `record_decision` NOW with the chosen approach (the one the PR implements), then treat the finding as `DESIGN_LOCKED` for this and future rounds:
+   ```
+   record_decision(
+     decision: "<one-line: chosen approach>",
+     rationale: "<why this was the right call given the PR context>",
+     alternatives_considered: [{"alternative": "<reviewer suggestion>", "rejected_because": "<why not"}],
+     reversibility: "reversible",
+     confidence: 0.7,
+     actor: "session:rework:pr-<N>",
+     project: "<repo>"
+   )
+   ```
+
+This guard must run before step 3's classification loop — a DESIGN_LOCKED finding is invisible to the CRITICAL/MAJOR/MINOR count and does not trigger a rework commit.
+
 Classify each finding into CRITICAL / MAJOR / MINOR. Count totals:
 `n_critical`, `n_major`, `n_minor`.
 
@@ -190,6 +227,20 @@ For **each** CRITICAL finding, in order of appearance:
    discipline: one finding → one test → one fix at a time.
 
 2. **GREEN** — Implement the fix. Run the test to confirm green.
+
+2b. **Symmetric scan** — before REFACTOR, grep for the same anti-pattern across every file in the PR diff (not just the specific line flagged). Root cause of multiple rework rounds: the reviewer flags instance A, the fixer fixes A, round 2 flags instance B in the same file, etc.
+
+   ```bash
+   # Identify all files this PR touches
+   git diff <base>...HEAD --name-only > /tmp/pr_files.txt
+
+   # For each CRITICAL finding's pattern, grep every PR file
+   cat /tmp/pr_files.txt | while read f; do
+     grep -n "<anti_pattern_from_finding>" "$f" 2>/dev/null && echo "  ^ in $f"
+   done
+   ```
+
+   Fix ALL instances found across the diff in the same commit. Document extra instances in the commit message: `"also fixed 3 sibling instances in X, Y, Z"`. A CRITICAL finding is a class of bug, not a single line.
 
 3. **REFACTOR** — Clean up only what is under green coverage. Do not refactor
    adjacent untested code (per the refactor-permission clause in `tdd-loop.md`).
