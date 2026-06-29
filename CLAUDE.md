@@ -99,6 +99,7 @@ Use skills — don't reinvent with raw tools.
 | "почисти память", "memory hygiene", /curate, after 2+ recall complaints | `/curate` (owner-invoked weekly; M45 S3 — host-only, deterministic surfacer, per-row owner confirm) |
 | "review memories", "drain queue", "проверь кандидаты", weekly memory-review, volume-event fire, /learn --status | `/learn` (M42 always-gate review surface; drains classifier + Deriver/Dreamer queues, hard cap 20, idempotent, no defer/accept_all) |
 | "last sprint report", "what did we ship", "milestone closeout", pre-sweep brief | `/last-work-report` (skeleton — #606) |
+| `статус` / `status` / `статус <repo>` — **anchored, only these exact triggers** | `/status` (deterministic L3 render over `status_digest`, 0 LLM tokens by default; `--deep` adds full picture + LLM narration; milestone #53, #1018) |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
 | Author/edit a skill | `/write-a-skill` |
@@ -110,6 +111,7 @@ Rules:
 - **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
 - **`/reason` (optional, intuition-stage) → `/grill` → `/to-prd` → `/to-issues` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
+- **`/status` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `статус`, `status`, or `статус <repo>` (the word as a standalone command, optionally naming a tracked repo) route to `/status`. A sentence that merely contains the word — "какой статус у PR #123", "статус деплоя в логах", "status code 500", a quoted error string — is a normal request, answered in-context; it must NOT be treated as a command to run a repo-state investigation. This anchoring closes the original failure mode where a bare "статус" was over-eagerly read as "go investigate everything".
 
 ### Responsibility split — interactive · `/delegate` · reactive-core orchestrator
 
