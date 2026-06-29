@@ -1,0 +1,611 @@
+"""Tests for status_gather I/O adapter (#1015).
+
+Test targets (per issue AC):
+- Silent-empty guards: empty vs crashed sources are stamped distinctly
+- Per-repo degradation: redrobot missing milestones degrades only that repo
+- Snapshot-gap tolerance: no baselines still returns a usable partial result
+- Pure helper functions: parse_repos_conf, _make_decision_record
+
+All tests use injected fixture-returning callbacks — no network, no live creds.
+"""
+
+from __future__ import annotations
+
+import json
+
+from scripts.status_gather import (
+    SourceKind,
+    parse_repos_conf,
+    _make_decision_record,
+    gather,
+)
+
+
+# ============================================================================
+# Fixture helpers (mirror test_rework_policy.py pattern)
+# ============================================================================
+
+
+def _fixture_repos_conf(content: str) -> callable:
+    """Return a read_repos_conf_fn that returns parsed lines from a string."""
+    return lambda path: parse_repos_conf(content)
+
+
+def _fixture_device_json(data: dict | None) -> callable:
+    """Return a read_device_json_fn returning the given dict or None."""
+    return lambda path: data
+
+
+def _fixture_run_git(result: dict) -> callable:
+    """Return a run_git_fn that always returns the same result."""
+    return lambda repo_path, args: result
+
+
+def _fixture_run_gh(result: dict) -> callable:
+    """Return a run_gh_fn that always returns the same result."""
+    return lambda repo, args: result
+
+
+def _fixture_query_supabase(rows: list[dict] | None) -> callable:
+    """Return a query_supabase_fn returning rows, None, or empty.
+
+    Args:
+        rows: If None, simulates a failed query (network error).
+              If [], simulates an empty- but-successful query.
+              Otherwise returns the list as-is.
+    """
+    def _query(url: str, key: str, table: str, params: dict) -> list[dict] | None:
+        if rows is None:
+            return None  # failed query
+        return rows  # possibly empty
+
+    return _query
+
+
+def _fixture_now() -> callable:
+    """Return a now_fn with a fixed timestamp."""
+    fixed = 1_717_000_000.0  # 2024-06-09T12:26:40 UTC
+    return lambda: fixed
+
+
+def _make_gh_success(data: list) -> dict:
+    """Simulate a successful gh command returning JSON."""
+    return {"stdout": json.dumps(data), "stderr": "", "returncode": 0}
+
+
+def _make_gh_empty() -> dict:
+    """Simulate a successful gh command with no output."""
+    return {"stdout": "", "stderr": "", "returncode": 0}
+
+
+def _make_gh_fail() -> dict:
+    """Simulate a failed gh command."""
+    return {"stdout": "", "stderr": "gh: not authenticated", "returncode": 1}
+
+
+# ============================================================================
+# Test: parse_repos_conf (pure function)
+# ============================================================================
+
+
+class TestParseReposConf:
+    """parse_repos_conf — pure, directly tested."""
+
+    def test_parses_owner_repo_lines(self):
+        content = "Osasuwu/jarvis\nSergazyNarynov/redrobot\n"
+        assert parse_repos_conf(content) == [
+            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
+        ]
+
+    def test_skips_comments_and_blanks(self):
+        content = "# This is a comment\n\nOsasuwu/jarvis\n\n  # another\nSergazyNarynov/redrobot\n"
+        assert parse_repos_conf(content) == [
+            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
+        ]
+
+    def test_returns_empty_for_empty_string(self):
+        assert parse_repos_conf("") == []
+
+    def test_returns_empty_for_only_comments(self):
+        assert parse_repos_conf("# only comment\n# another") == []
+
+    def test_strips_whitespace(self):
+        content = "  Osasuwu/jarvis  \n  SergazyNarynov/redrobot  \n"
+        assert parse_repos_conf(content) == [
+            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
+        ]
+
+
+# ============================================================================
+# Test: _make_decision_record (pure function)
+# ============================================================================
+
+
+class TestMakeDecisionRecord:
+    """_make_decision_record — pure row-to-record conversion."""
+
+    def test_converts_full_row(self):
+        row = {
+            "id": "abc-123",
+            "actor": "session:2026-06-01",
+            "kind": "decision_made",
+            "payload": json.dumps({"decision": "Use pydantic",
+                                    "rationale": "Validation matters"}),
+            "created_at": "2026-06-01T12:00:00Z",
+        }
+        # JSONB columns come back as dict from Supabase, not string
+        row["payload"] = {"decision": "Use pydantic",
+                          "rationale": "Validation matters"}
+
+        record = _make_decision_record(row)
+        assert record.id == "abc-123"
+        assert record.actor == "session:2026-06-01"
+        assert record.decision == "Use pydantic"
+        assert record.rationale == "Validation matters"
+        assert record.created_at == "2026-06-01T12:00:00Z"
+
+    def test_handles_empty_payload(self):
+        row = {
+            "id": "abc-123",
+            "actor": "session:test",
+            "kind": "decision_made",
+            "payload": {},
+            "created_at": "2026-06-01T12:00:00Z",
+        }
+        record = _make_decision_record(row)
+        assert record.decision == ""
+        assert record.rationale == ""
+
+    def test_handles_missing_fields(self):
+        row = {"id": "abc-123", "actor": "test", "created_at": "now"}
+        record = _make_decision_record(row)
+        assert record.decision == ""
+        assert record.payload == {}
+
+
+# ============================================================================
+# Test: Silent-empty guards
+# ============================================================================
+
+
+class TestSilentEmptyGuards:
+    """An empty result and a crashed/failed source are stamped distinctly.
+
+    Empty result (e.g., no open issues): {ran=T, ok=T, input_rows=0}
+    Crashed source (e.g., network error): {ran=T, ok=F, input_rows=0}
+
+    Both have input_rows=0 but differ on ok — the renderer checks ok first.
+    """
+
+    def test_empty_gh_result_is_ok_with_zero_rows(self):
+        """AC: a gh command returning empty list → ok=True, input_rows=0."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),  # empty list
+            query_supabase_fn=_fixture_query_supabase([]),  # empty
+            now_fn=_fixture_now(),
+        )
+
+        assert len(result.repos) == 1
+        repo = result.repos[0]
+
+        # PRs came back empty → ok=True, input_rows=0
+        prs_prov = repo["provenance"][SourceKind.GH_PRS]
+        assert prs_prov["ran"] is True
+        assert prs_prov["ok"] is True  # empty is NOT a failure
+        assert prs_prov["input_rows"] == 0
+
+        # Issues came back empty → ok=True, input_rows=0
+        issues_prov = repo["provenance"][SourceKind.GH_ISSUES]
+        assert issues_prov["ran"] is True
+        assert issues_prov["ok"] is True
+        assert issues_prov["input_rows"] == 0
+
+    def test_failed_gh_result_is_not_ok_with_zero_rows(self):
+        """AC: a failing gh command → ok=False, input_rows=0."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_fail()),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        assert len(result.repos) == 1
+        repo = result.repos[0]
+
+        # All gh sources failed
+        for source in [SourceKind.GH_PRS, SourceKind.GH_ISSUES,
+                        SourceKind.GH_CI, SourceKind.GH_MILESTONES]:
+            prov = repo["provenance"][source]
+            assert prov["ran"] is True, f"{source} should have ran=True"
+            assert prov["ok"] is False, f"{source} should have ok=False"
+            assert prov["input_rows"] == 0
+
+    def test_empty_supabase_is_ok_with_zero_rows(self):
+        """AC: Supabase returns [] → ok=True, input_rows=0."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase([]),  # empty list
+            now_fn=_fixture_now(),
+        )
+
+        decisions_prov = result.provenance.get(SourceKind.SUPABASE_DECISIONS, {})
+        assert decisions_prov["ran"] is True
+        assert decisions_prov["ok"] is True  # empty is OK
+        assert decisions_prov["input_rows"] == 0
+        assert len(result.decisions) == 0
+
+    def test_failed_supabase_is_not_ok(self):
+        """AC: Supabase query returns None (network error) → ok=False."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase(None),  # failed
+            now_fn=_fixture_now(),
+        )
+
+        decisions_prov = result.provenance.get(SourceKind.SUPABASE_DECISIONS, {})
+        assert decisions_prov["ran"] is True
+        assert decisions_prov["ok"] is False  # failure
+        assert decisions_prov["input_rows"] == 0
+        assert len(result.decisions) == 0
+
+    def test_empty_repos_conf_is_not_ok(self):
+        """AC: empty repos.conf → ok=False, input_rows=0, no repos gathered."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf(""),
+            read_device_json_fn=_fixture_device_json(None),
+            run_git_fn=_fixture_run_git({"stdout": "", "stderr": "",
+                                         "returncode": -1}),
+            run_gh_fn=_fixture_run_gh(_make_gh_empty()),
+            query_supabase_fn=_fixture_query_supabase(None),
+            now_fn=_fixture_now(),
+        )
+
+        assert result.provenance[SourceKind.REPOS_CONF]["ok"] is False
+        assert result.provenance[SourceKind.REPOS_CONF]["input_rows"] == 0
+        assert len(result.repos) == 0
+        assert len(result.errors) > 0
+
+    def test_provenance_distinguishes_empty_from_failed(self):
+        """Regression: empty and failed must NOT produce identical provenance.
+
+        The renderer relies on ok to gate green health. If both are stamped
+        identically, an empty-but-healthy repo would show red, and a silently
+        failed one would show green.
+        """
+        # Empty case
+        empty_result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        # Failed case
+        failed_result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_fail()),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        empty_prs = empty_result.repos[0]["provenance"][SourceKind.GH_PRS]
+        failed_prs = failed_result.repos[0]["provenance"][SourceKind.GH_PRS]
+
+        # Empty: ok=True, failed: ok=False
+        assert empty_prs["ok"] is True
+        assert failed_prs["ok"] is False
+        # Both: input_rows=0
+        assert empty_prs["input_rows"] == 0
+        assert failed_prs["input_rows"] == 0
+        # Both: ran=True
+        assert empty_prs["ran"] is True
+        assert failed_prs["ran"] is True
+
+
+# ============================================================================
+# Test: Per-repo degradation
+# ============================================================================
+
+
+class TestPerRepoDegradation:
+    """redrobot asymmetry: a missing source on one repo degrades only that repo.
+
+    redrobot has no Projects board, manual merge, possibly-down CI. A source
+    missing on redrobot must degrade that repo's entry, not jarvis or the whole
+    gather.
+    """
+
+    def test_redrobot_milestones_degrade_only_redrobot(self):
+        """AC: redrobot milestones fail → redrobot degraded, jarvis unaffected."""
+        # Jarvis gh succeeds, redrobot gh fails on milestones
+        call_count: dict[str, int] = {}
+
+        def _side_effect_gh(repo: str, args: list[str]) -> dict:
+            call_count[repo] = call_count.get(repo, 0) + 1
+            is_milestones = any("milestones" in a or "api" in a for a in args)
+            if is_milestones and "redrobot" in repo:
+                return _make_gh_fail()
+            return _make_gh_success([{"number": 1, "title": "v1"}])
+
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf(
+                "Osasuwu/jarvis\nSergazyNarynov/redrobot\n"
+            ),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_side_effect_gh,
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        assert len(result.repos) == 2
+
+        jarvis_entry = [r for r in result.repos if "jarvis" in r["name"]][0]
+        redrobot_entry = [r for r in result.repos if "redrobot" in r["name"]][0]
+
+        # Jarvis: milestones ok, not degraded
+        assert jarvis_entry["degraded"] is False
+        assert jarvis_entry["degradation_reason"] is None
+        assert jarvis_entry["provenance"][SourceKind.GH_MILESTONES]["ok"] is True
+        assert len(jarvis_entry.get("milestones", [])) > 0
+
+        # Redrobot: milestones failed, degraded
+        assert redrobot_entry["degraded"] is True
+        assert redrobot_entry["degradation_reason"] is not None
+        assert "milestones" in redrobot_entry["degradation_reason"].lower()
+        assert redrobot_entry["provenance"][SourceKind.GH_MILESTONES]["ok"] is False
+        # Other redrobot sources still ok
+        assert redrobot_entry["provenance"][SourceKind.GH_PRS]["ok"] is True
+        assert redrobot_entry["provenance"][SourceKind.GH_ISSUES]["ok"] is True
+
+    def test_redrobot_failure_does_not_affect_jarvis_prs(self):
+        """AC: redrobot gh auth failure → jarvis PRs still gather correctly."""
+        def _side_effect_gh(repo: str, args: list[str]) -> dict:
+            if "redrobot" in repo:
+                return _make_gh_fail()
+            return _make_gh_success([{"number": 42, "title": "Fix bug",
+                                      "createdAt": "2026-06-01T00:00:00Z"}])
+
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf(
+                "Osasuwu/jarvis\nSergazyNarynov/redrobot\n"
+            ),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_side_effect_gh,
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        assert len(result.repos) == 2
+
+        jarvis_entry = [r for r in result.repos if "jarvis" in r["name"]][0]
+        redrobot_entry = [r for r in result.repos if "redrobot" in r["name"]][0]
+
+        # Jarvis PRs ok
+        assert jarvis_entry["provenance"][SourceKind.GH_PRS]["ok"] is True
+        assert len(jarvis_entry.get("prs", [])) == 1
+        assert jarvis_entry["prs"][0]["number"] == 42
+
+        # Redrobot PRs failed, but jarvis unaffected
+        assert redrobot_entry["provenance"][SourceKind.GH_PRS]["ok"] is False
+        assert redrobot_entry.get("prs") is None or redrobot_entry["prs"] == []
+
+
+# ============================================================================
+# Test: Snapshot-gap tolerance
+# ============================================================================
+
+
+class TestSnapshotGapTolerance:
+    """Gather must return a partial structure when no fresh baseline exists.
+
+    Cron runs Workshop-only (not this Main PC). A fresh L1 baseline may be
+    absent. Gather must still return a usable, provenance-marked partial result.
+    """
+
+    def test_no_supabase_creds_returns_partial_result(self):
+        """AC: SUPABASE_URL/SUPABASE_KEY unset → decisions source not ok,
+        but gather still returns repos and errors list."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([{"number": 1}])),
+            query_supabase_fn=_fixture_query_supabase(None),
+            now_fn=_fixture_now(),
+        )
+
+        # Still got repos
+        assert len(result.repos) == 1
+        assert result.repos[0]["name"] == "Osasuwu/jarvis"
+
+        # Decisions not ok (no creds)
+        decisions_prov = result.provenance.get(SourceKind.SUPABASE_DECISIONS, {})
+        assert decisions_prov.get("ran") is True
+        assert decisions_prov.get("ok") is False
+
+        # Errors recorded (non-fatal)
+        assert len(result.errors) > 0
+
+    def test_supabase_returns_real_data(self):
+        """Happy path: supabase returns decisions → records parsed."""
+        rows = [
+            {
+                "id": "d1",
+                "actor": "session:test",
+                "kind": "decision_made",
+                "payload": {"decision": "Use X", "rationale": "Faster"},
+                "created_at": "2026-06-01T00:00:00Z",
+            },
+            {
+                "id": "d2",
+                "actor": "session:test2",
+                "kind": "decision_made",
+                "payload": {"decision": "Drop Y", "rationale": "Unused"},
+                "created_at": "2026-06-02T00:00:00Z",
+            },
+        ]
+
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase(rows),
+            now_fn=_fixture_now(),
+        )
+
+        assert len(result.decisions) == 2
+        assert result.decisions[0].decision == "Use X"
+        assert result.decisions[1].decision == "Drop Y"
+
+        decisions_prov = result.provenance.get(SourceKind.SUPABASE_DECISIONS, {})
+        assert decisions_prov["ok"] is True
+        assert decisions_prov["input_rows"] == 2
+
+    def test_status_snapshot_not_available(self):
+        """AC: no status baselines → snapshot source not ok, but repos + decisions
+        still gathered."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        # Baseline source not ok (not available in this context)
+        snap_prov = result.provenance.get(SourceKind.STATUS_SNAPSHOT, {})
+        assert snap_prov.get("ran") is True
+        assert snap_prov.get("ok") is False
+
+        # But repos and decisions are still gathered
+        assert len(result.repos) == 1
+        assert result.repos[0]["name"] == "Osasuwu/jarvis"
+
+        # gathered_at is set
+        assert result.gathered_at != ""
+
+
+# ============================================================================
+# Test: Provenance contract
+# ============================================================================
+
+
+class TestProvenanceContract:
+    """Every source carries provenance. The result is serializable."""
+
+    def test_all_sources_have_provenance(self):
+        """Every SourceKind appears in the result."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([{"number": 1}])),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        # Top-level sources
+        for sk in [SourceKind.REPOS_CONF, SourceKind.SUPABASE_DECISIONS,
+                    SourceKind.STATUS_SNAPSHOT]:
+            assert sk in result.provenance, f"Missing top-level provenance: {sk}"
+
+        # Per-repo sources
+        repo = result.repos[0]
+        for sk in [SourceKind.GIT_STATE, SourceKind.GH_PRS,
+                    SourceKind.GH_ISSUES, SourceKind.GH_CI,
+                    SourceKind.GH_MILESTONES]:
+            assert sk in repo["provenance"], f"Missing repo provenance: {sk}"
+
+    def test_result_is_json_serializable(self):
+        """GatherResult.to_dict() produces JSON-serializable output."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([{"number": 1}])),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        serialized = json.dumps(result.to_dict(), default=str)
+        parsed = json.loads(serialized)
+        assert len(parsed["repos"]) == 1
+        assert "provenance" in parsed
+        assert "gathered_at" in parsed
+
+
+# ============================================================================
+# Test: Degradation flag when git state unavailable
+# ============================================================================
+
+
+class TestGitStateDegradation:
+    """Git state marks provenance !ok when local repo path doesn't exist."""
+
+    def test_no_local_repo_path_sets_git_not_ok(self):
+        """AC: device.json has repos_path but repo dir missing → git !ok."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json(
+                {"repos_path": "/nonexistent/path"}
+            ),
+            run_git_fn=_fixture_run_git({"stdout": "", "stderr": "not found",
+                                         "returncode": -1}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        repo = result.repos[0]
+        git_prov = repo["provenance"][SourceKind.GIT_STATE]
+        assert git_prov["ran"] is True
+        assert git_prov["ok"] is False  # local dir not available
+        assert repo["branch"] is None
+        assert repo["clean"] is None

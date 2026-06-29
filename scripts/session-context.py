@@ -276,8 +276,12 @@ def _run_smoke_check() -> None:
         os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_KEY")
     )
     creds_note = "creds present" if have_creds else "creds absent (config pending)"
+    # Emit to stderr: the installer's health-check runner redirects child stdout
+    # to DEVNULL and captures only stderr (#963). A stdout print would be
+    # silently discarded, hiding this diagnostic from the install log.
     print(
-        f"[session-context] smoke ok — venv + deps loaded, no network; {creds_note}"
+        f"[session-context] smoke ok — venv + deps loaded, no network; {creds_note}",
+        file=sys.stderr,
     )
 
 

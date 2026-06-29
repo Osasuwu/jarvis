@@ -50,9 +50,11 @@ def test_run_smoke_check_makes_no_network_call(
 
     sc._run_smoke_check()
 
-    out = capsys.readouterr().out
-    assert "smoke ok" in out
-    assert "creds present" in out
+    # Smoke message goes to stderr (#963): the installer redirects child stdout
+    # to DEVNULL and captures only stderr, so a stdout print would be discarded.
+    err = capsys.readouterr().err
+    assert "smoke ok" in err
+    assert "creds present" in err
     sentinel.assert_not_called()
 
 
@@ -65,9 +67,9 @@ def test_run_smoke_check_creds_absent_still_exits_clean(
 
     sc._run_smoke_check()  # must not raise / sys.exit non-zero
 
-    out = capsys.readouterr().out
-    assert "smoke ok" in out
-    assert "creds absent" in out
+    err = capsys.readouterr().err
+    assert "smoke ok" in err
+    assert "creds absent" in err
 
 
 def test_main_smoke_short_circuits_before_supabase(
@@ -88,7 +90,7 @@ def test_main_smoke_short_circuits_before_supabase(
 
     sc.main()
 
-    assert "smoke ok" in capsys.readouterr().out
+    assert "smoke ok" in capsys.readouterr().err
 
 
 def test_main_without_smoke_does_not_smoke(
@@ -106,3 +108,4 @@ def test_main_without_smoke_does_not_smoke(
 
     captured = capsys.readouterr()
     assert "smoke ok" not in captured.out
+    assert "smoke ok" not in captured.err

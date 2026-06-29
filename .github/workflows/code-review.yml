@@ -36,7 +36,7 @@ jobs:
       id-token: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -51,7 +51,51 @@ jobs:
             echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
           fi
 
+      # Skip review entirely when the diff has no substantive code changes.
+      # EOL/whitespace-only diffs (common on Windows with CRLF) trigger the
+      # plugin, which posts a non-standard "no code changes" verdict the
+      # verdict-guard can't parse → fail-closed → forced admin-merge.
+      # When has_code=false the review step is skipped; verdict-guard sees
+      # total=0 comments and exits 0 — no review needed, nothing to block.
+      # Mirror of SergazyNarynov/redrobot fix (issue #1296, commit 3c9f40e).
+      - name: Check substantive diff
+        id: diff
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_BASE=$(gh pr view "${{ steps.pr.outputs.number }}" \
+            --repo "${{ github.repository }}" \
+            --json baseRefName -q .baseRefName)
+          git fetch origin "$PR_BASE"
+          LINES=$(git diff "origin/$PR_BASE"...HEAD -- \
+            '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' \
+            '*.yaml' '*.yml' '*.json' '*.sh' '*.md' \
+            | grep -cE '^[+-][^+-]' 2>/dev/null || echo 0)
+          HAS=$( [ "$LINES" -gt 0 ] && echo true || echo false )
+          echo "lines=$LINES" >> "$GITHUB_OUTPUT"
+          echo "has_code=$HAS" >> "$GITHUB_OUTPUT"
+          echo "Substantive diff lines: $LINES (has_code=$HAS)"
+
+      # Skip review when the push comes from the auto-rebase bot. osasuwu-ci[bot]
+      # exclusively pushes "Merge branch 'main' into <feature>" commits — pure
+      # housekeeping with no new code. Without this guard, each rebase triggers a
+      # full review run: PR #963 accumulated 28 auto-rebase pushes → 23 spurious
+      # review comments despite only 4-5 real rework rounds (incident 2026-06-29).
+      #
+      # MUST stay at step level (not job `if:`): the job-level condition must not
+      # use github.actor — the dependabot[bot] guard already keys off PR author
+      # for stability across synchronize events, and test_code_review_dependabot_skip.py
+      # asserts that github.actor is absent from the job `if:` (#944 regression pin).
+      - name: Skip auto-rebase push
+        id: autobase
+        if: github.event_name == 'pull_request' && github.actor == 'osasuwu-ci[bot]'
+        run: |
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Push by osasuwu-ci[bot] is an auto-rebase only (no new code); skipping code review."
+
       - name: Run /code-review
+        if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true')
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -141,7 +185,7 @@ jobs:
       # the dispatch path too. steps.pr.outputs.number resolves on dispatch
       # via inputs.pr_number, so the lookup works for both events.
       - name: Verify review verdict
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
