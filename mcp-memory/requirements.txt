@@ -1,4 +1,4 @@
-mcp>=1.27.2
+mcp>=1.28.0
 supabase>=2.31.0
 voyageai>=0.4.0
 httpx>=0.28.1
