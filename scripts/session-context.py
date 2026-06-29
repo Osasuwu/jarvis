@@ -33,7 +33,9 @@ _venv_py = _root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/
 # importlib with a non-"__main__" module name), skip the re-exec so the
 # module's top-level sys.exit doesn't kill pytest collection.
 if __name__ == "__main__" and _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
-    sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve())]))
+    # Forward argv (e.g. --smoke) across the re-exec — without this the flag is
+    # silently dropped and the venv child runs the full script (#963 review).
+    sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve()), *sys.argv[1:]]))
 
 # ---------------------------------------------------------------------------
 # Now running under venv — safe to import dependencies
@@ -255,7 +257,41 @@ def _load_project_context(project_root: Path) -> str | None:
     return f"## Project Context\n{raw.rstrip()}{suffix}"
 
 
+def _run_smoke_check() -> None:
+    """Dry health probe for the install health-check — NO Supabase network call.
+
+    The install manifest runs ``session-context.py --smoke`` as a health
+    command. Reaching this function already proves the load path is sound: the
+    venv re-exec at module top succeeded and every top-level import (dotenv,
+    supabase) resolved — a broken venv or missing dependency crashes earlier
+    with a non-zero exit the health-check catches. We deliberately skip the
+    Supabase query so the health-check does not hinge on network reachability,
+    nor on the owner having populated ``.env`` yet. Before #963 the command
+    claimed "dry load" but ran the full script, network calls included.
+
+    Always exits 0; credential absence is reported but is config state, not an
+    install failure (the installer owns the venv, not the owner's ``.env``).
+    """
+    have_creds = bool(
+        os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_KEY")
+    )
+    creds_note = "creds present" if have_creds else "creds absent (config pending)"
+    # Emit to stderr: the installer's health-check runner redirects child stdout
+    # to DEVNULL and captures only stderr (#963). A stdout print would be
+    # silently discarded, hiding this diagnostic from the install log.
+    print(
+        f"[session-context] smoke ok — venv + deps loaded, no network; {creds_note}",
+        file=sys.stderr,
+    )
+
+
 def main():
+    # --smoke: dry health probe, short-circuits before any Supabase network
+    # call (#963). Checked before _read_hook_input so it never blocks on stdin.
+    if "--smoke" in sys.argv[1:]:
+        _run_smoke_check()
+        return
+
     hook_input = _read_hook_input()
     compact_resume = _is_compact_resume(hook_input)
     session_id = (

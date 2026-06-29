@@ -22,6 +22,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -1095,38 +1096,180 @@ def _rollback_failed_apply(plan: Plan) -> None:
         shutil.rmtree(plan.target_root, ignore_errors=True)
 
 
-def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[bool, list[str]]:
+HEALTH_CHECK_TIMEOUT_DEFAULT = 30
+
+
+# SIGKILL is POSIX-only — absent on Windows. _kill_tree references it solely
+# inside an ``os.name != "nt"`` branch, so it is never evaluated on Windows
+# today. Bind it through getattr at module load so a future refactor that hoists
+# the signal to a default arg / constant can't raise AttributeError at import
+# time on Windows (the platform this installer exists to support). Falls back to
+# SIGTERM, which always exists, if SIGKILL is ever unavailable.
+_SIGKILL = getattr(signal, "SIGKILL", signal.SIGTERM)
+
+
+def _kill_window_is_failure(returncode: int | None, os_name: str) -> bool:
+    """True when a timed-out process self-exited non-zero in the kill window.
+
+    A process can self-exit non-zero in the race between the timeout firing and
+    _kill_tree landing (e.g. a slow venv import that crashes at t=timeout+ε).
+    That is a genuine FAIL, not an inconclusive timeout — classifying it
+    "timeout" leaves a broken apply in place with no rollback.
+
+    On POSIX a positive returncode means the process exited on its own; a
+    negative returncode is our SIGKILL (the real timeout path). On Windows
+    there is no signal convention — TerminateProcess yields exit 1,
+    indistinguishable from a real failure — so we stay conservative there and
+    keep treating it as a timeout.
+    """
+    return os_name != "nt" and returncode is not None and returncode > 0
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Terminate proc AND its descendants; must never raise.
+
+    proc.kill() reaps only the direct child. Health commands spawn
+    grandchildren (session-context.py re-execs itself into the venv python);
+    a surviving grandchild keeps running — and keeps any inherited handles
+    open — long after the installer gave up on the command.
+
+    Precondition (POSIX): proc must have been spawned with
+    ``start_new_session=True`` so it is its own process-group leader — the
+    ``os.killpg(proc.pid, ...)`` path assumes PGID == PID. The sole call site
+    in run_health_check satisfies this; document it here to prevent misuse if
+    _kill_tree is ever reused for a proc spawned without a new session.
+    """
+    if os.name == "nt":
+        try:
+            # /T walks the tree by parent PID — the direct child is still
+            # alive here (we only reach this on TimeoutExpired), so the
+            # chain is discoverable.
+            result = subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+            if result.returncode != 0:
+                # taskkill failed (access denied, already exited, etc.) —
+                # fall through to proc.kill() as a last resort.
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        except (OSError, subprocess.TimeoutExpired):
+            # Fallback must honour the "never raise" contract: killing an
+            # already-exited process can surface OSError on Windows.
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    else:
+        try:
+            # start_new_session=True at spawn made proc a group leader.
+            os.killpg(proc.pid, _SIGKILL)
+        except (OSError, ProcessLookupError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def run_health_check(manifest: dict[str, Any], repo_root: Path) -> tuple[str, list[str]]:
+    """Run manifest health-check commands. Returns (status, logs).
+
+    status: "ok" — every command exited 0; "fail" — a command exited non-zero
+    or could not be spawned; "timeout" — a command outlived its time limit and
+    its process tree was killed. Callers must treat "timeout" as inconclusive,
+    NOT as evidence the apply is broken — see main().
+    """
     hc = manifest.get("health_check") or {}
     if not hc.get("enabled"):
-        return True, []
+        return "ok", []
+    timeout = int(hc.get("timeout", HEALTH_CHECK_TIMEOUT_DEFAULT))
     logs: list[str] = []
     for cmd in hc.get("commands") or []:
         # Use shlex so paths with spaces survive — `cmd.split()` breaks them.
-        # posix=False on Windows keeps backslashes intact.
-        argv = shlex.split(cmd, posix=(os.name != "nt"))
+        # posix=False on Windows keeps backslashes intact. A malformed entry
+        # (unterminated quote) raises ValueError — catch it as a clean "fail"
+        # rather than letting an unformatted traceback escape run_health_check.
         try:
-            # Force UTF-8 for subprocess I/O — text=True alone defaults to
-            # locale.getpreferredencoding(False), which on Russian Windows is
-            # cp1251 and can't decode the em-dashes / Cyrillic that session
-            # scripts emit. errors="replace" keeps the reader threads alive
-            # even if a rogue script ever emits garbage bytes (#352).
-            result = subprocess.run(
-                argv,
-                cwd=repo_root,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=30,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+            argv = shlex.split(cmd, posix=(os.name != "nt"))
+        except ValueError as exc:
+            logs.append(f"FAIL {cmd}: malformed command: {exc}")
+            return "fail", logs
+        # Resolve portable python/python3 tokens to the running interpreter.
+        # On Windows python3 is absent; on some Linux distros python is absent.
+        if argv and argv[0] in ("python", "python3"):
+            argv[0] = sys.executable
+        # Output goes to temp FILES, never pipes. With the prior capture_output=True
+        # approach, a health command that spawns its own children (session-context.py
+        # re-execs into the venv python) left a grandchild holding inherited pipe
+        # write-handles; once the timeout killed the direct child, the pipe never
+        # reached EOF and the parent blocked forever. File reads cannot block on EOF,
+        # so even a grandchild the tree-kill misses can't wedge the installer.
+        # stdin=DEVNULL keeps children from waiting on console input.
+        popen_kwargs: dict[str, Any] = {}
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True  # killable as a group
+        try:
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+                err_path = Path(td) / "err"
+                timed_out = False
+                with open(err_path, "wb") as err_f:
+                    proc = subprocess.Popen(
+                        argv,
+                        cwd=repo_root,
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=err_f,
+                        **popen_kwargs,
+                    )
+                    try:
+                        proc.wait(timeout=timeout)
+                    except subprocess.TimeoutExpired:
+                        _kill_tree(proc)
+                        try:
+                            proc.wait(timeout=10)  # reap zombie; bounded to avoid re-hang
+                        except subprocess.TimeoutExpired:
+                            pass  # unkillable (D-state) — proceed, zombie reaped at exit
+                        # A timed-out process that self-exited non-zero in the
+                        # kill window is a real failure, not an inconclusive
+                        # timeout — see _kill_window_is_failure for the platform
+                        # reasoning. Don't leave a broken apply unrolled-back.
+                        if _kill_window_is_failure(proc.returncode, os.name):
+                            logs.append(
+                                f"FAIL {cmd} exit={proc.returncode} — exited "
+                                f"non-zero during kill window (timed out then "
+                                f"self-failed)"
+                            )
+                            return "fail", logs
+                        timed_out = True
+                # Decode like the old capture path: locale-independent UTF-8,
+                # errors="replace" survives rogue bytes on cp1251 consoles (#352).
+                # PermissionError: surviving grandchild may hold the write handle on Windows.
+                try:
+                    stderr = err_path.read_bytes().decode("utf-8", errors="replace")
+                except PermissionError:
+                    stderr = "<stderr unavailable — file locked by surviving child>"
+                if timed_out:
+                    logs.append(
+                        f"TIMEOUT {cmd}: no exit after {timeout}s — "
+                        f"process tree killed; stderr={stderr[:200]}"
+                    )
+                    return "timeout", logs
+        except OSError as exc:
             logs.append(f"FAIL {cmd}: {exc}")
-            return False, logs
-        if result.returncode != 0:
-            logs.append(f"FAIL {cmd} exit={result.returncode} stderr={result.stderr[:200]}")
-            return False, logs
+            return "fail", logs
+        if proc.returncode != 0:
+            logs.append(f"FAIL {cmd} exit={proc.returncode} stderr={stderr[:200]}")
+            return "fail", logs
         logs.append(f"OK   {cmd}")
-    return True, logs
+    return "ok", logs
 
 
 # ---------- printing ----------
@@ -1186,6 +1329,14 @@ def format_plan(plan: Plan) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Install/sync Jarvis agent machinery into ~/.claude/.
+
+    Exit codes:
+      0  success
+      2  apply error (rolled back)
+      3  health check non-zero exit (rolled back)
+      4  health check timeout — inconclusive, apply left in place
+    """
     # Line-buffer stdout/stderr so per-action progress shows in real time even
     # when output is captured through a pipe (install.ps1 tees it). Otherwise
     # Python block-buffers a piped stdout and the whole run appears only at
@@ -1315,10 +1466,22 @@ def main(argv: list[str] | None = None) -> int:
             print("no fixable .env files found", file=sys.stderr)
 
     if not args.skip_health_check:
-        ok, logs = run_health_check(manifest, repo_root)
+        status, logs = run_health_check(manifest, repo_root)
         for line in logs:
             print(line)
-        if not ok:
+        if status == "timeout":
+            # Inconclusive ≠ broken. A hung health command (script stuck on
+            # network, grandchild that outlived its parent) says nothing
+            # about whether the apply itself succeeded — rolling back here
+            # would discard a completed, likely-good install. Leave it in
+            # place and tell the operator to verify by hand.
+            print(
+                "\nhealth check timed out — apply left in place (NOT rolled back); "
+                "verify manually or re-run the installer (install.ps1 / install.sh)",
+                file=sys.stderr,
+            )
+            return 4
+        if status == "fail":
             print("\nhealth check failed", file=sys.stderr)
             _rollback_failed_apply(plan)
             return 3
