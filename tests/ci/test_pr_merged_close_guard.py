@@ -19,7 +19,7 @@ Decision rule mirrored here (see the bash loop in the YAML):
   - issue reopened AFTER the PR's merged_at     -> skip (respect human reopen)
   - otherwise                                   -> close (state_reason=completed)
 The candidate set is `closingIssuesReferences` (authoritative linkage), not a
-body regex, projected WITH each ref's own repo (`repository.nameWithOwner`).
+body regex, projected WITH each ref's own repo (`owner.login`/`name`).
 GITHUB_TOKEN is scoped to $REPO, so a cross-repo ref CANNOT be closed here — it
 is SKIPPED with a warning, never collapsed into $REPO (which would close the
 wrong same-numbered issue). The linkage read fails LOUD on a gh error rather
@@ -154,9 +154,26 @@ def test_workflow_is_cross_repo_aware():
     # scoped to $REPO, so a foreign ref CANNOT be closed here — it must be SKIPPED
     # with a warning, never collapsed into $REPO (which would close the wrong
     # same-numbered issue), and never silently dropped.
-    assert "nameWithOwner" in text, (
-        "linkage projection must include repository.nameWithOwner so a foreign "
-        "ref is detected (then skipped), not collapsed into $REPO."
+    # The repo slug MUST be built from `owner.login` + `name`, NOT
+    # `.nameWithOwner`. The nested `repository` object on a
+    # closingIssuesReferences ref (gh pr view --json closingIssuesReferences)
+    # only exposes {id, name, owner{login}} — it has NO `nameWithOwner` field,
+    # so `\(.repository.nameWithOwner)` resolves to the literal "null". That made
+    # every same-repo ref read as "null", trip the cross-repo guard, and get
+    # skipped under a green job (#1013/#1015/#1037/#939; systemic from #1021).
+    # Pin the correct construction AND forbid the bogus field so a revert reds
+    # this test. (This grep-only meta-test can't catch the null at runtime — it
+    # never runs jq against real gh output — but it can at least pin the field
+    # path that does exist.)
+    assert ".repository.nameWithOwner" not in text, (
+        "linkage projection must NOT use `.repository.nameWithOwner` — that field "
+        "does not exist on the nested repository object and resolves to null, "
+        "misclassifying every same-repo ref as cross-repo (#1021 regression)."
+    )
+    assert ".repository.owner.login" in text and ".repository.name" in text, (
+        "linkage projection must build the repo slug from "
+        "`.repository.owner.login`/`.repository.name` so a foreign ref is "
+        "detected (then skipped), not collapsed into $REPO."
     )
     assert '"$irepo" != "$REPO"' in text, (
         "the loop must guard `$irepo != $REPO` and skip+warn — GITHUB_TOKEN is "
