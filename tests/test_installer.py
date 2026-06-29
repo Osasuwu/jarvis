@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -340,15 +342,15 @@ def test_prune_backups_keeps_latest_n(fake_repo: Path, tmp_path: Path) -> None:
 
 
 def test_health_check_disabled_by_default_returns_ok() -> None:
-    ok, logs = installer.run_health_check({"health_check": {"enabled": False}}, Path("."))
-    assert ok is True
+    status, logs = installer.run_health_check({"health_check": {"enabled": False}}, Path("."))
+    assert status == "ok"
     assert logs == []
 
 
 def test_health_check_failed_command_reports_failure(fake_repo: Path) -> None:
     m = {"health_check": {"enabled": True, "commands": ["python -c exit(1)"]}}
-    ok, logs = installer.run_health_check(m, fake_repo)
-    assert ok is False
+    status, logs = installer.run_health_check(m, fake_repo)
+    assert status == "fail"
     assert any("FAIL" in line for line in logs)
 
 
@@ -373,9 +375,130 @@ def test_health_check_handles_utf8_output(fake_repo: Path) -> None:
             "commands": [f'python -c "{payload}"'],
         }
     }
-    ok, logs = installer.run_health_check(m, fake_repo)
-    assert ok is True, logs
+    status, logs = installer.run_health_check(m, fake_repo)
+    assert status == "ok", logs
     assert any("OK" in line for line in logs)
+
+
+def test_health_check_timeout_with_grandchild_returns_promptly(
+    fake_repo: Path, tmp_path: Path
+) -> None:
+    """Regression for the 2026-06-12 install wedge: a health command whose
+    child spawns a grandchild (session-context.py re-execs into the venv
+    python) must not hang run_health_check past its timeout. With the old
+    capture_output pipes, the timeout-kill reaped only the direct child; the
+    grandchild kept the inherited pipe write-ends open and the parent blocked
+    on EOF forever (observed: install.ps1 -Apply wedged 35+ min). The
+    file-redirect + tree-kill rewrite bounds the wall clock and reaps the
+    grandchild too.
+
+    Paths are passed unquoted — pytest tmp dirs have no spaces, and quoted
+    tokens survive shlex(posix=False) on Windows with their quotes attached,
+    which list2cmdline then mangles.
+    """
+    marker = tmp_path / "grandchild.heartbeat"
+    grandchild_py = tmp_path / "grandchild.py"
+    grandchild_py.write_text(
+        "import time\n"
+        f"f = open({str(marker)!r}, 'a')\n"
+        "for _ in range(600):\n"
+        "    f.write('x')\n"
+        "    f.flush()\n"
+        "    time.sleep(0.1)\n",
+        encoding="utf-8",
+    )
+    # Mirrors session-context.py's bootstrap exactly: blocking subprocess.call
+    # of another python, which inherits this process's stdout/stderr handles.
+    wrapper_py = tmp_path / "wrapper.py"
+    wrapper_py.write_text(
+        "import subprocess, sys\n"
+        f"sys.exit(subprocess.call([sys.executable, {str(grandchild_py)!r}]))\n",
+        encoding="utf-8",
+    )
+    m = {
+        "health_check": {
+            "enabled": True,
+            "timeout": 5,
+            "commands": [f"{_sys.executable} {wrapper_py}"],
+        }
+    }
+
+    # Run in a daemon thread so a regression FAILS the test instead of
+    # hanging pytest until the CI job timeout.
+    result: dict[str, tuple[str, list[str]]] = {}
+
+    def target() -> None:
+        result["r"] = installer.run_health_check(m, fake_repo)
+
+    t = threading.Thread(target=target, daemon=True)
+    start = time.monotonic()
+    t.start()
+    t.join(timeout=35)
+    elapsed = time.monotonic() - start
+    assert not t.is_alive(), (
+        "run_health_check still blocked after 35s — grandchild pipe-EOF hang regressed"
+    )
+    assert "r" in result, "run_health_check raised — thread exited without returning a result"
+    status, logs = result["r"]
+    assert status == "timeout", logs
+    # timeout=5 + tree-kill worst case (taskkill 15s + wait 5s + outer wait 10s)
+    # ⇒ ~10–12s expected, ~35s theoretical max on Windows. Bound at 30s:
+    # catches a slow-kill regression while allowing Windows CI overhead.
+    assert elapsed < 30, f"returned after {elapsed:.0f}s — timeout-kill did not bound it"
+
+    # Tree-kill must reach the grandchild: its heartbeat (append-only, so the
+    # size can only grow while it lives) stops growing.
+    time.sleep(1.0)
+    size_before = marker.stat().st_size if marker.exists() else 0
+    time.sleep(1.5)
+    size_after = marker.stat().st_size if marker.exists() else 0
+    assert size_before == size_after, "grandchild still writing after tree-kill"
+
+
+def test_kill_window_posix_self_exit_nonzero_is_failure() -> None:
+    """MAJOR (#963 review): on POSIX a positive returncode means the process
+    self-exited non-zero during the kill window — a genuine FAIL, not an
+    inconclusive timeout. Classifying it 'timeout' would leave a broken apply
+    in place with no rollback."""
+    assert installer._kill_window_is_failure(3, "posix") is True
+
+
+def test_kill_window_posix_signal_kill_is_not_failure() -> None:
+    """A negative returncode is our SIGKILL (the real timeout path) — it must
+    NOT be read as a self-failure, else a normal timeout triggers a rollback."""
+    assert installer._kill_window_is_failure(-9, "posix") is False
+
+
+def test_kill_window_posix_clean_exit_is_not_failure() -> None:
+    """returncode 0 (or still-None) in the kill window is not a failure."""
+    assert installer._kill_window_is_failure(0, "posix") is False
+    assert installer._kill_window_is_failure(None, "posix") is False
+
+
+def test_kill_window_windows_stays_timeout() -> None:
+    """On Windows TerminateProcess yields exit 1, indistinguishable from a real
+    failure — so the kill-window reclassification is POSIX-only and Windows
+    stays conservatively a timeout (no false rollback on the target platform)."""
+    assert installer._kill_window_is_failure(1, "nt") is False
+
+
+# ---------- malformed health-check command (#963 review) ----------
+
+
+def test_health_check_malformed_command_is_fail(fake_repo: Path) -> None:
+    """MAJOR (#963 review): an unterminated quote in a health_check command
+    raises ValueError from shlex.split — it must be caught as a clean 'fail',
+    not propagate as an unformatted traceback out of run_health_check."""
+    m = {
+        "health_check": {
+            "enabled": True,
+            "timeout": 5,
+            "commands": ["python scripts/foo.py --arg 'bar"],  # unterminated quote
+        }
+    }
+    status, logs = installer.run_health_check(m, fake_repo)
+    assert status == "fail"
+    assert any("malformed command" in line for line in logs)
 
 
 # ---------- orphan-skill cleanup (#576) ----------
@@ -731,16 +854,18 @@ def test_health_check_uses_shlex_for_argv_parsing(
     """cmd.split() broke on paths with spaces; shlex handles quoted args."""
     seen: list[list[str]] = []
 
-    class FakeResult:
+    class FakeProc:
         returncode = 0
-        stderr = ""
-        stdout = ""
+        pid = 99999
 
-    def fake_run(argv, **kwargs):
+        def wait(self, timeout=None):
+            return 0
+
+    def fake_popen(argv, **kwargs):
         seen.append(list(argv))
-        return FakeResult()
+        return FakeProc()
 
-    monkeypatch.setattr(installer.subprocess, "run", fake_run)
+    monkeypatch.setattr(installer.subprocess, "Popen", fake_popen)
 
     m = {
         "health_check": {
@@ -750,8 +875,8 @@ def test_health_check_uses_shlex_for_argv_parsing(
             ],
         }
     }
-    ok, _logs = installer.run_health_check(m, fake_repo)
-    assert ok is True
+    status, _logs = installer.run_health_check(m, fake_repo)
+    assert status == "ok"
     assert len(seen) == 1
     argv = seen[0]
     # Whether posix or windows flavor of shlex, the quoted path must stay
@@ -759,7 +884,7 @@ def test_health_check_uses_shlex_for_argv_parsing(
     assert any("path with spaces" in tok for tok in argv), (
         f"quoted path split by whitespace: argv={argv}"
     )
-    assert argv[0] == "python"
+    assert argv[0] == _sys.executable  # python token resolved to running interpreter
 
 
 # ---------- #338 (M3): settings.json + .mcp.json deep-merge ----------
@@ -2043,9 +2168,70 @@ class TestEnvEncodingScan:
 def test_health_check_real_subprocess_succeeds(fake_repo: Path) -> None:
     """run_health_check with real subprocess call succeeds for a simple command."""
     m = {"health_check": {"enabled": True, "commands": [_sys.executable + " -c exit(0)"]}}
-    ok, logs = installer.run_health_check(m, fake_repo)
-    assert ok is True
+    status, logs = installer.run_health_check(m, fake_repo)
+    assert status == "ok"
     assert any("OK" in line for line in logs)
+
+
+def test_health_check_substitutes_python_token_with_sys_executable(
+    fake_repo: Path,
+) -> None:
+    """Manifest uses 'python' or 'python3' as a portable token; run_health_check
+    must resolve it to sys.executable at spawn time so the command works on
+    Windows (where python3 is absent) and Linux (where python may be absent)."""
+    m = {
+        "health_check": {
+            "enabled": True,
+            "commands": ["python3 -c exit(0)", "python -c exit(0)"],
+        }
+    }
+    status, logs = installer.run_health_check(m, fake_repo)
+    assert status == "ok", f"python/python3 token substitution failed: {logs}"
+
+
+def test_main_health_check_timeout_does_not_rollback(
+    manifest: Path,
+    fake_repo: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A health-check TIMEOUT is inconclusive, not a failed apply: main() must
+    leave the completed apply in place (no _rollback_failed_apply), tell the
+    operator, and exit 4 — distinct from rc 3 (health fail → rollback). In the
+    2026-06-12 incident the apply had succeeded; killing the wedged installer
+    at that point must not cost the user their install.
+    """
+    fake_installer = fake_repo / "scripts" / "install" / "installer.py"
+    fake_installer.parent.mkdir(parents=True, exist_ok=True)
+    fake_installer.touch()
+    monkeypatch.setattr(installer, "__file__", str(fake_installer))
+
+    sleeper = tmp_path / "sleeper.py"
+    sleeper.write_text("import time\ntime.sleep(60)\n", encoding="utf-8")
+    m = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    m["health_check"] = {
+        "enabled": True,
+        "timeout": 2,
+        "commands": [f"{_sys.executable} {sleeper}"],
+    }
+    manifest.write_text(yaml.safe_dump(m), encoding="utf-8")
+
+    # --skip-env: this test exercises the timeout/rollback path, not env setup.
+    # Without it _set_env appends `export JARVIS_HOME=...` to the real
+    # ~/.bashrc/~/.zshrc on a dev machine running the suite locally.
+    rc = installer.main(["--manifest", str(manifest), "--apply", "--skip-env"])
+    assert rc == 4
+
+    captured = capsys.readouterr()
+    assert "TIMEOUT" in captured.out
+    assert "NOT rolled back" in captured.err
+
+    # Fresh-install rollback would have rmtree'd target_root — it must survive,
+    # version marker intact.
+    target = installer._expand(m["target_root"])
+    assert target.exists(), "timeout must NOT roll back a completed apply"
+    assert (target / ".jarvis-version").exists()
 
 
 def test_main_dry_run_plans_does_not_create_files(
