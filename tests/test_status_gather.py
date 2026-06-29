@@ -17,7 +17,9 @@ from scripts.status_gather import (
     SourceKind,
     parse_repos_conf,
     _make_decision_record,
+    _extract_contradiction_cache,
     gather,
+    gather_contradiction_cache,
 )
 
 
@@ -81,6 +83,57 @@ def _make_gh_empty() -> dict:
 def _make_gh_fail() -> dict:
     """Simulate a failed gh command."""
     return {"stdout": "", "stderr": "gh: not authenticated", "returncode": 1}
+
+
+def _fixture_query_by_table(table_rows: dict) -> callable:
+    """Return a table-AWARE query_supabase_fn.
+
+    The default `_fixture_query_supabase` is table-blind (same rows for every
+    table); that conflates the `episodes` (decisions) and `memories`
+    (status-snapshot) queries. This fixture keys returned rows by table name so
+    a test can supply a snapshot for `memories` without polluting `episodes`.
+    A table absent from the mapping yields [] (empty-but-successful).
+    """
+    def _query(url: str, key: str, table: str, params: dict) -> list[dict] | None:
+        return table_rows.get(table, [])
+
+    return _query
+
+
+def _snapshot_memory(generated_at: str = "2024-06-09T12:00:00+00:00",
+                     verdicts: list[dict] | None = None) -> dict:
+    """Build a `memories` row whose body carries a fenced yaml contradiction
+    cache, mirroring what the status-record L1 audit writes."""
+    verdicts = verdicts if verdicts is not None else [
+        {
+            "decision_id": "d1",
+            "issue_number": 42,
+            "repo": "Osasuwu/jarvis",
+            "verdict": "contradiction",
+            "rationale": "memory says shipped; issue still open",
+        },
+    ]
+    lines = [
+        "# Status snapshot 2024-06-09",
+        "",
+        "```yaml",
+        "contradiction_cache:",
+        "  schema: contradiction-cache/v1",
+        f"  generated_at: '{generated_at}'",
+        "  verdicts:",
+    ]
+    for v in verdicts:
+        lines.append(f"    - decision_id: {v['decision_id']}")
+        lines.append(f"      issue_number: {v['issue_number']}")
+        lines.append(f"      repo: {v['repo']}")
+        lines.append(f"      verdict: {v['verdict']}")
+        lines.append(f"      rationale: {v['rationale']}")
+    lines.append("```")
+    return {
+        "name": "status_snapshot_2024-06-09",
+        "content": "\n".join(lines),
+        "created_at": "2024-06-09T12:00:05+00:00",
+    }
 
 
 # ============================================================================
@@ -609,3 +662,152 @@ class TestGitStateDegradation:
         assert git_prov["ok"] is False  # local dir not available
         assert repo["branch"] is None
         assert repo["clean"] is None
+
+
+# ============================================================================
+# Test: Contradiction-cache gather (#1016 AC3/AC4)
+#
+# The status-record L1 audit writes the LLM contradiction verdicts into the
+# `status-snapshot`-tagged memory as a fenced yaml block. gather() reads that
+# cache back WITHOUT re-running the LLM (AC4: "readable by the renderer without
+# re-running the LLM"). These tests pin the read-back path.
+# ============================================================================
+
+
+class TestExtractContradictionCache:
+    """Pure helper: pull the contradiction_cache dict out of a memory body."""
+
+    def test_extracts_cache_from_fenced_yaml(self):
+        snap = _snapshot_memory()
+        cache = _extract_contradiction_cache(snap["content"])
+        assert isinstance(cache, dict)
+        assert cache["schema"] == "contradiction-cache/v1"
+        assert len(cache["verdicts"]) == 1
+        assert cache["verdicts"][0]["issue_number"] == 42
+
+    def test_no_yaml_block_returns_none(self):
+        cache = _extract_contradiction_cache("# Just a heading\n\nNo fenced block.")
+        assert cache is None
+
+    def test_yaml_without_cache_key_returns_none(self):
+        body = "```yaml\nsomething_else: 1\n```"
+        assert _extract_contradiction_cache(body) is None
+
+    def test_malformed_yaml_returns_none(self):
+        body = "```yaml\n  : : not valid : :\n```"
+        assert _extract_contradiction_cache(body) is None
+
+    def test_empty_content_returns_none(self):
+        assert _extract_contradiction_cache("") is None
+
+
+class TestGatherContradictionCache:
+    """gather_contradiction_cache reads the latest status-snapshot memory."""
+
+    def test_snapshot_with_cache_returns_ok(self):
+        snap = _snapshot_memory()
+        query = _fixture_query_by_table({"memories": [snap]})
+        cache, prov = gather_contradiction_cache(
+            "https://x", "k", query, now=1_717_000_000.0,
+        )
+        assert cache is not None
+        assert cache["schema"] == "contradiction-cache/v1"
+        assert prov.ran is True
+        assert prov.ok is True
+        assert prov.input_rows == 1  # one verdict
+
+    def test_no_snapshot_row_returns_not_ok(self):
+        query = _fixture_query_by_table({"memories": []})
+        cache, prov = gather_contradiction_cache(
+            "https://x", "k", query, now=1_717_000_000.0,
+        )
+        assert cache is None
+        assert prov.ran is True
+        assert prov.ok is False
+
+    def test_query_failure_returns_not_ok(self):
+        def _failing(url, key, table, params):
+            return None
+        cache, prov = gather_contradiction_cache(
+            "https://x", "k", _failing, now=1_717_000_000.0,
+        )
+        assert cache is None
+        assert prov.ran is True
+        assert prov.ok is False
+
+    def test_snapshot_without_cache_block_returns_not_ok(self):
+        row = {
+            "name": "status_snapshot_x",
+            "content": "# Snapshot\n\nno cache here",
+            "created_at": "2024-06-09T12:00:00+00:00",
+        }
+        query = _fixture_query_by_table({"memories": [row]})
+        cache, prov = gather_contradiction_cache(
+            "https://x", "k", query, now=1_717_000_000.0,
+        )
+        assert cache is None
+        assert prov.ok is False
+
+    def test_age_reflects_generated_at_not_query_time(self):
+        # generated_at is 2024-06-09T12:00:00Z; now is +100s. Age must be the
+        # data age (~100s), so the renderer's freshness gate is meaningful.
+        snap = _snapshot_memory(generated_at="2024-06-09T12:00:00+00:00")
+        query = _fixture_query_by_table({"memories": [snap]})
+        gen_epoch = 1_717_934_400.0  # 2024-06-09T12:00:00 UTC
+        cache, prov = gather_contradiction_cache(
+            "https://x", "k", query, now=gen_epoch + 100.0,
+        )
+        assert prov.age is not None
+        assert abs(prov.age - 100.0) < 2.0
+
+
+class TestGatherIntegratesContradictionCache:
+    """gather() Step 5 populates result.contradiction_cache from the snapshot."""
+
+    def test_gather_populates_contradiction_cache(self):
+        snap = _snapshot_memory()
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_by_table({"memories": [snap]}),
+            now_fn=_fixture_now(),
+        )
+        assert result.contradiction_cache is not None
+        assert result.contradiction_cache["schema"] == "contradiction-cache/v1"
+        snap_prov = result.provenance[SourceKind.STATUS_SNAPSHOT]
+        assert snap_prov["ran"] is True
+        assert snap_prov["ok"] is True
+
+    def test_gather_no_snapshot_leaves_cache_none(self):
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+        assert result.contradiction_cache is None
+        snap_prov = result.provenance[SourceKind.STATUS_SNAPSHOT]
+        assert snap_prov["ok"] is False
+
+    def test_contradiction_cache_is_json_serializable(self):
+        snap = _snapshot_memory()
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_by_table({"memories": [snap]}),
+            now_fn=_fixture_now(),
+        )
+        parsed = json.loads(json.dumps(result.to_dict(), default=str))
+        assert parsed["contradiction_cache"]["schema"] == "contradiction-cache/v1"

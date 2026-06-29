@@ -4,7 +4,7 @@ Zero I/O. Houses four deterministic detectors, provenance contract, and
 top-N ranking for the status-synthesis pipeline.
 
 Public interface:
-    analyze(baseline, delta, decisions) -> Digest
+    analyze(baseline, delta, decisions, contradiction_verdicts=()) -> Digest
 
 Constants (reversible knobs, tuned post-launch):
     STALE_INPROGRESS_DAYS = 3
@@ -629,17 +629,29 @@ def analyze(
     baseline: Baseline,
     delta: Delta,
     decisions: list[DecisionInfo],
+    contradiction_verdicts: Sequence[ContradictionVerdict] = (),
 ) -> Digest:
     """Synthesize status digest from baseline, delta, and decisions.
 
     Pure function — zero I/O, fully deterministic given the same inputs.
     This is the sole public interface of status_engine.
+
+    ``contradiction_verdicts`` carries the L1 memory↔git verdicts (already
+    judged upstream by the status-record cron, then read from the cached
+    status-snapshot — see deserialize_contradiction_cache). analyze() only
+    *folds* them; it never runs the LLM judgment itself. The default empty
+    tuple is the intraday/L2 path: no verdicts → no contradiction hit → no
+    LLM cost, satisfying the L1-only contract (#1016 AC2). Folding the cached
+    verdicts here (rather than after analyze) lets contradiction hits take
+    part in rank_detector_hits + compute_health_verdict, so they appear in
+    "Куда смотреть" and flip health red like any other detector hit (AC4).
     """
     hits: list[DetectorHit] = []
     hits.extend(detect_stale_in_progress(baseline, delta, decisions))
     hits.extend(detect_priority_inversion(baseline, delta, decisions))
     hits.extend(detect_decision_without_followthrough(baseline, delta, decisions))
     hits.extend(detect_blocker_cascade(baseline, delta, decisions))
+    hits.extend(fold_contradiction_verdicts(contradiction_verdicts))
 
     ranking = rank_detector_hits(hits)
     health = compute_health_verdict(baseline, hits)
