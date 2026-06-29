@@ -196,7 +196,7 @@ def _contradiction_verdicts_from_gather(gather_result):
     analyze() to fold (#1016 AC4). No cache → empty list, which is the
     intraday/L2 default that folds nothing.
     """
-    cache = getattr(gather_result, "contradiction_cache", None)
+    cache = gather_result.contradiction_cache
     if not cache:
         return []
     return deserialize_contradiction_cache(cache)

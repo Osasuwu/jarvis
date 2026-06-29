@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import yaml
+
 # ============================================================================
 # Public constants
 # ============================================================================
@@ -475,7 +477,9 @@ def gather_decisions(
 # single REST read that already fetches the snapshot row.
 # ============================================================================
 
-_YAML_FENCE_RE = re.compile(r"```ya?ml\s*\n(.*?)\n```", re.DOTALL)
+# Tolerant of a fence info-string (```yaml title=...) and of a trailing blank
+# line before the closing fence — both are common Markdown emits (M1).
+_YAML_FENCE_RE = re.compile(r"```ya?ml[^\n]*\n(.*?)\n?```", re.DOTALL)
 
 
 def _extract_contradiction_cache(content: str) -> dict | None:
@@ -486,10 +490,9 @@ def _extract_contradiction_cache(content: str) -> dict | None:
     """
     if not content:
         return None
-    import yaml
 
     for match in _YAML_FENCE_RE.finditer(content):
-        block = match.group(1)
+        block = match.group(1).strip()
         try:
             data = yaml.safe_load(block)
         except yaml.YAMLError:
@@ -750,9 +753,10 @@ def gather(
                 f"{SourceKind.STATUS_SNAPSHOT}: no fresh status snapshot available"
             )
     else:
+        # No creds ⇒ nothing was gathered, so data age is undefined (None), not
+        # time-since-gather-start (m3). ok=False already signals the gap.
         result.provenance[SourceKind.STATUS_SNAPSHOT] = Provenance(
-            ran=True, ok=False, input_rows=0,
-            age=_now() - gather_start,
+            ran=True, ok=False, input_rows=0, age=None,
         ).to_dict()
         result.errors.append(
             f"{SourceKind.STATUS_SNAPSHOT}: {SUPABASE_URL_ENV}/{SUPABASE_KEY_ENV} unset"

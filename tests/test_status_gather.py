@@ -700,6 +700,48 @@ class TestExtractContradictionCache:
     def test_empty_content_returns_none(self):
         assert _extract_contradiction_cache("") is None
 
+    def test_trailing_blank_line_before_fence(self):
+        """A blank line before the closing fence (common Markdown emit) must not
+        defeat extraction — the cache should still parse (M1)."""
+        body = (
+            "```yaml\n"
+            "contradiction_cache:\n"
+            "  schema: contradiction-cache/v1\n"
+            "  verdicts: []\n"
+            "\n"  # trailing blank line before the closing fence
+            "```"
+        )
+        cache = _extract_contradiction_cache(body)
+        assert isinstance(cache, dict)
+        assert cache["schema"] == "contradiction-cache/v1"
+
+    def test_fence_with_info_string_after_yaml(self):
+        """A fence tagged ```yaml title=... still extracts (M1 regex tolerance)."""
+        body = (
+            "```yaml extra-info\n"
+            "contradiction_cache:\n"
+            "  verdicts: []\n"
+            "```"
+        )
+        assert _extract_contradiction_cache(body) is not None
+
+    def test_multi_fence_skips_to_cache_block(self):
+        """First yaml fence lacks contradiction_cache; the loop continues to the
+        second fence that has it (N2 — finditer continuation)."""
+        body = (
+            "```yaml\n"
+            "other_metadata: 1\n"
+            "```\n\n"
+            "```yaml\n"
+            "contradiction_cache:\n"
+            "  schema: contradiction-cache/v1\n"
+            "  verdicts: []\n"
+            "```"
+        )
+        cache = _extract_contradiction_cache(body)
+        assert isinstance(cache, dict)
+        assert cache["schema"] == "contradiction-cache/v1"
+
 
 class TestGatherContradictionCache:
     """gather_contradiction_cache reads the latest status-snapshot memory."""
