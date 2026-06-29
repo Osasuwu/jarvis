@@ -4,6 +4,10 @@
       "command": "python",
       "args": ["scripts/run-memory-server.py"]
     },
+    "status": {
+      "command": "python",
+      "args": ["scripts/run-status-server.py"]
+    },
     "github": {
       "type": "http",
       "url": "https://api.githubcopilot.com/mcp",
