@@ -77,8 +77,25 @@ jobs:
           echo "has_code=$HAS" >> "$GITHUB_OUTPUT"
           echo "Substantive diff lines: $LINES (has_code=$HAS)"
 
+      # Skip review when the push comes from the auto-rebase bot. osasuwu-ci[bot]
+      # exclusively pushes "Merge branch 'main' into <feature>" commits — pure
+      # housekeeping with no new code. Without this guard, each rebase triggers a
+      # full review run: PR #963 accumulated 28 auto-rebase pushes → 23 spurious
+      # review comments despite only 4-5 real rework rounds (incident 2026-06-29).
+      #
+      # MUST stay at step level (not job `if:`): the job-level condition must not
+      # use github.actor — the dependabot[bot] guard already keys off PR author
+      # for stability across synchronize events, and test_code_review_dependabot_skip.py
+      # asserts that github.actor is absent from the job `if:` (#944 regression pin).
+      - name: Skip auto-rebase push
+        id: autobase
+        if: github.event_name == 'pull_request' && github.actor == 'osasuwu-ci[bot]'
+        run: |
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Push by osasuwu-ci[bot] is an auto-rebase only (no new code); skipping code review."
+
       - name: Run /code-review
-        if: github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true'
+        if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true')
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -168,7 +185,7 @@ jobs:
       # the dispatch path too. steps.pr.outputs.number resolves on dispatch
       # via inputs.pr_number, so the lookup works for both events.
       - name: Verify review verdict
-        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+        if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
