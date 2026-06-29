@@ -39,7 +39,7 @@ jobs:
           # Authoritative closing linkage (same set GitHub's native auto-close
           # targets) — not a body regex, so malformed refs can't leak in. Each ref
           # carries its OWN repo: a PR can reference a cross-repo issue via
-          # `Closes owner/other#N`. We project repository.nameWithOwner alongside
+          # `Closes owner/other#N`. We project the ref's repo slug alongside
           # the number so a foreign ref is *detected* — but GITHUB_TOKEN is scoped
           # to $REPO only and cannot close issues in another repo (the permissions:
           # block grants nothing outside $REPO). So foreign refs are SKIPPED with a
@@ -55,10 +55,22 @@ jobs:
           # still open — the exact #948 Bug A this workflow exists to prevent, now
           # with no red signal. Fail loud instead (mirrors the empty-output guard
           # already proven in auto-merge-enable.yml).
+          #
+          # Build the repo slug from `owner.login` + `name`, NOT `.nameWithOwner`:
+          # the nested `repository` object on a closingIssuesReferences ref
+          # (`gh pr view --json closingIssuesReferences`) only exposes
+          # `{id, name, owner{login}}` — it has NO `nameWithOwner` field, so
+          # interpolating that path resolves to the literal "null". That
+          # made EVERY same-repo ref read as "null", trip the `$irepo != $REPO`
+          # cross-repo guard, and get skipped with a warning under a GREEN job —
+          # the issue left open (#948 Bug A class; live on #1013/#1015/#1037/#939,
+          # systemic from #1021 which introduced the bogus field). The meta-test
+          # only grepped the YAML text + reimplemented the rule in Python, so it
+          # never exercised jq against real gh output and could not catch null.
           if ! refs=$(
             gh pr view "$PR_NUMBER" --repo "$REPO" \
               --json closingIssuesReferences \
-              -q '.closingIssuesReferences[] | "\(.repository.nameWithOwner)\t\(.number)"'
+              -q '.closingIssuesReferences[] | "\(.repository.owner.login)/\(.repository.name)\t\(.number)"'
           ); then
             echo "::error::gh pr view failed for #$PR_NUMBER — refusing to assume no linked issues (would leave them open, #948 Bug A)."
             exit 1
