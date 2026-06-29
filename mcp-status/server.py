@@ -34,8 +34,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-# Alias __main__ -> 'server' for consistency with mcp-memory pattern
-sys.modules.setdefault("server", sys.modules[__name__])
+# NOTE: deliberately NOT aliasing this module to the global name "server".
+# mcp-memory/server.py uses `sys.modules.setdefault("server", ...)` because its
+# test suite imports `from server import ...`; copying that here makes the two
+# server.py files race for the single global name "server" — whichever test is
+# collected first wins, breaking the other (full-suite collision, #1017). This
+# server is launched as `__main__` and nothing internally imports "server", so
+# the alias served no purpose here. Tests load it under a unique module name.
 
 # noqa: E402 — .env loaded before MCP/script imports (required, follows mcp-memory pattern)
 from dotenv import load_dotenv  # noqa: E402

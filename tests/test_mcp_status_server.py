@@ -9,14 +9,22 @@ Tests the thin wrapper:
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-# Import server module to access conversion function and tool
-# Add mcp-status to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "mcp-status"))
-from server import _convert_gather_to_engine_format
+# Load mcp-status/server.py under a UNIQUE module name ("status_server"), not the
+# bare "server". mcp-memory's test suite also imports `from server import ...`;
+# if both grabbed the global name "server" the one collected second would get the
+# wrong module (full-suite collision, #1017). importlib with an explicit name and
+# no sys.path mutation keeps the two server.py files isolated.
+_status_server_path = Path(__file__).parent.parent / "mcp-status" / "server.py"
+_spec = importlib.util.spec_from_file_location("status_server", _status_server_path)
+status_server = importlib.util.module_from_spec(_spec)
+sys.modules["status_server"] = status_server
+_spec.loader.exec_module(status_server)
+_convert_gather_to_engine_format = status_server._convert_gather_to_engine_format
 
 
 # ============================================================================
@@ -166,11 +174,10 @@ def test_tool_schema_structure():
     # This is a structural test — verify the tool schema is correct
     # by inspecting the actual server.py code structure
     import inspect
-    from server import list_tools
 
     # Get the source code of list_tools to verify it returns Tool objects
     # with the right names and descriptions
-    src = inspect.getsource(list_tools)
+    src = inspect.getsource(status_server.list_tools)
     assert "status_digest" in src
     assert "gather" in src
     assert "engine" in src
