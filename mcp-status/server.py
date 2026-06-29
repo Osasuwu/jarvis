@@ -25,6 +25,15 @@ import asyncio
 import sys
 from pathlib import Path
 
+# Repo root must be on sys.path BEFORE the `from scripts.*` imports below.
+# When launched as a script (`python mcp-status/server.py`), sys.path[0] is
+# the script's own dir (mcp-status/), NOT the repo root — so `scripts.*`
+# would not resolve. pytest masks this because it injects rootdir. Insert
+# the repo root (parent of mcp-status/) explicitly.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 # Alias __main__ -> 'server' for consistency with mcp-memory pattern
 sys.modules.setdefault("server", sys.modules[__name__])
 
@@ -128,16 +137,21 @@ def _convert_gather_to_engine_format(gather_result):
             provenance=None,
         )
 
-        # Mark provenance from gather
-        repo_provenance: dict[str, any] = {}
+        # Attach per-repo provenance from gather onto the RepoState so the
+        # engine and digest see it (previously built into a local that was
+        # never used — the RepoState went out with provenance=None).
         if "provenance" in repo_entry:
-            for source_key, prov_dict in repo_entry["provenance"].items():
-                repo_provenance[source_key] = Provenance(
+            repo_prov = repo_entry["provenance"]
+            # Use the first source stamp as the repo-level provenance, mirroring
+            # how gather stamps a single {ran, ok, input_rows, age} per source.
+            for _src, prov_dict in repo_prov.items():
+                repo_state.provenance = Provenance(
                     ran=prov_dict.get("ran", False),
                     ok=prov_dict.get("ok", False),
                     input_rows=prov_dict.get("input_rows", 0),
                     age=prov_dict.get("age", 0.0),
                 )
+                break
 
         delta.repos[repo_name] = repo_state
 
