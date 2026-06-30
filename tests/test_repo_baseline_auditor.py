@@ -79,6 +79,13 @@ class TestRepoSnapshotParsing:
         assert snap.branch_protection.strict is True
         assert snap.branch_protection.contexts == ["review", "pytest"]
 
+        # contexts_source: "review" has no matching local workflow (app check),
+        # "pytest" matches the workflow named "pytest" at its known path.
+        assert snap.branch_protection.contexts_source == [
+            None,
+            ".github/workflows/pytest.yml",
+        ]
+
         # dependabot ecosystems
         assert snap.dependabot_ecosystems == ["pip", "github-actions"]
 
@@ -91,12 +98,14 @@ class TestRepoSnapshotParsing:
         runner = FakeRunner(
             {
                 "repos/Osasuwu/x/actions/workflows?per_page=100": {
-                    "workflows": [{"path": ".github/workflows/a.yml"}]
+                    "workflows": [{"name": "Workflow A", "path": ".github/workflows/a.yml"}]
                 }
             }
         )
         auditor = Auditor(runner)
-        assert auditor._read_workflows("Osasuwu/x") == [".github/workflows/a.yml"]
+        paths, name_map = auditor._read_workflows("Osasuwu/x")
+        assert paths == [".github/workflows/a.yml"]
+        assert name_map == {"Workflow A": ".github/workflows/a.yml"}
         # Single, non-paginated request that carries the larger page size.
         assert runner.paginate_for("repos/Osasuwu/x/actions/workflows?per_page=100") is False
 
@@ -304,6 +313,81 @@ class TestSnapshotSerialization:
         assert "INJECTED" not in snap.branch_protection.contexts
         assert "INJECTED" not in snap.dependabot_ecosystems
         assert "INJECTED" not in snap.workflows
+
+
+class TestContextsSource:
+    """AC2 — BranchProtection.contexts_source provenance."""
+
+    def test_locally_produced_check_resolves_to_workflow_path(self):
+        """A context matching a workflow name gets that workflow's path."""
+        responses = dict(_jarvis_responses())
+        snap = Auditor(FakeRunner(responses)).audit("Osasuwu/jarvis")
+        assert snap.branch_protection.contexts_source == [
+            None,  # "review" is an app check, no local workflow
+            ".github/workflows/pytest.yml",  # "pytest" workflow matches
+        ]
+
+    def test_all_checks_mapped_or_null_per_context(self):
+        """contexts_source must be same length as contexts — one entry per
+        required check context, in the same order."""
+        responses = dict(_jarvis_responses())
+        responses["repos/Osasuwu/jarvis/actions/workflows?per_page=100"] = {
+            "workflows": [
+                {"name": "review", "path": ".github/workflows/code-review.yml"},
+                {"name": "pytest", "path": ".github/workflows/pytest.yml"},
+            ]
+        }
+        snap = Auditor(FakeRunner(responses)).audit("Osasuwu/jarvis")
+        assert snap.branch_protection.contexts_source == [
+            ".github/workflows/code-review.yml",
+            ".github/workflows/pytest.yml",
+        ]
+
+    def test_no_branch_protection_yields_none_contexts_source(self):
+        """A repo with no branch protection has bp=None → contexts_source=None."""
+        responses = {
+            "repos/Osasuwu/dnd-calendar": {
+                "allow_auto_merge": False,
+                "allow_squash_merge": True,
+                "allow_merge_commit": True,
+                "allow_rebase_merge": True,
+                "delete_branch_on_merge": False,
+                "visibility": "public",
+                "default_branch": "main",
+            },
+            "repos/Osasuwu/dnd-calendar/labels": [],
+            "repos/Osasuwu/dnd-calendar/actions/workflows?per_page=100": {"workflows": []},
+        }
+        not_found = {
+            "repos/Osasuwu/dnd-calendar/branches/main/protection",
+            "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+        }
+        snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/dnd-calendar")
+        assert snap.branch_protection is None
+
+    def test_contexts_source_round_trips_through_to_dict_from_dict(self):
+        """contexts_source survives serialization."""
+        snap = Auditor(FakeRunner(_jarvis_responses())).audit("Osasuwu/jarvis")
+        restored = RepoSnapshot.from_dict(snap.to_dict())
+        assert restored.branch_protection.contexts_source == snap.branch_protection.contexts_source
+
+    def test_from_dict_tolerates_missing_contexts_source(self):
+        """A legacy snapshot without contexts_source loads with it as None."""
+        data = {
+            "repo": "Osasuwu/jarvis",
+            "settings": {"visibility": "public", "default_branch": "main"},
+            "labels": [],
+            "workflows": [],
+            "branch_protection": {
+                "strict": True,
+                "contexts": ["review"],
+            },
+            "dependabot_ecosystems": [],
+        }
+        snap = RepoSnapshot.from_dict(data)
+        assert snap.branch_protection.strict is True
+        assert snap.branch_protection.contexts == ["review"]
+        assert snap.branch_protection.contexts_source is None
 
 
 class TestSeedManifest:
