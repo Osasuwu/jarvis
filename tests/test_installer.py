@@ -1112,6 +1112,45 @@ def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
         assert skill_md.exists(), f"whitelisted skill missing: {skill_md}"
 
 
+def test_every_source_skill_is_whitelisted() -> None:
+    """Inverse of the whitelist check: a skill present in the source tree but
+    absent from the manifest `include` list would be silently quarantined to
+    `.skills-orphaned/` on install and never reach `~/.claude/skills/`.
+
+    This is the #1048 failure: `/status` (#1018) shipped under the source tree
+    but was forgotten in the whitelist, so it never installed on any device and
+    nothing failed CI. Every directory carrying a `SKILL.md` MUST be whitelisted
+    UNLESS it is an explicitly-documented intentional exclusion below.
+    """
+    # Skills that live in the repo but are deliberately NOT installed at user
+    # level — the installer's orphan-prune quarantines them by design. Each entry
+    # needs a reason so a future accidental omission can't hide here.
+    INTENTIONALLY_NOT_INSTALLED = {
+        # Personal project-scoped skill (Petr's D&D Obsidian vault, device-specific
+        # absolute paths). Stored in-repo but not a universal user-level skill.
+        "dnd-prep",
+    }
+
+    repo_root = Path(__file__).resolve().parents[1]
+    src = repo_root / ".claude-userlevel" / "skills"
+
+    m = installer.load_manifest(repo_root / "install-manifest.yaml")
+    include = set(
+        next(
+            d["include"] for g in m["groups"] if g["id"] == "skills" for d in g["directories"]
+        )
+    )
+    source_skills = {
+        child.name for child in src.iterdir() if child.is_dir() and (child / "SKILL.md").exists()
+    }
+    missing = source_skills - include - INTENTIONALLY_NOT_INSTALLED
+    assert not missing, (
+        f"skills present in source but missing from install-manifest.yaml include "
+        f"whitelist (would be quarantined on install): {sorted(missing)}. "
+        f"If intentional, add to INTENTIONALLY_NOT_INSTALLED with a reason."
+    )
+
+
 # ── #350: backup tolerates files that vanish mid-copy ────────────────
 
 
