@@ -97,9 +97,9 @@ Every owned repo enforces the same set via **branch protection on the default br
 
 ### Drafts are the manual hold
 
-A PR stays in **draft** while owner attention is owed (waiting on design feedback, intentional batching, etc.). Drafts never auto-merge — that's GitHub's default and it's the right one. Once flipped to ready, the four gates above are the merge gate.
+A PR stays in **draft** while your attention is owed (waiting on design feedback, intentional batching, etc.). Drafts never auto-merge — that's GitHub's default and it's the right one. Once flipped to ready, the four gates above are the merge gate.
 
-Use `status:owner-queue` for the rarer case: PR is content-complete (so it can pass review) but owner still wants to eyeball it before it ships. The label keeps it ready-but-blocked. Don't reach for the label when draft already covers the case.
+Use `status:owner-queue` for the rarer case: PR is content-complete (so it can pass review) but you still want to eyeball it before it ships. The label keeps it ready-but-blocked. Don't reach for the label when draft already covers the case.
 
 ### Required files per repo
 
@@ -115,7 +115,7 @@ gh api -X PATCH /repos/<owner>/<repo> -F allow_auto_merge=true -F delete_branch_
 gh api -X PUT /repos/<owner>/<repo>/branches/<default>/protection -F required_status_checks='{"strict":true,"contexts":["review","owner-queue-guard","require-linked-issue", ...repo-specific...]}' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null
 ```
 
-`enforce_admins=false` keeps escape-hatch open for the owner (admin-merge for the two structural cases below — not for routinely working around a misfiring gate). `required_pull_request_reviews=null` because the `review` check already encodes the AI review verdict — adding a required human review would defeat AFK Path A.
+`enforce_admins=false` keeps escape-hatch open for you (admin-merge for the two structural cases below — not for routinely working around a misfiring gate). `required_pull_request_reviews=null` because the `review` check already encodes the AI review verdict — adding a required human review would defeat AFK Path A.
 
 ### When to break the rules
 
