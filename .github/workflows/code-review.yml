@@ -360,9 +360,27 @@ jobs:
           fi
 
           # Non-blocking severity sections only: MINOR-only (#963) or MEDIUM/
-          # LOW/INFO/NITPICK advisories with no Found-N line.
-          if grep -qE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b' <<<"$body"; then
+          # LOW/INFO/NITPICK advisories with no Found-N line. Case-INSENSITIVE
+          # (-qiE, #1050): the plugin sometimes title-cases advisory headings
+          # ("#### Low" on PR #1049), which the old all-caps -qE dropped → the
+          # gate fell through to fail-closed on a clean verdict. Safe to be
+          # lenient here: this runs strictly AFTER the case-sensitive block
+          # check (line ~326), so a title-case match can never shadow a real
+          # all-caps CRITICAL/MAJOR/BLOCKING section. The block check itself
+          # stays -qE (case-sensitive) per #962/#976.
+          if grep -qiE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b' <<<"$body"; then
             echo "::notice::Code review posted only non-blocking severity sections; not blocking auto-merge."
+            exit 0
+          fi
+
+          # Explicit positive verdict with no blocking heading: bare "LGTM" or
+          # a "Verdict: … APPROVE/APPROVED" summary (#1050 — PR #1049 posted
+          # "**Verdict: LGTM with one minor note**" with no recognized severity
+          # heading and no "No issues found." line). Case-insensitive; reached
+          # only after the block check, so it can never green-light a real
+          # all-caps severity section.
+          if grep -qiE '\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b' <<<"$body"; then
+            echo "::notice::Code review posted a positive LGTM/APPROVE verdict; not blocking auto-merge."
             exit 0
           fi
 
