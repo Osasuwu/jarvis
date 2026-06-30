@@ -74,12 +74,24 @@ NO_BLOCKERS_RE = re.compile(r"blocking issues\b[^A-Za-z0-9\n]*none\b", re.I)
 # line (#956 carried only MEDIUM/LOW advisories). No longer a fail signal.
 FOUND_RE = re.compile(r"Found [0-9]+ issues?:")
 
-# Non-blocking severity sections only: MINOR-only (#963), or MEDIUM/LOW/INFO/
-# NITPICK advisories with no "Found N" line. All-caps, same decoration rules
-# as BLOCK_RE.
+# Non-blocking severity sections: MINOR-only (#963), or MEDIUM/LOW/INFO/
+# NITPICK advisories with no "Found N" line. Case-INSENSITIVE (#1050, re.I):
+# the plugin sometimes emits title-case advisory headings ("#### Low" on PR
+# #1049), which the old all-caps-only match dropped → fail-closed. Only
+# consulted AFTER the case-sensitive block check, so leniency here can never
+# shadow a real all-caps CRITICAL/MAJOR/BLOCKING section. \b after the keyword
+# keeps "### Information" / "### Lower" from matching INFO/LOW.
 NONBLOCK_SEV_RE = re.compile(
-    r"^#{1,6}[^A-Za-z0-9\n]*(?:MINOR|NITPICK|LOW|INFO|MEDIUM)\b", re.M
+    r"^#{1,6}[^A-Za-z0-9\n]*(?:MINOR|NITPICK|LOW|INFO|MEDIUM)\b", re.M | re.I
 )
+
+# Positive verdict line with no blocking severity heading: bare "LGTM" or a
+# "Verdict: … APPROVE/APPROVED" summary (#1050 — PR #1049 posted
+# "**Verdict: LGTM with one minor note**"). Case-insensitive; consulted only
+# after the block check, so it can never green-light a real all-caps severity
+# section. Covers the clean-LGTM-with-no-findings shape that carries no
+# severity heading at all (which the non-block grep above would miss).
+LGTM_RE = re.compile(r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b", re.I)
 
 
 def verdict(comment_bodies: list[str]) -> str:
@@ -103,6 +115,8 @@ def verdict(comment_bodies: list[str]) -> str:
     if FOUND_RE.search(body):
         return "pass"
     if NONBLOCK_SEV_RE.search(body):
+        return "pass"
+    if LGTM_RE.search(body):  # #1050: explicit LGTM/APPROVE verdict
         return "pass"
     return "fail"  # unrecognized review comment — fail closed
 
@@ -256,6 +270,31 @@ No issues found. Checked for bugs and CLAUDE.md compliance.
 🤖 Generated with [Claude Code](https://claude.ai/code)
 """
 
+# Real shape from PR #1049 (#1050 false-fail): an LGTM verdict line plus a
+# single advisory under a TITLE-CASE "#### Low" heading. The old all-caps-only
+# non-block grep dropped "#### Low" and there was no LGTM recognizer, so the
+# gate fell through to fail-closed despite a clean verdict.
+PR_1049_COMMENT = """\
+## Code Review
+
+**Verdict: LGTM with one minor note**
+
+#### Low — missing `src.is_dir()` guard (line 1143)
+
+`src.iterdir()` is called without first asserting `src.is_dir()`. Not a
+blocker (full CI catches it), but easy fix if you want isolation-safe tests.
+
+Everything else looks good.
+"""
+
+# Clean LGTM with no severity heading and no "No issues found." line — the
+# verdict line is the only positive signal. Must PASS via LGTM_RE (#1050).
+BARE_LGTM_COMMENT = """\
+## Code Review
+
+**Verdict: LGTM.** Clean diff, no concerns.
+"""
+
 SIMPLIFICATION_COMMENT = """\
 ### Simplification opportunities
 
@@ -319,6 +358,27 @@ class TestVerdictLogic:
         for sev in ("LOW", "INFO", "NITPICK", "MEDIUM"):
             body = f"## Code Review\n\n### {sev}\n\n1. advisory note\n"
             assert verdict([body]) == "pass", sev
+
+    def test_titlecase_nonblocking_severity_headings_pass(self):
+        # #1050: the plugin sometimes title-cases advisory headings ("#### Low"
+        # on PR #1049). These are non-blocking and must PASS, not fail-closed.
+        for sev in ("Low", "Minor", "Info", "Nitpick", "Medium"):
+            body = f"## Code Review\n\n#### {sev} — advisory\n\n1. note\n"
+            assert verdict([body]) == "pass", sev
+
+    def test_pr_1049_titlecase_low_plus_lgtm_passes(self):
+        # The exact #1049 false-fail shape: "Verdict: LGTM" + "#### Low".
+        assert verdict([PR_1049_COMMENT]) == "pass"
+
+    def test_bare_lgtm_verdict_passes(self):
+        # LGTM with no severity heading and no "No issues found." line.
+        assert verdict([BARE_LGTM_COMMENT]) == "pass"
+
+    def test_lgtm_does_not_shadow_a_real_major(self):
+        # A "Verdict: LGTM" line must NOT green-light a coexisting all-caps
+        # "### MAJOR" — the case-sensitive block check runs first.
+        body = "## Code Review\n\n**Verdict: LGTM**\n\n### MAJOR\n\n1. real bug\n"
+        assert verdict([body]) == "fail"
 
     def test_lowercase_severity_keyword_is_not_a_block(self):
         # Case-sensitive block keyword (#976): lowercase prose is not a real
@@ -621,6 +681,34 @@ class TestVerdictStepWiring:
         assert r"^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b" in run, (
             "Minor-only / advisory-only severity sections must be a positive "
             "pass signal (#963)."
+        )
+
+    def test_nonblocking_severity_grep_is_case_insensitive(self, verdict_step):
+        # #1050: the non-block pass grep must be -qiE so a title-case advisory
+        # heading ("#### Low" on PR #1049) passes instead of fail-closing. Safe
+        # because it runs after the case-sensitive block check.
+        run = verdict_step["run"]
+        assert (
+            "grep -qiE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)" in run
+        ), (
+            "Non-blocking severity grep must be case-insensitive (-qiE) so a "
+            "title-case advisory heading (#### Low, PR #1049) is a pass, not a "
+            "fail-closed (#1050)."
+        )
+
+    def test_lgtm_verdict_is_a_pass(self, verdict_step):
+        # #1050: an explicit LGTM / "Verdict: APPROVE" summary with no blocking
+        # heading must be a positive pass. Must run after the block check.
+        run = verdict_step["run"]
+        assert r"\bLGTM\b" in run and "APPROVED?" in run, (
+            "A positive LGTM/APPROVE verdict (PR #1049) must be recognized as "
+            "a pass signal (#1050)."
+        )
+        block_at = run.index("(CRITICAL|MAJOR|BLOCKING)")
+        lgtm_at = run.index(r"\bLGTM\b")
+        assert block_at < lgtm_at, (
+            "LGTM pass branch must run after the block check so it can never "
+            "shadow a real all-caps severity section."
         )
 
     def test_clean_pattern_is_not_end_anchored(self, verdict_step):
