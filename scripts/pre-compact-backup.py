@@ -397,6 +397,42 @@ def _persist_supabase(
         return False
 
 
+def _sanitize_session_id(session_id: str) -> str:
+    """Reduce a stdin-sourced session_id to a safe single filename component.
+
+    session_id comes verbatim from untrusted hook JSON, so strip anything that
+    isn't an identifier char (path separators, dots, traversal) before it names
+    a counter file. Empty → "unknown-session" so we never write a dotfile.
+    """
+    safe = "".join(c for c in str(session_id) if c.isalnum() or c in "-_")
+    return safe or "unknown-session"
+
+
+def _bump_compaction_count(session_id: str) -> int:
+    """Increment the per-session compaction generation counter; return new value.
+
+    State lives at ``~/.claude/compaction-counts/<session_id>.txt`` (device-local,
+    home-rooted so `statusline.py` can read it regardless of cwd). Best-effort:
+    any failure returns the last-known value (or 0) and never raises — the
+    never-blocks-compaction invariant holds. Called ONLY on PreCompact events,
+    so it counts summaries, not session ends.
+    """
+    try:
+        out_dir = Path.home() / ".claude" / "compaction-counts"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        f = out_dir / f"{_sanitize_session_id(session_id)}.txt"
+        try:
+            current = int(f.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            current = 0
+        new = current + 1
+        f.write_text(str(new), encoding="utf-8")
+        return new
+    except Exception as e:
+        print(f"[pre-compact] compaction-count bump failed: {e}", file=sys.stderr)
+        return 0
+
+
 def _is_within(path: Path, root: Path) -> bool:
     """True if ``path`` is ``root`` or nested under it.
 
@@ -519,12 +555,21 @@ def main() -> int:
         session_id = hook.get("session_id") or hook.get("sessionId") or "unknown-session"
         transcript_path = hook.get("transcript_path") or hook.get("transcriptPath") or ""
         cwd = hook.get("cwd") or os.getcwd()
+        event = hook.get("hook_event_name") or hook.get("hookEventName") or ""
         trigger = (
             hook.get("trigger")
             or hook.get("matcher")
             or hook.get("end_reason")
             or "unknown"
         )
+
+        # Compaction-generation counter (the dumb-zone signal under auto-compact).
+        # Bump ONLY on PreCompact — this hook is dual-purpose (also SessionEnd),
+        # and session ends must not inflate the count. PreCompact carries a
+        # trigger of "auto"/"manual"; SessionEnd carries an end_reason instead.
+        if event == "PreCompact" or trigger in ("auto", "manual"):
+            gen = _bump_compaction_count(session_id)
+            print(f"[pre-compact] compaction generation -> {gen}", file=sys.stderr)
 
         if not transcript_path:
             print("[pre-compact] no transcript_path in hook input", file=sys.stderr)

@@ -16,6 +16,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # Stub optional deps so module import succeeds on minimal CI
@@ -465,6 +467,15 @@ class TestAppendHookLog:
 # main — never raises, honours missing/absent inputs, always heartbeats
 # ---------------------------------------------------------------------------
 class TestMain:
+    @pytest.fixture(autouse=True)
+    def _isolate_home(self, tmp_path, monkeypatch):
+        # main() bumps the compaction counter under Path.home() on PreCompact-
+        # shaped payloads (trigger auto/manual). Without this, the through-main
+        # tests would write real files into the developer's ~/.claude — redirect
+        # home into tmp_path so the side effect stays sandboxed.
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path)
+        yield
+
     def test_missing_transcript_path_exits_zero(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pcb, "_root", tmp_path)
         monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"session_id": "x"})))
@@ -706,3 +717,41 @@ class TestSanitizeLogField:
         # to object precisely so the str() coerce is the documented contract.
         assert pcb._sanitize_log_field(None) == "None"
         assert pcb._sanitize_log_field(42) == "42"
+
+
+# ---------------------------------------------------------------------------
+# _sanitize_session_id + _bump_compaction_count (compaction-generation counter)
+# ---------------------------------------------------------------------------
+class TestSanitizeSessionId:
+    def test_strips_path_separators_and_traversal(self):
+        assert pcb._sanitize_session_id("../../etc/passwd") == "etcpasswd"
+        assert pcb._sanitize_session_id(r"a/b\c") == "abc"
+
+    def test_keeps_id_chars(self):
+        assert pcb._sanitize_session_id("sess-ABC_123") == "sess-ABC_123"
+
+    def test_empty_falls_back(self):
+        assert pcb._sanitize_session_id("") == "unknown-session"
+        assert pcb._sanitize_session_id("///") == "unknown-session"
+
+
+class TestBumpCompactionCount:
+    def test_increments_from_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path)
+        assert pcb._bump_compaction_count("sess-1") == 1
+        assert pcb._bump_compaction_count("sess-1") == 2
+        assert pcb._bump_compaction_count("sess-1") == 3
+
+    def test_per_session_isolation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path)
+        assert pcb._bump_compaction_count("sess-a") == 1
+        assert pcb._bump_compaction_count("sess-b") == 1
+        assert pcb._bump_compaction_count("sess-a") == 2
+
+    def test_corrupt_counter_resets(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path)
+        d = tmp_path / ".claude" / "compaction-counts"
+        d.mkdir(parents=True)
+        (d / "sess-x.txt").write_text("garbage", encoding="utf-8")
+        # Unparseable prior value -> treated as 0, so next bump yields 1.
+        assert pcb._bump_compaction_count("sess-x") == 1

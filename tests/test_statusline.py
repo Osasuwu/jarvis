@@ -58,3 +58,57 @@ def test_missing_model_falls_back(monkeypatch, capsys, tmp_path):
 def test_invalid_json_emits_nothing(monkeypatch, capsys):
     out = _run(monkeypatch, capsys, None, raw="not json{{")
     assert out == ""
+
+
+def _seed_gen(monkeypatch, home, session_id, value):
+    monkeypatch.setattr(Path, "home", lambda: home)
+    d = home / ".claude" / "compaction-counts"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{session_id}.txt").write_text(str(value), encoding="utf-8")
+
+
+def test_compaction_gen_rendered(monkeypatch, capsys, tmp_path):
+    home = tmp_path / "home"
+    _seed_gen(monkeypatch, home, "sess-abc", 3)
+    out = _run(
+        monkeypatch,
+        capsys,
+        {
+            "model": {"display_name": "Opus 4.8"},
+            "context_window": {"used_percentage": 20},
+            "session_id": "sess-abc",
+            "cwd": str(tmp_path),
+        },
+    )
+    assert "ctx 20% · gen 3" in out
+
+
+def test_compaction_gen_zero_suppressed(monkeypatch, capsys, tmp_path):
+    home = tmp_path / "home"
+    _seed_gen(monkeypatch, home, "sess-abc", 0)
+    out = _run(
+        monkeypatch,
+        capsys,
+        {
+            "model": {"display_name": "Opus 4.8"},
+            "context_window": {"used_percentage": 20},
+            "session_id": "sess-abc",
+            "cwd": str(tmp_path),
+        },
+    )
+    assert "gen" not in out
+    assert "ctx 20%" in out
+
+
+def test_compaction_gen_no_session_id(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+    out = _run(
+        monkeypatch,
+        capsys,
+        {
+            "model": {"display_name": "Opus 4.8"},
+            "context_window": {"used_percentage": 20},
+            "cwd": str(tmp_path),
+        },
+    )
+    assert "gen" not in out
