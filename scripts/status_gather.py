@@ -540,17 +540,40 @@ def gather_contradiction_cache(
         "select": "name,content,created_at",
         "order": "created_at.desc",
         "limit": "1",
+        # Live-row filter (mirrors memory recall): never fold a snapshot that
+        # was soft-deleted or expired/superseded out of belief.
+        "deleted_at": "is.null",
+        "expired_at": "is.null",
+        # Trust boundary (#542/#565 RLS): a sandcastle agent can only write
+        # rows whose source_provenance starts `sandcastle:`. An L1 baseline
+        # written by the principal never carries that prefix, so reject it to
+        # stop a sandcastle-poisoned snapshot from injecting forged verdicts.
+        # NULL provenance (legacy/principal writes) still passes.
+        "or": "(source_provenance.is.null,source_provenance.not.like.sandcastle:*)",
     }
     rows = query_fn(url, key, "memories", params)
 
-    if not rows:
-        # Query failed (None) or no snapshot row yet (empty) — both !ok.
-        return None, Provenance(ran=True, ok=False, input_rows=0, age=None)
+    # A transport failure (None) and an empty result ([]) must NOT collapse
+    # into the same provenance — a Supabase outage has to stay distinguishable
+    # from a first-run device that simply has no snapshot yet. Mirrors the
+    # gather_decisions None-vs-empty split.
+    _failed = Provenance(ran=True, ok=False, input_rows=0, age=None)
 
-    content = str(rows[0].get("content", ""))
+    if rows is None:
+        # Query failed entirely — transport/network error.
+        return None, _failed
+
+    if not rows:
+        # Query succeeded, no snapshot row yet (first run / intraday pre-L1).
+        # Empty is a legitimate non-error state, like gather_decisions.
+        return None, Provenance(ran=True, ok=True, input_rows=0, age=None)
+
+    content = rows[0].get("content") or ""
     cache = _extract_contradiction_cache(content)
     if cache is None:
-        return None, Provenance(ran=True, ok=False, input_rows=0, age=None)
+        # Snapshot exists but carries no parseable cache block — treat as a
+        # failed read of the cache, not an empty success.
+        return None, _failed
 
     verdicts = cache.get("verdicts") or []
     gen_epoch = _parse_iso_epoch(str(cache.get("generated_at", "")))

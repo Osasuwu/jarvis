@@ -197,8 +197,10 @@ def _contradiction_verdicts_from_gather(gather_result):
     intraday/L2 default that folds nothing.
     """
     cache = gather_result.contradiction_cache
-    if not cache:
+    if cache is None:
         return []
+    # An empty-but-present dict still flows through deserialize (→ []); only a
+    # genuinely absent cache short-circuits. `is None` keeps the two distinct.
     return deserialize_contradiction_cache(cache)
 
 

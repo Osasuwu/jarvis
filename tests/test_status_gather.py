@@ -554,8 +554,12 @@ class TestSnapshotGapTolerance:
         assert decisions_prov["input_rows"] == 2
 
     def test_status_snapshot_not_available(self):
-        """AC: no status baselines → snapshot source not ok, but repos + decisions
-        still gathered."""
+        """AC: no status baselines → snapshot query ran and succeeded-empty
+        (ok=True, cache None), but repos + decisions still gathered.
+
+        Empty is NOT a failure (MAJOR fix, PR #1046): only a transport error
+        is ok=False. The renderer reads "no snapshot" from cache is None /
+        input_rows==0, not from ok."""
         result = gather(
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
@@ -567,10 +571,12 @@ class TestSnapshotGapTolerance:
             now_fn=_fixture_now(),
         )
 
-        # Baseline source not ok (not available in this context)
+        # Snapshot query ran and succeeded with no rows — empty, not failed.
         snap_prov = result.provenance.get(SourceKind.STATUS_SNAPSHOT, {})
         assert snap_prov.get("ran") is True
-        assert snap_prov.get("ok") is False
+        assert snap_prov.get("ok") is True
+        assert snap_prov.get("input_rows") == 0
+        assert result.contradiction_cache is None
 
         # But repos and decisions are still gathered
         assert len(result.repos) == 1
@@ -758,14 +764,20 @@ class TestGatherContradictionCache:
         assert prov.ok is True
         assert prov.input_rows == 1  # one verdict
 
-    def test_no_snapshot_row_returns_not_ok(self):
+    def test_no_snapshot_row_is_ok_empty(self):
+        # No snapshot yet (first-run device, or intraday before L1) is a
+        # legitimate empty state, NOT a failure — mirrors gather_decisions
+        # where an empty query result is ok=True. Only a transport failure
+        # is ok=False. Conflating the two (MAJOR, PR #1046 re-review) hid a
+        # Supabase outage behind an indistinguishable "no data" stamp.
         query = _fixture_query_by_table({"memories": []})
         cache, prov = gather_contradiction_cache(
             "https://x", "k", query, now=1_717_000_000.0,
         )
         assert cache is None
         assert prov.ran is True
-        assert prov.ok is False
+        assert prov.ok is True
+        assert prov.input_rows == 0
 
     def test_query_failure_returns_not_ok(self):
         def _failing(url, key, table, params):
@@ -776,6 +788,23 @@ class TestGatherContradictionCache:
         assert cache is None
         assert prov.ran is True
         assert prov.ok is False
+
+    def test_provenance_distinguishes_empty_from_failed(self):
+        # The whole point of the MAJOR fix: a caller must be able to tell a
+        # Supabase outage (None) apart from a first-run empty result ([]).
+        empty_q = _fixture_query_by_table({"memories": []})
+        _, empty_prov = gather_contradiction_cache(
+            "https://x", "k", empty_q, now=1_717_000_000.0,
+        )
+
+        def _failing(url, key, table, params):
+            return None
+        _, failed_prov = gather_contradiction_cache(
+            "https://x", "k", _failing, now=1_717_000_000.0,
+        )
+        assert empty_prov.ok != failed_prov.ok
+        assert empty_prov.ok is True
+        assert failed_prov.ok is False
 
     def test_snapshot_without_cache_block_returns_not_ok(self):
         row = {
@@ -801,6 +830,27 @@ class TestGatherContradictionCache:
         )
         assert prov.age is not None
         assert abs(prov.age - 100.0) < 2.0
+
+    def test_query_filters_exclude_soft_deleted_and_poisoned_rows(self):
+        # Security/integrity (PR #1046 re-review LOWs): a soft-deleted or
+        # expired snapshot must not be folded, and a sandcastle-written row
+        # (anon key, RLS-gated to source_provenance like 'sandcastle:%') must
+        # not be trusted as an L1 baseline. Assert the query carries the
+        # live-row + provenance filters so the DB never returns those rows.
+        captured = {}
+
+        def _capturing(url, key, table, params):
+            captured.update(params)
+            return []
+
+        gather_contradiction_cache(
+            "https://x", "k", _capturing, now=1_717_000_000.0,
+        )
+        assert captured.get("deleted_at") == "is.null"
+        assert captured.get("expired_at") == "is.null"
+        # NULL or non-sandcastle provenance passes; sandcastle:* is rejected.
+        assert "sandcastle" in captured.get("or", "")
+        assert "not.like" in captured.get("or", "")
 
 
 class TestGatherIntegratesContradictionCache:
@@ -837,7 +887,10 @@ class TestGatherIntegratesContradictionCache:
         )
         assert result.contradiction_cache is None
         snap_prov = result.provenance[SourceKind.STATUS_SNAPSHOT]
-        assert snap_prov["ok"] is False
+        # Empty snapshot query succeeds with no rows (ok=True); cache is None.
+        # ok=False is reserved for a transport failure (MAJOR fix, PR #1046).
+        assert snap_prov["ok"] is True
+        assert snap_prov["input_rows"] == 0
 
     def test_contradiction_cache_is_json_serializable(self):
         snap = _snapshot_memory()
