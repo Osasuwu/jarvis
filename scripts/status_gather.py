@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -23,6 +24,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+import yaml
 
 # ============================================================================
 # Public constants
@@ -129,6 +132,7 @@ class GatherResult:
     provenance: dict[str, dict] = field(default_factory=dict)
     gathered_at: str = ""
     errors: list[str] = field(default_factory=list)
+    contradiction_cache: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -138,6 +142,7 @@ class GatherResult:
             "provenance": self.provenance,
             "gathered_at": self.gathered_at,
             "errors": self.errors,
+            "contradiction_cache": self.contradiction_cache,
         }
 
 
@@ -462,6 +467,122 @@ def gather_decisions(
 
 
 # ============================================================================
+# Contradiction-cache gather (#1016 AC3/AC4)
+#
+# The L1 status-record audit runs the memory↔git contradiction LLM ONCE and
+# writes its verdicts into the `status-snapshot`-tagged memory as a fenced
+# yaml block (schema contradiction-cache/v1). gather() reads that block back
+# so the engine can FOLD the cached verdicts without re-running the LLM
+# (AC4). Reading is pure deserialization — no LLM, no network beyond the
+# single REST read that already fetches the snapshot row.
+# ============================================================================
+
+# Tolerant of a fence info-string (```yaml title=...) and of a trailing blank
+# line before the closing fence — both are common Markdown emits (M1).
+_YAML_FENCE_RE = re.compile(r"```ya?ml[^\n]*\n(.*?)\n?```", re.DOTALL)
+
+
+def _extract_contradiction_cache(content: str) -> dict | None:
+    """Pull the `contradiction_cache` dict out of a memory body.
+
+    Fully tolerant: any parse failure, a missing fence, or a fence whose yaml
+    has no `contradiction_cache` key returns None. Never raises.
+    """
+    if not content:
+        return None
+
+    for match in _YAML_FENCE_RE.finditer(content):
+        block = match.group(1).strip()
+        try:
+            data = yaml.safe_load(block)
+        except yaml.YAMLError:
+            continue
+        if isinstance(data, dict):
+            cache = data.get("contradiction_cache")
+            if isinstance(cache, dict):
+                return cache
+    return None
+
+
+def _parse_iso_epoch(iso_str: str) -> float | None:
+    """Parse an ISO 8601 timestamp to epoch seconds, or None on failure."""
+    if not iso_str:
+        return None
+    try:
+        s = iso_str.strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        return datetime.fromisoformat(s).timestamp()
+    except (ValueError, TypeError):
+        return None
+
+
+def gather_contradiction_cache(
+    url: str,
+    key: str,
+    query_fn: QuerySupabaseFn,
+    now: float,
+) -> tuple[dict | None, Provenance]:
+    """Read the cached L1 contradiction verdicts from the latest status snapshot.
+
+    Queries the `memories` table for the most recent `status-snapshot`-tagged
+    jarvis memory, extracts its fenced contradiction-cache yaml block, and
+    returns it for the engine to fold. The cache's own `generated_at` drives
+    the provenance age (data age, not query latency) so the renderer's
+    freshness gate reflects when the LLM actually ran.
+
+    Returns (cache_dict, provenance). cache is None and ok=False when the
+    query fails, no snapshot exists, or the snapshot carries no cache block.
+    """
+    params = {
+        "tags": "cs.{status-snapshot}",
+        "project": "eq.jarvis",
+        "select": "name,content,created_at",
+        "order": "created_at.desc",
+        "limit": "1",
+        # Live-row filter (mirrors memory recall): never fold a snapshot that
+        # was soft-deleted or expired/superseded out of belief.
+        "deleted_at": "is.null",
+        "expired_at": "is.null",
+        # Trust boundary (#542/#565 RLS): a sandcastle agent can only write
+        # rows whose source_provenance starts `sandcastle:`. An L1 baseline
+        # written by the principal never carries that prefix, so reject it to
+        # stop a sandcastle-poisoned snapshot from injecting forged verdicts.
+        # NULL provenance (legacy/principal writes) still passes.
+        "or": "(source_provenance.is.null,source_provenance.not.like.sandcastle:*)",
+    }
+    rows = query_fn(url, key, "memories", params)
+
+    # A transport failure (None) and an empty result ([]) must NOT collapse
+    # into the same provenance — a Supabase outage has to stay distinguishable
+    # from a first-run device that simply has no snapshot yet. Mirrors the
+    # gather_decisions None-vs-empty split.
+    _failed = Provenance(ran=True, ok=False, input_rows=0, age=None)
+
+    if rows is None:
+        # Query failed entirely — transport/network error.
+        return None, _failed
+
+    if not rows:
+        # Query succeeded, no snapshot row yet (first run / intraday pre-L1).
+        # Empty is a legitimate non-error state, like gather_decisions.
+        return None, Provenance(ran=True, ok=True, input_rows=0, age=None)
+
+    content = rows[0].get("content") or ""
+    cache = _extract_contradiction_cache(content)
+    if cache is None:
+        # Snapshot exists but carries no parseable cache block — treat as a
+        # failed read of the cache, not an empty success.
+        return None, _failed
+
+    verdicts = cache.get("verdicts") or []
+    gen_epoch = _parse_iso_epoch(str(cache.get("generated_at", "")))
+    age = (now - gen_epoch) if gen_epoch is not None else None
+    prov = Provenance(ran=True, ok=True, input_rows=len(verdicts), age=age)
+    return cache, prov
+
+
+# ============================================================================
 # Main gather orchestrator
 # ============================================================================
 
@@ -638,17 +759,31 @@ def gather(
             f"{SourceKind.SUPABASE_DECISIONS}: {SUPABASE_URL_ENV}/{SUPABASE_KEY_ENV} unset"
         )
 
-    # --- Step 5: Status-snapshot baselines (optional — tolerate gap) ---
-    # Baselines are read from memory. In a cron context where memory-MCP is
-    # not loaded, this will be None — the gather tolerates the gap and stamps
-    # provenance accordingly.
-    result.provenance[SourceKind.STATUS_SNAPSHOT] = Provenance(
-        ran=True, ok=False, input_rows=0,
-        age=_now() - gather_start,
-        # NOTE: baseline retrieval from memory-MCP requires the memory server.
-        # If unavailable (cron), this source is simply marked !ok and the
-        # engine/renderer treats it as stale/no-baseline.
-    ).to_dict()
+    # --- Step 5: Status-snapshot contradiction cache (optional — tolerate gap) ---
+    # The L1 status-record audit writes the cached memory↔git contradiction
+    # verdicts into the `status-snapshot`-tagged memory. We read them back here
+    # (pure deserialization, no LLM — #1016 AC4) so the engine can fold them.
+    # On first run, a non-cron device, or a missing snapshot, the read is !ok
+    # and the engine/renderer treats it as stale/no-baseline.
+    if supabase_url and supabase_key:
+        cache, snap_prov = gather_contradiction_cache(
+            supabase_url, supabase_key, _query_supabase, _now(),
+        )
+        result.contradiction_cache = cache
+        result.provenance[SourceKind.STATUS_SNAPSHOT] = snap_prov.to_dict()
+        if not snap_prov.ok:
+            result.errors.append(
+                f"{SourceKind.STATUS_SNAPSHOT}: no fresh status snapshot available"
+            )
+    else:
+        # No creds ⇒ nothing was gathered, so data age is undefined (None), not
+        # time-since-gather-start (m3). ok=False already signals the gap.
+        result.provenance[SourceKind.STATUS_SNAPSHOT] = Provenance(
+            ran=True, ok=False, input_rows=0, age=None,
+        ).to_dict()
+        result.errors.append(
+            f"{SourceKind.STATUS_SNAPSHOT}: {SUPABASE_URL_ENV}/{SUPABASE_KEY_ENV} unset"
+        )
 
     return result
 

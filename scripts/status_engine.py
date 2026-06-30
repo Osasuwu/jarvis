@@ -4,7 +4,7 @@ Zero I/O. Houses four deterministic detectors, provenance contract, and
 top-N ranking for the status-synthesis pipeline.
 
 Public interface:
-    analyze(baseline, delta, decisions) -> Digest
+    analyze(baseline, delta, decisions, contradiction_verdicts=()) -> Digest
 
 Constants (reversible knobs, tuned post-launch):
     STALE_INPROGRESS_DAYS = 3
@@ -528,13 +528,24 @@ def deserialize_contradiction_cache(
 
     Tolerant of a malformed/empty cache: a missing ``verdicts`` key yields an
     empty list rather than raising, so a corrupt snapshot degrades to "no
-    cached contradictions" instead of breaking the render path.
+    cached contradictions" instead of breaking the render path. Individual
+    rows missing mandatory keys degrade per-field (not KeyError) for the same
+    reason (C2).
+
+    A cache stamped with an unrecognized ``schema`` version deserializes to
+    empty — a future v2 layout must not be silently misread as v1 (M2). A
+    cache with no ``schema`` key at all is accepted (legacy / hand-written).
     """
+    schema = data.get("schema")
+    if schema is not None and schema != CONTRADICTION_CACHE_SCHEMA:
+        return []
     rows = data.get("verdicts") or []
     return [
         ContradictionVerdict(
-            decision_id=row["decision_id"],
-            issue_number=row["issue_number"],
+            decision_id=row.get("decision_id", ""),
+            # YAML may emit issue_number as a float (42.0); coerce to int so it
+            # renders as #42, not #42.0.
+            issue_number=int(row.get("issue_number", 0) or 0),
             repo=row.get("repo", ""),
             verdict=row.get("verdict", "uncertain"),
             rationale=row.get("rationale", ""),
@@ -595,7 +606,10 @@ def compute_health_verdict(
             stale_or_failed.append(f"{source_name}: did not run")
         elif not prov.ok:
             stale_or_failed.append(f"{source_name}: failed (ok=False)")
-        elif prov.age > FRESHNESS_AGE_SECONDS:
+        elif prov.age is not None and prov.age > FRESHNESS_AGE_SECONDS:
+            # age is None ⇒ data age unknown (e.g. a status snapshot written
+            # without a parseable generated_at). Treat unknown age as not-stale
+            # rather than crashing the comparison (C1).
             stale_or_failed.append(
                 f"{source_name}: stale ({prov.age:.0f}s > {FRESHNESS_AGE_SECONDS}s)"
             )
@@ -629,17 +643,29 @@ def analyze(
     baseline: Baseline,
     delta: Delta,
     decisions: list[DecisionInfo],
+    contradiction_verdicts: Sequence[ContradictionVerdict] = (),
 ) -> Digest:
     """Synthesize status digest from baseline, delta, and decisions.
 
     Pure function — zero I/O, fully deterministic given the same inputs.
     This is the sole public interface of status_engine.
+
+    ``contradiction_verdicts`` carries the L1 memory↔git verdicts (already
+    judged upstream by the status-record cron, then read from the cached
+    status-snapshot — see deserialize_contradiction_cache). analyze() only
+    *folds* them; it never runs the LLM judgment itself. The default empty
+    tuple is the intraday/L2 path: no verdicts → no contradiction hit → no
+    LLM cost, satisfying the L1-only contract (#1016 AC2). Folding the cached
+    verdicts here (rather than after analyze) lets contradiction hits take
+    part in rank_detector_hits + compute_health_verdict, so they appear in
+    "Куда смотреть" and flip health red like any other detector hit (AC4).
     """
     hits: list[DetectorHit] = []
     hits.extend(detect_stale_in_progress(baseline, delta, decisions))
     hits.extend(detect_priority_inversion(baseline, delta, decisions))
     hits.extend(detect_decision_without_followthrough(baseline, delta, decisions))
     hits.extend(detect_blocker_cascade(baseline, delta, decisions))
+    hits.extend(fold_contradiction_verdicts(contradiction_verdicts))
 
     ranking = rank_detector_hits(hits)
     health = compute_health_verdict(baseline, hits)

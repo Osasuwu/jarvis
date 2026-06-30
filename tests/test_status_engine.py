@@ -7,7 +7,6 @@ test_rework_policy.py: in-memory fixtures, no I/O.
 
 from __future__ import annotations
 
-import inspect
 from datetime import datetime, timedelta, timezone
 
 from status_engine import (
@@ -648,29 +647,193 @@ class TestContradictionCache:
         """A malformed cache (no verdicts key) deserializes to empty, not raises."""
         assert deserialize_contradiction_cache({}) == []
 
+    def test_row_missing_mandatory_keys_tolerated(self):
+        """A verdict row missing decision_id/issue_number degrades gracefully —
+        the 'tolerant' contract must not raise KeyError on a partial row (C2)."""
+        cache = {
+            "verdicts": [
+                {"repo": "o/r", "verdict": "contradiction", "rationale": "x"},
+            ]
+        }
+        restored = deserialize_contradiction_cache(cache)
+        assert len(restored) == 1
+        assert restored[0].decision_id == ""
+        assert restored[0].issue_number == 0
+
+    def test_float_issue_number_coerced_to_int(self):
+        """YAML can emit issue_number as a float (42.0); it must render as #42,
+        not #42.0 (C2)."""
+        cache = {
+            "verdicts": [
+                {
+                    "decision_id": "d1",
+                    "issue_number": 42.0,
+                    "repo": "o/r",
+                    "verdict": "contradiction",
+                    "rationale": "x",
+                },
+            ]
+        }
+        restored = deserialize_contradiction_cache(cache)
+        assert restored[0].issue_number == 42
+        assert isinstance(restored[0].issue_number, int)
+
+    def test_schema_mismatch_returns_empty(self):
+        """A cache stamped with an unrecognized schema version deserializes to
+        empty rather than silently producing wrong verdicts (M2)."""
+        cache = {
+            "schema": "contradiction-cache/v2",
+            "verdicts": [
+                {
+                    "decision_id": "d1",
+                    "issue_number": 1,
+                    "repo": "o/r",
+                    "verdict": "contradiction",
+                    "rationale": "x",
+                },
+            ],
+        }
+        assert deserialize_contradiction_cache(cache) == []
+
+    def test_absent_schema_key_tolerated(self):
+        """A cache with no schema key (legacy/hand-written) still deserializes —
+        only an explicit *mismatched* schema is rejected (M2)."""
+        cache = {
+            "verdicts": [
+                {
+                    "decision_id": "d1",
+                    "issue_number": 1,
+                    "repo": "o/r",
+                    "verdict": "contradiction",
+                    "rationale": "x",
+                },
+            ]
+        }
+        assert len(deserialize_contradiction_cache(cache)) == 1
+
 
 class TestL1OnlyGuard:
-    """The contradiction detector runs L1-only; analyze() never invokes it (AC2)."""
+    """The contradiction detector runs L1-only; analyze() never invokes the
+    LLM judgment on its own (AC2).
 
-    def test_analyze_does_not_call_fold(self):
-        """The intraday-capable analyze() path must not invoke the LLM fold."""
-        src = inspect.getsource(analyze)
-        assert "fold_contradiction_verdicts" not in src
-        assert "contradiction" not in src.lower()
+    Behavioral guard (replaces an earlier source-grep): the meaningful L1-only
+    contract is that ``analyze`` never *generates* contradiction verdicts — it
+    only folds verdicts handed to it explicitly. The LLM judgment lives in the
+    upstream L1 status-record cron; the intraday (L2) path calls ``analyze``
+    with the default empty ``contradiction_verdicts`` and therefore pays for no
+    LLM and surfaces no contradiction. Folding a *cached* verdict (already
+    computed in the morning) is deterministic and free, so it is allowed.
+    """
 
-    def test_analyze_emits_no_contradiction_hits(self):
-        """Even with referenced decisions present, analyze() emits no
-        memory-git-contradiction hits — that detector is L1-only and lives
-        outside the engine path."""
-        baseline = make_baseline(
-            repos={
-                "jarvis": make_state("jarvis", issues=[make_issue(42)]),
-            },
-            provenance={"gh:jarvis": Provenance(ran=True, ok=True, age=0)},
+    def test_analyze_default_param_folds_nothing(self):
+        """Calling analyze without the verdicts arg surfaces no contradiction
+        hit — the intraday/L2 signature is unchanged and LLM-free."""
+        base = make_baseline(
+            provenance={"jarvis": Provenance(ran=True, ok=True, age=0)},
         )
+        digest = analyze(base, make_delta(), [])
+        assert all(
+            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
+        )
+
+    def test_analyze_does_not_autodetect_contradictions(self):
+        """Even when a decision references an open issue, analyze with no
+        verdicts produces no contradiction hit — it never runs the detector
+        itself (the LLM judgment must arrive pre-computed from L1)."""
+        issue = make_issue(42, labels=["status:in-progress"])
+        state = make_state("Osasuwu/jarvis", issues=[issue])
+        base = make_baseline(
+            provenance={"jarvis": Provenance(ran=True, ok=True, age=0)},
+        )
+        delta = make_delta(repos={"Osasuwu/jarvis": state})
         decisions = [make_decision("d1", decision="Shipped #42", created_days_ago=1)]
-        result = analyze(baseline, make_delta(), decisions)
-        assert all(h.detector != MEMORY_GIT_CONTRADICTION for h in result.detector_hits)
+        digest = analyze(base, delta, decisions)
+        assert all(
+            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
+        )
+
+
+class TestAnalyzeFoldsContradictions:
+    """analyze() folds explicitly-passed cached verdicts into the digest so
+    they participate in ranking + health (AC4)."""
+
+    def _green_baseline(self) -> Baseline:
+        return make_baseline(
+            provenance={"jarvis": Provenance(ran=True, ok=True, age=0)},
+        )
+
+    def test_contradiction_verdict_surfaces_as_hit(self):
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict()],
+        )
+        hits = [h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION]
+        assert len(hits) == 1
+        assert hits[0].issue_number == 42
+
+    def test_uncertain_verdict_not_folded(self):
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict(verdict="uncertain")],
+        )
+        assert all(
+            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
+        )
+
+    def test_folded_hit_participates_in_ranking(self):
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict()],
+        )
+        ranked_detectors = {item.detector_hit.detector for item in digest.ranking}
+        assert MEMORY_GIT_CONTRADICTION in ranked_detectors
+
+    def test_folded_hit_flips_health(self):
+        """A folded contradiction on an otherwise-green baseline makes the
+        health verdict unhealthy — it is a real anomaly, not just metadata."""
+        green = analyze(self._green_baseline(), make_delta(), [])
+        assert green.health.ok is True
+        unhealthy = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict()],
+        )
+        assert unhealthy.health.ok is False
+
+    def test_fold_is_deterministic(self):
+        args = (self._green_baseline(), make_delta(), [])
+        kw = {"contradiction_verdicts": [make_verdict()]}
+        assert analyze(*args, **kw).detector_hits == analyze(*args, **kw).detector_hits
+
+    def test_cached_cache_folds_through_analyze_without_llm(self):
+        """End-to-end AC4: serialize → deserialize → analyze surfaces the same
+        contradiction hit the live verdicts would, with no LLM in the path."""
+        verdicts = [
+            make_verdict("d1", 1, verdict="contradiction"),
+            make_verdict("d2", 2, verdict="uncertain"),
+        ]
+        cache = serialize_contradiction_cache(verdicts)
+        restored = deserialize_contradiction_cache(cache)
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=restored,
+        )
+        hits = [h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION]
+        assert len(hits) == 1  # only the contradiction survives
+        assert hits[0].issue_number == 1
+
+    # NOTE: the "analyze never autodetects contradictions" assertion lives in
+    # TestL1OnlyGuard.test_analyze_does_not_autodetect_contradictions — not
+    # duplicated here (N4).
 
 
 # ============================================================================
@@ -808,6 +971,21 @@ class TestHealthVerdict:
             [],
         )
         assert health.ok is False
+
+    def test_age_none_does_not_crash(self):
+        """A source with ran=True, ok=True, age=None (unknown data age — e.g. a
+        status snapshot written without a parseable generated_at) must not crash
+        the freshness comparison. age=None means 'age unknown', not stale (C1)."""
+        health = compute_health_verdict(
+            make_baseline(
+                provenance={
+                    "status_snapshot": Provenance(ran=True, ok=True, age=None),
+                },
+            ),
+            [],
+        )
+        # Does not raise; unknown age is treated as not-stale (lenient, non-crash).
+        assert health.ok is True
 
 
 # ============================================================================
