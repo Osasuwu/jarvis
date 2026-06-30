@@ -185,6 +185,24 @@ def test_tool_schema_structure():
     assert "jarvis_home" in src
 
 
+def test_handlers_are_coroutines():
+    """The MCP SDK awaits every registered handler. A sync `def list_tools`
+    connects fine but makes `tools/list` raise
+    `object list can't be used in 'await' expression` at runtime — Claude Code
+    then registers ZERO tools from the server and status_digest silently
+    disappears. (#1017 regression: list_tools shipped sync.) Both decorated
+    handlers must be coroutine functions.
+    """
+    import inspect
+
+    assert inspect.iscoroutinefunction(status_server.list_tools), (
+        "list_tools must be `async def` — the MCP SDK awaits it"
+    )
+    assert inspect.iscoroutinefunction(status_server.call_tool), (
+        "call_tool must be `async def` — the MCP SDK awaits it"
+    )
+
+
 # ============================================================================
 # Test: Integration — gather result flow through to digest
 # ============================================================================

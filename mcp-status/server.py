@@ -78,7 +78,7 @@ server = Server("jarvis-status")
 # ============================================================================
 
 @server.list_tools()
-def list_tools() -> list[Tool]:
+async def list_tools() -> list[Tool]:
     """Return the single status_digest tool."""
     return [
         Tool(
