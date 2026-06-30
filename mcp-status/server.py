@@ -61,7 +61,10 @@ from mcp.types import CallToolResult, TextContent, Tool  # noqa: E402
 
 # Import gather and engine modules
 from scripts.status_gather import gather  # noqa: E402
-from scripts.status_engine import analyze  # noqa: E402
+from scripts.status_engine import (  # noqa: E402
+    analyze,
+    deserialize_contradiction_cache,
+)
 
 # ============================================================================
 # MCP Server
@@ -183,6 +186,24 @@ def _convert_gather_to_engine_format(gather_result):
     return baseline, delta, decisions
 
 
+def _contradiction_verdicts_from_gather(gather_result):
+    """Deserialize the cached L1 contradiction verdicts from a GatherResult.
+
+    The L1 status-record audit ran the memory↔git contradiction LLM once and
+    stored its verdicts in the status-snapshot memory; gather() read that cache
+    back into `gather_result.contradiction_cache` (pure deserialization, no
+    LLM). Here we turn the cache dict into ContradictionVerdict objects for
+    analyze() to fold (#1016 AC4). No cache → empty list, which is the
+    intraday/L2 default that folds nothing.
+    """
+    cache = gather_result.contradiction_cache
+    if cache is None:
+        return []
+    # An empty-but-present dict still flows through deserialize (→ []); only a
+    # genuinely absent cache short-circuits. `is None` keeps the two distinct.
+    return deserialize_contradiction_cache(cache)
+
+
 @server.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolResult:
     """Dispatch to the status_digest tool."""
@@ -196,8 +217,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             # Convert gather result to engine format
             baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
 
+            # Fold the cached L1 memory↔git contradiction verdicts (if any).
+            # Reading the cache is pure deserialization — the LLM ran once in
+            # the L1 status-record audit, never here (#1016 AC2/AC4).
+            contradiction_verdicts = _contradiction_verdicts_from_gather(gather_result)
+
             # Analyze with engine
-            digest = analyze(baseline, delta, decisions)
+            digest = analyze(
+                baseline, delta, decisions,
+                contradiction_verdicts=contradiction_verdicts,
+            )
 
             # Build response: {health, detector_hits, ranking, provenance}
             response_data = {

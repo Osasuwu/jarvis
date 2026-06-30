@@ -95,6 +95,7 @@ jobs:
           echo "::notice::Push by osasuwu-ci[bot] is an auto-rebase only (no new code); skipping code review."
 
       - name: Run /code-review
+        id: review
         if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true')
         uses: anthropics/claude-code-action@v1
         with:
@@ -127,7 +128,17 @@ jobs:
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
             (not available in this runner). This is plugin invocation only.
           claude_args: |
-            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*)"
+            # MUST stay a superset of the plugin command's own frontmatter
+            # allowed-tools (commands/code-review.md). The action runs headless,
+            # so any tool the plugin uses that is absent here is DENIED (no human
+            # to approve) — agent #9 (structural-growth) runs `git show <sha>:<f>
+            # | wc -l`, agent #3 reads `git blame`/`git log`, so the missing
+            # git/wc tools produced repeated permission_denials and made agents
+            # burn turns and flail at the final comment-post step (test/placeholder
+            # probe comments, fragment comments, or no post at all → verdict gate
+            # fails closed → admin-merge). Keep this list and the plugin frontmatter
+            # in lockstep (tests/ci/test_code_review_allowed_tools.py pins it).
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(wc:*)"
 
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). Without
       # this step the `review` check is SUCCESS as long as the bot ran —
@@ -184,6 +195,49 @@ jobs:
       # that jam (above) makes retries succeed, so this gate must enforce on
       # the dispatch path too. steps.pr.outputs.number resolves on dispatch
       # via inputs.pr_number, so the lookup works for both events.
+      # Loud-fail diagnostic (mirror of SergazyNarynov/redrobot PR #1304). The
+      # verdict guard below fails CLOSED on a missing/unparseable comment — which
+      # masks two very different causes as one "re-run code-review" message:
+      #   (a) the model genuinely posted no blocking verdict, vs
+      #   (b) the review run itself broke — is_error=true, or its subagents were
+      #       permission-denied tools they need (allowlist drift between this
+      #       workflow's claude_args --allowed-tools and the plugin command's
+      #       frontmatter), so the orchestrator burned turns and never posted.
+      # When (b) happens the verdict guard says "errored, re-run" but a re-run
+      # hits the SAME wall silently. This step reads the action's execution log
+      # and fails LOUDLY with the exact denied tool calls, so allowlist drift is
+      # self-diagnosing instead of presenting as a flaky verdict gate. jarvis is
+      # the allowlist source-of-truth (already a superset), so in steady state
+      # this should always pass with 0 denials — it is a regression tripwire.
+      - name: Verify review ran cleanly
+        if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true')
+        env:
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXEC_FILE:-}" ] || [ ! -f "$EXEC_FILE" ]; then
+            echo "::notice::No execution log (review skipped or produced no output); nothing to verify."
+            exit 0
+          fi
+          result=$(jq -c '[.[] | select(.type == "result")] | last // {}' "$EXEC_FILE")
+          is_error=$(jq -r '.is_error // false' <<<"$result")
+          denials=$(jq -r '.permission_denials_count // 0' <<<"$result")
+          echo "Review result: is_error=$is_error permission_denials_count=$denials"
+          if [ "$is_error" = "true" ]; then
+            echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
+            exit 1
+          fi
+          if [ "$denials" -gt 0 ]; then
+            echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
+            echo "Denied tool calls:"
+            jq -r '[.[] | select(.type == "result")] | last
+                   | (.permission_denials // [])[]
+                   | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
+              "$EXEC_FILE" 2>/dev/null | sort -u || true
+            exit 1
+          fi
+          echo "::notice::Code review ran cleanly (0 permission denials)."
+
       - name: Verify review verdict
         if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
         env:

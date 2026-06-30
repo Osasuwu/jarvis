@@ -4,7 +4,7 @@ Zero I/O. Houses four deterministic detectors, provenance contract, and
 top-N ranking for the status-synthesis pipeline.
 
 Public interface:
-    analyze(baseline, delta, decisions) -> Digest
+    analyze(baseline, delta, decisions, contradiction_verdicts=()) -> Digest
 
 Constants (reversible knobs, tuned post-launch):
     STALE_INPROGRESS_DAYS = 3
@@ -37,6 +37,20 @@ FRESHNESS_AGE_SECONDS = 86400  # 24 hours
 DECISION_PREFILTER_DAYS = 14
 """Max age in days for decisions considered by the contradiction prefilter."""
 
+MEMORY_GIT_CONTRADICTION = "memory-git-contradiction"
+"""Detector name for the L1-only memory↔git contradiction detector (#1016).
+
+The judgment itself is the native status-record cron Claude session — there is
+no Anthropic API call here. This engine only folds the session's verdicts into
+DetectorHits (see fold_contradiction_verdicts) and round-trips the cached
+result (serialize/deserialize_contradiction_cache). The detector is L1-only:
+analyze() never invokes it, so intraday (L2) recomputation never pays for the
+LLM pass.
+"""
+
+CONTRADICTION_CACHE_SCHEMA = "contradiction-cache/v1"
+"""Schema tag for the serialized contradiction cache (AC4)."""
+
 
 # ============================================================================
 # Data types
@@ -46,6 +60,7 @@ DECISION_PREFILTER_DAYS = 14
 @dataclass
 class Provenance:
     """Provenance stamp for a data source or detector."""
+
     ran: bool = True
     ok: bool = True
     input_rows: int = 0
@@ -55,6 +70,7 @@ class Provenance:
 @dataclass
 class IssueInfo:
     """Lightweight issue representation for engine consumption."""
+
     number: int
     title: str = ""
     state: str = "open"
@@ -68,6 +84,7 @@ class IssueInfo:
 @dataclass
 class RepoState:
     """State snapshot of a single repository."""
+
     repo: str
     open_issues: list[IssueInfo] = field(default_factory=list)
     open_prs: list[dict] = field(default_factory=list)
@@ -77,6 +94,7 @@ class RepoState:
 @dataclass
 class DecisionInfo:
     """A recorded decision from episodes table."""
+
     decision_id: str
     decision: str = ""
     created_at: str = ""  # ISO 8601
@@ -84,8 +102,28 @@ class DecisionInfo:
 
 
 @dataclass
+class ContradictionVerdict:
+    """One LLM judgment over a (decision, issue) prefilter candidate (#1016).
+
+    Emitted by the native status-record cron session, not by this engine.
+    `verdict` is one of: 'contradiction' (memory and git disagree),
+    'no_contradiction' (they agree / benign divergence), or 'uncertain'
+    (judge could not decide). Per the false-negative-over-false-positive
+    posture (research b72ea66c), only 'contradiction' surfaces — both
+    'uncertain' and 'no_contradiction' are dropped on fold.
+    """
+
+    decision_id: str
+    issue_number: int
+    repo: str = ""
+    verdict: str = "uncertain"
+    rationale: str = ""
+
+
+@dataclass
 class Baseline:
     """L1 morning baseline snapshot."""
+
     repos: dict[str, RepoState] = field(default_factory=dict)
     gathered_at: str = ""
     provenance: dict[str, Provenance] = field(default_factory=dict)
@@ -94,6 +132,7 @@ class Baseline:
 @dataclass
 class Delta:
     """Intraday delta — lightweight current state."""
+
     repos: dict[str, RepoState] = field(default_factory=dict)
     gathered_at: str = ""
 
@@ -101,6 +140,7 @@ class Delta:
 @dataclass
 class DetectorHit:
     """A single detector firing."""
+
     detector: str
     severity: str  # 'critical' | 'major' | 'minor'
     repo: str
@@ -113,6 +153,7 @@ class DetectorHit:
 @dataclass
 class RankedItem:
     """A ranked item for the 'Куда смотреть' list."""
+
     rank: int
     detector_hit: DetectorHit
     reason: str = ""
@@ -121,6 +162,7 @@ class RankedItem:
 @dataclass
 class HealthVerdict:
     """Overall health verdict."""
+
     ok: bool
     reason: str = ""
 
@@ -128,6 +170,7 @@ class HealthVerdict:
 @dataclass
 class Digest:
     """Output of analyze()."""
+
     health: HealthVerdict
     detector_hits: list[DetectorHit] = field(default_factory=list)
     ranking: list[RankedItem] = field(default_factory=list)
@@ -154,9 +197,7 @@ def _parse_iso_age(iso_str: str, now: datetime | None = None) -> float:
         return 0.0
 
 
-def _merge_repos(
-    baseline: Baseline, delta: Delta
-) -> dict[str, RepoState]:
+def _merge_repos(baseline: Baseline, delta: Delta) -> dict[str, RepoState]:
     """Merge repos from delta over baseline for the freshest view."""
     merged: dict[str, RepoState] = {}
     for name, state in baseline.repos.items():
@@ -190,17 +231,19 @@ def detect_stale_in_progress(
                 continue
             age_days = _parse_iso_age(issue.updated_at, now)
             if age_days > STALE_INPROGRESS_DAYS:
-                hits.append(DetectorHit(
-                    detector="stale-in-progress",
-                    severity="major",
-                    repo=repo_name,
-                    issue_number=issue.number,
-                    title=issue.title,
-                    description=(
-                        f"Issue #{issue.number} has been in-progress for "
-                        f"{age_days:.1f} days (threshold: {STALE_INPROGRESS_DAYS}d)"
-                    ),
-                ))
+                hits.append(
+                    DetectorHit(
+                        detector="stale-in-progress",
+                        severity="major",
+                        repo=repo_name,
+                        issue_number=issue.number,
+                        title=issue.title,
+                        description=(
+                            f"Issue #{issue.number} has been in-progress for "
+                            f"{age_days:.1f} days (threshold: {STALE_INPROGRESS_DAYS}d)"
+                        ),
+                    )
+                )
 
     return hits
 
@@ -250,17 +293,19 @@ def detect_priority_inversion(
         if stalled_high and active_low:
             for high_issue in stalled_high:
                 low_titles = ", ".join(f"#{i.number}" for i in active_low[:3])
-                hits.append(DetectorHit(
-                    detector="priority-inversion",
-                    severity="critical",
-                    repo=repo_name,
-                    issue_number=high_issue.number,
-                    title=high_issue.title,
-                    description=(
-                        f"P0/P1 issue #{high_issue.number} stalled while "
-                        f"lower-priority work ({low_titles}) has recent activity"
-                    ),
-                ))
+                hits.append(
+                    DetectorHit(
+                        detector="priority-inversion",
+                        severity="critical",
+                        repo=repo_name,
+                        issue_number=high_issue.number,
+                        title=high_issue.title,
+                        description=(
+                            f"P0/P1 issue #{high_issue.number} stalled while "
+                            f"lower-priority work ({low_titles}) has recent activity"
+                        ),
+                    )
+                )
 
     return hits
 
@@ -310,18 +355,20 @@ def detect_decision_without_followthrough(
             seen.add(ref_num)
             for repo_name, issue_nums in open_issues.items():
                 if ref_num in issue_nums:
-                    hits.append(DetectorHit(
-                        detector="decision-without-followthrough",
-                        severity="major",
-                        repo=repo_name,
-                        issue_number=ref_num,
-                        title=f"Decision references #{ref_num}",
-                        description=(
-                            f"Decision '{dec.decision_id}' references "
-                            f"#{ref_num} but the issue has had no "
-                            f"visible movement"
-                        ),
-                    ))
+                    hits.append(
+                        DetectorHit(
+                            detector="decision-without-followthrough",
+                            severity="major",
+                            repo=repo_name,
+                            issue_number=ref_num,
+                            title=f"Decision references #{ref_num}",
+                            description=(
+                                f"Decision '{dec.decision_id}' references "
+                                f"#{ref_num} but the issue has had no "
+                                f"visible movement"
+                            ),
+                        )
+                    )
                     break
 
     return hits
@@ -358,18 +405,20 @@ def detect_blocker_cascade(
         for issue in repo_state.open_issues:
             blocked_list = blockers.get(issue.number, [])
             if blocked_list and issue.number not in blocked_by:
-                hits.append(DetectorHit(
-                    detector="blocker-cascade",
-                    severity="critical",
-                    repo=repo_name,
-                    issue_number=issue.number,
-                    title=issue.title,
-                    description=(
-                        f"Issue #{issue.number} is a root blocker "
-                        f"blocking {len(blocked_list)} other issue(s): "
-                        f"{', '.join(f'#{n}' for n in blocked_list)}"
-                    ),
-                ))
+                hits.append(
+                    DetectorHit(
+                        detector="blocker-cascade",
+                        severity="critical",
+                        repo=repo_name,
+                        issue_number=issue.number,
+                        title=issue.title,
+                        description=(
+                            f"Issue #{issue.number} is a root blocker "
+                            f"blocking {len(blocked_list)} other issue(s): "
+                            f"{', '.join(f'#{n}' for n in blocked_list)}"
+                        ),
+                    )
+                )
 
     return hits
 
@@ -409,6 +458,103 @@ def build_contradiction_prefilter(
 
 
 # ============================================================================
+# Contradiction-detector fold (L1-only — see analyze() omission)
+# ============================================================================
+
+
+def fold_contradiction_verdicts(
+    verdicts: Sequence[ContradictionVerdict],
+) -> list[DetectorHit]:
+    """Fold LLM contradiction verdicts into DetectorHits (#1016, AC1/AC6).
+
+    Only verdicts with ``verdict == "contradiction"`` surface. Both
+    ``"uncertain"`` and ``"no_contradiction"`` (and any unrecognized value)
+    are dropped — the false-negative-over-false-positive posture (research
+    b72ea66c): at solo-dev volume a base-rate flood of weak positives causes
+    habituation, so an undecided candidate is dropped, not surfaced.
+
+    The per-candidate rationale is carried into the hit's ``description`` so
+    the provenance of every surfaced contradiction is visible to the reader
+    (the actionability/provenance mitigation from the same research).
+    """
+    hits: list[DetectorHit] = []
+    for v in verdicts:
+        if v.verdict != "contradiction":
+            continue
+        hits.append(
+            DetectorHit(
+                detector=MEMORY_GIT_CONTRADICTION,
+                severity="major",
+                repo=v.repo,
+                issue_number=v.issue_number,
+                title=f"Decision {v.decision_id} contradicts issue #{v.issue_number}",
+                description=v.rationale,
+            )
+        )
+    return hits
+
+
+def serialize_contradiction_cache(
+    verdicts: Sequence[ContradictionVerdict],
+    generated_at: str = "",
+) -> dict:
+    """Serialize verdicts to a JSON-able cache dict (#1016, AC4).
+
+    The L1 morning pass writes this under the ``status-snapshot`` memory tag so
+    L2/L3 can re-fold the same contradictions without re-running the LLM. The
+    full verdict set is stored (not just the surfaced contradictions) so the
+    drop decision stays auditable from the cache alone.
+    """
+    return {
+        "schema": CONTRADICTION_CACHE_SCHEMA,
+        "generated_at": generated_at,
+        "verdicts": [
+            {
+                "decision_id": v.decision_id,
+                "issue_number": v.issue_number,
+                "repo": v.repo,
+                "verdict": v.verdict,
+                "rationale": v.rationale,
+            }
+            for v in verdicts
+        ],
+    }
+
+
+def deserialize_contradiction_cache(
+    data: dict,
+) -> list[ContradictionVerdict]:
+    """Rebuild verdicts from a cache dict (#1016, AC4).
+
+    Tolerant of a malformed/empty cache: a missing ``verdicts`` key yields an
+    empty list rather than raising, so a corrupt snapshot degrades to "no
+    cached contradictions" instead of breaking the render path. Individual
+    rows missing mandatory keys degrade per-field (not KeyError) for the same
+    reason (C2).
+
+    A cache stamped with an unrecognized ``schema`` version deserializes to
+    empty — a future v2 layout must not be silently misread as v1 (M2). A
+    cache with no ``schema`` key at all is accepted (legacy / hand-written).
+    """
+    schema = data.get("schema")
+    if schema is not None and schema != CONTRADICTION_CACHE_SCHEMA:
+        return []
+    rows = data.get("verdicts") or []
+    return [
+        ContradictionVerdict(
+            decision_id=row.get("decision_id", ""),
+            # YAML may emit issue_number as a float (42.0); coerce to int so it
+            # renders as #42, not #42.0.
+            issue_number=int(row.get("issue_number", 0) or 0),
+            repo=row.get("repo", ""),
+            verdict=row.get("verdict", "uncertain"),
+            rationale=row.get("rationale", ""),
+        )
+        for row in rows
+    ]
+
+
+# ============================================================================
 # Ranking
 # ============================================================================
 
@@ -428,13 +574,14 @@ def rank_detector_hits(hits: list[DetectorHit]) -> list[RankedItem]:
 
     ranked: list[RankedItem] = []
     for i, hit in enumerate(sorted_hits[:TOP_N_CAP]):
-        ranked.append(RankedItem(
-            rank=i + 1,
-            detector_hit=hit,
-            reason=f"[{hit.severity.upper()}] {hit.detector}"
-                   f" — {hit.repo}"
-                   + (f" — #{hit.issue_number}" if hit.issue_number else ""),
-        ))
+        ranked.append(
+            RankedItem(
+                rank=i + 1,
+                detector_hit=hit,
+                reason=f"[{hit.severity.upper()}] {hit.detector}"
+                f" — {hit.repo}" + (f" — #{hit.issue_number}" if hit.issue_number else ""),
+            )
+        )
     return ranked
 
 
@@ -459,10 +606,12 @@ def compute_health_verdict(
             stale_or_failed.append(f"{source_name}: did not run")
         elif not prov.ok:
             stale_or_failed.append(f"{source_name}: failed (ok=False)")
-        elif prov.age > FRESHNESS_AGE_SECONDS:
+        elif prov.age is not None and prov.age > FRESHNESS_AGE_SECONDS:
+            # age is None ⇒ data age unknown (e.g. a status snapshot written
+            # without a parseable generated_at). Treat unknown age as not-stale
+            # rather than crashing the comparison (C1).
             stale_or_failed.append(
-                f"{source_name}: stale "
-                f"({prov.age:.0f}s > {FRESHNESS_AGE_SECONDS}s)"
+                f"{source_name}: stale ({prov.age:.0f}s > {FRESHNESS_AGE_SECONDS}s)"
             )
 
     if stale_or_failed:
@@ -494,17 +643,29 @@ def analyze(
     baseline: Baseline,
     delta: Delta,
     decisions: list[DecisionInfo],
+    contradiction_verdicts: Sequence[ContradictionVerdict] = (),
 ) -> Digest:
     """Synthesize status digest from baseline, delta, and decisions.
 
     Pure function — zero I/O, fully deterministic given the same inputs.
     This is the sole public interface of status_engine.
+
+    ``contradiction_verdicts`` carries the L1 memory↔git verdicts (already
+    judged upstream by the status-record cron, then read from the cached
+    status-snapshot — see deserialize_contradiction_cache). analyze() only
+    *folds* them; it never runs the LLM judgment itself. The default empty
+    tuple is the intraday/L2 path: no verdicts → no contradiction hit → no
+    LLM cost, satisfying the L1-only contract (#1016 AC2). Folding the cached
+    verdicts here (rather than after analyze) lets contradiction hits take
+    part in rank_detector_hits + compute_health_verdict, so they appear in
+    "Куда смотреть" and flip health red like any other detector hit (AC4).
     """
     hits: list[DetectorHit] = []
     hits.extend(detect_stale_in_progress(baseline, delta, decisions))
     hits.extend(detect_priority_inversion(baseline, delta, decisions))
     hits.extend(detect_decision_without_followthrough(baseline, delta, decisions))
     hits.extend(detect_blocker_cascade(baseline, delta, decisions))
+    hits.extend(fold_contradiction_verdicts(contradiction_verdicts))
 
     ranking = rank_detector_hits(hits)
     health = compute_health_verdict(baseline, hits)

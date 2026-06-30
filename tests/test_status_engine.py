@@ -12,9 +12,11 @@ from datetime import datetime, timedelta, timezone
 from status_engine import (
     DECISION_PREFILTER_DAYS,
     FRESHNESS_AGE_SECONDS,
+    MEMORY_GIT_CONTRADICTION,
     STALE_INPROGRESS_DAYS,
     TOP_N_CAP,
     Baseline,
+    ContradictionVerdict,
     DecisionInfo,
     Delta,
     DetectorHit,
@@ -22,16 +24,18 @@ from status_engine import (
     HealthVerdict,
     IssueInfo,
     Provenance,
-    RankedItem,
     RepoState,
     analyze,
     build_contradiction_prefilter,
     compute_health_verdict,
+    deserialize_contradiction_cache,
     detect_blocker_cascade,
     detect_decision_without_followthrough,
     detect_priority_inversion,
     detect_stale_in_progress,
+    fold_contradiction_verdicts,
     rank_detector_hits,
+    serialize_contradiction_cache,
 )
 
 # ============================================================================
@@ -150,12 +154,20 @@ class TestStaleInProgressDetector:
 
     def test_stale_issue_detected(self):
         """AC: issue in-progress >3 days without update → hit."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["status:in-progress"],
-                           updated_days_ago=STALE_INPROGRESS_DAYS + 1),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1,
+                            labels=["status:in-progress"],
+                            updated_days_ago=STALE_INPROGRESS_DAYS + 1,
+                        ),
+                    ],
+                ),
+            }
+        )
         hits = detect_stale_in_progress(baseline, make_delta(), [])
         assert len(hits) == 1
         assert hits[0].detector == "stale-in-progress"
@@ -164,50 +176,79 @@ class TestStaleInProgressDetector:
 
     def test_recent_in_progress_not_stale(self):
         """AC: in-progress issue updated today → no hit."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["status:in-progress"],
-                           updated_days_ago=0.1),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(1, labels=["status:in-progress"], updated_days_ago=0.1),
+                    ],
+                ),
+            }
+        )
         hits = detect_stale_in_progress(baseline, make_delta(), [])
         assert len(hits) == 0
 
     def test_no_label_not_stale(self):
         """Issue without status:in-progress label → no hit regardless of age."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["bug"], updated_days_ago=10),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(1, labels=["bug"], updated_days_ago=10),
+                    ],
+                ),
+            }
+        )
         hits = detect_stale_in_progress(baseline, make_delta(), [])
         assert len(hits) == 0
 
     def test_delta_overrides_baseline(self):
         """Delta repo state takes priority over baseline."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["status:in-progress"],
-                           updated_days_ago=10),  # stale in baseline
-            ]),
-        })
-        delta = make_delta({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["status:in-progress"],
-                           updated_days_ago=0.1),  # fresh in delta
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1, labels=["status:in-progress"], updated_days_ago=10
+                        ),  # stale in baseline
+                    ],
+                ),
+            }
+        )
+        delta = make_delta(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1, labels=["status:in-progress"], updated_days_ago=0.1
+                        ),  # fresh in delta
+                    ],
+                ),
+            }
+        )
         hits = detect_stale_in_progress(baseline, delta, [])
         assert len(hits) == 0
 
     def test_boundary_below_threshold_not_stale(self):
         """Edge: just below STALE_INPROGRESS_DAYS → not stale (> not >=)."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["status:in-progress"],
-                           updated_days_ago=STALE_INPROGRESS_DAYS - 0.01),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1,
+                            labels=["status:in-progress"],
+                            updated_days_ago=STALE_INPROGRESS_DAYS - 0.01,
+                        ),
+                    ],
+                ),
+            }
+        )
         hits = detect_stale_in_progress(baseline, make_delta(), [])
         assert len(hits) == 0
 
@@ -222,14 +263,19 @@ class TestPriorityInversionDetector:
 
     def test_priority_inversion_detected(self):
         """AC: P0 issue stale, P2 issue active → hit."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["priority:P0"],
-                           updated_days_ago=STALE_INPROGRESS_DAYS + 2),
-                make_issue(2, labels=["priority:P2"],
-                           updated_days_ago=0.1),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1, labels=["priority:P0"], updated_days_ago=STALE_INPROGRESS_DAYS + 2
+                        ),
+                        make_issue(2, labels=["priority:P2"], updated_days_ago=0.1),
+                    ],
+                ),
+            }
+        )
         hits = detect_priority_inversion(baseline, make_delta(), [])
         assert len(hits) == 1
         assert hits[0].detector == "priority-inversion"
@@ -238,53 +284,77 @@ class TestPriorityInversionDetector:
 
     def test_no_inversion_when_all_active(self):
         """All priorities active → no inversion."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["priority:P0"],
-                           updated_days_ago=0.1),
-                make_issue(2, labels=["priority:P2"],
-                           updated_days_ago=0.1),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(1, labels=["priority:P0"], updated_days_ago=0.1),
+                        make_issue(2, labels=["priority:P2"], updated_days_ago=0.1),
+                    ],
+                ),
+            }
+        )
         hits = detect_priority_inversion(baseline, make_delta(), [])
         assert len(hits) == 0
 
     def test_no_inversion_when_low_priority_inactive(self):
         """All issues stale → no inversion (no active low-pri work)."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["priority:P0"],
-                           updated_days_ago=STALE_INPROGRESS_DAYS + 5),
-                make_issue(2, labels=["priority:P2"],
-                           updated_days_ago=STALE_INPROGRESS_DAYS + 5),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1, labels=["priority:P0"], updated_days_ago=STALE_INPROGRESS_DAYS + 5
+                        ),
+                        make_issue(
+                            2, labels=["priority:P2"], updated_days_ago=STALE_INPROGRESS_DAYS + 5
+                        ),
+                    ],
+                ),
+            }
+        )
         hits = detect_priority_inversion(baseline, make_delta(), [])
         assert len(hits) == 0
 
     def test_no_inversion_without_priority_labels(self):
         """Issues without priority labels → no inversion hits."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["status:in-progress"],
-                           updated_days_ago=STALE_INPROGRESS_DAYS + 2),
-                make_issue(2, labels=["bug"],
-                           updated_days_ago=0.1),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1,
+                            labels=["status:in-progress"],
+                            updated_days_ago=STALE_INPROGRESS_DAYS + 2,
+                        ),
+                        make_issue(2, labels=["bug"], updated_days_ago=0.1),
+                    ],
+                ),
+            }
+        )
         hits = detect_priority_inversion(baseline, make_delta(), [])
         assert len(hits) == 0
 
     def test_priority_critical_treated_as_P0(self):
         """priority:critical label treated same as P0."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, labels=["priority:critical"],
-                           updated_days_ago=STALE_INPROGRESS_DAYS + 2),
-                make_issue(2, labels=["priority:P2"],
-                           updated_days_ago=0.1),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1,
+                            labels=["priority:critical"],
+                            updated_days_ago=STALE_INPROGRESS_DAYS + 2,
+                        ),
+                        make_issue(2, labels=["priority:P2"], updated_days_ago=0.1),
+                    ],
+                ),
+            }
+        )
         hits = detect_priority_inversion(baseline, make_delta(), [])
         assert len(hits) == 1
 
@@ -299,17 +369,20 @@ class TestDecisionWithoutFollowthrough:
 
     def test_decision_referencing_open_issue_detected(self):
         """AC: decision with #NNN referencing an open issue → hit."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(42, labels=[]),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(42, labels=[]),
+                    ],
+                ),
+            }
+        )
         decisions = [
             make_decision("dec-1", decision="We should fix #42 via a new PR"),
         ]
-        hits = detect_decision_without_followthrough(
-            baseline, make_delta(), decisions
-        )
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
         assert len(hits) == 1
         assert hits[0].detector == "decision-without-followthrough"
         assert hits[0].issue_number == 42
@@ -317,32 +390,38 @@ class TestDecisionWithoutFollowthrough:
 
     def test_decision_no_refs_no_hit(self):
         """Decision without #NNN ref → no hit."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(42),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(42),
+                    ],
+                ),
+            }
+        )
         decisions = [
             make_decision("dec-1", decision="Refactor the auth module"),
         ]
-        hits = detect_decision_without_followthrough(
-            baseline, make_delta(), decisions
-        )
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
         assert len(hits) == 0
 
     def test_decision_refers_to_closed_issue(self):
         """Decision referencing issue NOT in open_issues → no hit."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, state="closed"),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(1, state="closed"),
+                    ],
+                ),
+            }
+        )
         decisions = [
             make_decision("dec-1", decision="See #999"),
         ]
-        hits = detect_decision_without_followthrough(
-            baseline, make_delta(), decisions
-        )
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
         assert len(hits) == 0
 
 
@@ -356,13 +435,18 @@ class TestBlockerCascadeDetector:
 
     def test_root_blocker_surfaced(self):
         """AC: issue blocking others but not blocked → root blocker hit."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, blocks=[2, 3]),      # root blocker
-                make_issue(2, is_blocked=True),     # transitively blocked
-                make_issue(3, is_blocked=True),     # transitively blocked
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(1, blocks=[2, 3]),  # root blocker
+                        make_issue(2, is_blocked=True),  # transitively blocked
+                        make_issue(3, is_blocked=True),  # transitively blocked
+                    ],
+                ),
+            }
+        )
         hits = detect_blocker_cascade(baseline, make_delta(), [])
         assert len(hits) == 1
         assert hits[0].detector == "blocker-cascade"
@@ -371,24 +455,34 @@ class TestBlockerCascadeDetector:
 
     def test_no_blockers_no_hits(self):
         """No blocking relationships → no hits."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1),
-                make_issue(2),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(1),
+                        make_issue(2),
+                    ],
+                ),
+            }
+        )
         hits = detect_blocker_cascade(baseline, make_delta(), [])
         assert len(hits) == 0
 
     def test_transitive_chain_surfaces_root(self):
         """AC: A→B→C chain surfaces A (root), not B or C."""
-        baseline = make_baseline({
-            "jarvis": make_state("jarvis", issues=[
-                make_issue(1, blocks=[2]),
-                make_issue(2, is_blocked=True, blocks=[3]),
-                make_issue(3, is_blocked=True),
-            ]),
-        })
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(1, blocks=[2]),
+                        make_issue(2, is_blocked=True, blocks=[3]),
+                        make_issue(3, is_blocked=True),
+                    ],
+                ),
+            }
+        )
         hits = detect_blocker_cascade(baseline, make_delta(), [])
         assert len(hits) == 1
         assert hits[0].issue_number == 1
@@ -405,8 +499,9 @@ class TestContradictionPrefilter:
     def test_recent_decision_with_ref_included(self):
         """Recent decision (<14d) with #NNN → included in prefilter."""
         decisions = [
-            make_decision("dec-1", decision="Fix #42",
-                          created_days_ago=DECISION_PREFILTER_DAYS - 1),
+            make_decision(
+                "dec-1", decision="Fix #42", created_days_ago=DECISION_PREFILTER_DAYS - 1
+            ),
         ]
         result = build_contradiction_prefilter(decisions, make_baseline())
         assert len(result) == 1
@@ -415,8 +510,9 @@ class TestContradictionPrefilter:
     def test_old_decision_excluded(self):
         """Old decision (>14d) → excluded from prefilter."""
         decisions = [
-            make_decision("dec-1", decision="Fix #42",
-                          created_days_ago=DECISION_PREFILTER_DAYS + 1),
+            make_decision(
+                "dec-1", decision="Fix #42", created_days_ago=DECISION_PREFILTER_DAYS + 1
+            ),
         ]
         result = build_contradiction_prefilter(decisions, make_baseline())
         assert len(result) == 0
@@ -424,8 +520,7 @@ class TestContradictionPrefilter:
     def test_decision_without_ref_excluded(self):
         """Decision without #NNN ref → excluded."""
         decisions = [
-            make_decision("dec-1", decision="Refactor auth",
-                          created_days_ago=1),
+            make_decision("dec-1", decision="Refactor auth", created_days_ago=1),
         ]
         result = build_contradiction_prefilter(decisions, make_baseline())
         assert len(result) == 0
@@ -433,13 +528,312 @@ class TestContradictionPrefilter:
     def test_multiple_refs_in_one_decision(self):
         """One decision referencing multiple issues → multiple pairs."""
         decisions = [
-            make_decision("dec-1", decision="Fix #42 and #99",
-                          created_days_ago=1),
+            make_decision("dec-1", decision="Fix #42 and #99", created_days_ago=1),
         ]
         result = build_contradiction_prefilter(decisions, make_baseline())
         assert len(result) == 2
         refs = {r[1] for r in result}
         assert refs == {42, 99}
+
+
+# ============================================================================
+# AC: memory↔git contradiction — verdict folding (#1016)
+# ============================================================================
+
+
+def make_verdict(
+    decision_id: str = "dec-1",
+    issue_number: int = 42,
+    repo: str = "Osasuwu/jarvis",
+    verdict: str = "contradiction",
+    rationale: str = "memory says shipped; issue still open",
+) -> ContradictionVerdict:
+    """Helper to construct a ContradictionVerdict fixture."""
+    return ContradictionVerdict(
+        decision_id=decision_id,
+        issue_number=issue_number,
+        repo=repo,
+        verdict=verdict,
+        rationale=rationale,
+    )
+
+
+class TestContradictionFolding:
+    """fold_contradiction_verdicts maps verdicts → DetectorHits (AC1, AC6).
+
+    The LLM judgment itself is the native status-record cron session — not
+    tested here. This covers only the deterministic fold of its output.
+    """
+
+    def test_contradiction_verdict_becomes_hit(self):
+        """A 'contradiction' verdict folds into one DetectorHit."""
+        hits = fold_contradiction_verdicts([make_verdict()])
+        assert len(hits) == 1
+        assert hits[0].detector == MEMORY_GIT_CONTRADICTION
+        assert hits[0].issue_number == 42
+        assert hits[0].repo == "Osasuwu/jarvis"
+
+    def test_rationale_carried_into_hit(self):
+        """Per-candidate rationale is preserved into the hit (AC1)."""
+        hits = fold_contradiction_verdicts(
+            [make_verdict(rationale="decision 6f11 claims merged; PR never opened")]
+        )
+        assert "6f11" in hits[0].description
+
+    def test_uncertain_verdict_dropped(self):
+        """An 'uncertain' candidate is dropped, not surfaced (AC6)."""
+        hits = fold_contradiction_verdicts([make_verdict(verdict="uncertain")])
+        assert hits == []
+
+    def test_no_contradiction_verdict_dropped(self):
+        """A 'no_contradiction' candidate produces no hit."""
+        hits = fold_contradiction_verdicts([make_verdict(verdict="no_contradiction")])
+        assert hits == []
+
+    def test_mixed_batch_only_contradictions_surface(self):
+        """Only the 'contradiction' verdicts in a mixed batch fold to hits."""
+        verdicts = [
+            make_verdict("d1", 1, verdict="contradiction"),
+            make_verdict("d2", 2, verdict="uncertain"),
+            make_verdict("d3", 3, verdict="no_contradiction"),
+            make_verdict("d4", 4, verdict="contradiction"),
+        ]
+        hits = fold_contradiction_verdicts(verdicts)
+        assert {h.issue_number for h in hits} == {1, 4}
+
+    def test_empty_verdicts_returns_empty(self):
+        assert fold_contradiction_verdicts([]) == []
+
+    def test_unknown_verdict_string_dropped(self):
+        """An unrecognized verdict value is treated as uncertain → dropped."""
+        hits = fold_contradiction_verdicts([make_verdict(verdict="maybe?")])
+        assert hits == []
+
+
+class TestContradictionCache:
+    """Cached contradiction result round-trips without re-running the LLM (AC4)."""
+
+    def test_serialize_produces_jsonable_dict(self):
+        data = serialize_contradiction_cache([make_verdict()])
+        # round-trips through JSON unchanged
+        import json
+
+        assert json.loads(json.dumps(data)) == data
+
+    def test_roundtrip_preserves_verdicts(self):
+        verdicts = [
+            make_verdict("d1", 1, verdict="contradiction"),
+            make_verdict("d2", 2, verdict="uncertain"),
+        ]
+        restored = deserialize_contradiction_cache(serialize_contradiction_cache(verdicts))
+        assert restored == verdicts
+
+    def test_renderer_folds_from_cache_without_llm(self):
+        """Deserialized cache folds to the same hits as the live verdicts (AC4)."""
+        verdicts = [
+            make_verdict("d1", 1, verdict="contradiction"),
+            make_verdict("d2", 2, verdict="uncertain"),
+        ]
+        cached = serialize_contradiction_cache(verdicts)
+        from_cache = fold_contradiction_verdicts(deserialize_contradiction_cache(cached))
+        from_live = fold_contradiction_verdicts(verdicts)
+        assert from_cache == from_live
+        assert len(from_cache) == 1  # only the contradiction survives
+
+    def test_empty_cache_deserializes_to_empty(self):
+        assert deserialize_contradiction_cache({"verdicts": []}) == []
+
+    def test_missing_verdicts_key_tolerated(self):
+        """A malformed cache (no verdicts key) deserializes to empty, not raises."""
+        assert deserialize_contradiction_cache({}) == []
+
+    def test_row_missing_mandatory_keys_tolerated(self):
+        """A verdict row missing decision_id/issue_number degrades gracefully —
+        the 'tolerant' contract must not raise KeyError on a partial row (C2)."""
+        cache = {
+            "verdicts": [
+                {"repo": "o/r", "verdict": "contradiction", "rationale": "x"},
+            ]
+        }
+        restored = deserialize_contradiction_cache(cache)
+        assert len(restored) == 1
+        assert restored[0].decision_id == ""
+        assert restored[0].issue_number == 0
+
+    def test_float_issue_number_coerced_to_int(self):
+        """YAML can emit issue_number as a float (42.0); it must render as #42,
+        not #42.0 (C2)."""
+        cache = {
+            "verdicts": [
+                {
+                    "decision_id": "d1",
+                    "issue_number": 42.0,
+                    "repo": "o/r",
+                    "verdict": "contradiction",
+                    "rationale": "x",
+                },
+            ]
+        }
+        restored = deserialize_contradiction_cache(cache)
+        assert restored[0].issue_number == 42
+        assert isinstance(restored[0].issue_number, int)
+
+    def test_schema_mismatch_returns_empty(self):
+        """A cache stamped with an unrecognized schema version deserializes to
+        empty rather than silently producing wrong verdicts (M2)."""
+        cache = {
+            "schema": "contradiction-cache/v2",
+            "verdicts": [
+                {
+                    "decision_id": "d1",
+                    "issue_number": 1,
+                    "repo": "o/r",
+                    "verdict": "contradiction",
+                    "rationale": "x",
+                },
+            ],
+        }
+        assert deserialize_contradiction_cache(cache) == []
+
+    def test_absent_schema_key_tolerated(self):
+        """A cache with no schema key (legacy/hand-written) still deserializes —
+        only an explicit *mismatched* schema is rejected (M2)."""
+        cache = {
+            "verdicts": [
+                {
+                    "decision_id": "d1",
+                    "issue_number": 1,
+                    "repo": "o/r",
+                    "verdict": "contradiction",
+                    "rationale": "x",
+                },
+            ]
+        }
+        assert len(deserialize_contradiction_cache(cache)) == 1
+
+
+class TestL1OnlyGuard:
+    """The contradiction detector runs L1-only; analyze() never invokes the
+    LLM judgment on its own (AC2).
+
+    Behavioral guard (replaces an earlier source-grep): the meaningful L1-only
+    contract is that ``analyze`` never *generates* contradiction verdicts — it
+    only folds verdicts handed to it explicitly. The LLM judgment lives in the
+    upstream L1 status-record cron; the intraday (L2) path calls ``analyze``
+    with the default empty ``contradiction_verdicts`` and therefore pays for no
+    LLM and surfaces no contradiction. Folding a *cached* verdict (already
+    computed in the morning) is deterministic and free, so it is allowed.
+    """
+
+    def test_analyze_default_param_folds_nothing(self):
+        """Calling analyze without the verdicts arg surfaces no contradiction
+        hit — the intraday/L2 signature is unchanged and LLM-free."""
+        base = make_baseline(
+            provenance={"jarvis": Provenance(ran=True, ok=True, age=0)},
+        )
+        digest = analyze(base, make_delta(), [])
+        assert all(
+            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
+        )
+
+    def test_analyze_does_not_autodetect_contradictions(self):
+        """Even when a decision references an open issue, analyze with no
+        verdicts produces no contradiction hit — it never runs the detector
+        itself (the LLM judgment must arrive pre-computed from L1)."""
+        issue = make_issue(42, labels=["status:in-progress"])
+        state = make_state("Osasuwu/jarvis", issues=[issue])
+        base = make_baseline(
+            provenance={"jarvis": Provenance(ran=True, ok=True, age=0)},
+        )
+        delta = make_delta(repos={"Osasuwu/jarvis": state})
+        decisions = [make_decision("d1", decision="Shipped #42", created_days_ago=1)]
+        digest = analyze(base, delta, decisions)
+        assert all(
+            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
+        )
+
+
+class TestAnalyzeFoldsContradictions:
+    """analyze() folds explicitly-passed cached verdicts into the digest so
+    they participate in ranking + health (AC4)."""
+
+    def _green_baseline(self) -> Baseline:
+        return make_baseline(
+            provenance={"jarvis": Provenance(ran=True, ok=True, age=0)},
+        )
+
+    def test_contradiction_verdict_surfaces_as_hit(self):
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict()],
+        )
+        hits = [h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION]
+        assert len(hits) == 1
+        assert hits[0].issue_number == 42
+
+    def test_uncertain_verdict_not_folded(self):
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict(verdict="uncertain")],
+        )
+        assert all(
+            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
+        )
+
+    def test_folded_hit_participates_in_ranking(self):
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict()],
+        )
+        ranked_detectors = {item.detector_hit.detector for item in digest.ranking}
+        assert MEMORY_GIT_CONTRADICTION in ranked_detectors
+
+    def test_folded_hit_flips_health(self):
+        """A folded contradiction on an otherwise-green baseline makes the
+        health verdict unhealthy — it is a real anomaly, not just metadata."""
+        green = analyze(self._green_baseline(), make_delta(), [])
+        assert green.health.ok is True
+        unhealthy = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=[make_verdict()],
+        )
+        assert unhealthy.health.ok is False
+
+    def test_fold_is_deterministic(self):
+        args = (self._green_baseline(), make_delta(), [])
+        kw = {"contradiction_verdicts": [make_verdict()]}
+        assert analyze(*args, **kw).detector_hits == analyze(*args, **kw).detector_hits
+
+    def test_cached_cache_folds_through_analyze_without_llm(self):
+        """End-to-end AC4: serialize → deserialize → analyze surfaces the same
+        contradiction hit the live verdicts would, with no LLM in the path."""
+        verdicts = [
+            make_verdict("d1", 1, verdict="contradiction"),
+            make_verdict("d2", 2, verdict="uncertain"),
+        ]
+        cache = serialize_contradiction_cache(verdicts)
+        restored = deserialize_contradiction_cache(cache)
+        digest = analyze(
+            self._green_baseline(),
+            make_delta(),
+            [],
+            contradiction_verdicts=restored,
+        )
+        hits = [h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION]
+        assert len(hits) == 1  # only the contradiction survives
+        assert hits[0].issue_number == 1
+
+    # NOTE: the "analyze never autodetects contradictions" assertion lives in
+    # TestL1OnlyGuard.test_analyze_does_not_autodetect_contradictions — not
+    # duplicated here (N4).
 
 
 # ============================================================================
@@ -453,8 +847,7 @@ class TestRanking:
     def test_at_most_top_n_returned(self):
         """AC: ranking caps at TOP_N_CAP items."""
         hits = [
-            DetectorHit(detector=f"test-{i}", severity="minor",
-                        repo="jarvis")
+            DetectorHit(detector=f"test-{i}", severity="minor", repo="jarvis")
             for i in range(TOP_N_CAP + 5)
         ]
         ranked = rank_detector_hits(hits)
@@ -463,12 +856,9 @@ class TestRanking:
     def test_critical_before_major_before_minor(self):
         """AC: critical items ranked before major before minor."""
         hits = [
-            DetectorHit(detector="minor-hit", severity="minor",
-                        repo="jarvis"),
-            DetectorHit(detector="critical-hit", severity="critical",
-                        repo="jarvis"),
-            DetectorHit(detector="major-hit", severity="major",
-                        repo="jarvis"),
+            DetectorHit(detector="minor-hit", severity="minor", repo="jarvis"),
+            DetectorHit(detector="critical-hit", severity="critical", repo="jarvis"),
+            DetectorHit(detector="major-hit", severity="major", repo="jarvis"),
         ]
         ranked = rank_detector_hits(hits)
         assert ranked[0].detector_hit.detector == "critical-hit"
@@ -541,7 +931,9 @@ class TestHealthVerdict:
             make_baseline(
                 provenance={
                     "gh:jarvis": Provenance(
-                        ran=True, ok=True, age=FRESHNESS_AGE_SECONDS + 1,
+                        ran=True,
+                        ok=True,
+                        age=FRESHNESS_AGE_SECONDS + 1,
                     )
                 },
             ),
@@ -557,8 +949,7 @@ class TestHealthVerdict:
                 provenance={"gh:jarvis": Provenance(ran=True, ok=True, age=0)},
             ),
             [
-                DetectorHit(detector="test", severity="major",
-                            repo="jarvis"),
+                DetectorHit(detector="test", severity="major", repo="jarvis"),
             ],
         )
         assert health.ok is False
@@ -571,13 +962,30 @@ class TestHealthVerdict:
                 provenance={
                     "gh:jarvis": Provenance(ran=True, ok=True, age=0),
                     "gh:redrobot": Provenance(
-                        ran=True, ok=True, age=FRESHNESS_AGE_SECONDS + 100,
+                        ran=True,
+                        ok=True,
+                        age=FRESHNESS_AGE_SECONDS + 100,
                     ),
                 },
             ),
             [],
         )
         assert health.ok is False
+
+    def test_age_none_does_not_crash(self):
+        """A source with ran=True, ok=True, age=None (unknown data age — e.g. a
+        status snapshot written without a parseable generated_at) must not crash
+        the freshness comparison. age=None means 'age unknown', not stale (C1)."""
+        health = compute_health_verdict(
+            make_baseline(
+                provenance={
+                    "status_snapshot": Provenance(ran=True, ok=True, age=None),
+                },
+            ),
+            [],
+        )
+        # Does not raise; unknown age is treated as not-stale (lenient, non-crash).
+        assert health.ok is True
 
 
 # ============================================================================
@@ -620,10 +1028,16 @@ class TestIntegration:
         """Single stale in-progress issue → hits + non-green health."""
         baseline = make_baseline(
             repos={
-                "jarvis": make_state("jarvis", issues=[
-                    make_issue(1, labels=["status:in-progress"],
-                               updated_days_ago=STALE_INPROGRESS_DAYS + 5),
-                ]),
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[
+                        make_issue(
+                            1,
+                            labels=["status:in-progress"],
+                            updated_days_ago=STALE_INPROGRESS_DAYS + 5,
+                        ),
+                    ],
+                ),
             },
             provenance={"gh:jarvis": Provenance(ran=True, ok=True, age=0)},
         )
@@ -648,11 +1062,13 @@ class TestIntegration:
         baseline = make_baseline(
             provenance={"gh:jarvis": Provenance(ran=True, ok=True, age=0)},
         )
-        delta = make_delta({
-            "redrobot": make_state(
-                "redrobot",
-                provenance=Provenance(ran=True, ok=True, age=100),
-            ),
-        })
+        delta = make_delta(
+            {
+                "redrobot": make_state(
+                    "redrobot",
+                    provenance=Provenance(ran=True, ok=True, age=100),
+                ),
+            }
+        )
         result = analyze(baseline, delta, [])
         assert "delta:redrobot" in result.provenance

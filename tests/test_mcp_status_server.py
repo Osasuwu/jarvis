@@ -25,6 +25,7 @@ status_server = importlib.util.module_from_spec(_spec)
 sys.modules["status_server"] = status_server
 _spec.loader.exec_module(status_server)
 _convert_gather_to_engine_format = status_server._convert_gather_to_engine_format
+_contradiction_verdicts_from_gather = status_server._contradiction_verdicts_from_gather
 
 
 # ============================================================================
@@ -206,3 +207,88 @@ def test_end_to_end_gather_to_digest():
     # Provenance should include the sources from gather
     assert "repos_conf" in digest.provenance
     assert "supabase_decisions" in digest.provenance
+
+
+# ============================================================================
+# Test: Contradiction-cache deserialization + fold-through (#1016 AC4)
+#
+# The server reads the cached L1 verdicts from gather_result.contradiction_cache
+# and folds them into analyze() — WITHOUT re-running the LLM. The cached hit
+# must surface in the digest's detector_hits.
+# ============================================================================
+
+
+def _cache_with_contradiction():
+    """Build a serialized contradiction cache carrying one contradiction."""
+    from scripts.status_engine import (
+        ContradictionVerdict,
+        serialize_contradiction_cache,
+    )
+
+    verdicts = [
+        ContradictionVerdict(
+            decision_id="dec-9",
+            issue_number=77,
+            repo="Osasuwu/jarvis",
+            verdict="contradiction",
+            rationale="memory says shipped; issue #77 still open",
+        ),
+    ]
+    return serialize_contradiction_cache(verdicts, generated_at="2024-06-09T12:00:00+00:00")
+
+
+def test_contradiction_verdicts_from_gather_deserializes_cache():
+    """The server helper turns the cached dict back into verdict objects."""
+    gather_result = make_fixture_gather_result()
+    gather_result.contradiction_cache = _cache_with_contradiction()
+
+    verdicts = _contradiction_verdicts_from_gather(gather_result)
+    assert len(verdicts) == 1
+    assert verdicts[0].issue_number == 77
+    assert verdicts[0].verdict == "contradiction"
+
+
+def test_no_cache_yields_empty_verdicts():
+    """No contradiction_cache → empty verdicts (intraday/L2-safe default)."""
+    gather_result = make_fixture_gather_result()
+    gather_result.contradiction_cache = None
+    assert _contradiction_verdicts_from_gather(gather_result) == []
+
+
+def test_cached_contradiction_surfaces_in_digest_without_llm():
+    """End-to-end: cached verdict folds through analyze into detector_hits.
+
+    This is the #1016 AC4 proof — the renderer (digest consumer) sees the
+    contradiction with NO LLM call in this path.
+    """
+    from scripts.status_engine import MEMORY_GIT_CONTRADICTION, analyze
+
+    gather_result = make_fixture_gather_result()
+    gather_result.contradiction_cache = _cache_with_contradiction()
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+    verdicts = _contradiction_verdicts_from_gather(gather_result)
+    digest = analyze(baseline, delta, decisions, contradiction_verdicts=verdicts)
+
+    contradiction_hits = [
+        h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION
+    ]
+    assert len(contradiction_hits) == 1
+    assert contradiction_hits[0].issue_number == 77
+
+
+def test_no_cache_means_no_contradiction_hit():
+    """Empty cache → analyze folds nothing → no contradiction hit (L2 path)."""
+    from scripts.status_engine import MEMORY_GIT_CONTRADICTION, analyze
+
+    gather_result = make_fixture_gather_result()
+    gather_result.contradiction_cache = None
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+    verdicts = _contradiction_verdicts_from_gather(gather_result)
+    digest = analyze(baseline, delta, decisions, contradiction_verdicts=verdicts)
+
+    contradiction_hits = [
+        h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION
+    ]
+    assert contradiction_hits == []

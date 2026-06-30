@@ -115,13 +115,16 @@ gh api -X PATCH /repos/<owner>/<repo> -F allow_auto_merge=true -F delete_branch_
 gh api -X PUT /repos/<owner>/<repo>/branches/<default>/protection -F required_status_checks='{"strict":true,"contexts":["review","owner-queue-guard","require-linked-issue", ...repo-specific...]}' -F enforce_admins=false -F required_pull_request_reviews=null -F restrictions=null
 ```
 
-`enforce_admins=false` keeps escape-hatch open for the owner (admin-merge when a gate is broken). `required_pull_request_reviews=null` because the `review` check already encodes the AI review verdict — adding a required human review would defeat AFK Path A.
+`enforce_admins=false` keeps escape-hatch open for the owner (admin-merge for the two structural cases below — not for routinely working around a misfiring gate). `required_pull_request_reviews=null` because the `review` check already encodes the AI review verdict — adding a required human review would defeat AFK Path A.
 
 ### When to break the rules
 
-- **Gate is broken, blocking real work**: admin-merge (`gh pr merge --admin`) is fine. Note in the PR comment which gate you bypassed and why.
+Two structural cases where a gate *cannot* run, and admin-merge is the only path — not a convenience:
+
 - **A PR modifies `code-review.yml` itself**: `anthropics/claude-code-action@v1` refuses to run on self-modifying PRs ("Workflow validation failed" — documented behavior). The `review` check fails as expected; admin-merge.
 - **Self-hosted runner is down (redrobot)**: review/CI can't run. Verify locally, admin-merge per `redrobot_billing_blocked_manual_merge_protocol` precedent.
+
+**A flaky or false-failing gate is NOT on this list.** A gate that fails when it shouldn't (e.g. the `review` check going red because the bot posted no parseable verdict comment) is a **bug to fix, not a bypass to normalize**. Knowing a gate is broken and routinely admin-merging around it silently disables the protection for every future PR. If a gate misfires: file an issue, fix the root cause, and only admin-merge the *one* blocked PR as a stop-gap **with that tracking issue linked in the merge comment**. If you find yourself admin-merging the same gate twice, stop and fix the gate first.
 
 ## Tooling — MCP servers
 
