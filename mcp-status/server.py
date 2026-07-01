@@ -128,11 +128,19 @@ def _convert_gather_to_engine_format(gather_result):
         # Convert issues to IssueInfo
         issues: list[IssueInfo] = []
         for issue in issues_data:
+            # gh returns labels as objects [{"name":..,"color":..}]; the engine
+            # (_issue_priority) treats each label as a hashable string. Flatten
+            # to names so priority detection doesn't crash on unhashable dicts.
+            raw_labels = issue.get("labels", []) or []
+            labels = [
+                lbl.get("name", "") if isinstance(lbl, dict) else lbl
+                for lbl in raw_labels
+            ]
             issues.append(IssueInfo(
                 number=issue.get("number", 0),
                 title=issue.get("title", ""),
                 state="open",  # gather filters to open issues
-                labels=issue.get("labels", []),
+                labels=labels,
                 milestone=issue.get("milestone"),
                 updated_at=issue.get("updatedAt", ""),
             ))
