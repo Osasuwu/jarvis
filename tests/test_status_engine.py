@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from status_engine import (
+    DECISION_FOLLOWTHROUGH_STALE_DAYS,
     DECISION_PREFILTER_DAYS,
     FRESHNESS_AGE_SECONDS,
     MEMORY_GIT_CONTRADICTION,
@@ -104,12 +105,14 @@ def make_decision(
     decision_id: str = "dec-1",
     decision: str = "",
     created_days_ago: float = 0,
+    project: str | None = None,
 ) -> DecisionInfo:
     """Helper to construct a DecisionInfo fixture."""
     return DecisionInfo(
         decision_id=decision_id,
         decision=decision,
         created_at=_days_ago(created_days_ago),
+        project=project,
     )
 
 
@@ -365,22 +368,31 @@ class TestPriorityInversionDetector:
 
 
 class TestDecisionWithoutFollowthrough:
-    """decision-without-followthrough: decisions referencing open issues."""
+    """decision-without-followthrough (#1057): flag a decision-referenced open
+    issue only when it has had NO movement since the latest referencing
+    decision AND that decision is older than the age-gate. Real no-movement
+    check via issue.updated_at vs decision.created_at — not "any open ref"."""
 
-    def test_decision_referencing_open_issue_detected(self):
-        """AC: decision with #NNN referencing an open issue → hit."""
+    _STALE = DECISION_FOLLOWTHROUGH_STALE_DAYS
+
+    def test_untouched_since_decision_flagged(self):
+        """AC1+AC2: decision older than the gate, issue untouched since the
+        decision → hit."""
         baseline = make_baseline(
             {
                 "jarvis": make_state(
                     "jarvis",
-                    issues=[
-                        make_issue(42, labels=[]),
-                    ],
+                    issues=[make_issue(42, updated_days_ago=self._STALE + 20)],
                 ),
             }
         )
         decisions = [
-            make_decision("dec-1", decision="We should fix #42 via a new PR"),
+            make_decision(
+                "dec-1",
+                decision="We should fix #42 via a new PR",
+                created_days_ago=self._STALE + 6,
+                project="jarvis",
+            ),
         ]
         hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
         assert len(hits) == 1
@@ -388,38 +400,197 @@ class TestDecisionWithoutFollowthrough:
         assert hits[0].issue_number == 42
         assert hits[0].severity == "major"
 
+    def test_moved_after_decision_not_flagged(self):
+        """AC1: issue was updated AFTER the decision → real movement, no hit."""
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[make_issue(42, updated_days_ago=1)],
+                ),
+            }
+        )
+        decisions = [
+            make_decision(
+                "dec-1",
+                decision="Fix #42",
+                created_days_ago=self._STALE + 6,
+                project="jarvis",
+            ),
+        ]
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
+        assert len(hits) == 0
+
+    def test_untouched_but_within_age_gate_not_flagged(self):
+        """AC2: no movement since decision, but decision is younger than the
+        age-gate → not yet stale, no hit."""
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[make_issue(42, updated_days_ago=self._STALE - 2)],
+                ),
+            }
+        )
+        decisions = [
+            make_decision(
+                "dec-1",
+                decision="Fix #42",
+                created_days_ago=self._STALE - 4,
+                project="jarvis",
+            ),
+        ]
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
+        assert len(hits) == 0
+
+    def test_dedup_one_issue_many_decisions(self):
+        """AC4: one issue referenced by 3 stale decisions → exactly 1 hit whose
+        description lists all 3 referencing decision IDs."""
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[make_issue(42, updated_days_ago=self._STALE + 30)],
+                ),
+            }
+        )
+        decisions = [
+            make_decision(
+                "dec-a",
+                decision="Plan #42",
+                created_days_ago=self._STALE + 10,
+                project="jarvis",
+            ),
+            make_decision(
+                "dec-b",
+                decision="Revisit #42",
+                created_days_ago=self._STALE + 5,
+                project="jarvis",
+            ),
+            make_decision(
+                "dec-c",
+                decision="Still #42",
+                created_days_ago=self._STALE + 2,
+                project="jarvis",
+            ),
+        ]
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
+        assert len(hits) == 1
+        assert hits[0].issue_number == 42
+        for dec_id in ("dec-a", "dec-b", "dec-c"):
+            assert dec_id in hits[0].description
+
+    def test_project_scoped_no_cross_repo_collision(self):
+        """AC5: a jarvis decision referencing #50 must NOT flag redrobot#50 —
+        matching is scoped to the decision's own project."""
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[make_issue(50, updated_days_ago=self._STALE + 30)],
+                ),
+                "redrobot": make_state(
+                    "redrobot",
+                    issues=[make_issue(50, updated_days_ago=self._STALE + 30)],
+                ),
+            }
+        )
+        decisions = [
+            make_decision(
+                "dec-1",
+                decision="Fix #50",
+                created_days_ago=self._STALE + 5,
+                project="jarvis",
+            ),
+        ]
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
+        assert len(hits) == 1
+        assert hits[0].repo == "jarvis"
+        assert hits[0].issue_number == 50
+
+    def test_empty_project_any_repo_fallback(self):
+        """AC5: a decision with no project falls back to any-repo matching."""
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[make_issue(50, updated_days_ago=self._STALE + 30)],
+                ),
+            }
+        )
+        decisions = [
+            make_decision(
+                "dec-1",
+                decision="Fix #50",
+                created_days_ago=self._STALE + 5,
+                project=None,
+            ),
+        ]
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
+        assert len(hits) == 1
+        assert hits[0].issue_number == 50
+
     def test_decision_no_refs_no_hit(self):
         """Decision without #NNN ref → no hit."""
         baseline = make_baseline(
             {
                 "jarvis": make_state(
                     "jarvis",
-                    issues=[
-                        make_issue(42),
-                    ],
+                    issues=[make_issue(42, updated_days_ago=self._STALE + 30)],
                 ),
             }
         )
         decisions = [
-            make_decision("dec-1", decision="Refactor the auth module"),
+            make_decision(
+                "dec-1",
+                decision="Refactor the auth module",
+                created_days_ago=self._STALE + 5,
+                project="jarvis",
+            ),
         ]
         hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
         assert len(hits) == 0
 
     def test_decision_refers_to_closed_issue(self):
-        """Decision referencing issue NOT in open_issues → no hit."""
+        """AC8: decision referencing an issue NOT in open_issues → no hit."""
         baseline = make_baseline(
             {
                 "jarvis": make_state(
                     "jarvis",
-                    issues=[
-                        make_issue(1, state="closed"),
-                    ],
+                    issues=[make_issue(1, state="closed")],
                 ),
             }
         )
         decisions = [
-            make_decision("dec-1", decision="See #999"),
+            make_decision(
+                "dec-1",
+                decision="See #999",
+                created_days_ago=self._STALE + 5,
+                project="jarvis",
+            ),
+        ]
+        hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
+        assert len(hits) == 0
+
+    def test_blank_updated_at_fail_silent(self):
+        """AC8: a blank/malformed issue timestamp parses to age 0 (fresh), so
+        the movement check treats it as recently-touched and does NOT flag —
+        documented fail-silent behavior (false-negative over false-positive)."""
+        baseline = make_baseline(
+            {
+                "jarvis": make_state(
+                    "jarvis",
+                    issues=[IssueInfo(number=42, updated_at="")],
+                ),
+            }
+        )
+        decisions = [
+            make_decision(
+                "dec-1",
+                decision="Fix #42",
+                created_days_ago=self._STALE + 5,
+                project="jarvis",
+            ),
         ]
         hits = detect_decision_without_followthrough(baseline, make_delta(), decisions)
         assert len(hits) == 0
@@ -732,9 +903,7 @@ class TestL1OnlyGuard:
             provenance={"jarvis": Provenance(ran=True, ok=True, age=0)},
         )
         digest = analyze(base, make_delta(), [])
-        assert all(
-            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
-        )
+        assert all(h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits)
 
     def test_analyze_does_not_autodetect_contradictions(self):
         """Even when a decision references an open issue, analyze with no
@@ -748,9 +917,7 @@ class TestL1OnlyGuard:
         delta = make_delta(repos={"Osasuwu/jarvis": state})
         decisions = [make_decision("d1", decision="Shipped #42", created_days_ago=1)]
         digest = analyze(base, delta, decisions)
-        assert all(
-            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
-        )
+        assert all(h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits)
 
 
 class TestAnalyzeFoldsContradictions:
@@ -780,9 +947,7 @@ class TestAnalyzeFoldsContradictions:
             [],
             contradiction_verdicts=[make_verdict(verdict="uncertain")],
         )
-        assert all(
-            h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits
-        )
+        assert all(h.detector != MEMORY_GIT_CONTRADICTION for h in digest.detector_hits)
 
     def test_folded_hit_participates_in_ranking(self):
         digest = analyze(
