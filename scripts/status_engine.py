@@ -28,6 +28,10 @@ from typing import Sequence
 STALE_INPROGRESS_DAYS = 3
 """Days before an in-progress issue is considered stale."""
 
+STALE_BACKLOG_DAYS = 30
+"""Days an issue may sit in a ProjectV2 Backlog/Ready status before the
+stale-backlog detector flags it (#1059)."""
+
 DECISION_FOLLOWTHROUGH_STALE_DAYS = 14
 """Days a decision-referenced issue may sit without movement before the
 decision-without-followthrough detector flags it (#1057)."""
@@ -83,6 +87,7 @@ class IssueInfo:
     updated_at: str = ""  # ISO 8601
     is_blocked: bool = False
     blocks: list[int] = field(default_factory=list)
+    project_status: str | None = None  # ProjectV2 Status field (#1059)
 
 
 @dataclass
@@ -146,7 +151,7 @@ class DetectorHit:
     """A single detector firing."""
 
     detector: str
-    severity: str  # 'critical' | 'major' | 'minor'
+    severity: str  # 'critical' | 'major' | 'minor' | 'info'
     repo: str
     issue_number: int | None = None
     title: str = ""
@@ -439,6 +444,107 @@ def detect_decision_without_followthrough(
 
 
 # ============================================================================
+# Detector: stale-backlog (#1059)
+# ============================================================================
+
+
+# Vocabulary — case-normalized ProjectV2 Status strings the detector reacts to.
+# Backlog is time-only; Ready additionally requires no referencing decision.
+# Every other status (In Progress / In review / Done) and None (not on board)
+# is silent — the false-negative-over-false-positive posture.
+_BACKLOG_STATUS = "backlog"
+_READY_STATUS = "ready"
+
+
+def _decision_refs_by_repo(
+    decisions: list[DecisionInfo], repos: list[str]
+) -> dict[str, set[int]]:
+    """Map repo → set of issue numbers referenced by any project decision.
+
+    Matching is robust to the decision's ``project`` being either the full
+    ``owner/repo`` or the short repo slug (``jarvis`` for ``Osasuwu/jarvis``).
+    A decision with a falsy project is skipped (cannot be scoped to a repo).
+    """
+    refs: dict[str, set[int]] = {r: set() for r in repos}
+    for dec in decisions:
+        if not dec.project:
+            continue
+        ref_nums = {int(m) for m in _ISSUE_REF_RE.findall(dec.decision)}
+        if not ref_nums:
+            continue
+        for repo in repos:
+            if repo == dec.project or repo.endswith(f"/{dec.project}"):
+                refs[repo].update(ref_nums)
+    return refs
+
+
+def detect_stale_backlog(
+    baseline: Baseline,
+    delta: Delta,
+    decisions: list[DecisionInfo],
+) -> list[DetectorHit]:
+    """Flag issues idle ≥STALE_BACKLOG_DAYS in a ProjectV2 Backlog/Ready status.
+
+    Vocab-driven (branches on the case-normalized ``project_status`` string, no
+    repo hardcode):
+
+    - **Backlog** + idle ≥30d → candidate (time-only).
+    - **Ready** + idle ≥30d + no project-scoped decision referencing ``#<n>``
+      → candidate. A decision means the issue is intentionally staged, so it is
+      suppressed.
+    - **In Progress / In review / Done / None** → never flagged. ``None`` means
+      the issue is not on the board, so it is skipped (bias to false-negative).
+
+    Aggregation (AC3): one ``info``-severity hit PER REPO listing all candidate
+    issue numbers oldest-first (largest ``updated_at`` age first). Zero
+    candidates in a repo ⇒ no hit for that repo. ``info`` severity does not flip
+    health and is excluded from ranking (see compute_health_verdict /
+    rank_detector_hits).
+    """
+    now = datetime.now(timezone.utc)
+    merged = _merge_repos(baseline, delta)
+    decision_refs = _decision_refs_by_repo(decisions, list(merged.keys()))
+
+    hits: list[DetectorHit] = []
+    for repo_name, state in merged.items():
+        referenced = decision_refs.get(repo_name, set())
+        # (age, number) candidates so we can order oldest-first deterministically.
+        candidates: list[tuple[float, int]] = []
+        for issue in state.open_issues:
+            status = (issue.project_status or "").strip().lower()
+            if status not in (_BACKLOG_STATUS, _READY_STATUS):
+                continue
+            age = _parse_iso_age(issue.updated_at, now)
+            if age < STALE_BACKLOG_DAYS:
+                continue
+            if status == _READY_STATUS and issue.number in referenced:
+                continue
+            candidates.append((age, issue.number))
+
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda c: c[0], reverse=True)  # oldest (largest age) first
+        numbers = [num for _, num in candidates]
+        refs = ", ".join(f"#{n}" for n in numbers)
+        hits.append(
+            DetectorHit(
+                detector="stale-backlog",
+                severity="info",
+                repo=repo_name,
+                issue_number=None,
+                title=f"{len(numbers)} issue(s) idle ≥{STALE_BACKLOG_DAYS}d in Backlog/Ready",
+                description=(
+                    f"{len(numbers)} issue(s) sitting in Backlog/Ready for "
+                    f"≥{STALE_BACKLOG_DAYS}d with no movement (oldest first): {refs}"
+                ),
+            )
+        )
+
+    return hits
+
+
+# ============================================================================
 # Detector: blocker-cascade
 # ============================================================================
 
@@ -630,9 +736,12 @@ def rank_detector_hits(hits: list[DetectorHit]) -> list[RankedItem]:
     """Rank detector hits by severity, return at most TOP_N_CAP items.
 
     Critical first, then major, then minor. Stable sort within severity.
+    ``info`` hits (e.g. stale-backlog, #1059) are advisory — excluded from
+    "Куда смотреть" entirely.
     """
+    rankable = [h for h in hits if h.severity != "info"]
     sorted_hits = sorted(
-        hits,
+        rankable,
         key=lambda h: _SEVERITY_SORT.get(h.severity, 99),
     )
 
@@ -684,13 +793,16 @@ def compute_health_verdict(
             reason="Unhealthy: " + "; ".join(stale_or_failed),
         )
 
-    if hits:
-        critical_count = sum(1 for h in hits if h.severity == "critical")
-        major_count = sum(1 for h in hits if h.severity == "major")
+    # ``info`` hits (stale-backlog, #1059) are advisory — they surface only in
+    # --deep and must NOT flip health red. Gate on the blocking subset.
+    blocking = [h for h in hits if h.severity != "info"]
+    if blocking:
+        critical_count = sum(1 for h in blocking if h.severity == "critical")
+        major_count = sum(1 for h in blocking if h.severity == "major")
         return HealthVerdict(
             ok=False,
             reason=(
-                f"Unhealthy: {len(hits)} detector hit(s)"
+                f"Unhealthy: {len(blocking)} detector hit(s)"
                 f" ({critical_count} critical, {major_count} major)"
             ),
         )
@@ -728,6 +840,7 @@ def analyze(
     hits.extend(detect_stale_in_progress(baseline, delta, decisions))
     hits.extend(detect_priority_inversion(baseline, delta, decisions))
     hits.extend(detect_decision_without_followthrough(baseline, delta, decisions))
+    hits.extend(detect_stale_backlog(baseline, delta, decisions))
     hits.extend(detect_blocker_cascade(baseline, delta, decisions))
     hits.extend(fold_contradiction_verdicts(contradiction_verdicts))
 
