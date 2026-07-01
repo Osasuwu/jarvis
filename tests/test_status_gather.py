@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import json
 
+import scripts.status_gather as status_gather
 from scripts.status_gather import (
     SourceKind,
     parse_repos_conf,
     _make_decision_record,
     _extract_contradiction_cache,
+    _default_run_git,
+    _default_run_gh,
     gather,
     gather_contradiction_cache,
 )
@@ -906,3 +909,48 @@ class TestGatherIntegratesContradictionCache:
         )
         parsed = json.loads(json.dumps(result.to_dict(), default=str))
         assert parsed["contradiction_cache"]["schema"] == "contradiction-cache/v1"
+
+
+# ============================================================================
+# Test: default subprocess runners decode as UTF-8 (Windows cp1251 crash)
+#
+# On Windows, subprocess.run(text=True) without an explicit encoding decodes
+# child stdout with the locale codec (cp1251 here). redrobot issue titles are
+# Cyrillic; gh emits UTF-8 bytes, so the cp1251 decode raised
+# `UnicodeDecodeError` and crashed the whole /status gather. The default git/gh
+# runners must pin encoding="utf-8", errors="replace". [no-issue] regression.
+# ============================================================================
+
+
+class TestDefaultRunnersUtf8:
+    """_default_run_git / _default_run_gh must decode child output as UTF-8."""
+
+    def _capture_run(self, monkeypatch):
+        """Patch subprocess.run in the gather module, capture its kwargs."""
+        captured: dict = {}
+
+        class _FakeCompleted:
+            stdout = "тест"  # Cyrillic — only survives a UTF-8 decode
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return _FakeCompleted()
+
+        monkeypatch.setattr(status_gather.subprocess, "run", _fake_run)
+        return captured
+
+    def test_run_git_requests_utf8(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        out = _default_run_git("/repo", ["status"])
+        assert captured.get("encoding") == "utf-8"
+        assert captured.get("errors") == "replace"
+        assert out["stdout"] == "тест"
+
+    def test_run_gh_requests_utf8(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        out = _default_run_gh("Owner/repo", ["issue", "list"])
+        assert captured.get("encoding") == "utf-8"
+        assert captured.get("errors") == "replace"
+        assert out["stdout"] == "тест"

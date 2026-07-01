@@ -203,7 +203,8 @@ def _default_run_git(repo_path: str, args: list[str]) -> dict:
     try:
         result = subprocess.run(
             ["git", "-C", repo_path, *args],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15,
         )
         return {"stdout": result.stdout.strip(), "stderr": result.stderr.strip(),
                 "returncode": result.returncode}
@@ -215,7 +216,8 @@ def _default_run_gh(repo: str, args: list[str]) -> dict:
     try:
         result = subprocess.run(
             ["gh", *args, "--repo", repo],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
         )
         return {"stdout": result.stdout.strip(), "stderr": result.stderr.strip(),
                 "returncode": result.returncode}
