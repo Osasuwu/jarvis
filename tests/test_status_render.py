@@ -216,6 +216,46 @@ class TestBothRepos:
 
 
 # ---------------------------------------------------------------------------
+# #1059 AC4 — info hits (stale-backlog) hidden by default, shown under --deep
+# ---------------------------------------------------------------------------
+
+
+DIGEST_WITH_INFO = {
+    "health": {"ok": True, "reason": "All sources fresh, no anomalies detected"},
+    "detector_hits": [
+        _hit(
+            "stale-backlog",
+            "info",
+            "Osasuwu/jarvis",
+            None,
+            "3 issue(s) idle",
+            "3 issue(s) sitting in Backlog/Ready for ≥30d: #1, #2, #3",
+        ),
+    ],
+    "ranking": [],
+    "provenance": {
+        "jarvis": {"ran": True, "ok": True, "input_rows": 10, "age": 60.0},
+    },
+}
+
+
+class TestInfoSeverityGate:
+    def test_info_hidden_in_default_render(self):
+        out = render(DIGEST_WITH_INFO, deep=False)
+        assert "stale-backlog" not in out
+        assert "Аномалии" not in out  # no non-info hits ⇒ block absent entirely
+
+    def test_info_shown_under_deep(self):
+        out = render(DIGEST_WITH_INFO, deep=True)
+        assert "stale-backlog" in out
+        assert "#1, #2, #3" in out
+
+    def test_info_does_not_break_green_default(self):
+        # info-only digest still reads green in the default surface.
+        assert "🟢" in render(DIGEST_WITH_INFO, deep=False)
+
+
+# ---------------------------------------------------------------------------
 # AC5 — snapshot test pins the deterministic render against a fixture digest
 # ---------------------------------------------------------------------------
 

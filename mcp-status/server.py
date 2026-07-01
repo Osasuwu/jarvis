@@ -155,6 +155,7 @@ def _convert_gather_to_engine_format(gather_result):
                 labels=labels,
                 milestone=issue.get("milestone"),
                 updated_at=issue.get("updatedAt", ""),
+                project_status=issue.get("project_status"),
             ))
 
         # Create RepoState for delta (most recent data)

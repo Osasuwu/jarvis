@@ -80,6 +80,7 @@ class SourceKind:
     GH_ISSUES = "gh_issues"
     GH_CI = "gh_ci"
     GH_MILESTONES = "gh_milestones"
+    GH_PROJECTS = "gh_projects"
     SUPABASE_DECISIONS = "supabase_decisions"
     STATUS_SNAPSHOT = "status_snapshot"
 
@@ -153,6 +154,9 @@ class GatherResult:
 # read_repos_conf(path) -> list[str] (owner/repo lines)
 ReadReposConfFn = Callable[[str], list[str]]
 
+# read_repos_conf_projects(path) -> dict[str, int] (owner/repo -> project number)
+ReadReposConfProjectsFn = Callable[[str], dict]
+
 # read_device_json(path) -> dict | None (parsed device.json or None)
 ReadDeviceJsonFn = Callable[[str], dict | None]
 
@@ -187,6 +191,19 @@ def _default_read_repos_conf(path: str) -> list[str]:
     if raw is None:
         return []
     return parse_repos_conf(raw)
+
+
+def _default_read_repos_conf_projects(path: str) -> dict:
+    """Read owner/repo → project-number map from repos.conf (#1059).
+
+    Only lines carrying a ``project=<N>`` token contribute an entry; a repo
+    without one simply has no ProjectV2 board configured and is skipped by the
+    project-status fetch. Empty/unreadable file → empty map.
+    """
+    raw = _default_read_file(path)
+    if raw is None:
+        return {}
+    return parse_repos_conf_projects(raw)
 
 
 def _default_read_device_json(path: str) -> dict | None:
@@ -273,13 +290,41 @@ def _default_query_supabase(
 
 
 def parse_repos_conf(raw: str) -> list[str]:
-    """Parse repos.conf content into owner/repo list (pure, tested directly)."""
+    """Parse repos.conf content into owner/repo list (pure, tested directly).
+
+    A line may carry trailing key=value tokens (e.g. ``project=3``, #1059);
+    only the first whitespace-delimited token — the ``owner/repo`` — is the
+    repo identifier. Bare lines (no tokens) are returned unchanged.
+    """
     repos: list[str] = []
     for line in raw.splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            repos.append(line)
+            repos.append(line.split()[0])
     return repos
+
+
+def parse_repos_conf_projects(raw: str) -> dict:
+    """Parse repos.conf ``project=<N>`` tokens into owner/repo → int map (#1059).
+
+    Only lines with a parseable ``project=<int>`` token yield an entry; lines
+    without one (or with a non-integer value) are omitted, so a repo with no
+    ProjectV2 board is simply absent from the map. Pure, tested directly.
+    """
+    projects: dict[str, int] = {}
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        tokens = line.split()
+        repo = tokens[0]
+        for tok in tokens[1:]:
+            if tok.startswith("project="):
+                try:
+                    projects[repo] = int(tok.split("=", 1)[1])
+                except ValueError:
+                    pass
+    return projects
 
 
 # ============================================================================
@@ -416,6 +461,80 @@ def _gather_gh_milestones(
 
     prov = Provenance(ran=True, ok=ok, input_rows=len(data), age=elapsed)
     return {"milestones": data, "milestones_truncated": truncated}, prov
+
+
+# ============================================================================
+# ProjectV2 status gather (#1059)
+# ============================================================================
+
+# GraphQL for a *user*-owned Project (owner from repo.split("/")[0]); the
+# board tracked repos live under is a user project, not an org project.
+_PROJECT_STATUS_QUERY = (
+    "query($owner: String!, $number: Int!) {"
+    "  user(login: $owner) {"
+    "    projectV2(number: $number) {"
+    "      items(first: 100) {"
+    "        nodes {"
+    "          content { ... on Issue { number } }"
+    "          fieldValueByName(name: \"Status\") {"
+    "            ... on ProjectV2ItemFieldSingleSelectValue { name }"
+    "          }"
+    "        }"
+    "      }"
+    "    }"
+    "  }"
+    "}"
+)
+
+_PROJECT_STATUS_JQ = (
+    ".data.user.projectV2.items.nodes[] "
+    "| select(.content.number != null) "
+    "| {number: .content.number, status: (.fieldValueByName.name // null)}"
+)
+
+
+def _gather_project_status(
+    repo: str, project_number: int, run_gh: RunGhFn, now: float,
+) -> tuple[dict, Provenance]:
+    """Fetch GitHub Projects v2 ``Status`` per issue number for one repo (#1059).
+
+    Returns ({issue_number: status_string}, Provenance). A fetch failure (or
+    malformed payload) yields an empty map with ok=False so the caller leaves
+    ``project_status=None`` on every issue and surfaces a provenance gap rather
+    than a false-green (AC5). Issues without a Status value are simply absent
+    from the map (join leaves them None → detector treats as "not on board").
+    """
+    start = time.time()
+    owner = repo.split("/")[0]
+    result = run_gh(repo, [
+        "api", "graphql",
+        "-f", f"query={_PROJECT_STATUS_QUERY}",
+        "-F", f"owner={owner}",
+        "-F", f"number={project_number}",
+        "--jq", _PROJECT_STATUS_JQ,
+    ])
+
+    elapsed = time.time() - start
+    ok = result["returncode"] == 0
+    status_by_number: dict[int, str] = {}
+
+    if ok and result["stdout"]:
+        try:
+            for line in result["stdout"].splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                row = json.loads(line)
+                num = row.get("number")
+                status = row.get("status")
+                if num is not None and status:
+                    status_by_number[int(num)] = str(status)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            ok = False
+            status_by_number = {}
+
+    prov = Provenance(ran=True, ok=ok, input_rows=len(status_by_number), age=elapsed)
+    return status_by_number, prov
 
 
 # ============================================================================
@@ -599,6 +718,7 @@ def gather(
     *,
     # Injectable I/O callbacks (defaults = real implementations)
     read_repos_conf_fn: ReadReposConfFn | None = None,
+    read_repos_conf_projects_fn: ReadReposConfProjectsFn | None = None,
     read_device_json_fn: ReadDeviceJsonFn | None = None,
     run_git_fn: RunGitFn | None = None,
     run_gh_fn: RunGhFn | None = None,
@@ -622,6 +742,9 @@ def gather(
     """
     # Resolve defaults
     _read_conf = read_repos_conf_fn or _default_read_repos_conf
+    _read_conf_projects = (
+        read_repos_conf_projects_fn or _default_read_repos_conf_projects
+    )
     _read_dev = read_device_json_fn or _default_read_device_json
     _run_git = run_git_fn or _default_run_git
     _run_gh = run_gh_fn or _default_run_gh
@@ -666,6 +789,11 @@ def gather(
         ran=True, ok=True, input_rows=len(repos),
         age=_now() - gather_start,
     ).to_dict()
+
+    # Project-number map (owner/repo -> ProjectV2 number) from the same conf.
+    # A repo absent from the map has no board configured; its issues keep
+    # project_status=None and no gh_projects provenance is stamped (#1059 AC1).
+    repos_projects = _read_conf_projects(conf_path) or {}
 
     # --- Step 2: Read device.json for repos_path ---
     dev_path = str(jarvis_path / DEVICE_CONF_RELPATH)
@@ -717,6 +845,26 @@ def gather(
         issues_state, issues_prov = _gather_gh_issues(repo_name_stripped, _run_gh, _now())
         repo_entry.update(issues_state)
         repo_entry["provenance"][SourceKind.GH_ISSUES] = issues_prov.to_dict()
+
+        # ProjectV2 Status — join onto issues by number (#1059 AC1). Only for
+        # repos with a configured project number. The provenance is stamped at
+        # TOP level (`gh_projects:<repo>`) so a fetch failure gates health via
+        # compute_health_verdict rather than false-greening (AC5).
+        project_number = repos_projects.get(repo_name_stripped)
+        if project_number is not None:
+            status_map, project_prov = _gather_project_status(
+                repo_name_stripped, project_number, _run_gh, _now(),
+            )
+            for issue in repo_entry.get("issues") or []:
+                issue["project_status"] = status_map.get(issue.get("number"))
+            result.provenance[
+                f"{SourceKind.GH_PROJECTS}:{repo_name_stripped}"
+            ] = project_prov.to_dict()
+            if not project_prov.ok:
+                result.errors.append(
+                    f"{SourceKind.GH_PROJECTS}:{repo_name_stripped}: "
+                    f"ProjectV2 status fetch failed"
+                )
 
         # CI
         ci_state, ci_prov = _gather_gh_ci(repo_name_stripped, _run_gh, _now())

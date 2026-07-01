@@ -121,6 +121,26 @@ def test_convert_gather_to_engine_format():
     assert "status_digest" in decisions[0].decision
 
 
+def test_convert_carries_project_status():
+    """AC1 (#1059): gather's per-issue project_status flows onto IssueInfo."""
+    gather_result = make_fixture_gather_result()
+    gather_result.repos[0]["issues"][0]["project_status"] = "Backlog"
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    issue = delta.repos["Osasuwu/jarvis"].open_issues[0]
+    assert issue.project_status == "Backlog"
+
+
+def test_convert_project_status_defaults_none():
+    """AC1 (#1059): absent project_status → None (issue not on the board)."""
+    gather_result = make_fixture_gather_result()
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    issue = delta.repos["Osasuwu/jarvis"].open_issues[0]
+    assert issue.project_status is None
+
+
 def test_convert_flattens_object_labels():
     """gh returns labels as objects [{"name":..,"color":..}], not strings.
 

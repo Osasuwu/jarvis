@@ -14,6 +14,7 @@ from status_engine import (
     DECISION_PREFILTER_DAYS,
     FRESHNESS_AGE_SECONDS,
     MEMORY_GIT_CONTRADICTION,
+    STALE_BACKLOG_DAYS,
     STALE_INPROGRESS_DAYS,
     TOP_N_CAP,
     Baseline,
@@ -33,6 +34,7 @@ from status_engine import (
     detect_blocker_cascade,
     detect_decision_without_followthrough,
     detect_priority_inversion,
+    detect_stale_backlog,
     detect_stale_in_progress,
     fold_contradiction_verdicts,
     rank_detector_hits,
@@ -57,6 +59,7 @@ def make_issue(
     updated_days_ago: float = 0,
     is_blocked: bool = False,
     blocks: list[int] | None = None,
+    project_status: str | None = None,
 ) -> IssueInfo:
     """Helper to construct an IssueInfo fixture."""
     return IssueInfo(
@@ -67,6 +70,7 @@ def make_issue(
         updated_at=_days_ago(updated_days_ago),
         is_blocked=is_blocked,
         blocks=blocks or [],
+        project_status=project_status,
     )
 
 
@@ -1154,6 +1158,193 @@ class TestHealthVerdict:
 
 
 # ============================================================================
+# AC2/AC3 (#1059): stale-backlog detector
+# ============================================================================
+
+
+def _backlog_state(repo="Osasuwu/jarvis", issues=None):
+    return make_state(repo, issues=issues or [])
+
+
+class TestStaleBacklog:
+    """AC2: vocab-driven candidate selection; AC3: per-repo info aggregation."""
+
+    def test_backlog_idle_flagged(self):
+        """Backlog + idle ≥30d → candidate (time-only, no decision needed)."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(
+                            42, updated_days_ago=40, project_status="Backlog"
+                        )
+                    ],
+                )
+            }
+        )
+        hits = detect_stale_backlog(baseline, make_delta(), [])
+        assert len(hits) == 1
+        assert hits[0].severity == "info"
+        assert hits[0].issue_number is None
+        assert "#42" in hits[0].description
+
+    def test_backlog_fresh_not_flagged(self):
+        """Backlog but idle <30d → not a candidate."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(
+                            42, updated_days_ago=5, project_status="Backlog"
+                        )
+                    ],
+                )
+            }
+        )
+        assert detect_stale_backlog(baseline, make_delta(), []) == []
+
+    def test_status_case_normalized(self):
+        """Status matched case-insensitively (`.strip().lower()`)."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(
+                            42, updated_days_ago=40, project_status="  backlog "
+                        )
+                    ],
+                )
+            }
+        )
+        assert len(detect_stale_backlog(baseline, make_delta(), [])) == 1
+
+    def test_ready_idle_no_decision_flagged(self):
+        """Ready + idle ≥30d + no referencing decision → candidate."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(7, updated_days_ago=40, project_status="Ready")
+                    ],
+                )
+            }
+        )
+        hits = detect_stale_backlog(baseline, make_delta(), [])
+        assert len(hits) == 1
+        assert "#7" in hits[0].description
+
+    def test_ready_with_decision_not_flagged(self):
+        """Ready + idle ≥30d but a project decision references it → suppressed."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(7, updated_days_ago=40, project_status="Ready")
+                    ],
+                )
+            }
+        )
+        decisions = [
+            make_decision(
+                decision="Ship #7 next sprint", project="Osasuwu/jarvis"
+            )
+        ]
+        assert detect_stale_backlog(baseline, make_delta(), decisions) == []
+
+    def test_ready_decision_short_project_slug_matches(self):
+        """Decision.project may be the short slug (`jarvis`) — still matches."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(7, updated_days_ago=40, project_status="Ready")
+                    ],
+                )
+            }
+        )
+        decisions = [make_decision(decision="Do #7", project="jarvis")]
+        assert detect_stale_backlog(baseline, make_delta(), decisions) == []
+
+    def test_in_progress_not_flagged(self):
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(
+                            9, updated_days_ago=99, project_status="In Progress"
+                        )
+                    ],
+                )
+            }
+        )
+        assert detect_stale_backlog(baseline, make_delta(), []) == []
+
+    def test_none_status_not_flagged(self):
+        """project_status None (not on board) → never flagged."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(9, updated_days_ago=99, project_status=None)
+                    ],
+                )
+            }
+        )
+        assert detect_stale_backlog(baseline, make_delta(), []) == []
+
+    def test_zero_candidates_no_hit(self):
+        assert detect_stale_backlog(make_baseline(), make_delta(), []) == []
+
+    def test_aggregate_one_hit_per_repo_oldest_first(self):
+        """One info hit per repo; numbers ordered oldest-first by updated_at."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[
+                        make_issue(3, updated_days_ago=35, project_status="Backlog"),
+                        make_issue(1, updated_days_ago=90, project_status="Backlog"),
+                        make_issue(2, updated_days_ago=60, project_status="Ready"),
+                    ],
+                )
+            }
+        )
+        hits = detect_stale_backlog(baseline, make_delta(), [])
+        assert len(hits) == 1
+        # oldest (largest age) first: #1 (90d), #2 (60d), #3 (35d)
+        assert hits[0].description.index("#1") < hits[0].description.index("#2")
+        assert hits[0].description.index("#2") < hits[0].description.index("#3")
+
+    def test_info_does_not_flip_health(self):
+        """AC3: an info-only hit set leaves health green."""
+        verdict = compute_health_verdict(
+            make_baseline(),
+            [
+                DetectorHit(
+                    detector="stale-backlog",
+                    severity="info",
+                    repo="Osasuwu/jarvis",
+                    description="#42",
+                )
+            ],
+        )
+        assert verdict.ok is True
+
+    def test_info_excluded_from_ranking(self):
+        """AC3: info hits never appear in 'Куда смотреть'."""
+        ranked = rank_detector_hits(
+            [
+                DetectorHit(
+                    detector="stale-backlog",
+                    severity="info",
+                    repo="Osasuwu/jarvis",
+                    description="#42",
+                )
+            ]
+        )
+        assert ranked == []
+
+
+# ============================================================================
 # AC: Constants are module-level
 # ============================================================================
 
@@ -1172,6 +1363,26 @@ class TestModuleConstants:
     def test_decision_prefilter_days_constant(self):
         assert isinstance(DECISION_PREFILTER_DAYS, int)
         assert DECISION_PREFILTER_DAYS > 0
+
+    def test_stale_backlog_days_constant(self):
+        assert isinstance(STALE_BACKLOG_DAYS, int)
+        assert STALE_BACKLOG_DAYS == 30
+
+
+# ============================================================================
+# AC1: IssueInfo carries the Projects v2 Status string
+# ============================================================================
+
+
+class TestIssueProjectStatus:
+    """AC1: IssueInfo.project_status holds the ProjectV2 Status (or None)."""
+
+    def test_defaults_to_none(self):
+        assert IssueInfo(number=1).project_status is None
+
+    def test_carries_status_value(self):
+        issue = IssueInfo(number=1, project_status="Backlog")
+        assert issue.project_status == "Backlog"
 
 
 # ============================================================================

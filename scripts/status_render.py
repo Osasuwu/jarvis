@@ -94,6 +94,10 @@ def _anomalies(digest: dict, deep: bool) -> list[str]:
     full description text for each hit.
     """
     hits = digest.get("detector_hits") or []
+    # info hits (stale-backlog, #1059) are advisory — the default surface hides
+    # them; they appear only under --deep.
+    if not deep:
+        hits = [h for h in hits if (h.get("severity") or "") != "info"]
     if not hits:
         return []
     lines = ["Аномалии:"]
