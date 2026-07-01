@@ -26,7 +26,7 @@ Usage::
     python scripts/dreamer-run.py --model deepseek-chat    # alternate LLM
 
 Env: SUPABASE_URL, SUPABASE_KEY, plus one of:
-  - ``ANTHROPIC_API_KEY`` (default — uses ``claude-sonnet-4-6``).
+  - ``ANTHROPIC_API_KEY`` (default — uses ``claude-sonnet-5``).
   - ``DREAMER_API_KEY`` + ``DREAMER_API_URL`` + ``DREAMER_MODEL``
     (alt provider such as Ollama / DeepSeek — ``DREAMER_API_URL`` must be a
     ``/v1/messages``-compatible endpoint that accepts the Anthropic Messages
@@ -78,7 +78,7 @@ DAYS_SINCE_LAST_RUN = 7
 MAX_CORPUS_ROWS = 200
 CORPUS_LOOKBACK_DAYS = 90
 
-DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
+DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-5"
 DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
 MAX_TOKENS = 4000

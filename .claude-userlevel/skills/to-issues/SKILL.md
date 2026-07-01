@@ -81,6 +81,17 @@ For each approved slice, publish a new issue to the issue tracker. Use the issue
 
 Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
 
+**Milestone assignment (every published issue MUST land in a milestone)**:
+
+An issue with no milestone falls off the board — it is invisible to milestone-scoped triage and rots. Never publish milestone-less. Resolve the milestone per slice, in this order:
+
+1. **Inherit from parent** — if the slice has a `## Parent` reference, read that issue's milestone and apply the same one. The `## Parent` body link is text only; the issue tracker does NOT propagate the milestone, so you must set it explicitly (e.g. `gh issue edit <N> --milestone "<title>"`). If the parent itself is milestone-less, fix the parent first (assign it, then inherit) rather than propagating the gap.
+2. **Inherit from source** — if the slices came from an existing issue/PRD passed as the argument, use that source's milestone.
+3. **Match by theme** — no parent and no source: pick the open milestone whose theme the slice fits (enumerate the tracker's open milestones first). Fold this into the §4 quiz — show the proposed milestone per slice and let the user correct it.
+4. **No fit** — if genuinely nothing matches, surface it in the quiz and ask whether to create a new milestone or leave it orphan by explicit choice. Orphan is only ever a deliberate, stated decision — never a default.
+
+This applies to follow-up / tech-debt slices too: a spin-off inherits the milestone of the issue it spun off from (rule 1), which is the single most common case and the one that was silently dropping issues off the board.
+
 <issue-template>
 ## Parent
 

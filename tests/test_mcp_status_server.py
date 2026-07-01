@@ -121,6 +121,72 @@ def test_convert_gather_to_engine_format():
     assert "status_digest" in decisions[0].decision
 
 
+def test_convert_carries_project_status():
+    """AC1 (#1059): gather's per-issue project_status flows onto IssueInfo."""
+    gather_result = make_fixture_gather_result()
+    gather_result.repos[0]["issues"][0]["project_status"] = "Backlog"
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    issue = delta.repos["Osasuwu/jarvis"].open_issues[0]
+    assert issue.project_status == "Backlog"
+
+
+def test_convert_project_status_defaults_none():
+    """AC1 (#1059): absent project_status → None (issue not on the board)."""
+    gather_result = make_fixture_gather_result()
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    issue = delta.repos["Osasuwu/jarvis"].open_issues[0]
+    assert issue.project_status is None
+
+
+def test_convert_flattens_object_labels():
+    """gh returns labels as objects [{"name":..,"color":..}], not strings.
+
+    The engine's `_issue_priority` treats each label as a hashable string;
+    feeding it a dict raised `TypeError: unhashable type: 'dict'` and crashed
+    the whole digest (masked earlier by the cp1251 gather crash). The converter
+    must flatten label objects to their names so priority detection survives
+    real gh output. Regression for the /status label-dict crash ([no-issue]).
+    """
+    gather_result = make_fixture_gather_result()
+    # Replace the fixture's string labels with the real gh object shape.
+    gather_result.repos[0]["issues"][0]["labels"] = [
+        {"name": "status:in-progress", "color": "ededed"},
+        {"name": "P1", "color": "d93f0b"},
+    ]
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    issue = delta.repos["Osasuwu/jarvis"].open_issues[0]
+    assert issue.labels == ["status:in-progress", "P1"]
+    # And the flattened labels must be hashable (engine puts them through `in`).
+    assert all(isinstance(lbl, str) for lbl in issue.labels)
+
+
+def test_convert_handles_mixed_and_missing_labels():
+    """Defensive: bare-string labels, missing key, and None all normalize."""
+    gather_result = make_fixture_gather_result()
+    gather_result.repos[0]["issues"][0]["labels"] = [
+        {"name": "P0"},
+        "already-a-string",
+    ]
+    # Second issue with labels entirely absent.
+    gather_result.repos[0]["issues"].append({
+        "number": 2,
+        "title": "No labels",
+        "updatedAt": _days_ago(1),
+        "milestone": None,
+    })
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    issues = delta.repos["Osasuwu/jarvis"].open_issues
+    assert issues[0].labels == ["P0", "already-a-string"]
+    assert issues[1].labels == []
+
+
 def test_provenance_passthrough():
     """Test that provenance from gather is preserved in conversion."""
     gather_result = make_fixture_gather_result()

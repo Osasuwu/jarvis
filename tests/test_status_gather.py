@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import json
 
+import scripts.status_gather as status_gather
 from scripts.status_gather import (
     SourceKind,
     parse_repos_conf,
     _make_decision_record,
     _extract_contradiction_cache,
+    _default_run_git,
+    _default_run_gh,
     gather,
     gather_contradiction_cache,
 )
@@ -906,3 +909,251 @@ class TestGatherIntegratesContradictionCache:
         )
         parsed = json.loads(json.dumps(result.to_dict(), default=str))
         assert parsed["contradiction_cache"]["schema"] == "contradiction-cache/v1"
+
+
+# ============================================================================
+# Test: default subprocess runners decode as UTF-8 (Windows cp1251 crash)
+#
+# On Windows, subprocess.run(text=True) without an explicit encoding decodes
+# child stdout with the locale codec (cp1251 here). redrobot issue titles are
+# Cyrillic; gh emits UTF-8 bytes, so the cp1251 decode raised
+# `UnicodeDecodeError` and crashed the whole /status gather. The default git/gh
+# runners must pin encoding="utf-8", errors="replace". [no-issue] regression.
+# ============================================================================
+
+
+class TestDefaultRunnersUtf8:
+    """_default_run_git / _default_run_gh must decode child output as UTF-8."""
+
+    def _capture_run(self, monkeypatch):
+        """Patch subprocess.run in the gather module, capture its kwargs."""
+        captured: dict = {}
+
+        class _FakeCompleted:
+            stdout = "тест"  # Cyrillic — only survives a UTF-8 decode
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return _FakeCompleted()
+
+        monkeypatch.setattr(status_gather.subprocess, "run", _fake_run)
+        return captured
+
+    def test_run_git_requests_utf8(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        out = _default_run_git("/repo", ["status"])
+        assert captured.get("encoding") == "utf-8"
+        assert captured.get("errors") == "replace"
+        assert out["stdout"] == "тест"
+
+    def test_run_gh_requests_utf8(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        out = _default_run_gh("Owner/repo", ["issue", "list"])
+        assert captured.get("encoding") == "utf-8"
+        assert captured.get("errors") == "replace"
+        assert out["stdout"] == "тест"
+
+
+class TestDefaultRunnersDetachStdin:
+    """_default_run_git / _default_run_gh must pass stdin=DEVNULL.
+
+    Regression: when gather() runs inside the mcp-status stdio server, the
+    process's stdin (fd 0) is the MCP transport pipe from the client. A child
+    gh/git spawned without stdin=DEVNULL inherits that pipe; its own background
+    grandchildren keep the pipe's write end open, so subprocess.run's
+    communicate() can't reach EOF and every call stalls toward its timeout —
+    turning a ~10s gather into ~70s (observed via the status_digest MCP tool).
+    Detaching stdin severs the inheritance. Same class of bug as the memory
+    lesson `subprocess_capture_output_grandchild_pipe_hang`.
+    """
+
+    def _capture_run(self, monkeypatch):
+        captured: dict = {}
+
+        class _FakeCompleted:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return _FakeCompleted()
+
+        monkeypatch.setattr(status_gather.subprocess, "run", _fake_run)
+        return captured
+
+    def test_run_git_detaches_stdin(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        _default_run_git("/repo", ["status"])
+        assert captured.get("stdin") is status_gather.subprocess.DEVNULL
+
+    def test_run_gh_detaches_stdin(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        _default_run_gh("Owner/repo", ["issue", "list"])
+        assert captured.get("stdin") is status_gather.subprocess.DEVNULL
+
+
+class TestDefaultRunGhRepoFlag:
+    """_default_run_gh targets the repo correctly per subcommand.
+
+    Regression: `gh api` addresses the repo via the URL path and rejects a
+    trailing `--repo` flag ("unknown flag: --repo"), which made every milestone
+    gather fail (ok=False) and the digest degrade silently. Every other gh
+    subcommand still needs `--repo`.
+    """
+
+    def _capture_cmd(self, monkeypatch):
+        captured: dict = {}
+
+        class _FakeCompleted:
+            stdout = "[]"
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(cmd, *args, **kwargs):
+            captured["cmd"] = cmd
+            return _FakeCompleted()
+
+        monkeypatch.setattr(status_gather.subprocess, "run", _fake_run)
+        return captured
+
+    def test_api_subcommand_omits_repo_flag(self, monkeypatch):
+        captured = self._capture_cmd(monkeypatch)
+        _default_run_gh("Owner/repo", ["api", "repos/Owner/repo/milestones"])
+        assert "--repo" not in captured["cmd"]
+        assert captured["cmd"] == ["gh", "api", "repos/Owner/repo/milestones"]
+
+    def test_non_api_subcommand_appends_repo_flag(self, monkeypatch):
+        captured = self._capture_cmd(monkeypatch)
+        _default_run_gh("Owner/repo", ["issue", "list"])
+        assert captured["cmd"][-2:] == ["--repo", "Owner/repo"]
+
+
+# ============================================================================
+# Test: ProjectV2 status fetch + join (#1059 AC1)
+# ============================================================================
+
+
+def _fixture_repos_conf_projects(mapping: dict) -> callable:
+    """Return a read_repos_conf_projects_fn returning owner/repo → project number."""
+    return lambda path: dict(mapping)
+
+
+def _project_status_gh(status_by_number: dict[int, str], *, fail: bool = False):
+    """Arg-aware run_gh: returns ProjectV2 status for the graphql call, issues
+    for `issue list`, empty-ok for everything else.
+
+    When ``fail`` is set the graphql call errors (returncode 1) so AC5's
+    degradation path can be exercised.
+    """
+    def _run(repo: str, args: list[str]) -> dict:
+        # ProjectV2 status query goes through `gh api graphql`.
+        if args and args[0] == "api" and "graphql" in args:
+            if fail:
+                return {"stdout": "", "stderr": "graphql: not found", "returncode": 1}
+            nodes = [
+                {"number": n, "status": s} for n, s in status_by_number.items()
+            ]
+            return {
+                "stdout": "\n".join(json.dumps(node) for node in nodes),
+                "stderr": "",
+                "returncode": 0,
+            }
+        # Open issues list.
+        if "issue" in args:
+            return _make_gh_success([
+                {"number": 42, "title": "Backlog issue", "labels": [],
+                 "updatedAt": "2024-05-01T00:00:00Z"},
+                {"number": 7, "title": "Ready issue", "labels": [],
+                 "updatedAt": "2024-05-01T00:00:00Z"},
+            ])
+        # Everything else (PRs, CI, milestones): empty-but-ok.
+        return _make_gh_empty()
+
+    return _run
+
+
+class TestParseReposConfProjects:
+    """parse_repos_conf_projects — pure, maps owner/repo → project number."""
+
+    def test_parses_project_numbers(self):
+        content = "Osasuwu/jarvis project=3\nSergazyNarynov/redrobot project=1\n"
+        assert status_gather.parse_repos_conf_projects(content) == {
+            "Osasuwu/jarvis": 3,
+            "SergazyNarynov/redrobot": 1,
+        }
+
+    def test_line_without_project_is_omitted(self):
+        content = "Osasuwu/jarvis\nSergazyNarynov/redrobot project=1\n"
+        assert status_gather.parse_repos_conf_projects(content) == {
+            "SergazyNarynov/redrobot": 1,
+        }
+
+    def test_skips_comments_and_blanks(self):
+        content = "# comment\n\nOsasuwu/jarvis project=3\n"
+        assert status_gather.parse_repos_conf_projects(content) == {
+            "Osasuwu/jarvis": 3,
+        }
+
+    def test_parse_repos_conf_still_returns_bare_repo(self):
+        # The project= suffix must not leak into the plain repo list.
+        content = "Osasuwu/jarvis project=3\nSergazyNarynov/redrobot project=1\n"
+        assert parse_repos_conf(content) == [
+            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
+        ]
+
+
+class TestProjectStatusJoin:
+    """AC1 — ProjectV2 Status is fetched per repo and joined onto issues."""
+
+    def test_project_status_joined_onto_issues(self):
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_repos_conf_projects_fn=_fixture_repos_conf_projects(
+                {"Osasuwu/jarvis": 3}
+            ),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_project_status_gh({42: "Backlog", 7: "Ready"}),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        jarvis = result.repos[0]
+        by_num = {i["number"]: i for i in jarvis["issues"]}
+        assert by_num[42]["project_status"] == "Backlog"
+        assert by_num[7]["project_status"] == "Ready"
+
+        # Top-level provenance stamp for the projects source (AC5 gating point).
+        prov = result.provenance[f"{SourceKind.GH_PROJECTS}:Osasuwu/jarvis"]
+        assert prov["ran"] is True
+        assert prov["ok"] is True
+        assert prov["input_rows"] == 2
+
+    def test_project_fetch_failure_degrades_and_leaves_status_none(self):
+        """AC5 — graphql failure ⇒ project_status=None + gh_projects ok=False."""
+        result = gather(
+            jarvis_home="/fake",
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_repos_conf_projects_fn=_fixture_repos_conf_projects(
+                {"Osasuwu/jarvis": 3}
+            ),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
+                                         "returncode": 0}),
+            run_gh_fn=_project_status_gh({}, fail=True),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+
+        jarvis = result.repos[0]
+        for issue in jarvis["issues"]:
+            assert issue["project_status"] is None
+
+        prov = result.provenance[f"{SourceKind.GH_PROJECTS}:Osasuwu/jarvis"]
+        assert prov["ran"] is True
+        assert prov["ok"] is False

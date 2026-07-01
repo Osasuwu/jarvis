@@ -22,6 +22,7 @@ Usage in .mcp.json:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -46,6 +47,16 @@ if str(_REPO_ROOT) not in sys.path:
 from dotenv import load_dotenv  # noqa: E402
 
 # Load .env from repo root (two levels up from mcp-status/server.py).
+#
+# override=True lets .env win for SUPABASE_* (the vars this server actually
+# needs), but it must NOT clobber auth tokens the harness/shell already
+# injected: a stale GITHUB_TOKEN/GH_TOKEN in .env would 401 every gh call in
+# gather(), silently degrading the digest to empty for BOTH repos (the live
+# token from the environment is the source of truth for gh, not the .env copy).
+# Snapshot the pre-existing tokens and restore them after the load.
+_preserved_tokens = {
+    _k: os.environ[_k] for _k in ("GITHUB_TOKEN", "GH_TOKEN") if _k in os.environ
+}
 _env_candidates = [
     Path(__file__).resolve().parent.parent / ".env",
     Path(__file__).resolve().parent.parent.parent / ".env",
@@ -54,6 +65,7 @@ for _env_path in _env_candidates:
     if _env_path.exists():
         load_dotenv(_env_path, override=True)
         break
+os.environ.update(_preserved_tokens)
 
 from mcp.server import Server  # noqa: E402
 from mcp.server.stdio import stdio_server  # noqa: E402
@@ -128,13 +140,22 @@ def _convert_gather_to_engine_format(gather_result):
         # Convert issues to IssueInfo
         issues: list[IssueInfo] = []
         for issue in issues_data:
+            # gh returns labels as objects [{"name":..,"color":..}]; the engine
+            # (_issue_priority) treats each label as a hashable string. Flatten
+            # to names so priority detection doesn't crash on unhashable dicts.
+            raw_labels = issue.get("labels", []) or []
+            labels = [
+                lbl.get("name", "") if isinstance(lbl, dict) else lbl
+                for lbl in raw_labels
+            ]
             issues.append(IssueInfo(
                 number=issue.get("number", 0),
                 title=issue.get("title", ""),
                 state="open",  # gather filters to open issues
-                labels=issue.get("labels", []),
+                labels=labels,
                 milestone=issue.get("milestone"),
                 updated_at=issue.get("updatedAt", ""),
+                project_status=issue.get("project_status"),
             ))
 
         # Create RepoState for delta (most recent data)
