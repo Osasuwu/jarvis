@@ -213,9 +213,14 @@ def _default_run_git(repo_path: str, args: list[str]) -> dict:
 
 
 def _default_run_gh(repo: str, args: list[str]) -> dict:
+    # `gh api` addresses the repo through the URL path (repos/<owner>/<name>/...)
+    # and rejects a trailing `--repo` flag ("unknown flag: --repo") — appending
+    # it unconditionally made every milestone gather fail. Every other gh
+    # subcommand needs `--repo` to target the right repo.
+    cmd = ["gh", *args] if args and args[0] == "api" else ["gh", *args, "--repo", repo]
     try:
         result = subprocess.run(
-            ["gh", *args, "--repo", repo],
+            cmd,
             capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=30,
         )
