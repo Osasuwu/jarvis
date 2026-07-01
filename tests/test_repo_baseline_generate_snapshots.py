@@ -160,3 +160,58 @@ class TestPerRepoIsolation:
         assert (mans / "Osasuwu__jarvis.manifest.yml").exists()
         # The failed repo wrote nothing.
         assert not (snaps / "Osasuwu__ghost.snapshot.json").exists()
+
+
+class TestCheckMode:
+    """AC1 — generate_snapshots --check re-audits and diffs without writing."""
+
+    def test_clean_match_returns_empty_drifts(self, tmp_path):
+        """When committed snapshot matches a fresh audit, check returns []. """
+        # First, write a snapshot via generate.
+        gen.generate(
+            ["Osasuwu/jarvis"],
+            runner=FakeRunner(_jarvis_responses()),
+            snapshots_dir=tmp_path / "snaps",
+            manifests_dir=tmp_path / "mans",
+        )
+        drifts = gen.check(
+            ["Osasuwu/jarvis"],
+            runner=FakeRunner(_jarvis_responses()),
+            snapshots_dir=tmp_path / "snaps",
+        )
+        assert drifts == []
+
+    def test_single_axis_drift_detected(self, tmp_path):
+        """When a setting changes, check detects the drift and names the axis."""
+        gen.generate(
+            ["Osasuwu/jarvis"],
+            runner=FakeRunner(_jarvis_responses()),
+            snapshots_dir=tmp_path / "snaps",
+            manifests_dir=tmp_path / "mans",
+        )
+        # Modify the committed snapshot on disk — change visibility.
+        snap_path = tmp_path / "snaps" / "Osasuwu__jarvis.snapshot.json"
+        data = json.loads(snap_path.read_text(encoding="utf-8"))
+        data["settings"]["visibility"] = "private"
+        snap_path.write_text(json.dumps(data, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+
+        drifts = gen.check(
+            ["Osasuwu/jarvis"],
+            runner=FakeRunner(_jarvis_responses()),
+            snapshots_dir=tmp_path / "snaps",
+        )
+        assert len(drifts) == 1
+        assert "Osasuwu/jarvis" in drifts[0]
+        assert "settings" in drifts[0]
+
+    def test_missing_snapshot_file_reported(self, tmp_path):
+        """If no committed snapshot exists, check lists it as a missing-snapshot
+        drift rather than crashing."""
+        drifts = gen.check(
+            ["Osasuwu/jarvis"],
+            runner=FakeRunner(_jarvis_responses()),
+            snapshots_dir=tmp_path / "snaps",
+        )
+        assert len(drifts) == 1
+        assert "Osasuwu/jarvis" in drifts[0]
+        assert "no committed snapshot" in drifts[0]

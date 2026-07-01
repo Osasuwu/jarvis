@@ -17,12 +17,18 @@ under the Osasuwu token; deferred to issue #940.
 
 Usage::
 
+    # Generate (or re-generate) committed fixtures
     python -m scripts.repo_baseline.generate_snapshots
+
+    # Check for drift without writing
+    python -m scripts.repo_baseline.generate_snapshots --check
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from pathlib import Path
 
 import yaml
@@ -31,6 +37,7 @@ from .auditor import (
     OSASUWU_REPOS,
     Auditor,
     GhRunner,
+    RepoSnapshot,
     gh_runner,
     scrub_topology,
     seed_manifest,
@@ -109,7 +116,75 @@ def generate(
     return written
 
 
+def check(
+    repos: list[str],
+    runner: GhRunner = gh_runner,
+    *,
+    snapshots_dir: Path | None = None,
+) -> list[str]:
+    """Re-audit each repo and diff against its committed snapshot.
+
+    Returns a list of drift reports (one per drifted repo). Each report names
+    the repo and the differing top-level axes. An empty list means every repo
+    matches its committed snapshot — clean.
+
+    Does **not** fail fast: every repo is audited, even if one has already
+    drifted. Never writes anything — pure read-only check.
+    """
+    snapshots_dir = snapshots_dir if snapshots_dir is not None else SNAPSHOTS_DIR
+
+    auditor = Auditor(runner)
+    drifts: list[str] = []
+
+    for repo in repos:
+        try:
+            committed = RepoSnapshot.from_dict(
+                json.loads((snapshots_dir / f"{_slug(repo)}.snapshot.json").read_text(encoding="utf-8"))
+            )
+            fresh_scrubbed = scrub_topology(auditor.audit(repo).to_dict())
+            committed_dict = scrub_topology(committed.to_dict())
+
+            diff_axes = _diff_snapshot_dicts(fresh_scrubbed, committed_dict)
+            if diff_axes:
+                drifts.append(f"{repo}: {', '.join(sorted(diff_axes))}")
+        except FileNotFoundError as e:
+            drifts.append(f"{repo}: no committed snapshot found ({e})")
+        except Exception as e:  # noqa: BLE001 — collect, don't fail-fast
+            drifts.append(f"{repo}: check error ({type(e).__name__}: {e})")
+
+    return drifts
+
+
+def _diff_snapshot_dicts(fresh: dict, committed: dict) -> list[str]:
+    """Return top-level axis names that differ between two snapshot dicts.
+    Keys present in only one dict are reported as drifts."""
+    differing: list[str] = []
+    all_keys = set(fresh) | set(committed)
+    for key in sorted(all_keys):
+        if fresh.get(key) != committed.get(key):
+            differing.append(key)
+    return differing
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Generate or check repo baseline snapshots.")
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Re-audit and diff against committed snapshots. Exit non-zero on drift.",
+    )
+    args = parser.parse_args()
+
+    if args.check:
+        drifts = check(OSASUWU_REPOS)
+        if drifts:
+            print(f"Drift detected in {len(drifts)} of {len(OSASUWU_REPOS)} repo(s):")
+            for d in drifts:
+                print(f"  {d}")
+            sys.exit(1)
+        print(f"All {len(OSASUWU_REPOS)} repo(s) match their committed snapshots.")
+        return
+
     written = generate(OSASUWU_REPOS)
     print(f"Wrote {len(written)} files for {len(OSASUWU_REPOS)} repos:")
     for path in written:

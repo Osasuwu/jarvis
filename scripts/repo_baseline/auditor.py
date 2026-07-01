@@ -103,10 +103,19 @@ class BranchProtection:
     **not** modelled here. The baseline cares whether the right CI checks gate
     merges; the richer protection surface is out of scope for slice 1 and a
     downstream slice can extend this dataclass if the applier needs those axes.
+
+    ``contexts_source`` is a parallel list to ``contexts``: for each required
+    check context, the workflow file path that produces it (or ``None`` when no
+    local workflow defines it — e.g. a marketplace/app check like ``review``).
+    Populated by the auditor during :meth:`Auditor.audit`. ``None`` means
+    provenance was not computed (legacy snapshot); an entry of ``None`` inside
+    the list means that specific context has no matching local workflow.
+    Added in issue #979.
     """
 
     strict: bool = False
     contexts: list[str] = field(default_factory=list)
+    contexts_source: list[str | None] | None = None
 
 
 @dataclass
@@ -196,12 +205,22 @@ class Auditor:
         """
         try:
             settings = self._read_settings(repo)
+            workflows, wf_name_map = self._read_workflows(repo)
+            bp = self._read_branch_protection(repo, settings.default_branch)
+            if bp is not None:
+                # For each required check context, try to find a workflow whose
+                # name matches — that workflow's path is the provenance source.
+                # Contexts not produced by any local workflow (e.g. marketplace
+                # app checks like "review") get a null entry.
+                bp.contexts_source = [
+                    wf_name_map.get(ctx) for ctx in bp.contexts
+                ]
             return RepoSnapshot(
                 repo=repo,
                 settings=settings,
                 labels=self._read_labels(repo),
-                workflows=self._read_workflows(repo),
-                branch_protection=self._read_branch_protection(repo, settings.default_branch),
+                workflows=workflows,
+                branch_protection=bp,
                 dependabot_ecosystems=self._read_dependabot_ecosystems(repo),
             )
         except Exception as e:  # noqa: BLE001 — boundary: attribute to the repo
@@ -262,7 +281,7 @@ class Auditor:
             for lb in data
         ]
 
-    def _read_workflows(self, repo: str) -> list[str]:
+    def _read_workflows(self, repo: str) -> tuple[list[str], dict[str, str]]:
         # The workflows endpoint returns a ``{total_count, workflows: [...]}``
         # envelope, not a bare array, so the runner's array-paginate merge path
         # cannot handle it — ``--paginate`` here would trip the "unexpected page
@@ -272,7 +291,10 @@ class Auditor:
         # any realistic repo in scope; a repo exceeding it would need true
         # envelope-aware pagination, which no current target requires.
         data = self.runner(f"repos/{repo}/actions/workflows?per_page=100")
-        return [wf["path"] for wf in data.get("workflows", [])]
+        wfs = data.get("workflows", [])
+        paths = [wf["path"] for wf in wfs]
+        name_to_path = {wf["name"]: wf["path"] for wf in wfs}
+        return paths, name_to_path
 
     def _read_branch_protection(self, repo: str, default_branch: str) -> BranchProtection | None:
         try:
