@@ -8,6 +8,7 @@ should be updated with the outcome_id.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+import asyncio
 from unittest.mock import MagicMock, call
 from pathlib import Path
 
@@ -60,16 +61,27 @@ def _make_linkage_test_client(
         )
         return chain
 
-    # Setup events.select() chain
+    # Setup events.select() chain — captures event_id from .eq() for payload lookup
     def _events_select_side_effect(*_args, **_kwargs):
         chain = MagicMock()
-        chain.eq.return_value = chain
         chain.single.return_value = chain
+        _captured = {}
+
+        def _eq_side_effect(key, value):
+            _captured[key] = value
+            return chain
+
+        chain.eq.side_effect = _eq_side_effect
 
         def _execute_side_effect():
-            # Capture which event_id was queried via eq("id", <value>)
-            # This is a simplified mock — in reality we'd track the call args
-            return MagicMock(data=None)  # Default to None
+            event_id = _captured.get("id")
+            if event_id is not None and event_payloads:
+                payload = event_payloads.get(str(event_id))
+                if payload is not None:
+                    # events.select('payload').single() returns
+                    # data == {"payload": <the payload dict>}
+                    return MagicMock(data={"payload": payload})
+            return MagicMock(data=None)
 
         chain.execute.side_effect = _execute_side_effect
         return chain
@@ -91,6 +103,7 @@ def _make_linkage_test_client(
             m.update.return_value.eq.return_value.execute.return_value = MagicMock(
                 data=[{"id": "updated"}]
             )
+            client._fok_mock = m
             return m
         elif name == "events":
             m = MagicMock()
@@ -176,6 +189,148 @@ class TestFokOutcomeLinkage:
         assert "ep-decision-1" in result[0].text
 
         # No linkage attempted (no memories to link)
+
+    @pytest.mark.asyncio
+    async def test_linkage_updates_outcome_id_when_memory_matches(self, monkeypatch):
+        """Linkage updates fok_judgments.outcome_id when memory_id is in
+        the recall event's returned_ids."""
+        from server import _handle_record_decision
+
+        fok_judgments = [
+            {"id": _UID_FOK_1, "recall_event_id": _UID_EVENT_1, "project": None},
+        ]
+        event_payloads = {
+            _UID_EVENT_1: {"returned_ids": [_UID_MEM_A]},
+        }
+
+        client = _make_linkage_test_client(
+            fok_judgments_to_return=fok_judgments,
+            event_payloads=event_payloads,
+        )
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_record_decision(
+            {
+                "decision": "link test",
+                "rationale": "verify linkage",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+
+        assert "ep-decision-1" in result[0].text
+
+        # Yield to event loop so fire-and-forget linkage task runs
+        await asyncio.sleep(0)
+
+        # Verify fok_judgments.update() was called with the correct outcome_id
+        fok_mock = client._fok_mock
+        fok_mock.update.assert_called_once_with({"outcome_id": "out-1"})
+        # Verify it targeted the correct judgment by id
+        fok_mock.update.return_value.eq.assert_called_once_with("id", _UID_FOK_1)
+
+    @pytest.mark.asyncio
+    async def test_linkage_skips_when_memory_not_in_returned_ids(self, monkeypatch):
+        """No fok_judgments update when memory_id is absent from returned_ids."""
+        from server import _handle_record_decision
+
+        fok_judgments = [
+            {"id": _UID_FOK_1, "recall_event_id": _UID_EVENT_1, "project": None},
+        ]
+        # returned_ids contains _UID_MEM_B, not _UID_MEM_A
+        event_payloads = {
+            _UID_EVENT_1: {"returned_ids": [_UID_MEM_B]},
+        }
+
+        client = _make_linkage_test_client(
+            fok_judgments_to_return=fok_judgments,
+            event_payloads=event_payloads,
+        )
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "no match",
+                "rationale": "memory not in returned IDs",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+
+        await asyncio.sleep(0)
+
+        # No update should be performed (memory_id not in recall results)
+        fok_mock = client._fok_mock
+        fok_mock.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_linkage_skips_when_event_data_missing(self, monkeypatch):
+        """No update when the recall event has no payload or doesn't exist."""
+        from server import _handle_record_decision
+
+        fok_judgments = [
+            {"id": _UID_FOK_1, "recall_event_id": _UID_EVENT_1, "project": None},
+        ]
+        # No event_payloads passed — event lookup returns data=None
+        client = _make_linkage_test_client(
+            fok_judgments_to_return=fok_judgments,
+        )
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "missing event",
+                "rationale": "event data absent",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+
+        await asyncio.sleep(0)
+
+        fok_mock = client._fok_mock
+        fok_mock.update.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_linkage_skips_when_two_judgments_one_match(self, monkeypatch):
+        """Only the matching judgment gets updated when multiple exist."""
+        from server import _handle_record_decision
+
+        fok_judgments = [
+            {"id": _UID_FOK_1, "recall_event_id": _UID_EVENT_1, "project": None},
+            {"id": _UID_FOK_2, "recall_event_id": _UID_EVENT_2, "project": None},
+        ]
+        event_payloads = {
+            _UID_EVENT_1: {"returned_ids": [_UID_MEM_A]},
+            _UID_EVENT_2: {"returned_ids": [_UID_MEM_B]},
+        }
+
+        client = _make_linkage_test_client(
+            fok_judgments_to_return=fok_judgments,
+            event_payloads=event_payloads,
+        )
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "two judgments",
+                "rationale": "verify only matching judgment linked",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+
+        await asyncio.sleep(0)
+
+        fok_mock = client._fok_mock
+        # Update called once (only FOK_1 matches _UID_MEM_A)
+        fok_mock.update.assert_called_once_with({"outcome_id": "out-1"})
+        # Targeted FOK_1, not FOK_2
+        fok_mock.update.return_value.eq.assert_called_once_with("id", _UID_FOK_1)
 
 
 def test_fok_calibration_summary_in_schema():
