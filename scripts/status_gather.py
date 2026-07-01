@@ -203,7 +203,7 @@ def _default_run_git(repo_path: str, args: list[str]) -> dict:
     try:
         result = subprocess.run(
             ["git", "-C", repo_path, *args],
-            capture_output=True, text=True,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
             encoding="utf-8", errors="replace", timeout=15,
         )
         return {"stdout": result.stdout.strip(), "stderr": result.stderr.strip(),
@@ -221,7 +221,7 @@ def _default_run_gh(repo: str, args: list[str]) -> dict:
     try:
         result = subprocess.run(
             cmd,
-            capture_output=True, text=True,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL,
             encoding="utf-8", errors="replace", timeout=30,
         )
         return {"stdout": result.stdout.strip(), "stderr": result.stderr.strip(),
@@ -637,7 +637,7 @@ def gather(
         try:
             git_result = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
             )
             if git_result.returncode == 0:
                 jarvis_home = git_result.stdout.strip()
