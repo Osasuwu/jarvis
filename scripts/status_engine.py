@@ -28,6 +28,10 @@ from typing import Sequence
 STALE_INPROGRESS_DAYS = 3
 """Days before an in-progress issue is considered stale."""
 
+DECISION_FOLLOWTHROUGH_STALE_DAYS = 14
+"""Days a decision-referenced issue may sit without movement before the
+decision-without-followthrough detector flags it (#1057)."""
+
 TOP_N_CAP = 3
 """Absolute cap for "Куда смотреть" ranking."""
 
@@ -331,45 +335,105 @@ def detect_decision_without_followthrough(
     delta: Delta,
     decisions: list[DecisionInfo],
 ) -> list[DetectorHit]:
-    """Detect decisions referencing issues with no subsequent movement.
+    """Flag decision-referenced open issues that have had NO movement (#1057).
 
-    Scans decision text for #NNN references. If the referenced issue is
-    still open (visible in baseline or delta), it's flagged.
+    For each open issue referenced by ≥1 decision, take the LATEST referencing
+    decision's ``created_at`` as ``t_dec``. The issue is flagged iff BOTH:
+
+    - **No movement since the decision** — ``issue.updated_at <= t_dec``,
+      computed via ``_parse_iso_age`` so both timestamps are tz-normalized
+      (naive→UTC) before comparison. If the issue was touched after the
+      decision, that is real follow-through and it is not flagged. GitHub's
+      ``updated_at`` is bumped by comments, labels, milestone/assignee/state
+      changes and commit ``referenced`` events, but NOT by passive
+      "cross-referenced" timeline events — so it is a sound movement signal.
+    - **Age-gate** — ``now - t_dec > DECISION_FOLLOWTHROUGH_STALE_DAYS`` (14d).
+      A fresh decision has not had time to stall.
+
+    Matching is **project-scoped**: ``#NNN`` is matched only against the open
+    issues of ``dec.project``. A decision with a falsy ``project`` falls back
+    to any-repo matching (legacy decisions predating project provenance).
+
+    At most one hit per ``(repo, issue_number)``; the description lists every
+    referencing decision ID. Blank/malformed ``updated_at`` parses to age 0
+    (treated as freshly-touched) and therefore fails silent rather than
+    false-flagging — the false-negative-over-false-positive posture.
+
+    NOTE (accepted limitation): a housekeeping-only touch (label churn with no
+    real work) resets the movement clock and masks a genuine stall. The
+    2026-07-01 milestone-backfill root cause is fixed, so residual risk is
+    reduced; a backlog-issue-with-no-decision stall is tracked separately in
+    #1059 and out of scope here.
     """
     hits: list[DetectorHit] = []
+    now = datetime.now(timezone.utc)
 
-    # Build set of open issue numbers per repo
-    open_issues: dict[str, set[int]] = {}
+    # AC3: per-repo open-issue index carries the full IssueInfo (for updated_at),
+    # not a bare set of numbers — the movement check depends on it.
+    open_index: dict[str, dict[int, IssueInfo]] = {}
     for name, state in _merge_repos(baseline, delta).items():
-        open_issues.setdefault(name, set())
+        idx = open_index.setdefault(name, {})
         for issue in state.open_issues:
-            open_issues[name].add(issue.number)
+            idx[issue.number] = issue
 
+    # Collect referencing decisions per (repo, issue), tracking the latest one.
+    refs: dict[tuple[str, int], dict] = {}
     for dec in decisions:
-        refs = _ISSUE_REF_RE.findall(dec.decision)
-        seen: set[int] = set()
-        for ref_str in refs:
-            ref_num = int(ref_str)
-            if ref_num in seen:
-                continue
-            seen.add(ref_num)
-            for repo_name, issue_nums in open_issues.items():
-                if ref_num in issue_nums:
-                    hits.append(
-                        DetectorHit(
-                            detector="decision-without-followthrough",
-                            severity="major",
-                            repo=repo_name,
-                            issue_number=ref_num,
-                            title=f"Decision references #{ref_num}",
-                            description=(
-                                f"Decision '{dec.decision_id}' references "
-                                f"#{ref_num} but the issue has had no "
-                                f"visible movement"
-                            ),
-                        )
-                    )
-                    break
+        ref_nums = {int(m) for m in _ISSUE_REF_RE.findall(dec.decision)}
+        if not ref_nums:
+            continue
+        # AC5: project-scoped matching; falsy project → any-repo fallback.
+        if dec.project:
+            target_repos = [dec.project] if dec.project in open_index else []
+        else:
+            target_repos = list(open_index.keys())
+
+        for repo_name in target_repos:
+            idx = open_index[repo_name]
+            for ref_num in ref_nums:
+                issue = idx.get(ref_num)
+                if issue is None:
+                    continue
+                key = (repo_name, ref_num)
+                entry = refs.get(key)
+                if entry is None:
+                    entry = {"issue": issue, "dec_ids": [], "latest": None}
+                    refs[key] = entry
+                if dec.decision_id not in entry["dec_ids"]:
+                    entry["dec_ids"].append(dec.decision_id)
+                # Latest = smallest age (most recent created_at).
+                if entry["latest"] is None or _parse_iso_age(dec.created_at, now) < _parse_iso_age(
+                    entry["latest"], now
+                ):
+                    entry["latest"] = dec.created_at
+
+    for (repo_name, ref_num), entry in refs.items():
+        issue: IssueInfo = entry["issue"]
+        t_dec_age = _parse_iso_age(entry["latest"], now)
+        # AC2: age-gate — decision must be older than the stale window.
+        if t_dec_age <= DECISION_FOLLOWTHROUGH_STALE_DAYS:
+            continue
+        # AC1: movement check — flag only if the issue was NOT touched after
+        # the decision (issue is at least as old as the decision).
+        issue_age = _parse_iso_age(issue.updated_at, now)
+        if issue_age < t_dec_age:
+            continue
+        dec_list = ", ".join(entry["dec_ids"])
+        hits.append(
+            DetectorHit(
+                detector="decision-without-followthrough",
+                severity="major",
+                repo=repo_name,
+                issue_number=ref_num,
+                title=issue.title or f"Decision references #{ref_num}",
+                description=(
+                    f"#{ref_num} referenced by decision(s) {dec_list} but had "
+                    f"no movement for {issue_age:.1f}d "
+                    f"(latest decision {t_dec_age:.1f}d ago, threshold "
+                    f"{DECISION_FOLLOWTHROUGH_STALE_DAYS}d)"
+                ),
+            )
+        )
 
     return hits
 
