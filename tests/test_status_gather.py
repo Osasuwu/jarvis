@@ -956,6 +956,45 @@ class TestDefaultRunnersUtf8:
         assert out["stdout"] == "тест"
 
 
+class TestDefaultRunnersDetachStdin:
+    """_default_run_git / _default_run_gh must pass stdin=DEVNULL.
+
+    Regression: when gather() runs inside the mcp-status stdio server, the
+    process's stdin (fd 0) is the MCP transport pipe from the client. A child
+    gh/git spawned without stdin=DEVNULL inherits that pipe; its own background
+    grandchildren keep the pipe's write end open, so subprocess.run's
+    communicate() can't reach EOF and every call stalls toward its timeout —
+    turning a ~10s gather into ~70s (observed via the status_digest MCP tool).
+    Detaching stdin severs the inheritance. Same class of bug as the memory
+    lesson `subprocess_capture_output_grandchild_pipe_hang`.
+    """
+
+    def _capture_run(self, monkeypatch):
+        captured: dict = {}
+
+        class _FakeCompleted:
+            stdout = ""
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(*args, **kwargs):
+            captured.update(kwargs)
+            return _FakeCompleted()
+
+        monkeypatch.setattr(status_gather.subprocess, "run", _fake_run)
+        return captured
+
+    def test_run_git_detaches_stdin(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        _default_run_git("/repo", ["status"])
+        assert captured.get("stdin") is status_gather.subprocess.DEVNULL
+
+    def test_run_gh_detaches_stdin(self, monkeypatch):
+        captured = self._capture_run(monkeypatch)
+        _default_run_gh("Owner/repo", ["issue", "list"])
+        assert captured.get("stdin") is status_gather.subprocess.DEVNULL
+
+
 class TestDefaultRunGhRepoFlag:
     """_default_run_gh targets the repo correctly per subcommand.
 
