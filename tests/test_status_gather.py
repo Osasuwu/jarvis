@@ -954,3 +954,39 @@ class TestDefaultRunnersUtf8:
         assert captured.get("encoding") == "utf-8"
         assert captured.get("errors") == "replace"
         assert out["stdout"] == "тест"
+
+
+class TestDefaultRunGhRepoFlag:
+    """_default_run_gh targets the repo correctly per subcommand.
+
+    Regression: `gh api` addresses the repo via the URL path and rejects a
+    trailing `--repo` flag ("unknown flag: --repo"), which made every milestone
+    gather fail (ok=False) and the digest degrade silently. Every other gh
+    subcommand still needs `--repo`.
+    """
+
+    def _capture_cmd(self, monkeypatch):
+        captured: dict = {}
+
+        class _FakeCompleted:
+            stdout = "[]"
+            stderr = ""
+            returncode = 0
+
+        def _fake_run(cmd, *args, **kwargs):
+            captured["cmd"] = cmd
+            return _FakeCompleted()
+
+        monkeypatch.setattr(status_gather.subprocess, "run", _fake_run)
+        return captured
+
+    def test_api_subcommand_omits_repo_flag(self, monkeypatch):
+        captured = self._capture_cmd(monkeypatch)
+        _default_run_gh("Owner/repo", ["api", "repos/Owner/repo/milestones"])
+        assert "--repo" not in captured["cmd"]
+        assert captured["cmd"] == ["gh", "api", "repos/Owner/repo/milestones"]
+
+    def test_non_api_subcommand_appends_repo_flag(self, monkeypatch):
+        captured = self._capture_cmd(monkeypatch)
+        _default_run_gh("Owner/repo", ["issue", "list"])
+        assert captured["cmd"][-2:] == ["--repo", "Owner/repo"]
