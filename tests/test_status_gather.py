@@ -1135,3 +1135,46 @@ class TestLabelsFlowThrough:
             "Osasuwu/jarvis",
             "SergazyNarynov/redrobot",
         ]
+
+
+class TestJarvisHomeResolution:
+    """Resolution precedence: explicit arg > $JARVIS_HOME > git rev-parse > cwd.
+
+    Regression: gather() previously resolved only via `git rev-parse`, which
+    keys off the *current* repo. A call from another repo (e.g. redrobot) then
+    resolved to the wrong toplevel and degraded the whole gather. $JARVIS_HOME
+    must pin the jarvis root before git rev-parse is ever consulted.
+    """
+
+    def _run(self, monkeypatch, jarvis_home):
+        """Run gather with all I/O stubbed; guard git rev-parse from firing."""
+        called = {"rev_parse": False}
+
+        def _guard_subprocess_run(cmd, *a, **k):
+            if isinstance(cmd, (list, tuple)) and "rev-parse" in cmd:
+                called["rev_parse"] = True
+            raise AssertionError(f"unexpected subprocess.run({cmd})")
+
+        monkeypatch.setattr(status_gather.subprocess, "run", _guard_subprocess_run)
+        gather(
+            jarvis_home=jarvis_home,
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
+            run_gh_fn=_fixture_run_gh(_make_gh_success([])),
+            query_supabase_fn=_fixture_query_supabase([]),
+            now_fn=_fixture_now(),
+        )
+        return called
+
+    def test_env_var_short_circuits_git_rev_parse(self, monkeypatch):
+        """Empty arg + $JARVIS_HOME set → env wins, git rev-parse not called."""
+        monkeypatch.setenv("JARVIS_HOME", "/env/jarvis")
+        called = self._run(monkeypatch, jarvis_home="")
+        assert called["rev_parse"] is False
+
+    def test_explicit_arg_beats_env_var(self, monkeypatch):
+        """Explicit jarvis_home wins over $JARVIS_HOME; git rev-parse untouched."""
+        monkeypatch.setenv("JARVIS_HOME", "/env/jarvis")
+        called = self._run(monkeypatch, jarvis_home="/explicit/jarvis")
+        assert called["rev_parse"] is False

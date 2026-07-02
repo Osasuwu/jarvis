@@ -6,7 +6,10 @@
     },
     "status": {
       "command": "python",
-      "args": ["scripts/run-status-server.py"]
+      "args": ["scripts/run-status-server.py"],
+      "env": {
+        "JARVIS_HOME": "{{JARVIS_HOME}}"
+      }
     },
     "github": {
       "type": "http",
