@@ -26,7 +26,7 @@ class TestGrillSkillStructure:
         # Fallback to mirrors
         mirror_candidates = [
             Path.home() / ".claude" / "skills" / "grill" / "SKILL.md",
-            Path("/c/Users/petrk/.claude/skills/grill/SKILL.md"),
+            Path("/c/Users/jdoe/.claude/skills/grill/SKILL.md"),
         ]
 
         cls.skill_path = None

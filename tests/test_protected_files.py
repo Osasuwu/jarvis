@@ -56,10 +56,10 @@ def test_blocks_principal_script():
 # ── Absolute paths (Windows-style) ──────────────────────────────────
 
 def test_blocks_absolute_windows():
-    assert is_protected("C:\\Users\\petrk\\GitHub\\jarvis\\.gitleaks.toml")
+    assert is_protected("C:\\Users\\jdoe\\GitHub\\jarvis\\.gitleaks.toml")
 
 def test_blocks_absolute_forward_slash():
-    assert is_protected("C:/Users/petrk/GitHub/jarvis/scripts/secret-scanner.py")
+    assert is_protected("C:/Users/jdoe/GitHub/jarvis/scripts/secret-scanner.py")
 
 
 # ── Non-protected files: allowed ─────────────────────────────────────
@@ -109,7 +109,7 @@ def test_normalize_leading_dot_slash():
     assert normalize_path("./CLAUDE.md") == "CLAUDE.md"
 
 def test_normalize_absolute():
-    assert normalize_path("C:/Users/petrk/GitHub/jarvis/CLAUDE.md") == "CLAUDE.md"
+    assert normalize_path("C:/Users/jdoe/GitHub/jarvis/CLAUDE.md") == "CLAUDE.md"
 
 
 # ── User-level (~/.claude/) paths: blocked ───────────────────────────
