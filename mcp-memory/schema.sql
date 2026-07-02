@@ -2593,9 +2593,11 @@ create table if not exists task_queue (
   priority int not null default 0,
   assignee text,
 
-  -- Lifecycle
+  -- Lifecycle. `skipped_duplicate` (#931): dispatch-dedup terminal — issue
+  -- already had a live PR or sibling row. Keep in lockstep with
+  -- supabase/migrations/20260702120000_add_skipped_duplicate_status.sql.
   status text not null default 'pending'
-    check (status in ('pending', 'claimed', 'running', 'done', 'failed', 'parked')),
+    check (status in ('pending', 'claimed', 'running', 'done', 'failed', 'parked', 'skipped_duplicate')),
   claimed_at timestamptz,
   completed_at timestamptz,
   escalated_reason text,

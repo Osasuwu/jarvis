@@ -1,7 +1,7 @@
 """Task queue interface — enqueue, claim_next, transition.
 
 Built on the reshaped ``task_queue`` table (issue #740):
-- FSM: ``pending → claimed → running → done | failed | parked``
+- FSM: ``pending → claimed → running → done | failed | parked | skipped_duplicate``
 - Priority-ordered claiming (highest first, FIFO for ties)
 - Idempotency-key dedup (colliding key on enqueue is a silent no-op)
 
@@ -38,10 +38,12 @@ from agents.supabase_client import get_client
 _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"claimed"}),
     "claimed": frozenset({"running"}),
-    "running": frozenset({"done", "failed", "parked"}),
+    "running": frozenset({"done", "failed", "parked", "skipped_duplicate"}),
 }
 
-_TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "parked"})
+# `skipped_duplicate` (#931): dispatch-dedup found a live PR (or a live sibling
+# row) for the task's issue after the running transition — terminal, no retry.
+_TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "parked", "skipped_duplicate"})
 
 
 # -- Public API ------------------------------------------------------------
@@ -199,7 +201,7 @@ def transition(
 
     if to_status == "claimed":
         update["claimed_at"] = now
-    elif to_status in ("done", "failed"):
+    elif to_status in ("done", "failed", "skipped_duplicate"):
         update["completed_at"] = now
 
     if reason is not None:
@@ -316,6 +318,30 @@ def requeue_running(
         .execute()
     )
     return bool(result.data)
+
+
+def list_active(
+    *,
+    client: Client | None = None,
+) -> list[dict[str, Any]]:
+    """List live (``claimed`` or ``running``) rows for sibling dedup (#931).
+
+    The dispatch-dedup check reads these to detect a *sibling* task_queue row
+    already working the same issue. Only ``id``, ``goal`` and ``status`` are
+    selected — the dedup predicate extracts the issue number from ``goal``.
+    Two ``eq`` queries instead of ``in_`` keeps the call compatible with the
+    minimal client stubs used across the test suite.
+    """
+    cli = client or get_client()
+    rows: list[dict[str, Any]] = []
+    for status in ("claimed", "running"):
+        rows.extend(
+            (
+                cli.table("task_queue").select("id, goal, status").eq("status", status).execute()
+            ).data
+            or []
+        )
+    return rows
 
 
 def list_stale_running(

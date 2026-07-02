@@ -686,7 +686,13 @@ def gather(
     gathered_at = datetime.fromtimestamp(gather_start, tz=timezone.utc).isoformat()
     result = GatherResult(gathered_at=gathered_at)
 
-    # --- Resolve jarvis_home via git rev-parse ---
+    # --- Resolve jarvis_home: explicit arg > $JARVIS_HOME > git rev-parse > cwd ---
+    # git rev-parse keys off the *current* repo, so a call from another repo
+    # (e.g. redrobot) would resolve to the wrong toplevel and degrade the gather.
+    # $JARVIS_HOME pins the jarvis root regardless of CWD.
+    if not jarvis_home:
+        jarvis_home = os.environ.get("JARVIS_HOME", "").strip()
+
     if not jarvis_home:
         try:
             git_result = subprocess.run(

@@ -287,6 +287,45 @@ class TestJsonRoundtripCaveat:
             json_file.unlink()
 
 
+class TestStatusServerJarvisHomePinned:
+    """Regression: status MCP server must pin JARVIS_HOME in its env (#1087).
+
+    The status server's repo resolution (scripts/status_gather.py) falls back
+    to `git rev-parse --show-toplevel` / CWD when JARVIS_HOME is absent from
+    the process env. A server spawned from a non-jarvis repo (or a session
+    started before JARVIS_HOME was persisted) then reads a nonexistent
+    <other-repo>/config/repos.conf and returns an empty digest. Pinning
+    env.JARVIS_HOME in the template makes resolution independent of ambient
+    env/CWD.
+    """
+
+    SOURCE_MCP = (
+        Path(__file__).parent.parent.parent / ".claude-userlevel" / ".mcp.json"
+    )
+
+    def test_source_template_status_pins_jarvis_home(self):
+        """Source .mcp.json status block declares env.JARVIS_HOME placeholder."""
+        data = json.loads(self.SOURCE_MCP.read_text(encoding="utf-8"))
+        status = data["mcpServers"]["status"]
+        assert status.get("env", {}).get("JARVIS_HOME") == "{{JARVIS_HOME}}", (
+            "status server must carry env.JARVIS_HOME = '{{JARVIS_HOME}}' so the "
+            "installer substitutes the repo root; without it the digest silently "
+            "empties from non-jarvis repos"
+        )
+
+    def test_installed_status_env_substituted_to_repo_root(self):
+        """template_content resolves the JARVIS_HOME placeholder to repo root."""
+        repo_root = Path("/opt/jarvis-home")
+        rendered = installer.template_content(
+            self.SOURCE_MCP, repo_root, Path("/tmp/claude-home")
+        )
+        data = json.loads(rendered.decode("utf-8"))
+        assert (
+            data["mcpServers"]["status"]["env"]["JARVIS_HOME"]
+            == repo_root.as_posix()
+        )
+
+
 class TestSkipEnvCLI:
     """Tests for --skip-env CLI path (#415)."""
 

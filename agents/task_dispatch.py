@@ -235,9 +235,7 @@ def _compute_pr_evidence(
         # out). The assert narrows int|None → int for the typed call below and
         # fails loud if that invariant is ever broken upstream (LOW, PR #1011 r3).
         assert pr_number is not None  # noqa: S101 — invariant guard, not input validation
-        return check_pr_evidence_rework_shape(
-            task_id, goal, pr_number, spawned_at, client=client
-        )
+        return check_pr_evidence_rework_shape(task_id, goal, pr_number, spawned_at, client=client)
 
     evidence = check_pr_evidence_fresh_shape(task_id, goal, spawned_at, client=client)
     if evidence is False and stdout_reader is not None:
@@ -305,12 +303,138 @@ class TaskQueuePort(Protocol):
         """Return one process-less ``running`` row to ``pending`` (direct UPDATE, #921 AC4)."""
 
 
+# First "#N" reference in a goal string — the issue a fresh-shape task targets.
+# Right-anchored like the gate's closing-keyword regex so "#93" never reads as
+# "#931" (the (?!\d) lookahead).
+_GOAL_ISSUE_RE = re.compile(r"#(\d+)(?!\d)")
+
+
+def _goal_issue_number(goal: str) -> int | None:
+    """Issue number a goal references, or ``None`` when it references none."""
+    m = _GOAL_ISSUE_RE.search(goal)
+    return int(m.group(1)) if m else None
+
+
+def _load_gate_module() -> Any:
+    """Load ``scripts/delegate_predispatch_gate.py`` for its shared predicate (#931).
+
+    The gate module lives outside the ``agents`` package (it is the /delegate
+    CLI reference implementation), so import it by path, anchored to the repo
+    root the same way :data:`_EXECUTOR_LOG_DIR` is. Cached in ``sys.modules``
+    under its plain name — the tests import it the same way, so the two share
+    one module object.
+    """
+    mod = sys.modules.get("delegate_predispatch_gate")
+    if mod is not None:
+        return mod
+    import importlib.util
+
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "scripts",
+        "delegate_predispatch_gate.py",
+    )
+    spec = importlib.util.spec_from_file_location("delegate_predispatch_gate", path)
+    if spec is None or spec.loader is None:  # pragma: no cover — repo layout broken
+        raise ImportError(f"cannot load dispatch gate module from {path}")
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["delegate_predispatch_gate"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@dataclass(frozen=True)
+class DedupConfig:
+    """Pre-spawn dispatch-dedup wiring for :func:`drain_tasks` (#931).
+
+    ``fetch_in_flight`` returns ``(open_prs, open_branches)`` in the shapes the
+    gate's ``check_in_flight`` predicate takes — PR dicts with ``number`` /
+    ``body`` / ``headRefName``, branch names as plain strings. It is called
+    lazily, at most once per drain (the first fresh-shape task with an issue
+    reference triggers it), and a raise means *unverifiable*: the in-flight row
+    is requeued to ``pending`` and the drain stops — never a terminal state on
+    evidence we could not read.
+
+    ``list_active_rows`` returns live (``claimed``/``running``) task_queue rows
+    (``id``/``goal``/``status``) for the sibling check; queried fresh per task
+    so a row spawned earlier in this same drain is seen by later tasks.
+
+    ``record_outcome`` (optional) is called best-effort with a small payload
+    dict on each ``skipped_duplicate`` — a raise is logged and swallowed.
+    """
+
+    fetch_in_flight: Callable[[], tuple[list[dict[str, Any]], list[str]]]
+    list_active_rows: Callable[[], list[dict[str, Any]]]
+    record_outcome: Callable[[dict[str, Any]], None] | None = None
+
+
+def _record_skip_outcome(payload: dict[str, Any]) -> None:
+    """Best-effort ``task_outcomes`` write for a skipped-duplicate (#931).
+
+    Sandcastle-anon insert, so ``source_provenance`` carries the required
+    ``sandcastle:`` prefix (mcp-memory/schema.sql RLS, #542). Any failure is the
+    caller's to swallow — this never raises on the happy path but the caller
+    still guards it. ``GITHUB_REPO`` builds the issue URL for the ``issue_url``
+    link column.
+    """
+    from agents.supabase_client import get_client
+
+    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
+    issue_number = payload.get("issue_number")
+    get_client().table("task_outcomes").insert(
+        {
+            "task_type": "autonomous",
+            "task_description": f"dispatch-dedup skip: {payload.get('goal')}",
+            "outcome_status": "unknown",
+            "outcome_summary": (
+                f"Skipped duplicate dispatch for #{issue_number}: {payload.get('pointer')}"
+            ),
+            "project": "jarvis",
+            "issue_url": (
+                f"https://github.com/{repo}/issues/{issue_number}"
+                if issue_number is not None
+                else None
+            ),
+            "pattern_tags": ["dispatch-dedup", "skip", "autonomous"],
+            "source_provenance": "sandcastle:task_dispatch-dedup",
+        }
+    ).execute()
+
+
+def default_task_dedup(
+    github: GitHubClient,
+    *,
+    list_active: Callable[[], list[dict[str, Any]]] | None = None,
+) -> DedupConfig:
+    """Build the production :class:`DedupConfig` from a live GitHub client (#931).
+
+    ``fetch_in_flight`` maps the client's ``list_open_pulls`` / ``list_branch_names``
+    into the ``(open_prs, open_branches)`` shape the gate predicate takes;
+    ``list_active_rows`` defaults to :func:`task_queue.list_active`; ``record_outcome``
+    is the best-effort ``task_outcomes`` writer above. Wired from
+    :func:`wake_driver.main`; unit tests inject fakes into :class:`DedupConfig` directly.
+    """
+    active = list_active if list_active is not None else task_queue.list_active
+
+    def fetch_in_flight() -> tuple[list[dict[str, Any]], list[str]]:
+        return github.list_open_pulls(), github.list_branch_names()
+
+    return DedupConfig(
+        fetch_in_flight=fetch_in_flight,
+        list_active_rows=active,
+        record_outcome=_record_skip_outcome,
+    )
+
+
 @dataclass(frozen=True)
 class DrainResult:
     """What one :func:`drain_tasks` did."""
 
     spawned: int = 0
     failed: int = 0
+    # Tasks terminated as ``skipped_duplicate`` by the #931 pre-spawn dedup:
+    # a live PR (or a live sibling queue row) already covers their issue.
+    skipped_duplicate: int = 0
     # True iff the whole drain was skipped because the claude binary did not
     # resolve (AC7a) — distinct from "ran, claimed nothing".
     skipped_no_binary: bool = False
@@ -722,6 +846,7 @@ def drain_tasks(
     resolve_binary: ResolveBinary = default_resolve_binary,
     read_usage: ReadUsage = default_read_usage,
     sidecar: Sidecar | None = None,
+    dedup: DedupConfig | None = None,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -750,6 +875,15 @@ def drain_tasks(
     launched) stops the drain — the one in-flight row is requeued to
     ``pending`` (#921 AC4; reaper backstop if the requeue fails), the rest stay
     ``pending``; quota will not recover mid-drain.
+
+    With ``dedup`` wired (#931), each *fresh-shape* task that references an
+    issue is checked after the running transition and before the spawn: a live
+    PR for the issue or a live sibling queue row → ``running →
+    skipped_duplicate`` (terminal, best-effort outcome record) and the drain
+    continues; a stale claim branch with no PR → ``running → parked`` for
+    owner attention; evidence fetch failure → the row is requeued to
+    ``pending`` and the drain stops (unverifiable is never terminal).
+    Rework-shape goals bypass the check — they target a live PR by design.
     """
     # AC7a — pre-flight once; an unusable binary skips the whole drain. Widened
     # past FileNotFoundError to the other no-usable-binary failures (not
@@ -785,6 +919,9 @@ def drain_tasks(
 
     spawned = 0
     failed = 0
+    skipped_duplicate = 0
+    # #931 — GitHub in-flight evidence, fetched lazily at most once per drain.
+    in_flight_evidence: tuple[list[dict[str, Any]], list[str]] | None = None
     procs: list[tuple[str, Any]] = []
     # AC1/AC2 (#953) — carry each spawned task's goal + idempotency key + tz-aware
     # spawn time out to the wake_driver, which folds them onto the TrackedProc so
@@ -810,6 +947,99 @@ def drain_tasks(
                 task_id,
             )
             continue
+
+        # #931 — pre-spawn dispatch-dedup. Placed AFTER the running transition
+        # (the row is ours under the optimistic lock — a skip verdict can only
+        # terminate a row this drain owns) and BEFORE the spawn (the whole
+        # point: no duplicate process). Fresh-shape goals only; a rework goal
+        # targets a live PR by design and must not be eaten by the live-PR rule.
+        if dedup is not None:
+            shape, _ = parse_goal_shape(row["goal"])
+            issue_number = _goal_issue_number(str(row["goal"])) if shape == "fresh" else None
+            if issue_number is not None:
+                try:
+                    if in_flight_evidence is None:
+                        in_flight_evidence = dedup.fetch_in_flight()
+                    active_rows = dedup.list_active_rows()
+                except Exception:  # noqa: BLE001 — unverifiable is never terminal
+                    try:
+                        requeued = port.requeue_running(task_id)
+                    except Exception:  # noqa: BLE001 — requeue is best-effort
+                        requeued = False
+                    logger.exception(
+                        "[task_dispatch] dedup evidence fetch failed; stopping drain — task %s %s",
+                        task_id,
+                        "requeued to pending" if requeued else "left running for the reaper",
+                    )
+                    return DrainResult(
+                        spawned=spawned,
+                        failed=failed,
+                        skipped_duplicate=skipped_duplicate,
+                        procs=tuple(procs),
+                        spawned_meta=spawned_meta,
+                    )
+
+                open_prs, open_branches = in_flight_evidence
+                in_flight = _load_gate_module().check_in_flight(
+                    issue_number, open_prs, open_branches
+                )
+                sibling = next(
+                    (
+                        r
+                        for r in active_rows
+                        if str(r.get("id")) != task_id
+                        and _goal_issue_number(str(r.get("goal") or "")) == issue_number
+                    ),
+                    None,
+                )
+                if in_flight.verdict == "live_pr" or sibling is not None:
+                    pointer = (
+                        in_flight.pointer
+                        if in_flight.verdict == "live_pr"
+                        else f"live task_queue row {sibling['id']} already targets #{issue_number}"
+                    )
+                    try:
+                        port.transition(task_id, "skipped_duplicate", reason=pointer)
+                    except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                        logger.exception(
+                            "[task_dispatch] could not mark task %s skipped_duplicate; "
+                            "row left running for the reaper",
+                            task_id,
+                        )
+                        continue
+                    skipped_duplicate += 1
+                    logger.info(
+                        "[task_dispatch] task %s skipped as duplicate: %s", task_id, pointer
+                    )
+                    if dedup.record_outcome is not None:
+                        try:
+                            dedup.record_outcome(
+                                {
+                                    "task_id": task_id,
+                                    "issue_number": issue_number,
+                                    "goal": row["goal"],
+                                    "pointer": pointer,
+                                }
+                            )
+                        except Exception:  # noqa: BLE001 — outcome record is best-effort
+                            logger.exception(
+                                "[task_dispatch] outcome record for skipped task %s raised",
+                                task_id,
+                            )
+                    continue
+                if in_flight.verdict == "stale_branch":
+                    # A claim branch with no open PR is owner-attention territory:
+                    # someone (or some run) claimed the issue and went dark. Park —
+                    # don't spawn over it, don't silently drop it.
+                    try:
+                        port.transition(task_id, "parked", reason=in_flight.pointer)
+                    except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                        logger.exception(
+                            "[task_dispatch] could not park task %s on stale branch; "
+                            "row left running for the reaper",
+                            task_id,
+                        )
+                    continue
 
         # Capture spawn time BEFORE launching (MAJOR, PR #1011). The terminal
         # evidence check counts PR/commit activity with timestamp > spawned_at;
@@ -855,6 +1085,7 @@ def drain_tasks(
             return DrainResult(
                 spawned=spawned,
                 failed=failed,
+                skipped_duplicate=skipped_duplicate,
                 throttled=True,
                 procs=tuple(procs),
                 spawned_meta=spawned_meta,
@@ -893,7 +1124,13 @@ def drain_tasks(
                         task_id,
                     )
 
-    return DrainResult(spawned=spawned, failed=failed, procs=tuple(procs), spawned_meta=spawned_meta)
+    return DrainResult(
+        spawned=spawned,
+        failed=failed,
+        skipped_duplicate=skipped_duplicate,
+        procs=tuple(procs),
+        spawned_meta=spawned_meta,
+    )
 
 
 def reclaim_stale_tasks(
