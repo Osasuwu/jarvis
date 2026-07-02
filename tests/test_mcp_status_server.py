@@ -9,10 +9,12 @@ Tests the thin wrapper:
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 # Load mcp-status/server.py under a UNIQUE module name ("status_server"), not the
 # bare "server". mcp-memory's test suite also imports `from server import ...`;
@@ -371,3 +373,32 @@ def test_no_cache_means_no_contradiction_hit():
 
     contradiction_hits = [h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION]
     assert contradiction_hits == []
+
+
+# ============================================================================
+# Test: Off-event-loop gather with timeout (#1083)
+# ============================================================================
+
+
+def test_gather_timeout_returns_one_line_error():
+    """When gather() exceeds the timeout, return a one-line error (no traceback)."""
+    async def _test():
+        with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
+            result = await status_server.call_tool("status_digest", {"jarvis_home": ""})
+            assert len(result) == 1
+            assert "timed out" in result[0].text
+            assert "Traceback" not in result[0].text
+
+    asyncio.run(_test())
+
+
+def test_exception_returns_one_line_error_no_traceback():
+    """Exception in gather returns one-line error; traceback is server-side only."""
+    async def _test():
+        with patch.object(status_server, "gather", side_effect=ValueError("test error")):
+            result = await status_server.call_tool("status_digest", {"jarvis_home": ""})
+            assert len(result) == 1
+            assert "Error in status_digest" in result[0].text
+            assert "Traceback" not in result[0].text
+
+    asyncio.run(_test())

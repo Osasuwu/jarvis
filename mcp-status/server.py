@@ -26,6 +26,10 @@ import os
 import sys
 from pathlib import Path
 
+# Timeout for synchronous gather() running off the event loop.
+# A hung subprocess (gh/git) should not block the MCP server indefinitely.
+_GATHER_TIMEOUT = 30.0  # seconds
+
 # Repo root must be on sys.path BEFORE the `from scripts.*` imports below.
 # When launched as a script (`python mcp-status/server.py`), sys.path[0] is
 # the script's own dir (mcp-status/), NOT the repo root — so `scripts.*`
@@ -237,8 +241,19 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
         if name == "status_digest":
             jarvis_home = arguments.get("jarvis_home", "")
 
-            # Call gather to collect state
-            gather_result = gather(jarvis_home)
+            # Call gather off the event loop via thread pool, with a timeout.
+            # gather() makes blocking subprocess/HTTP calls; running it on the
+            # event loop would stall the MCP server for all other requests.
+            try:
+                gather_result = await asyncio.wait_for(
+                    asyncio.to_thread(gather, jarvis_home),
+                    timeout=_GATHER_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                return [TextContent(
+                    type="text",
+                    text="status gather timed out after 30s",
+                )]
 
             # Convert gather result to engine format
             baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
@@ -310,7 +325,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
     except Exception as exc:
         import traceback
 
-        return [TextContent(type="text", text=f"Error in {name}: {exc}\n{traceback.format_exc()}")]
+        traceback.print_exc()  # Log full traceback server-side
+        return [TextContent(type="text", text=f"Error in {name}: {exc}")]
 
 
 # ============================================================================
