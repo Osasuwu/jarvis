@@ -82,6 +82,10 @@ _REQUEUE_REASONS: dict[str, str] = {
     "done": "completed",
     "failed": "failed",
     "parked": "parked (terminal) — orchestrator re-routes",
+    # #931: a task skipped as a duplicate is terminal — an event blocked on it
+    # will never see it advance, so re-route rather than strand it. The live PR /
+    # sibling row that triggered the skip is the work the event should follow.
+    "skipped_duplicate": "skipped as duplicate (terminal) — orchestrator re-routes",
 }
 
 # Import-time guard: if task_queue adds a new terminal state the poller must

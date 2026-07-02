@@ -72,9 +72,11 @@ from agents.task_dispatch import (
     TaskQueuePort,
     TrackedProc,
     default_read_usage,
+    DedupConfig,
     default_resolve_binary,
     default_spawn,
     default_stdout_reader,
+    default_task_dedup,
     drain_tasks,
     kill_process_tree,
     kill_runaways,
@@ -226,6 +228,7 @@ def tick(
     task_event_emit: EventEmit | None = None,
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
+    task_dedup: DedupConfig | None = None,
 ) -> TickResult:
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
 
@@ -351,6 +354,7 @@ def tick(
                 resolve_binary=task_resolve_binary,
                 read_usage=task_read_usage,
                 sidecar=task_sidecar,
+                dedup=task_dedup,
             )
             if task_procs is not None:
                 for task_id, proc in task_drain.procs:
@@ -404,6 +408,7 @@ def run(
     task_event_emit: EventEmit | None = None,
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
+    task_dedup: DedupConfig | None = None,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -468,6 +473,7 @@ def run(
                 task_event_emit=task_event_emit,
                 task_evidence_client=task_evidence_client,
                 task_stdout_reader=task_stdout_reader,
+                task_dedup=task_dedup,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
@@ -661,6 +667,9 @@ def main() -> int:
             task_event_emit=event_emit,
             task_evidence_client=evidence_client,
             task_stdout_reader=default_stdout_reader,
+            # #931 dispatch-dedup: reuse the one evidence client for the
+            # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
+            task_dedup=default_task_dedup(evidence_client),
         )
     except KeyboardInterrupt:
         logger.info("[wake_driver] KeyboardInterrupt — stopping")

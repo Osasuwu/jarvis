@@ -181,8 +181,13 @@ def test_handles_missing_labels_key():
 # ── CLI smoke (stdin JSON → exit code) ──────────────────────────────────────
 
 
+# Since #931 the CLI takes a strict envelope: {issue, open_prs, open_branches}.
+# Bare-issue stdin now fails closed (exit 2) — see tests/test_dispatch_dedup.py.
+
+
 def test_main_returns_zero_on_allow(monkeypatch, capsys):
-    monkeypatch.setattr("sys.stdin", _StringStream(json.dumps(_issue())))
+    envelope = {"issue": _issue(), "open_prs": [], "open_branches": []}
+    monkeypatch.setattr("sys.stdin", _StringStream(json.dumps(envelope)))
     rc = gate.main([])
     assert rc == 0
     out = capsys.readouterr().out
@@ -190,10 +195,12 @@ def test_main_returns_zero_on_allow(monkeypatch, capsys):
 
 
 def test_main_returns_nonzero_on_refuse(monkeypatch, capsys):
-    monkeypatch.setattr(
-        "sys.stdin",
-        _StringStream(json.dumps(_issue(body="", labels=()))),
-    )
+    envelope = {
+        "issue": _issue(body="", labels=()),
+        "open_prs": [],
+        "open_branches": [],
+    }
+    monkeypatch.setattr("sys.stdin", _StringStream(json.dumps(envelope)))
     rc = gate.main([])
     assert rc == 1
     out = capsys.readouterr().out

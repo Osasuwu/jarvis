@@ -86,6 +86,65 @@ shortcut that hands work directly to a subagent) would silently bypass
 the gate. Re-surface this risk in any architectural change that restructures
 the dispatch chain.
 
+## Contract: dispatch-dedup (in-flight skip, runs before claim/spawn)
+
+Issue #931. An issue that already has an **open PR** or an **in-flight branch**
+is being worked — dispatching a second subagent onto it duplicates effort and
+races two branches to the same `Closes #N`. The check is network-fed but the
+predicate is the same pure `check_in_flight` the autonomous drain uses
+([`scripts/delegate_predispatch_gate.py`](../../../scripts/delegate_predispatch_gate.py)),
+so interactive `/delegate` and the reactive-core drain skip identically.
+
+**Per issue that survived the pre-dispatch gate, before §2 claim:**
+
+1. **Fetch in-flight evidence — explicit pagination** (a truncated first page
+   silently misses later PRs/branches and re-dispatches a duplicate):
+
+   ```bash
+   gh pr list --repo <owner/repo> --state open --limit 200 \
+     --json number,body,headRefName
+   gh api --paginate "repos/<owner/repo>/branches" --jq '.[].name'
+   ```
+
+2. **Check task_queue live rows** — a sibling autonomous drain may already be
+   running this issue with no PR yet. Query the `claimed`/`running` rows
+   (`agents.task_queue.list_active`) and match the issue number out of each
+   `goal`. A live sibling row for `#N` counts as in-flight.
+
+3. **Run the predicate** — feed the issue number + the fetched `open_prs`
+   (`number`/`body`/`headRefName`) + `open_branches` (names) into
+   `check_in_flight`. Verdicts:
+   - `live_pr` (closing keyword `#N` in a PR body, or a PR head branch
+     `^[a-z]+/<N>-`) **or a live sibling row** → **SKIP**.
+   - `stale_branch` (a `feat/<N>-` branch with no PR) → owner-attention route,
+     not an auto-dispatch.
+   - `clear` → proceed to claim.
+
+**On SKIP:**
+
+1. Report a **pointer** in the batch summary: `#N skipped — already in flight:
+   <PR #M / branch / live task row>`. No further routing.
+2. **No label mutation** — do NOT add `status:in-progress` or
+   `status:owner-queue`; the issue is already owned by the in-flight work.
+3. `mcp__memory__outcome_record(task_type="delegation", outcome_status="unknown",
+   outcome_summary="dispatch-dedup skip: <pointer>", project="<repo>",
+   issue_url=..., pattern_tags=["delegation","dispatch-dedup","skip"])` —
+   low-severity, for `/reflect` pattern-spotting. Not a `failure`: the issue
+   isn't broken, it's already being handled.
+
+**Atomic claim before spawn** — closes the residual race where two `/delegate`
+runs both read `clear` in the same window. Push an **empty** branch ref as the
+claim *before* spawning the subagent:
+
+```bash
+git push origin "$(git rev-parse origin/main)":refs/heads/feat/<N>-<slug>
+# non-zero exit (ref already exists) ⇒ another run claimed it ⇒ treat as SKIP
+```
+
+A rejected push means a concurrent claimer won — SKIP as above. This makes the
+branch namespace the lock; the pre-claim window (between the read and the push)
+is the only residual race, and it is documented in the gate module docstring.
+
 ## Contract: dispatch routing (per issue: mechanical / TDD-mode / `grill_required`)
 
 Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/delegate` does **not** run `/grill` inline (and there is no standalone `/tdd` skill — TDD-mode is dispatched as inline operating discipline carrying `_shared/tdd/` reference docs). For **each** issue that **passed** the pre-dispatch gate above, inspect two inputs and route to one of three branches. Routing is per-issue: a single batch can mix mechanical-mode and TDD-mode dispatches (and exclude grill-failing issues).
