@@ -40,6 +40,13 @@ REQUIRED_TOOLS = (
     "Bash(git blame:*)",
     "Bash(git log:*)",
     "Bash(wc:*)",
+    # #971: the plugin composes the verdict body with the Write tool at
+    # /tmp/code-review-comment.md and posts via `gh pr comment --body-file`,
+    # so no shell string-interpretation touches review prose (backticks,
+    # $(...), $VAR would otherwise be evaluated under bash -c). Dropping this
+    # grant denies the Write in the headless runner and the post step degrades
+    # back to shell-assembled bodies.
+    "Write(//tmp/**)",
 )
 
 # Sanity floor — the pre-existing tools that must never disappear either.
