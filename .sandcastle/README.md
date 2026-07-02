@@ -79,7 +79,7 @@ Expected outcome: a new branch `feat/<N>-<slug>` is pushed, a PR with
 API calls (since `ANTHROPIC_BASE_URL` is pointed at Ollama).
 
 To inspect what the agent actually did, look at the captured session JSONL at
-`~/.claude/projects/C-Users-petrk-GitHub-jarvis/<run-id>.jsonl`. The
+`~/.claude/projects/C-Users-jdoe-GitHub-jarvis/<run-id>.jsonl`. The
 `message.model` field on assistant turns confirms which model handled the
 request (`qwen3:8b`, `qwen2.5-coder:14b`, etc. — never `claude-…` for
 Ollama-routed runs).

@@ -223,11 +223,11 @@ class TestHelpers:
         assert hook._is_markdown_path("foo.md.bak") is False
 
     def test_detect_project_known(self):
-        assert hook.detect_project("/c/Users/petrk/GitHub/jarvis") == "jarvis"
-        assert hook.detect_project("/c/Users/petrk/GitHub/redrobot") == "redrobot"
+        assert hook.detect_project("/c/Users/jdoe/GitHub/jarvis") == "jarvis"
+        assert hook.detect_project("/c/Users/jdoe/GitHub/redrobot") == "redrobot"
 
     def test_detect_project_unknown_returns_none(self):
-        assert hook.detect_project("/c/Users/petrk/GitHub/other") is None
+        assert hook.detect_project("/c/Users/jdoe/GitHub/other") is None
 
     def test_detect_project_none_cwd(self):
         assert hook.detect_project(None) is None
@@ -369,7 +369,7 @@ class TestMainIntegration:
             {
                 "tool_name": "Task",
                 "tool_input": {"description": "audit ship readiness"},
-                "cwd": "C:/Users/petrk/GitHub/jarvis",
+                "cwd": "C:/Users/jdoe/GitHub/jarvis",
             },
             monkeypatch,
             tmp_path,
@@ -399,7 +399,7 @@ class TestMainIntegration:
             {
                 "tool_name": "Task",
                 "tool_input": {"description": "delegate Y to agent"},
-                "cwd": "C:/Users/petrk/GitHub/jarvis",
+                "cwd": "C:/Users/jdoe/GitHub/jarvis",
             },
             monkeypatch,
             tmp_path,
@@ -412,7 +412,7 @@ class TestMainIntegration:
             {
                 "tool_name": "Task",
                 "tool_input": {"description": "delegate Y to agent"},
-                "cwd": "C:/Users/petrk/GitHub/jarvis",
+                "cwd": "C:/Users/jdoe/GitHub/jarvis",
             },
             monkeypatch,
             tmp_path,
@@ -442,7 +442,7 @@ class TestMainIntegration:
                     "type": "feedback",
                     "content": "...",
                 },
-                "cwd": "C:/Users/petrk/GitHub/jarvis",
+                "cwd": "C:/Users/jdoe/GitHub/jarvis",
             },
             monkeypatch,
             tmp_path,

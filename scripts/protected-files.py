@@ -94,7 +94,7 @@ def _is_user_level_protected(normalized: str) -> bool:
     like ``some-other-project/.claude/settings.json`` don't false-positive.
 
     On Windows, the filesystem is case-insensitive so prefix matching is too
-    (e.g. ``c:/users/petrk/.claude/...`` must still match regardless of drive
+    (e.g. ``c:/users/jdoe/.claude/...`` must still match regardless of drive
     letter / user dir casing); ``os.path.normcase`` handles this. POSIX is
     left case-sensitive by the same call.
     """

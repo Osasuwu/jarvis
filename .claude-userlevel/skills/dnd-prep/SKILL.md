@@ -12,7 +12,7 @@ Companion to `/dnd` (in-session) and `/gm-craft` (storytelling reference). This 
 1. **Meta-setting is invisible to players.** The campaign frame is "worlds inside the Червь parasite." Output that goes to players (handouts, in-fiction text, NPC dialogue) NEVER references this directly. Hints only as world-reactions ("вселенная недовольна", echoes on ascent like Бездна's Depth Strain).
 2. **Causal chain, not "and then".** Every major event must answer: *"why now? why here? what would happen without PCs?"* "Because DM wrote it" → rewrite. Run the audit in Phase 4.
 3. **Grill is mandatory** before scaffolding (Phase 1) AND after (Phase 5). Do not skip on "small task" — see SOUL.md grill trigger checkbox.
-4. **Vault path:** `C:/Users/petrk/OneDrive/Документы/Obsidian Vault/DnD/` (Cyrillic `Документы`, space in `Obsidian Vault`). New worlds go to `DnD/Сюжет/<Имя>/`.
+4. **Vault path:** `C:/Users/jdoe/OneDrive/Документы/Obsidian Vault/DnD/` (Cyrillic `Документы`, space in `Obsidian Vault`). New worlds go to `DnD/Сюжет/<Имя>/`.
 5. **Petr's DM philosophy** (memory: `dnd_dm_philosophy`): short notes with colour keywords, NPC personality > scripted lines, flexible combat, homebrew-but-accessible. Never produce wall-of-text NPCs.
 6. **Don't rewrite 5e mechanics.** PHB/DMG live in `DnD/Мануалы/`. Reference page numbers when needed.
 7. **Default scope:** 1–2 fights, rest social. Petr's group prefers social. Override only if user says so.

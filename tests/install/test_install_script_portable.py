@@ -1,7 +1,7 @@
 r"""Portability guard test for install scripts.
 
 Verifies that install scripts do not contain:
-- Hardcoded usernames (e.g., petrk, sergazy)
+- Hardcoded usernames (e.g., jdoe, sergazy)
 - Absolute paths starting with C:\Users\<username>
 - Device-specific absolute paths
 

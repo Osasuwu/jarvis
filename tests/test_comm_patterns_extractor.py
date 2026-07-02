@@ -73,17 +73,17 @@ def _make_classifier(label="correction_wrong_direction", confidence=0.9, subtype
 
 def test_is_headless_cwd_detects_sandcastle():
     assert is_headless_cwd("/repo/.sandcastle/main") is True
-    assert is_headless_cwd("C:\\Users\\petrk\\GitHub\\jarvis\\.sandcastle\\worktree") is True
+    assert is_headless_cwd("C:\\Users\\jdoe\\GitHub\\jarvis\\.sandcastle\\worktree") is True
 
 
 def test_is_headless_cwd_detects_worktrees():
     assert is_headless_cwd("/repo/.claude-worktrees/keen-tesla-bb41d9") is True
-    assert is_headless_cwd("C:\\Users\\petrk\\GitHub\\jarvis\\worktrees\\foo") is True
+    assert is_headless_cwd("C:\\Users\\jdoe\\GitHub\\jarvis\\worktrees\\foo") is True
 
 
 def test_is_headless_cwd_passes_normal_repo():
-    assert is_headless_cwd("/Users/petrk/GitHub/jarvis") is False
-    assert is_headless_cwd("C:\\Users\\petrk\\GitHub\\jarvis") is False
+    assert is_headless_cwd("/Users/jdoe/GitHub/jarvis") is False
+    assert is_headless_cwd("C:\\Users\\jdoe\\GitHub\\jarvis") is False
     assert is_headless_cwd("") is False
     assert is_headless_cwd(None) is False
 
@@ -136,7 +136,7 @@ def test_extract_session_writes_rows_for_classified_turns(tmp_path: Path):
         device="dev1",
         session_id="abc",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=_make_classifier(),
         source_provenance="extractor:stop-hook",
@@ -165,7 +165,7 @@ def test_re_run_produces_zero_duplicate_rows(tmp_path: Path):
         device="dev1",
         session_id="s1",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=_make_classifier(),
         source_provenance="extractor:stop-hook",
@@ -193,7 +193,7 @@ def test_partial_run_advances_watermark_then_resumes(tmp_path: Path):
     common = dict(
         device="dev1",
         session_id="growing",
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=_make_classifier(),
         source_provenance="extractor:stop-hook",
@@ -225,7 +225,7 @@ def test_extractor_skips_sandcastle_cwd(tmp_path: Path):
         device="dev1",
         session_id="sand",
         transcript_path=fp,
-        cwd="C:\\Users\\petrk\\GitHub\\jarvis\\.sandcastle\\foo",
+        cwd="C:\\Users\\jdoe\\GitHub\\jarvis\\.sandcastle\\foo",
         store=store,
         classify_fn=_make_classifier(),
         source_provenance="extractor:stop-hook",
@@ -288,7 +288,7 @@ def test_extractor_skips_session_with_no_user_messages(tmp_path: Path):
         device="dev1",
         session_id="no-user",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=_make_classifier(),
         source_provenance="extractor:stop-hook",
@@ -316,7 +316,7 @@ def test_extractor_scrubs_anchor_and_sets_redacted_flag(tmp_path: Path):
         device="dev1",
         session_id="redact",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=_make_classifier(),
         source_provenance="extractor:stop-hook",
@@ -341,7 +341,7 @@ def test_low_confidence_is_skipped_but_watermark_advances(tmp_path: Path):
         device="dev1",
         session_id="low",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=_make_classifier(label="affirmation", confidence=0.3),
         source_provenance="extractor:stop-hook",
@@ -362,7 +362,7 @@ def test_confidence_boundary_at_threshold_writes_row(tmp_path: Path):
         device="dev1",
         session_id="boundary",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=_make_classifier(label="affirmation", confidence=0.5),
         source_provenance="extractor:stop-hook",
@@ -383,7 +383,7 @@ def test_null_label_is_skipped_but_watermark_advances(tmp_path: Path):
         device="dev1",
         session_id="null",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=null_classifier,
         source_provenance="extractor:stop-hook",
@@ -424,7 +424,7 @@ def test_partial_failure_does_not_skip_failed_turn_on_next_run(tmp_path: Path):
         device="dev1",
         session_id="partial",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=flaky,
         source_provenance="extractor:stop-hook",
@@ -479,7 +479,7 @@ def test_wall_clock_budget_aborts_loop_and_preserves_watermark(tmp_path: Path):
             device="dev1",
             session_id="wall",
             transcript_path=fp,
-            cwd="/Users/petrk/GitHub/jarvis",
+            cwd="/Users/jdoe/GitHub/jarvis",
             store=store,
             classify_fn=slow,
             source_provenance="extractor:stop-hook",
@@ -502,7 +502,7 @@ def test_classifier_returning_none_does_not_advance_watermark(tmp_path: Path):
         device="dev1",
         session_id="netfail",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=lambda u, p: None,
         source_provenance="extractor:stop-hook",
@@ -534,7 +534,7 @@ def test_ollama_unavailable_does_not_advance_watermark(tmp_path: Path):
         device="dev1",
         session_id="ollama-fail",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=boom,
         source_provenance="extractor:stop-hook",
@@ -586,7 +586,7 @@ def test_ollama_unavailable_mid_pass_preserves_completed_turns(tmp_path: Path):
         device="dev1",
         session_id="midpass",
         transcript_path=fp,
-        cwd="/Users/petrk/GitHub/jarvis",
+        cwd="/Users/jdoe/GitHub/jarvis",
         store=store,
         classify_fn=flaky,
         source_provenance="extractor:stop-hook",

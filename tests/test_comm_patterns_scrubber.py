@@ -26,28 +26,28 @@ def test_planted_email_is_redacted():
 
 
 def test_planted_path_with_username_is_redacted_windows():
-    text = r"check C:\Users\petrk\GitHub\jarvis\config.json"
+    text = r"check C:\Users\jdoe\GitHub\jarvis\config.json"
     out, redacted = scrub(text)
     assert redacted is True
-    assert "petrk" not in out
+    assert "jdoe" not in out
     assert "[REDACTED:user]" in out
     # Path structure preserved.
     assert "GitHub" in out
 
 
 def test_planted_path_with_username_is_redacted_posix_home():
-    text = "ls /home/petrk/.cache/jarvis-comms-analysis"
+    text = "ls /home/jdoe/.cache/jarvis-comms-analysis"
     out, redacted = scrub(text)
     assert redacted is True
-    assert "/home/petrk" not in out
+    assert "/home/jdoe" not in out
     assert "[REDACTED:user]" in out
 
 
 def test_planted_path_with_username_is_redacted_macos_users():
-    text = "open /Users/petrk/Documents/secret.txt"
+    text = "open /Users/jdoe/Documents/secret.txt"
     out, redacted = scrub(text)
     assert redacted is True
-    assert "/Users/petrk" not in out
+    assert "/Users/jdoe" not in out
     assert "[REDACTED:user]" in out
 
 

@@ -83,7 +83,7 @@ def test_should_skip_rejects_nonstandard(cwd):
     "cwd",
     [
         "/home/user/GitHub/jarvis",
-        "C:/Users/petrk/GitHub/jarvis",
+        "C:/Users/jdoe/GitHub/jarvis",
         "/home/user/.claude/skills",  # .claude but not a worktree
     ],
 )

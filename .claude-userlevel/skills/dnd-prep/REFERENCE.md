@@ -278,7 +278,7 @@ Use BBEG planning template above, verbatim.
 
 ## Petr-specific notes
 
-- Vault: `C:/Users/petrk/OneDrive/Документы/Obsidian Vault/DnD/`. Cyrillic `Документы`, space in `Obsidian Vault`. Always quote paths.
+- Vault: `C:/Users/jdoe/OneDrive/Документы/Obsidian Vault/DnD/`. Cyrillic `Документы`, space in `Obsidian Vault`. Always quote paths.
 - Existing worlds (reference for tone/depth): `Стимпанк/` (closed), `Бездна/` (active, Lumenite mechanic). Don't copy plot, copy *structural density*.
 - Players overlap with campaign (Эдуард, Никита, Даня): out-of-fiction they may know meta. **Never** drop hints that connect a oneshot world to the campaign chain. Treat as different Worm entirely.
 - Combat balance: Petr historically prepped for 2–3 PCs. Now group up to 5. Default: monsters at advertised CR + 1–2 minion mooks; have ready 1 "elite" upgrade for boss if pacing demands.
