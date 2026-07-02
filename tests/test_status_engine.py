@@ -59,7 +59,6 @@ def make_issue(
     updated_days_ago: float = 0,
     is_blocked: bool = False,
     blocks: list[int] | None = None,
-    project_status: str | None = None,
 ) -> IssueInfo:
     """Helper to construct an IssueInfo fixture."""
     return IssueInfo(
@@ -70,7 +69,6 @@ def make_issue(
         updated_at=_days_ago(updated_days_ago),
         is_blocked=is_blocked,
         blocks=blocks or [],
-        project_status=project_status,
     )
 
 
@@ -1167,18 +1165,20 @@ def _backlog_state(repo="Osasuwu/jarvis", issues=None):
 
 
 class TestStaleBacklog:
-    """AC2: vocab-driven candidate selection; AC3: per-repo info aggregation."""
+    """AC2: label-driven candidate selection; AC3: per-repo info aggregation.
+
+    Source of truth is ``status:*`` labels (grill #1065, decision 0a02d3ee):
+    - ``ready``   = issue carries ``status:ready``.
+    - ``backlog`` = open ∧ carries none of
+      ``status:{in-progress, ready, children-done}``.
+    """
 
     def test_backlog_idle_flagged(self):
-        """Backlog + idle ≥30d → candidate (time-only, no decision needed)."""
+        """Backlog (no status label) + idle ≥30d → candidate (time-only)."""
         baseline = make_baseline(
             repos={
                 "Osasuwu/jarvis": _backlog_state(
-                    issues=[
-                        make_issue(
-                            42, updated_days_ago=40, project_status="Backlog"
-                        )
-                    ],
+                    issues=[make_issue(42, updated_days_ago=40, labels=[])],
                 )
             }
         )
@@ -1193,9 +1193,33 @@ class TestStaleBacklog:
         baseline = make_baseline(
             repos={
                 "Osasuwu/jarvis": _backlog_state(
+                    issues=[make_issue(42, updated_days_ago=5, labels=[])],
+                )
+            }
+        )
+        assert detect_stale_backlog(baseline, make_delta(), []) == []
+
+    def test_backlog_with_unrelated_label_flagged(self):
+        """A non-status label doesn't exclude an issue from backlog."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
+                    issues=[make_issue(42, updated_days_ago=40, labels=["enhancement"])],
+                )
+            }
+        )
+        assert len(detect_stale_backlog(baseline, make_delta(), [])) == 1
+
+    def test_children_done_not_flagged(self):
+        """status:children-done excludes an issue from backlog (dead vocab)."""
+        baseline = make_baseline(
+            repos={
+                "Osasuwu/jarvis": _backlog_state(
                     issues=[
                         make_issue(
-                            42, updated_days_ago=5, project_status="Backlog"
+                            42,
+                            updated_days_ago=99,
+                            labels=["status:children-done"],
                         )
                     ],
                 )
@@ -1203,29 +1227,12 @@ class TestStaleBacklog:
         )
         assert detect_stale_backlog(baseline, make_delta(), []) == []
 
-    def test_status_case_normalized(self):
-        """Status matched case-insensitively (`.strip().lower()`)."""
-        baseline = make_baseline(
-            repos={
-                "Osasuwu/jarvis": _backlog_state(
-                    issues=[
-                        make_issue(
-                            42, updated_days_ago=40, project_status="  backlog "
-                        )
-                    ],
-                )
-            }
-        )
-        assert len(detect_stale_backlog(baseline, make_delta(), [])) == 1
-
     def test_ready_idle_no_decision_flagged(self):
-        """Ready + idle ≥30d + no referencing decision → candidate."""
+        """status:ready + idle ≥30d + no referencing decision → candidate."""
         baseline = make_baseline(
             repos={
                 "Osasuwu/jarvis": _backlog_state(
-                    issues=[
-                        make_issue(7, updated_days_ago=40, project_status="Ready")
-                    ],
+                    issues=[make_issue(7, updated_days_ago=40, labels=["status:ready"])],
                 )
             }
         )
@@ -1234,21 +1241,15 @@ class TestStaleBacklog:
         assert "#7" in hits[0].description
 
     def test_ready_with_decision_not_flagged(self):
-        """Ready + idle ≥30d but a project decision references it → suppressed."""
+        """status:ready + idle ≥30d but a project decision references it → suppressed."""
         baseline = make_baseline(
             repos={
                 "Osasuwu/jarvis": _backlog_state(
-                    issues=[
-                        make_issue(7, updated_days_ago=40, project_status="Ready")
-                    ],
+                    issues=[make_issue(7, updated_days_ago=40, labels=["status:ready"])],
                 )
             }
         )
-        decisions = [
-            make_decision(
-                decision="Ship #7 next sprint", project="Osasuwu/jarvis"
-            )
-        ]
+        decisions = [make_decision(decision="Ship #7 next sprint", project="Osasuwu/jarvis")]
         assert detect_stale_backlog(baseline, make_delta(), decisions) == []
 
     def test_ready_decision_short_project_slug_matches(self):
@@ -1256,9 +1257,7 @@ class TestStaleBacklog:
         baseline = make_baseline(
             repos={
                 "Osasuwu/jarvis": _backlog_state(
-                    issues=[
-                        make_issue(7, updated_days_ago=40, project_status="Ready")
-                    ],
+                    issues=[make_issue(7, updated_days_ago=40, labels=["status:ready"])],
                 )
             }
         )
@@ -1266,26 +1265,16 @@ class TestStaleBacklog:
         assert detect_stale_backlog(baseline, make_delta(), decisions) == []
 
     def test_in_progress_not_flagged(self):
+        """status:in-progress excludes an issue from backlog (owned by stale-in-progress)."""
         baseline = make_baseline(
             repos={
                 "Osasuwu/jarvis": _backlog_state(
                     issues=[
                         make_issue(
-                            9, updated_days_ago=99, project_status="In Progress"
+                            9,
+                            updated_days_ago=99,
+                            labels=["status:in-progress"],
                         )
-                    ],
-                )
-            }
-        )
-        assert detect_stale_backlog(baseline, make_delta(), []) == []
-
-    def test_none_status_not_flagged(self):
-        """project_status None (not on board) → never flagged."""
-        baseline = make_baseline(
-            repos={
-                "Osasuwu/jarvis": _backlog_state(
-                    issues=[
-                        make_issue(9, updated_days_ago=99, project_status=None)
                     ],
                 )
             }
@@ -1301,9 +1290,9 @@ class TestStaleBacklog:
             repos={
                 "Osasuwu/jarvis": _backlog_state(
                     issues=[
-                        make_issue(3, updated_days_ago=35, project_status="Backlog"),
-                        make_issue(1, updated_days_ago=90, project_status="Backlog"),
-                        make_issue(2, updated_days_ago=60, project_status="Ready"),
+                        make_issue(3, updated_days_ago=35, labels=[]),
+                        make_issue(1, updated_days_ago=90, labels=[]),
+                        make_issue(2, updated_days_ago=60, labels=["status:ready"]),
                     ],
                 )
             }
@@ -1367,22 +1356,6 @@ class TestModuleConstants:
     def test_stale_backlog_days_constant(self):
         assert isinstance(STALE_BACKLOG_DAYS, int)
         assert STALE_BACKLOG_DAYS == 30
-
-
-# ============================================================================
-# AC1: IssueInfo carries the Projects v2 Status string
-# ============================================================================
-
-
-class TestIssueProjectStatus:
-    """AC1: IssueInfo.project_status holds the ProjectV2 Status (or None)."""
-
-    def test_defaults_to_none(self):
-        assert IssueInfo(number=1).project_status is None
-
-    def test_carries_status_value(self):
-        issue = IssueInfo(number=1, project_status="Backlog")
-        assert issue.project_status == "Backlog"
 
 
 # ============================================================================

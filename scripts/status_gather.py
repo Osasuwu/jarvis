@@ -80,7 +80,6 @@ class SourceKind:
     GH_ISSUES = "gh_issues"
     GH_CI = "gh_ci"
     GH_MILESTONES = "gh_milestones"
-    GH_PROJECTS = "gh_projects"
     SUPABASE_DECISIONS = "supabase_decisions"
     STATUS_SNAPSHOT = "status_snapshot"
 
@@ -154,9 +153,6 @@ class GatherResult:
 # read_repos_conf(path) -> list[str] (owner/repo lines)
 ReadReposConfFn = Callable[[str], list[str]]
 
-# read_repos_conf_projects(path) -> dict[str, int] (owner/repo -> project number)
-ReadReposConfProjectsFn = Callable[[str], dict]
-
 # read_device_json(path) -> dict | None (parsed device.json or None)
 ReadDeviceJsonFn = Callable[[str], dict | None]
 
@@ -193,19 +189,6 @@ def _default_read_repos_conf(path: str) -> list[str]:
     return parse_repos_conf(raw)
 
 
-def _default_read_repos_conf_projects(path: str) -> dict:
-    """Read owner/repo → project-number map from repos.conf (#1059).
-
-    Only lines carrying a ``project=<N>`` token contribute an entry; a repo
-    without one simply has no ProjectV2 board configured and is skipped by the
-    project-status fetch. Empty/unreadable file → empty map.
-    """
-    raw = _default_read_file(path)
-    if raw is None:
-        return {}
-    return parse_repos_conf_projects(raw)
-
-
 def _default_read_device_json(path: str) -> dict | None:
     raw = _default_read_file(path)
     if raw is None:
@@ -220,11 +203,18 @@ def _default_run_git(repo_path: str, args: list[str]) -> dict:
     try:
         result = subprocess.run(
             ["git", "-C", repo_path, *args],
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
-            encoding="utf-8", errors="replace", timeout=15,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
         )
-        return {"stdout": result.stdout.strip(), "stderr": result.stderr.strip(),
-                "returncode": result.returncode}
+        return {
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode,
+        }
     except (OSError, subprocess.SubprocessError) as exc:
         return {"stdout": "", "stderr": str(exc), "returncode": -1}
 
@@ -238,17 +228,27 @@ def _default_run_gh(repo: str, args: list[str]) -> dict:
     try:
         result = subprocess.run(
             cmd,
-            capture_output=True, text=True, stdin=subprocess.DEVNULL,
-            encoding="utf-8", errors="replace", timeout=30,
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
         )
-        return {"stdout": result.stdout.strip(), "stderr": result.stderr.strip(),
-                "returncode": result.returncode}
+        return {
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "returncode": result.returncode,
+        }
     except (OSError, subprocess.SubprocessError) as exc:
         return {"stdout": "", "stderr": str(exc), "returncode": -1}
 
 
 def _default_query_supabase(
-    url: str, key: str, table: str, params: dict,
+    url: str,
+    key: str,
+    table: str,
+    params: dict,
 ) -> list[dict] | None:
     """Query Supabase table via REST API (direct execute_sql equivalent).
 
@@ -304,29 +304,6 @@ def parse_repos_conf(raw: str) -> list[str]:
     return repos
 
 
-def parse_repos_conf_projects(raw: str) -> dict:
-    """Parse repos.conf ``project=<N>`` tokens into owner/repo → int map (#1059).
-
-    Only lines with a parseable ``project=<int>`` token yield an entry; lines
-    without one (or with a non-integer value) are omitted, so a repo with no
-    ProjectV2 board is simply absent from the map. Pure, tested directly.
-    """
-    projects: dict[str, int] = {}
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        tokens = line.split()
-        repo = tokens[0]
-        for tok in tokens[1:]:
-            if tok.startswith("project="):
-                try:
-                    projects[repo] = int(tok.split("=", 1)[1])
-                except ValueError:
-                    pass
-    return projects
-
-
 # ============================================================================
 # Per-repo gather helpers
 # ============================================================================
@@ -358,11 +335,19 @@ def _gather_git_state(
 def _gather_gh_prs(repo: str, run_gh: RunGhFn, now: float) -> tuple[dict, Provenance]:
     """Gather open PRs for one repo."""
     start = time.time()
-    result = run_gh(repo, [
-        "pr", "list", "--state", "open",
-        "--json", "number,title,createdAt,updatedAt,reviewDecision,isDraft,labels,headRefName",
-        "--limit", "100",
-    ])
+    result = run_gh(
+        repo,
+        [
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,createdAt,updatedAt,reviewDecision,isDraft,labels,headRefName",
+            "--limit",
+            "100",
+        ],
+    )
 
     elapsed = time.time() - start
     ok = result["returncode"] == 0
@@ -382,15 +367,25 @@ def _gather_gh_prs(repo: str, run_gh: RunGhFn, now: float) -> tuple[dict, Proven
 
 
 def _gather_gh_issues(
-    repo: str, run_gh: RunGhFn, now: float,
+    repo: str,
+    run_gh: RunGhFn,
+    now: float,
 ) -> tuple[dict, Provenance]:
     """Gather open issues for one repo."""
     start = time.time()
-    result = run_gh(repo, [
-        "issue", "list", "--state", "open",
-        "--json", "number,title,labels,updatedAt,milestone",
-        "--limit", "100",
-    ])
+    result = run_gh(
+        repo,
+        [
+            "issue",
+            "list",
+            "--state",
+            "open",
+            "--json",
+            "number,title,labels,updatedAt,milestone",
+            "--limit",
+            "100",
+        ],
+    )
 
     elapsed = time.time() - start
     ok = result["returncode"] == 0
@@ -412,10 +407,17 @@ def _gather_gh_issues(
 def _gather_gh_ci(repo: str, run_gh: RunGhFn, now: float) -> tuple[dict, Provenance]:
     """Gather recent CI runs for one repo."""
     start = time.time()
-    result = run_gh(repo, [
-        "run", "list", "--json", "conclusion,name,createdAt,headBranch",
-        "--limit", "10",
-    ])
+    result = run_gh(
+        repo,
+        [
+            "run",
+            "list",
+            "--json",
+            "conclusion,name,createdAt,headBranch",
+            "--limit",
+            "10",
+        ],
+    )
 
     elapsed = time.time() - start
     ok = result["returncode"] == 0
@@ -432,15 +434,22 @@ def _gather_gh_ci(repo: str, run_gh: RunGhFn, now: float) -> tuple[dict, Provena
 
 
 def _gather_gh_milestones(
-    repo: str, run_gh: RunGhFn, now: float,
+    repo: str,
+    run_gh: RunGhFn,
+    now: float,
 ) -> tuple[dict, Provenance]:
     """Gather open milestones for one repo (redrobot-asymmetric source)."""
     start = time.time()
     # Use gh api directly since gh milestone list has different shapes
-    result = run_gh(repo, [
-        "api", f"repos/{repo}/milestones?state=open&per_page=50",
-        "--jq", ".[] | {number, title, open_issues, closed_issues, due_on}",
-    ])
+    result = run_gh(
+        repo,
+        [
+            "api",
+            f"repos/{repo}/milestones?state=open&per_page=50",
+            "--jq",
+            ".[] | {number, title, open_issues, closed_issues, due_on}",
+        ],
+    )
 
     elapsed = time.time() - start
     ok = result["returncode"] == 0
@@ -461,80 +470,6 @@ def _gather_gh_milestones(
 
     prov = Provenance(ran=True, ok=ok, input_rows=len(data), age=elapsed)
     return {"milestones": data, "milestones_truncated": truncated}, prov
-
-
-# ============================================================================
-# ProjectV2 status gather (#1059)
-# ============================================================================
-
-# GraphQL for a *user*-owned Project (owner from repo.split("/")[0]); the
-# board tracked repos live under is a user project, not an org project.
-_PROJECT_STATUS_QUERY = (
-    "query($owner: String!, $number: Int!) {"
-    "  user(login: $owner) {"
-    "    projectV2(number: $number) {"
-    "      items(first: 100) {"
-    "        nodes {"
-    "          content { ... on Issue { number } }"
-    "          fieldValueByName(name: \"Status\") {"
-    "            ... on ProjectV2ItemFieldSingleSelectValue { name }"
-    "          }"
-    "        }"
-    "      }"
-    "    }"
-    "  }"
-    "}"
-)
-
-_PROJECT_STATUS_JQ = (
-    ".data.user.projectV2.items.nodes[] "
-    "| select(.content.number != null) "
-    "| {number: .content.number, status: (.fieldValueByName.name // null)}"
-)
-
-
-def _gather_project_status(
-    repo: str, project_number: int, run_gh: RunGhFn, now: float,
-) -> tuple[dict, Provenance]:
-    """Fetch GitHub Projects v2 ``Status`` per issue number for one repo (#1059).
-
-    Returns ({issue_number: status_string}, Provenance). A fetch failure (or
-    malformed payload) yields an empty map with ok=False so the caller leaves
-    ``project_status=None`` on every issue and surfaces a provenance gap rather
-    than a false-green (AC5). Issues without a Status value are simply absent
-    from the map (join leaves them None → detector treats as "not on board").
-    """
-    start = time.time()
-    owner = repo.split("/")[0]
-    result = run_gh(repo, [
-        "api", "graphql",
-        "-f", f"query={_PROJECT_STATUS_QUERY}",
-        "-F", f"owner={owner}",
-        "-F", f"number={project_number}",
-        "--jq", _PROJECT_STATUS_JQ,
-    ])
-
-    elapsed = time.time() - start
-    ok = result["returncode"] == 0
-    status_by_number: dict[int, str] = {}
-
-    if ok and result["stdout"]:
-        try:
-            for line in result["stdout"].splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                row = json.loads(line)
-                num = row.get("number")
-                status = row.get("status")
-                if num is not None and status:
-                    status_by_number[int(num)] = str(status)
-        except (json.JSONDecodeError, ValueError, TypeError):
-            ok = False
-            status_by_number = {}
-
-    prov = Provenance(ran=True, ok=ok, input_rows=len(status_by_number), age=elapsed)
-    return status_by_number, prov
 
 
 # ============================================================================
@@ -718,7 +653,6 @@ def gather(
     *,
     # Injectable I/O callbacks (defaults = real implementations)
     read_repos_conf_fn: ReadReposConfFn | None = None,
-    read_repos_conf_projects_fn: ReadReposConfProjectsFn | None = None,
     read_device_json_fn: ReadDeviceJsonFn | None = None,
     run_git_fn: RunGitFn | None = None,
     run_gh_fn: RunGhFn | None = None,
@@ -742,9 +676,6 @@ def gather(
     """
     # Resolve defaults
     _read_conf = read_repos_conf_fn or _default_read_repos_conf
-    _read_conf_projects = (
-        read_repos_conf_projects_fn or _default_read_repos_conf_projects
-    )
     _read_dev = read_device_json_fn or _default_read_device_json
     _run_git = run_git_fn or _default_run_git
     _run_gh = run_gh_fn or _default_run_gh
@@ -760,7 +691,10 @@ def gather(
         try:
             git_result = subprocess.run(
                 ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=5,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=5,
             )
             if git_result.returncode == 0:
                 jarvis_home = git_result.stdout.strip()
@@ -779,21 +713,20 @@ def gather(
     if not repos:
         # Empty or unreadable repos.conf — provenance stamped but no repos to gather
         result.provenance[SourceKind.REPOS_CONF] = Provenance(
-            ran=True, ok=False, input_rows=0,
+            ran=True,
+            ok=False,
+            input_rows=0,
             age=_now() - gather_start,
         ).to_dict()
         result.errors.append("repos.conf is empty, unreadable, or not found")
         return result
 
     result.provenance[SourceKind.REPOS_CONF] = Provenance(
-        ran=True, ok=True, input_rows=len(repos),
+        ran=True,
+        ok=True,
+        input_rows=len(repos),
         age=_now() - gather_start,
     ).to_dict()
-
-    # Project-number map (owner/repo -> ProjectV2 number) from the same conf.
-    # A repo absent from the map has no board configured; its issues keep
-    # project_status=None and no gh_projects provenance is stamped (#1059 AC1).
-    repos_projects = _read_conf_projects(conf_path) or {}
 
     # --- Step 2: Read device.json for repos_path ---
     dev_path = str(jarvis_path / DEVICE_CONF_RELPATH)
@@ -828,7 +761,9 @@ def gather(
             repo_entry["branch"] = None
             repo_entry["clean"] = None
             repo_entry["provenance"][SourceKind.GIT_STATE] = Provenance(
-                ran=True, ok=False, input_rows=-1,
+                ran=True,
+                ok=False,
+                input_rows=-1,
                 age=_now() - gather_start,
             ).to_dict()
 
@@ -846,25 +781,11 @@ def gather(
         repo_entry.update(issues_state)
         repo_entry["provenance"][SourceKind.GH_ISSUES] = issues_prov.to_dict()
 
-        # ProjectV2 Status — join onto issues by number (#1059 AC1). Only for
-        # repos with a configured project number. The provenance is stamped at
-        # TOP level (`gh_projects:<repo>`) so a fetch failure gates health via
-        # compute_health_verdict rather than false-greening (AC5).
-        project_number = repos_projects.get(repo_name_stripped)
-        if project_number is not None:
-            status_map, project_prov = _gather_project_status(
-                repo_name_stripped, project_number, _run_gh, _now(),
-            )
-            for issue in repo_entry.get("issues") or []:
-                issue["project_status"] = status_map.get(issue.get("number"))
-            result.provenance[
-                f"{SourceKind.GH_PROJECTS}:{repo_name_stripped}"
-            ] = project_prov.to_dict()
-            if not project_prov.ok:
-                result.errors.append(
-                    f"{SourceKind.GH_PROJECTS}:{repo_name_stripped}: "
-                    f"ProjectV2 status fetch failed"
-                )
+        # No ProjectV2 board fetch (#1065): status:* labels are the single source
+        # of truth (grill decision 0a02d3ee); the board is a read-only downstream
+        # projection maintained by project-sync.yml. Detectors read labels off
+        # the issues gathered above — removing the fetch also removes a
+        # false-green surface (a board fetch failure can no longer gate health).
 
         # CI
         ci_state, ci_prov = _gather_gh_ci(repo_name_stripped, _run_gh, _now())
@@ -873,14 +794,15 @@ def gather(
 
         # Milestones — asymmetric source: redrobot may not have this
         milestones_state, milestones_prov = _gather_gh_milestones(
-            repo_name_stripped, _run_gh, _now(),
+            repo_name_stripped,
+            _run_gh,
+            _now(),
         )
         if not milestones_prov.ok:
             # Degrade this repo's milestone source but keep other sources
             repo_entry["degraded"] = True
             repo_entry["degradation_reason"] = (
-                f"{SourceKind.GH_MILESTONES}: "
-                f"failed (expected for repos without milestone access)"
+                f"{SourceKind.GH_MILESTONES}: failed (expected for repos without milestone access)"
             )
             repo_entry["milestones"] = None
             repo_entry["milestones_truncated"] = False
@@ -896,7 +818,10 @@ def gather(
 
     if supabase_url and supabase_key:
         decisions, decisions_prov = gather_decisions(
-            supabase_url, supabase_key, _query_supabase, _now(),
+            supabase_url,
+            supabase_key,
+            _query_supabase,
+            _now(),
         )
         result.decisions = decisions
         result.provenance[SourceKind.SUPABASE_DECISIONS] = decisions_prov.to_dict()
@@ -907,7 +832,9 @@ def gather(
     else:
         # Supabase not configured — non-fatal, provenance marks it unavailable
         result.provenance[SourceKind.SUPABASE_DECISIONS] = Provenance(
-            ran=True, ok=False, input_rows=0,
+            ran=True,
+            ok=False,
+            input_rows=0,
             age=_now() - gather_start,
         ).to_dict()
         result.errors.append(
@@ -922,7 +849,10 @@ def gather(
     # and the engine/renderer treats it as stale/no-baseline.
     if supabase_url and supabase_key:
         cache, snap_prov = gather_contradiction_cache(
-            supabase_url, supabase_key, _query_supabase, _now(),
+            supabase_url,
+            supabase_key,
+            _query_supabase,
+            _now(),
         )
         result.contradiction_cache = cache
         result.provenance[SourceKind.STATUS_SNAPSHOT] = snap_prov.to_dict()
@@ -934,7 +864,10 @@ def gather(
         # No creds ⇒ nothing was gathered, so data age is undefined (None), not
         # time-since-gather-start (m3). ok=False already signals the gap.
         result.provenance[SourceKind.STATUS_SNAPSHOT] = Provenance(
-            ran=True, ok=False, input_rows=0, age=None,
+            ran=True,
+            ok=False,
+            input_rows=0,
+            age=None,
         ).to_dict()
         result.errors.append(
             f"{SourceKind.STATUS_SNAPSHOT}: {SUPABASE_URL_ENV}/{SUPABASE_KEY_ENV} unset"
