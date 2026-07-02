@@ -453,11 +453,10 @@ def detect_decision_without_followthrough(
 # is silent — the false-negative-over-false-positive posture.
 _READY_LABEL = "status:ready"
 _IN_PROGRESS_LABEL = "status:in-progress"
-_CHILDREN_DONE_LABEL = "status:children-done"
 # Labels that pull an issue OUT of the "backlog" bucket. status:in-progress is
-# owned by detect_stale_in_progress; status:children-done is dead epic-era vocab
-# (#1068); status:ready has its own (decision-suppressed) branch below.
-_BACKLOG_EXCLUDING_LABELS = frozenset({_IN_PROGRESS_LABEL, _READY_LABEL, _CHILDREN_DONE_LABEL})
+# owned by detect_stale_in_progress; status:ready has its own
+# (decision-suppressed) branch below.
+_BACKLOG_EXCLUDING_LABELS = frozenset({_IN_PROGRESS_LABEL, _READY_LABEL})
 
 
 def _decision_refs_by_repo(decisions: list[DecisionInfo], repos: list[str]) -> dict[str, set[int]]:
@@ -491,9 +490,9 @@ def detect_stale_backlog(
     the single source of truth; the ProjectV2 board is a read-only downstream
     projection and is never read here.
 
-    - **Backlog** = open ∧ carries none of ``status:{in-progress, ready,
-      children-done}`` + idle ≥30d → candidate (time-only). status:in-progress
-      is owned by detect_stale_in_progress; status:children-done is dead vocab.
+    - **Backlog** = open ∧ carries none of ``status:{in-progress, ready}``
+      + idle ≥30d → candidate (time-only). status:in-progress is owned by
+      detect_stale_in_progress.
     - **Ready** = carries ``status:ready`` + idle ≥30d + no project-scoped
       decision referencing ``#<n>`` → candidate. A decision means the issue is
       intentionally staged, so it is suppressed.

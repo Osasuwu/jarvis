@@ -43,7 +43,7 @@ When working on this repo:
 - Use GitHub sub-issues to link child tasks/bugs to each parent epic.
 - Keep `Parent: #NNN` in child issue body only as optional context.
 - Parent epics are not auto-closed.
-- When all children close, workflow adds `status:children-done`.
+- When all children close, workflow posts a verification comment on the parent.
 - Human owner verifies DoD and closes epic manually.
 
 ### Linking sub-issues via API

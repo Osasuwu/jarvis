@@ -102,9 +102,6 @@ jobs:
                 status:ready)
                   status_option="${STATUS_READY_OPTION}"
                   ;;
-                status:children-done)
-                  status_option="${STATUS_DONE_OPTION}"
-                  ;;
                 *)
                   status_option="${STATUS_TODO_OPTION}"
                   ;;

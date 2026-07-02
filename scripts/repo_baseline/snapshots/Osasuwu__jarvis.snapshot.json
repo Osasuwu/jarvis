@@ -262,11 +262,6 @@
       "name": "status:blocked"
     },
     {
-      "color": "0e8a16",
-      "description": "All child issues closed",
-      "name": "status:children-done"
-    },
-    {
       "color": "fbca04",
       "description": "Work in progress",
       "name": "status:in-progress"

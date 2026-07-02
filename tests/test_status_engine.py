@@ -1169,8 +1169,7 @@ class TestStaleBacklog:
 
     Source of truth is ``status:*`` labels (grill #1065, decision 0a02d3ee):
     - ``ready``   = issue carries ``status:ready``.
-    - ``backlog`` = open ∧ carries none of
-      ``status:{in-progress, ready, children-done}``.
+    - ``backlog`` = open ∧ carries none of ``status:{in-progress, ready}``.
     """
 
     def test_backlog_idle_flagged(self):
@@ -1209,23 +1208,6 @@ class TestStaleBacklog:
             }
         )
         assert len(detect_stale_backlog(baseline, make_delta(), [])) == 1
-
-    def test_children_done_not_flagged(self):
-        """status:children-done excludes an issue from backlog (dead vocab)."""
-        baseline = make_baseline(
-            repos={
-                "Osasuwu/jarvis": _backlog_state(
-                    issues=[
-                        make_issue(
-                            42,
-                            updated_days_ago=99,
-                            labels=["status:children-done"],
-                        )
-                    ],
-                )
-            }
-        )
-        assert detect_stale_backlog(baseline, make_delta(), []) == []
 
     def test_ready_idle_no_decision_flagged(self):
         """status:ready + idle ≥30d + no referencing decision → candidate."""
