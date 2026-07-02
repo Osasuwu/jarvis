@@ -32,6 +32,7 @@ _contradiction_verdicts_from_gather = status_server._contradiction_verdicts_from
 # Fixtures for gather result
 # ============================================================================
 
+
 def _days_ago(days: float) -> str:
     """Return ISO 8601 string for `days` ago in UTC."""
     return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -96,6 +97,7 @@ def make_fixture_gather_result():
 # Test: Convert gather result to engine format
 # ============================================================================
 
+
 def test_convert_gather_to_engine_format():
     """Test that GatherResult → Baseline/Delta/decisions works correctly."""
     gather_result = make_fixture_gather_result()
@@ -121,24 +123,17 @@ def test_convert_gather_to_engine_format():
     assert "status_digest" in decisions[0].decision
 
 
-def test_convert_carries_project_status():
-    """AC1 (#1059): gather's per-issue project_status flows onto IssueInfo."""
+def test_convert_drops_project_status_field():
+    """#1065: the ProjectV2 board is no longer a data source — IssueInfo has no
+    project_status field, and a stray project_status key on a gathered issue is
+    ignored rather than plumbed through."""
     gather_result = make_fixture_gather_result()
     gather_result.repos[0]["issues"][0]["project_status"] = "Backlog"
 
     baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
 
     issue = delta.repos["Osasuwu/jarvis"].open_issues[0]
-    assert issue.project_status == "Backlog"
-
-
-def test_convert_project_status_defaults_none():
-    """AC1 (#1059): absent project_status → None (issue not on the board)."""
-    gather_result = make_fixture_gather_result()
-    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
-
-    issue = delta.repos["Osasuwu/jarvis"].open_issues[0]
-    assert issue.project_status is None
+    assert not hasattr(issue, "project_status")
 
 
 def test_convert_flattens_object_labels():
@@ -173,12 +168,14 @@ def test_convert_handles_mixed_and_missing_labels():
         "already-a-string",
     ]
     # Second issue with labels entirely absent.
-    gather_result.repos[0]["issues"].append({
-        "number": 2,
-        "title": "No labels",
-        "updatedAt": _days_ago(1),
-        "milestone": None,
-    })
+    gather_result.repos[0]["issues"].append(
+        {
+            "number": 2,
+            "title": "No labels",
+            "updatedAt": _days_ago(1),
+            "milestone": None,
+        }
+    )
 
     baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
 
@@ -236,6 +233,7 @@ def test_no_detector_logic_duplication():
 # Test: Tool schema compliance
 # ============================================================================
 
+
 def test_tool_schema_structure():
     """Test that the tool schema has the required structure."""
     # This is a structural test — verify the tool schema is correct
@@ -272,6 +270,7 @@ def test_handlers_are_coroutines():
 # ============================================================================
 # Test: Integration — gather result flow through to digest
 # ============================================================================
+
 
 def test_end_to_end_gather_to_digest():
     """Test the full pipeline: fixture gather → conversion → engine → digest."""
@@ -354,9 +353,7 @@ def test_cached_contradiction_surfaces_in_digest_without_llm():
     verdicts = _contradiction_verdicts_from_gather(gather_result)
     digest = analyze(baseline, delta, decisions, contradiction_verdicts=verdicts)
 
-    contradiction_hits = [
-        h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION
-    ]
+    contradiction_hits = [h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION]
     assert len(contradiction_hits) == 1
     assert contradiction_hits[0].issue_number == 77
 
@@ -372,7 +369,5 @@ def test_no_cache_means_no_contradiction_hit():
     verdicts = _contradiction_verdicts_from_gather(gather_result)
     digest = analyze(baseline, delta, decisions, contradiction_verdicts=verdicts)
 
-    contradiction_hits = [
-        h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION
-    ]
+    contradiction_hits = [h for h in digest.detector_hits if h.detector == MEMORY_GIT_CONTRADICTION]
     assert contradiction_hits == []

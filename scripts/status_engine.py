@@ -87,7 +87,6 @@ class IssueInfo:
     updated_at: str = ""  # ISO 8601
     is_blocked: bool = False
     blocks: list[int] = field(default_factory=list)
-    project_status: str | None = None  # ProjectV2 Status field (#1059)
 
 
 @dataclass
@@ -452,13 +451,16 @@ def detect_decision_without_followthrough(
 # Backlog is time-only; Ready additionally requires no referencing decision.
 # Every other status (In Progress / In review / Done) and None (not on board)
 # is silent — the false-negative-over-false-positive posture.
-_BACKLOG_STATUS = "backlog"
-_READY_STATUS = "ready"
+_READY_LABEL = "status:ready"
+_IN_PROGRESS_LABEL = "status:in-progress"
+_CHILDREN_DONE_LABEL = "status:children-done"
+# Labels that pull an issue OUT of the "backlog" bucket. status:in-progress is
+# owned by detect_stale_in_progress; status:children-done is dead epic-era vocab
+# (#1068); status:ready has its own (decision-suppressed) branch below.
+_BACKLOG_EXCLUDING_LABELS = frozenset({_IN_PROGRESS_LABEL, _READY_LABEL, _CHILDREN_DONE_LABEL})
 
 
-def _decision_refs_by_repo(
-    decisions: list[DecisionInfo], repos: list[str]
-) -> dict[str, set[int]]:
+def _decision_refs_by_repo(decisions: list[DecisionInfo], repos: list[str]) -> dict[str, set[int]]:
     """Map repo → set of issue numbers referenced by any project decision.
 
     Matching is robust to the decision's ``project`` being either the full
@@ -483,17 +485,18 @@ def detect_stale_backlog(
     delta: Delta,
     decisions: list[DecisionInfo],
 ) -> list[DetectorHit]:
-    """Flag issues idle ≥STALE_BACKLOG_DAYS in a ProjectV2 Backlog/Ready status.
+    """Flag issues idle ≥STALE_BACKLOG_DAYS in a Backlog/Ready state.
 
-    Vocab-driven (branches on the case-normalized ``project_status`` string, no
-    repo hardcode):
+    Label-driven (grill #1065, decision ``0a02d3ee``): ``status:*`` labels are
+    the single source of truth; the ProjectV2 board is a read-only downstream
+    projection and is never read here.
 
-    - **Backlog** + idle ≥30d → candidate (time-only).
-    - **Ready** + idle ≥30d + no project-scoped decision referencing ``#<n>``
-      → candidate. A decision means the issue is intentionally staged, so it is
-      suppressed.
-    - **In Progress / In review / Done / None** → never flagged. ``None`` means
-      the issue is not on the board, so it is skipped (bias to false-negative).
+    - **Backlog** = open ∧ carries none of ``status:{in-progress, ready,
+      children-done}`` + idle ≥30d → candidate (time-only). status:in-progress
+      is owned by detect_stale_in_progress; status:children-done is dead vocab.
+    - **Ready** = carries ``status:ready`` + idle ≥30d + no project-scoped
+      decision referencing ``#<n>`` → candidate. A decision means the issue is
+      intentionally staged, so it is suppressed.
 
     Aggregation (AC3): one ``info``-severity hit PER REPO listing all candidate
     issue numbers oldest-first (largest ``updated_at`` age first). Zero
@@ -511,13 +514,15 @@ def detect_stale_backlog(
         # (age, number) candidates so we can order oldest-first deterministically.
         candidates: list[tuple[float, int]] = []
         for issue in state.open_issues:
-            status = (issue.project_status or "").strip().lower()
-            if status not in (_BACKLOG_STATUS, _READY_STATUS):
+            labels = set(issue.labels)
+            is_ready = _READY_LABEL in labels
+            is_backlog = not (labels & _BACKLOG_EXCLUDING_LABELS)
+            if not (is_ready or is_backlog):
                 continue
             age = _parse_iso_age(issue.updated_at, now)
             if age < STALE_BACKLOG_DAYS:
                 continue
-            if status == _READY_STATUS and issue.number in referenced:
+            if is_ready and issue.number in referenced:
                 continue
             candidates.append((age, issue.number))
 

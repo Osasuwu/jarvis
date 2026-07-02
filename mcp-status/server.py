@@ -54,9 +54,7 @@ from dotenv import load_dotenv  # noqa: E402
 # gather(), silently degrading the digest to empty for BOTH repos (the live
 # token from the environment is the source of truth for gh, not the .env copy).
 # Snapshot the pre-existing tokens and restore them after the load.
-_preserved_tokens = {
-    _k: os.environ[_k] for _k in ("GITHUB_TOKEN", "GH_TOKEN") if _k in os.environ
-}
+_preserved_tokens = {_k: os.environ[_k] for _k in ("GITHUB_TOKEN", "GH_TOKEN") if _k in os.environ}
 _env_candidates = [
     Path(__file__).resolve().parent.parent / ".env",
     Path(__file__).resolve().parent.parent.parent / ".env",
@@ -88,6 +86,7 @@ server = Server("jarvis-status")
 # ============================================================================
 # Tool registration
 # ============================================================================
+
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
@@ -122,10 +121,16 @@ async def list_tools() -> list[Tool]:
 # Tool dispatch
 # ============================================================================
 
+
 def _convert_gather_to_engine_format(gather_result):
     """Convert GatherResult to Baseline/Delta/decisions for engine.analyze()."""
     from scripts.status_engine import (
-        Baseline, Delta, Provenance, RepoState, IssueInfo, DecisionInfo
+        Baseline,
+        Delta,
+        Provenance,
+        RepoState,
+        IssueInfo,
+        DecisionInfo,
     )
 
     baseline = Baseline(gathered_at="", repos={}, provenance={})
@@ -144,19 +149,17 @@ def _convert_gather_to_engine_format(gather_result):
             # (_issue_priority) treats each label as a hashable string. Flatten
             # to names so priority detection doesn't crash on unhashable dicts.
             raw_labels = issue.get("labels", []) or []
-            labels = [
-                lbl.get("name", "") if isinstance(lbl, dict) else lbl
-                for lbl in raw_labels
-            ]
-            issues.append(IssueInfo(
-                number=issue.get("number", 0),
-                title=issue.get("title", ""),
-                state="open",  # gather filters to open issues
-                labels=labels,
-                milestone=issue.get("milestone"),
-                updated_at=issue.get("updatedAt", ""),
-                project_status=issue.get("project_status"),
-            ))
+            labels = [lbl.get("name", "") if isinstance(lbl, dict) else lbl for lbl in raw_labels]
+            issues.append(
+                IssueInfo(
+                    number=issue.get("number", 0),
+                    title=issue.get("title", ""),
+                    state="open",  # gather filters to open issues
+                    labels=labels,
+                    milestone=issue.get("milestone"),
+                    updated_at=issue.get("updatedAt", ""),
+                )
+            )
 
         # Create RepoState for delta (most recent data)
         repo_state = RepoState(
@@ -197,12 +200,14 @@ def _convert_gather_to_engine_format(gather_result):
     decisions: list[DecisionInfo] = []
     for decision_rec in gather_result.decisions:
         payload = decision_rec.payload or {}
-        decisions.append(DecisionInfo(
-            decision_id=decision_rec.id,
-            decision=payload.get("decision", ""),
-            created_at=decision_rec.created_at,
-            project=payload.get("project"),
-        ))
+        decisions.append(
+            DecisionInfo(
+                decision_id=decision_rec.id,
+                decision=payload.get("decision", ""),
+                created_at=decision_rec.created_at,
+                project=payload.get("project"),
+            )
+        )
 
     return baseline, delta, decisions
 
@@ -245,7 +250,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
 
             # Analyze with engine
             digest = analyze(
-                baseline, delta, decisions,
+                baseline,
+                delta,
+                decisions,
                 contradiction_verdicts=contradiction_verdicts,
             )
 
@@ -293,6 +300,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
             }
 
             import json
+
             result_text = json.dumps(response_data, indent=2, default=str)
             return [TextContent(type="text", text=result_text)]
 
@@ -301,15 +309,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent] | CallToolR
 
     except Exception as exc:
         import traceback
-        return [TextContent(
-            type="text",
-            text=f"Error in {name}: {exc}\n{traceback.format_exc()}"
-        )]
+
+        return [TextContent(type="text", text=f"Error in {name}: {exc}\n{traceback.format_exc()}")]
 
 
 # ============================================================================
 # Main
 # ============================================================================
+
 
 async def main():
     async with stdio_server() as (read_stream, write_stream):

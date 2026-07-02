@@ -24,9 +24,13 @@ env:
   PHASE_FIELD_ID: "PVTSSF_lAHOCQcMGs4BSPd1zg_1swg"
   PRIORITY_FIELD_ID: "PVTSSF_lAHOCQcMGs4BSPd1zg_1sug"
 
-  STATUS_TODO_OPTION: "f75ad846"
-  STATUS_IN_PROGRESS_OPTION: "47fc9ee4"
-  STATUS_DONE_OPTION: "98236657"
+  # Status option IDs regenerate whenever the board's Status option set is
+  # edited via updateProjectV2Field (GitHub does NOT preserve IDs by name).
+  # Last refreshed 2026-07-02 when the Ready option was added (#1065 AC4).
+  STATUS_TODO_OPTION: "8b81f7b9"
+  STATUS_READY_OPTION: "d9128d2b"
+  STATUS_IN_PROGRESS_OPTION: "a1338eff"
+  STATUS_DONE_OPTION: "77ae4ae9"
 
   PRIORITY_CRITICAL_OPTION: "adbf738e"
   PRIORITY_HIGH_OPTION: "ea606f7c"
@@ -94,6 +98,9 @@ jobs:
               case "${status_label}" in
                 status:in-progress|status:review)
                   status_option="${STATUS_IN_PROGRESS_OPTION}"
+                  ;;
+                status:ready)
+                  status_option="${STATUS_READY_OPTION}"
                   ;;
                 status:children-done)
                   status_option="${STATUS_DONE_OPTION}"

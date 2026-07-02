@@ -59,6 +59,7 @@ def _fixture_query_supabase(rows: list[dict] | None) -> callable:
               If [], simulates an empty- but-successful query.
               Otherwise returns the list as-is.
     """
+
     def _query(url: str, key: str, table: str, params: dict) -> list[dict] | None:
         if rows is None:
             return None  # failed query
@@ -97,25 +98,31 @@ def _fixture_query_by_table(table_rows: dict) -> callable:
     a test can supply a snapshot for `memories` without polluting `episodes`.
     A table absent from the mapping yields [] (empty-but-successful).
     """
+
     def _query(url: str, key: str, table: str, params: dict) -> list[dict] | None:
         return table_rows.get(table, [])
 
     return _query
 
 
-def _snapshot_memory(generated_at: str = "2024-06-09T12:00:00+00:00",
-                     verdicts: list[dict] | None = None) -> dict:
+def _snapshot_memory(
+    generated_at: str = "2024-06-09T12:00:00+00:00", verdicts: list[dict] | None = None
+) -> dict:
     """Build a `memories` row whose body carries a fenced yaml contradiction
     cache, mirroring what the status-record L1 audit writes."""
-    verdicts = verdicts if verdicts is not None else [
-        {
-            "decision_id": "d1",
-            "issue_number": 42,
-            "repo": "Osasuwu/jarvis",
-            "verdict": "contradiction",
-            "rationale": "memory says shipped; issue still open",
-        },
-    ]
+    verdicts = (
+        verdicts
+        if verdicts is not None
+        else [
+            {
+                "decision_id": "d1",
+                "issue_number": 42,
+                "repo": "Osasuwu/jarvis",
+                "verdict": "contradiction",
+                "rationale": "memory says shipped; issue still open",
+            },
+        ]
+    )
     lines = [
         "# Status snapshot 2024-06-09",
         "",
@@ -150,13 +157,15 @@ class TestParseReposConf:
     def test_parses_owner_repo_lines(self):
         content = "Osasuwu/jarvis\nSergazyNarynov/redrobot\n"
         assert parse_repos_conf(content) == [
-            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
+            "Osasuwu/jarvis",
+            "SergazyNarynov/redrobot",
         ]
 
     def test_skips_comments_and_blanks(self):
         content = "# This is a comment\n\nOsasuwu/jarvis\n\n  # another\nSergazyNarynov/redrobot\n"
         assert parse_repos_conf(content) == [
-            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
+            "Osasuwu/jarvis",
+            "SergazyNarynov/redrobot",
         ]
 
     def test_returns_empty_for_empty_string(self):
@@ -168,7 +177,8 @@ class TestParseReposConf:
     def test_strips_whitespace(self):
         content = "  Osasuwu/jarvis  \n  SergazyNarynov/redrobot  \n"
         assert parse_repos_conf(content) == [
-            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
+            "Osasuwu/jarvis",
+            "SergazyNarynov/redrobot",
         ]
 
 
@@ -185,13 +195,11 @@ class TestMakeDecisionRecord:
             "id": "abc-123",
             "actor": "session:2026-06-01",
             "kind": "decision_made",
-            "payload": json.dumps({"decision": "Use pydantic",
-                                    "rationale": "Validation matters"}),
+            "payload": json.dumps({"decision": "Use pydantic", "rationale": "Validation matters"}),
             "created_at": "2026-06-01T12:00:00Z",
         }
         # JSONB columns come back as dict from Supabase, not string
-        row["payload"] = {"decision": "Use pydantic",
-                          "rationale": "Validation matters"}
+        row["payload"] = {"decision": "Use pydantic", "rationale": "Validation matters"}
 
         record = _make_decision_record(row)
         assert record.id == "abc-123"
@@ -239,8 +247,7 @@ class TestSilentEmptyGuards:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),  # empty list
             query_supabase_fn=_fixture_query_supabase([]),  # empty
             now_fn=_fixture_now(),
@@ -267,8 +274,7 @@ class TestSilentEmptyGuards:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_fail()),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -278,8 +284,12 @@ class TestSilentEmptyGuards:
         repo = result.repos[0]
 
         # All gh sources failed
-        for source in [SourceKind.GH_PRS, SourceKind.GH_ISSUES,
-                        SourceKind.GH_CI, SourceKind.GH_MILESTONES]:
+        for source in [
+            SourceKind.GH_PRS,
+            SourceKind.GH_ISSUES,
+            SourceKind.GH_CI,
+            SourceKind.GH_MILESTONES,
+        ]:
             prov = repo["provenance"][source]
             assert prov["ran"] is True, f"{source} should have ran=True"
             assert prov["ok"] is False, f"{source} should have ok=False"
@@ -291,8 +301,7 @@ class TestSilentEmptyGuards:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_supabase([]),  # empty list
             now_fn=_fixture_now(),
@@ -310,8 +319,7 @@ class TestSilentEmptyGuards:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_supabase(None),  # failed
             now_fn=_fixture_now(),
@@ -329,8 +337,7 @@ class TestSilentEmptyGuards:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf(""),
             read_device_json_fn=_fixture_device_json(None),
-            run_git_fn=_fixture_run_git({"stdout": "", "stderr": "",
-                                         "returncode": -1}),
+            run_git_fn=_fixture_run_git({"stdout": "", "stderr": "", "returncode": -1}),
             run_gh_fn=_fixture_run_gh(_make_gh_empty()),
             query_supabase_fn=_fixture_query_supabase(None),
             now_fn=_fixture_now(),
@@ -353,8 +360,7 @@ class TestSilentEmptyGuards:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -365,8 +371,7 @@ class TestSilentEmptyGuards:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_fail()),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -413,12 +418,9 @@ class TestPerRepoDegradation:
 
         result = gather(
             jarvis_home="/fake",
-            read_repos_conf_fn=_fixture_repos_conf(
-                "Osasuwu/jarvis\nSergazyNarynov/redrobot\n"
-            ),
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\nSergazyNarynov/redrobot\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_side_effect_gh,
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -446,20 +448,19 @@ class TestPerRepoDegradation:
 
     def test_redrobot_failure_does_not_affect_jarvis_prs(self):
         """AC: redrobot gh auth failure → jarvis PRs still gather correctly."""
+
         def _side_effect_gh(repo: str, args: list[str]) -> dict:
             if "redrobot" in repo:
                 return _make_gh_fail()
-            return _make_gh_success([{"number": 42, "title": "Fix bug",
-                                      "createdAt": "2026-06-01T00:00:00Z"}])
+            return _make_gh_success(
+                [{"number": 42, "title": "Fix bug", "createdAt": "2026-06-01T00:00:00Z"}]
+            )
 
         result = gather(
             jarvis_home="/fake",
-            read_repos_conf_fn=_fixture_repos_conf(
-                "Osasuwu/jarvis\nSergazyNarynov/redrobot\n"
-            ),
+            read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\nSergazyNarynov/redrobot\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_side_effect_gh,
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -499,8 +500,7 @@ class TestSnapshotGapTolerance:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([{"number": 1}])),
             query_supabase_fn=_fixture_query_supabase(None),
             now_fn=_fixture_now(),
@@ -541,8 +541,7 @@ class TestSnapshotGapTolerance:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_supabase(rows),
             now_fn=_fixture_now(),
@@ -567,8 +566,7 @@ class TestSnapshotGapTolerance:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -603,23 +601,29 @@ class TestProvenanceContract:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([{"number": 1}])),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
         )
 
         # Top-level sources
-        for sk in [SourceKind.REPOS_CONF, SourceKind.SUPABASE_DECISIONS,
-                    SourceKind.STATUS_SNAPSHOT]:
+        for sk in [
+            SourceKind.REPOS_CONF,
+            SourceKind.SUPABASE_DECISIONS,
+            SourceKind.STATUS_SNAPSHOT,
+        ]:
             assert sk in result.provenance, f"Missing top-level provenance: {sk}"
 
         # Per-repo sources
         repo = result.repos[0]
-        for sk in [SourceKind.GIT_STATE, SourceKind.GH_PRS,
-                    SourceKind.GH_ISSUES, SourceKind.GH_CI,
-                    SourceKind.GH_MILESTONES]:
+        for sk in [
+            SourceKind.GIT_STATE,
+            SourceKind.GH_PRS,
+            SourceKind.GH_ISSUES,
+            SourceKind.GH_CI,
+            SourceKind.GH_MILESTONES,
+        ]:
             assert sk in repo["provenance"], f"Missing repo provenance: {sk}"
 
     def test_result_is_json_serializable(self):
@@ -628,8 +632,7 @@ class TestProvenanceContract:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([{"number": 1}])),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -655,11 +658,8 @@ class TestGitStateDegradation:
         result = gather(
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
-            read_device_json_fn=_fixture_device_json(
-                {"repos_path": "/nonexistent/path"}
-            ),
-            run_git_fn=_fixture_run_git({"stdout": "", "stderr": "not found",
-                                         "returncode": -1}),
+            read_device_json_fn=_fixture_device_json({"repos_path": "/nonexistent/path"}),
+            run_git_fn=_fixture_run_git({"stdout": "", "stderr": "not found", "returncode": -1}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -726,12 +726,7 @@ class TestExtractContradictionCache:
 
     def test_fence_with_info_string_after_yaml(self):
         """A fence tagged ```yaml title=... still extracts (M1 regex tolerance)."""
-        body = (
-            "```yaml extra-info\n"
-            "contradiction_cache:\n"
-            "  verdicts: []\n"
-            "```"
-        )
+        body = "```yaml extra-info\ncontradiction_cache:\n  verdicts: []\n```"
         assert _extract_contradiction_cache(body) is not None
 
     def test_multi_fence_skips_to_cache_block(self):
@@ -759,7 +754,10 @@ class TestGatherContradictionCache:
         snap = _snapshot_memory()
         query = _fixture_query_by_table({"memories": [snap]})
         cache, prov = gather_contradiction_cache(
-            "https://x", "k", query, now=1_717_000_000.0,
+            "https://x",
+            "k",
+            query,
+            now=1_717_000_000.0,
         )
         assert cache is not None
         assert cache["schema"] == "contradiction-cache/v1"
@@ -775,7 +773,10 @@ class TestGatherContradictionCache:
         # Supabase outage behind an indistinguishable "no data" stamp.
         query = _fixture_query_by_table({"memories": []})
         cache, prov = gather_contradiction_cache(
-            "https://x", "k", query, now=1_717_000_000.0,
+            "https://x",
+            "k",
+            query,
+            now=1_717_000_000.0,
         )
         assert cache is None
         assert prov.ran is True
@@ -785,8 +786,12 @@ class TestGatherContradictionCache:
     def test_query_failure_returns_not_ok(self):
         def _failing(url, key, table, params):
             return None
+
         cache, prov = gather_contradiction_cache(
-            "https://x", "k", _failing, now=1_717_000_000.0,
+            "https://x",
+            "k",
+            _failing,
+            now=1_717_000_000.0,
         )
         assert cache is None
         assert prov.ran is True
@@ -797,13 +802,20 @@ class TestGatherContradictionCache:
         # Supabase outage (None) apart from a first-run empty result ([]).
         empty_q = _fixture_query_by_table({"memories": []})
         _, empty_prov = gather_contradiction_cache(
-            "https://x", "k", empty_q, now=1_717_000_000.0,
+            "https://x",
+            "k",
+            empty_q,
+            now=1_717_000_000.0,
         )
 
         def _failing(url, key, table, params):
             return None
+
         _, failed_prov = gather_contradiction_cache(
-            "https://x", "k", _failing, now=1_717_000_000.0,
+            "https://x",
+            "k",
+            _failing,
+            now=1_717_000_000.0,
         )
         assert empty_prov.ok != failed_prov.ok
         assert empty_prov.ok is True
@@ -817,7 +829,10 @@ class TestGatherContradictionCache:
         }
         query = _fixture_query_by_table({"memories": [row]})
         cache, prov = gather_contradiction_cache(
-            "https://x", "k", query, now=1_717_000_000.0,
+            "https://x",
+            "k",
+            query,
+            now=1_717_000_000.0,
         )
         assert cache is None
         assert prov.ok is False
@@ -829,7 +844,10 @@ class TestGatherContradictionCache:
         query = _fixture_query_by_table({"memories": [snap]})
         gen_epoch = 1_717_934_400.0  # 2024-06-09T12:00:00 UTC
         cache, prov = gather_contradiction_cache(
-            "https://x", "k", query, now=gen_epoch + 100.0,
+            "https://x",
+            "k",
+            query,
+            now=gen_epoch + 100.0,
         )
         assert prov.age is not None
         assert abs(prov.age - 100.0) < 2.0
@@ -847,7 +865,10 @@ class TestGatherContradictionCache:
             return []
 
         gather_contradiction_cache(
-            "https://x", "k", _capturing, now=1_717_000_000.0,
+            "https://x",
+            "k",
+            _capturing,
+            now=1_717_000_000.0,
         )
         assert captured.get("deleted_at") == "is.null"
         assert captured.get("expired_at") == "is.null"
@@ -865,8 +886,7 @@ class TestGatherIntegratesContradictionCache:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_by_table({"memories": [snap]}),
             now_fn=_fixture_now(),
@@ -882,8 +902,7 @@ class TestGatherIntegratesContradictionCache:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
@@ -901,8 +920,7 @@ class TestGatherIntegratesContradictionCache:
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
             run_gh_fn=_fixture_run_gh(_make_gh_success([])),
             query_supabase_fn=_fixture_query_by_table({"memories": [snap]}),
             now_fn=_fixture_now(),
@@ -1032,128 +1050,88 @@ class TestDefaultRunGhRepoFlag:
 
 
 # ============================================================================
-# Test: ProjectV2 status fetch + join (#1059 AC1)
+# Test: status:* labels flow through to issues (#1065)
 # ============================================================================
+#
+# Grill #1065 (decision 0a02d3ee) removed the ProjectV2 board fetch from the
+# gather path: status:* labels are the single source of truth and detectors read
+# them off the issues gathered here. There is no more `project_status` field, no
+# `gh_projects` provenance source, and no `read_repos_conf_projects_fn` param.
 
 
-def _fixture_repos_conf_projects(mapping: dict) -> callable:
-    """Return a read_repos_conf_projects_fn returning owner/repo → project number."""
-    return lambda path: dict(mapping)
-
-
-def _project_status_gh(status_by_number: dict[int, str], *, fail: bool = False):
-    """Arg-aware run_gh: returns ProjectV2 status for the graphql call, issues
-    for `issue list`, empty-ok for everything else.
-
-    When ``fail`` is set the graphql call errors (returncode 1) so AC5's
-    degradation path can be exercised.
+def _labels_gh(issues: list[dict]):
+    """Arg-aware run_gh: returns the given issues for `issue list`, empty-ok
+    for everything else. No graphql branch — the board is never fetched now.
     """
+
     def _run(repo: str, args: list[str]) -> dict:
-        # ProjectV2 status query goes through `gh api graphql`.
-        if args and args[0] == "api" and "graphql" in args:
-            if fail:
-                return {"stdout": "", "stderr": "graphql: not found", "returncode": 1}
-            nodes = [
-                {"number": n, "status": s} for n, s in status_by_number.items()
-            ]
-            return {
-                "stdout": "\n".join(json.dumps(node) for node in nodes),
-                "stderr": "",
-                "returncode": 0,
-            }
-        # Open issues list.
         if "issue" in args:
-            return _make_gh_success([
-                {"number": 42, "title": "Backlog issue", "labels": [],
-                 "updatedAt": "2024-05-01T00:00:00Z"},
-                {"number": 7, "title": "Ready issue", "labels": [],
-                 "updatedAt": "2024-05-01T00:00:00Z"},
-            ])
-        # Everything else (PRs, CI, milestones): empty-but-ok.
+            return _make_gh_success(issues)
         return _make_gh_empty()
 
     return _run
 
 
-class TestParseReposConfProjects:
-    """parse_repos_conf_projects — pure, maps owner/repo → project number."""
+class TestLabelsFlowThrough:
+    """#1065 — status:* labels reach the gathered issues; board is not fetched."""
 
-    def test_parses_project_numbers(self):
-        content = "Osasuwu/jarvis project=3\nSergazyNarynov/redrobot project=1\n"
-        assert status_gather.parse_repos_conf_projects(content) == {
-            "Osasuwu/jarvis": 3,
-            "SergazyNarynov/redrobot": 1,
-        }
-
-    def test_line_without_project_is_omitted(self):
-        content = "Osasuwu/jarvis\nSergazyNarynov/redrobot project=1\n"
-        assert status_gather.parse_repos_conf_projects(content) == {
-            "SergazyNarynov/redrobot": 1,
-        }
-
-    def test_skips_comments_and_blanks(self):
-        content = "# comment\n\nOsasuwu/jarvis project=3\n"
-        assert status_gather.parse_repos_conf_projects(content) == {
-            "Osasuwu/jarvis": 3,
-        }
-
-    def test_parse_repos_conf_still_returns_bare_repo(self):
-        # The project= suffix must not leak into the plain repo list.
-        content = "Osasuwu/jarvis project=3\nSergazyNarynov/redrobot project=1\n"
-        assert parse_repos_conf(content) == [
-            "Osasuwu/jarvis", "SergazyNarynov/redrobot",
-        ]
-
-
-class TestProjectStatusJoin:
-    """AC1 — ProjectV2 Status is fetched per repo and joined onto issues."""
-
-    def test_project_status_joined_onto_issues(self):
+    def test_labels_preserved_on_issues(self):
         result = gather(
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
-            read_repos_conf_projects_fn=_fixture_repos_conf_projects(
-                {"Osasuwu/jarvis": 3}
-            ),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
-            run_gh_fn=_project_status_gh({42: "Backlog", 7: "Ready"}),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
+            run_gh_fn=_labels_gh(
+                [
+                    {
+                        "number": 42,
+                        "title": "Backlog issue",
+                        "labels": [],
+                        "updatedAt": "2024-05-01T00:00:00Z",
+                    },
+                    {
+                        "number": 7,
+                        "title": "Ready issue",
+                        "labels": [{"name": "status:ready"}],
+                        "updatedAt": "2024-05-01T00:00:00Z",
+                    },
+                ]
+            ),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
         )
 
         jarvis = result.repos[0]
         by_num = {i["number"]: i for i in jarvis["issues"]}
-        assert by_num[42]["project_status"] == "Backlog"
-        assert by_num[7]["project_status"] == "Ready"
+        assert by_num[42]["labels"] == []
+        assert by_num[7]["labels"] == [{"name": "status:ready"}]
 
-        # Top-level provenance stamp for the projects source (AC5 gating point).
-        prov = result.provenance[f"{SourceKind.GH_PROJECTS}:Osasuwu/jarvis"]
-        assert prov["ran"] is True
-        assert prov["ok"] is True
-        assert prov["input_rows"] == 2
-
-    def test_project_fetch_failure_degrades_and_leaves_status_none(self):
-        """AC5 — graphql failure ⇒ project_status=None + gh_projects ok=False."""
+    def test_no_project_status_field_or_gh_projects_provenance(self):
+        """The board fetch is gone: no project_status field, no gh_projects prov."""
         result = gather(
             jarvis_home="/fake",
             read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
-            read_repos_conf_projects_fn=_fixture_repos_conf_projects(
-                {"Osasuwu/jarvis": 3}
-            ),
             read_device_json_fn=_fixture_device_json({"repos_path": "/fake/repos"}),
-            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "",
-                                         "returncode": 0}),
-            run_gh_fn=_project_status_gh({}, fail=True),
+            run_git_fn=_fixture_run_git({"stdout": "main", "stderr": "", "returncode": 0}),
+            run_gh_fn=_labels_gh(
+                [
+                    {"number": 1, "title": "x", "labels": [], "updatedAt": "2024-05-01T00:00:00Z"},
+                ]
+            ),
             query_supabase_fn=_fixture_query_supabase([]),
             now_fn=_fixture_now(),
         )
 
         jarvis = result.repos[0]
         for issue in jarvis["issues"]:
-            assert issue["project_status"] is None
+            assert "project_status" not in issue
+        assert not any(k.startswith("gh_projects") for k in result.provenance)
 
-        prov = result.provenance[f"{SourceKind.GH_PROJECTS}:Osasuwu/jarvis"]
-        assert prov["ran"] is True
-        assert prov["ok"] is False
+    def test_parse_repos_conf_ignores_project_token(self):
+        # A stray `project=N` token in repos.conf must not leak into the repo
+        # list; it is simply ignored now that nothing consumes it.
+        content = "Osasuwu/jarvis project=3\nSergazyNarynov/redrobot project=1\n"
+        assert parse_repos_conf(content) == [
+            "Osasuwu/jarvis",
+            "SergazyNarynov/redrobot",
+        ]
