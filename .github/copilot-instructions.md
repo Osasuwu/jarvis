@@ -72,7 +72,7 @@ Priority labels:
 - `priority:critical`, `priority:high`, `priority:medium`, `priority:low`
 
 Status labels:
-- `status:ready`, `status:in-progress`, `status:review`, `status:blocked`, `status:children-done`
+- `status:ready`, `status:in-progress`, `status:review`, `status:blocked`
 
 Area labels:
 - `area:skills`, `area:config`, `area:docs`, `area:quality`, `area:infrastructure`

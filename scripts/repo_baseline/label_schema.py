@@ -32,25 +32,20 @@ CLEAN_LABELS: list[CleanLabel] = [
         "priority",
     ),
     CleanLabel("priority:high", "d93f0b", "High priority", "priority"),
-    CleanLabel(
-        "priority:medium", "fbca04", "Medium priority", "priority"
-    ),
+    CleanLabel("priority:medium", "fbca04", "Medium priority", "priority"),
     CleanLabel("priority:low", "0e8a16", "Low priority", "priority"),
     # ── Status ────────────────────────────────────────────────────────
     CleanLabel("status:ready", "c2e0c6", "Ready to start", "status"),
     CleanLabel(
         # Distinct light-amber so it does not collide with priority:medium
         # (fbca04) — same colour across semantic categories is ambiguous.
-        "status:in-progress", "fef2c0", "Work in progress", "status"
+        "status:in-progress",
+        "fef2c0",
+        "Work in progress",
+        "status",
     ),
     CleanLabel("status:review", "d4c5f9", "Under review", "status"),
     CleanLabel("status:blocked", "b60205", "Blocked", "status"),
-    CleanLabel(
-        "status:children-done",
-        "85e89d",
-        "All child issues closed",
-        "status",
-    ),
     CleanLabel(
         "status:owner-queue",
         "f9a03c",
@@ -64,12 +59,8 @@ CLEAN_LABELS: list[CleanLabel] = [
         "Testing and quality gates",
         "area",
     ),
-    CleanLabel(
-        "area:docs", "0075ca", "Documentation and planning", "area"
-    ),
-    CleanLabel(
-        "area:skills", "0052cc", "Skill and subagent development", "area"
-    ),
+    CleanLabel("area:docs", "0075ca", "Documentation and planning", "area"),
+    CleanLabel("area:skills", "0052cc", "Skill and subagent development", "area"),
     CleanLabel(
         "area:config",
         "1d76db",
@@ -103,18 +94,14 @@ CLEAN_LABELS: list[CleanLabel] = [
     # needs-research / needs-grill / needs-prd and are referenced throughout
     # CLAUDE.md; renaming to needs:* would break every existing issue's
     # association. The schema mirrors reality; do not "normalize" the dash.
-    CleanLabel(
-        "needs-research", "f0f8f0", "Needs investigation", "needs"
-    ),
+    CleanLabel("needs-research", "f0f8f0", "Needs investigation", "needs"),
     CleanLabel(
         "needs-grill",
         "fdd835",
         "Needs /grill before implementation",
         "needs",
     ),
-    CleanLabel(
-        "needs-prd", "ffc844", "Needs PRD before slicing", "needs"
-    ),
+    CleanLabel("needs-prd", "ffc844", "Needs PRD before slicing", "needs"),
     # ── Tier ──────────────────────────────────────────────────────────
     CleanLabel(
         "tier:1-auto",
@@ -156,11 +143,12 @@ CLEAN_LABELS: list[CleanLabel] = [
     # only grouping primitive, the term "epic" is not used. Do not re-add.
     CleanLabel(
         # Distinct teal so it does not collide with priority:low (0e8a16).
-        "task", "006b75", "Task: one PR execution item", "type"
+        "task",
+        "006b75",
+        "Task: one PR execution item",
+        "type",
     ),
-    CleanLabel(
-        "draft", "c5def5", "Rough idea, not ready for triage", "type"
-    ),
+    CleanLabel("draft", "c5def5", "Rough idea, not ready for triage", "type"),
     CleanLabel("dependencies", "0366d6", "Dependency updates", "type"),
     CleanLabel("github-actions", "000000", "GitHub Actions code", "type"),
     CleanLabel("python", "2b67c6", "Python code", "type"),
@@ -177,9 +165,7 @@ if _dupe_names:
     raise ValueError(f"Duplicate label names in CLEAN_LABELS: {_dupe_names}")
 for lb in CLEAN_LABELS:
     if not _HEX6.match(lb.color):
-        raise ValueError(
-            f"{lb.name}: color {lb.color!r} must be 6 lowercase hex chars"
-        )
+        raise ValueError(f"{lb.name}: color {lb.color!r} must be 6 lowercase hex chars")
 
 # Built once at import — O(1) name lookup instead of a linear scan per call.
 _CLEAN_BY_NAME: dict[str, CleanLabel] = {lb.name: lb for lb in CLEAN_LABELS}

@@ -188,13 +188,7 @@ jobs:
                     ].join('\n'),
                   });
                 }
-                await github.rest.issues.addLabels({ ...repo, issue_number: parentNum, labels: ['status:children-done'] });
               } else {
-                try {
-                  await github.rest.issues.removeLabel({ ...repo, issue_number: parentNum, name: 'status:children-done' });
-                } catch (e) {
-                  // Ignore 404.
-                }
                 if (context.payload.action === 'closed' && currentParent === parentNum && open.length > 0) {
                   const total = open.length + closed.length;
                   await github.rest.issues.createComment({
