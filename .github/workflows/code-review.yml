@@ -114,8 +114,11 @@ jobs:
           # job-level `if:` requires head.repo.full_name == github.repository,
           # so fork/external PRs never reach this step, and workflow_dispatch /
           # branch pushes both require repo write access. No untrusted external
-          # actor can initiate this run. Allowed-tools are also locked
-          # read-only below. Uniform across owned repos for the M48 baseline.
+          # actor can initiate this run. Allowed-tools are locked read-only
+          # below, except Write(//tmp/**) — the plugin composes its verdict
+          # comment there and posts via `gh pr comment --body-file` so review
+          # prose never passes through shell string-interpretation (#971).
+          # Uniform across owned repos for the M48 baseline.
           allowed_bots: "*"
           prompt: |
             Run /code-review for PR #${{ steps.pr.outputs.number }} in repo ${{ github.repository }}.
@@ -138,7 +141,7 @@ jobs:
             # probe comments, fragment comments, or no post at all → verdict gate
             # fails closed → admin-merge). Keep this list and the plugin frontmatter
             # in lockstep (tests/ci/test_code_review_allowed_tools.py pins it).
-            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(wc:*)"
+            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(wc:*),Write(//tmp/**)"
 
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). Without
       # this step the `review` check is SUCCESS as long as the bot ran —

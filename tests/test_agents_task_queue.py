@@ -16,6 +16,7 @@ from agents.task_queue import (
     claim_next,
     count_running,
     enqueue,
+    list_active,
     list_stale_running,
     reclaim_stale_claimed,
     requeue_running,
@@ -462,8 +463,18 @@ class TestTransition:
 class TestFSMDefinition:
     """Validate the FSM transition table covers every non-terminal state."""
 
+    _ALL_STATES = {
+        "pending",
+        "claimed",
+        "running",
+        "done",
+        "failed",
+        "parked",
+        "skipped_duplicate",
+    }
+
     def test_all_non_terminal_states_defined(self) -> None:
-        all_states = {"pending", "claimed", "running", "done", "failed", "parked"}
+        all_states = self._ALL_STATES
         non_terminal = all_states - _TERMINAL_STATES
         defined = set(_VALID_TRANSITIONS.keys())
         assert defined == non_terminal, f"Missing transition rules for: {non_terminal - defined}"
@@ -477,7 +488,7 @@ class TestFSMDefinition:
             assert state not in targets, f"Self-loop in {state}"
 
     def test_all_targets_are_valid_states(self) -> None:
-        all_states = {"pending", "claimed", "running", "done", "failed", "parked"}
+        all_states = self._ALL_STATES
         for state, targets in _VALID_TRANSITIONS.items():
             for target in targets:
                 assert target in all_states, (
@@ -679,3 +690,70 @@ class TestRequeueRunning:
 
     def test_returns_false_when_missing(self, client: _StubClient) -> None:
         assert requeue_running("ghost", client=client) is False
+
+
+# ===========================================================================
+# skipped_duplicate (#931) — dispatch-dedup terminal state
+# ===========================================================================
+
+
+class TestSkippedDuplicate:
+    """#931: a running row whose issue already has a live PR terminates
+    as `skipped_duplicate` — no requeue, no retry."""
+
+    def test_running_to_skipped_duplicate(self, client: _StubClient) -> None:
+        client.seed("task_queue", [_running()])
+        row = transition(
+            "tq-running",
+            "skipped_duplicate",
+            reason="open PR #555 closes #931",
+            client=client,
+        )
+        assert row["status"] == "skipped_duplicate"
+        assert row["completed_at"] is not None
+        assert row["escalated_reason"] == "open PR #555 closes #931"
+
+    def test_skipped_duplicate_is_terminal(self, client: _StubClient) -> None:
+        assert "skipped_duplicate" in _TERMINAL_STATES
+        client.seed("task_queue", [_running(id="tq-skip", status="skipped_duplicate")])
+        with pytest.raises(ValueError, match="terminal state"):
+            transition("tq-skip", "claimed", client=client)
+
+    def test_pending_cannot_skip_directly(self, client: _StubClient) -> None:
+        client.seed("task_queue", [_pending()])
+        with pytest.raises(ValueError, match="Illegal transition"):
+            transition("tq-pending", "skipped_duplicate", client=client)
+
+    def test_claimed_cannot_skip_directly(self, client: _StubClient) -> None:
+        client.seed("task_queue", [_claimed()])
+        with pytest.raises(ValueError, match="Illegal transition"):
+            transition("tq-claimed", "skipped_duplicate", client=client)
+
+
+# ===========================================================================
+# list_active (#931) — live claimed/running rows for sibling dedup
+# ===========================================================================
+
+
+class TestListActive:
+    def test_lists_claimed_and_running_only(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="p", idempotency_key="k1"),
+                _claimed(id="c", idempotency_key="k2"),
+                _running(id="r", idempotency_key="k3"),
+                _running(id="d", status="done", idempotency_key="k4"),
+                _running(id="s", status="skipped_duplicate", idempotency_key="k5"),
+            ],
+        )
+        rows = list_active(client=client)
+        assert {r["id"] for r in rows} == {"c", "r"}
+
+    def test_rows_carry_goal(self, client: _StubClient) -> None:
+        client.seed("task_queue", [_running(id="r", goal="Implement #931", idempotency_key="k")])
+        rows = list_active(client=client)
+        assert rows[0]["goal"] == "Implement #931"
+
+    def test_empty_queue(self, client: _StubClient) -> None:
+        assert list_active(client=client) == []

@@ -469,6 +469,60 @@ class HttpxGitHubClient:
             page += 1
         return commits
 
+    def list_open_pulls(self) -> list[dict[str, Any]]:
+        """All open PRs as ``{number, body, headRefName}`` dicts (#931 dedup).
+
+        The dispatch-dedup predicate (:func:`delegate_predispatch_gate.check_in_flight`)
+        matches on a PR's closing-keyword body and its head branch under the
+        ``headRefName`` key — the same shape ``gh pr list --json`` emits. The REST
+        list endpoint instead nests the branch under ``head.ref``, so each row is
+        remapped. Paginated at ``per_page=100`` (full walk, short page terminates)
+        so a busy repo's later PRs are never silently dropped.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/pulls"
+        pulls: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            resp = self._client.get(url, params={"state": "open", "per_page": 100, "page": page})
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            for pr in batch:
+                pulls.append(
+                    {
+                        "number": pr.get("number"),
+                        "body": pr.get("body") or "",
+                        "headRefName": (pr.get("head") or {}).get("ref"),
+                    }
+                )
+            if len(batch) < 100:
+                break
+            page += 1
+        return pulls
+
+    def list_branch_names(self) -> list[str]:
+        """All branch names (#931 dedup).
+
+        Backs the head-branch arm of the dedup predicate — an in-flight branch
+        (``feat/<N>-``) with no PR yet still means the issue is being worked.
+        Paginated like :meth:`list_open_pulls`.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/branches"
+        names: list[str] = []
+        page = 1
+        while True:
+            resp = self._client.get(url, params={"per_page": 100, "page": page})
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            names.extend(b["name"] for b in batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return names
+
 
 def default_github_client() -> HttpxGitHubClient:
     """Production :class:`GitHubClient` — repo from ``GITHUB_REPO`` env (AC4).

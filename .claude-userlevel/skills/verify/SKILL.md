@@ -64,9 +64,12 @@ outcome_update(
 )
 ```
 
-**Enrich `memory_id` if the outcome row has it NULL**: look up the linked `decision_made` episode (same issue/PR) and pass `memory_id = payload.memories_used[0]`. Rule — primary informing memory = first entry (dominant basis). If the outcome already has `memory_id`, leave it alone; `/verify` is not where you rewrite attribution. If no decision episode references this issue, omit — the backfill script (`scripts/backfill-outcome-memories.py`) can handle historical rows in bulk.
+**Enrich `memory_id` if the outcome row has it NULL**: look up the linked `decision_made` episode (same issue/PR) and pass the first entry of `payload.memories_used` that is a **memory-row UUID** (verify with `memory_get` by id, or match it in the session's recall map). If the outcome already has `memory_id`, leave it alone; `/verify` is not where you rewrite attribution. If no decision episode references this issue, omit — the backfill script (`scripts/backfill-outcome-memories.py`) can handle historical rows in bulk.
 
-**Only backfill when `memories_used[0]` is a UUID** (matches `^[0-9a-f]{8}-`). Empirical audit per #325: of 33 historical `decision_made` episodes, 21 had empty `memories_used` and 12 stored memory NAMES, not UUIDs (zero matched the FK shape). Passing a name to `outcome_update.memory_id` writes a broken FK. If the first entry is a name, omit `memory_id` and leave the row for `scripts/backfill-outcome-memories.py`, which handles name→id resolution in bulk. If no decision episode references this issue, also omit.
+**Only backfill a verified memory-row UUID.** Two known bad shapes in historical `memories_used` (both write a broken FK or get rejected):
+- Memory NAMES, not UUIDs — per #325 audit: of 33 historical `decision_made` episodes, 21 had empty `memories_used` and 12 stored names (zero matched the FK shape). A name fails the `^[0-9a-f]{8}-` shape check; omit and leave for the backfill script's name→id resolution.
+- Decision-**episode** UUIDs — shape-valid UUIDs that live in the episodes table, not `memories`; the FK `task_outcomes.memory_id → memories(id)` rejects them with 23503 (bitten 2026-07-02, #971 outcome). Shape checks can't catch these — confirm the id resolves via `memory_get` (or is present in the recall map) before passing it.
+If the first entry fails either check, try the next; if none qualify, omit `memory_id`. If no decision episode references this issue, also omit.
 
 **Empty `memories_used` is valid** (per #334 expanded triggers: policy/schema/tag/config decisions may genuinely have no memory basis). If the matching decision episode exists but its `memories_used` list is empty, skip the enrichment — do NOT error, do NOT guess. Outcome stays `memory_id = NULL`; this is the correct representation for a decision that wasn't informed by prior memory.
 
