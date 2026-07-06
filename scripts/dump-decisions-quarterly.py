@@ -18,8 +18,6 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from supabase import create_client
-
 ROOT = Path(__file__).resolve().parent.parent
 
 # ---------------------------------------------------------------------------
@@ -267,6 +265,12 @@ def main():
     if not url or not key:
         print("Error: SUPABASE_URL and SUPABASE_KEY env vars required.", file=sys.stderr)
         sys.exit(1)
+
+    # Lazy import: keep supabase off the module-import path so the scrub
+    # meta-test (tests/ci/test_dump_scrub_guard.py) can import this module in
+    # the minimal meta-tests CI env, which installs only pytest/pyyaml. Mirrors
+    # the pattern in capture-episode.py / consolidation-run.py.
+    from supabase import create_client
 
     client = create_client(url, key)
 
