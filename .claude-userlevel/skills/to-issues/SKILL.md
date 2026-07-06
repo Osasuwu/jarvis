@@ -76,10 +76,24 @@ For each approved slice, publish a new issue to the issue tracker. Use the issue
 **Label application at publish time**:
 
 - Slice passed AFK-fit checklist (all four "no") → apply the `sandcastle` label. This is the canonical place the label is set — see §3a, decision `6e753417`.
-- Slice failed AFK-fit (any "yes") → do **NOT** apply `sandcastle`. The slice routes via interactive `/implement` instead of `/delegate`.
+- Slice failed AFK-fit (any "yes") → do **NOT** apply `sandcastle`. The slice routes via interactive `/implement` instead of `/delegate`. **A HITL slice still needs a positive label** — apply the project's HITL/attention marker from its CLAUDE.md label vocabulary (e.g. `unsafe-for-AFK`, `status:owner-queue`, or the repo's equivalent) plus any risk marker the failing question implies (e.g. a safety-review label when the slice touches safety-critical motion). Without a positive label the slice lands with an **empty status column** on the board and is invisible to triage — the AFK-no verdict must *produce* a label, not merely be the absence of `sandcastle`.
 - Slice carries unresolved scope or unclear AC discovered during §3a → apply the matching `needs-*` label (`needs-grill`, `needs-research`, `needs-prd`). The requesting skill removes its own `needs-*` label at terminal success — `/grill` removes `needs-grill`, `/research` removes `needs-research`, `/to-prd` removes `needs-prd`. `/delegate`'s pre-dispatch gate refuses any issue carrying a `needs-*` label.
 
+**Every published issue MUST carry a starting status label** (the project's `status:ready` / `status:*` equivalent). Where the project's board is a read-only projection of `status:*` labels, an issue with no status label has an empty status column and is invisible to board-scoped triage. A slice startable now gets the "ready" status; a slice whose blockers are still open gets no "ready" status until they close (the native dependency below encodes the block).
+
 Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
+
+**Wire native dependencies, not just prose** (mandatory): after publishing, encode each "Blocked by" edge as a **native issue dependency** on the tracker, not only as body text. Prose blocks decay and are invisible to the board's blocked-by view and to `/delegate`'s readiness check; the native edge is queryable and renders in the tracker UI. On GitHub, for each blocked→blocker pair:
+
+```bash
+# blocker_id is the blocker's NUMERIC REST database id — NOT the issue number, NOT the GraphQL node_id.
+# Fetch it:  gh api repos/<owner>/<repo>/issues/<blockerN> --jq .id
+# Then POST the edge on the BLOCKED issue. On Windows/Git-Bash, prefix MSYS_NO_PATHCONV=1 and drop the
+# leading slash so the endpoint is not rewritten to a filesystem path:
+MSYS_NO_PATHCONV=1 gh api --method POST repos/<owner>/<repo>/issues/<blockedN>/dependencies/blocked_by -f issue_id=<blocker_id>
+```
+
+Keep the prose "## Blocked by" section too — it is the human-readable rationale — but the native edge is the source of truth for tooling. Set every edge the DAG requires, including transitive blockers a slice lists explicitly.
 
 **Milestone assignment (every published issue MUST land in a milestone)**:
 
@@ -114,6 +128,8 @@ Avoid specific file paths or code snippets — they go stale fast. Exception: if
 - A reference to the blocking ticket (if any)
 
 Or "None - can start immediately" if no blockers.
+
+(This section is the human-readable rationale. It does NOT replace the **native issue dependency** — every edge listed here must also be wired as a native blocked_by edge on the tracker per §5.)
 
 </issue-template>
 
