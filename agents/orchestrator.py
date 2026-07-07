@@ -186,9 +186,33 @@ def _attempt_of(payload: Mapping[str, Any]) -> int:
     emitter) and must be preserved. The round-1 code used
     ``int(payload.get("attempt", 1) or 1)``, where ``0 or 1`` silently
     coerced an explicit 0 to 1, mis-numbering the re-drive lineage key as
-    ``:r2`` instead of ``:r1`` (MAJOR, PR #1011)."""
+    ``:r2`` instead of ``:r1`` (MAJOR, PR #1011).
+
+    A non-numeric attempt (malformed payload) falls back to the root
+    attempt ``0`` rather than raising ``ValueError`` inside the emit path
+    (M1, #1029). No emitter produces a non-int attempt today."""
     raw = payload.get("attempt", 1)
-    return int(raw) if raw is not None else 1
+    if raw is None:
+        return 1
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _as_bool(value: Any) -> bool:
+    """Coerce an emitted-payload flag into a strict bool (L4, #1029).
+
+    ``exit_confirmed`` gates the escalate-vs-re-drive branch in
+    :func:`handle_event`; a future emitter passing the string ``"false"``
+    would otherwise coerce truthy and flip an *unconfirmed* death into a
+    spurious re-drive. Recognized false-strings (``"false"``/``"0"``/``"no"``/
+    empty, case-insensitive) map to ``False``; every other value falls back to
+    Python truthiness. Today's emitters emit real bools, which pass through
+    unchanged."""
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "0", "no")
+    return bool(value)
 
 
 def _redrive(
@@ -331,7 +355,7 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
 
     if event_type == "task_failed":
         pr_evidence = payload.get("pr_evidence")
-        exit_confirmed = payload.get("exit_confirmed", False)
+        exit_confirmed = _as_bool(payload.get("exit_confirmed", False))
         attempt = _attempt_of(payload)
         failure_reason = payload.get("failure_reason", "unknown")
 

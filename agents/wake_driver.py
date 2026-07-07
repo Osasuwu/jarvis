@@ -634,23 +634,30 @@ def main() -> int:
         # only; the #953 detection→emission path lives exclusively in the
         # long-running ``run(...)`` loop below. Do not "fix" this by threading
         # the wiring in — there is no prior-tick proc map for it to act on.
-        result = tick(
-            queue,
-            default_orchestrator,
-            stale_after_seconds=args.watchdog_seconds,
-            task_port=task_port,
-        )
-        logger.info(
-            "[wake_driver] one-shot tick: reclaimed=%d processed=%d requeued=%d "
-            "tasks_reclaimed=%d tasks_reaped=%d tasks_spawned=%d tasks_failed=%d",
-            result.reclaimed,
-            result.processed,
-            result.requeued,
-            result.tasks_reclaimed,
-            result.tasks_reaped,
-            result.tasks_spawned,
-            result.tasks_failed,
-        )
+        try:
+            result = tick(
+                queue,
+                default_orchestrator,
+                stale_after_seconds=args.watchdog_seconds,
+                task_port=task_port,
+            )
+            logger.info(
+                "[wake_driver] one-shot tick: reclaimed=%d processed=%d requeued=%d "
+                "tasks_reclaimed=%d tasks_reaped=%d tasks_spawned=%d tasks_failed=%d",
+                result.reclaimed,
+                result.processed,
+                result.requeued,
+                result.tasks_reclaimed,
+                result.tasks_reaped,
+                result.tasks_spawned,
+                result.tasks_failed,
+            )
+        finally:
+            # The one-shot path builds the lifetime evidence client (unused
+            # here, see the CONSTRAINT note above) but still owns its pooled
+            # sockets; release them before the short-circuit return so --once
+            # doesn't leak an FD (L1, #1029). close() is idempotent.
+            evidence_client.close()
         return 0
 
     logger.info(
