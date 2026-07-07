@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import tomllib
+import types
 from pathlib import Path
 
 import pytest
@@ -1103,9 +1104,7 @@ def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
     monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda: object())
     monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", lambda *a, **k: object())
-    monkeypatch.setattr(
-        wake_driver, "_default_event_emit", lambda **k: (lambda *a, **kk: None)
-    )
+    monkeypatch.setattr(wake_driver, "_default_event_emit", lambda **k: (lambda *a, **kk: None))
     monkeypatch.setattr("agents.github_client.default_github_client", lambda: client)
     monkeypatch.setattr("agents.supabase_client.get_client", lambda: object())
     monkeypatch.setattr(wake_driver, "run", run_impl)
@@ -1133,4 +1132,27 @@ def test_main_closes_evidence_client_when_run_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="loop died"):
         wake_driver.main()
+    assert client.closed == 1
+
+
+def test_main_once_closes_evidence_client(monkeypatch):
+    # L1 (#1029): the ``--once`` short-circuit builds the lifetime evidence
+    # client just like the long-running path but returns BEFORE the outer
+    # try/finally that closes it. Without its own finally the one-shot path
+    # leaks the pooled sockets on every drain/watchdog invocation.
+    client = _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--once"])
+
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+    monkeypatch.setattr(wake_driver, "tick", lambda *a, **k: tick_result)
+
+    assert wake_driver.main() == 0
     assert client.closed == 1

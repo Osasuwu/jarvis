@@ -22,12 +22,19 @@ from unittest import mock
 import pytest
 
 from agents.github_client import (
+    GitHubClient,
     HttpxGitHubClient,
     check_pr_evidence_fresh_shape,
     check_pr_evidence_rework_shape,
     parse_executor_stdout,
 )
-from agents.orchestrator import Route, handle_event
+from agents.orchestrator import (
+    Route,
+    _as_bool,
+    _attempt_of,
+    _redrive_goal,
+    handle_event,
+)
 from agents.task_dispatch import (
     TrackedProc,
     _augment_branch_directive,
@@ -37,7 +44,6 @@ from agents.task_dispatch import (
     parse_lineage,
     poll_completions,
 )
-from agents.orchestrator import _redrive_goal
 
 
 # =============================================================================
@@ -74,9 +80,7 @@ class _RecordingPort:
         return {"id": task_id, "status": to_status}
 
 
-def _recording_emit(
-    order_log: list[tuple[str, ...]], sink: list[dict[str, Any]]
-) -> Any:
+def _recording_emit(order_log: list[tuple[str, ...]], sink: list[dict[str, Any]]) -> Any:
     """Build an ``event_emit`` callback that records emit order and payloads."""
 
     def emit(
@@ -326,6 +330,41 @@ class TestPREvidenceReworkShape:
         )
         assert evidence is None
 
+    def test_freshness_anchors_on_committer_date_not_author_date(self) -> None:
+        """Commit freshness reads ``committer.date``, not ``author.date`` (M2 #1029).
+
+        A rebased/cherry-picked rework commit keeps the ORIGINAL author.date
+        (pre-spawn) while the committer.date reflects the actual rework push
+        (post-spawn). Anchoring on author.date would read that commit as stale
+        and spuriously re-drive a PR that in fact has fresh rework activity.
+        ``updated_at`` is pre-spawn so the commit date is the only signal.
+        """
+        mock_client = mock.MagicMock()
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        mock_client.get_pull_by_number.return_value = {
+            "number": 42,
+            "updated_at": "2026-06-21T09:00:00Z",  # pre-spawn → no signal here
+            "head": {"sha": "abc123"},
+        }
+        mock_client.list_commits_for_pull.return_value = [
+            {
+                "sha": "abc123",
+                "commit": {
+                    "author": {"date": "2026-06-20T08:00:00Z"},  # pre-spawn (original)
+                    "committer": {"date": "2026-06-21T10:30:00Z"},  # post-spawn (rework)
+                },
+            }
+        ]
+
+        evidence = check_pr_evidence_rework_shape(
+            task_id="abc123",
+            goal="/rework #42",
+            pr_number=42,
+            spawned_at=spawned_at,
+            client=mock_client,
+        )
+        assert evidence is True
+
 
 class TestListCommitsForPullPagination:
     """``HttpxGitHubClient.list_commits_for_pull`` walks ALL pages (CRITICAL, PR #1011 r2).
@@ -356,9 +395,7 @@ class TestListCommitsForPullPagination:
         page1 = [{"sha": f"a{i}"} for i in range(100)]
         page2 = [{"sha": f"b{i}"} for i in range(100)]
         page3 = [{"sha": f"c{i}"} for i in range(50)]  # short → terminal page
-        client = self._client_with(
-            [self._resp(page1), self._resp(page2), self._resp(page3)]
-        )
+        client = self._client_with([self._resp(page1), self._resp(page2), self._resp(page3)])
         commits = client.list_commits_for_pull(1)
         assert len(commits) == 250
         # Newest commit (last element, oldest-first ordering) MUST survive — the
@@ -387,6 +424,66 @@ class TestListCommitsForPullPagination:
         client = self._client_with([self._resp(None, status=404)])
         assert client.list_commits_for_pull(1) == []
         assert client._client.get.call_count == 1
+
+
+class TestGetPullByHeadBranch404Guard:
+    """``get_pull_by_head_branch`` normalizes a 404 to ``None`` (L3, #1029).
+
+    A branch that never had a PR (or a deleted branch) makes the pulls
+    endpoint 404. That is "no evidence the work landed", not a transport
+    error — the caller expects the same ``None`` sentinel a found-but-empty
+    result yields, not a raised ``HTTPStatusError``.
+    """
+
+    @staticmethod
+    def _resp(body: object, status: int = 200) -> mock.MagicMock:
+        r = mock.MagicMock()
+        r.status_code = status
+        r.json.return_value = body
+        # raise_for_status must actually raise on 4xx so a missing 404 guard
+        # would surface as an error instead of silently passing this test.
+        if status >= 400:
+            r.raise_for_status.side_effect = RuntimeError(f"HTTP {status}")
+        else:
+            r.raise_for_status.return_value = None
+        return r
+
+    def _client_with(self, response: mock.MagicMock) -> HttpxGitHubClient:
+        client = HttpxGitHubClient("o/r", token="t")
+        client._client = mock.MagicMock()
+        client._client.get.return_value = response
+        return client
+
+    def test_404_returns_none(self) -> None:
+        client = self._client_with(self._resp(None, status=404))
+        assert client.get_pull_by_head_branch("feat/x") is None
+
+    def test_found_pr_returned(self) -> None:
+        client = self._client_with(self._resp([{"number": 7}]))
+        assert client.get_pull_by_head_branch("feat/x") == {"number": 7}
+
+    def test_empty_list_returns_none(self) -> None:
+        client = self._client_with(self._resp([]))
+        assert client.get_pull_by_head_branch("feat/x") is None
+
+
+class TestGitHubClientProtocolClose:
+    """The ``GitHubClient`` Protocol declares ``close()`` (L2, #1029).
+
+    Declaring it on the Protocol makes a type-checker flag any alternate
+    implementation that forgets to release its pooled connections — the
+    lifecycle contract lives on the interface, not just the one concrete impl.
+    """
+
+    def test_close_declared_on_protocol(self) -> None:
+        assert hasattr(GitHubClient, "close")
+
+    def test_concrete_client_close_is_idempotent(self) -> None:
+        client = HttpxGitHubClient("o/r", token="t")
+        client._client = mock.MagicMock()
+        client.close()
+        client.close()
+        assert client._client.close.call_count == 2
 
 
 # =============================================================================
@@ -560,9 +657,7 @@ class TestComputePrEvidenceStdoutFallback:
         client.get_pull_by_number.return_value = {"number": 888, "state": "open"}
 
         def stdout_reader(task_id: str) -> str:
-            return json.dumps(
-                {"status": "completed", "pr_url": "https://github.com/o/r/pull/888"}
-            )
+            return json.dumps({"status": "completed", "pr_url": "https://github.com/o/r/pull/888"})
 
         evidence = _compute_pr_evidence(
             "abc123",
@@ -720,6 +815,43 @@ class TestOrchestratorRoutingTable:
         decision = handle_event(event)
         assert decision.route == Route.ESCALATE
         assert decision.assignee == "owner"
+
+    def test_task_failed_exit_confirmed_false_string_escalates(self) -> None:
+        """``exit_confirmed="false"`` (a string) must ESCALATE, not re-drive (L4 #1029).
+
+        Emitters that serialize the flag as text send the *string* ``"false"``,
+        which is truthy under a bare ``if exit_confirmed:`` check — flipping an
+        unconfirmed death into a confident re-drive. Normalizing at the emit
+        boundary coerces it to the real bool ``False`` so the unconfirmed-exit
+        branch fires and the event escalates to the owner.
+        """
+        event = {
+            "event_type": "task_failed",
+            "severity": "medium",
+            "payload": {
+                "task_id": "t123",
+                "exit_confirmed": "false",  # string, not bool
+                "pr_evidence": False,
+                "failure_reason": "reaped",
+                "goal": "implement feature",
+            },
+        }
+        decision = handle_event(event)
+        assert decision.route == Route.ESCALATE
+        assert decision.assignee == "owner"
+
+    def test_as_bool_coerces_flag_strings(self) -> None:
+        """``_as_bool`` maps flag-like strings to strict bools (L4 #1029)."""
+        assert _as_bool("false") is False
+        assert _as_bool("False") is False
+        assert _as_bool("0") is False
+        assert _as_bool("") is False
+        assert _as_bool("no") is False
+        assert _as_bool("true") is True
+        assert _as_bool("1") is True
+        assert _as_bool(True) is True
+        assert _as_bool(False) is False
+        assert _as_bool(None) is False
 
     def test_task_failed_pr_evidence_null_escalate(self) -> None:
         """task_failed + confirmed exit + pr_evidence=null (unparseable goal) → ESCALATE.
@@ -932,6 +1064,37 @@ class TestRedriveIdempotency:
         decision = handle_event(event)
         assert decision.route == Route.EMIT_TASK
         assert decision.idempotency_key == "t123:r2"
+
+    def test_malformed_attempt_falls_back_to_zero(self) -> None:
+        """A non-int ``attempt`` (malformed payload) falls back to 0, not a crash (M1 #1029).
+
+        ``int("abc")`` raises ``ValueError``; without the guard the whole event
+        handler would blow up on a garbage attempt suffix instead of degrading
+        to the root attempt. attempt→0 ⇒ next_attempt 1 ⇒ key suffix ``:r1``.
+        """
+        event = {
+            "event_type": "task_done",
+            "severity": "medium",
+            "payload": {
+                "task_id": "t123",
+                "lineage_key": "t123",
+                "attempt": "abc",  # non-int → guard returns 0
+                "pr_evidence": False,
+                "goal": "implement feature",
+            },
+        }
+        decision = handle_event(event)
+        assert decision.route == Route.EMIT_TASK
+        assert decision.idempotency_key == "t123:r1"
+
+    def test_attempt_of_guards_non_int(self) -> None:
+        """``_attempt_of`` returns 0 on a non-int suffix, 1 on absent (M1 #1029)."""
+        assert _attempt_of({"attempt": "abc"}) == 0
+        assert _attempt_of({"attempt": None}) == 1
+        assert _attempt_of({}) == 1
+        assert _attempt_of({"attempt": 0}) == 0
+        assert _attempt_of({"attempt": 3}) == 3
+        assert _attempt_of({"attempt": "2"}) == 2
 
     def test_max_attempts_exhausted(self) -> None:
         """Attempt ≥ 2 (MAX_ATTEMPTS=2) and pr_evidence=false → escalate, no re-drive."""

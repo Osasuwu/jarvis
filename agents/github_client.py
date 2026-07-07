@@ -209,6 +209,12 @@ class GitHubClient(Protocol):
     def list_commits_for_pull(self, pr_number: int) -> list[dict[str, Any]]:
         """List commits for a PR; returns empty list if not found."""
 
+    def close(self) -> None:
+        """Release any pooled resources held by the client. Idempotent.
+
+        Declared on the Protocol (L2, #1029) so a type-checker flags an
+        alternate implementation that forgets to release its connections."""
+
 
 def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
     """Parse executor stdout JSON and extract PR number if present (AC3 #953).
@@ -377,7 +383,16 @@ def check_pr_evidence_rework_shape(
             )
             return None
         for commit in commits:
-            commit_date_str = commit.get("commit", {}).get("author", {}).get("date")
+            commit_meta = commit.get("commit", {})
+            # committer.date is the push-time anchor for the freshness gate
+            # (M2, #1029): a rebase/amend can leave author.date OLDER than the
+            # actual push, which would let a pre-spawn commit read as fresh and
+            # soften the #993 guarantee. Fall back to author.date only for a
+            # malformed commit that carries no committer block — real rebased
+            # commits always update committer.date.
+            commit_date_str = commit_meta.get("committer", {}).get("date") or commit_meta.get(
+                "author", {}
+            ).get("date")
             if commit_date_str:
                 try:
                     commit_date = datetime.fromisoformat(commit_date_str.replace("Z", "+00:00"))
@@ -427,6 +442,11 @@ class HttpxGitHubClient:
             f"https://api.github.com/repos/{self._repo}/pulls",
             params={"head": f"{self._owner}:{branch}", "state": "all", "per_page": 1},
         )
+        if resp.status_code == 404:
+            # A genuinely-absent branch/PR is "no evidence", not an error —
+            # normalize to the None sentinel the siblings already return (L3,
+            # #1029) instead of surfacing a raw HTTPError to callers.
+            return None
         resp.raise_for_status()
         data = resp.json()
         return data[0] if data else None
