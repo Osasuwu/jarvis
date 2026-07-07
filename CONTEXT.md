@@ -174,6 +174,14 @@ These are the "obvious" assumptions that previously bit because they weren't wri
 - **`mcp-memory/server.py`, `.mcp.json`, Supabase schema** are shared with redrobot. Changes here can break redrobot — verify before pushing.
 - **`.mcp.json` must be device-portable.** No hardcoded usernames, no absolute paths. Use relative paths or env vars.
 
+### AFK spawn substrate (sandcastle convergence, #959 / milestone 58)
+
+- **Branch placement is enforced supervisor-side, not agent-side or library-side.** The native sandcastle branch pin is belt only; the authoritative layer is the supervisor verifying commits, pushing HEAD to the pinned branch, and verifying/opening the PR after the run. Upstream Windows worktree bugs (mattpocock/sandcastle#855, #849) make library-level enforcement untrustworthy on our host — a zero-commits result on the Windows host classifies as **infra fault** (no agent attempt burned, no tier escalation). Decisions `aa4959d8`, `3c0f2953`.
+- **Sandcastle runs all `onSandboxReady` hooks concurrently** (`Effect.all` unbounded, verified in package source). Order-dependent setup must be a single chained command (`sh -c "a && b && c"`), never separate hooks. Any hook failure aborts the whole run.
+- **Queue DB is the source of truth; the Docker daemon is a reconcilable cache.** The row is written before any container is created; sweeps cross-join labeled containers against claimed rows; a daemon error means "skip this pass loudly", never "no containers exist" (Nomad #6762 class: the daemon can start a container yet report failure).
+- **Agent faults never escalate the model tier.** Failure classes are semantic, not transport-origin; only infra/quota classes move the ladder. Retry budget is a **total across the ladder**, not per-hop, and tier state (quota/cooldown/health) is evaluated per attempt at runtime. Decision `c85b5de9` + research `74ce63b5`.
+- **Metered billing requires explicit consent.** No tier transition may silently move a task onto metered API billing (`consent_required` per slot); the spawn env boundary is symmetric — host billing vars never reach containers, and endpoint-intended runs never silently fall back to subscription OAuth.
+
 ### Communication & delegation
 
 - **Sending as the owner is not autonomous** until the "digital twin" pillar is ready. Drafts welcome; final send stays with the owner.
