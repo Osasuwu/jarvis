@@ -439,11 +439,21 @@ if (result.commits.length === 0 || !pinnedBranchExists) {
         `PR #${targetPr} (${pinnedBranch}).`,
     );
   } else {
-    const existingPr = execFileSync(
+    // `--jq '.[0].number // empty'`: on an empty array `.[0].number` is jq
+    // `null`, which gh prints as the literal string "null" — truthy in JS and
+    // would falsely read as "PR already exists", silently suppressing
+    // `gh pr create` on every fresh run (the exact bug this PR exists to
+    // close). `// empty` makes the null case emit nothing instead. Belt-and-
+    // suspenders: we STILL require a positive integer below, so a future jq
+    // regression can't re-open the hole.
+    const existingPrRaw = execFileSync(
       "gh",
-      ["pr", "list", "--head", pinnedBranch, "--json", "number", "--jq", ".[0].number"],
+      ["pr", "list", "--head", pinnedBranch, "--json", "number", "--jq", ".[0].number // empty"],
       { encoding: "utf8" },
     ).trim();
+    const existingPrNum = Number(existingPrRaw);
+    const existingPr =
+      Number.isInteger(existingPrNum) && existingPrNum > 0 ? existingPrNum : null;
     if (existingPr) {
       console.error(
         `[sandcastle] PR #${existingPr} already open for ${pinnedBranch} — ` +
