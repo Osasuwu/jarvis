@@ -159,6 +159,74 @@ def test_mark_processed_guards_on_pending_state():
 
 
 # ---------------------------------------------------------------------------
+# Test-B3 (PR #1142 follow-up): mark_processed must distinguish a benign no-op
+# (returns True) from a real DB/network failure (returns False + ERROR). A
+# swallowed failure would silently reintroduce the #649 re-send loop.
+# ---------------------------------------------------------------------------
+
+
+class _RaisingClient:
+    """Supabase stand-in whose events update raises — models a DB/network fault."""
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def table(self, name):
+        assert name == "events", f"unexpected table {name!r}"
+        return self
+
+    def update(self, *_a, **_k):
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        raise self._exc
+
+
+def test_mark_processed_returns_true_on_success():
+    client = FakeEventsClient([_pending_event("e1")])
+    assert telegram_hook.mark_processed(client, "e1", "telegram sent: ok") is True
+
+
+def test_mark_processed_returns_true_on_benign_no_match():
+    """Row already claimed elsewhere → empty update, no exception → benign True."""
+    row = _pending_event("e1")
+    row["state"] = "claimed"
+    client = FakeEventsClient([row])
+    assert telegram_hook.mark_processed(client, "e1", "telegram sent: ok") is True
+
+
+def test_mark_processed_returns_false_on_db_failure(capsys):
+    """A real exception is surfaced (ERROR), not swallowed as a soft WARN."""
+    client = _RaisingClient(RuntimeError("connection reset"))
+    assert telegram_hook.mark_processed(client, "e1", "telegram sent: ok") is False
+    err = capsys.readouterr().err
+    assert "ERROR" in err
+    assert "will re-notify" in err.lower()
+
+
+def test_main_flags_run_failed_when_mark_fails(monkeypatch):
+    """Send succeeds but the processed-write fails → exit 2, not a clean 0."""
+    monkeypatch.setattr("sys.argv", ["telegram-notify-hook.py"])
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "bot:token")
+    monkeypatch.setenv("TELEGRAM_ALLOW_USER_ID", "12345")
+    monkeypatch.setenv("SUPABASE_URL", "http://localhost")
+    monkeypatch.setenv("SUPABASE_KEY", "test-key")
+    with (
+        patch("supabase.create_client", return_value=MagicMock()),
+        patch.object(
+            telegram_hook, "fetch_pending_events", return_value=[_pending_event("e1")]
+        ),
+        patch.object(telegram_hook, "send_telegram", return_value=(True, "sent")),
+        patch.object(telegram_hook, "mark_processed", return_value=False),
+    ):
+        rc = telegram_hook.main()
+    assert rc == 2
+
+
+# ---------------------------------------------------------------------------
 # AC-B2 (#649): fail loud on missing Telegram secrets. Non-dry-run with either
 # TELEGRAM_BOT_TOKEN or TELEGRAM_ALLOW_USER_ID unset must exit non-zero BEFORE
 # any send. Behavior already lives at telegram-notify-hook.py:168; these lock
