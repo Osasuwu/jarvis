@@ -463,6 +463,45 @@ if (result.commits.length === 0 || !pinnedBranchExists) {
       execFileSync("gh", ["pr", "create", "--head", pinnedBranch, "--fill"], {
         stdio: "inherit",
       });
+      // Belt-and-suspenders (this PR's thesis: the supervisor is the
+      // enforcement authority, not the agent). `--fill` derives the body
+      // from the commit message; prompt.md step 6 mandates `Closes #<N>`
+      // there, but that relies on agent compliance. If the closing keyword
+      // is missing, the merged PR silently won't auto-close its issue (the
+      // #948 failure mode). We can't inject it here — the supervisor doesn't
+      // know which issue a free-pick fresh run claimed — but we can make the
+      // omission LOUD instead of silent so the orchestrator catches it at
+      // review time rather than after a stale issue accumulates.
+      // This runs AFTER the PR is created — the run has already succeeded.
+      // Wrap in try/catch so a transient `gh pr view` failure (API hiccup,
+      // rate limit, read-after-write replication lag right after `gh pr
+      // create`) degrades to its own warning instead of throwing past the
+      // resultFile-write at the end of this script, which would surface a
+      // successful run to the watchdog as a hard infra fault and risk a
+      // spurious tier-escalation retry. The check is advisory — it must not
+      // be able to crash a run that already committed + pushed + opened a PR.
+      try {
+        const createdBody = execFileSync(
+          "gh",
+          ["pr", "view", pinnedBranch, "--json", "body", "--jq", ".body"],
+          { encoding: "utf8" },
+        );
+        if (!/\b(clos|fix|resolv)(e|es|ed)?\s+#\d+/i.test(createdBody)) {
+          console.error(
+            `[sandcastle] WARNING: PR for ${pinnedBranch} has no ` +
+              "Closes/Fixes/Resolves #<N> keyword in its body — merging it will " +
+              "NOT auto-close the issue (#948 failure mode). The agent's commit " +
+              "message dropped the closing keyword; flag for the orchestrator.",
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[sandcastle] WARNING: could not verify Closes #<N> keyword for ` +
+            `${pinnedBranch} — \`gh pr view\` failed: ${
+              err instanceof Error ? err.message : String(err)
+            }. PR creation itself succeeded; skipping the advisory check.`,
+        );
+      }
     }
   }
 }
