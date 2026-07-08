@@ -297,29 +297,32 @@ if (
 }
 const maxIterations = 1;
 
-// AC6 (#1118) — Docker Desktop >=29 hangs sandcastle's docker sandbox on this
-// host (upstream mattpocock/sandcastle#868). Fail loud here, before any
-// spawn, rather than let the run() call hang silently for the operator to
-// eventually kill. `docker version --format` avoids parsing the full `docker
-// info` text; the server (Engine) version is what sandcastle actually talks
-// to, not the CLI client.
+// AC6 (#1118) — mattpocock/sandcastle#868 reports the docker sandbox freezing
+// Claude Code startup on Docker Engine >=29. That freeze is HEAD-mode-specific.
+// Our config runs WORKTREE mode (branchStrategy { type: "branch" }), whose git
+// mounts land differently (main `.git` -> /.sandcastle-parent-git, a gitdir-
+// override file -> /home/agent/workspace/.git) and do NOT trip the duplicate-
+// inode bug. Verified empirically on Docker Engine 29.5.2: the container builds
+// its mounts and Claude Code boots cleanly (boot smoke, session 8c3bb91f,
+// 2026-07-08). So we WARN rather than block — the original hard `throw` here was
+// a false blocker that grounded the whole AFK loop on this host. If a future
+// sandcastle release switches us to head mode, or Claude Code startup begins
+// freezing inside the container on >=29, this is the first place to look.
+// `docker version --format` reads the server (Engine) version — what sandcastle
+// actually talks to — not the CLI client. A docker-down error still throws here
+// (execFileSync), which is correct: docker is required regardless.
 const dockerServerVersion = execFileSync(
   "docker",
   ["version", "--format", "{{.Server.Version}}"],
   { encoding: "utf8" },
 ).trim();
 const dockerMajor = Number(dockerServerVersion.split(".")[0]);
-if (!Number.isFinite(dockerMajor)) {
-  throw new Error(
-    `Could not parse Docker server version from "${dockerServerVersion}" — ` +
-      "refusing to spawn without a known-good Docker version.",
-  );
-}
-if (dockerMajor >= 29) {
-  throw new Error(
-    `Docker Engine ${dockerServerVersion} detected — sandcastle's docker ` +
-      "sandbox hangs on Docker >=29 (mattpocock/sandcastle#868). Downgrade " +
-      "Docker Desktop to <29 before running sandcastle on this host.",
+if (Number.isFinite(dockerMajor) && dockerMajor >= 29) {
+  console.warn(
+    `[sandcastle] Docker Engine ${dockerServerVersion} (>=29) detected. ` +
+      "Worktree-mode is verified OK on this host (mattpocock/sandcastle#868 is " +
+      "head-mode-specific); if Claude Code startup freezes inside the container, " +
+      "that bug is the first suspect.",
   );
 }
 
