@@ -102,6 +102,7 @@ groups:
           - "autonomous-loop"
           - "delegate"
           - "end"
+          - "file-issue"
           - "goals"
           - "implement"
           - "last-work-report"
