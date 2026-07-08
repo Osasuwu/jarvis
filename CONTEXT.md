@@ -181,6 +181,7 @@ These are the "obvious" assumptions that previously bit because they weren't wri
 - **Queue DB is the source of truth; the Docker daemon is a reconcilable cache.** The row is written before any container is created; sweeps cross-join labeled containers against claimed rows; a daemon error means "skip this pass loudly", never "no containers exist" (Nomad #6762 class: the daemon can start a container yet report failure).
 - **Agent faults never escalate the model tier.** Failure classes are semantic, not transport-origin; only infra/quota classes move the ladder. Retry budget is a **total across the ladder**, not per-hop, and tier state (quota/cooldown/health) is evaluated per attempt at runtime. Decision `c85b5de9` + research `74ce63b5`.
 - **Metered billing requires explicit consent.** No tier transition may silently move a task onto metered API billing (`consent_required` per slot); the spawn env boundary is symmetric — host billing vars never reach containers, and endpoint-intended runs never silently fall back to subscription OAuth.
+- **Pause is a host-local CLI drain switch, never a DB flag** (`1c03fb17`, `2a095b9f`). Scheduling is always-on by default; `pause`/`resume`/`status` subcommands persist state locally on the host (survives reboot, works with DB unreachable), drain semantics — no new pickups, in-flight runs finish. Operated over SSH/RDP, same shape as `gitlab-runner pause` / `kubectl cordon`. Quiet-hours is optional config enforced at the drain; absent config = always-on.
 
 ### Communication & delegation
 
