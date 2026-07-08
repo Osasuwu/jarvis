@@ -291,8 +291,8 @@ def test_write_verdict_to_event():
     """Canonical write: write_verdict_to_event writes to fok_judgments (no legacy mirror)."""
     mock_client = MagicMock()
     # Stub the events.payload fetch so write_verdict_to_event finds a row
-    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = (
-        Mock(data=[{"payload": {"query": "test", "project": "Osasuwu/jarvis"}}])
+    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = Mock(
+        data=[{"payload": {"query": "test", "project": "Osasuwu/jarvis"}}]
     )
     event_id = "evt-001"
     verdict = {"verdict": "partial", "confidence": 0.7, "reason": "Some info present."}
@@ -300,11 +300,7 @@ def test_write_verdict_to_event():
     fok_batch.write_verdict_to_event(mock_client, event_id, verdict)
 
     # fok_judgments.upsert was called with verdict data
-    upsert_calls = [
-        c
-        for c in mock_client.table.return_value.upsert.call_args_list
-        if c.args
-    ]
+    upsert_calls = [c for c in mock_client.table.return_value.upsert.call_args_list if c.args]
     assert upsert_calls, "fok_judgments.upsert should fire"
     record = upsert_calls[0].args[0]
     assert record["verdict"] == "partial"
@@ -315,17 +311,15 @@ def test_write_verdict_to_event():
 def test_write_verdict_to_event_dual_writes_to_fok_judgments():
     """Canonical write: fok_judgments table receives an upsert with the right shape."""
     mock_client = MagicMock()
-    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = (
-        Mock(
-            data=[
-                {
-                    "payload": {
-                        "query": "what is fok?",
-                        "project": "Osasuwu/jarvis",
-                    }
+    mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = Mock(
+        data=[
+            {
+                "payload": {
+                    "query": "what is fok?",
+                    "project": "Osasuwu/jarvis",
                 }
-            ]
-        )
+            }
+        ]
     )
     event_id = "evt-042"
     verdict = {
@@ -337,11 +331,7 @@ def test_write_verdict_to_event_dual_writes_to_fok_judgments():
     fok_batch.write_verdict_to_event(mock_client, event_id, verdict)
 
     # Find the fok_judgments call specifically (events.update is also called)
-    upsert_calls = [
-        c
-        for c in mock_client.table.return_value.upsert.call_args_list
-        if c.args
-    ]
+    upsert_calls = [c for c in mock_client.table.return_value.upsert.call_args_list if c.args]
     assert upsert_calls, "fok_judgments.upsert should fire"
 
     # Confirm the table name was fok_judgments at least once
@@ -430,9 +420,7 @@ def test_try_insert_zero_confidence_is_not_treated_as_missing():
 
     fok_batch.try_insert_known_unknown(client, event, verdict, "jarvis")
 
-    insert_calls = [
-        c for c in client.table.return_value.insert.call_args_list if c.args
-    ]
+    insert_calls = [c for c in client.table.return_value.insert.call_args_list if c.args]
     assert insert_calls, "insert() should have been called for confidence=0.0"
     payload = insert_calls[-1].args[0]
     assert payload["query"] == "zero-confidence query"
@@ -454,9 +442,7 @@ def test_try_insert_dedupes_on_exact_query_and_bumps_hit_count():
     client.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = Mock(
         data=[{"id": "ku-1", "hit_count": 3}]
     )
-    update_chain = (
-        client.table.return_value.update.return_value.eq.return_value.execute
-    )
+    update_chain = client.table.return_value.update.return_value.eq.return_value.execute
 
     event = {
         "id": "evt-dup",
@@ -474,9 +460,7 @@ def test_try_insert_dedupes_on_exact_query_and_bumps_hit_count():
     assert "last_seen_at" in update_payload
 
     # No insert should have fired on the dedupe path
-    insert_calls = [
-        c for c in client.table.return_value.insert.call_args_list if c.args
-    ]
+    insert_calls = [c for c in client.table.return_value.insert.call_args_list if c.args]
     assert not insert_calls, "insert() must not be called when a dup row exists"
 
 
@@ -506,6 +490,70 @@ def test_check_known_unknowns_exists_uses_table_probe():
         RuntimeError("relation does not exist")
     )
     assert fok_batch.check_known_unknowns_exists(client2) is False
+
+
+# ---------------------------------------------------------------------------
+# Fix A / Test-A1 (#649): main() must fail fast on degenerate config so it never
+# persists missing-key 'unknown' verdicts into fok_judgments. --dry-run keeps its
+# smoke-test role and must NOT fail fast.
+# ---------------------------------------------------------------------------
+
+
+def test_main_fails_fast_without_api_key_and_writes_nothing(monkeypatch):
+    """Non-dry-run with ANTHROPIC_API_KEY unset → exit 1 and zero fok_judgments writes."""
+    monkeypatch.setattr("sys.argv", ["fok-batch.py"])
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with (
+        patch.object(fok_batch, "fetch_events") as mock_fetch,
+        patch.object(fok_batch, "write_verdict_to_event") as mock_write,
+    ):
+        with pytest.raises(SystemExit) as exc:
+            fok_batch.main()
+
+    assert exc.value.code == 1
+    # Bailed before the fetch/judge loop → no DB reads, no verdict writes.
+    mock_fetch.assert_not_called()
+    mock_write.assert_not_called()
+
+
+def test_main_fails_fast_when_httpx_unavailable(monkeypatch):
+    """Non-dry-run with httpx import failed → exit 1 (every verdict would be degenerate)."""
+    monkeypatch.setattr("sys.argv", ["fok-batch.py"])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "present-but-httpx-missing")
+
+    original_httpx = fok_batch.httpx
+    try:
+        fok_batch.httpx = None
+        with (
+            patch.object(fok_batch, "fetch_events") as mock_fetch,
+            patch.object(fok_batch, "write_verdict_to_event") as mock_write,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                fok_batch.main()
+        assert exc.value.code == 1
+        mock_fetch.assert_not_called()
+        mock_write.assert_not_called()
+    finally:
+        fok_batch.httpx = original_httpx
+
+
+def test_main_dry_run_does_not_fail_fast_on_missing_key(monkeypatch):
+    """--dry-run with the key unset → does NOT exit 1; still fetches/formats/summarizes."""
+    monkeypatch.setattr("sys.argv", ["fok-batch.py", "--dry-run"])
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("SUPABASE_URL", "http://localhost")
+    monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+    with (
+        patch("supabase.create_client", return_value=MagicMock()),
+        patch.object(fok_batch, "fetch_events", return_value=[]) as mock_fetch,
+    ):
+        # No SystemExit from the api-key guard; empty fetch → clean return.
+        result = fok_batch.main()
+
+    assert result is None
+    mock_fetch.assert_called_once()
 
 
 if __name__ == "__main__":
