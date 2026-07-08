@@ -392,8 +392,16 @@ def main():
     # writes). Mirrors telegram-notify-hook.py's not-dry-run + missing-config gate.
     if not args.dry_run:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        if not api_key or httpx is None:
-            reason = "ANTHROPIC_API_KEY not set" if not api_key else "httpx not available"
+        # Single source of truth for both the guard and the message: whichever
+        # precondition is unmet names itself; None means the config is sound.
+        reason = (
+            "ANTHROPIC_API_KEY not set"
+            if not api_key
+            else "httpx not available"
+            if httpx is None
+            else None
+        )
+        if reason:
             print(
                 f"Error: {reason} — every FoK verdict would be a degenerate 'unknown'. "
                 "Refusing to persist. (Use --dry-run to preview without writing.)",
