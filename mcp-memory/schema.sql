@@ -2194,7 +2194,8 @@ create index if not exists idx_task_outcomes_memory_id
 -- Only includes memories with at least one resolved outcome (success or
 -- failure). Partial/unknown/pending outcomes are excluded — they would
 -- bias the Brier score either way.
-create or replace view memory_calibration as
+create or replace view memory_calibration
+  with (security_invoker = on) as
 select
   m.id as memory_id,
   m.type as memory_type,
@@ -3230,3 +3231,65 @@ drop policy if exists "Allow all for authenticated" on global_task_sources;
 drop policy if exists "Anon select only" on global_task_sources;
 create policy "Anon select only" on global_task_sources
   for select to anon using (true);
+
+-- ===========================================================================
+-- credential_registry (Pillar 9): metadata inventory of credentials — service,
+-- env-var NAME, storage location, rotation/expiry. NEVER secret values (see
+-- mcp-memory/handlers/credential.py). Applied to remote as migrations
+-- 20260415082814 (create) + 20260708044124 (RLS); documented here per #326.
+-- ===========================================================================
+create table if not exists credential_registry (
+  id uuid primary key default gen_random_uuid(),
+  service text not null,
+  env_var text not null unique,
+  stored_in text not null default '.env',
+  scope text not null default 'jarvis',
+  created_at timestamptz default now(),
+  expires_at timestamptz,
+  last_rotated_at timestamptz,
+  rotation_notes text,
+  notes text,
+  -- Defence-in-depth: reject rows whose metadata columns look like a raw secret.
+  check (
+    env_var !~ '^(eyJ|sk-|ghp_|ghs_|AKIA|xox[bpras]-)'
+    and (rotation_notes is null or rotation_notes !~ '(eyJ|sk-|ghp_|ghs_|AKIA)')
+    and (notes is null or notes !~ '(eyJ|sk-|ghp_|ghs_|AKIA)')
+  )
+);
+
+-- RLS: allow-all convention (service_role bypasses). Enabled to clear the
+-- Supabase rls_disabled_in_public ERROR; access is unchanged (app-layer trust).
+alter table credential_registry enable row level security;
+drop policy if exists "Allow all for authenticated" on credential_registry;
+drop policy if exists "Allow all for anon" on credential_registry;
+create policy "Allow all for authenticated" on credential_registry
+  for all using (true) with check (true);
+create policy "Allow all for anon" on credential_registry
+  for all to anon using (true) with check (true);
+
+-- ===========================================================================
+-- audit_log: fire-and-forget trail of MCP tool invocations. Applied to remote
+-- as migrations 20260415113317 (create) + 20260708044124 (RLS); documented
+-- here per #326.
+-- ===========================================================================
+create table if not exists audit_log (
+  id uuid primary key default gen_random_uuid(),
+  "timestamp" timestamptz default now(),
+  agent_id text,
+  tool_name text not null,
+  action text not null,
+  target text,
+  details jsonb default '{}'::jsonb,
+  outcome text default 'success'
+);
+
+create index if not exists idx_audit_log_timestamp on audit_log ("timestamp" desc);
+create index if not exists idx_audit_log_tool_name on audit_log (tool_name);
+
+alter table audit_log enable row level security;
+drop policy if exists "Allow all for authenticated" on audit_log;
+drop policy if exists "Allow all for anon" on audit_log;
+create policy "Allow all for authenticated" on audit_log
+  for all using (true) with check (true);
+create policy "Allow all for anon" on audit_log
+  for all to anon using (true) with check (true);
