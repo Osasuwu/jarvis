@@ -44,9 +44,9 @@ a crash.
 
 ## Cache semantics
 
-`CachedProbe` memoizes the reading in process memory for the TTL. The
-dispatcher runs as one long-lived APScheduler process, so cross-process
-cache (Supabase) would add complexity without benefit:
+`CachedProbe` memoizes the reading in process memory for the TTL. The probe
+runs within a single reactive-core wake, so a cross-process cache (Supabase)
+would add complexity for little benefit at current volumes:
 
 - First tick after process start → fresh probe.
 - Subsequent ticks within TTL → cached reading.

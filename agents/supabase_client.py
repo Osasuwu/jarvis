@@ -1,7 +1,7 @@
-"""Supabase bridge for LangGraph agents.
+"""Supabase bridge for reactive-core agents.
 
-LangGraph agents call Supabase directly via ``supabase-py`` — MCP is
-Claude Code's protocol and isn't available inside graph nodes. The
+Reactive-core agents call Supabase directly via ``supabase-py`` — MCP is
+Claude Code's protocol and isn't available outside a Claude session. The
 read/write helpers here mirror a subset of ``mcp-memory/server.py`` so
 data written by an agent shows up in Claude Code's ``memory_recall`` /
 ``events_list`` / ``goal_list`` and vice versa.
