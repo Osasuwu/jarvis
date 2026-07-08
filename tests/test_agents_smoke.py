@@ -1,7 +1,7 @@
 """Smoke tests for the Pillar 7 agents package.
 
 These are import/config-level sanity checks — no Postgres, no Ollama.
-Full end-to-end validation is manual (see docs/agents/langgraph-setup.md).
+Full end-to-end validation is manual (see docs/agents/reactive-core-setup.md).
 """
 
 from __future__ import annotations
@@ -54,14 +54,19 @@ def test_config_loads_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     from agents.config import (
         DEFAULT_OLLAMA_HOST,
         DEFAULT_OLLAMA_MODEL,
-        DEFAULT_POSTGRES_URL,
         load_config,
     )
 
     cfg = load_config()
     assert cfg.ollama_host == DEFAULT_OLLAMA_HOST
     assert cfg.ollama_model == DEFAULT_OLLAMA_MODEL
-    assert cfg.postgres_url == DEFAULT_POSTGRES_URL
+    # Postgres has no safe default — the old hardcoded localhost docker DSN was
+    # a footgun (that container never hosts the events NOTIFY triggers, which
+    # live only in Supabase migrations; #734). Empty string means "not
+    # configured";
+    # wake_driver fails loud at connect time rather than blocking on a NOTIFY
+    # that never fires.
+    assert cfg.postgres_url == ""
     # Supabase bridge has no safe default — empty string means "not configured".
     assert cfg.supabase_url == ""
     assert cfg.supabase_key == ""
@@ -83,6 +88,22 @@ def test_config_honours_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cfg.postgres_url.startswith("postgresql://u:p@host")
     assert cfg.supabase_url == "https://proj.supabase.co"
     assert cfg.supabase_key == "anon-key-xyz"
+
+
+def test_build_psycopg_queue_fails_loud_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Empty AGENTS_POSTGRES_URL must raise a clear error naming the var, not
+    silently connect to a phantom localhost DB (the #734 footgun). The guard
+    fires before the lazy ``import psycopg``, so this holds without the driver
+    installed.
+    """
+    monkeypatch.delenv("AGENTS_POSTGRES_URL", raising=False)
+
+    from agents import wake_driver
+
+    with pytest.raises(RuntimeError, match="AGENTS_POSTGRES_URL"):
+        wake_driver._build_psycopg_queue()
 
 
 def test_ollama_client_defaults_to_think_false() -> None:
@@ -340,7 +361,6 @@ def test_summarise_event_covers_known_types() -> None:
         assert event["type"] in s, s
 
 
-# NOTE: tests for agents.event_monitor (LangGraph monitor graph + classifier
-# schema) were removed with the module in #744 — the deterministic router
-# (agents/orchestrator.py) replaced the graph runtime. Router coverage lives
-# in tests/test_orchestrator.py.
+# NOTE: tests for the retired monitor graph + classifier schema were removed
+# with that module in #744 — the deterministic router (agents/orchestrator.py)
+# replaced the graph runtime. Router coverage lives in tests/test_orchestrator.py.
