@@ -124,7 +124,11 @@ def send_telegram(token: str, chat_id: str, text: str) -> tuple[bool, str]:
                     "disable_web_page_preview": True,
                 },
             )
-            body = resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {}
+            body = (
+                resp.json()
+                if resp.headers.get("content-type", "").startswith("application/json")
+                else {}
+            )
             if resp.status_code == 200 and body.get("ok"):
                 return True, "sent"
             return False, f"HTTP {resp.status_code}: {body.get('description', resp.text[:200])}"
@@ -133,17 +137,49 @@ def send_telegram(token: str, chat_id: str, text: str) -> tuple[bool, str]:
 
 
 def mark_processed(client, event_id: str, action: str) -> None:
-    """Mark event processed so it won't notify again."""
+    """Mark event processed so it won't notify again.
+
+    Sets the FSM ``state='processed'`` column alongside the legacy
+    ``processed=True`` flag. ``fetch_pending_events`` keys on ``state='pending'``
+    (#739), so before #649 this drain — which set only ``processed=True`` —
+    left ``state='pending'`` and re-notified every sent event on the next run.
+    Writing ``state='processed'`` closes that re-send loop.
+
+    The update guards on ``.eq("state","pending")``: this batch drain is a
+    side-channel that only claims events *still awaiting triage* and defers
+    anything the orchestrator has already advanced to ``claimed`` (the
+    single-event ``claim_next`` RPC path). Guarding on ``pending`` — not
+    ``claimed`` — means a concurrent orchestrator claim is never clobbered.
+    It deliberately does NOT delegate to the ``claim_next`` / ``mark_processed``
+    RPCs: those transition ``pending -> claimed -> processed`` and would force
+    this drain to first *claim* the row, stealing it from the orchestrator.
+    """
     now = datetime.now(timezone.utc).isoformat()
     try:
-        client.table("events").update(
-            {
-                "processed": True,
-                "processed_at": now,
-                "processed_by": "telegram-notify-hook",
-                "action_taken": action,
-            }
-        ).eq("id", event_id).execute()
+        result = (
+            client.table("events")
+            .update(
+                {
+                    "processed": True,
+                    "processed_at": now,
+                    "processed_by": "telegram-notify-hook",
+                    "action_taken": action,
+                    "state": "processed",
+                }
+            )
+            .eq("id", event_id)
+            .eq("state", "pending")
+            .execute()
+        )
+        if not (getattr(result, "data", None) or []):
+            # No row matched the pending guard — the event was already claimed
+            # or processed (orchestrator or a concurrent drain got there first).
+            # Not an error: the notification side-effect already fired above.
+            print(
+                f"INFO: {event_id} not marked processed "
+                "(no pending row — already claimed/processed elsewhere)",
+                file=sys.stderr,
+            )
     except Exception as e:
         print(f"WARN: failed to mark {event_id} processed: {e}", file=sys.stderr)
 
