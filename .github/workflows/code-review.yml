@@ -68,10 +68,22 @@ jobs:
             --repo "${{ github.repository }}" \
             --json baseRefName -q .baseRefName)
           git fetch origin "$PR_BASE"
+          # `.sql` is in the glob: schema/migration PRs are code and must be
+          # reviewed (this repo is schema-drift-sensitive). A pure-.sql PR used
+          # to fall through as "no code" and — worse — trip the crash below.
+          #
+          # grep -c prints "0" AND exits 1 when there are zero matches. The old
+          # `|| echo 0` then APPENDED a second "0", so LINES became the two-line
+          # string "0\n0" and `echo "lines=$LINES" >> $GITHUB_OUTPUT` wrote a
+          # malformed second line → "##[error]Invalid format '0'" → the step
+          # (and the whole `review` check) failed on any PR touching only
+          # non-listed extensions. Use `|| true` (grep already emits the count)
+          # and default-guard the empty-pipeline case.
           LINES=$(git diff "origin/$PR_BASE"...HEAD -- \
             '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' \
-            '*.yaml' '*.yml' '*.json' '*.sh' '*.md' \
-            | grep -cE '^[+-][^+-]' 2>/dev/null || echo 0)
+            '*.yaml' '*.yml' '*.json' '*.sh' '*.md' '*.sql' \
+            | grep -cE '^[+-][^+-]' 2>/dev/null || true)
+          LINES=${LINES:-0}
           HAS=$( [ "$LINES" -gt 0 ] && echo true || echo false )
           echo "lines=$LINES" >> "$GITHUB_OUTPUT"
           echo "has_code=$HAS" >> "$GITHUB_OUTPUT"
