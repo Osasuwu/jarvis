@@ -20,7 +20,7 @@ Tier 2 wins over Tier 0 when both match — safety bias is deny-first.
 from agents import safety
 
 outcome = safety.gate(
-    agent_id="langgraph-dispatcher",
+    agent_id="reactive-core-executor",
     tool_name="gh_labels",
     action="add_label",
     target="priority:high",
@@ -52,7 +52,7 @@ omit `fn`:
 
 ```python
 outcome = safety.gate(
-    agent_id="langgraph-dispatcher",
+    agent_id="reactive-core-executor",
     tool_name="gh_labels",
     action="add_label",
     target="priority:high",

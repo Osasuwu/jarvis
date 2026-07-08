@@ -1,6 +1,7 @@
 """wake_driver — crash-safe LISTEN/NOTIFY cold-boot loop (#743).
 
-The wake_driver replaces the retired APScheduler resident scheduler. It is a
+The wake_driver replaces the retired resident scheduler service
+(``agents/scheduler.py``, #743). It is a
 **program, not an agent**: it owns no decisions, only the wake mechanics —
 "persistent BEHAVIOR, not a persistent PROCESS" (milestone #44, decisions
 ``efa255cc`` / ``2c5384d0``).
@@ -537,9 +538,17 @@ class PsycopgEventQueue:
 
 
 def _build_psycopg_queue() -> PsycopgEventQueue:
+    cfg = load_config()
+    if not cfg.postgres_url:
+        raise RuntimeError(
+            "AGENTS_POSTGRES_URL is not set. wake_driver needs a direct-Postgres "
+            "session-mode DSN to open the LISTEN/NOTIFY socket — the PostgREST "
+            "client can't LISTEN. Point it at db.<ref>.supabase.co:5432 or a "
+            "session-pooler :5432 endpoint; never the transaction pooler :6543 "
+            "(transaction mode drops LISTEN). See .env.example."
+        )
     import psycopg
 
-    cfg = load_config()
     conn = psycopg.connect(cfg.postgres_url, autocommit=False)
     return PsycopgEventQueue(conn)
 

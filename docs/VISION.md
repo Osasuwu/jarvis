@@ -216,7 +216,7 @@ Owns axis *how it thinks*. SOUL.md identity, always-load rules, behavioral hooks
 ### Reach (cross-cutting / future)
 
 **Pillar 6 — Federation & Delegation**
-Multi-agent coordination architecture: jurisdiction boundaries, `/delegate` dispatch, persistent agents (LangGraph — Sprint 1 prototype, not production), action-agent safety gates. Direction is **HYBRID** — federation across independent jurisdictions (each project owns its own Jarvis instance and memory) + orchestrator-worker inside each delegated task.
+Multi-agent coordination architecture: jurisdiction boundaries, `/delegate` dispatch, persistent agents (Sprint 1 prototype, not production), action-agent safety gates. Direction is **HYBRID** — federation across independent jurisdictions (each project owns its own Jarvis instance and memory) + orchestrator-worker inside each delegated task.
 
 **Pillar 7 — Integrations** *(L1.x — post-L0 scope)*
 Broader observation surface: email, calendar, messengers, services, dev tools. Read access by default; writes manually configured per tool. Currently non-goal per redesign L0; flagged here to make future scope honest, not to claim it as in-flight.
