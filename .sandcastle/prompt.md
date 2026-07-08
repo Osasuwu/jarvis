@@ -66,7 +66,14 @@ issues**, not to the prompt-level context blocks.
 6. **Commit** — single rich commit. Do NOT open the PR yourself; the
    supervisor pushes the pinned branch and opens (or updates) the PR after
    this run finishes (AC1, #1118). Just leave the commit(s) on the current
-   branch.
+   branch. **The commit message body MUST contain `Closes #<N>` on its own
+   line** (N = the issue you claimed in step 3). The supervisor opens the PR
+   with `gh pr create --fill`, which derives the PR body from this commit
+   message — if `Closes #<N>` is not in the commit, the merged PR will NOT
+   auto-close the issue, silently leaving it open with stale labels (the
+   #948 failure mode documented in CLAUDE.md). This is the only place the
+   closing keyword can enter a fresh-run PR now that the agent no longer
+   opens the PR itself.
 7. **Record outcome** — emit one `outcome_record` describing the iteration
    (success / partial / failure) with the provenance tags from §"Memory
    provenance" below. Always record, even on failure — failed outcomes are

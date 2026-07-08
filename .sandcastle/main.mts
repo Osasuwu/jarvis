@@ -463,6 +463,28 @@ if (result.commits.length === 0 || !pinnedBranchExists) {
       execFileSync("gh", ["pr", "create", "--head", pinnedBranch, "--fill"], {
         stdio: "inherit",
       });
+      // Belt-and-suspenders (this PR's thesis: the supervisor is the
+      // enforcement authority, not the agent). `--fill` derives the body
+      // from the commit message; prompt.md step 6 mandates `Closes #<N>`
+      // there, but that relies on agent compliance. If the closing keyword
+      // is missing, the merged PR silently won't auto-close its issue (the
+      // #948 failure mode). We can't inject it here — the supervisor doesn't
+      // know which issue a free-pick fresh run claimed — but we can make the
+      // omission LOUD instead of silent so the orchestrator catches it at
+      // review time rather than after a stale issue accumulates.
+      const createdBody = execFileSync(
+        "gh",
+        ["pr", "view", pinnedBranch, "--json", "body", "--jq", ".body"],
+        { encoding: "utf8" },
+      );
+      if (!/\b(clos|fix|resolv)(e|es|ed)?\s+#\d+/i.test(createdBody)) {
+        console.error(
+          `[sandcastle] WARNING: PR for ${pinnedBranch} has no ` +
+            "Closes/Fixes/Resolves #<N> keyword in its body — merging it will " +
+            "NOT auto-close the issue (#948 failure mode). The agent's commit " +
+            "message dropped the closing keyword; flag for the orchestrator.",
+        );
+      }
     }
   }
 }
