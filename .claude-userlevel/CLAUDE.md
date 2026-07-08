@@ -126,6 +126,17 @@ Two structural cases where a gate *cannot* run, and admin-merge is the only path
 
 **A flaky or false-failing gate is NOT on this list.** A gate that fails when it shouldn't (e.g. the `review` check going red because the bot posted no parseable verdict comment) is a **bug to fix, not a bypass to normalize**. Knowing a gate is broken and routinely admin-merging around it silently disables the protection for every future PR. If a gate misfires: file an issue, fix the root cause, and only admin-merge the *one* blocked PR as a stop-gap **with that tracking issue linked in the merge comment**. If you find yourself admin-merging the same gate twice, stop and fix the gate first.
 
+## Filing issues — route through the right skill
+
+Do **not** open issues with a raw `gh issue create` / `mcp github issue_write` mid-session. Raw creation bypasses the project's issue schema, so the issue lands missing type/milestone/required-field metadata and rots off milestone-scoped triage — the exact leak `/file-issue`'s hygiene gate exists to catch.
+
+| What you have | Skill |
+|---|---|
+| One follow-up / finding / tech-debt / drive-by bug | **`/file-issue`** |
+| A plan/PRD to break into multiple end-to-end slices | **`/to-issues`** |
+
+Both skills read the project's label/field vocabulary from its CLAUDE.md and issue templates — they do not hardcode it. A project may ship a concrete `/file-issue` override under `.claude/skills/` that bakes in its repo slug and required fields; that shadows this generic one within that repo. This is the adoption pair for the skill: the capability is only used if the routing points at it (per `capability_needs_adoption_slice`).
+
 ## Tooling — MCP servers
 
 User-scope MCP servers (registered by the installer from `.claude-userlevel/.mcp.json`): `memory`, `github`, `context7`, `sequential-thinking`, `obsidian`, plus device-gated `uml` (only where `UML_MCP_HOME` is set — the workshop PC with the local Kroki backend). A server may declare `"x-jarvis-requires-env": "<VAR>"`; the installer skips it on devices where that var is unset, so the same source installs correctly everywhere.
