@@ -11,8 +11,8 @@ The following skills are imported from **Matt Pocock's** [`mattpocock/skills`](h
 | `grill` | `engineering/grill-with-docs` | renamed to `grill` (M37 — single grill skill, with-docs flavor; ADR 0001) |
 | `improve-codebase-architecture` | `engineering/improve-codebase-architecture` | as-is (refs CONTEXT.md / docs/adr/ — create lazily) |
 | `_shared/tdd/` reference docs | `engineering/tdd` | unbundled (#593/#596): standalone `/tdd` skill dropped; `tdd-loop.md`, `mocking.md`, `refactoring.md`, `tests.md` migrated to `skills/_shared/tdd/` as reference docs loaded by `/implement` and `/delegate` in TDD-mode. `deep-modules.md` and `interface-design.md` folded into `CONTEXT.md` glossary (Deep module / Deletion test / Testable interface entries) |
-| `to-issues` | `engineering/to-issues` | replaced `/setup-matt-pocock-skills` ref → "defined in the project's CLAUDE.md" |
-| `to-prd` | `engineering/to-prd` | same |
+| `to-tickets` | `engineering/to-issues` | renamed `to-issues` → `to-tickets` (#1150); replaced `/setup-matt-pocock-skills` ref → "defined in the project's CLAUDE.md" |
+| `to-spec` | `engineering/to-prd` | renamed `to-prd` → `to-spec` (#1150); replaced `/setup-matt-pocock-skills` ref → "defined in the project's CLAUDE.md" |
 | `triage` | `engineering/triage` | same |
 | `write-a-skill` | `productivity/write-a-skill` | as-is |
 | `zoom-out` | `engineering/zoom-out` | as-is |

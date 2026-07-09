@@ -1,4 +1,4 @@
-"""Tests for scripts/to_issues_afk_fit.py — AFK-fit static check (issue #642).
+"""Tests for scripts/to_tickets_afk_fit.py — AFK-fit static check (issue #642).
 
 The full AFK-fit checklist has four questions (1 static, 3 LLM-judgement).
 This module covers question 1 only: does any declared-changed file match a
@@ -16,7 +16,7 @@ from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-afk_fit = importlib.import_module("to_issues_afk_fit")
+afk_fit = importlib.import_module("to_tickets_afk_fit")
 
 intersects_protected = afk_fit.intersects_protected
 load_protected_paths = afk_fit.load_protected_paths

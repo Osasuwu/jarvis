@@ -67,7 +67,7 @@ Implicit assumptions are the #1 source of scope shrinkage. Before starting any t
 - [ ] Will tests be non-trivial? (need to decide what counts as "correct")
 - [ ] Does the change cross existing non-trivial code?
 
-**≥1 yes → run `/grill` BEFORE `/to-issues` / `/implement`.** Do NOT skip on the basis of "small task" — small tasks are exactly where assumption land mines hide.
+**≥1 yes → run `/grill` BEFORE `/to-tickets` / `/implement`.** Do NOT skip on the basis of "small task" — small tasks are exactly where assumption land mines hide.
 
 **0 yes → proceed with normal flow** (`/implement` directly, or just edit).
 
