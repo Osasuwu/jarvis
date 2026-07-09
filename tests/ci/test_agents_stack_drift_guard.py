@@ -82,12 +82,8 @@ ALLOWLIST: dict[str, object] = {
         "event_monitor",
         "apscheduler",
     },
-    "agents/supabase_client.py": {"langgraph"},  # DB source-identifier string-literals
     "agents/executor.py": {"langgraph"},  # "Salvaged from agents/dispatcher.py" lineage
-    "tests/test_agents_supabase_bridge.py": {  # asserts the DB-identifier bridge
-        "langgraph",
-        "event_monitor",
-    },
+    "tests/test_agents_supabase_bridge.py": {"event_monitor"},  # tool_name fixture (retired module name is legit test data)
     "tests/test_wake_driver.py": {"apscheduler"},  # retirement-enforcement assertions
     ".claude-userlevel/skills/implement/SKILL.md": {
         "apscheduler"
