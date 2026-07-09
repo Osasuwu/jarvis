@@ -200,7 +200,7 @@ def test_store_event_inserts_full_payload() -> None:
         title="t",
         severity="medium",
         payload={"foo": 1},
-        source="langgraph-monitor",
+        source="reactive-core",
         client=cli,
     )
 
@@ -209,7 +209,7 @@ def test_store_event_inserts_full_payload() -> None:
     (payload,) = insert_call[1]
     assert payload["event_type"] == "github.IssuesEvent"
     assert payload["severity"] == "medium"
-    assert payload["source"] == "langgraph-monitor"
+    assert payload["source"] == "reactive-core"
     assert payload["payload"] == {"foo": 1}
     # No dedup_key ⇒ plain insert path; upsert must NOT be used.
     assert "upsert" not in _names(cli.chains["events"][0])
@@ -381,7 +381,7 @@ def test_audit_swallows_backend_errors() -> None:
 
     # Absence of exception is the assertion.
     supabase_client.audit(
-        agent_id="langgraph-monitor",
+        agent_id="reactive-core",
         tool_name="event_monitor",
         action="poll",
         client=_BoomClient(),  # type: ignore[arg-type]
@@ -396,7 +396,7 @@ def test_audit_writes_agent_id_and_defaults() -> None:
     cli.preset("audit_log", _FakeResult(data=[{"id": 1}]))
 
     supabase_client.audit(
-        agent_id="langgraph-monitor",
+        agent_id="reactive-core",
         tool_name="event_monitor",
         action="poll",
         target="o/r",
@@ -405,7 +405,7 @@ def test_audit_writes_agent_id_and_defaults() -> None:
 
     insert_call = _find(cli.chains["audit_log"][0], "insert")
     (payload,) = insert_call[1]
-    assert payload["agent_id"] == "langgraph-monitor"
+    assert payload["agent_id"] == "reactive-core"
     assert payload["tool_name"] == "event_monitor"
     assert payload["action"] == "poll"
     assert payload["target"] == "o/r"

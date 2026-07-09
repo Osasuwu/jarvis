@@ -834,8 +834,12 @@ function Stop-AgentPR {
         return $false
     }
     try {
-        # Find the PR for this branch
-        $prNum = Invoke-Gh pr list --repo $RepoSlug --head $Branch --state open --json number --jq '.[0].number'
+        # Find the PR for this branch. `// empty` so an empty result array
+        # emits nothing rather than the literal string "null" (which would
+        # otherwise reach [int] and throw into the catch below — harmless here
+        # but a noisy, fragile idiom; hardened alongside the same fix in
+        # .sandcastle/main.mts, #1118).
+        $prNum = Invoke-Gh pr list --repo $RepoSlug --head $Branch --state open --json number --jq '.[0].number // empty'
         if ($prNum -and [int]$prNum.Trim() -gt 0) {
             Invoke-Gh pr close $prNum --repo $RepoSlug --comment "Closed by sandcastle watchdog -- pytest gate failed." | Out-Null
             return ($LASTEXITCODE -eq 0)

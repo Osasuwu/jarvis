@@ -91,8 +91,8 @@ Use skills — don't reinvent with raw tools.
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Vague intuition (no written plan yet) / "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт"; subsumes /research for in-debate factual grounding | `/reason` |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
-| Conversation context → PRD on issue tracker | `/to-prd` |
-| Plan / PRD → vertical-slice issues | `/to-issues` |
+| Conversation context → PRD on issue tracker | `/to-spec` |
+| Plan / PRD → vertical-slice issues | `/to-tickets` |
 | "diagnose this", bug repro, perf regression | `/diagnose` |
 | PR rework needed / negative review received | `/rework` (skips grill-me checkbox; reactive TDD per CRITICAL finding, MAJOR fixes, loop-stop guard policy) |
 | "improve architecture", find shallow modules, refactoring opportunities | `/improve-codebase-architecture` |
@@ -109,7 +109,7 @@ Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
 - **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs the SOUL.md checkbox at start. ≥1 yes ⇒ `/grill` first, no exceptions on "small task" basis. Output goes to AC + CONTEXT.md + memory.
-- **`/reason` (optional, intuition-stage) → `/grill` → `/to-prd` → `/to-issues` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
+- **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 - **`/status` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `статус`, `status`, or `статус <repo>` (the word as a standalone command, optionally naming a tracked repo) route to `/status`. A sentence that merely contains the word — "какой статус у PR #123", "статус деплоя в логах", "status code 500", a quoted error string — is a normal request, answered in-context; it must NOT be treated as a command to run a repo-state investigation. This anchoring closes the original failure mode where a bare "статус" was over-eagerly read as "go investigate everything".
 
@@ -123,7 +123,7 @@ Three places work can land. Pick by **who's present** and **how the work was tri
 
 Boundaries:
 
-- **Orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-issues`'s checklist applies regardless of who emits the task. An AFK-unsafe TASK row gets routed for owner attention (no auto-spawn), same as the `status:owner-queue` landing zone for `/delegate` refuses.
+- **Orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-tickets`'s checklist applies regardless of who emits the task. An AFK-unsafe TASK row gets routed for owner attention (no auto-spawn), same as the `status:owner-queue` landing zone for `/delegate` refuses.
 - **The orchestrator is a router, not the principal.** It runs routing-policy only (no full SOUL load). Full SOUL is for interactive `/implement` and for the `claude -p` subagents the executor spawns — both are the principal in their lane (CONTEXT.md → *SOUL is shared across interactive + autonomous lanes*).
 - **`/autonomous-loop` (SUPERSEDED 2026-05-26)** — cron entry removed from `setup-tasks` bootstrap; existing cron jobs on each device must be unregistered manually. The skill file is retained as an opt-in pre-M44 catch-up baseline ONLY. **Do not invoke for new flows; do not reference it in routing as if alive.** New AFK paths route through events + reactive-core orchestrator (M44). When M44 ships, the skill itself is deleted.
 
@@ -191,7 +191,7 @@ pillar (narrative only) → goal (Type A) → milestone (capability + PRD) → s
 - **No numerical WIP limit.** Self-throttle by HITL/grill/review attention load. AFK milestones (running through subagents/sandcastle) cost ~0 attention — opening another unrelated milestone is fine when prior ones are AFK.
 
 Mechanics:
-1. New work needing grouping → create milestone *first*, write description (PRD), then attach slices. `/to-prd` writes to milestone description.
+1. New work needing grouping → create milestone *first*, write description (PRD), then attach slices. `/to-spec` writes to milestone description.
 2. Capability shipped → close milestone in the same action as closing the last slice.
 3. Retroactive — if related slices shipped without a milestone, create it, attach the issues+PRs, close it. History must be recoverable.
 4. When user rushes and skips the milestone for grouped work — catch it: "milestone for these N slices?" before creating issues. Don't be a silent executor.

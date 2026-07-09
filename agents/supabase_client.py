@@ -1,7 +1,7 @@
-"""Supabase bridge for LangGraph agents.
+"""Supabase bridge for reactive-core agents.
 
-LangGraph agents call Supabase directly via ``supabase-py`` — MCP is
-Claude Code's protocol and isn't available inside graph nodes. The
+Reactive-core agents call Supabase directly via ``supabase-py`` — MCP is
+Claude Code's protocol and isn't available outside a Claude session. The
 read/write helpers here mirror a subset of ``mcp-memory/server.py`` so
 data written by an agent shows up in Claude Code's ``memory_recall`` /
 ``events_list`` / ``goal_list`` and vice versa.
@@ -152,7 +152,7 @@ def store_event(
     title: str,
     severity: str = "info",
     payload: dict[str, Any] | None = None,
-    source: str = "langgraph-agent",
+    source: str = "reactive-core",
     dedup_key: str | None = None,
     client: Client | None = None,
     config: AgentConfig | None = None,
@@ -313,7 +313,7 @@ def audit(
     """Best-effort audit entry — never raises.
 
     The ``agent_id`` column on ``audit_log`` is how agents identify
-    themselves (e.g. ``"langgraph-monitor"``). Matches the server.py
+    themselves (e.g. ``"reactive-core"``). Matches the server.py
     ``_audit_log()`` convention, with ``agent_id`` filled in — MCP writes
     leave it NULL, so the column doubles as the actor differentiator.
     """

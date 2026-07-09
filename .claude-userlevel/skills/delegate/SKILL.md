@@ -45,7 +45,7 @@ inside the dispatched sandcastle agent.
 **Four conditions, all required** (canonical implementation:
 [`scripts/delegate_predispatch_gate.py`](../../../scripts/delegate_predispatch_gate.py)):
 
-1. Issue has label `sandcastle` (applied by `/to-issues` per the AFK-fit
+1. Issue has label `sandcastle` (applied by `/to-tickets` per the AFK-fit
    checklist at slice creation — never manually, never at grill time).
 2. Issue has **no** `needs-*` label (`needs-grill`, `needs-research`,
    `needs-prd`, `needs-refactor`, …). Each requesting skill removes its own
@@ -155,7 +155,7 @@ UUID), the SOUL.md grill-checkbox below is **skipped** — the artefacts'
 presence is itself evidence the issue has been grilled and refined. The
 checkbox runs only as a **legacy backstop** for pre-#642 issues that have
 no artefacts and no `needs-grill` label (e.g. early milestones whose slices
-were authored before the AFK-fit checklist). New issues from `/to-issues`
+were authored before the AFK-fit checklist). New issues from `/to-tickets`
 land with artefacts in place and bypass the checkbox entirely.
 
 **Inputs** (per issue — fetch the body first):
@@ -176,7 +176,7 @@ done
 2. **Grill artifact for this issue** — present iff *either* of the following holds:
 
    - **(a) working_state** — `memory_get(name="working_state_<project>", project="<project>")` where `<project>` is the short project slug (`jarvis`, `redrobot`), matching the convention in `scripts/session-context.py`. If the returned record references this issue number alongside one or more decision UUIDs, the artifact is present. The exact key shape inside the record is project-controlled — accept any structure where a decision UUID is reachable from the issue number. If working_state has no entry for this issue, fall through to (b).
-   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies. The automated `/to-issues` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
+   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies. The automated `/to-tickets` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
 
 **Dispatch table** — per issue, pick exactly one branch:
 

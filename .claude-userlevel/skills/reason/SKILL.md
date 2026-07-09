@@ -65,7 +65,7 @@ The bias prevention only holds if you don't tell the subagent which side you're 
 
 ## When to chain into other skills
 
-- Discussion crystallises into a concrete plan → handoff to `/grill` on that plan, then `/to-issues` / `/implement`.
+- Discussion crystallises into a concrete plan → handoff to `/grill` on that plan, then `/to-tickets` / `/implement`.
 - Discussion reveals a code-level question that's bigger than this session → spin out an issue via `/triage` or `mcp__ccd_session__spawn_task`.
 - Domain term gets sharpened mid-discussion → append inline to `CONTEXT.md` (same rule as /grill — don't batch).
 
