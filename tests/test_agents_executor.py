@@ -303,6 +303,42 @@ def test_spawn_uses_resolved_binary_path(
     assert "--dangerously-skip-permissions" not in argv
 
 
+def test_spawn_passes_issue_bearing_goal_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """AC2 (#1136): the executor stays goal-agnostic.
+
+    ``spawn`` places ``task_text`` at ``argv[2]`` unchanged — it must NOT
+    inject issue semantics (no ``Closes #<N>`` appended here). The
+    ``Closes``/``Refs`` PR-body mandate is composed upstream in
+    ``task_dispatch._augment_closes_mandate`` before ``spawn`` is called,
+    so the executor never learns the issue number. This lock test pins that
+    boundary: a goal that already names ``#42`` passes through byte-for-byte
+    with no linkage keyword grafted on by the executor.
+    """
+    from agents.executor import spawn
+
+    fake = tmp_path / "resolved-claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+
+    goal = "implement the guard for #42"
+    captured = _CapturedPopen()
+    result = spawn(
+        goal,
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
+
+    assert result.proc is not None, "spawn should not be throttled"
+    argv = captured.calls[0]["argv"]
+    assert argv[2] == goal, "executor must pass the goal through verbatim"
+    assert "Closes #42" not in argv[2], "executor must not inject a closing keyword"
+    assert "Refs #42" not in argv[2], "executor must not inject a linkage keyword"
+
+
 def test_spawn_captures_stderr_to_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -352,7 +388,6 @@ class _FixedProbe:
 
 
 def _healthy_reading() -> Any:
-
     from agents.usage_probe import UsageReading
 
     return UsageReading(
@@ -365,7 +400,6 @@ def _healthy_reading() -> Any:
 
 
 def _exhausted_reading() -> Any:
-
     from agents.usage_probe import UsageReading
 
     return UsageReading(

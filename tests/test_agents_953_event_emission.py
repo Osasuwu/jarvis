@@ -15,6 +15,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime
 from typing import Any
 from unittest import mock
@@ -24,6 +25,7 @@ import pytest
 from agents.github_client import (
     GitHubClient,
     HttpxGitHubClient,
+    check_pr_closing_ref_fresh_shape,
     check_pr_evidence_fresh_shape,
     check_pr_evidence_rework_shape,
     parse_executor_stdout,
@@ -38,7 +40,9 @@ from agents.orchestrator import (
 from agents.task_dispatch import (
     TrackedProc,
     _augment_branch_directive,
+    _augment_closes_mandate,
     _compute_pr_evidence,
+    default_spawn,
     default_stdout_reader,
     format_lineage_key,
     parse_lineage,
@@ -237,6 +241,148 @@ class TestPREvidenceFreshShape:
             client=mock_client,
         )
         assert evidence is True
+
+
+def _real_closing_ref_matcher() -> Any:
+    """Load the /delegate gate's closing-ref regex factory (source of truth, #1136 AC4).
+
+    ``check_pr_closing_ref_fresh_shape`` takes the matcher by injection so the
+    HTTP client never path-loads a ``scripts/`` module. The test exercises the
+    *real* regex (not a re-implementation) to stay in lockstep with the gate.
+    """
+    import importlib
+    import sys
+    from pathlib import Path
+
+    scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    return importlib.import_module("delegate_predispatch_gate")._closing_ref_re
+
+
+class TestClosingRefChannel:
+    """AC4 (#1136): a SEPARATE return channel reporting whether the fetched PR
+    body carries a *closing* ref for the task's issue.
+
+    Distinct from the freshness tri-state — this reuses the gate's
+    ``_closing_ref_re`` (via injection) so ``Refs #N``-only bodies (which link
+    without closing) report False, feeding the AC5 advisory WARNING.
+    """
+
+    def test_body_with_closes_keyword_reports_true(self) -> None:
+        mock_client = mock.MagicMock()
+        mock_client.get_pull_by_head_branch.return_value = {
+            "number": 42,
+            "body": "Some summary.\n\nCloses #1136\n",
+        }
+        result = check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement the guard for #1136",
+            issue_number=1136,
+            client=mock_client,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        assert result is True
+
+    def test_body_with_fixes_variant_reports_true(self) -> None:
+        mock_client = mock.MagicMock()
+        mock_client.get_pull_by_head_branch.return_value = {
+            "number": 42,
+            "body": "Fixes #1136",
+        }
+        result = check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement the guard for #1136",
+            issue_number=1136,
+            client=mock_client,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        assert result is True
+
+    def test_body_with_only_refs_reports_false(self) -> None:
+        """``Refs #N`` links without closing → NOT a closing ref (drives the advisory)."""
+        mock_client = mock.MagicMock()
+        mock_client.get_pull_by_head_branch.return_value = {
+            "number": 42,
+            "body": "Refs #1136 — partial work, issue stays open.",
+        }
+        result = check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement the guard for #1136",
+            issue_number=1136,
+            client=mock_client,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        assert result is False
+
+    def test_body_without_any_ref_reports_false(self) -> None:
+        mock_client = mock.MagicMock()
+        mock_client.get_pull_by_head_branch.return_value = {
+            "number": 42,
+            "body": "No linkage keyword at all.",
+        }
+        result = check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement the guard for #1136",
+            issue_number=1136,
+            client=mock_client,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        assert result is False
+
+    def test_closing_ref_for_other_issue_reports_false(self) -> None:
+        """A close of a *different* issue is not a close of this one."""
+        mock_client = mock.MagicMock()
+        mock_client.get_pull_by_head_branch.return_value = {
+            "number": 42,
+            "body": "Closes #999",
+        }
+        result = check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement the guard for #1136",
+            issue_number=1136,
+            client=mock_client,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        assert result is False
+
+    def test_no_pr_on_branch_reports_none(self) -> None:
+        """No PR found → None (unknown), distinct from False (PR exists, no close)."""
+        mock_client = mock.MagicMock()
+        mock_client.get_pull_by_head_branch.return_value = None
+        result = check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement the guard for #1136",
+            issue_number=1136,
+            client=mock_client,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        assert result is None
+
+    def test_explicit_branch_directive_is_honored(self) -> None:
+        mock_client = mock.MagicMock()
+        mock_client.get_pull_by_head_branch.return_value = {
+            "number": 42,
+            "body": "Closes #1136",
+        }
+        check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement feature X (branch=feat/1136-x)",
+            issue_number=1136,
+            client=mock_client,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        mock_client.get_pull_by_head_branch.assert_called_with("feat/1136-x")
+
+    def test_no_client_reports_none(self) -> None:
+        result = check_pr_closing_ref_fresh_shape(
+            task_id="abc123",
+            goal="implement the guard for #1136",
+            issue_number=1136,
+            client=None,
+            closing_ref_matcher=_real_closing_ref_matcher(),
+        )
+        assert result is None
 
 
 # =============================================================================
@@ -710,6 +856,109 @@ class TestComputePrEvidenceStdoutFallback:
         )
         assert evidence is False
         client.get_pull_by_number.assert_not_called()
+
+
+# =============================================================================
+# AC5/AC6 (#1136): Closing-ref advisory at the evidence boundary
+# =============================================================================
+
+
+class TestClosingRefAdvisory:
+    """``_compute_pr_evidence`` emits an advisory WARNING (no blocking, no edit)
+    when a fresh-shape task naming an issue produces a PR whose body links but
+    does not *close* that issue (#1136 AC5/AC6).
+
+    Native auto-close is ``closingIssuesReferences``-driven and suppressed for
+    bot/App merges (memory 21866efc), so a ``Refs #N``-only body silently leaves
+    the issue open. The advisory surfaces that at the boundary; it does not
+    change the returned evidence tri-state.
+    """
+
+    _WARN_TOKEN = "pr_closing_ref_missing"
+
+    def _fresh_pr(self, body: str) -> dict[str, Any]:
+        return {
+            "number": 42,
+            "created_at": "2026-06-21T10:30:00Z",  # after the spawn below
+            "body": body,
+        }
+
+    def test_advisory_fires_for_refs_only_body(self, caplog: pytest.LogCaptureFixture) -> None:
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = self._fresh_pr("Refs #1136 — partial work.")
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            _compute_pr_evidence(
+                "abc123",
+                "implement the guard for #1136",
+                spawned_at,
+                client=client,
+            )
+        assert any(self._WARN_TOKEN in r.message for r in caplog.records), (
+            "expected a closing-ref advisory for a Refs-only PR body"
+        )
+
+    def test_advisory_fires_for_no_ref_body(self, caplog: pytest.LogCaptureFixture) -> None:
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = self._fresh_pr("No linkage keyword.")
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            _compute_pr_evidence(
+                "abc123",
+                "implement the guard for #1136",
+                spawned_at,
+                client=client,
+            )
+        assert any(self._WARN_TOKEN in r.message for r in caplog.records), (
+            "expected a closing-ref advisory for a PR body with no linkage"
+        )
+
+    def test_no_advisory_when_body_closes_issue(self, caplog: pytest.LogCaptureFixture) -> None:
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = self._fresh_pr("Closes #1136")
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            _compute_pr_evidence(
+                "abc123",
+                "implement the guard for #1136",
+                spawned_at,
+                client=client,
+            )
+        assert not any(self._WARN_TOKEN in r.message for r in caplog.records), (
+            "a Closes #N body must not trigger the advisory"
+        )
+
+    def test_no_advisory_when_goal_names_no_issue(self, caplog: pytest.LogCaptureFixture) -> None:
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = self._fresh_pr("no ref")
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            _compute_pr_evidence(
+                "abc123",
+                "refactor the usage probe module",  # names no issue
+                spawned_at,
+                client=client,
+            )
+        assert not any(self._WARN_TOKEN in r.message for r in caplog.records), (
+            "a goal naming no issue must not trigger the advisory"
+        )
+
+    def test_no_advisory_for_rework_shape(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Rework-shape tasks return before the fresh-path advisory (AC5 scope)."""
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        client = mock.MagicMock()
+        client.get_pull_by_number.return_value = {"number": 7, "state": "open"}
+        client.list_commits_for_pull.return_value = []
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            _compute_pr_evidence(
+                "abc123",
+                "/rework #7 address review on #1136",
+                spawned_at,
+                client=client,
+            )
+        assert not any(self._WARN_TOKEN in r.message for r in caplog.records), (
+            "rework-shape must not reach the fresh-path advisory"
+        )
 
 
 # =============================================================================
@@ -1352,6 +1601,71 @@ class TestBranchContract:
         goal = "/rework #42"
         # Rework targets an existing PR's branch — augmenting it would be wrong.
         assert _augment_branch_directive(goal, "abc123") == goal
+
+
+# =============================================================================
+# #1136 AC1/AC3: Executor-Lane Closes #N Mandate — Goal Augmentation
+# =============================================================================
+
+
+class TestClosesMandate:
+    """`_augment_closes_mandate` injects a `Closes #N` PR-body mandate (#1136).
+
+    The executor lane's spawned ``claude -p`` sessions may run
+    ``Bash(gh pr create:*)`` with no directive to link the issue their PR
+    closes — so a merged PR can silently fail to auto-close its issue (#948).
+    A fresh-shape goal naming issue #N gets an explicit mandate appended.
+    """
+
+    def test_fresh_shape_with_issue_gets_closes_mandate(self) -> None:
+        """Fresh goal naming #N → mandate appended carrying `Closes #<N>` (AC1)."""
+        goal = "implement the executor guard for #1136"
+        augmented = _augment_closes_mandate(goal, "abc123")
+        assert augmented != goal  # it WAS augmented
+        assert augmented.startswith(goal)  # additive — original goal preserved verbatim
+        assert "Closes #1136" in augmented
+
+    def test_closes_mandate_permits_refs_escape(self) -> None:
+        """The mandate offers the partial-work `Refs #<N>` escape (AC3)."""
+        goal = "implement feature for #1136"
+        augmented = _augment_closes_mandate(goal, "abc123")
+        assert "Refs #1136" in augmented
+
+    def test_rework_shape_no_closes_mandate(self) -> None:
+        """Rework goal (`/rework #N`) targets an existing PR → never augmented (AC1)."""
+        goal = "/rework #42"
+        assert _augment_closes_mandate(goal, "abc123") == goal
+
+    def test_fresh_shape_without_issue_no_mandate(self) -> None:
+        """Fresh goal with no `#N` has no close target → unchanged (AC1)."""
+        goal = "refactor the usage probe module"
+        assert _augment_closes_mandate(goal, "abc123") == goal
+
+    def test_empty_goal_no_mandate(self) -> None:
+        """Empty/whitespace goal → unchanged (AC1)."""
+        assert _augment_closes_mandate("", "abc123") == ""
+        assert _augment_closes_mandate("   ", "abc123") == "   "
+
+    def test_default_spawn_composes_branch_and_closes_mandate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`default_spawn` applies BOTH augmenters before the executor hand-off (AC1)."""
+        import agents.executor as executor_mod
+
+        captured: dict[str, Any] = {}
+
+        def fake_spawn(goal: str, *, task_id: str | None = None) -> Any:
+            captured["goal"] = goal
+            captured["task_id"] = task_id
+            return object()
+
+        monkeypatch.setattr(executor_mod, "spawn", fake_spawn)
+
+        default_spawn("implement the guard for #1136", task_id="t1")
+
+        assert "(branch=task/t1)" in captured["goal"]  # branch directive applied
+        assert "Closes #1136" in captured["goal"]  # closes mandate applied
+        assert captured["task_id"] == "t1"
 
 
 # =============================================================================
