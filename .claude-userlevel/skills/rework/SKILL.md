@@ -589,6 +589,10 @@ Check for:
 - Secrets or credentials in any form
 - Symmetric patterns: when fixing a class of finding, grep for sibling instances
   across the file AND related files
+- **Self-review (same vocabulary as `/implement`)**: run the Standards + Spec
+  checklist — especially the Spec lens to verify fixes stay faithful to the PR
+  scope and don't creep beyond the originating issue. Fowler-12 naming is shared
+  so pre-PR and post-review passes use the same language.
 
 ## Recovery playbook
 
