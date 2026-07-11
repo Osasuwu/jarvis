@@ -52,6 +52,7 @@ from typing import Any, Protocol, runtime_checkable
 from agents import task_queue
 from agents.github_client import (
     GitHubClient,
+    check_pr_closing_ref_fresh_shape,
     check_pr_evidence_fresh_shape,
     check_pr_evidence_rework_shape,
     parse_executor_stdout,
@@ -170,6 +171,43 @@ def _augment_branch_directive(goal: str, task_id: str) -> str:
     return f"{goal}\n\n(branch=task/{task_id})"
 
 
+def _augment_closes_mandate(goal: str, task_id: str) -> str:
+    """Append a ``Closes #<N>`` PR-body mandate to a fresh-shape goal (#1136 AC1).
+
+    The executor lane's spawned ``claude -p`` sessions are permitted to run
+    ``Bash(gh pr create:*)`` (``executor._SPAWN_ALLOWED_TOOLS``) with no directive
+    to link the issue their PR closes — so a merged PR can silently fail to
+    auto-close its issue (the #948 failure mode; native linked-issue auto-close is
+    suppressed for bot/App-attributed merges, so the closing keyword in the PR body
+    is what the ``pr-merged.yml`` close path keys on). Fresh-shape goals naming an
+    issue ``#N`` get an explicit mandate appended so the child's PR body carries
+    that keyword.
+
+    Fires **iff** the goal is fresh-shape AND names an issue (``#N``). Rework goals
+    (``/rework #N``) target an existing PR and are left untouched; a fresh goal with
+    no ``#N`` has no close target; an empty goal is a no-op. AC3 escape: the mandate
+    permits the child to emit ``Refs #N`` instead when the PR only partially
+    addresses the issue — both satisfy the ``require-linked-issue`` merge gate, but
+    only ``Closes`` triggers auto-close. Additive like
+    :func:`_augment_branch_directive` — the original goal is preserved verbatim as a
+    prefix. ``task_id`` is unused (sibling-parity with the branch augmenter); kept in
+    the signature for a uniform augmenter shape.
+    """
+    shape, _ = parse_goal_shape(goal)
+    if shape != "fresh":
+        return goal
+    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        return goal
+    return (
+        f"{goal}\n\n(PR-body requirement: when you open the PR, put "
+        f"`Closes #{issue_number}` on its own line in the body so the merge "
+        f"auto-closes the issue. If this PR only partially addresses "
+        f"#{issue_number}, use `Refs #{issue_number}` instead — it still satisfies "
+        f"the linked-issue merge gate but leaves the issue open.)"
+    )
+
+
 # A task_id is interpolated into the executor-log path, so it must be confined
 # to a charset that cannot escape the directory — no ``/``, ``\``, ``.`` (hence
 # no ``..``), or other path-significant characters. UUIDs and the alnum ids used
@@ -238,6 +276,10 @@ def _compute_pr_evidence(
         return check_pr_evidence_rework_shape(task_id, goal, pr_number, spawned_at, client=client)
 
     evidence = check_pr_evidence_fresh_shape(task_id, goal, spawned_at, client=client)
+    # #1136 AC5: advisory-only — surface a fresh-shape PR that links but does not
+    # *close* its named issue. Runs at this evidence boundary regardless of the
+    # freshness verdict; never blocks and never edits the PR.
+    _warn_if_pr_lacks_closing_ref(task_id, goal, client=client)
     if evidence is False and stdout_reader is not None:
         # AC3 — the head-branch lookup found nothing; fall back to whatever PR
         # the agent claimed in its stdout, then verify it actually exists.
@@ -254,6 +296,59 @@ def _compute_pr_evidence(
             if pr:
                 return True
     return evidence
+
+
+def _warn_if_pr_lacks_closing_ref(
+    task_id: str,
+    goal: str,
+    *,
+    client: GitHubClient,
+) -> None:
+    """Log an advisory WARNING if a fresh-shape task's PR does not close its issue (#1136 AC5).
+
+    Advisory-only: this neither blocks the pipeline nor edits the PR. It is a
+    SEPARATE, deliberate second fetch of the PR (via
+    :func:`check_pr_closing_ref_fresh_shape`) — the freshness evidence and the
+    closing-ref question are orthogonal (grill decision ``ec66db74``), so they
+    are not folded into one call. The closing-ref matcher is the /delegate gate's
+    ``_closing_ref_re`` (recognizing ``closes/fixes/resolves`` only, NOT
+    ``Refs``), reused by injection so this module keeps its single path-load in
+    :func:`_load_gate_module` rather than importing gate internals directly.
+
+    Fires only when the goal names an issue AND a PR exists on the branch whose
+    body carries no closing ref for that issue (``check_...`` returns ``False``).
+    A missing issue reference, an absent PR (``None``), or a genuine ``Closes #N``
+    (``True``) are all silent. The AC7 follow-up (#1169) turns this signal into a
+    disposition; here it is observation only.
+    """
+    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        return
+    try:
+        gate = _load_gate_module()
+    except Exception:  # noqa: BLE001 — advisory must never break the evidence path
+        logger.debug("closing-ref advisory: gate module unavailable; skipping")
+        return
+    closes = check_pr_closing_ref_fresh_shape(
+        task_id,
+        goal,
+        issue_number,
+        client=client,
+        closing_ref_matcher=gate._closing_ref_re,
+    )
+    if closes is False:
+        logger.warning(
+            "pr_closing_ref_missing: task=%s issue=#%s — the PR links but carries "
+            "no `Closes #%s` keyword; this merge will NOT auto-close the issue "
+            "(native auto-close is suppressed for bot/App merges). Use `Closes #%s` "
+            "for a full close; `Refs #%s` is correct only for partial work. "
+            "Advisory only — see #1169 for enforcement.",
+            task_id,
+            issue_number,
+            issue_number,
+            issue_number,
+            issue_number,
+        )
 
 
 def _severity_for(event_type: str, pr_evidence: bool | None) -> str:
@@ -811,10 +906,19 @@ def default_spawn(goal: str, *, task_id: str | None = None) -> Any:
     untouched — augmentation is purely additive and never rewrites an operator's
     branch choice. The un-augmented goal is what ``drain_tasks`` records in
     ``spawned_meta`` for evidence (the default head ``task/<task_id>`` matches).
+
+    AC1 (#1136): a fresh-shape goal naming an issue ``#N`` additionally gets a
+    ``Closes #<N>`` PR-body mandate appended (:func:`_augment_closes_mandate`), so a
+    PR the executor lane opens links its issue and auto-closes on merge (#948).
     """
     from agents.executor import spawn as executor_spawn
 
     spawn_goal = _augment_branch_directive(goal, task_id) if task_id else goal
+    # #1136 AC1: also inject the Closes #<N> PR-body mandate for a fresh-shape goal
+    # naming an issue. Order-independent of the branch directive above — the branch
+    # suffix carries no ``#N`` and is not a ``/rework`` marker, so it neither adds a
+    # spurious close target nor flips the goal's shape.
+    spawn_goal = _augment_closes_mandate(spawn_goal, task_id) if task_id else spawn_goal
     return executor_spawn(spawn_goal, task_id=task_id)
 
 

@@ -1,11 +1,11 @@
-"""AFK-fit static path-grep helper for /to-issues (issue #642).
+"""AFK-fit static path-grep helper for /to-tickets (issue #642).
 
-The /to-issues AFK-fit checklist has four questions. Question 1 is static
+The /to-tickets AFK-fit checklist has four questions. Question 1 is static
 and lives here: do the slice's declared-changed files intersect any
 protected/safety-critical glob from the per-repo list in
 ``config/protected-paths.json``?
 
-Questions 2-4 are LLM-judgement and live as prose in /to-issues SKILL.md.
+Questions 2-4 are LLM-judgement and live as prose in /to-tickets SKILL.md.
 
 Adding a new repo to the system means adding an entry to the JSON config —
 never editing this module or any SKILL.md (issue #642 hard constraint).
@@ -36,7 +36,7 @@ def intersects_protected(
 
     Globs follow gitignore-style semantics translated into fnmatch — the leading
     ``**/`` is implicit (we match against the repo-relative path). Unknown
-    repos return an empty list by design (fail-open); /to-issues prose must
+    repos return an empty list by design (fail-open); /to-tickets prose must
     surface "unknown repo" as a manual judgement prompt instead.
     """
     globs = config.get(repo, [])
