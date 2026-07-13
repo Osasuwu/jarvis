@@ -805,7 +805,7 @@ class TestComputePrEvidenceStdoutFallback:
         def stdout_reader(task_id: str) -> str:
             return json.dumps({"status": "completed", "pr_url": "https://github.com/o/r/pull/888"})
 
-        evidence = _compute_pr_evidence(
+        evidence, _ = _compute_pr_evidence(
             "abc123",
             "implement feature X",
             spawned_at,
@@ -829,7 +829,7 @@ class TestComputePrEvidenceStdoutFallback:
         def stdout_reader(task_id: str) -> str:
             return json.dumps({"pr_url": "https://github.com/o/r/pull/404"})
 
-        evidence = _compute_pr_evidence(
+        evidence, _ = _compute_pr_evidence(
             "abc123",
             "implement feature X",
             spawned_at,
@@ -847,7 +847,7 @@ class TestComputePrEvidenceStdoutFallback:
         def stdout_reader(task_id: str) -> str:
             return json.dumps({"status": "completed", "message": "no PR opened"})
 
-        evidence = _compute_pr_evidence(
+        evidence, _ = _compute_pr_evidence(
             "abc123",
             "implement feature X",
             spawned_at,

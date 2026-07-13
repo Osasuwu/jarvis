@@ -361,6 +361,30 @@ Check for:
 - Secrets or credentials in any form
 - **Symmetric patterns**: when fixing a class of bug, grep for sibling instances across the file AND other files — not just the one the reviewer flagged (memory `feedback_symmetric_fixes`)
 
+#### Self-review checklist (cheap catch — PR plugin is authoritative)
+
+Quick scan through two lenses before opening the PR:
+
+**Standards** — Fowler's 12 code smells:
+- [ ] **Mysterious Name** — naming clear and self-documenting?
+- [ ] **Duplicated Code** — repeated logic to unify?
+- [ ] **Feature Envy** — method belongs more to another class?
+- [ ] **Data Clumps** — items that travel together → own object?
+- [ ] **Primitive Obsession** — small type where primitives are used?
+- [ ] **Repeated Switches** — same conditional in multiple places?
+- [ ] **Shotgun Surgery** — one change touches many files?
+- [ ] **Divergent Change** — file changes for multiple reasons?
+- [ ] **Speculative Generality** — unused abstraction / dead code?
+- [ ] **Message Chains** — long `.a().b().c()` traversal chains?
+- [ ] **Middle Man** — delegation without added value?
+- [ ] **Refused Bequest** — subclass ignoring inherited members?
+
+**Spec** — faithfulness to the originating issue:
+- [ ] All acceptance criteria addressed?
+- [ ] No scope creep beyond the issue?
+
+This is a **cheap catch**, not a merge gate. The Claude code-review plugin is the authoritative reviewer; missing items will be caught there. The goal is to catch obvious errors before the PR opens, not to replace the review. The same vocabulary (Standards + Spec, Fowler-12) is used by `/rework` so pre-PR and post-review passes share a common language.
+
 If the diff looks wrong, fix it before pushing.
 
 ## Recovery playbook
