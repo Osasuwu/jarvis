@@ -38,7 +38,7 @@ jobs:
   # DB-gated integration tests (issue #975). Without a real Postgres the
   # advancer's FOR UPDATE SKIP LOCKED / ON CONFLICT dedup / interval arithmetic
   # were never exercised in CI — the DB-gated tests in
-  # tests/test_global_task_advancer.py silently skipped. This job stands up a
+  # tests/reactive_core/test_global_task_advancer.py silently skipped. This job stands up a
   # Postgres service, bootstraps the schema, and runs ONLY that file with
   # DATABASE_URL set so those tests actually run.
   #
@@ -99,4 +99,4 @@ jobs:
       - name: Run DB-gated advancer tests
         env:
           REQUIRE_DB: "1"
-        run: pytest tests/test_global_task_advancer.py -v -rs
+        run: pytest tests/reactive_core/test_global_task_advancer.py -v -rs
