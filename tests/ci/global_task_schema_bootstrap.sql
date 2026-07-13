@@ -1,5 +1,5 @@
 -- Minimal Postgres bootstrap for the DB-gated global-task-advancer tests
--- (tests/test_global_task_advancer.py), run by the `pytest-db` job in
+-- (tests/reactive_core/test_global_task_advancer.py), run by the `pytest-db` job in
 -- .github/workflows/pytest.yml. Issue #975.
 --
 -- Scope rationale: the advancer (scripts/advance-global-tasks.py) INSERTs
