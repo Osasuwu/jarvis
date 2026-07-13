@@ -84,7 +84,7 @@ KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
 
 # ---------------------------------------------------------------------------
-# Helpers (pure — unit-tested in tests/test_pre_compact_backup.py)
+# Helpers (pure — unit-tested in tests/infrastructure/test_pre_compact_backup.py)
 # ---------------------------------------------------------------------------
 def _detect_project(cwd: str | None) -> str | None:
     """Return the known project a path belongs to, scanning all components.

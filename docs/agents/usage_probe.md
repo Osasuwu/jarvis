@@ -107,5 +107,5 @@ assert reading.used == 90
 assert reading.near_exhaustion is True  # 10% headroom <= 15% threshold
 ```
 
-Full unit suite (`tests/test_agents_usage_probe.py`) uses a hand-rolled
+Full unit suite (`tests/reactive_core/test_agents_usage_probe.py`) uses a hand-rolled
 stub client and fake clock — no live DB or real time passing required.
