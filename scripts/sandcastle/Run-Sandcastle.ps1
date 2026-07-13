@@ -717,11 +717,23 @@ function Get-RelatedTestFiles {
             $testFiles += $colocated
             continue
         }
-        # Tests mirror: src/module.py -> tests/test_module.py
+        # Tests mirror: src/module.py -> tests/test_module.py (flat root)
         $inTests = Join-Path (Join-Path $RepoRoot 'tests') "test_$name.py"
         if (Test-Path -LiteralPath $inTests -PathType Leaf) {
             $testFiles += $inTests
             continue
+        }
+        # Domain subdirs (#868): tests are grouped under tests/<domain>/. Fall
+        # back to a recursive lookup so src/module.py -> tests/**/test_module.py
+        # still resolves after the flat root was restructured.
+        $testsDir = Join-Path $RepoRoot 'tests'
+        if (Test-Path -LiteralPath $testsDir -PathType Container) {
+            $nested = Get-ChildItem -LiteralPath $testsDir -Recurse -File -Filter "test_$name.py" -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($nested) {
+                $testFiles += $nested.FullName
+                continue
+            }
         }
     }
     return ($testFiles | Select-Object -Unique)
