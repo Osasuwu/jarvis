@@ -275,13 +275,21 @@ def record_query(query: str, project: str | None, now: float | None = None) -> N
 
 
 def detect_project(cwd: str | None) -> str | None:
+    """Return the known project a path belongs to, scanning all components.
+
+    Worktree cwds (`<repo>/.claude/worktrees/<name>`) and subdirectories
+    resolve to the containing repo; rightmost match wins.
+    """
     if not cwd:
         return None
     try:
-        name = Path(cwd).name.lower()
+        parts = Path(cwd).parts
     except (OSError, ValueError):
         return None
-    return name if name in KNOWN_PROJECTS else None
+    for part in reversed(parts):
+        if part.lower() in KNOWN_PROJECTS:
+            return part.lower()
+    return None
 
 
 # ---------------------------------------------------------------------------
