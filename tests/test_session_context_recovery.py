@@ -318,6 +318,72 @@ def test_load_snapshot_from_supabase_rejects_bad_session_id():
     assert client.call_log == []
 
 
+def test_load_snapshot_from_supabase_project_miss_retries_unfiltered():
+    # Legacy rows written before worktree-aware project detection live under
+    # project=NULL — a project-filtered miss must retry without the filter.
+    now = datetime.now(timezone.utc).isoformat()
+
+    class _LegacyRowTable(_FakeTable):
+        def __init__(self, rows, call_log):
+            super().__init__(rows, call_log)
+            self._project_filtered = False
+
+        def eq(self, *a, **kw):
+            if a[:1] == ("project",):
+                self._project_filtered = True
+            return super().eq(*a, **kw)
+
+        def execute(self):
+            self._call_log.append(("execute", (), {}))
+            data = [] if self._project_filtered else list(self._rows)
+            return types.SimpleNamespace(data=data)
+
+    class _LegacyClient(_FakeClient):
+        def table(self, _name):
+            return _LegacyRowTable(self._rows, self.call_log)
+
+    client = _LegacyClient([{"content": "# legacy", "updated_at": now}])
+    assert sc._load_snapshot_from_supabase(client, "sid", "redrobot") == "# legacy"
+    # Two executes: filtered miss, then unfiltered hit.
+    executes = [op for op in client.call_log if op[0] == "execute"]
+    assert len(executes) == 2
+
+
+def test_load_snapshot_from_supabase_project_hit_queries_once():
+    # When the project-filtered query hits, no fallback query is issued.
+    now = datetime.now(timezone.utc).isoformat()
+    client = _FakeClient([{"content": "# snap", "updated_at": now}])
+    assert sc._load_snapshot_from_supabase(client, "sid", "jarvis") == "# snap"
+    executes = [op for op in client.call_log if op[0] == "execute"]
+    assert len(executes) == 1
+
+
+# ---------------------------------------------------------------------------
+# _detect_project — component scan + project root resolution
+# ---------------------------------------------------------------------------
+def test_detect_project_repo_root(monkeypatch):
+    monkeypatch.setattr(sc.os, "getcwd", lambda: "/Users/x/GitHub/jarvis")
+    assert sc._detect_project() == ("jarvis", Path("/Users/x/GitHub/jarvis"))
+
+
+def test_detect_project_worktree_resolves_repo_and_worktree_root(monkeypatch):
+    # Worktree sessions: project = containing repo, root = the worktree
+    # checkout (it carries its own, possibly edited, CONTEXT.md).
+    wt = "/Users/x/GitHub/redrobot/.claude/worktrees/grill-1255"
+    monkeypatch.setattr(sc.os, "getcwd", lambda: wt)
+    assert sc._detect_project() == ("redrobot", Path(wt))
+
+
+def test_detect_project_subdir_resolves_repo_root(monkeypatch):
+    monkeypatch.setattr(sc.os, "getcwd", lambda: "/Users/x/GitHub/jarvis/scripts")
+    assert sc._detect_project() == ("jarvis", Path("/Users/x/GitHub/jarvis"))
+
+
+def test_detect_project_unknown_returns_none_pair(monkeypatch):
+    monkeypatch.setattr(sc.os, "getcwd", lambda: "/tmp/random")
+    assert sc._detect_project() == (None, None)
+
+
 # ---------------------------------------------------------------------------
 # _safe_session_id — path-traversal / injection guard
 # ---------------------------------------------------------------------------

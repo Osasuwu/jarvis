@@ -241,19 +241,25 @@ class TestRrfMergeBoost:
 
 
 # ---------------------------------------------------------------------------
-# detect_project — cwd basename matching
+# detect_project — path-component matching (worktree-aware)
 # ---------------------------------------------------------------------------
 
 
 class TestDetectProject:
     # Forward-slash paths work cross-platform: Path on Linux uses "/" as the
-    # separator (so `.name` correctly extracts "jarvis"), and Path on Windows
-    # accepts "/" as well. Hardcoded backslash paths only resolve on Windows.
+    # separator, and Path on Windows accepts "/" as well. Hardcoded backslash
+    # paths only resolve on Windows.
     def test_known_project(self):
         assert mrh.detect_project("/Users/x/GitHub/jarvis") == "jarvis"
 
     def test_case_insensitive(self):
         assert mrh.detect_project("/Users/x/GitHub/Jarvis") == "jarvis"
+
+    def test_worktree_resolves_to_containing_repo(self):
+        assert (
+            mrh.detect_project("/Users/x/GitHub/redrobot/.claude/worktrees/wt-1")
+            == "redrobot"
+        )
 
     def test_unknown_project_returns_none(self):
         assert mrh.detect_project("/Users/x/GitHub/random-repo") is None
