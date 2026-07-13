@@ -85,15 +85,19 @@ py-modules = ["risk_radar"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src", "."]
+pythonpath = ["src", ".", "tests/_support"]
 asyncio_mode = "auto"
-# Pin prepend import mode (today's pytest default) explicitly: tests/ is not a
-# package, and test modules import shared helpers as top-level names — both from
-# conftest (`from conftest import FakeRunner`, #980) and from sibling test
-# modules (`from test_utils import FakeClient`). That only works while the test
-# directory is on sys.path[0], which prepend mode guarantees. If pytest ever
-# changes its default to importlib, this keeps those imports working.
-# (#978 round-3 MINOR 6; #980.)
+# Pin prepend import mode (today's pytest default) explicitly. tests/ has no
+# __init__.py (only its domain subdirs do), so prepend inserts tests/ onto
+# sys.path and every test imports the root `conftest` as a top-level module
+# (`from conftest import FakeRunner`, #980) regardless of which subdir it lives
+# in. Shared test doubles moved out of the collected tree into tests/_support/
+# (renamed off the `test_` prefix so they are not themselves collected) and are
+# imported by bare name via the pythonpath entry above:
+#   `from supabase_stubs import FakeClient`  (was test_utils, #980)
+#   `from record_decision_doubles import make_client`  (was test_record_decision_helpers)
+# If pytest ever changes its default to importlib, this keeps those imports
+# working. (#978 round-3 MINOR 6; #980; #868.)
 addopts = "--import-mode=prepend"
 
 [tool.ruff]

@@ -83,8 +83,8 @@ ALLOWLIST: dict[str, object] = {
         "apscheduler",
     },
     "agents/executor.py": {"langgraph"},  # "Salvaged from agents/dispatcher.py" lineage
-    "tests/test_agents_supabase_bridge.py": {"event_monitor"},  # tool_name fixture (retired module name is legit test data)
-    "tests/test_wake_driver.py": {"apscheduler"},  # retirement-enforcement assertions
+    "tests/reactive_core/test_agents_supabase_bridge.py": {"event_monitor"},  # tool_name fixture (retired module name is legit test data)
+    "tests/reactive_core/test_wake_driver.py": {"apscheduler"},  # retirement-enforcement assertions
     ".claude-userlevel/skills/implement/SKILL.md": {
         "apscheduler"
     },  # historical bug-class example (#304/#298)
