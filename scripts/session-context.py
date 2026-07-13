@@ -70,12 +70,28 @@ PRE_COMPACT_FRESHNESS_MINUTES = 30
 
 
 def _detect_project():
-    """Return current project name if cwd basename matches a known project, else None."""
+    """Return (project_name, project_root) for the current cwd, or (None, None).
+
+    Scans all path components (not just the basename) so worktree sessions
+    (`<repo>/.claude/worktrees/<name>`) and subdirectory cwds resolve to the
+    containing repo. Rightmost match wins. `project_root` points at the
+    directory whose CONTEXT.md belongs to this session: the worktree root
+    when cwd is inside `<repo>/.claude/worktrees/<name>` (the worktree has
+    its own checkout, possibly with uncommitted CONTEXT.md edits), else the
+    repo directory itself.
+    """
     try:
-        name = Path(os.getcwd()).name.lower()
+        parts = Path(os.getcwd()).parts
     except Exception:
-        return None
-    return name if name in KNOWN_PROJECTS else None
+        return None, None
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() in KNOWN_PROJECTS:
+            root = Path(*parts[: i + 1])
+            rest = parts[i + 1 :]
+            if len(rest) >= 3 and rest[0] == ".claude" and rest[1] == "worktrees":
+                root = root.joinpath(*rest[:3])
+            return parts[i].lower(), root
+    return None, None
 
 
 def _read_hook_input() -> dict:
@@ -153,24 +169,33 @@ def _load_snapshot_from_supabase(client, session_id: str, project: str | None = 
     if not sid:
         return None
     name = f"session_snapshot_{sid}"
+    # Project-filtered lookup first; on miss, retry unfiltered — snapshots
+    # written before worktree-aware project detection landed under
+    # project=NULL, and `name` embeds the session UUID so a cross-project
+    # false positive is practically impossible.
+    filters = [project, None] if project else [None]
+    result = None
     try:
-        query = (
-            client.table("memories")
-            .select("content, updated_at")
-            .eq("name", name)
-            .is_("deleted_at", "null")
-        )
-        if project:
-            query = query.eq("project", project)
-        result = (
-            query.order("updated_at", desc=True)
-            .limit(1)
-            .execute()
-        )
+        for proj in filters:
+            query = (
+                client.table("memories")
+                .select("content, updated_at")
+                .eq("name", name)
+                .is_("deleted_at", "null")
+            )
+            if proj:
+                query = query.eq("project", proj)
+            result = (
+                query.order("updated_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                break
     except Exception as e:
         print(f"[session-context] snapshot query failed: {e}", file=sys.stderr)
         return None
-    if not result.data:
+    if result is None or not result.data:
         return None
     row = result.data[0]
     ts = _parse_ts(row.get("updated_at"))
@@ -322,7 +347,7 @@ def main():
         print(f"[session-context] Supabase connect failed: {e}", file=sys.stderr)
         return
 
-    project = _detect_project()
+    project, project_root = _detect_project()
     sections = []
     touched_ids: list[str] = []
 
@@ -364,14 +389,15 @@ def main():
     #     Project root is resolved from cwd (the directory the session was
     #     launched in), not from `_root` — `_root` is the jarvis repo and
     #     would inject jarvis's CONTEXT.md into a redrobot session.
-    #     `_detect_project()` only returns a project name when cwd basename
-    #     matches a known project, so cwd IS the project root in that case.
+    #     `_detect_project()` returns the matched root alongside the name:
+    #     the worktree root for worktree sessions (its own CONTEXT.md
+    #     checkout), the repo directory otherwise.
     #
     #     CONTEXT.md is canonical at repo root per Pocock convention;
     #     multi-context repos use CONTEXT-MAP.md. Truncated at 8KB to avoid
     #     blowing the smart-zone budget — full file is one Read away.
-    if project:
-        ctx_section = _load_project_context(Path(os.getcwd()))
+    if project and project_root:
+        ctx_section = _load_project_context(project_root)
         if ctx_section:
             sections.append(ctx_section)
 

@@ -83,6 +83,15 @@ class TestDetectProject:
         assert pcb._detect_project("/Users/jdoe/GitHub/jarvis") == "jarvis"
         assert pcb._detect_project("/home/x/redrobot") == "redrobot"
 
+    def test_worktree_resolves_to_containing_repo(self):
+        # `<repo>/.claude/worktrees/<name>` — basename is the worktree name;
+        # component scan must still attribute the session to the repo.
+        assert (
+            pcb._detect_project("/Users/x/GitHub/redrobot/.claude/worktrees/grill-1255")
+            == "redrobot"
+        )
+        assert pcb._detect_project("/home/x/jarvis/scripts") == "jarvis"
+
     def test_unknown_returns_none(self):
         assert pcb._detect_project("/tmp/random") is None
 

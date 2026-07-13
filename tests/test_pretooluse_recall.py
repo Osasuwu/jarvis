@@ -3,7 +3,7 @@
 Covers:
   - ``_derive_query``: per-tool mapping from tool_input -> recall query.
   - ``is_duplicate`` / ``record_query``: 60s dedup window.
-  - ``detect_project``: cwd-basename gating.
+  - ``detect_project``: path-component project gating (worktree-aware).
   - End-to-end ``main()`` with mocked stdin + supabase client: verifies the
     ``additionalContext`` payload shape and that unmatched tool names exit
     silently.
@@ -225,6 +225,12 @@ class TestHelpers:
     def test_detect_project_known(self):
         assert hook.detect_project("/c/Users/jdoe/GitHub/jarvis") == "jarvis"
         assert hook.detect_project("/c/Users/jdoe/GitHub/redrobot") == "redrobot"
+
+    def test_detect_project_worktree(self):
+        assert (
+            hook.detect_project("/c/Users/jdoe/GitHub/redrobot/.claude/worktrees/wt-1")
+            == "redrobot"
+        )
 
     def test_detect_project_unknown_returns_none(self):
         assert hook.detect_project("/c/Users/jdoe/GitHub/other") is None
