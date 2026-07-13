@@ -70,7 +70,7 @@ from supabase import create_client
 
 # recall.py is the deep module (#496-#499). Hook adds mcp-memory/ to
 # sys.path and re-exports the public names so tests that introspect
-# mrh.<NAME> directly (tests/test_memory_recall_hook.py) keep working.
+# mrh.<NAME> directly (tests/memory/test_memory_recall_hook.py) keep working.
 # noqa: F401 — names not used inside this module; they exist as the
 # re-export surface for downstream test code.
 sys.path.insert(0, str(_root / "mcp-memory"))

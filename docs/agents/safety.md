@@ -80,7 +80,7 @@ double-count.
 2. If Tier 0 / Tier 2, update both `agents/safety.py` **and**
    `action_agent_safety_gate_model_v1` memory in the same change — the
    two must stay in lockstep.
-3. Add a unit test in `tests/test_agents_safety.py` covering the new
+3. Add a unit test in `tests/reactive_core/test_agents_safety.py` covering the new
    match. Every tier-boundary assertion is the spec.
 
 ## Changing tiers
