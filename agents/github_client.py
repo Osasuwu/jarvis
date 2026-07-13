@@ -216,6 +216,14 @@ class GitHubClient(Protocol):
         Declared on the Protocol (L2, #1029) so a type-checker flags an
         alternate implementation that forgets to release its connections."""
 
+    def create_pull(
+        self, *, title: str, body: str, head: str, base: str = "main"
+    ) -> dict[str, Any] | None:
+        """Create a pull request. Returns the PR dict, or None on error."""
+
+    def update_pull(self, pr_number: int, *, body: str) -> dict[str, Any] | None:
+        """Update a pull request's body. Returns the updated PR dict, or None on error."""
+
 
 def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
     """Parse executor stdout JSON and extract PR number if present (AC3 #953).
@@ -601,6 +609,42 @@ class HttpxGitHubClient:
                 break
             page += 1
         return names
+
+    def create_pull(
+        self, *, title: str, body: str, head: str, base: str = "main"
+    ) -> dict[str, Any] | None:
+        """Create a pull request (#1169). Returns the PR dict, or None on error.
+
+        POSTs to the GitHub PRs endpoint. Credential scope: the client's token
+        must have ``repo`` or ``pull_request`` write access. A 422 (unprocessable
+        — e.g. duplicate PR, merge conflict) is normalized to None so the caller
+        can distinguish "PR already exists" from a hard error; everything else
+        raises so infra faults fail loud.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/pulls"
+        resp = self._client.post(
+            url,
+            json={"title": title, "body": body, "head": head, "base": base},
+        )
+        if resp.status_code == 422:
+            # 422 means a PR already exists for this head, or another structural
+            # issue — normalise to None so the caller treats it as "already done."
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_pull(self, pr_number: int, *, body: str) -> dict[str, Any] | None:
+        """Update a pull request's body (#1169). Returns the updated PR dict.
+
+        PATCHes the PR resource. A 404 (PR not found) is normalised to None;
+        everything else raises.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}"
+        resp = self._client.patch(url, json={"body": body})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
 
 
 def default_github_client() -> HttpxGitHubClient:
