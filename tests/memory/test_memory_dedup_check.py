@@ -77,7 +77,7 @@ class TestIsExemptSeries:
 # ---------------------------------------------------------------------------
 
 
-def _run_main(stdin_payload, monkeypatch):
+def _run_main(stdin_payload, monkeypatch, embed_fn=None):
     raw = json.dumps(stdin_payload).encode("utf-8")
     fake_stdin = MagicMock()
     fake_stdin.buffer.read.return_value = raw
@@ -89,7 +89,10 @@ def _run_main(stdin_payload, monkeypatch):
     # Force-fail embedding so that, IF the exempt short-circuit ever regresses,
     # the test still wouldn't reach a real network call — but a block() would
     # require embedding to succeed, so a regression surfaces as exit!=0 below.
-    monkeypatch.setattr(hook, "embed", lambda *a, **k: pytest.fail("embed called for exempt series"))
+    # Callers that need dedup to actually run past the embed step pass embed_fn.
+    monkeypatch.setattr(
+        hook, "embed", embed_fn or (lambda *a, **k: pytest.fail("embed called for exempt series"))
+    )
 
     exit_code = 0
     try:
@@ -116,5 +119,98 @@ class TestMainExemption:
             monkeypatch,
         )
         # allow() -> exit 0, no deny JSON emitted.
+        assert code == 0
+        assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# main() — #1184 regressions: upsert short-circuit + session-snapshot exclusion
+# ---------------------------------------------------------------------------
+
+
+def _fake_client(*, existing_row: bool, rpc_rows: list[dict]):
+    """Build a MagicMock supabase client for the two query chains main() uses:
+
+    - client.table("memories").select("id").eq("name",...).is_("deleted_at","null")
+      .eq("project",...).limit(1).execute()   (row_exists check, project truthy branch)
+    - client.rpc("match_memories", {...}).execute()
+    """
+    client = MagicMock()
+
+    row_exists_chain = (
+        client.table.return_value.select.return_value.eq.return_value.is_.return_value
+    )
+    row_exists_chain.eq.return_value.limit.return_value.execute.return_value.data = (
+        [{"id": "existing-id"}] if existing_row else []
+    )
+
+    client.rpc.return_value.execute.return_value.data = rpc_rows
+    return client
+
+
+class TestMainUpsertShortCircuit:
+    def test_existing_project_name_row_skips_dedup_entirely(self, monkeypatch):
+        """AC1: memory_store against an existing (project, name) upserts without
+        consulting the dedup guard — embed() must never be called."""
+        fake_client = _fake_client(existing_row=True, rpc_rows=[])
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "working_state_jarvis",
+                    "type": "project",
+                    "project": "jarvis",
+                    "description": "Working state checkpoint",
+                    "content": "some working state content",
+                },
+            },
+            monkeypatch,
+        )
+        assert code == 0
+        assert out == ""
+
+
+class TestMainSessionSnapshotExclusion:
+    def test_working_state_store_survives_similar_session_snapshot(self, monkeypatch):
+        """AC2/AC3: a highly-similar session_snapshot_<id> row must not block an
+        unrelated working_state_<project> store — it's excluded from the dedup
+        candidate set the same way it's excluded from memory_recall (#417)."""
+        fake_client = _fake_client(
+            existing_row=False,
+            rpc_rows=[
+                {
+                    "name": "session_snapshot_6cda4c6f-0000-0000-0000-000000000000",
+                    "project": "jarvis",
+                    "type": "project",
+                    "description": "Session snapshot",
+                    "similarity": 0.79,
+                    "tags": ["session-snapshot"],
+                }
+            ],
+        )
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "working_state_jarvis",
+                    "type": "project",
+                    "project": "jarvis",
+                    "description": "Working state checkpoint",
+                    "content": "some working state content",
+                },
+            },
+            monkeypatch,
+            embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
+        )
+        # allow() -> exit 0, no deny JSON — the snapshot candidate was filtered
+        # out before the same-name check, so no candidates remain to block on.
         assert code == 0
         assert out == ""
