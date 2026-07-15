@@ -266,6 +266,7 @@ jobs:
           PR: ${{ steps.pr.outputs.number }}
           REPO: ${{ github.repository }}
           SKIP: ${{ steps.autobase.outputs.skip }}
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
           set -euo pipefail
           # Freshness anchor (#993): a /code-review comment is a verdict only for
@@ -327,11 +328,24 @@ jobs:
           body=$(jq -r '.freshBody' <<<"$sel")
 
           if [ "$total" -eq 0 ]; then
-            # No /code-review comment at all — the plugin legitimately skipped
-            # this PR (draft / closed / already reviewed / not-eligible). No
-            # verdict expected; leave merge gating to the eligibility logic
-            # upstream. (No regression: skipped PRs still pass.)
-            echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
+            # No /code-review comment at all. Ambiguous between two states (#1182):
+            #   (a) legitimate skip — the review step's own `if:` never matched
+            #       (draft / has_code=false / autobase skip), so it never ran and
+            #       EXEC_FILE is unset. No verdict expected; pass.
+            #   (b) ran-but-silent — the review step WAS eligible and ran. The
+            #       prior "Verify review ran cleanly" step already confirmed
+            #       is_error=false and 0 permission denials (this step would
+            #       never be reached otherwise — that step exits 1 on either
+            #       failure), yet the model posted zero comments. This is a
+            #       silent no-review; passing it ships the PR completely
+            #       unreviewed (PR #1179 incident). Fail CLOSED.
+            # EXEC_FILE is only ever populated when the review step actually
+            # ran, so its presence alone distinguishes (a) from (b).
+            if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+              echo "::error::Code review ran cleanly (execution log present, 0 errors/denials per the prior step) but posted zero /code-review comments. This is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
+              exit 1
+            fi
+            echo "::notice::No /code-review comment present and review did not run; plugin likely skipped (draft/no-code/autobase). Treating as pass."
             exit 0
           fi
 

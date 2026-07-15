@@ -95,14 +95,28 @@ NONBLOCK_SEV_RE = re.compile(
 LGTM_RE = re.compile(r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b", re.I)
 
 
-def verdict(comment_bodies: list[str]) -> str:
+def verdict(comment_bodies: list[str], *, ran: bool = False) -> str:
     """Reimplementation of the verdict step's decision rule.
+
+    Args:
+        comment_bodies: /code-review-titled comment bodies (any age).
+        ran: whether the review step's execution_file was present (#1182) —
+            i.e. the step was eligible and actually ran (and, per the prior
+            "Verify review ran cleanly" step, ran cleanly: is_error=false, 0
+            denials — otherwise the job would have already failed before this
+            check runs). Only consulted when there is no selected comment: it
+            disambiguates "legitimate skip" (ran=False → pass) from
+            "ran-but-silent" (ran=True → fail closed, #1182).
 
     Returns 'pass' (exit 0) or 'fail' (exit 1).
     """
     selected = [b for b in comment_bodies if TITLE_RE.search(b)]
     if not selected:
-        return "pass"  # plugin skipped — no review comment at all
+        # No review comment at all. ran=False → plugin never ran (ineligible:
+        # draft / has_code=false / autobase skip) → legitimate skip → pass.
+        # ran=True → eligible + ran cleanly yet posted nothing → ran-but-silent
+        # → fail closed (#1182 — PR #1179 shipped unreviewed on this gap).
+        return "fail" if ran else "pass"
     body = selected[-1]  # latest review comment wins
     # BLOCK check runs first: a pass signal must never shadow a CRITICAL/MAJOR/
     # BLOCKING heading.
@@ -122,7 +136,7 @@ def verdict(comment_bodies: list[str]) -> str:
     return "fail"  # unrecognized review comment — fail closed
 
 
-def verdict_fresh(comments: list[tuple[str, str]], head_time: str) -> str:
+def verdict_fresh(comments: list[tuple[str, str]], head_time: str, *, ran: bool = False) -> str:
     """Mirror of the verdict step INCLUDING the #993 freshness gate.
 
     A /code-review comment is a verdict only for the CURRENT head commit. The
@@ -135,16 +149,19 @@ def verdict_fresh(comments: list[tuple[str, str]], head_time: str) -> str:
             order). ``created_at`` is an ISO-8601 UTC string (…Z), comparable as
             a plain string against ``head_time``.
         head_time: committer time of the current head commit (ISO-8601 UTC).
+        ran: see ``verdict()`` — only consulted when there is no review comment
+            at all (disambiguates skip vs. ran-but-silent, #1182).
 
-    Returns 'pass' (exit 0) or 'fail' (exit 1). Three-way disambiguation:
-      - no code-review comment at all → 'pass' (plugin legitimately skipped);
+    Returns 'pass' (exit 0) or 'fail' (exit 1). Disambiguation:
+      - no code-review comment at all, ran=False → 'pass' (legitimate skip);
+      - no code-review comment at all, ran=True → 'fail' (ran-but-silent, #1182);
       - code-review comment(s) exist but ALL predate the head commit →
         'fail' (latest review errored / never posted for this SHA — #993);
       - a fresh code-review comment exists → existing two-gate content verdict.
     """
     review = [(b, t) for (b, t) in comments if TITLE_RE.search(b)]
     if not review:
-        return "pass"  # no review comment at all — plugin skipped (no regression)
+        return "fail" if ran else "pass"
     fresh = [b for (b, t) in review if t >= head_time]
     if not fresh:
         return "fail"  # only stale prior-SHA comment(s) — fail closed (#993)
@@ -199,16 +216,17 @@ def verdict_autobase(
     head_time: str,
     *,
     autobase: bool,
+    ran: bool = False,
 ) -> str:
     """Mirror of the full verdict step INCLUDING the #1134 autobase branch.
 
     Computes the freshness anchor (``head_time`` on the normal path, the last
     non-bot head on the autobase path) then applies the SAME freshness + two-gate
-    content verdict as ``verdict_fresh``. AC3 (total==0→pass) and AC4 (comments
-    exist but none fresh-for-anchor→fail-closed) fall out of ``verdict_fresh``
-    unchanged — only the anchor differs.
+    content verdict as ``verdict_fresh``. AC3 (total==0→pass/fail per ``ran``,
+    #1182) and AC4 (comments exist but none fresh-for-anchor→fail-closed) fall
+    out of ``verdict_fresh`` unchanged — only the anchor differs.
     """
-    return verdict_fresh(comments, anchor_time(commits, head_time, autobase=autobase))
+    return verdict_fresh(comments, anchor_time(commits, head_time, autobase=autobase), ran=ran)
 
 
 # The literal shape that false-passed the gate on PR #957: MAJOR + MINOR
@@ -472,6 +490,18 @@ class TestVerdictLogic:
     def test_no_comments_passes(self):
         assert verdict([]) == "pass"
 
+    # --- #1182: ran-but-silent vs. legitimate skip (total==0 disambiguation) ---
+    def test_no_comments_and_ran_fails_closed(self):
+        # Review step was eligible, ran cleanly (execution_file present, prior
+        # step already confirmed is_error=false / 0 denials), yet posted zero
+        # comments. Silent no-review — must fail closed (PR #1179 incident).
+        assert verdict([], ran=True) == "fail"
+
+    def test_no_comments_and_not_ran_passes(self):
+        # Review step never ran (ineligible: draft / has_code=false / autobase
+        # skip) — no execution_file at all. Legitimate skip — pass.
+        assert verdict([], ran=False) == "pass"
+
     def test_unrelated_comments_only_passes(self):
         assert verdict(["LGTM!", RETRY_EXHAUSTED_COMMENT, "merge train queued"]) == "pass"
 
@@ -545,6 +575,13 @@ class TestFreshnessLogic:
         # Plugin legitimately skipped — no regression vs. the pre-#993 behavior.
         assert verdict_fresh([("LGTM, merging", self.NEW)], self.HEAD) == "pass"
         assert verdict_fresh([], self.HEAD) == "pass"
+
+    # --- #1182: ran-but-silent vs. legitimate skip (total==0 disambiguation) ---
+    def test_no_review_comment_and_ran_fails_closed(self):
+        assert verdict_fresh([], self.HEAD, ran=True) == "fail"
+
+    def test_no_review_comment_and_not_ran_passes(self):
+        assert verdict_fresh([], self.HEAD, ran=False) == "pass"
 
     def test_comment_at_exactly_head_time_is_fresh(self):
         # created_at == head_time is treated as fresh (>=), not stale.
@@ -633,6 +670,15 @@ class TestAutobaseAnchorLogic:
         ]
         head = "2026-07-01T11:00:00Z"
         assert verdict_autobase([], commits, head, autobase=True) == "pass"
+
+    # --- #1182: ran-but-silent must fail closed on the autobase path too ---
+    def test_autobase_no_review_comment_and_ran_fails_closed(self):
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),
+            ("2026-07-01T11:00:00Z", AUTOBASE_BOT),
+        ]
+        head = "2026-07-01T11:00:00Z"
+        assert verdict_autobase([], commits, head, autobase=True, ran=True) == "fail"
         # non-review comments only (no code-review title) also pass
         assert (
             verdict_autobase(
@@ -960,17 +1006,65 @@ class TestFreshnessGateWiring:
             "commit (stale prior-SHA comments are not this head's verdict)."
         )
 
-    def test_no_comment_at_all_still_passes(self, verdict_step):
-        # total == 0 (plugin skipped) must remain a pass — no regression.
+    def test_no_comment_at_all_branch_disambiguates_skip_vs_ran(self, verdict_step):
+        # total == 0 is ambiguous between legitimate skip and ran-but-silent
+        # (#1182) — the branch must consult EXEC_FILE to tell them apart rather
+        # than passing unconditionally.
         run = verdict_step["run"]
         marker = 'if [ "$total" -eq 0 ]; then'
         assert marker in run, (
-            "Must distinguish 'no review comment at all' (total 0 → pass) from "
+            "Must distinguish 'no review comment at all' (total 0) from "
             "'comment(s) exist but all stale' (→ fail closed)."
         )
-        skip_branch = run[run.index(marker) : run.index(marker) + 400]
-        assert "exit 0" in skip_branch, (
-            "No review comment at all = legitimate skip → pass (no regression)."
+        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        assert "EXEC_FILE" in total_zero_branch, (
+            "The total==0 branch must consult EXEC_FILE (steps.review.outputs."
+            "execution_file) to distinguish a legitimate skip (never ran, no "
+            "execution log) from a ran-but-silent run (#1182)."
+        )
+        assert "exit 1" in total_zero_branch and "exit 0" in total_zero_branch, (
+            "total==0 must branch: EXEC_FILE present → fail closed (exit 1, "
+            "ran-but-silent, #1182); EXEC_FILE absent → pass (exit 0, "
+            "legitimate skip)."
+        )
+
+    def test_exec_file_threaded_into_verdict_step_env(self, verdict_step):
+        # Without EXEC_FILE in this step's own env, the shell variable used by
+        # the total==0 branch would always be unset — silently degrading back
+        # to "always pass" regardless of the bash logic (#1182).
+        env = verdict_step.get("env", {})
+        assert "EXEC_FILE" in env, (
+            "Verify review verdict must read steps.review.outputs."
+            "execution_file into EXEC_FILE — the sibling 'Verify review ran "
+            "cleanly' step already proves that output exists when the review "
+            "step ran (#1182)."
+        )
+        assert "steps.review.outputs.execution_file" in str(env["EXEC_FILE"])
+
+    def test_genuine_skip_without_exec_file_still_passes(self, verdict_step):
+        # Pure logic check on the extracted sub-branch: when EXEC_FILE is
+        # empty/absent the step must fall through to exit 0 — no regression
+        # for draft / has_code=false / autobase-skip PRs.
+        run = verdict_step["run"]
+        marker = 'if [ "$total" -eq 0 ]; then'
+        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        exec_check_idx = total_zero_branch.index("EXEC_FILE")
+        after_exec_check = total_zero_branch[exec_check_idx:]
+        assert "exit 0" in after_exec_check, (
+            "The fall-through path after the EXEC_FILE check (i.e. no "
+            "execution log — review never ran) must still exit 0."
+        )
+
+    def test_ran_but_silent_fails_before_genuine_skip_exit(self, verdict_step):
+        # The exit 1 (ran-but-silent) must appear textually before the
+        # fall-through exit 0 (genuine skip) — otherwise the EXEC_FILE check
+        # is dead code and every total==0 case would hit exit 0 first.
+        run = verdict_step["run"]
+        marker = 'if [ "$total" -eq 0 ]; then'
+        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        assert total_zero_branch.index("exit 1") < total_zero_branch.rindex("exit 0"), (
+            "Ran-but-silent's exit 1 must be reached before the genuine-skip "
+            "exit 0 fall-through, or the fail-closed branch is unreachable."
         )
 
     def test_stale_only_fails_closed(self, verdict_step):
