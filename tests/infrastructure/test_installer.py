@@ -103,6 +103,16 @@ def fake_repo(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
 
+    # `memory` above is .venv-dependent (python + repo-relative args) once
+    # templated. Mirrors the documented install order (setup-device.py
+    # creates .venv before any installer run) so existing apply tests don't
+    # trip the new .venv-existence guard; both candidate paths are stubbed
+    # since tests don't know the host platform in advance.
+    (repo / ".venv" / "Scripts").mkdir(parents=True)
+    (repo / ".venv" / "Scripts" / "python.exe").touch()
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    (repo / ".venv" / "bin" / "python").touch()
+
     # git init so current_git_sha() works
     subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
@@ -277,7 +287,55 @@ def test_mcp_gate_registers_server_and_strips_marker_when_env_set(
     assert len(gated) == 1
     spec = json.loads(gated[0].note)["spec"]
     assert "x-jarvis-requires-env" not in spec
-    assert spec["command"] == "python"
+
+
+# ---------- #1199: worktree-checkout guard + .venv-dependency validation ----------
+
+
+def test_is_git_worktree_checkout_false_for_main_checkout(fake_repo: Path) -> None:
+    """A real `git init` checkout has a `.git` DIRECTORY — not a worktree."""
+    assert installer._is_git_worktree_checkout(fake_repo) is False
+
+
+def test_is_git_worktree_checkout_true_for_worktree(fake_repo: Path, tmp_path: Path) -> None:
+    """A real `git worktree add` checkout has a `.git` FILE (`gitdir: ...`)."""
+    wt = tmp_path / "fake_repo_worktree"
+    subprocess.run(["git", "worktree", "add", "-q", str(wt), "HEAD"], cwd=fake_repo, check=True)
+    assert installer._is_git_worktree_checkout(wt) is True
+
+
+def test_mcp_action_requires_venv_true_for_repo_relative_python(fake_repo: Path) -> None:
+    spec = {"command": "python", "args": [str(fake_repo / "scripts" / "run-memory-server.py")]}
+    assert installer._mcp_action_requires_venv(spec, fake_repo) is True
+
+
+def test_mcp_action_requires_venv_false_for_non_python_command(fake_repo: Path) -> None:
+    spec = {"command": "npx", "args": ["-y", "some-server"]}
+    assert installer._mcp_action_requires_venv(spec, fake_repo) is False
+
+
+def test_mcp_action_requires_venv_false_for_external_path(fake_repo: Path) -> None:
+    """e.g. uml: python + ${UML_MCP_HOME}/server.py — not repo_root-relative."""
+    spec = {"command": "python", "args": ["/opt/uml-mcp/server.py"]}
+    assert installer._mcp_action_requires_venv(spec, fake_repo) is False
+
+
+def test_check_mcp_venv_dependencies_raises_when_venv_missing(fake_repo: Path) -> None:
+    import shutil as _shutil
+
+    _shutil.rmtree(fake_repo / ".venv")
+    actions = installer._plan_mcp_user_registrations(
+        fake_repo / ".mcp.json", fake_repo, fake_repo / "t"
+    )
+    with pytest.raises(RuntimeError, match="(?i)venv"):
+        installer._check_mcp_venv_dependencies(actions, fake_repo)
+
+
+def test_check_mcp_venv_dependencies_passes_when_venv_present(fake_repo: Path) -> None:
+    actions = installer._plan_mcp_user_registrations(
+        fake_repo / ".mcp.json", fake_repo, fake_repo / "t"
+    )
+    installer._check_mcp_venv_dependencies(actions, fake_repo)  # must not raise
 
 
 def test_build_plan_state_fresh_has_writes_no_backup(manifest: Path, fake_repo: Path) -> None:
@@ -2346,3 +2404,98 @@ def test_main_dry_run_plans_does_not_create_files(
 
     # Plan was printed but NOT applied — target must still be absent.
     assert not target.exists(), "dry-run must NOT create target files"
+
+
+@pytest.fixture
+def fake_worktree(fake_repo: Path, tmp_path: Path) -> Path:
+    """A real `git worktree add` checkout of fake_repo — mirrors #1199: the
+    installer resolves repo_root from its own file location
+    (`Path(__file__).resolve().parents[2]`), which for a worktree checkout is
+    the worktree tree, not the main checkout. A hand-rolled `.git` pointer
+    file would break `current_git_sha()` (called unconditionally inside
+    `build_plan`, before the dry-run/apply split) — only a real worktree
+    keeps that working exactly as it would on a genuine linked checkout.
+    """
+    wt = tmp_path / "fake_repo_worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(wt), "HEAD"],
+        cwd=fake_repo,
+        check=True,
+    )
+    return wt
+
+
+def _wire_main_at(monkeypatch: pytest.MonkeyPatch, repo_root: Path) -> None:
+    """Point installer.__file__ at `repo_root` so main() derives repo_root
+    via `Path(__file__).resolve().parents[2]` — module-level twin of
+    TestEnvEncodingScan._wire_main, usable for any repo_root (main checkout
+    or worktree)."""
+    fake_installer = repo_root / "scripts" / "install" / "installer.py"
+    monkeypatch.setattr(installer, "__file__", str(fake_installer))
+
+
+def test_main_apply_from_worktree_hard_fails(
+    manifest: Path,
+    fake_worktree: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1199: --apply from a worktree checkout must hard-fail before any
+    global-scope write — no partial apply, no target_root creation."""
+    _wire_main_at(monkeypatch, fake_worktree)
+
+    rc = installer.main(["--manifest", str(manifest), "--apply"])
+    assert rc == 5
+
+    err = capsys.readouterr().err
+    assert "worktree" in err.lower()
+
+    m = installer.load_manifest(manifest)
+    target = installer._expand(m["target_root"])
+    assert not target.exists(), "worktree refusal must NOT perform any apply write"
+
+
+def test_main_dry_run_still_works_from_worktree(
+    manifest: Path,
+    fake_worktree: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#1199 AC: dry-run (planning/diffing) is harmless from a worktree — only
+    the actual --apply global-scope write is gated."""
+    _wire_main_at(monkeypatch, fake_worktree)
+
+    rc = installer.main(["--manifest", str(manifest)])
+    assert rc == 0
+
+    out = capsys.readouterr().out
+    assert "dry-run" in out
+
+
+def test_main_apply_fails_when_venv_missing_at_repo_root(
+    fake_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """#1199 AC: a venv-dependent MCP registration must fail loudly (not
+    silently register a server that can't launch) when `.venv` is absent at
+    the resolved repo_root.
+
+    Uses `_user_mcp_manifest` (not the generic `manifest` fixture) because
+    the generic fixture's `mcp_config` group is a plain `copy_file`, not
+    `install_as: user_mcp_registrations` — it never produces a
+    `register_mcp_user` action, so the venv guard would trivially no-op.
+    """
+    import shutil as _shutil
+
+    _shutil.rmtree(fake_repo / ".venv")
+    target = tmp_path / "claude_home"
+    manifest_path = _user_mcp_manifest(fake_repo, target)
+    _wire_main_at(monkeypatch, fake_repo)
+
+    rc = installer.main(["--manifest", str(manifest_path), "--apply", "--skip-env"])
+    assert rc == 2
+
+    err = capsys.readouterr().err
+    assert ".venv" in err
