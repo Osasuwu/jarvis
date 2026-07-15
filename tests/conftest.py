@@ -98,6 +98,46 @@ os.environ.setdefault("SUPABASE_KEY", "test-key")
 
 
 # ---------------------------------------------------------------------------
+# Persistent-environment pollution guard (#1192)
+# ---------------------------------------------------------------------------
+# Incident 2026-07-15: installer tests ran a real `setx JARVIS_HOME
+# <pytest tmp_path>`, leaving the developer's User-scope JARVIS_HOME pointing
+# at a deleted temp dir. Tests must stub installer._set_env (or pass
+# --skip-env); this guard catches any mechanism that slips through, from any
+# test file in the suite.
+
+
+def _persistent_env_snapshot() -> dict[str, object]:
+    """User-scope JARVIS_HOME (Windows registry) / shell rc bytes (POSIX)."""
+    if os.name == "nt":
+        import winreg
+
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+                value = winreg.QueryValueEx(key, "JARVIS_HOME")[0]
+        except OSError:
+            value = None
+        return {"HKCU:Environment:JARVIS_HOME": value}
+    return {
+        str(rc): (rc.read_bytes() if rc.exists() else None)
+        for rc in (Path.home() / ".bashrc", Path.home() / ".zshrc")
+    }
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_persistent_env_pollution():
+    """Fail the run if any test mutated the machine's persistent environment."""
+    before = _persistent_env_snapshot()
+    yield
+    after = _persistent_env_snapshot()
+    assert after == before, (
+        f"test run mutated persistent environment: {before!r} -> {after!r}; "
+        "a test reached real setx / shell rc files — stub installer._set_env "
+        "or pass --skip-env (#1192)"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Contract-style test helpers for memory server tests
 # Replace deeply chained MagicMock calls with intent-revealing helpers.
 # ---------------------------------------------------------------------------
