@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -25,6 +26,31 @@ import installer  # noqa: E402  — path hack is intentional
 
 
 # ---------- fixtures ----------
+
+
+@pytest.fixture(autouse=True)
+def set_env_guard(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    """Module-wide: no test here may touch the machine's persistent environment.
+
+    The `manifest` fixture carries JARVIS_HOME={repo_root} in env_vars, so any
+    ``installer.main(["--apply", ...])`` without --skip-env reaches _set_env —
+    which runs a real ``setx JARVIS_HOME <tmp_path>`` on Windows (persists to
+    User scope) and appends to the real ~/.bashrc / ~/.zshrc on POSIX (#1192).
+    Calls are recorded instead; tests unit-testing _set_env itself use ``.real``.
+
+    Note: this intercepts the ``main()`` path (module-global lookup at call
+    time). ``apply_plan``'s ``run_env`` default binds the real _set_env at def
+    time — direct apply_plan callers must keep passing ``run_env=None``; the
+    session-level guard in tests/conftest.py backstops that hole.
+    """
+    calls: list[tuple[str, str, str]] = []
+
+    def _record(name: str, value: str, platform: str) -> None:
+        calls.append((name, value, platform))
+
+    guard = SimpleNamespace(real=installer._set_env, calls=calls)
+    monkeypatch.setattr(installer, "_set_env", _record)
+    return guard
 
 
 @pytest.fixture
@@ -1136,9 +1162,7 @@ def test_every_source_skill_is_whitelisted() -> None:
 
     m = installer.load_manifest(repo_root / "install-manifest.yaml")
     include = set(
-        next(
-            d["include"] for g in m["groups"] if g["id"] == "skills" for d in g["directories"]
-        )
+        next(d["include"] for g in m["groups"] if g["id"] == "skills" for d in g["directories"])
     )
     source_skills = {
         child.name for child in src.iterdir() if child.is_dir() and (child / "SKILL.md").exists()
@@ -1583,15 +1607,15 @@ def test_register_mcp_user_tolerates_remove_timeout(monkeypatch) -> None:
     assert any("add" in c for c in calls), "add must still run after remove timeout"
 
 
-def test_set_env_tolerates_setx_timeout(monkeypatch, capsys) -> None:
+def test_set_env_tolerates_setx_timeout(set_env_guard, monkeypatch, capsys) -> None:
     """A hung `setx` is reported and skipped, not propagated as a crash."""
 
     def fake_run(cmd, **kwargs):
         raise installer.subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
 
     monkeypatch.setattr(installer.subprocess, "run", fake_run)
-    # Must not raise.
-    installer._set_env("FOO", "bar", "windows")
+    # Must not raise. `.real` because the autouse guard stubs the module attr.
+    set_env_guard.real("FOO", "bar", "windows")
     assert "timed out" in capsys.readouterr().err
 
 
@@ -2155,6 +2179,24 @@ class TestEnvEncodingScan:
         assert re.search(r"could not fix.*bad\.env", err)
         # good.env got fixed despite bad.env failing.
         assert good.read_bytes() == b"TOKEN=y\n"
+
+    def test_main_apply_env_writes_are_stubbed(
+        self,
+        manifest: Path,
+        fake_repo: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        set_env_guard: SimpleNamespace,
+    ) -> None:
+        """#1192: main(--apply) without --skip-env must land in the recording
+        stub, never in real setx / rc-file writes. If the autouse guard is
+        removed, this test fails at collection (unknown fixture) instead of
+        silently re-enabling machine-env pollution."""
+        self._wire_main(monkeypatch, manifest, fake_repo)
+        rc = installer.main(["--manifest", str(manifest), "--apply", "--skip-health-check"])
+        assert rc == 0
+        assert [name for name, _, _ in set_env_guard.calls] == ["JARVIS_HOME"], (
+            "the JARVIS_HOME env action must be absorbed by the stub"
+        )
 
     def test_platforms_filter_skips_non_matching(self, tmp_path: Path) -> None:
         """m2 minor: env_vars entry with platforms=['windows'] only on windows.
