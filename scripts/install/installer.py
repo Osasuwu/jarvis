@@ -87,6 +87,18 @@ def current_git_sha(repo_root: Path) -> str:
     return _run_git(repo_root, "rev-parse", "HEAD")
 
 
+def _is_git_worktree_checkout(repo_root: Path) -> bool:
+    """True when `repo_root` is a linked worktree, not the main checkout.
+
+    A worktree's `.git` is a FILE holding a `gitdir: ...` pointer into the
+    main checkout's `.git/worktrees/<name>`; the main checkout's `.git` is a
+    directory. #1199: the installer resolves `repo_root` from its own file
+    location, which for a worktree is the worktree tree — global-scope MCP
+    registration (`claude mcp add -s user`) must run from the main checkout.
+    """
+    return (repo_root / ".git").is_file()
+
+
 def read_version(target_root: Path) -> str | None:
     marker = target_root / ".jarvis-version"
     if not marker.exists():
@@ -424,6 +436,58 @@ def _plan_mcp_user_registrations(
                 )
             )
     return actions
+
+
+def _venv_python_candidates(repo_root: Path) -> list[Path]:
+    """Mirrors scripts/run-memory-server.py's venv-python lookup order."""
+    return [
+        repo_root / ".venv" / "Scripts" / "python.exe",  # Windows
+        repo_root / ".venv" / "bin" / "python",  # macOS/Linux
+    ]
+
+
+def _mcp_action_requires_venv(spec: dict[str, Any], repo_root: Path) -> bool:
+    """True when `spec` invokes a repo-venv python — e.g. `python
+    scripts/x.py`, templated to an absolute `repo_root`-rooted path by
+    `_plan_mcp_user_registrations`. A python command pointed at a path
+    outside `repo_root` (e.g. `${UML_MCP_HOME}/server.py`) doesn't depend on
+    this repo's own `.venv`.
+
+    `template_content` renders args with forward slashes regardless of OS
+    (#1199 — a raw string `.startswith(str(repo_root))` breaks on Windows,
+    where `repo_root` renders with backslashes), so args are compared as
+    `Path` objects rather than strings.
+    """
+    if spec.get("command") not in ("python", "python3"):
+        return False
+    repo_root = repo_root.resolve()
+    for a in spec.get("args") or []:
+        try:
+            if Path(a).resolve().is_relative_to(repo_root):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def _check_mcp_venv_dependencies(actions: list[Action], repo_root: Path) -> None:
+    """Raise loudly if a planned MCP registration depends on `.venv` and no
+    venv-python candidate exists at `repo_root` (#1199) — otherwise the
+    registration succeeds but the server fails to launch on first use.
+    """
+    for action in actions:
+        if action.kind != "register_mcp_user":
+            continue
+        payload = json.loads(action.note)
+        spec = payload["spec"]
+        if not _mcp_action_requires_venv(spec, repo_root):
+            continue
+        if not any(p.is_file() for p in _venv_python_candidates(repo_root)):
+            raise RuntimeError(
+                f"MCP server {payload['name']!r} requires a repo .venv, but none "
+                f"was found at {repo_root / '.venv'}; run scripts/setup-device.py "
+                "(or setup-device.sh) before installing"
+            )
 
 
 def _resolve_claude_cli() -> str:
@@ -1336,6 +1400,7 @@ def main(argv: list[str] | None = None) -> int:
       2  apply error (rolled back)
       3  health check non-zero exit (rolled back)
       4  health check timeout — inconclusive, apply left in place
+      5  refused --apply from a git worktree checkout (no write performed)
     """
     # Line-buffer stdout/stderr so per-action progress shows in real time even
     # when output is captured through a pipe (install.ps1 tees it). Otherwise
@@ -1413,12 +1478,23 @@ def main(argv: list[str] | None = None) -> int:
         print("\n(dry-run — re-run with --apply to execute)")
         return 0
 
+    if _is_git_worktree_checkout(repo_root):
+        print(
+            f"\nERROR: refusing --apply from a git worktree checkout ({repo_root}).\n"
+            "Global-scope MCP registration (`claude mcp add -s user`) must run from "
+            "the main checkout, not a linked worktree — re-run the installer from "
+            "the main checkout directory.",
+            file=sys.stderr,
+        )
+        return 5
+
     # `state == "current"` short-circuit must NOT skip --fix-env-encoding:
     # the common re-run case is a user with an installed-but-encoding-broken
     # ~/.claude who runs `install.ps1 -Apply -FixEncoding` to repair it.
     if plan.state != "current":
         env_runner = None if args.skip_env else _set_env
         try:
+            _check_mcp_venv_dependencies(plan.actions, repo_root)
             apply_plan(plan, manifest, run_env=env_runner)
         except Exception as exc:  # noqa: BLE001
             print(f"\napply failed: {exc}", file=sys.stderr)

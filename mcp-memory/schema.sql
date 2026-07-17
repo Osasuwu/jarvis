@@ -377,6 +377,24 @@ create policy "Allow all for anon" on memory_links
 -- source so consumers never see stale memories in a cluster. Legacy
 -- `%_archived` types are also excluded defensively (0 rows as of 2026-04-19,
 -- left in place so a stray row from old logic cannot poison consolidation).
+--
+-- Rewritten #1187: the prior O(N^2) self-join (`live a join live b on
+-- a.id < b.id and a.type = b.type`) timed out (57014) once live-memory
+-- volume grew (2054 rows -> 2M+ pair comparisons). Replaced with:
+--   1. Strict (type, project_key) partitioning (was type-only — cross-project
+--      memories of the same type could cluster together).
+--   2. A bare HNSW LATERAL probe (limit 40, zero predicates inside the
+--      LATERAL — all filters applied outside) so the planner reliably uses
+--      idx_memories_embedding_hnsw instead of falling back to a seq scan.
+--   3. Disjoint connected components via label propagation / union-find
+--      over a temp edge table, replacing the old overlapping anchor-star
+--      clustering (a memory could appear in multiple clusters if it was
+--      similar to two different anchors).
+-- `analyze live_tmp` after populating it is required — without it the
+-- planner uses default cardinality stats for the fresh temp table and
+-- picks a catastrophic join plan for the edge-generation insert (verified
+-- empirically: identical query times out at 2min without ANALYZE, ~2.9s
+-- with it, against 2054 live rows / ~51k qualifying edges).
 create or replace function find_consolidation_clusters(
   min_cluster_size int default 3,
   sim_threshold float default 0.80
@@ -390,60 +408,131 @@ returns table (
   similarity float,
   updated_at timestamptz
 )
-language sql stable
+language plpgsql
 as $$
-  with live as (
-    select id, name, type, content, embedding, updated_at
-    from memories
-    where embedding is not null
-      and expired_at is null
-      and superseded_by is null
-      and deleted_at is null
-      and (valid_to is null or valid_to > now())
-      and type not like '%\_archived' escape '\'
-  ),
-  pairs as (
-    select
-      a.id as id_a, b.id as id_b,
-      a.name as name_a, b.name as name_b,
-      a.type as type_a,
-      a.content as content_a, b.content as content_b,
-      a.updated_at as updated_a, b.updated_at as updated_b,
-      1 - (a.embedding <=> b.embedding) as sim
-    from live a
-    join live b on a.id < b.id
-      and a.type = b.type
-    where 1 - (a.embedding <=> b.embedding) >= sim_threshold
-  ),
-  -- Group connected pairs into clusters via the oldest memory as anchor
-  anchors as (
-    select id_a as anchor, id_a as member, name_a as name, type_a as type,
-           content_a as content, sim, updated_a as updated_at from pairs
+declare
+  i int := 0;
+begin
+  set local hnsw.ef_search = 80;
+
+  create temp table if not exists live_tmp (
+    id uuid primary key,
+    name text,
+    type text,
+    project_key text,
+    content text,
+    updated_at timestamptz,
+    embedding vector,
+    label uuid
+  ) on commit drop;
+  truncate live_tmp;
+
+  create temp table if not exists cc_edges (
+    id_a uuid,
+    id_b uuid,
+    sim float
+  ) on commit drop;
+  truncate cc_edges;
+
+  insert into live_tmp (id, name, type, project_key, content, updated_at, embedding, label)
+  select m.id, m.name, m.type, m.project_key, m.content, m.updated_at, m.embedding, m.id
+  from memories m
+  where m.embedding is not null
+    and m.expired_at is null
+    and m.superseded_by is null
+    and m.deleted_at is null
+    and (m.valid_to is null or m.valid_to > now())
+    and m.type not like '%\_archived' escape '\';
+
+  analyze live_tmp;
+
+  -- Bare HNSW probe: no predicates inside the LATERAL so the planner uses
+  -- idx_memories_embedding_hnsw; type/project_key/similarity filters applied
+  -- outside against the pre-filtered live_tmp set.
+  insert into cc_edges (id_a, id_b, sim)
+  select a.id, nb.neighbor_id, nb.sim
+  from live_tmp a
+  cross join lateral (
+    select b.id as neighbor_id, 1 - (b.embedding <=> a.embedding) as sim
+    from memories b
+    order by b.embedding <=> a.embedding
+    limit 40
+  ) nb
+  join live_tmp b2 on b2.id = nb.neighbor_id
+  where nb.neighbor_id <> a.id
+    and b2.type = a.type
+    and b2.project_key = a.project_key
+    and nb.sim >= sim_threshold;
+
+  analyze cc_edges;
+
+  -- Label propagation to disjoint connected components. uuid has no min()
+  -- aggregate, so the running-minimum label is resolved via a text cast.
+  loop
+    i := i + 1;
+    with prop as (
+      select e.id_a as id, least(la.label, lb.label) as new_label
+      from cc_edges e
+      join live_tmp la on la.id = e.id_a
+      join live_tmp lb on lb.id = e.id_b
+      where la.label <> lb.label
+      union all
+      select e.id_b as id, least(la.label, lb.label) as new_label
+      from cc_edges e
+      join live_tmp la on la.id = e.id_a
+      join live_tmp lb on lb.id = e.id_b
+      where la.label <> lb.label
+    ),
+    agg as (
+      select id, min(new_label::text)::uuid as new_label from prop group by id
+    )
+    update live_tmp lt
+    set label = agg.new_label
+    from agg
+    where agg.id = lt.id and agg.new_label < lt.label;
+
+    exit when not found;
+    if i > 1000 then
+      raise exception 'find_consolidation_clusters: label propagation did not converge after % iterations', i;
+    end if;
+  end loop;
+
+  return query
+  with sims as (
+    select id_a as id, max(sim) as best_sim from cc_edges group by id_a
     union all
-    select id_a as anchor, id_b as member, name_b as name, type_a as type,
-           content_b as content, sim, updated_b as updated_at from pairs
+    select id_b as id, max(sim) as best_sim from cc_edges group by id_b
   ),
-  clusters as (
-    select
-      dense_rank() over (order by anchor) as cid,
-      member, name, type, content, sim, updated_at
-    from anchors
+  best as (
+    select id, max(best_sim) as similarity from sims group by id
   ),
-  sized as (
-    select *, count(*) over (partition by cid) as cluster_size
-    from clusters
+  comp_sizes as (
+    select label, count(*) as comp_size from live_tmp group by label
+  ),
+  qualifying as (
+    select lt.id, lt.name, lt.type, lt.content, lt.updated_at, lt.label,
+           coalesce(b.similarity, 0) as similarity,
+           row_number() over (partition by lt.label order by lt.updated_at desc, lt.id) as rn
+    from live_tmp lt
+    join comp_sizes cs on cs.label = lt.label
+    left join best b on b.id = lt.id
+    where cs.comp_size >= min_cluster_size
+  ),
+  -- Cap components >10 members to the 10 most recently updated (#1187 AC).
+  capped as (
+    select * from qualifying where rn <= 10
   )
   select
-    cid::int as cluster_id,
-    member as memory_id,
-    name as memory_name,
-    type as memory_type,
-    content,
-    sim as similarity,
-    updated_at
-  from sized
-  where cluster_size >= min_cluster_size
-  order by cid, updated_at desc;
+    dense_rank() over (order by capped.label)::int as cluster_id,
+    capped.id as memory_id,
+    capped.name as memory_name,
+    capped.type as memory_type,
+    capped.content as content,
+    capped.similarity as similarity,
+    capped.updated_at as updated_at
+  from capped
+  order by 1, capped.updated_at desc;
+end;
 $$;
 
 -- Archive superseded memories (Phase 5.1c): set `expired_at` instead of
