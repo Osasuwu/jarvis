@@ -129,6 +129,12 @@ class TestSafetyComments:
     def test_guardrail_in_sentence(self):
         assert classify("# This acts as a guardrail against") == "keep_warning"
 
+    def test_swallow_error(self):
+        assert classify("# Swallows the error to keep the loop alive") == "keep_warning"
+
+    def test_mask_error(self):
+        assert classify("# Masks the underlying error on purpose") == "keep_warning"
+
     def test_not_marked_as_safety(self):
         """A generic "fail" does not trigger safety — must match the full
         compound term.
@@ -206,6 +212,14 @@ class TestRestateComments:
 
     def test_save_restate(self):
         assert classify("# Save results") == "remove"
+
+    def test_third_person_verb_restate(self):
+        """Third-person forms (``Gets``, ``Validates``) must restate-match
+        too — the verb-boundary regex previously required an exact-stem
+        match and missed the trailing ``s``.
+        """
+        assert classify("# Gets the current user") == "remove"
+        assert classify("# Validates the input") == "remove"
 
 
 # ---------------------------------------------------------------------------
