@@ -51,6 +51,42 @@ Record the AFK decision per slice (yes/no + the one question that flipped it, wh
 
 **The AFK-fit verdict is the single source of AFK-truth — for manual *and* automated emission.** The `/delegate` pre-dispatch gate is not the only consumer: any **automated task emitter** the project runs must honor the same verdict rather than trust a label blindly. In jarvis this is the reactive-core orchestrator's `emit_task` route — an orchestrator-emitted `task_queue` row carries the same AFK-fit semantics as a manually-triaged slice: AFK-safe ⇒ `assignee=sandcastle` (auto-spawned by the task-dispatch loop), AFK-unsafe ⇒ `assignee=owner` (routed for owner attention, never auto-spawned), mirroring the `status:owner-queue` landing zone where a refused `/delegate` parks. The binding (event/task state vocabulary, who enqueues with what priority) lives in the project's CLAUDE.md *Responsibility split* and CONTEXT.md `task_queue` glossary — not here, so this checklist stays project-agnostic.
 
+### 3b. Expand-contract for wide refactors
+
+For some change sets, normal vertical slicing can't keep the tree green between slices — typically a **mechanical refactor** with a wide blast radius (renaming a core type across 50 files, splitting a module that everything imports, changing a shared interface). In this case, reach for the **expand-contract** pattern instead of tracer-bullet vertical slices.
+
+Reach for expand-contract when:
+- The change is **purely mechanical** (rename, extract, move — no new logic)
+- The **blast radius** is wide enough that any single vertical slice changes files across multiple bounded contexts
+- You **cannot slice vertically** while keeping the tree green at every intermediate point
+
+If the change adds new logic or is narrow enough for vertical slicing, use the default §3 process. Expand-contract is the exception, not the default.
+
+#### The three moves
+
+**1. Expand** — Add the new form beside the old. Nothing breaks; both paths work. A single ticket (one PR), typically large but safe, `blocked_by` nothing.
+
+**2. Migrate** — Move call sites from old to new in batches. Each batch is one ticket (one PR), `blocked_by` the expand ticket. Batches are independent of each other (no ordering) and can run in parallel.
+
+**3. Contract** — Delete the old form once all migrate batches are done. One ticket, `blocked_by` *all* migrate batches.
+
+#### Blocked_by wiring
+
+Wire native dependencies per §5 for every edge:
+
+- Each migrate batch → `blocked_by` the expand ticket
+- The contract ticket → `blocked_by` every migrate batch
+
+Migrate batches do NOT block each other — they are independent siblings. The DAG is a star: expand at the center, batches as spokes, contract as the hub after all spokes converge.
+
+#### AFK-fit consistency
+
+Migrate batches are **typically AFK-safe** (mechanical find-and-replace, AC fully constrains the change). Run the AFK-fit checklist (§3a) per batch to confirm — but expect most batches to pass all four questions. The expand ticket may be AFK-unsafe (question 3 — "pick the right migration boundary" is often a mid-execution judgement call) and the contract ticket may be AFK-unsafe (question 2 — "is the migration truly complete?" needs session context a single-issue agent can't verify).
+
+#### Quiz presentation
+
+Present the full set of tickets in the §4 quiz as a **flat list** — expand ticket first, then all migrate batches, then the contract ticket. List the blocked_by for each as prose, but the native edges (§5) are the source of truth.
+
 ### 4. Quiz the user
 
 Present the proposed breakdown as a numbered list. For each slice, show:
