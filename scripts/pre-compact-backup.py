@@ -84,16 +84,26 @@ KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
 
 # ---------------------------------------------------------------------------
-# Helpers (pure — unit-tested in tests/test_pre_compact_backup.py)
+# Helpers (pure — unit-tested in tests/infrastructure/test_pre_compact_backup.py)
 # ---------------------------------------------------------------------------
 def _detect_project(cwd: str | None) -> str | None:
+    """Return the known project a path belongs to, scanning all components.
+
+    Basename-only matching missed worktree sessions
+    (`<repo>/.claude/worktrees/<name>` → basename is the worktree name), so
+    snapshots landed under project=NULL and the /end lookup missed them.
+    Rightmost match wins so a nested checkout resolves to the inner repo.
+    """
     if not cwd:
         return None
     try:
-        name = Path(cwd).name.lower()
+        parts = Path(cwd).parts
     except Exception:
         return None
-    return name if name in KNOWN_PROJECTS else None
+    for part in reversed(parts):
+        if part.lower() in KNOWN_PROJECTS:
+            return part.lower()
+    return None
 
 
 def _read_hook_input(stream=None) -> dict:

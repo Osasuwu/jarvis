@@ -29,9 +29,11 @@ Interview the user relentlessly about every aspect of their plan until we reach 
 
 **Framing approach**: Instead of "You proposed X, let me ask about Y," use third-person reviewer framing. Example: *"The user proposed X. As a senior engineer reviewing this proposal, what would I push back on? The choice seems to assume Y, but I'm not sure that's warranted because Z."*
 
-Ask the questions one at a time, waiting for feedback on each question before continuing.
+**One question at a time.** Ask questions singly and wait for the answer before the next. Batching multiple questions is bewildering — the user can only address one thread at a time, and batched questions dilute the feedback signal on each.
 
-If a question can be answered by exploring the codebase, explore the codebase instead.
+**Facts vs decisions split.** If a fact is discoverable by exploring the codebase — a file's contents, an existing API's shape, a configuration value — look it up instead of asking. Decisions belong to the user: put each decision question to them and wait for an answer. Distinguishing the two avoids wasting the user's time on lookup questions while still capturing their judgement where it matters.
+
+**Confirmation gate.** Do not proceed to Phase 3 (or exit Phase 2) until the user explicitly confirms that shared understanding has been reached. Ask: "Do we have shared understanding on [topic] before I move on?" Phase 2 completes only on affirmative confirmation.
 
 **Anti-sycophancy note** (decision 316c5911-9f06-44de-8f99-20fe3e9fa448): This third-person reviewer framing (based on arxiv 2505.23840) reduces agreement-bias in LLM responses to user proposals by ~64% in multi-turn dialogues. The goal is crisp pushback, not reflexive agreement.
 

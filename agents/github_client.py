@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Protocol
 
@@ -215,6 +216,14 @@ class GitHubClient(Protocol):
         Declared on the Protocol (L2, #1029) so a type-checker flags an
         alternate implementation that forgets to release its connections."""
 
+    def create_pull(
+        self, *, title: str, body: str, head: str, base: str = "main"
+    ) -> dict[str, Any] | None:
+        """Create a pull request. Returns the PR dict, or None on error."""
+
+    def update_pull(self, pr_number: int, *, body: str) -> dict[str, Any] | None:
+        """Update a pull request's body. Returns the updated PR dict, or None on error."""
+
 
 def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
     """Parse executor stdout JSON and extract PR number if present (AC3 #953).
@@ -324,6 +333,64 @@ def check_pr_evidence_fresh_shape(
         return True
     except Exception:
         logger.exception("check_pr_evidence_fresh_shape: client error for %s", task_id)
+        return None
+
+
+def check_pr_closing_ref_fresh_shape(
+    task_id: str,
+    goal: str,
+    issue_number: int,
+    *,
+    client: GitHubClient | None = None,
+    closing_ref_matcher: Callable[[int], re.Pattern[str]],
+) -> bool | None:
+    """Report whether a fresh-shape task's PR body *closes* its issue (#1136 AC4).
+
+    A SEPARATE return channel from ``check_pr_evidence_fresh_shape`` — that one
+    answers "did this spawn produce a fresh PR?" (a ``bool | None`` freshness
+    tri-state); this one answers the orthogonal "does that PR's body carry a
+    closing keyword for issue ``#N``?". Overloading the freshness tri-state was
+    explicitly rejected in the grill (decision ``ec66db74``): the two questions
+    have independent None/False/True semantics and one channel can't carry both.
+
+    The closing-ref regex is *not* re-implemented here — it is injected
+    (``closing_ref_matcher``, in practice the /delegate pre-dispatch gate's
+    ``_closing_ref_re``) so this HTTP-client module never path-loads a
+    ``scripts/`` module. By construction the matcher recognizes only closing
+    keywords (``closes/fixes/resolves``), NOT ``Refs``/``References`` — a
+    ``Refs #N``-only body links-without-closing and correctly reports False,
+    which is what feeds the AC5 advisory WARNING upstream.
+
+    Branch resolution mirrors ``check_pr_evidence_fresh_shape`` (explicit
+    ``(branch=...)`` directive, else the ``task/<task_id>`` convention). The PR
+    fetch already returns the raw REST object including ``body``, so no extra
+    field plumbing is needed.
+
+    Returns:
+    - True: a PR exists on the branch AND its body closes ``#issue_number``
+    - False: a PR exists but its body has no closing ref for ``#issue_number``
+      (includes the ``Refs #N``-only case)
+    - None: no client, or no PR found on the branch (existence unknown here —
+      distinct from False, which asserts a PR was seen)
+    """
+    if client is None:
+        logger.warning("check_pr_closing_ref_fresh_shape: no client provided")
+        return None
+
+    branch_match = re.search(r"\(branch=([^)]+)\)", goal)
+    if branch_match:
+        branch = branch_match.group(1).strip()
+    else:
+        branch = f"task/{task_id}"
+
+    try:
+        pr = client.get_pull_by_head_branch(branch)
+        if not pr:
+            return None
+        body = pr.get("body") or ""
+        return bool(closing_ref_matcher(issue_number).search(body))
+    except Exception:
+        logger.exception("check_pr_closing_ref_fresh_shape: client error for %s", task_id)
         return None
 
 
@@ -542,6 +609,42 @@ class HttpxGitHubClient:
                 break
             page += 1
         return names
+
+    def create_pull(
+        self, *, title: str, body: str, head: str, base: str = "main"
+    ) -> dict[str, Any] | None:
+        """Create a pull request (#1169). Returns the PR dict, or None on error.
+
+        POSTs to the GitHub PRs endpoint. Credential scope: the client's token
+        must have ``repo`` or ``pull_request`` write access. A 422 (unprocessable
+        — e.g. duplicate PR, merge conflict) is normalized to None so the caller
+        can distinguish "PR already exists" from a hard error; everything else
+        raises so infra faults fail loud.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/pulls"
+        resp = self._client.post(
+            url,
+            json={"title": title, "body": body, "head": head, "base": base},
+        )
+        if resp.status_code == 422:
+            # 422 means a PR already exists for this head, or another structural
+            # issue — normalise to None so the caller treats it as "already done."
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_pull(self, pr_number: int, *, body: str) -> dict[str, Any] | None:
+        """Update a pull request's body (#1169). Returns the updated PR dict.
+
+        PATCHes the PR resource. A 404 (PR not found) is normalised to None;
+        everything else raises.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}"
+        resp = self._client.patch(url, json={"body": body})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
 
 
 def default_github_client() -> HttpxGitHubClient:

@@ -70,7 +70,7 @@ from supabase import create_client
 
 # recall.py is the deep module (#496-#499). Hook adds mcp-memory/ to
 # sys.path and re-exports the public names so tests that introspect
-# mrh.<NAME> directly (tests/test_memory_recall_hook.py) keep working.
+# mrh.<NAME> directly (tests/memory/test_memory_recall_hook.py) keep working.
 # noqa: F401 — names not used inside this module; they exist as the
 # re-export surface for downstream test code.
 sys.path.insert(0, str(_root / "mcp-memory"))
@@ -320,12 +320,19 @@ def rewrite_prompt(prompt: str) -> dict | None:
 
 
 def detect_project(cwd: str) -> str | None:
-    """Return project name if cwd is a known project dir, else None."""
+    """Return the known project a path belongs to, scanning all components.
+
+    Worktree cwds (`<repo>/.claude/worktrees/<name>`) and subdirectories
+    resolve to the containing repo; rightmost match wins.
+    """
     try:
-        name = Path(cwd).name.lower()
+        parts = Path(cwd).parts
     except Exception:
         return None
-    return name if name in KNOWN_PROJECTS else None
+    for part in reversed(parts):
+        if part.lower() in KNOWN_PROJECTS:
+            return part.lower()
+    return None
 
 
 def check_known_unknown_gate(client, query_embedding: list[float] | None) -> bool:

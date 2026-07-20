@@ -25,6 +25,7 @@ Two halves, per the #326 guard-test convention:
   - Logic: reimplement the verdict decision rule in Python and assert it
     blocks/allows the scenarios the workflow claims to handle.
 """
+
 from __future__ import annotations
 
 import re
@@ -94,14 +95,28 @@ NONBLOCK_SEV_RE = re.compile(
 LGTM_RE = re.compile(r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b", re.I)
 
 
-def verdict(comment_bodies: list[str]) -> str:
+def verdict(comment_bodies: list[str], *, ran: bool = False) -> str:
     """Reimplementation of the verdict step's decision rule.
+
+    Args:
+        comment_bodies: /code-review-titled comment bodies (any age).
+        ran: whether the review step's execution_file was present (#1182) —
+            i.e. the step was eligible and actually ran (and, per the prior
+            "Verify review ran cleanly" step, ran cleanly: is_error=false, 0
+            denials — otherwise the job would have already failed before this
+            check runs). Only consulted when there is no selected comment: it
+            disambiguates "legitimate skip" (ran=False → pass) from
+            "ran-but-silent" (ran=True → fail closed, #1182).
 
     Returns 'pass' (exit 0) or 'fail' (exit 1).
     """
     selected = [b for b in comment_bodies if TITLE_RE.search(b)]
     if not selected:
-        return "pass"  # plugin skipped — no review comment at all
+        # No review comment at all. ran=False → plugin never ran (ineligible:
+        # draft / has_code=false / autobase skip) → legitimate skip → pass.
+        # ran=True → eligible + ran cleanly yet posted nothing → ran-but-silent
+        # → fail closed (#1182 — PR #1179 shipped unreviewed on this gap).
+        return "fail" if ran else "pass"
     body = selected[-1]  # latest review comment wins
     # BLOCK check runs first: a pass signal must never shadow a CRITICAL/MAJOR/
     # BLOCKING heading.
@@ -121,7 +136,7 @@ def verdict(comment_bodies: list[str]) -> str:
     return "fail"  # unrecognized review comment — fail closed
 
 
-def verdict_fresh(comments: list[tuple[str, str]], head_time: str) -> str:
+def verdict_fresh(comments: list[tuple[str, str]], head_time: str, *, ran: bool = False) -> str:
     """Mirror of the verdict step INCLUDING the #993 freshness gate.
 
     A /code-review comment is a verdict only for the CURRENT head commit. The
@@ -134,20 +149,84 @@ def verdict_fresh(comments: list[tuple[str, str]], head_time: str) -> str:
             order). ``created_at`` is an ISO-8601 UTC string (…Z), comparable as
             a plain string against ``head_time``.
         head_time: committer time of the current head commit (ISO-8601 UTC).
+        ran: see ``verdict()`` — only consulted when there is no review comment
+            at all (disambiguates skip vs. ran-but-silent, #1182).
 
-    Returns 'pass' (exit 0) or 'fail' (exit 1). Three-way disambiguation:
-      - no code-review comment at all → 'pass' (plugin legitimately skipped);
+    Returns 'pass' (exit 0) or 'fail' (exit 1). Disambiguation:
+      - no code-review comment at all, ran=False → 'pass' (legitimate skip);
+      - no code-review comment at all, ran=True → 'fail' (ran-but-silent, #1182);
       - code-review comment(s) exist but ALL predate the head commit →
         'fail' (latest review errored / never posted for this SHA — #993);
       - a fresh code-review comment exists → existing two-gate content verdict.
     """
     review = [(b, t) for (b, t) in comments if TITLE_RE.search(b)]
     if not review:
-        return "pass"  # no review comment at all — plugin skipped (no regression)
+        return "fail" if ran else "pass"
     fresh = [b for (b, t) in review if t >= head_time]
     if not fresh:
         return "fail"  # only stale prior-SHA comment(s) — fail closed (#993)
     return verdict([fresh[-1]])  # latest fresh comment → content verdict
+
+
+# -- Autobase carry-forward anchor (mirror of the #1134 autobase branch) -------
+#
+# On the osasuwu-ci[bot] auto-rebase (update-branch) push the verdict step now
+# RUNS — its if: no longer short-circuits on steps.autobase.outputs.skip — but
+# HEAD is the bot's 2-parent merge commit. Anchoring freshness on that commit's
+# committer time is an anchor-trap: no review comment is newer than a just-made
+# merge commit, so a clean PR would fail-closed forever. Instead the autobase
+# branch anchors on the LAST NON-BOT HEAD — the committer date of the most
+# recent PR commit whose author is not osasuwu-ci[bot] — so the last REAL review
+# verdict is re-enforced. The walk is newest→oldest so a run of consecutive
+# auto-rebases (PR #963 had 28) is skipped, not just parents[0]. A null/unlinked
+# commit author counts as real (safe default). Normal path unchanged: anchor ==
+# head_time.
+AUTOBASE_BOT = "osasuwu-ci[bot]"
+
+
+def anchor_time(commits: list[tuple[str, str | None]], head_time: str, *, autobase: bool) -> str:
+    """Freshness anchor for the verdict step (mirror of the #1134 bash).
+
+    Args:
+        commits: ``(committer_date, author_login)`` pairs for the PR commits,
+            oldest→newest (REST ``pulls/<n>/commits`` order). ``author_login`` is
+            the GitHub login or ``None`` when the commit email is unlinked.
+        head_time: committer date of the current head commit.
+        autobase: whether ``steps.autobase.outputs.skip == 'true'`` (the push was
+            an osasuwu-ci[bot] auto-rebase).
+
+    Returns the ISO-8601 UTC string to anchor freshness on. Normal path →
+    ``head_time``. Autobase path → committer date of the most recent non-bot
+    commit, or ``head_time`` if the PR is (impossibly) all-bot.
+    """
+    if not autobase:
+        return head_time
+    non_bot = [c for c in commits if (c[1] or "") != AUTOBASE_BOT]
+    if not non_bot:
+        # No real commit at all (should not happen — every PR has a first human
+        # commit). Fall back to HEAD → strict freshness → fail-closed on this
+        # bizarre all-bot PR rather than pass unverified.
+        return head_time
+    return non_bot[-1][0]
+
+
+def verdict_autobase(
+    comments: list[tuple[str, str]],
+    commits: list[tuple[str, str | None]],
+    head_time: str,
+    *,
+    autobase: bool,
+    ran: bool = False,
+) -> str:
+    """Mirror of the full verdict step INCLUDING the #1134 autobase branch.
+
+    Computes the freshness anchor (``head_time`` on the normal path, the last
+    non-bot head on the autobase path) then applies the SAME freshness + two-gate
+    content verdict as ``verdict_fresh``. AC3 (total==0→pass/fail per ``ran``,
+    #1182) and AC4 (comments exist but none fresh-for-anchor→fail-closed) fall
+    out of ``verdict_fresh`` unchanged — only the anchor differs.
+    """
+    return verdict_fresh(comments, anchor_time(commits, head_time, autobase=autobase), ran=ran)
 
 
 # The literal shape that false-passed the gate on PR #957: MAJOR + MINOR
@@ -332,9 +411,7 @@ class TestVerdictLogic:
 
     def test_major_heading_with_stray_no_blockers_line_fails(self):
         # "Blocking issues — None" prose must not shadow a real "### MAJOR".
-        body = (
-            "## Code Review\n\n### Blocking issues — None\n\n### MAJOR\n\n1. real bug\n"
-        )
+        body = "## Code Review\n\n### Blocking issues — None\n\n### MAJOR\n\n1. real bug\n"
         assert verdict([body]) == "fail"
 
     def test_severity_decoration_does_not_span_lines(self):
@@ -413,6 +490,18 @@ class TestVerdictLogic:
     def test_no_comments_passes(self):
         assert verdict([]) == "pass"
 
+    # --- #1182: ran-but-silent vs. legitimate skip (total==0 disambiguation) ---
+    def test_no_comments_and_ran_fails_closed(self):
+        # Review step was eligible, ran cleanly (execution_file present, prior
+        # step already confirmed is_error=false / 0 denials), yet posted zero
+        # comments. Silent no-review — must fail closed (PR #1179 incident).
+        assert verdict([], ran=True) == "fail"
+
+    def test_no_comments_and_not_ran_passes(self):
+        # Review step never ran (ineligible: draft / has_code=false / autobase
+        # skip) — no execution_file at all. Legitimate skip — pass.
+        assert verdict([], ran=False) == "pass"
+
     def test_unrelated_comments_only_passes(self):
         assert verdict(["LGTM!", RETRY_EXHAUSTED_COMMENT, "merge train queued"]) == "pass"
 
@@ -487,6 +576,13 @@ class TestFreshnessLogic:
         assert verdict_fresh([("LGTM, merging", self.NEW)], self.HEAD) == "pass"
         assert verdict_fresh([], self.HEAD) == "pass"
 
+    # --- #1182: ran-but-silent vs. legitimate skip (total==0 disambiguation) ---
+    def test_no_review_comment_and_ran_fails_closed(self):
+        assert verdict_fresh([], self.HEAD, ran=True) == "fail"
+
+    def test_no_review_comment_and_not_ran_passes(self):
+        assert verdict_fresh([], self.HEAD, ran=False) == "pass"
+
     def test_comment_at_exactly_head_time_is_fresh(self):
         # created_at == head_time is treated as fresh (>=), not stale.
         assert verdict_fresh([(CANONICAL_CLEAN_SPEC, self.HEAD)], self.HEAD) == "pass"
@@ -522,6 +618,164 @@ class TestFreshnessLogic:
             )
             == "pass"
         )
+
+
+class TestAutobaseAnchorLogic:
+    """#1134: on the autobase (osasuwu-ci[bot] update-branch) push the verdict
+    step now RUNS and anchors freshness on the last non-bot head — not the bot's
+    2-parent merge commit. Anchoring on the merge commit is an anchor-trap (no
+    review comment is newer than a just-made merge commit → a clean PR would
+    fail-closed forever; and #1131's live CRITICAL, posted for the last real
+    head, would be dropped as stale). AC2-AC6.
+    """
+
+    # --- #1131 timeline (AC6), all 2026-07-08 UTC ---
+    CRITICAL_COMMENT = "## Code Review — PR #1131\n\n### CRITICAL\n\n1. Data-loss on empty batch\n"
+    # commits oldest→newest: last real head, then the bot 2-parent merge (HEAD).
+    PR_1131_COMMITS = [
+        ("2026-07-08T06:00:52Z", "Osasuwu"),  # 45e17d61b — last real head
+        ("2026-07-08T06:14:50Z", AUTOBASE_BOT),  # ef39b0a86 — bot merge (HEAD)
+    ]
+    PR_1131_HEAD = "2026-07-08T06:14:50Z"  # bot merge committer time
+    PR_1131_COMMENTS = [
+        (CRITICAL_COMMENT, "2026-07-08T05:51:50Z"),  # stale (< 06:00:52 anchor)
+        (CRITICAL_COMMENT, "2026-07-08T06:14:38Z"),  # fresh (>= anchor) — selected
+    ]
+
+    def test_pr_1131_autobase_anchors_on_last_real_head_and_blocks(self):
+        # AC6: the 06:14:57 autobase run must BLOCK. Carry-forward anchor =
+        # 06:00:52 → the 06:14:38 CRITICAL is fresh → block-first grep → fail.
+        assert (
+            verdict_autobase(
+                self.PR_1131_COMMENTS,
+                self.PR_1131_COMMITS,
+                self.PR_1131_HEAD,
+                autobase=True,
+            )
+            == "fail"
+        )
+
+    def test_pr_1131_head_anchor_would_have_masked_the_critical(self):
+        # Why not anchor on HEAD: the bot merge commit (06:14:50) is newer than
+        # BOTH CRITICAL comments, so a naive head anchor finds nothing fresh.
+        # (Combined with the OLD if-gate the step was skipped entirely — either
+        # way the live CRITICAL went un-enforced and #1131 auto-merged.)
+        assert verdict_fresh(self.PR_1131_COMMENTS, self.PR_1131_HEAD) == "fail"
+
+    # --- AC3: autobase, zero review comments → pass (do not fail-close) ---
+    def test_autobase_no_review_comment_passes(self):
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),
+            ("2026-07-01T11:00:00Z", AUTOBASE_BOT),
+        ]
+        head = "2026-07-01T11:00:00Z"
+        assert verdict_autobase([], commits, head, autobase=True) == "pass"
+
+    # --- #1182: ran-but-silent must fail closed on the autobase path too ---
+    def test_autobase_no_review_comment_and_ran_fails_closed(self):
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),
+            ("2026-07-01T11:00:00Z", AUTOBASE_BOT),
+        ]
+        head = "2026-07-01T11:00:00Z"
+        assert verdict_autobase([], commits, head, autobase=True, ran=True) == "fail"
+        # non-review comments only (no code-review title) also pass
+        assert (
+            verdict_autobase(
+                [("merge-train queued", "2026-07-01T11:30:00Z")],
+                commits,
+                head,
+                autobase=True,
+            )
+            == "pass"
+        )
+
+    # --- AC4 / CRITIC Risk #1: stale clean before the last real head → fail ---
+    def test_autobase_stale_clean_before_last_real_head_fails_closed(self):
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),  # older real commit
+            ("2026-07-01T12:00:00Z", "Osasuwu"),  # LAST real head → anchor
+            ("2026-07-01T13:00:00Z", AUTOBASE_BOT),  # autobase (HEAD)
+        ]
+        # Clean verdict from 11:00 — after the OLDER real commit but BEFORE the
+        # last real head (12:00). Must not be resurrected → fail closed. Pins
+        # "anchor on the LAST real head", not the first.
+        stale = [(CANONICAL_CLEAN_SPEC, "2026-07-01T11:00:00Z")]
+        assert verdict_autobase(stale, commits, "2026-07-01T13:00:00Z", autobase=True) == "fail"
+
+    # --- AC5 + autobase-clean-fresh: walk past consecutive autobases ---
+    def test_autobase_consecutive_rebases_anchor_on_last_real_head(self):
+        # PR #963 shape: a run of consecutive bot rebases. The anchor must walk
+        # back past ALL of them (not parents[0]) to the last real head, so a
+        # clean review of that head still passes.
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),  # real head, reviewed clean
+            ("2026-07-01T11:00:00Z", AUTOBASE_BOT),  # autobase 1
+            ("2026-07-01T12:00:00Z", AUTOBASE_BOT),  # autobase 2
+            ("2026-07-01T13:00:00Z", AUTOBASE_BOT),  # autobase 3 (HEAD)
+        ]
+        clean_for_real_head = [(CANONICAL_CLEAN_SPEC, "2026-07-01T10:30:00Z")]
+        assert (
+            verdict_autobase(clean_for_real_head, commits, "2026-07-01T13:00:00Z", autobase=True)
+            == "pass"
+        )
+        # Anchor-trap proof: naive head anchoring (13:00) drops the 10:30 clean
+        # comment → fail-closed on a legitimately clean PR.
+        assert verdict_fresh(clean_for_real_head, "2026-07-01T13:00:00Z") == "fail"
+
+    # --- anchor_time unit behaviour ---
+    def test_anchor_time_normal_path_is_head(self):
+        assert (
+            anchor_time(
+                [("2026-07-01T10:00:00Z", "Osasuwu")],
+                "2026-07-01T12:00:00Z",
+                autobase=False,
+            )
+            == "2026-07-01T12:00:00Z"
+        )
+
+    def test_anchor_time_autobase_walks_back_past_bots(self):
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),
+            ("2026-07-01T11:00:00Z", AUTOBASE_BOT),
+            ("2026-07-01T12:00:00Z", AUTOBASE_BOT),
+        ]
+        assert anchor_time(commits, "2026-07-01T12:00:00Z", autobase=True) == "2026-07-01T10:00:00Z"
+
+    def test_anchor_time_null_author_counts_as_real(self):
+        # An unlinked/null GitHub author is treated as non-bot (safe default).
+        commits = [
+            ("2026-07-01T10:00:00Z", None),
+            ("2026-07-01T11:00:00Z", AUTOBASE_BOT),
+        ]
+        assert anchor_time(commits, "2026-07-01T11:00:00Z", autobase=True) == "2026-07-01T10:00:00Z"
+
+    def test_anchor_time_all_bot_falls_back_to_head(self):
+        assert (
+            anchor_time(
+                [("2026-07-01T11:00:00Z", AUTOBASE_BOT)],
+                "2026-07-01T11:00:00Z",
+                autobase=True,
+            )
+            == "2026-07-01T11:00:00Z"
+        )
+
+    # --- AC1 sanity: normal path via the mirror == verdict_fresh (unchanged) ---
+    def test_normal_path_matches_verdict_fresh(self):
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),
+            ("2026-07-01T12:00:00Z", "Osasuwu"),
+        ]
+        head = "2026-07-01T12:00:00Z"
+        for comments in (
+            [(CANONICAL_CLEAN_SPEC, head)],
+            [(BLOCKING_COMMENT, head)],
+            [(CANONICAL_CLEAN_SPEC, "2026-07-01T09:00:00Z")],  # stale → fail
+            [],
+        ):
+            assert verdict_autobase(comments, commits, head, autobase=False) == verdict_fresh(
+                comments, head
+            )
 
 
 # -- Workflow wiring ----------------------------------------------------------
@@ -629,9 +883,9 @@ class TestVerdictStepWiring:
             "check under the runner's C.UTF-8 default and a coexisting MINOR "
             "section flips the merge gate to a false PASS."
         )
-        assert run.index("export LC_ALL=C") < run.index(
-            "(CRITICAL|MAJOR|BLOCKING)"
-        ), "LC_ALL=C must be exported before the first severity grep."
+        assert run.index("export LC_ALL=C") < run.index("(CRITICAL|MAJOR|BLOCKING)"), (
+            "LC_ALL=C must be exported before the first severity grep."
+        )
 
     def test_block_check_is_case_sensitive_allcaps(self, verdict_step):
         # #976: the block grep must be `-qE` (case-sensitive), NOT `-qiE` —
@@ -643,8 +897,7 @@ class TestVerdictStepWiring:
             "case prose (#976)."
         )
         assert "grep -qiE '^#{1,6}[^[:alnum:]]*(CRITICAL" not in run, (
-            "Block check must not use -i (case-insensitive) — that is the "
-            "#962 false-block bug."
+            "Block check must not use -i (case-insensitive) — that is the #962 false-block bug."
         )
 
     def test_found_n_issues_is_a_nonblocking_pass(self, verdict_step):
@@ -655,13 +908,11 @@ class TestVerdictStepWiring:
         )
         block_at = run.index("(CRITICAL|MAJOR|BLOCKING)")
         found_at = run.index("Found [0-9]+ issues?:")
-        assert block_at < found_at, (
-            "Block check must precede the Found-N pass branch."
-        )
+        assert block_at < found_at, "Block check must precede the Found-N pass branch."
         # The Found-N branch must lead to a pass (exit 0), not a block. The
         # branch spans the if-guard, a count-extraction line, the notice, and
         # exit 0 — widen the slice to cover it without reaching the next branch.
-        found_branch = run[found_at:found_at + 380]
+        found_branch = run[found_at : found_at + 380]
         assert "exit 0" in found_branch and "exit 1" not in found_branch, (
             "A 'Found N issues:' comment with no blocking heading must PASS "
             "(exit 0), not block (#956 advisory-only false-block)."
@@ -672,15 +923,13 @@ class TestVerdictStepWiring:
         # case-insensitively (it is title-case prose).
         run = verdict_step["run"]
         assert "blocking issues" in run.lower(), (
-            "A 'Blocking issues — None' APPROVE summary (#962) must be "
-            "recognized as a pass."
+            "A 'Blocking issues — None' APPROVE summary (#962) must be recognized as a pass."
         )
 
     def test_nonblocking_severity_headings_pass(self, verdict_step):
         run = verdict_step["run"]
         assert r"^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b" in run, (
-            "Minor-only / advisory-only severity sections must be a positive "
-            "pass signal (#963)."
+            "Minor-only / advisory-only severity sections must be a positive pass signal (#963)."
         )
 
     def test_nonblocking_severity_grep_is_case_insensitive(self, verdict_step):
@@ -688,9 +937,7 @@ class TestVerdictStepWiring:
         # heading ("#### Low" on PR #1049) passes instead of fail-closing. Safe
         # because it runs after the case-sensitive block check.
         run = verdict_step["run"]
-        assert (
-            "grep -qiE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)" in run
-        ), (
+        assert "grep -qiE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)" in run, (
             "Non-blocking severity grep must be case-insensitive (-qiE) so a "
             "title-case advisory heading (#### Low, PR #1049) is a pass, not a "
             "fail-closed (#1050)."
@@ -727,9 +974,7 @@ class TestVerdictStepWiring:
         nonblock_at = run.index("(MINOR|NITPICK|LOW|INFO|MEDIUM)")
         assert block_at < clean_at, "Clean line must not shadow a block heading."
         assert block_at < found_at, "Found-N must not shadow a block heading."
-        assert block_at < nonblock_at, (
-            "Non-blocking severity check must run after the block check."
-        )
+        assert block_at < nonblock_at, "Non-blocking severity check must run after the block check."
 
     def test_step_ends_fail_closed(self, verdict_step):
         assert verdict_step["run"].strip().endswith("exit 1"), (
@@ -761,17 +1006,65 @@ class TestFreshnessGateWiring:
             "commit (stale prior-SHA comments are not this head's verdict)."
         )
 
-    def test_no_comment_at_all_still_passes(self, verdict_step):
-        # total == 0 (plugin skipped) must remain a pass — no regression.
+    def test_no_comment_at_all_branch_disambiguates_skip_vs_ran(self, verdict_step):
+        # total == 0 is ambiguous between legitimate skip and ran-but-silent
+        # (#1182) — the branch must consult EXEC_FILE to tell them apart rather
+        # than passing unconditionally.
         run = verdict_step["run"]
         marker = 'if [ "$total" -eq 0 ]; then'
         assert marker in run, (
-            "Must distinguish 'no review comment at all' (total 0 → pass) from "
+            "Must distinguish 'no review comment at all' (total 0) from "
             "'comment(s) exist but all stale' (→ fail closed)."
         )
-        skip_branch = run[run.index(marker) : run.index(marker) + 400]
-        assert "exit 0" in skip_branch, (
-            "No review comment at all = legitimate skip → pass (no regression)."
+        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        assert "EXEC_FILE" in total_zero_branch, (
+            "The total==0 branch must consult EXEC_FILE (steps.review.outputs."
+            "execution_file) to distinguish a legitimate skip (never ran, no "
+            "execution log) from a ran-but-silent run (#1182)."
+        )
+        assert "exit 1" in total_zero_branch and "exit 0" in total_zero_branch, (
+            "total==0 must branch: EXEC_FILE present → fail closed (exit 1, "
+            "ran-but-silent, #1182); EXEC_FILE absent → pass (exit 0, "
+            "legitimate skip)."
+        )
+
+    def test_exec_file_threaded_into_verdict_step_env(self, verdict_step):
+        # Without EXEC_FILE in this step's own env, the shell variable used by
+        # the total==0 branch would always be unset — silently degrading back
+        # to "always pass" regardless of the bash logic (#1182).
+        env = verdict_step.get("env", {})
+        assert "EXEC_FILE" in env, (
+            "Verify review verdict must read steps.review.outputs."
+            "execution_file into EXEC_FILE — the sibling 'Verify review ran "
+            "cleanly' step already proves that output exists when the review "
+            "step ran (#1182)."
+        )
+        assert "steps.review.outputs.execution_file" in str(env["EXEC_FILE"])
+
+    def test_genuine_skip_without_exec_file_still_passes(self, verdict_step):
+        # Pure logic check on the extracted sub-branch: when EXEC_FILE is
+        # empty/absent the step must fall through to exit 0 — no regression
+        # for draft / has_code=false / autobase-skip PRs.
+        run = verdict_step["run"]
+        marker = 'if [ "$total" -eq 0 ]; then'
+        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        exec_check_idx = total_zero_branch.index("EXEC_FILE")
+        after_exec_check = total_zero_branch[exec_check_idx:]
+        assert "exit 0" in after_exec_check, (
+            "The fall-through path after the EXEC_FILE check (i.e. no "
+            "execution log — review never ran) must still exit 0."
+        )
+
+    def test_ran_but_silent_fails_before_genuine_skip_exit(self, verdict_step):
+        # The exit 1 (ran-but-silent) must appear textually before the
+        # fall-through exit 0 (genuine skip) — otherwise the EXEC_FILE check
+        # is dead code and every total==0 case would hit exit 0 first.
+        run = verdict_step["run"]
+        marker = 'if [ "$total" -eq 0 ]; then'
+        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        assert total_zero_branch.index("exit 1") < total_zero_branch.rindex("exit 0"), (
+            "Ran-but-silent's exit 1 must be reached before the genuine-skip "
+            "exit 0 fall-through, or the fail-closed branch is unreachable."
         )
 
     def test_stale_only_fails_closed(self, verdict_step):
@@ -787,4 +1080,60 @@ class TestFreshnessGateWiring:
             "Stale-only (no comment fresh for the head SHA) must FAIL CLOSED "
             "(exit 1) — the latest review errored; do not consume a prior-SHA "
             "verdict (#993)."
+        )
+
+
+class TestAutobaseAnchorWiring:
+    """#1134: the verdict step must RUN on the osasuwu-ci[bot] auto-rebase push
+    (drop the skip gate from its `if:`) and, on that branch, anchor freshness on
+    the last non-bot head instead of the bot's 2-parent merge commit. #1131
+    auto-merged past a live CRITICAL because the step was skipped there and the
+    `review` check went green with nothing evaluated."""
+
+    def test_step_no_longer_if_gated_on_autobase_skip(self, verdict_step):
+        assert "steps.autobase.outputs.skip" not in str(verdict_step.get("if", "")), (
+            "Verify review verdict must RUN on the autobase push — the "
+            "steps.autobase.outputs.skip gate must not be in its if: (#1134). "
+            "Skipping there is what let #1131 auto-merge past a CRITICAL."
+        )
+
+    def test_step_imports_autobase_skip_for_internal_branch(self, verdict_step):
+        # The flag no longer gates the step; it must still reach the body (via
+        # env or the run script) so the step can branch the anchor internally.
+        env = verdict_step.get("env", {}) or {}
+        in_env = any("steps.autobase.outputs.skip" in str(v) for v in env.values())
+        in_run = "steps.autobase.outputs.skip" in verdict_step.get("run", "")
+        assert in_env or in_run, (
+            "Verdict step must still reference steps.autobase.outputs.skip (via "
+            "env or run body) to branch the freshness anchor internally (#1134)."
+        )
+
+    def test_autobase_branch_walks_pr_commits_filtering_the_bot(self, verdict_step):
+        run = verdict_step["run"]
+        assert "pulls/" in run and "/commits" in run, (
+            "Autobase branch must list the PR commits (pulls/<n>/commits) to "
+            "find the last non-bot head."
+        )
+        assert ".author.login" in run, (
+            "Autobase anchor must key off commit author.login (null/unlinked "
+            "author counts as real — safe default, #1134)."
+        )
+        assert "osasuwu-ci[bot]" in run, (
+            "Autobase anchor must filter out osasuwu-ci[bot] commits so it walks "
+            "back to the last real head (#963: 28 consecutive rebases; "
+            "parents[0] alone breaks)."
+        )
+
+    def test_autobase_anchor_feeds_the_shared_fresh_selection(self, verdict_step):
+        # The computed anchor must feed the SAME selection/grep chain — the
+        # autobase path is not a parallel copy of the two-gate verdict.
+        run = verdict_step["run"]
+        assert '--arg head "$ANCHOR_TIME"' in run, (
+            "The freshness selection must consume the computed ANCHOR_TIME "
+            "(head_time on the normal path, last-non-bot-head on the autobase "
+            "path), not a raw HEAD_TIME — so both paths share one verdict chain."
+        )
+        assert ".created_at >= $head" in run, (
+            "Autobase path must reuse the shared freshness filter, not a "
+            "separate selection (#1134)."
         )

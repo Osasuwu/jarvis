@@ -76,7 +76,7 @@ Memory records can be wrong:
 
 ### Decisions belong in memory, not in issue/PR bodies
 
-Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD prose all decay; the queryable decision log doesn't. Skills that produce issues (`/to-prd`, `/to-issues`) reference `decision_uuids[]` rather than restating the *why* — see each skill for the section template.
+Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD prose all decay; the queryable decision log doesn't. Skills that produce issues (`/to-spec`, `/to-tickets`) reference `decision_uuids[]` rather than restating the *why* — see each skill for the section template.
 
 ## Repo policy — auto-merge & merge gates
 
@@ -133,7 +133,7 @@ Do **not** open issues with a raw `gh issue create` / `mcp github issue_write` m
 | What you have | Skill |
 |---|---|
 | One follow-up / finding / tech-debt / drive-by bug | **`/file-issue`** |
-| A plan/PRD to break into multiple end-to-end slices | **`/to-issues`** |
+| A plan/PRD to break into multiple end-to-end slices | **`/to-tickets`** |
 
 Both skills read the project's label/field vocabulary from its CLAUDE.md and issue templates — they do not hardcode it. A project may ship a concrete `/file-issue` override under `.claude/skills/` that bakes in its repo slug and required fields; that shadows this generic one within that repo. This is the adoption pair for the skill: the capability is only used if the routing points at it (per `capability_needs_adoption_slice`).
 

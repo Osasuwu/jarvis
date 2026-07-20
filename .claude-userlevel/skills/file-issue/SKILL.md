@@ -1,6 +1,6 @@
 ---
 name: file-issue
-description: File ONE well-formed follow-up issue (a finding, tech-debt item, bug, or drive-by task) with the metadata the project's issue schema requires — without the full /to-issues vertical-slice pipeline. Use whenever you would otherwise reach for a raw `gh issue create` / `mcp github issue_write` mid-session. For decomposing a plan or PRD into multiple slices, use /to-issues instead.
+description: File ONE well-formed follow-up issue (a finding, tech-debt item, bug, or drive-by task) with the metadata the project's issue schema requires — without the full /to-tickets vertical-slice pipeline. Use whenever you would otherwise reach for a raw `gh issue create` / `mcp github issue_write` mid-session. For decomposing a plan or PRD into multiple slices, use /to-tickets instead.
 ---
 
 # File Issue
@@ -8,7 +8,7 @@ description: File ONE well-formed follow-up issue (a finding, tech-debt item, bu
 The lightweight path for a **single** follow-up issue. Fills in the metadata the
 project's issue schema requires so the issue never lands mis-triaged and never falls
 off the board. This is the middle ground between a raw `gh issue create` (no metadata
-→ gets flagged / rots) and `/to-issues` (a full plan → vertical-slice quiz, overkill
+→ gets flagged / rots) and `/to-tickets` (a full plan → vertical-slice quiz, overkill
 for one finding).
 
 The issue tracker, its issue schema, and the triage-label vocabulary are defined in
@@ -22,11 +22,11 @@ the generic fields below.
 | Situation | Tool |
 |---|---|
 | One finding / tech-debt / drive-by bug / follow-up task | **`/file-issue`** (this) |
-| A feature/plan that needs breaking into multiple end-to-end slices | `/to-issues` |
+| A feature/plan that needs breaking into multiple end-to-end slices | `/to-tickets` |
 | A raw `gh issue create` mid-session | **stop — use `/file-issue`** |
 
 If while filing you realize the "one issue" is really several vertical slices under a
-theme, stop and hand off to `/to-issues` instead of forcing it through here.
+theme, stop and hand off to `/to-tickets` instead of forcing it through here.
 
 ## Required metadata
 
@@ -68,7 +68,7 @@ The generic requirements every issue must satisfy:
 
 Decide: type; the milestone (walk the resolution order above); priority if you know it;
 domain; whether a safety/protected zone is touched; whether it's tech-debt. If this is
-really multi-slice → hand off to `/to-issues` and stop.
+really multi-slice → hand off to `/to-tickets` and stop.
 
 ### 2. Draft the body
 

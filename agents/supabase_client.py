@@ -152,7 +152,7 @@ def store_event(
     title: str,
     severity: str = "info",
     payload: dict[str, Any] | None = None,
-    source: str = "langgraph-agent",
+    source: str = "reactive-core",
     dedup_key: str | None = None,
     client: Client | None = None,
     config: AgentConfig | None = None,
@@ -313,7 +313,7 @@ def audit(
     """Best-effort audit entry — never raises.
 
     The ``agent_id`` column on ``audit_log`` is how agents identify
-    themselves (e.g. ``"langgraph-monitor"``). Matches the server.py
+    themselves (e.g. ``"reactive-core"``). Matches the server.py
     ``_audit_log()`` convention, with ``agent_id`` filled in — MCP writes
     leave it NULL, so the column doubles as the actor differentiator.
     """

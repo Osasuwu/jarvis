@@ -254,11 +254,19 @@ jobs:
           echo "::notice::Code review ran cleanly (0 permission denials)."
 
       - name: Verify review verdict
-        if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
+        # #1134: RUN on the osasuwu-ci[bot] auto-rebase push too (do NOT gate on
+        # steps.autobase.outputs.skip here). On that push HEAD is the bot's
+        # 2-parent merge commit; skipping left the `review` check green with
+        # nothing evaluated and native auto-merge shipped #1131 past a live
+        # CRITICAL. Instead the step runs and, when SKIP=true, anchors comment
+        # freshness on the last non-bot head (see ANCHOR_TIME below).
+        if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ steps.pr.outputs.number }}
           REPO: ${{ github.repository }}
+          SKIP: ${{ steps.autobase.outputs.skip }}
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
         run: |
           set -euo pipefail
           # Freshness anchor (#993): a /code-review comment is a verdict only for
@@ -274,6 +282,30 @@ jobs:
           HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
           HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
 
+          # Freshness anchor (#1134). Normal path: anchor on HEAD_TIME (above).
+          # Autobase path (SKIP=true — this push is an osasuwu-ci[bot] auto-
+          # rebase): HEAD is the bot's just-made 2-parent merge commit. No review
+          # comment is newer than that, so anchoring on it is an anchor-trap — a
+          # clean PR fail-closes forever AND #1131's live CRITICAL (posted for the
+          # last real head) reads as stale. Instead anchor on the LAST NON-BOT
+          # HEAD: the committer date of the most recent PR commit whose author is
+          # not osasuwu-ci[bot], walking newest→oldest so a run of consecutive
+          # auto-rebases (PR #963 had 28) is skipped — parents[0] alone would not
+          # suffice. A null/unlinked commit author counts as real (safe default:
+          # it keeps a comment eligible rather than dropping it). If (impossibly)
+          # every commit is the bot, fall back to HEAD_TIME → strict freshness →
+          # fail-closed rather than pass unverified.
+          if [ "${SKIP:-}" = "true" ]; then
+            ANCHOR_TIME=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+              | jq -rs 'add
+                  | map(select((.author.login // "") != "osasuwu-ci[bot]"))
+                  | (.[-1].commit.committer.date // "")')
+            if [ -z "$ANCHOR_TIME" ]; then ANCHOR_TIME="$HEAD_TIME"; fi
+            echo "::notice::autobase push — anchoring review freshness on last non-bot head ($ANCHOR_TIME) instead of the bot merge commit ($HEAD_TIME)."
+          else
+            ANCHOR_TIME="$HEAD_TIME"
+          fi
+
           # Selection happens in standalone jq, not gh's --jq:
           #   - gh rejects `--slurp` combined with `--jq` (despite the help
           #     text), and without slurping, --jq runs per page so `.[-1]`
@@ -287,7 +319,7 @@ jobs:
           # `total` = all code-review-titled comments (any age); `freshBody` =
           # body of the latest one created at/after the head commit ($head).
           sel=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            | jq -rs --arg head "$HEAD_TIME" 'add
+            | jq -rs --arg head "$ANCHOR_TIME" 'add
                 | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
                 | { total: length,
                     freshBody: ( map(select(.created_at >= $head)) | (.[-1].body // "") ) }
@@ -296,20 +328,33 @@ jobs:
           body=$(jq -r '.freshBody' <<<"$sel")
 
           if [ "$total" -eq 0 ]; then
-            # No /code-review comment at all — the plugin legitimately skipped
-            # this PR (draft / closed / already reviewed / not-eligible). No
-            # verdict expected; leave merge gating to the eligibility logic
-            # upstream. (No regression: skipped PRs still pass.)
-            echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
+            # No /code-review comment at all. Ambiguous between two states (#1182):
+            #   (a) legitimate skip — the review step's own `if:` never matched
+            #       (draft / has_code=false / autobase skip), so it never ran and
+            #       EXEC_FILE is unset. No verdict expected; pass.
+            #   (b) ran-but-silent — the review step WAS eligible and ran. The
+            #       prior "Verify review ran cleanly" step already confirmed
+            #       is_error=false and 0 permission denials (this step would
+            #       never be reached otherwise — that step exits 1 on either
+            #       failure), yet the model posted zero comments. This is a
+            #       silent no-review; passing it ships the PR completely
+            #       unreviewed (PR #1179 incident). Fail CLOSED.
+            # EXEC_FILE is only ever populated when the review step actually
+            # ran, so its presence alone distinguishes (a) from (b).
+            if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+              echo "::error::Code review ran cleanly (execution log present, 0 errors/denials per the prior step) but posted zero /code-review comments. This is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
+              exit 1
+            fi
+            echo "::notice::No /code-review comment present and review did not run; plugin likely skipped (draft/no-code/autobase). Treating as pass."
             exit 0
           fi
 
           if [ -z "$body" ]; then
-            # The plugin HAS reviewed this PR before, but no comment is newer
-            # than the current head commit — the latest review run errored or
-            # never posted for $HEAD_SHA. A stale prior-SHA comment is not a
-            # verdict for this head (#993). Fail closed; re-run code-review.
-            echo "::error::/code-review has prior comments on this PR but none newer than head commit $HEAD_SHA ($HEAD_TIME) — the latest review likely errored. Failing closed; re-run code-review."
+            # Prior review comment(s) exist but none is newer than the freshness
+            # anchor ($ANCHOR_TIME, computed above). The latest review errored or
+            # never posted for this head; a comment before the anchor is not its
+            # verdict (#993/#1134). Fail closed; re-run code-review.
+            echo "::error::/code-review comments exist but none newer than anchor $ANCHOR_TIME (head $HEAD_SHA @ $HEAD_TIME) — latest review likely errored. Failing closed; re-run."
             exit 1
           fi
 

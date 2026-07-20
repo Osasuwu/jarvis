@@ -40,7 +40,7 @@ Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/impl
 2. **Grill artifact for this issue** — present iff *either* of the following holds:
 
    - **(a) working_state** — `memory_get(name="working_state_<project>", project="<project>")` where `<project>` is the short project slug (`jarvis`, `redrobot`), matching the convention in `scripts/session-context.py`. If the returned record references this issue number alongside one or more decision UUIDs, the artifact is present. The exact key shape inside the record (`decision_uuids[]` keyed by issue, an episodes list, free-form notes) is project-controlled — accept any structure where a decision UUID is reachable from the issue number; if `/grill` populated working_state for this issue, the link will be there. If working_state has no entry for this issue, fall through to (b).
-   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies (e.g. #593/#594/#595/#596 in the TDD-wiring chain). The automated `/to-issues` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
+   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies (e.g. #593/#594/#595/#596 in the TDD-wiring chain). The automated `/to-tickets` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
 
 **Dispatch table** — pick exactly one branch:
 
@@ -360,6 +360,30 @@ Check for:
 - Unrelated changes that crept in
 - Secrets or credentials in any form
 - **Symmetric patterns**: when fixing a class of bug, grep for sibling instances across the file AND other files — not just the one the reviewer flagged (memory `feedback_symmetric_fixes`)
+
+#### Self-review checklist (cheap catch — PR plugin is authoritative)
+
+Quick scan through two lenses before opening the PR:
+
+**Standards** — Fowler's 12 code smells:
+- [ ] **Mysterious Name** — naming clear and self-documenting?
+- [ ] **Duplicated Code** — repeated logic to unify?
+- [ ] **Feature Envy** — method belongs more to another class?
+- [ ] **Data Clumps** — items that travel together → own object?
+- [ ] **Primitive Obsession** — small type where primitives are used?
+- [ ] **Repeated Switches** — same conditional in multiple places?
+- [ ] **Shotgun Surgery** — one change touches many files?
+- [ ] **Divergent Change** — file changes for multiple reasons?
+- [ ] **Speculative Generality** — unused abstraction / dead code?
+- [ ] **Message Chains** — long `.a().b().c()` traversal chains?
+- [ ] **Middle Man** — delegation without added value?
+- [ ] **Refused Bequest** — subclass ignoring inherited members?
+
+**Spec** — faithfulness to the originating issue:
+- [ ] All acceptance criteria addressed?
+- [ ] No scope creep beyond the issue?
+
+This is a **cheap catch**, not a merge gate. The Claude code-review plugin is the authoritative reviewer; missing items will be caught there. The goal is to catch obvious errors before the PR opens, not to replace the review. The same vocabulary (Standards + Spec, Fowler-12) is used by `/rework` so pre-PR and post-review passes share a common language.
 
 If the diff looks wrong, fix it before pushing.
 
