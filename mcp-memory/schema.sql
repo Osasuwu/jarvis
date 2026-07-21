@@ -591,6 +591,14 @@ create table if not exists task_outcomes (
   lessons text,
   pattern_tags text[] default '{}',
 
+  -- Which memory most informed this outcome's decision (Phase 5
+  -- Metacognition / Confidence Calibration, #251). FK to memories(id) —
+  -- NOT record_decision's returned episode UUID (episodes.id); see #660.
+  -- Nullable — outcomes recorded before calibration work won't have it,
+  -- and some outcomes (e.g. pure research tasks) don't trace to a single
+  -- memory.
+  memory_id uuid references memories(id) on delete set null,
+
   -- Verification
   verified_at timestamptz,  -- when outcome was verified (e.g. PR merged check)
 
@@ -2270,11 +2278,11 @@ CREATE POLICY "Allow all for anon" ON known_unknowns
 -- =========================================================================
 
 -- Link column: which memory most informed this outcome's decision.
--- Nullable — outcomes recorded before calibration work won't have it,
--- and some outcomes (e.g. pure research tasks) don't trace to a single
--- memory.
-alter table task_outcomes
-  add column if not exists memory_id uuid references memories(id) on delete set null;
+-- Moved inline into the canonical `create table task_outcomes` block
+-- above (#660 doc reconciliation) — this ALTER TABLE only mattered for
+-- databases that ran this file before the column existed; retained here
+-- as a no-op comment so the migration history stays legible rather than
+-- silently vanishing. Do not reintroduce the ALTER TABLE statement.
 
 create index if not exists idx_task_outcomes_memory_id
   on task_outcomes(memory_id) where memory_id is not null;

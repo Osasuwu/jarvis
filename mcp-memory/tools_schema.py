@@ -617,9 +617,12 @@ def tool_definitions() -> list[Tool]:
                     "memory_id": {
                         "type": ["string", "null"],
                         "description": (
-                            "UUID of the primary memory that informed this outcome. "
-                            "Links the outcome into memory_calibration so confidence "
-                            "and lessons can be attributed back to the reasoning basis."
+                            "UUID of the primary memory (memories.id) that informed this "
+                            "outcome. NOT the episode UUID returned by record_decision — "
+                            "that is a different table (episodes.id) and will be rejected. "
+                            "Use payload.memories_used[0] from the record_decision call "
+                            "this outcome is based on. Omit or pass null if no single "
+                            "memory applies."
                         ),
                     },
                 },
@@ -656,9 +659,14 @@ def tool_definitions() -> list[Tool]:
                     "memory_id": {
                         "type": ["string", "null"],
                         "description": (
-                            "UUID of the primary memory that informed this outcome. "
-                            "Pass during verification to retro-link outcomes whose "
-                            "basis became clear only after the decision played out."
+                            "UUID of the primary memory (memories.id) that informed this "
+                            "outcome. NOT the episode UUID returned by record_decision — "
+                            "that is a different table (episodes.id) and will be rejected. "
+                            "Use payload.memories_used[0] from the record_decision call "
+                            "this outcome is based on. Omit or pass null if no single "
+                            "memory applies. Pass during verification to retro-link "
+                            "outcomes whose basis became clear only after the decision "
+                            "played out."
                         ),
                     },
                 },
