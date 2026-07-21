@@ -127,9 +127,12 @@ jobs:
           # so fork/external PRs never reach this step, and workflow_dispatch /
           # branch pushes both require repo write access. No untrusted external
           # actor can initiate this run. Allowed-tools are locked read-only
-          # below, except Write(//tmp/**) — the plugin composes its verdict
-          # comment there and posts via `gh pr comment --body-file` so review
-          # prose never passes through shell string-interpretation (#971).
+          # below, except Write — the plugin composes its verdict comment at
+          # /tmp/code-review-comment.md and posts via `gh pr comment --body-file`
+          # so review prose never passes through shell string-interpretation
+          # (#971). Write is granted unscoped (not Write(//tmp/**)) because the
+          # `//tmp/**` glob failed to match the plugin's `/tmp/...` path on the
+          # Linux runner, denying the verdict Write and degrading the post step.
           # Uniform across owned repos for the M48 baseline.
           allowed_bots: "*"
           prompt: |
@@ -146,14 +149,22 @@ jobs:
             # MUST stay a superset of the plugin command's own frontmatter
             # allowed-tools (commands/code-review.md). The action runs headless,
             # so any tool the plugin uses that is absent here is DENIED (no human
-            # to approve) — agent #9 (structural-growth) runs `git show <sha>:<f>
-            # | wc -l`, agent #3 reads `git blame`/`git log`, so the missing
-            # git/wc tools produced repeated permission_denials and made agents
-            # burn turns and flail at the final comment-post step (test/placeholder
-            # probe comments, fragment comments, or no post at all → verdict gate
-            # fails closed → admin-merge). Keep this list and the plugin frontmatter
-            # in lockstep (tests/ci/test_code_review_allowed_tools.py pins it).
-            --allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(wc:*),Write(//tmp/**),Skill(code-review:code-review)"
+            # to approve). This is the redrobot-parity set: the deployed plugin
+            # prose steers reviewer agents to the native Read/Grep/Glob tools for
+            # file discovery and reading — those MUST be granted or the agents are
+            # told to use them then denied. read-utils (head/tail/cat/sort/uniq/
+            # cut/nl/tr/echo) cover compound commands the agents compose (e.g.
+            # `echo … ; gh pr view …`, `git show <sha>:<f> | wc -l`): headless
+            # permission matching splits on ; | && and newlines and checks EACH
+            # sub-command, so an un-allowlisted `echo`/`head` prefix denies the
+            # whole compound even when the real command is allowlisted. Missing
+            # tools produced repeated permission_denials → agents flail at the
+            # comment-post step (probe/fragment comments, or no post) → verdict
+            # gate fails closed → admin-merge. sed/awk/python3(-c)/jq are
+            # deliberately EXCLUDED (write-capable). Keep this list and the plugin
+            # frontmatter in lockstep (tests/ci/test_code_review_allowed_tools.py
+            # pins it; kept byte-identical with scripts/repo_baseline/canon).
+            --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write,Skill(code-review:code-review)"
 
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). Without
       # this step the `review` check is SUCCESS as long as the bot ran —
