@@ -137,7 +137,7 @@ jobs:
 
             The /code-review slash command is provided by the code-review plugin
             (loaded via the action's plugins input). Follow its instructions
-            verbatim — eligibility check, guideline-file gather, 8 parallel
+            verbatim — eligibility check, guideline-file gather, 12 parallel
             reviewers, confidence scoring, post comment.
 
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
