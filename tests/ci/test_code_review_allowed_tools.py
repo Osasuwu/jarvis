@@ -36,17 +36,33 @@ CANON_WORKFLOW = REPO_ROOT / "scripts" / "repo_baseline" / "canon" / "code-revie
 # git/structural tools the plugin's reviewer agents invoke; if any is dropped
 # from the allowlist the headless action denies it and the post step degrades.
 REQUIRED_TOOLS = (
+    # Native file-reading tools. The deployed plugin prose (fork
+    # claude-plugins-official) steers reviewer + file-discovery agents to
+    # Read/Grep/Glob instead of Bash `cat`/`grep`/`find`. jarvis's allowlist
+    # never granted them (redrobot's did) — so the agents were told to use them
+    # then DENIED, the core face of the allowlist-drift class
+    # (`code_review_allowlist_drift_class`). Dropping any re-opens that drift.
+    "Read",
+    "Grep",
+    "Glob",
     "Bash(git show:*)",
     "Bash(git blame:*)",
     "Bash(git log:*)",
     "Bash(wc:*)",
+    # Compound-command guard: headless permission matching splits on ; | && and
+    # newlines and checks each sub-command, so an un-allowlisted `echo` prefix
+    # (`echo "=== …" ; gh pr view …`) denies the whole compound even though
+    # `gh pr view` is allowlisted. This was an observed denial on PR #1226.
+    "Bash(echo:*)",
     # #971: the plugin composes the verdict body with the Write tool at
     # /tmp/code-review-comment.md and posts via `gh pr comment --body-file`,
     # so no shell string-interpretation touches review prose (backticks,
     # $(...), $VAR would otherwise be evaluated under bash -c). Dropping this
     # grant denies the Write in the headless runner and the post step degrades
-    # back to shell-assembled bodies.
-    "Write(//tmp/**)",
+    # back to shell-assembled bodies. Granted UNSCOPED (`Write`, not
+    # `Write(//tmp/**)`): the `//tmp/**` glob failed to match the plugin's
+    # `/tmp/...` path on the Linux runner, denying the verdict Write.
+    "Write",
     # #1218: the code-review plugin's `/code-review` command is dispatched
     # through the `Skill` tool in the headless action (plugin commands are
     # Skill invocations, registered as `code-review:code-review`). Without this
