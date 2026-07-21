@@ -236,7 +236,14 @@ jobs:
           fi
           result=$(jq -c '[.[] | select(.type == "result")] | last // {}' "$EXEC_FILE")
           is_error=$(jq -r '.is_error // false' <<<"$result")
-          denials=$(jq -r '.permission_denials_count // 0' <<<"$result")
+          # EXEC_FILE holds the RAW SDKMessage[] written by claude-code-action's
+          # writeExecutionFile() — the result object's real field is the array
+          # `permission_denials`, counted via `length`. `permission_denials_count`
+          # is a display-only field synthesized by the action's console-log
+          # sanitizer and never written to EXEC_FILE; reading it here always
+          # silently resolved to the `// 0` fallback regardless of actual denials
+          # (#1210 — CI showed raw counts of 14/15/17 vs. this step parsing 0).
+          denials=$(jq -r '(.permission_denials // []) | length' <<<"$result")
           echo "Review result: is_error=$is_error permission_denials_count=$denials"
           if [ "$is_error" = "true" ]; then
             echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
