@@ -197,3 +197,144 @@ class TestResolveMemoryName:
         client = FakeClient()
         client.table_handlers["memories"] = lambda call: []
         assert backfill._resolve_memory_name(client, "nonexistent") is None
+
+
+class TestIsUuidShaped:
+    """AC 1: UUID-shaped entries should be distinguished from name strings."""
+
+    def test_valid_uuid_v4_returns_true(self):
+        """Standard UUID v4 format."""
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        assert backfill._is_uuid_shaped(uuid) is True
+
+    def test_valid_uuid_no_hyphens_returns_true(self):
+        """UUID without hyphens should also match."""
+        uuid = "550e8400e29b41d4a716446655440000"
+        assert backfill._is_uuid_shaped(uuid) is True
+
+    def test_short_string_returns_false(self):
+        """Memory names like 'primary_mem' are not UUIDs."""
+        assert backfill._is_uuid_shaped("primary_mem") is False
+
+    def test_empty_string_returns_false(self):
+        assert backfill._is_uuid_shaped("") is False
+
+    def test_none_returns_false(self):
+        assert backfill._is_uuid_shaped(None) is False
+
+    def test_numeric_string_returns_false(self):
+        assert backfill._is_uuid_shaped("12345") is False
+
+
+class TestResolveMemoryUuid:
+    """AC 1: Direct UUID existence check against memories(id)."""
+
+    def test_existing_uuid_returns_id(self):
+        """UUID that exists in memories table."""
+        client = FakeClient()
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        client.table_handlers["memories"] = lambda call: [
+            {"id": uuid, "name": "some_name", "updated_at": "2026-01-01T00:00:00+00:00"},
+        ]
+        assert backfill._resolve_memory_uuid(client, uuid) == uuid
+        # Verify it queries by id, not by name
+        assert ("eq", "id", uuid) in client.table_calls[0]["filters"]
+
+    def test_dangling_uuid_returns_none(self):
+        """UUID that doesn't exist in memories table (dangling reference)."""
+        client = FakeClient()
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        client.table_handlers["memories"] = lambda call: []
+        assert backfill._resolve_memory_uuid(client, uuid) is None
+
+    def test_queries_with_deleted_at_check(self):
+        """Should only match non-deleted memories."""
+        client = FakeClient()
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        client.table_handlers["memories"] = lambda call: []
+        backfill._resolve_memory_uuid(client, uuid)
+        # Verify it filters by is_("deleted_at", "null")
+        assert ("is", "deleted_at", "null") in client.table_calls[0]["filters"]
+
+
+class TestBuildHashToMemoryIndexUuid:
+    """AC 1 & 2: Handle UUID entries in memories_used[0]."""
+
+    def test_uuid_shaped_entry_preserved_in_index(self):
+        """UUID-shaped entries should be stored as-is, not treated as names."""
+        client = FakeClient()
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        client.table_handlers["episodes"] = lambda call: [
+            {
+                "id": "ep-001",
+                "kind": "decision_made",
+                "payload": {
+                    "decision": "Implement #286: add memory_id",
+                    "memories_used": [uuid],  # UUID, not name
+                },
+                "created_at": "2026-01-01T00:00:00+00:00",
+            },
+        ]
+        idx = backfill._build_hash_to_memory_index(client)
+        assert 286 in idx
+        # The stored value should be the UUID as-is
+        assert idx[286][0] == uuid
+
+    def test_name_string_still_stored(self):
+        """Non-UUID strings should still be stored (for backward compat)."""
+        client = FakeClient()
+        client.table_handlers["episodes"] = lambda call: [
+            {
+                "id": "ep-001",
+                "kind": "decision_made",
+                "payload": {
+                    "decision": "Implement #286: add memory_id",
+                    "memories_used": ["primary_mem"],  # Name string
+                },
+                "created_at": "2026-01-01T00:00:00+00:00",
+            },
+        ]
+        idx = backfill._build_hash_to_memory_index(client)
+        assert idx[286][0] == "primary_mem"
+
+
+class TestResolveMemoryRef:
+    """AC 2: UUID-first resolution strategy (try UUID, then name)."""
+
+    def test_uuid_shaped_and_exists_uses_directly(self):
+        """AC 2: UUID entry that exists should be used directly."""
+        client = FakeClient()
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        client.table_handlers["memories"] = lambda call: [
+            {"id": uuid, "name": "some_name", "updated_at": "2026-01-01T00:00:00+00:00"},
+        ]
+        result, is_dangling = backfill._resolve_memory_ref(client, uuid)
+        assert result == uuid
+        assert is_dangling is False
+
+    def test_uuid_shaped_but_dangling_reported_as_dangling(self):
+        """AC 3: UUID entry that doesn't exist is tracked as dangling."""
+        client = FakeClient()
+        uuid = "550e8400-e29b-41d4-a716-446655440000"
+        client.table_handlers["memories"] = lambda call: []
+        result, is_dangling = backfill._resolve_memory_ref(client, uuid)
+        assert result is None
+        assert is_dangling is True
+
+    def test_name_string_falls_back_to_name_resolution(self):
+        """AC 2: Non-UUID entries use name resolution."""
+        client = FakeClient()
+        client.table_handlers["memories"] = lambda call: [
+            {"id": "mem-abc123", "name": "primary_mem", "updated_at": "2026-01-01T00:00:00+00:00"},
+        ]
+        result, is_dangling = backfill._resolve_memory_ref(client, "primary_mem")
+        assert result == "mem-abc123"
+        assert is_dangling is False
+
+    def test_name_string_not_found_not_dangling(self):
+        """AC 2: Unresolved names are not marked as dangling (they could be renamed)."""
+        client = FakeClient()
+        client.table_handlers["memories"] = lambda call: []
+        result, is_dangling = backfill._resolve_memory_ref(client, "nonexistent_name")
+        assert result is None
+        assert is_dangling is False
