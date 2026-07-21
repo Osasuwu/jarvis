@@ -47,6 +47,14 @@ REQUIRED_TOOLS = (
     # grant denies the Write in the headless runner and the post step degrades
     # back to shell-assembled bodies.
     "Write(//tmp/**)",
+    # #1218: the code-review plugin's `/code-review` command is dispatched
+    # through the `Skill` tool in the headless action (plugin commands are
+    # Skill invocations, registered as `code-review:code-review`). Without this
+    # grant EVERY review run denies the command itself → ~16 denials, no verdict
+    # posted, and the gates pass VACUOUSLY (empty exec log → exit 0), so
+    # auto-merge ships PRs unreviewed. This is the plugin-dispatch face of the
+    # allowlist-drift class (memory `code_review_allowlist_drift_class`).
+    "Skill(code-review:code-review)",
 )
 
 # Sanity floor — the pre-existing tools that must never disappear either.
