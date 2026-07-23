@@ -3,19 +3,64 @@
   "dependabot_ecosystems": [],
   "labels": [
     {
+      "color": "d4e9c8",
+      "description": "CI and quality infrastructure",
+      "name": "area:ci-quality"
+    },
+    {
+      "color": "1d76db",
+      "description": "Config files (SOUL.md, device.json, .mcp.json) and setup",
+      "name": "area:config"
+    },
+    {
+      "color": "ededed",
+      "description": "Core agent functionality",
+      "name": "area:core-agent"
+    },
+    {
+      "color": "0075ca",
+      "description": "Documentation and planning",
+      "name": "area:docs"
+    },
+    {
+      "color": "f9d0c4",
+      "description": "Platform, LLM, hosting, integrations",
+      "name": "area:infrastructure"
+    },
+    {
+      "color": "8fbcdb",
+      "description": "Memory subsystem (mcp-memory, recall, derivation)",
+      "name": "area:memory"
+    },
+    {
+      "color": "bfe5bf",
+      "description": "Testing and quality gates",
+      "name": "area:quality"
+    },
+    {
+      "color": "e99695",
+      "description": "Security & digital hygiene",
+      "name": "area:security"
+    },
+    {
+      "color": "0052cc",
+      "description": "Skill and subagent development",
+      "name": "area:skills"
+    },
+    {
       "color": "d73a4a",
       "description": "Something isn't working",
       "name": "bug"
     },
     {
-      "color": "0075ca",
-      "description": "Improvements or additions to documentation",
-      "name": "documentation"
+      "color": "0366d6",
+      "description": "Dependency updates",
+      "name": "dependencies"
     },
     {
-      "color": "cfd3d7",
-      "description": "This issue or pull request already exists",
-      "name": "duplicate"
+      "color": "c5def5",
+      "description": "Rough idea, not ready for triage",
+      "name": "draft"
     },
     {
       "color": "a2eeef",
@@ -23,34 +68,109 @@
       "name": "enhancement"
     },
     {
-      "color": "7057ff",
-      "description": "Good for newcomers",
-      "name": "good first issue"
+      "color": "000000",
+      "description": "GitHub Actions code",
+      "name": "github-actions"
     },
     {
-      "color": "008672",
-      "description": "Extra attention is needed",
-      "name": "help wanted"
+      "color": "fdd835",
+      "description": "Needs /grill before implementation",
+      "name": "needs-grill"
     },
     {
-      "color": "e4e669",
-      "description": "This doesn't seem right",
-      "name": "invalid"
+      "color": "ffc844",
+      "description": "Needs PRD before slicing",
+      "name": "needs-prd"
     },
     {
-      "color": "FBCA04",
-      "description": "Issue needs triage and refinement",
+      "color": "f0f8f0",
+      "description": "Needs investigation",
+      "name": "needs-research"
+    },
+    {
+      "color": "ffe082",
+      "description": "Awaiting triage into the issue state machine",
       "name": "needs-triage"
     },
     {
-      "color": "d876e3",
-      "description": "Further information is requested",
-      "name": "question"
+      "color": "7b0000",
+      "description": "Blocking, must fix now",
+      "name": "priority:critical"
     },
     {
-      "color": "ffffff",
-      "description": "This will not be worked on",
-      "name": "wontfix"
+      "color": "d93f0b",
+      "description": "High priority",
+      "name": "priority:high"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Low priority",
+      "name": "priority:low"
+    },
+    {
+      "color": "fbca04",
+      "description": "Medium priority",
+      "name": "priority:medium"
+    },
+    {
+      "color": "2b67c6",
+      "description": "Python code",
+      "name": "python"
+    },
+    {
+      "color": "5319e7",
+      "description": "AFK queue: safe for sandcastle agent",
+      "name": "sandcastle"
+    },
+    {
+      "color": "b60205",
+      "description": "Blocked",
+      "name": "status:blocked"
+    },
+    {
+      "color": "fef2c0",
+      "description": "Work in progress",
+      "name": "status:in-progress"
+    },
+    {
+      "color": "f9a03c",
+      "description": "Needs owner manual touch",
+      "name": "status:owner-queue"
+    },
+    {
+      "color": "c2e0c6",
+      "description": "Ready to start",
+      "name": "status:ready"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "Under review",
+      "name": "status:review"
+    },
+    {
+      "color": "006b75",
+      "description": "Task: one PR execution item",
+      "name": "task"
+    },
+    {
+      "color": "51dd5f",
+      "description": "Tier 1: auto-dispatch",
+      "name": "tier:1-auto"
+    },
+    {
+      "color": "dbab09",
+      "description": "Tier 2: owner review required",
+      "name": "tier:2-review"
+    },
+    {
+      "color": "d73a4a",
+      "description": "Tier 3: owner-driven only",
+      "name": "tier:3-human"
+    },
+    {
+      "color": "e92c42",
+      "description": "Not safe for sandcastle agent",
+      "name": "unsafe-for-afk"
     }
   ],
   "repo": "Osasuwu/dnd-calendar",

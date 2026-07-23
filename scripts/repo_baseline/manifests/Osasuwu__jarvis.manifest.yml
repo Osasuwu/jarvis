@@ -12,4 +12,5 @@ required_check_contexts:
 - pytest
 - meta-tests
 - Detect secrets with gitleaks
+- pytest-db
 visibility: public

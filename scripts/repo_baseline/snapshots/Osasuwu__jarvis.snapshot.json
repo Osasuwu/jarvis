@@ -6,7 +6,17 @@
       "require-linked-issue",
       "pytest",
       "meta-tests",
-      "Detect secrets with gitleaks"
+      "Detect secrets with gitleaks",
+      "pytest-db"
+    ],
+    "contexts_source": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
     ],
     "strict": true
   },
@@ -52,9 +62,19 @@
       "name": "area:infrastructure"
     },
     {
+      "color": "8fbcdb",
+      "description": "Memory subsystem (mcp-memory, recall, derivation)",
+      "name": "area:memory"
+    },
+    {
       "color": "bfe5bf",
       "description": "Testing and quality gates",
       "name": "area:quality"
+    },
+    {
+      "color": "e99695",
+      "description": "Security & digital hygiene",
+      "name": "area:security"
     },
     {
       "color": "0052cc",
@@ -62,19 +82,9 @@
       "name": "area:skills"
     },
     {
-      "color": "ededed",
-      "description": "",
-      "name": "autonomous-loop"
-    },
-    {
       "color": "d73a4a",
       "description": "Something isn't working",
       "name": "bug"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "ci"
     },
     {
       "color": "0e8a16",
@@ -87,19 +97,9 @@
       "name": "dependencies"
     },
     {
-      "color": "0075ca",
-      "description": "Improvements or additions to documentation",
-      "name": "documentation"
-    },
-    {
       "color": "C5DEF5",
       "description": "Rough idea, not ready for triage \u0432\u0402\u201d author still shaping it",
       "name": "draft"
-    },
-    {
-      "color": "cfd3d7",
-      "description": "This issue or pull request already exists",
-      "name": "duplicate"
     },
     {
       "color": "a2eeef",
@@ -107,49 +107,14 @@
       "name": "enhancement"
     },
     {
-      "color": "6f42c1",
-      "description": "Epic: groups related tasks",
-      "name": "epic"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "eval"
-    },
-    {
       "color": "000000",
       "description": "Pull requests that update GitHub Actions code",
-      "name": "github_actions"
-    },
-    {
-      "color": "7057ff",
-      "description": "Good for newcomers",
-      "name": "good first issue"
-    },
-    {
-      "color": "008672",
-      "description": "Extra attention is needed",
-      "name": "help wanted"
+      "name": "github-actions"
     },
     {
       "color": "ededed",
       "description": "",
       "name": "installer"
-    },
-    {
-      "color": "e4e669",
-      "description": "This doesn't seem right",
-      "name": "invalid"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "memory"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "meta"
     },
     {
       "color": "FBCA04",
@@ -158,7 +123,7 @@
     },
     {
       "color": "FBCA04",
-      "description": "Scope defined but no PRD yet \u0432\u0402\u201d run /to-prd before slicing",
+      "description": "Scope defined but no PRD yet \u0432\u0402\u201d run /to-spec before slicing",
       "name": "needs-prd"
     },
     {
@@ -172,34 +137,9 @@
       "name": "needs-research"
     },
     {
-      "color": "ededed",
-      "description": "",
-      "name": "performance"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "pillar-3"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "pillar-4"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "pillar-9"
-    },
-    {
-      "color": "5319E7",
-      "description": "Pillar 7: Multi-agent architecture",
-      "name": "pillar:7-agent-system"
-    },
-    {
-      "color": "D93F0B",
-      "description": "Pillar 9: Security & Digital Hygiene",
-      "name": "pillar:security"
+      "color": "ffe082",
+      "description": "Awaiting triage into the issue state machine",
+      "name": "needs-triage"
     },
     {
       "color": "7B0000",
@@ -222,39 +162,14 @@
       "name": "priority:medium"
     },
     {
-      "color": "ededed",
-      "description": "",
-      "name": "process"
-    },
-    {
       "color": "2b67c6",
       "description": "Pull requests that update python code",
       "name": "python"
     },
     {
-      "color": "d876e3",
-      "description": "Further information is requested",
-      "name": "question"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "recall"
-    },
-    {
       "color": "1d76db",
       "description": "AFK queue: issue is safe for sandcastle agent to pick up unattended",
       "name": "sandcastle"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "security"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "skill:rework"
     },
     {
       "color": "b60205",
@@ -265,11 +180,6 @@
       "color": "fbca04",
       "description": "Work in progress",
       "name": "status:in-progress"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "status:needs-human"
     },
     {
       "color": "F9A03C",
@@ -285,11 +195,6 @@
       "color": "d4c5f9",
       "description": "In review",
       "name": "status:review"
-    },
-    {
-      "color": "ededed",
-      "description": "",
-      "name": "status:rework-in-progress"
     },
     {
       "color": "0e8a16",
@@ -324,12 +229,7 @@
     {
       "color": "B60205",
       "description": "Sandcastle guard: issue requires action on a protected file \u0432\u0402\u201d orchestrator must handle",
-      "name": "unsafe-for-AFK"
-    },
-    {
-      "color": "ffffff",
-      "description": "This will not be worked on",
-      "name": "wontfix"
+      "name": "unsafe-for-afk"
     }
   ],
   "repo": "Osasuwu/jarvis",
@@ -360,6 +260,7 @@
     ".github/workflows/code-review-retry.yml",
     ".github/workflows/owner-queue-guard.yml",
     ".github/workflows/auto-merge-enable.yml",
-    ".github/workflows/merge-train.yml"
+    ".github/workflows/merge-train.yml",
+    ".github/workflows/review-debt-collector.yml"
   ]
 }
