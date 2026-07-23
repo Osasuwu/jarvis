@@ -302,6 +302,7 @@ jobs:
           REPO: ${{ github.repository }}
           SKIP: ${{ steps.autobase.outputs.skip }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          HAS_CODE: ${{ steps.diff.outputs.has_code }}
         run: |
           set -euo pipefail
           # Freshness anchor (#993): a /code-review comment is a verdict only for
@@ -363,24 +364,40 @@ jobs:
           body=$(jq -r '.freshBody' <<<"$sel")
 
           if [ "$total" -eq 0 ]; then
-            # No /code-review comment at all. Ambiguous between two states (#1182):
+            # No /code-review comment at all. Ambiguous between three states:
             #   (a) legitimate skip — the review step's own `if:` never matched
-            #       (draft / has_code=false / autobase skip), so it never ran and
-            #       EXEC_FILE is unset. No verdict expected; pass.
-            #   (b) ran-but-silent — the review step WAS eligible and ran. The
-            #       prior "Verify review ran cleanly" step already confirmed
-            #       is_error=false and 0 permission denials (this step would
-            #       never be reached otherwise — that step exits 1 on either
-            #       failure), yet the model posted zero comments. This is a
-            #       silent no-review; passing it ships the PR completely
-            #       unreviewed (PR #1179 incident). Fail CLOSED.
-            # EXEC_FILE is only ever populated when the review step actually
-            # ran, so its presence alone distinguishes (a) from (b).
+            #       (draft / has_code=false / autobase-with-no-code), so it
+            #       never ran and EXEC_FILE is unset. No verdict expected; pass.
+            #   (b) ran-but-silent (#1182) — the review step WAS eligible and
+            #       ran THIS push. The prior "Verify review ran cleanly" step
+            #       already confirmed is_error=false and 0 permission denials
+            #       (this step would never be reached otherwise — it exits 1 on
+            #       either failure), yet the model posted zero comments. This
+            #       is a silent no-review (PR #1179 incident). Fail CLOSED.
+            # EXEC_FILE is only ever populated when the review step ran THIS
+            # push, so its presence alone distinguishes (a) from (b).
             if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
               echo "::error::Code review ran cleanly (execution log present, 0 errors/denials per the prior step) but posted zero /code-review comments. This is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
               exit 1
             fi
-            echo "::notice::No /code-review comment present and review did not run; plugin likely skipped (draft/no-code/autobase). Treating as pass."
+            #   (c) autobase-push blind spot (#1232) — on an osasuwu-ci[bot]
+            #       auto-rebase push (SKIP=true), "Run /code-review" never runs
+            #       BY DESIGN, so EXEC_FILE is always empty on THIS push's job
+            #       regardless of whether an EARLIER push's review attempt ran
+            #       and failed silently. PR #1226: 3 real attempts all failed
+            #       via permission_denials (never posted a comment), then the
+            #       next autobase push hit this exact branch and passed as a
+            #       "legitimate skip" — auto-merging completely unreviewed.
+            #       HAS_CODE (from the "Check substantive diff" step, which
+            #       runs on every pull_request push regardless of autobase)
+            #       separates "nothing to review" (docs-only PR swept into a
+            #       rebase — pass) from "real code exists and was never
+            #       successfully reviewed" (fail closed).
+            if [ "${SKIP:-}" = "true" ] && [ "${HAS_CODE:-}" = "true" ]; then
+              echo "::error::autobase push carries substantive code but this PR has no /code-review comment at all — the code has never been successfully reviewed (an earlier push's attempt may have failed silently, e.g. permission denials). Failing closed; re-run code-review."
+              exit 1
+            fi
+            echo "::notice::No /code-review comment present and review did not run; plugin likely skipped (draft/no-code/autobase-with-no-code). Treating as pass."
             exit 0
           fi
 

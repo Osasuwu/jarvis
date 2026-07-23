@@ -71,9 +71,22 @@ VERDICT_ANTIPATTERNS = [
 ]
 
 
+def _verdict_step(run_steps: list[dict]) -> dict:
+    return next(s for s in run_steps if s.get("name") == "Verify review verdict")
+
+
 def _verdict_run(run_steps: list[dict]) -> str:
-    step = next(s for s in run_steps if s.get("name") == "Verify review verdict")
-    return step["run"]
+    return _verdict_step(run_steps)["run"]
+
+
+def _total_zero_branch(run: str) -> str:
+    # Mirrors tests/ci/test_code_review_verdict_guard.py's
+    # TestFreshnessGateWiring._total_zero_branch — anchor on the next natural
+    # marker rather than a fixed character budget so the slice can't silently
+    # truncate as the branch grows a new disambiguation state (#1232).
+    start = run.index('if [ "$total" -eq 0 ]; then')
+    end = run.index('if [ -z "$body" ]; then', start)
+    return run[start:end]
 
 
 @pytest.fixture(scope="module")
@@ -83,7 +96,7 @@ def live_verdict_run() -> str:
 
 
 @pytest.fixture(scope="module")
-def canon_verdict_run() -> str:
+def canon_verdict_step() -> dict:
     template = load_canon_template(".github/workflows/code-review.yml")
     assert template is not None, "canon code-review.yml template must exist"
     manifest = Manifest.from_dict(
@@ -95,7 +108,12 @@ def canon_verdict_run() -> str:
     )
     rendered = Renderer().render(template, manifest)
     doc = yaml.safe_load(rendered)
-    return _verdict_run(doc["jobs"]["verify-verdict"]["steps"])
+    return _verdict_step(doc["jobs"]["verify-verdict"]["steps"])
+
+
+@pytest.fixture(scope="module")
+def canon_verdict_run(canon_verdict_step) -> str:
+    return canon_verdict_step["run"]
 
 
 class TestCanonVerdictParity:
@@ -148,4 +166,54 @@ class TestCanonVerdictParity:
         assert canon_verdict_run.strip().endswith("exit 1"), (
             "Unrecognized verdict format must fail closed (exit 1), not fall "
             "through to success (cf. #957)."
+        )
+
+
+class TestCanonAutobaseSkipDisambiguation:
+    """#1232: canon's total==0 branch must distinguish a genuine skip (no
+    attempt job ever ran — fork PR / dependabot) from a review attempt that
+    ran and still produced no verdict. Mirrors the live workflow's SKIP+
+    HAS_CODE guard in tests/ci/test_code_review_verdict_guard.py, adapted to
+    canon's 3-job retry-wrapper (attempt-1 -> attempt-2 -> verify-verdict)
+    signals since there is no single-job execution-log path here.
+    """
+
+    def test_attempt1_result_threaded_into_verdict_step_env(self, canon_verdict_step):
+        env = canon_verdict_step.get("env", {})
+        assert "ATTEMPT1_RESULT" in env, (
+            "Verify review verdict must read needs.attempt-1.result into "
+            "ATTEMPT1_RESULT — without it the total==0 branch cannot tell a "
+            "genuine skip (attempt-1 never ran) from a ran-but-silent review "
+            "(#1232)."
+        )
+        assert "needs.attempt-1.result" in str(env["ATTEMPT1_RESULT"])
+
+    def test_attempt_ran_and_silent_fails_closed(self, canon_verdict_run):
+        # attempt-1 ran (result 'success' or 'failure', not 'skipped') and no
+        # verdict comment ever landed -- this is the PR #1226 shape: real
+        # review attempts died silently, must not be treated as a pass.
+        total_zero_branch = _total_zero_branch(canon_verdict_run)
+        assert "ATTEMPT1_RESULT" in total_zero_branch, (
+            "total==0 branch must consult ATTEMPT1_RESULT to catch the "
+            "ran-but-silent case (#1232)."
+        )
+        skip_check_idx = total_zero_branch.index('"${ATTEMPT1_RESULT:-}" = "skipped"')
+        after_skip_check = total_zero_branch[skip_check_idx:]
+        assert "exit 1" in after_skip_check, (
+            "When ATTEMPT1_RESULT is not 'skipped' (an attempt actually ran) "
+            "and total is still 0, the branch must fail closed (exit 1)."
+        )
+
+    def test_genuine_skip_check_runs_before_fail_closed(self, canon_verdict_run):
+        # The 'skipped' pass-through must be reached (and returned from) before
+        # the fail-closed branch, or every total==0 case -- including genuine
+        # fork/dependabot skips -- would fail closed.
+        total_zero_branch = _total_zero_branch(canon_verdict_run)
+        skip_check_idx = total_zero_branch.index('"${ATTEMPT1_RESULT:-}" = "skipped"')
+        skip_pass_idx = total_zero_branch.index("exit 0", skip_check_idx)
+        fail_closed_idx = total_zero_branch.rindex("exit 1")
+        assert skip_check_idx < skip_pass_idx < fail_closed_idx, (
+            "Genuine-skip pass (exit 0) must be checked and returned before "
+            "the fail-closed exit 1, or fork/dependabot PRs would wrongly "
+            "fail closed (#1232)."
         )

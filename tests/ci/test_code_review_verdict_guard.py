@@ -1006,6 +1006,17 @@ class TestFreshnessGateWiring:
             "commit (stale prior-SHA comments are not this head's verdict)."
         )
 
+    @staticmethod
+    def _total_zero_branch(run: str) -> str:
+        # The natural end of the total==0 branch is the next top-level
+        # disambiguation marker (the stale-only check). Anchoring on that
+        # marker instead of a fixed character budget means the window can't
+        # silently truncate as the branch grows a new disambiguation state
+        # (#1232 added a third — SKIP+HAS_CODE — after EXEC_FILE).
+        start = run.index('if [ "$total" -eq 0 ]; then')
+        end = run.index('if [ -z "$body" ]; then', start)
+        return run[start:end]
+
     def test_no_comment_at_all_branch_disambiguates_skip_vs_ran(self, verdict_step):
         # total == 0 is ambiguous between legitimate skip and ran-but-silent
         # (#1182) — the branch must consult EXEC_FILE to tell them apart rather
@@ -1016,7 +1027,7 @@ class TestFreshnessGateWiring:
             "Must distinguish 'no review comment at all' (total 0) from "
             "'comment(s) exist but all stale' (→ fail closed)."
         )
-        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        total_zero_branch = self._total_zero_branch(run)
         assert "EXEC_FILE" in total_zero_branch, (
             "The total==0 branch must consult EXEC_FILE (steps.review.outputs."
             "execution_file) to distinguish a legitimate skip (never ran, no "
@@ -1046,8 +1057,7 @@ class TestFreshnessGateWiring:
         # empty/absent the step must fall through to exit 0 — no regression
         # for draft / has_code=false / autobase-skip PRs.
         run = verdict_step["run"]
-        marker = 'if [ "$total" -eq 0 ]; then'
-        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        total_zero_branch = self._total_zero_branch(run)
         exec_check_idx = total_zero_branch.index("EXEC_FILE")
         after_exec_check = total_zero_branch[exec_check_idx:]
         assert "exit 0" in after_exec_check, (
@@ -1060,11 +1070,71 @@ class TestFreshnessGateWiring:
         # fall-through exit 0 (genuine skip) — otherwise the EXEC_FILE check
         # is dead code and every total==0 case would hit exit 0 first.
         run = verdict_step["run"]
-        marker = 'if [ "$total" -eq 0 ]; then'
-        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        total_zero_branch = self._total_zero_branch(run)
         assert total_zero_branch.index("exit 1") < total_zero_branch.rindex("exit 0"), (
             "Ran-but-silent's exit 1 must be reached before the genuine-skip "
             "exit 0 fall-through, or the fail-closed branch is unreachable."
+        )
+
+    def test_has_code_threaded_into_verdict_step_env(self, verdict_step):
+        # Without HAS_CODE in this step's own env, the SKIP+HAS_CODE branch
+        # below would always see an unset var — silently degrading back to
+        # "always pass" on every autobase push regardless of the bash logic
+        # (#1232).
+        env = verdict_step.get("env", {})
+        assert "HAS_CODE" in env, (
+            "Verify review verdict must read steps.diff.outputs.has_code into "
+            "HAS_CODE — the 'Check substantive diff' step runs on every "
+            "pull_request push regardless of autobase gating (#1232)."
+        )
+        assert "steps.diff.outputs.has_code" in str(env["HAS_CODE"])
+
+    def test_autobase_skip_with_code_fails_closed(self, verdict_step):
+        # #1232: on an autobase push (SKIP=true) "Run /code-review" never runs
+        # THIS push by design, so EXEC_FILE is always empty regardless of
+        # whether an earlier push's review attempt failed silently (PR #1226:
+        # 3 real attempts all failed via permission_denials, then the next
+        # autobase push hit total==0 with no EXEC_FILE and passed as a
+        # "legitimate skip"). HAS_CODE=true means there is substantive code
+        # that has never been successfully reviewed — must fail closed.
+        run = verdict_step["run"]
+        total_zero_branch = self._total_zero_branch(run)
+        assert "SKIP" in total_zero_branch and "HAS_CODE" in total_zero_branch, (
+            "total==0 branch must consult SKIP and HAS_CODE to catch the "
+            "autobase-push blind spot (#1232) that EXEC_FILE alone cannot "
+            "see (EXEC_FILE is always empty on an autobase push's own job)."
+        )
+        skip_check_idx = total_zero_branch.index('"${SKIP:-}"')
+        after_skip_check = total_zero_branch[skip_check_idx:]
+        assert "exit 1" in after_skip_check, (
+            "SKIP=true && HAS_CODE=true must fail closed (exit 1) — real code "
+            "on an autobase push that was never successfully reviewed."
+        )
+
+    def test_autobase_skip_check_runs_before_final_pass(self, verdict_step):
+        # The SKIP+HAS_CODE fail-closed check must be reachable — i.e. it must
+        # appear before the branch's final unconditional "legitimate skip"
+        # exit 0, or it is dead code and #1232 stays open.
+        run = verdict_step["run"]
+        total_zero_branch = self._total_zero_branch(run)
+        skip_check_idx = total_zero_branch.index('"${SKIP:-}"')
+        final_pass_idx = total_zero_branch.rindex("exit 0")
+        assert skip_check_idx < final_pass_idx, (
+            "The SKIP+HAS_CODE fail-closed check must run before the final "
+            "unconditional pass, or it can never fire (#1232)."
+        )
+
+    def test_genuine_autobase_skip_without_code_still_passes(self, verdict_step):
+        # SKIP=true but HAS_CODE=false (docs-only PR swept into a bot rebase,
+        # or nothing substantive changed) must still reach the final pass —
+        # no regression for the legitimate autobase-skip-with-no-code case.
+        run = verdict_step["run"]
+        total_zero_branch = self._total_zero_branch(run)
+        branch_body = total_zero_branch.rstrip().removesuffix("fi").rstrip()
+        assert branch_body.endswith("exit 0"), (
+            "The total==0 branch must still end in an unconditional pass for "
+            "the case where neither EXEC_FILE nor SKIP+HAS_CODE trips — "
+            "genuine skip with no code to review."
         )
 
     def test_stale_only_fails_closed(self, verdict_step):

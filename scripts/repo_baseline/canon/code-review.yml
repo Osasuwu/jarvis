@@ -304,6 +304,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          ATTEMPT1_RESULT: ${{ needs.attempt-1.result }}
         run: |
           set -euo pipefail
           # Freshness anchor (#993): resolve the head commit's committer time and
@@ -332,10 +333,31 @@ jobs:
           body=$(jq -r '.freshBody' <<<"$sel")
 
           if [ "$total" -eq 0 ]; then
-            # No /code-review comment at all — the plugin legitimately skipped
-            # this PR (draft / closed / already reviewed / not-eligible).
-            echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
-            exit 0
+            # No /code-review comment at all. Ambiguous between two states
+            # (#1232 — mirrors the live jarvis workflow's EXEC_FILE/HAS_CODE
+            # disambiguation, adapted to this retry-wrapper's job-result
+            # signals since there is no single-job execution-log path here):
+            #   (a) legitimate skip — attempt-1's own `if:` never matched
+            #       (fork PR / dependabot), so no attempt job ran at all and
+            #       ATTEMPT1_RESULT is 'skipped'. attempt-2 is gated on
+            #       `needs.attempt-1.result == 'failure'`, so it also never
+            #       ran. No verdict expected; pass.
+            #   (b) an attempt actually ran (ATTEMPT1_RESULT is 'success' or
+            #       'failure') and STILL no comment landed. Either "Verify
+            #       review ran cleanly" passed (0 denials, is_error=false) yet
+            #       the model posted nothing — the exact silent-no-review
+            #       shape from #1182 — or the attempt failed outright and its
+            #       retry (attempt-2) also produced no comment. A green
+            #       verify-verdict here would be the #1232 hole: attempt-1/
+            #       attempt-2 failing is not itself a required check, so only
+            #       this step stands between a real review attempt and a
+            #       silently-merged, unreviewed PR. Fail closed.
+            if [ "${ATTEMPT1_RESULT:-}" = "skipped" ]; then
+              echo "::notice::No /code-review comment present and attempt-1 never ran (fork PR / dependabot); plugin legitimately skipped. Treating as pass."
+              exit 0
+            fi
+            echo "::error::No /code-review comment present, but a review attempt actually ran (attempt-1 result: ${ATTEMPT1_RESULT:-unknown}) and produced no verdict — this is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
+            exit 1
           fi
 
           if [ -z "$body" ]; then
