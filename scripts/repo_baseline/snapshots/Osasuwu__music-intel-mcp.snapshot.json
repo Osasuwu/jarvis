@@ -3,9 +3,29 @@
   "dependabot_ecosystems": [],
   "labels": [
     {
+      "color": "d4e9c8",
+      "description": "CI and quality infrastructure",
+      "name": "area:ci-quality"
+    },
+    {
+      "color": "1d76db",
+      "description": "Config files (SOUL.md, device.json, .mcp.json) and setup",
+      "name": "area:config"
+    },
+    {
+      "color": "ededed",
+      "description": "Core agent functionality",
+      "name": "area:core-agent"
+    },
+    {
       "color": "1d76db",
       "description": "Data sources, loaders, caching (lastfm/spotify/mb/ab)",
       "name": "area:data"
+    },
+    {
+      "color": "0075ca",
+      "description": "Documentation and planning",
+      "name": "area:docs"
     },
     {
       "color": "5319E7",
@@ -13,9 +33,9 @@
       "name": "area:engine"
     },
     {
-      "color": "ededed",
-      "description": "CI, deps, tooling, repo hygiene",
-      "name": "area:infra"
+      "color": "f9d0c4",
+      "description": "Platform, LLM, hosting, integrations",
+      "name": "area:infrastructure"
     },
     {
       "color": "0052cc",
@@ -23,9 +43,29 @@
       "name": "area:mcp"
     },
     {
+      "color": "8fbcdb",
+      "description": "Memory subsystem (mcp-memory, recall, derivation)",
+      "name": "area:memory"
+    },
+    {
+      "color": "bfe5bf",
+      "description": "Testing and quality gates",
+      "name": "area:quality"
+    },
+    {
       "color": "5319E7",
       "description": "Recommendation engine, scoring, anti-bubble logic",
       "name": "area:recommend"
+    },
+    {
+      "color": "e99695",
+      "description": "Security & digital hygiene",
+      "name": "area:security"
+    },
+    {
+      "color": "0052cc",
+      "description": "Skill and subagent development",
+      "name": "area:skills"
     },
     {
       "color": "a2eeef",
@@ -38,19 +78,14 @@
       "name": "bug"
     },
     {
-      "color": "0E8A16",
-      "description": "Research done, decision documented (memory linked)",
-      "name": "decision-made"
+      "color": "0366d6",
+      "description": "Dependency updates",
+      "name": "dependencies"
     },
     {
-      "color": "0075ca",
-      "description": "Improvements or additions to documentation",
-      "name": "documentation"
-    },
-    {
-      "color": "cfd3d7",
-      "description": "This issue or pull request already exists",
-      "name": "duplicate"
+      "color": "c5def5",
+      "description": "Rough idea, not ready for triage",
+      "name": "draft"
     },
     {
       "color": "a2eeef",
@@ -58,29 +93,29 @@
       "name": "enhancement"
     },
     {
-      "color": "6f42c1",
-      "description": "Epic / milestone-level grouping",
-      "name": "epic"
+      "color": "000000",
+      "description": "GitHub Actions code",
+      "name": "github-actions"
     },
     {
-      "color": "7057ff",
-      "description": "Good for newcomers",
-      "name": "good first issue"
+      "color": "fdd835",
+      "description": "Needs /grill before implementation",
+      "name": "needs-grill"
     },
     {
-      "color": "008672",
-      "description": "Extra attention is needed",
-      "name": "help wanted"
-    },
-    {
-      "color": "e4e669",
-      "description": "This doesn't seem right",
-      "name": "invalid"
+      "color": "ffc844",
+      "description": "Needs PRD before slicing",
+      "name": "needs-prd"
     },
     {
       "color": "ededed",
       "description": "Needs investigation before implementation",
       "name": "needs-research"
+    },
+    {
+      "color": "ffe082",
+      "description": "Awaiting triage into the issue state machine",
+      "name": "needs-triage"
     },
     {
       "color": "7B0000",
@@ -103,14 +138,14 @@
       "name": "priority:medium"
     },
     {
-      "color": "d876e3",
-      "description": "Further information is requested",
-      "name": "question"
+      "color": "2b67c6",
+      "description": "Python code",
+      "name": "python"
     },
     {
-      "color": "B60205",
-      "description": "Security or secrets concern",
-      "name": "security"
+      "color": "5319e7",
+      "description": "AFK queue: safe for sandcastle agent",
+      "name": "sandcastle"
     },
     {
       "color": "b60205",
@@ -121,6 +156,11 @@
       "color": "fbca04",
       "description": "Work in progress",
       "name": "status:in-progress"
+    },
+    {
+      "color": "f9a03c",
+      "description": "Needs owner manual touch",
+      "name": "status:owner-queue"
     },
     {
       "color": "c2e0c6",
@@ -138,9 +178,24 @@
       "name": "task"
     },
     {
-      "color": "ffffff",
-      "description": "This will not be worked on",
-      "name": "wontfix"
+      "color": "51dd5f",
+      "description": "Tier 1: auto-dispatch",
+      "name": "tier:1-auto"
+    },
+    {
+      "color": "dbab09",
+      "description": "Tier 2: owner review required",
+      "name": "tier:2-review"
+    },
+    {
+      "color": "d73a4a",
+      "description": "Tier 3: owner-driven only",
+      "name": "tier:3-human"
+    },
+    {
+      "color": "e92c42",
+      "description": "Not safe for sandcastle agent",
+      "name": "unsafe-for-afk"
     }
   ],
   "repo": "Osasuwu/music-intel-mcp",
