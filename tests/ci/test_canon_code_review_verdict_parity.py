@@ -26,9 +26,9 @@ canon is a 3-job retry-wrapper (attempt-1 → attempt-2 → verify-verdict) with
 `{{ axis }}` placeholders, live is a single `review` job. So this test compares
 the *verdict-decision patterns*, not the whole file.
 """
+
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import pytest
@@ -60,6 +60,15 @@ VERDICT_INVARIANTS = [
     "headRefOid",
     ".commit.committer.date",
     ".created_at >= $head",
+    # head-lineage probe (#1228) — "no verdict comment" is NOT an automatic
+    # pass. PR #1226 auto-merged un-reviewed because every review run died
+    # before posting and the gate read the silence as "plugin skipped".
+    "actions/workflows/code-review.yml/runs",
+    'conclusion == "failure"',
+    "LINEAGE_FAILED",
+    "GITHUB_RUN_ID",
+    # post-factum carve-out (#1228): a merged/closed PR has nothing left to gate
+    'PR_STATE" != "OPEN"',
 ]
 
 # Anti-patterns: the OLD/buggy shapes. Must appear in NEITHER verdict step.
@@ -83,7 +92,17 @@ def live_verdict_run() -> str:
 
 
 @pytest.fixture(scope="module")
-def canon_verdict_run() -> str:
+def live_review_job() -> dict:
+    doc = yaml.safe_load(LIVE_WORKFLOW.read_text(encoding="utf-8"))
+    return doc["jobs"]["review"]
+
+
+@pytest.fixture(scope="module")
+def canon_verdict_job() -> dict:
+    return yaml.safe_load(_rendered_canon())["jobs"]["verify-verdict"]
+
+
+def _rendered_canon() -> str:
     template = load_canon_template(".github/workflows/code-review.yml")
     assert template is not None, "canon code-review.yml template must exist"
     manifest = Manifest.from_dict(
@@ -93,9 +112,12 @@ def canon_verdict_run() -> str:
             "required_check_contexts": ["verify-verdict"],
         }
     )
-    rendered = Renderer().render(template, manifest)
-    doc = yaml.safe_load(rendered)
-    return _verdict_run(doc["jobs"]["verify-verdict"]["steps"])
+    return Renderer().render(template, manifest)
+
+
+@pytest.fixture(scope="module")
+def canon_verdict_run(canon_verdict_job) -> str:
+    return _verdict_run(canon_verdict_job["steps"])
 
 
 class TestCanonVerdictParity:
@@ -131,8 +153,11 @@ class TestCanonVerdictParity:
     def test_canon_block_check_runs_before_pass_checks(self, canon_verdict_run):
         run = canon_verdict_run
         block_at = run.index("(CRITICAL|MAJOR|BLOCKING)")
-        for later in (r"^No issues found\.", "Found [0-9]+ issues?:",
-                      "(MINOR|NITPICK|LOW|INFO|MEDIUM)"):
+        for later in (
+            r"^No issues found\.",
+            "Found [0-9]+ issues?:",
+            "(MINOR|NITPICK|LOW|INFO|MEDIUM)",
+        ):
             assert block_at < run.index(later), (
                 f"Block check must precede pass signal {later!r} so no pass can "
                 f"shadow a CRITICAL/MAJOR/BLOCKING heading."
@@ -143,6 +168,18 @@ class TestCanonVerdictParity:
         assert run.index("export LC_ALL=C") < run.index("(CRITICAL|MAJOR|BLOCKING)"), (
             "LC_ALL=C must be exported before the first severity grep (#996)."
         )
+
+    def test_both_jobs_grant_actions_read(self, canon_verdict_job, live_review_job):
+        # The #1228 lineage probe reads the Actions API. Propagating the bash
+        # without the permission gives owned repos a step that dies under
+        # `set -euo pipefail` on every PR.
+        for label, job in (
+            ("canon verify-verdict", canon_verdict_job),
+            ("live review", live_review_job),
+        ):
+            assert (job.get("permissions") or {}).get("actions") == "read", (
+                f"{label} job must grant `actions: read` for the head-lineage probe (#1228)."
+            )
 
     def test_canon_verdict_fails_closed(self, canon_verdict_run):
         assert canon_verdict_run.strip().endswith("exit 1"), (
