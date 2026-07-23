@@ -282,17 +282,7 @@ def test_carve_out_pr_is_a_candidate_without_automerge():
     # otherwise the manual merge it is waiting for is itself blocked on a stale
     # branch, and the carve-out turns a review gap into a permanent stall.
     to_update, _ = select(
-        [
-            {
-                "number": 7,
-                "isDraft": False,
-                "autoMerge": False,
-                "labels": [CARVE_OUT_LABEL],
-                "createdAt": "2026-07-23T00:00:00Z",
-                "mergeStateStatus": "BEHIND",
-                "mergeable": "MERGEABLE",
-            }
-        ]
+        [_pr(7, created="2026-07-23T00:00:00Z", auto=False, labels=[CARVE_OUT_LABEL])]
     )
     assert to_update == [7]
 
@@ -302,15 +292,12 @@ def test_owner_queue_still_excludes_a_carve_out_pr():
     # explicit park. status:owner-queue stays the stronger signal.
     to_update, to_flag = select(
         [
-            {
-                "number": 8,
-                "isDraft": False,
-                "autoMerge": False,
-                "labels": [CARVE_OUT_LABEL, "status:owner-queue"],
-                "createdAt": "2026-07-23T00:00:00Z",
-                "mergeStateStatus": "BEHIND",
-                "mergeable": "MERGEABLE",
-            }
+            _pr(
+                8,
+                created="2026-07-23T00:00:00Z",
+                auto=False,
+                labels=[CARVE_OUT_LABEL, "status:owner-queue"],
+            )
         ]
     )
     assert to_update == [] and to_flag == []
