@@ -171,6 +171,29 @@ jobs:
             # pins it; kept byte-identical with scripts/repo_baseline/canon).
             --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write,Skill(code-review:code-review)"
 
+      # Diagnostic escape hatch for silent no-review runs (#1239). The action
+      # runs with `show_full_output` unset, so the orchestrator's turns are
+      # hidden "for security" and the ONLY copy of what the reviewers actually
+      # did is the runner-local execution log. When the run reports
+      # is_error=false / 0 denials and still posts nothing (observed 3/3 on PR
+      # #1237), both diagnostic steps below say "nothing to verify" and the
+      # evidence dies with the runner. Uploading the log makes that case
+      # diagnosable after the fact instead of only reproducible live.
+      #
+      # Content is agent tool-calls and review prose over a PUBLIC repo, so the
+      # artifact carries nothing the diff doesn't already expose; secrets are
+      # not in scope because the allowed-tools set is read-only and the agents
+      # never read .env. Retention is short on purpose — this is a tripwire
+      # payload, not an archive.
+      - name: Upload review execution log
+        if: always() && steps.review.outputs.execution_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.review.outputs.execution_file }}
+          retention-days: 7
+          if-no-files-found: warn
+
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). Without
       # this step the `review` check is SUCCESS as long as the bot ran —
       # auto-merge can't distinguish "ran cleanly" from "found CRITICAL bugs".
