@@ -245,26 +245,43 @@ jobs:
             echo "::notice::No execution log (review skipped or produced no output); nothing to verify."
             exit 0
           fi
-          result=$(jq -c '[.[] | select(.type == "result")] | last // {}' "$EXEC_FILE")
-          is_error=$(jq -r '.is_error // false' <<<"$result")
           # EXEC_FILE holds the RAW SDKMessage[] written by claude-code-action's
           # writeExecutionFile() — the result object's real field is the array
-          # `permission_denials`, counted via `length`. `permission_denials_count`
-          # is a display-only field synthesized by the action's console-log
-          # sanitizer and never written to EXEC_FILE; reading it here always
-          # silently resolved to the `// 0` fallback regardless of actual denials
+          # `permission_denials`. `permission_denials_count` is a display-only
+          # field synthesized by the action's console-log sanitizer and is
+          # normally absent from EXEC_FILE; reading it ALONE always silently
+          # resolved to the `// 0` fallback regardless of actual denials
           # (#1210 — CI showed raw counts of 14/15/17 vs. this step parsing 0).
-          denials=$(jq -r '(.permission_denials // []) | length' <<<"$result")
+          #
+          # AGGREGATE ACROSS THE WHOLE LOG, not `[.[] | select(.type=="result")]
+          # | last` (#1229). The plugin's /code-review spawns subagents and the
+          # stream can carry more than one `result` object; a trailing result
+          # reporting 0 SHADOWS the real aggregate when selected with `last`.
+          # This is not theoretical — the same shared plugin produced it in
+          # redrobot (redrobot#1371, PR #1362 run 28666054188): the action's own
+          # summary reported 11 denials while a `last`-selecting guard read 0
+          # and passed green, defeating the exact check it exists to enforce.
+          # Take the max count found anywhere (recursive `..`) AND the size of
+          # the unioned permission_denials[] arrays, whichever is larger, so
+          # neither a zeroed trailing result nor a relocated field can mask a
+          # denial. is_error stays scoped to result objects (true on any).
+          is_error=$(jq -r 'any(.[] | select(.type == "result"); .is_error == true)' "$EXEC_FILE")
+          count_field=$(jq -r '[.. | .permission_denials_count? // empty] | max // 0' "$EXEC_FILE")
+          count_array=$(jq -r '[.. | .permission_denials? // empty] | add // [] | length' "$EXEC_FILE")
+          denials=$(( count_field > count_array ? count_field : count_array ))
           echo "Review result: is_error=$is_error permission_denials_count=$denials"
           if [ "$is_error" = "true" ]; then
             echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
             exit 1
           fi
+          # STRICT TRIPWIRE (jarvis policy, #1229): any denial fails the gate.
+          # Deliberately NOT redrobot's blinded-only model — see the policy note
+          # in scripts/repo_baseline/canon/code-review.yml for why the two repos
+          # differ by design. Mandate: widen the allowlist, never soften this.
           if [ "$denials" -gt 0 ]; then
             echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
             echo "Denied tool calls:"
-            jq -r '[.[] | select(.type == "result")] | last
-                   | (.permission_denials // [])[]
+            jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
                    | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
               "$EXEC_FILE" 2>/dev/null | sort -u || true
             exit 1
