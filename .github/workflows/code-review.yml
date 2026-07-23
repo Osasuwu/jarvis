@@ -34,6 +34,11 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+      # #1228: the verdict step's head-lineage probe lists this workflow's own
+      # runs via the Actions API. Without `actions: read` the query 404s and,
+      # under `set -euo pipefail`, the step dies — safe but wrong (every PR
+      # would block on an infrastructure gap rather than on a review verdict).
+      actions: read
 
     steps:
       - uses: actions/checkout@v7
@@ -166,6 +171,29 @@ jobs:
             # pins it; kept byte-identical with scripts/repo_baseline/canon).
             --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write,Skill(code-review:code-review)"
 
+      # Diagnostic escape hatch for silent no-review runs (#1239). The action
+      # runs with `show_full_output` unset, so the orchestrator's turns are
+      # hidden "for security" and the ONLY copy of what the reviewers actually
+      # did is the runner-local execution log. When the run reports
+      # is_error=false / 0 denials and still posts nothing (observed 3/3 on PR
+      # #1237), both diagnostic steps below say "nothing to verify" and the
+      # evidence dies with the runner. Uploading the log makes that case
+      # diagnosable after the fact instead of only reproducible live.
+      #
+      # Content is agent tool-calls and review prose over a PUBLIC repo, so the
+      # artifact carries nothing the diff doesn't already expose; secrets are
+      # not in scope because the allowed-tools set is read-only and the agents
+      # never read .env. Retention is short on purpose — this is a tripwire
+      # payload, not an archive.
+      - name: Upload review execution log
+        if: always() && steps.review.outputs.execution_file != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.review.outputs.execution_file }}
+          retention-days: 7
+          if-no-files-found: warn
+
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). Without
       # this step the `review` check is SUCCESS as long as the bot ran —
       # auto-merge can't distinguish "ran cleanly" from "found CRITICAL bugs".
@@ -245,26 +273,43 @@ jobs:
             echo "::notice::No execution log (review skipped or produced no output); nothing to verify."
             exit 0
           fi
-          result=$(jq -c '[.[] | select(.type == "result")] | last // {}' "$EXEC_FILE")
-          is_error=$(jq -r '.is_error // false' <<<"$result")
           # EXEC_FILE holds the RAW SDKMessage[] written by claude-code-action's
           # writeExecutionFile() — the result object's real field is the array
-          # `permission_denials`, counted via `length`. `permission_denials_count`
-          # is a display-only field synthesized by the action's console-log
-          # sanitizer and never written to EXEC_FILE; reading it here always
-          # silently resolved to the `// 0` fallback regardless of actual denials
+          # `permission_denials`. `permission_denials_count` is a display-only
+          # field synthesized by the action's console-log sanitizer and is
+          # normally absent from EXEC_FILE; reading it ALONE always silently
+          # resolved to the `// 0` fallback regardless of actual denials
           # (#1210 — CI showed raw counts of 14/15/17 vs. this step parsing 0).
-          denials=$(jq -r '(.permission_denials // []) | length' <<<"$result")
+          #
+          # AGGREGATE ACROSS THE WHOLE LOG, not `[.[] | select(.type=="result")]
+          # | last` (#1229). The plugin's /code-review spawns subagents and the
+          # stream can carry more than one `result` object; a trailing result
+          # reporting 0 SHADOWS the real aggregate when selected with `last`.
+          # This is not theoretical — the same shared plugin produced it in
+          # redrobot (redrobot#1371, PR #1362 run 28666054188): the action's own
+          # summary reported 11 denials while a `last`-selecting guard read 0
+          # and passed green, defeating the exact check it exists to enforce.
+          # Take the max count found anywhere (recursive `..`) AND the size of
+          # the unioned permission_denials[] arrays, whichever is larger, so
+          # neither a zeroed trailing result nor a relocated field can mask a
+          # denial. is_error stays scoped to result objects (true on any).
+          is_error=$(jq -r 'any(.[] | select(.type == "result"); .is_error == true)' "$EXEC_FILE")
+          count_field=$(jq -r '[.. | .permission_denials_count? // empty] | max // 0' "$EXEC_FILE")
+          count_array=$(jq -r '[.. | .permission_denials? // empty] | add // [] | length' "$EXEC_FILE")
+          denials=$(( count_field > count_array ? count_field : count_array ))
           echo "Review result: is_error=$is_error permission_denials_count=$denials"
           if [ "$is_error" = "true" ]; then
             echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
             exit 1
           fi
+          # STRICT TRIPWIRE (jarvis policy, #1229): any denial fails the gate.
+          # Deliberately NOT redrobot's blinded-only model — see the policy note
+          # in scripts/repo_baseline/canon/code-review.yml for why the two repos
+          # differ by design. Mandate: widen the allowlist, never soften this.
           if [ "$denials" -gt 0 ]; then
             echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
             echo "Denied tool calls:"
-            jq -r '[.[] | select(.type == "result")] | last
-                   | (.permission_denials // [])[]
+            jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
                    | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
               "$EXEC_FILE" 2>/dev/null | sort -u || true
             exit 1
@@ -297,7 +342,11 @@ jobs:
           # head commit's committer time and treat any comment older than it as
           # not-a-verdict-for-this-head. ISO-8601 UTC timestamps (…Z) from the
           # API compare correctly as plain strings.
-          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          pr_json=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,state)
+          HEAD_SHA=$(jq -r '.headRefOid' <<<"$pr_json")
+          # PR_STATE (#1228) gates the post-factum carve-out in the total==0
+          # branch below: OPEN | MERGED | CLOSED.
+          PR_STATE=$(jq -r '.state' <<<"$pr_json")
           HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
 
           # Freshness anchor (#1134). Normal path: anchor on HEAD_TIME (above).
@@ -346,24 +395,65 @@ jobs:
           body=$(jq -r '.freshBody' <<<"$sel")
 
           if [ "$total" -eq 0 ]; then
-            # No /code-review comment at all. Ambiguous between two states (#1182):
-            #   (a) legitimate skip — the review step's own `if:` never matched
-            #       (draft / has_code=false / autobase skip), so it never ran and
-            #       EXEC_FILE is unset. No verdict expected; pass.
-            #   (b) ran-but-silent — the review step WAS eligible and ran. The
-            #       prior "Verify review ran cleanly" step already confirmed
-            #       is_error=false and 0 permission denials (this step would
-            #       never be reached otherwise — that step exits 1 on either
-            #       failure), yet the model posted zero comments. This is a
-            #       silent no-review; passing it ships the PR completely
-            #       unreviewed (PR #1179 incident). Fail CLOSED.
-            # EXEC_FILE is only ever populated when the review step actually
-            # ran, so its presence alone distinguishes (a) from (b).
+            # No /code-review comment at all. Comment-absence alone does NOT
+            # mean "the plugin skipped" — it is ambiguous across THREE states,
+            # decided in this order (#1228, #1182):
+            #
+            #   1. Post-factum run on a non-OPEN PR. A workflow_dispatch re-run
+            #      against a merged/closed PR: the plugin correctly declines to
+            #      review it and posts nothing. There is no merge left to gate,
+            #      so failing closed is pure noise — run 29986227927 went red on
+            #      merged #1226 for exactly this. PASS.
+            #   2. Never reviewed. Every code-review run over this PR's own
+            #      commits CONCLUDED IN FAILURE, so no attempt ever got far
+            #      enough to post a verdict. This is the #1226 hole: three runs
+            #      died on permission_denials, a later osasuwu-ci[bot] auto-
+            #      rebase push skipped review as designed, this gate found no
+            #      comment, read it as "likely skipped", went green, and native
+            #      auto-merge shipped the PR completely un-reviewed. FAIL CLOSED.
+            #   3. Ran-but-silent. The review step WAS eligible and ran. The
+            #      prior "Verify review ran cleanly" step already confirmed
+            #      is_error=false and 0 permission denials (this step would
+            #      never be reached otherwise — that step exits 1 on either
+            #      failure), yet the model posted zero comments. Passing it
+            #      ships the PR unreviewed (PR #1179 incident). FAIL CLOSED.
+            #      EXEC_FILE is only ever populated when the review step
+            #      actually ran, so its presence alone identifies this state.
+            #
+            # Falling through all three = legitimate skip (draft / has_code=false
+            # / autobase push) over a clean lineage. PASS.
+            if [ "$PR_STATE" != "OPEN" ]; then
+              echo "::notice::PR is $PR_STATE and has no /code-review comment; nothing left to gate on a post-factum run. Treating as pass."
+              exit 0
+            fi
+
+            # Head-lineage probe. Intersect this workflow's FAILED runs with the
+            # PR's own commit SHAs, so another PR's broken review can never block
+            # this one. Only `conclusion == "failure"` counts — success /
+            # cancelled / skipped / still-running are not evidence of a dead
+            # attempt. The currently-executing run is excluded by id: it has no
+            # conclusion yet, but excluding it explicitly keeps a re-run from
+            # ever self-blocking on its own row.
+            lineage_shas=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+              | jq -rs 'add | map(.sha)')
+            LINEAGE_FAILED=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
+              | jq -rs --argjson shas "$lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
+                  [ .[].workflow_runs[]
+                    | select(.conclusion == "failure")
+                    | select((.id | tostring) != $cur)
+                    | select(.head_sha as $s | $shas | index($s) != null) ]
+                  | length')
+            if [ "$LINEAGE_FAILED" -gt 0 ]; then
+              echo "::error::No /code-review verdict comment exists and $LINEAGE_FAILED code-review run(s) over this PR's commits ended in failure. Every review attempt died before it could post — this PR has never been reviewed. Failing closed (#1228); fix the failing run and re-review."
+              exit 1
+            fi
+
             if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
               echo "::error::Code review ran cleanly (execution log present, 0 errors/denials per the prior step) but posted zero /code-review comments. This is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
               exit 1
             fi
-            echo "::notice::No /code-review comment present and review did not run; plugin likely skipped (draft/no-code/autobase). Treating as pass."
+
+            echo "::notice::No /code-review comment present, review did not run, and no code-review run over this PR's commits failed; plugin legitimately skipped (draft/no-code/autobase). Treating as pass."
             exit 0
           fi
 

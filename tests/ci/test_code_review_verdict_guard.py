@@ -95,7 +95,41 @@ NONBLOCK_SEV_RE = re.compile(
 LGTM_RE = re.compile(r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b", re.I)
 
 
-def verdict(comment_bodies: list[str], *, ran: bool = False) -> str:
+def lineage_failed_runs(
+    runs: list[tuple[str, str | None, str]],
+    lineage_shas: list[str],
+    current_run_id: str | None = None,
+) -> int:
+    """Count code-review workflow runs over the PR's head lineage that FAILED.
+
+    Mirror of the #1228 head-lineage probe. Comment-absence alone cannot tell
+    "the plugin legitimately declined" from "every review attempt died before it
+    could post" — both look like zero comments. A failed run whose head SHA is
+    one of the PR's own commits is positive evidence of the latter.
+
+    Args:
+        runs: ``(head_sha, conclusion, run_id)`` triples from
+            ``actions/workflows/code-review.yml/runs``. ``conclusion`` is None
+            for a still-running run.
+        lineage_shas: SHAs of the PR's commits (``pulls/<n>/commits``).
+        current_run_id: the run executing this check. Excluded — its own
+            conclusion is not yet decided and must never self-block.
+    """
+    lineage = set(lineage_shas)
+    return sum(
+        1
+        for head_sha, conclusion, run_id in runs
+        if conclusion == "failure" and head_sha in lineage and run_id != current_run_id
+    )
+
+
+def verdict(
+    comment_bodies: list[str],
+    *,
+    ran: bool = False,
+    lineage_failed: int = 0,
+    pr_state: str = "OPEN",
+) -> str:
     """Reimplementation of the verdict step's decision rule.
 
     Args:
@@ -107,15 +141,32 @@ def verdict(comment_bodies: list[str], *, ran: bool = False) -> str:
             check runs). Only consulted when there is no selected comment: it
             disambiguates "legitimate skip" (ran=False → pass) from
             "ran-but-silent" (ran=True → fail closed, #1182).
+        lineage_failed: number of FAILED code-review runs over the PR's head
+            lineage (#1228). Non-zero means every review attempt died before
+            posting, so "no comment" is evidence of never-reviewed, not of a
+            legitimate skip. Only consulted when there is no selected comment.
+        pr_state: ``OPEN`` / ``MERGED`` / ``CLOSED``. A non-OPEN PR gates
+            nothing — a post-factum ``workflow_dispatch`` re-run must not fail
+            closed merely because the plugin declined to review a merged PR
+            (#1228).
 
     Returns 'pass' (exit 0) or 'fail' (exit 1).
     """
     selected = [b for b in comment_bodies if TITLE_RE.search(b)]
     if not selected:
-        # No review comment at all. ran=False → plugin never ran (ineligible:
-        # draft / has_code=false / autobase skip) → legitimate skip → pass.
-        # ran=True → eligible + ran cleanly yet posted nothing → ran-but-silent
-        # → fail closed (#1182 — PR #1179 shipped unreviewed on this gap).
+        # No review comment at all — three disambiguating signals, in order:
+        #   1. PR not OPEN → post-factum run, nothing to gate → pass (#1228).
+        #   2. lineage_failed > 0 → every review attempt over this PR's own
+        #      commits errored, so the PR was NEVER reviewed → fail closed
+        #      (#1228; PR #1226 auto-merged unreviewed through this hole).
+        #   3. ran=True → eligible + ran cleanly yet posted nothing →
+        #      ran-but-silent → fail closed (#1182 — PR #1179).
+        # Otherwise the plugin never ran (draft / has_code=false / autobase
+        # skip) with a clean lineage → legitimate skip → pass.
+        if pr_state != "OPEN":
+            return "pass"
+        if lineage_failed > 0:
+            return "fail"
         return "fail" if ran else "pass"
     body = selected[-1]  # latest review comment wins
     # BLOCK check runs first: a pass signal must never shadow a CRITICAL/MAJOR/
@@ -136,7 +187,14 @@ def verdict(comment_bodies: list[str], *, ran: bool = False) -> str:
     return "fail"  # unrecognized review comment — fail closed
 
 
-def verdict_fresh(comments: list[tuple[str, str]], head_time: str, *, ran: bool = False) -> str:
+def verdict_fresh(
+    comments: list[tuple[str, str]],
+    head_time: str,
+    *,
+    ran: bool = False,
+    lineage_failed: int = 0,
+    pr_state: str = "OPEN",
+) -> str:
     """Mirror of the verdict step INCLUDING the #993 freshness gate.
 
     A /code-review comment is a verdict only for the CURRENT head commit. The
@@ -151,17 +209,20 @@ def verdict_fresh(comments: list[tuple[str, str]], head_time: str, *, ran: bool 
         head_time: committer time of the current head commit (ISO-8601 UTC).
         ran: see ``verdict()`` — only consulted when there is no review comment
             at all (disambiguates skip vs. ran-but-silent, #1182).
+        lineage_failed, pr_state: see ``verdict()`` — the #1228 never-reviewed
+            signals, likewise only consulted when there is no review comment.
 
     Returns 'pass' (exit 0) or 'fail' (exit 1). Disambiguation:
-      - no code-review comment at all, ran=False → 'pass' (legitimate skip);
-      - no code-review comment at all, ran=True → 'fail' (ran-but-silent, #1182);
+      - no code-review comment at all → the #1228/#1182 total==0 decision table
+        (see ``verdict()``): non-OPEN PR → pass; failed head-lineage runs →
+        fail; ran-but-silent → fail; otherwise legitimate skip → pass;
       - code-review comment(s) exist but ALL predate the head commit →
         'fail' (latest review errored / never posted for this SHA — #993);
       - a fresh code-review comment exists → existing two-gate content verdict.
     """
     review = [(b, t) for (b, t) in comments if TITLE_RE.search(b)]
     if not review:
-        return "fail" if ran else "pass"
+        return verdict([], ran=ran, lineage_failed=lineage_failed, pr_state=pr_state)
     fresh = [b for (b, t) in review if t >= head_time]
     if not fresh:
         return "fail"  # only stale prior-SHA comment(s) — fail closed (#993)
@@ -217,6 +278,8 @@ def verdict_autobase(
     *,
     autobase: bool,
     ran: bool = False,
+    lineage_failed: int = 0,
+    pr_state: str = "OPEN",
 ) -> str:
     """Mirror of the full verdict step INCLUDING the #1134 autobase branch.
 
@@ -226,7 +289,13 @@ def verdict_autobase(
     #1182) and AC4 (comments exist but none fresh-for-anchor→fail-closed) fall
     out of ``verdict_fresh`` unchanged — only the anchor differs.
     """
-    return verdict_fresh(comments, anchor_time(commits, head_time, autobase=autobase), ran=ran)
+    return verdict_fresh(
+        comments,
+        anchor_time(commits, head_time, autobase=autobase),
+        ran=ran,
+        lineage_failed=lineage_failed,
+        pr_state=pr_state,
+    )
 
 
 # The literal shape that false-passed the gate on PR #957: MAJOR + MINOR
@@ -778,6 +847,166 @@ class TestAutobaseAnchorLogic:
             )
 
 
+class TestNeverReviewedLineageLogic:
+    """#1228: "no verdict comment" must not be read as "plugin skipped".
+
+    Both of these produce zero /code-review comments for the current SHA:
+      (a) the plugin legitimately declined (draft / no substantive code /
+          autobase push / already-merged PR) — nothing to gate, pass;
+      (b) every real review attempt DIED before it could post (is_error,
+          permission denials) — the PR was never reviewed, block.
+
+    PR #1226 (2026-07-21) is case (b): all three plugin runs failed on
+    permission_denials, then an osasuwu-ci[bot] auto-rebase push skipped review
+    as designed, the gate found no comment, concluded "likely skipped → pass",
+    went green, and auto-merge shipped the PR un-reviewed. No admin bypass —
+    the gate genuinely passed on a PR nothing had ever reviewed.
+
+    The discriminator is the PR's HEAD LINEAGE: did any code-review run over
+    this PR's own commits conclude in failure?
+    """
+
+    HEAD = "2026-07-21T12:00:00Z"
+    SHAS = ["sha-a", "sha-b", "sha-head"]
+
+    # --- lineage_failed_runs() probe ---
+    def test_failed_run_on_a_pr_commit_is_counted(self):
+        runs = [("sha-b", "failure", "1001")]
+        assert lineage_failed_runs(runs, self.SHAS) == 1
+
+    def test_failed_run_outside_the_lineage_is_ignored(self):
+        # Another PR's failing review must never block this one.
+        runs = [("sha-of-other-pr", "failure", "1001")]
+        assert lineage_failed_runs(runs, self.SHAS) == 0
+
+    def test_successful_and_in_progress_runs_are_not_failures(self):
+        runs = [("sha-a", "success", "1001"), ("sha-head", None, "1002")]
+        assert lineage_failed_runs(runs, self.SHAS) == 0
+
+    def test_current_run_is_excluded(self):
+        # The run executing this check has no conclusion yet; excluding it by id
+        # keeps a re-run from ever self-blocking on its own prior attempt row.
+        runs = [("sha-head", "failure", "9999")]
+        assert lineage_failed_runs(runs, self.SHAS, current_run_id="9999") == 0
+        assert lineage_failed_runs(runs, self.SHAS, current_run_id="1234") == 1
+
+    def test_multiple_failures_counted(self):
+        runs = [
+            ("sha-a", "failure", "1001"),
+            ("sha-b", "failure", "1002"),
+            ("sha-head", "failure", "1003"),
+        ]
+        assert lineage_failed_runs(runs, self.SHAS) == 3
+
+    # --- AC2: the #1226 scenario blocks ---
+    def test_pr_1226_all_review_runs_failed_zero_comments_blocks(self):
+        # Autobase push, no comment ever posted, three dead review runs on the
+        # PR's own commits. This is the exact state that shipped #1226.
+        assert (
+            verdict_autobase(
+                [],
+                [(self.HEAD, "Osasuwu"), ("2026-07-21T12:30:00Z", AUTOBASE_BOT)],
+                "2026-07-21T12:30:00Z",
+                autobase=True,
+                ran=False,
+                lineage_failed=3,
+            )
+            == "fail"
+        )
+
+    def test_pr_1226_would_have_passed_without_the_lineage_signal(self):
+        # Same state minus the lineage evidence — the pre-#1228 gate. Proves
+        # the fix is load-bearing, not decorative.
+        assert (
+            verdict_autobase(
+                [],
+                [(self.HEAD, "Osasuwu"), ("2026-07-21T12:30:00Z", AUTOBASE_BOT)],
+                "2026-07-21T12:30:00Z",
+                autobase=True,
+                ran=False,
+                lineage_failed=0,
+            )
+            == "pass"
+        )
+
+    # --- AC3: genuine skips still pass ---
+    def test_genuine_skip_clean_lineage_passes(self):
+        assert verdict([], ran=False, lineage_failed=0) == "pass"
+
+    def test_autobase_push_clean_lineage_passes(self):
+        assert (
+            verdict_autobase(
+                [],
+                [(self.HEAD, "Osasuwu"), ("2026-07-21T12:30:00Z", AUTOBASE_BOT)],
+                "2026-07-21T12:30:00Z",
+                autobase=True,
+                lineage_failed=0,
+            )
+            == "pass"
+        )
+
+    # --- AC4: post-factum dispatch on a merged/closed PR ---
+    @pytest.mark.parametrize("state", ["MERGED", "CLOSED"])
+    def test_non_open_pr_with_zero_comments_passes(self, state):
+        # workflow_dispatch re-run on a merged PR: the plugin correctly declines
+        # to review it and posts nothing. Failing closed there is a false fail —
+        # there is no merge left to gate (reproduced on run 29986227927).
+        assert verdict([], ran=True, pr_state=state) == "pass"
+
+    def test_non_open_pr_passes_even_with_a_dirty_lineage(self):
+        # #1226 itself: merged, and its lineage is full of failed runs. The
+        # post-factum re-run still must not go red — the block is only
+        # meaningful while the PR can still be merged.
+        assert verdict([], ran=True, lineage_failed=3, pr_state="MERGED") == "pass"
+
+    def test_open_pr_is_the_only_gated_state(self):
+        assert verdict([], ran=True, lineage_failed=3, pr_state="OPEN") == "fail"
+
+    # --- #1182 preserved ---
+    def test_ran_but_silent_still_fails_on_a_clean_lineage(self):
+        assert verdict([], ran=True, lineage_failed=0, pr_state="OPEN") == "fail"
+
+    # --- the four-case decision table (AC5) ---
+    @pytest.mark.parametrize(
+        "case,pr_state,lineage_failed,ran,expected",
+        [
+            ("every review run failed, zero comments", "OPEN", 3, False, "fail"),
+            ("genuine skip (draft/no-code/autobase)", "OPEN", 0, False, "pass"),
+            ("ran cleanly but posted nothing (#1182)", "OPEN", 0, True, "fail"),
+            ("post-factum dispatch on a merged PR", "MERGED", 3, True, "pass"),
+        ],
+    )
+    def test_no_comment_decision_table(self, case, pr_state, lineage_failed, ran, expected):
+        assert verdict([], ran=ran, lineage_failed=lineage_failed, pr_state=pr_state) == expected, (
+            case
+        )
+
+    # --- no regression on #993 / #1134: a real comment still decides ---
+    @pytest.mark.parametrize("lineage_failed", [0, 3])
+    def test_fresh_comment_verdict_ignores_the_lineage_signal(self, lineage_failed):
+        # A fresh verdict comment is direct evidence a review happened; the
+        # lineage probe is consulted ONLY when there is no comment at all.
+        assert (
+            verdict_fresh(
+                [(CANONICAL_CLEAN_SPEC, self.HEAD)], self.HEAD, lineage_failed=lineage_failed
+            )
+            == "pass"
+        )
+        assert (
+            verdict_fresh([(BLOCKING_COMMENT, self.HEAD)], self.HEAD, lineage_failed=lineage_failed)
+            == "fail"
+        )
+
+    def test_stale_only_still_fails_closed_regardless_of_lineage(self):
+        # #993 anchoring is upstream of the total==0 branch and unaffected.
+        assert (
+            verdict_fresh(
+                [(CANONICAL_CLEAN_SPEC, "2026-07-20T00:00:00Z")], self.HEAD, lineage_failed=0
+            )
+            == "fail"
+        )
+
+
 # -- Workflow wiring ----------------------------------------------------------
 
 
@@ -798,6 +1027,27 @@ def review_step(workflow_text) -> dict:
     workflow = yaml.safe_load(workflow_text)
     steps = workflow["jobs"]["review"]["steps"]
     return next(s for s in steps if s.get("name") == "Run /code-review")
+
+
+@pytest.fixture(scope="module")
+def review_job(workflow_text) -> dict:
+    return yaml.safe_load(workflow_text)["jobs"]["review"]
+
+
+def branch_slice(run: str, marker: str) -> str:
+    """Extract the whole `if <marker> ... fi` block from a bash script.
+
+    Slicing a fixed character window instead makes every test that inspects a
+    branch silently start covering less (or more) of it as the branch grows —
+    the assertions keep passing while the thing they claim to pin drifts out of
+    the window. Anchor on the closing `fi` at the `if`'s own indentation.
+    """
+    start = run.index(marker)
+    line_start = run.rfind("\n", 0, start) + 1
+    indent = run[line_start:start]
+    end_token = f"\n{indent}fi"
+    end = run.index(end_token, start)
+    return run[start : end + len(end_token)]
 
 
 class TestReviewStepBotGate:
@@ -1016,7 +1266,7 @@ class TestFreshnessGateWiring:
             "Must distinguish 'no review comment at all' (total 0) from "
             "'comment(s) exist but all stale' (→ fail closed)."
         )
-        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        total_zero_branch = branch_slice(run, marker)
         assert "EXEC_FILE" in total_zero_branch, (
             "The total==0 branch must consult EXEC_FILE (steps.review.outputs."
             "execution_file) to distinguish a legitimate skip (never ran, no "
@@ -1047,7 +1297,7 @@ class TestFreshnessGateWiring:
         # for draft / has_code=false / autobase-skip PRs.
         run = verdict_step["run"]
         marker = 'if [ "$total" -eq 0 ]; then'
-        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        total_zero_branch = branch_slice(run, marker)
         exec_check_idx = total_zero_branch.index("EXEC_FILE")
         after_exec_check = total_zero_branch[exec_check_idx:]
         assert "exit 0" in after_exec_check, (
@@ -1061,7 +1311,7 @@ class TestFreshnessGateWiring:
         # is dead code and every total==0 case would hit exit 0 first.
         run = verdict_step["run"]
         marker = 'if [ "$total" -eq 0 ]; then'
-        total_zero_branch = run[run.index(marker) : run.index(marker) + 1400]
+        total_zero_branch = branch_slice(run, marker)
         assert total_zero_branch.index("exit 1") < total_zero_branch.rindex("exit 0"), (
             "Ran-but-silent's exit 1 must be reached before the genuine-skip "
             "exit 0 fall-through, or the fail-closed branch is unreachable."
@@ -1136,4 +1386,111 @@ class TestAutobaseAnchorWiring:
         assert ".created_at >= $head" in run, (
             "Autobase path must reuse the shared freshness filter, not a "
             "separate selection (#1134)."
+        )
+
+
+class TestNeverReviewedLineageWiring:
+    """#1228: the total==0 branch must probe the PR's head lineage for FAILED
+    code-review runs instead of reading comment-absence as "plugin skipped".
+
+    PR #1226 (2026-07-21): three plugin runs died on permission_denials, an
+    osasuwu-ci[bot] auto-rebase push then skipped review as designed, the gate
+    found no comment, passed, and auto-merge shipped an un-reviewed PR. The
+    mirror bug is run 29986227927 — a workflow_dispatch on the already-merged
+    #1226 where the plugin correctly declined and the guard failed closed.
+    """
+
+    MARKER = 'if [ "$total" -eq 0 ]; then'
+
+    @pytest.fixture(scope="class")
+    def zero_branch(self, verdict_step) -> str:
+        # Comment lines stripped: this class asserts on the ORDER of the
+        # decision steps, and the explanatory comment block names every signal
+        # up front — matching prose would make the ordering assertions vacuous.
+        branch = branch_slice(verdict_step["run"], self.MARKER)
+        return "\n".join(line for line in branch.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_job_can_read_workflow_runs(self, review_job):
+        # Listing workflow runs via GITHUB_TOKEN needs `actions: read`. Without
+        # it the probe 404s and — under `set -euo pipefail` — the step dies,
+        # which is safe but wrong: every PR would block.
+        perms = review_job.get("permissions", {}) or {}
+        assert perms.get("actions") == "read", (
+            "The review job must grant `actions: read` — the head-lineage probe "
+            "lists code-review workflow runs via the Actions API (#1228)."
+        )
+
+    def test_probe_queries_the_code_review_workflow_runs(self, zero_branch):
+        assert "actions/workflows/code-review.yml/runs" in zero_branch, (
+            "The total==0 branch must list this workflow's own runs to tell a "
+            "legitimate skip from 'every review attempt died' (#1228)."
+        )
+
+    def test_probe_counts_only_failed_runs(self, zero_branch):
+        assert 'conclusion == "failure"' in zero_branch, (
+            "Only runs that CONCLUDED IN FAILURE are evidence the PR was never "
+            "reviewed. success/cancelled/in-progress must not block."
+        )
+
+    def test_probe_is_scoped_to_this_prs_commits(self, zero_branch):
+        assert "pulls/" in zero_branch and "/commits" in zero_branch, (
+            "The failed-run set must be intersected with the PR's own commit "
+            "lineage — another PR's failing review must never block this one."
+        )
+        assert "head_sha" in zero_branch, (
+            "Intersection keys on run.head_sha ∈ the PR's commit SHAs (#1228)."
+        )
+
+    def test_probe_excludes_the_current_run(self, zero_branch):
+        assert "GITHUB_RUN_ID" in zero_branch, (
+            "The currently-executing run must be excluded by id, or a re-run "
+            "could self-block on its own row once it concludes (#1228)."
+        )
+
+    def test_non_open_pr_short_circuits_to_pass(self, zero_branch, verdict_step):
+        # AC4: a workflow_dispatch re-run on a merged/closed PR posts zero
+        # comments by design. There is no merge left to gate — failing closed
+        # there is pure noise (observed on run 29986227927 against #1226).
+        run = verdict_step["run"]
+        assert "PR_STATE" in run and "state" in run, (
+            "The verdict step must resolve the PR state (gh pr view --json "
+            "state) so post-factum dispatch on a non-OPEN PR is not gated."
+        )
+        assert 'PR_STATE" != "OPEN"' in zero_branch or 'PR_STATE" = "OPEN"' in zero_branch, (
+            "The total==0 branch must carve out non-OPEN PRs before the "
+            "lineage/EXEC_FILE fail-closed checks (#1228 AC4)."
+        )
+
+    def test_decision_order_state_then_lineage_then_exec_file(self, zero_branch):
+        # Ordering IS the fix: state carve-out must precede the fail-closed
+        # checks (else merged PRs go red), and the lineage block must precede
+        # the fall-through pass (else it is dead code).
+        state_at = zero_branch.index("PR_STATE")
+        lineage_at = zero_branch.index("LINEAGE_FAILED")
+        exec_at = zero_branch.index("EXEC_FILE")
+        assert state_at < lineage_at < exec_at, (
+            "total==0 must decide in order: non-OPEN → pass; lineage failures → "
+            "fail closed (never reviewed, #1228); EXEC_FILE present → fail "
+            "closed (ran-but-silent, #1182); otherwise pass (genuine skip)."
+        )
+        assert lineage_at < zero_branch.rindex("exit 0"), (
+            "The lineage check must run before the genuine-skip fall-through, "
+            "or #1226 passes again."
+        )
+
+    def test_lineage_failure_blocks(self, zero_branch):
+        lineage_at = zero_branch.index("LINEAGE_FAILED")
+        after = zero_branch[lineage_at:]
+        assert "exit 1" in after[: after.index("EXEC_FILE")], (
+            "A non-zero lineage failure count must exit 1 — the PR was never "
+            "reviewed, so it must not be mergeable (#1228 AC2)."
+        )
+
+    def test_genuine_skip_still_falls_through_to_pass(self, zero_branch):
+        # AC3: draft / no-substantive-code / autobase push with a CLEAN lineage
+        # must still pass. The branch's last statement is the skip exit 0.
+        assert "exit 0" in zero_branch, "Genuine skip must still pass (exit 0)."
+        assert zero_branch.rindex("exit 0") > zero_branch.rindex("exit 1"), (
+            "The genuine-skip exit 0 is the fall-through — it must come after "
+            "every fail-closed branch (#993/#1134 regression guard)."
         )

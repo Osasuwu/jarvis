@@ -43,6 +43,7 @@ jobs:
           fi
 
       - name: Run code review (attempt 1)
+        id: review
         uses: {{ code_review_marketplace }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -61,6 +62,104 @@ jobs:
             (not available in this runner). This is plugin invocation only.
           claude_args: |
             --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write,Skill(code-review:code-review)"
+
+      # ---------------------------------------------------------------------
+      # REVIEW-CLEANLINESS GATE — canon policy note (#1229)
+      # ---------------------------------------------------------------------
+      # This step exists because a `review` check that is SUCCESS whenever the
+      # bot *ran* cannot tell "reviewed cleanly" from "the reviewer was blocked
+      # from the tools it needed and reviewed half the diff". Until #1229 the
+      # canon carried NO cleanliness gate at all, so every repo synced from
+      # this template got zero denial detection — the weakest of all owned
+      # repos, and the actual drift #1229 set out to find.
+      #
+      # It lives INSIDE each attempt job, not in verify-verdict, because
+      # EXEC_FILE is a path on the attempt runner and does not cross the job
+      # boundary. Placing it here also composes correctly with the retry
+      # wrapper: attempt-1 failing on denials retries the CAUSE in attempt-2
+      # (per `fe795a8e` — retry the cause, never continue-on-error).
+      #
+      # DETECTION is uniform across all owned repos and is the strictest known:
+      # aggregate denials across the WHOLE execution log rather than selecting
+      # the last `result` object. Do not "simplify" this back to `| last` — see
+      # the inline comment below for the field evidence.
+      #
+      # BLOCKING POLICY is deliberately NOT uniform. Two policies exist and the
+      # difference is design, not drift. If you find a repo whose policy
+      # disagrees with its declaration here, THAT is drift:
+      #
+      #   strict  (canon default — jarvis)
+      #     denials > 0 ⇒ fail, unconditionally.
+      #     Rationale: jarvis's allowlist is a maintained superset and a clean
+      #     run is empirically achievable (0 denials verified on run
+      #     29986227927). Under those conditions the denial count is a true
+      #     regression tripwire, and it is the gate that actually caught the
+      #     shared-plugin defect behind #1223/#1227. Standing mandate
+      #     (`code_review_allowlist_drift_class`, decision `faaf6671`): widen
+      #     the allowlist, never soften this gate.
+      #
+      #   blinded-only  (redrobot — declared exception, decision `f96089ee`,
+      #                  redrobot#1408)
+      #     denials > 0 fails ONLY when the run also posted no fresh verdict
+      #     for the head SHA; denials are logged either way.
+      #     Rationale: redrobot's recurring denial class is compositional
+      #     pipelines whose second commands (`python3 -c`, `jq`, `awk`) are
+      #     arbitrary code execution that must NEVER be allowlisted. Widening
+      #     is therefore structurally unable to reach 0, so the denial COUNT is
+      #     the wrong signal there and "was the reviewer blinded" is the right
+      #     one. Converging redrobot up to strict would wedge its gate red on
+      #     denials it cannot legitimately eliminate.
+      #
+      # Both policies share the same detection and the same fail-closed default;
+      # they differ only in whether a *non-blinding* denial blocks the merge.
+      # Neither repo may move DOWNWARD from its declared policy.
+      # ---------------------------------------------------------------------
+      - name: Verify review ran cleanly
+        if: always()
+        env:
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXEC_FILE:-}" ] || [ ! -f "$EXEC_FILE" ]; then
+            echo "::notice::No execution log (review skipped or produced no output); nothing to verify."
+            exit 0
+          fi
+          # EXEC_FILE holds the RAW SDKMessage[] written by claude-code-action's
+          # writeExecutionFile(). The real field is the array
+          # `permission_denials`; `permission_denials_count` is a display-only
+          # field synthesized by the action's console-log sanitizer and is
+          # normally absent, so reading it ALONE silently resolves to 0
+          # regardless of actual denials (#1210).
+          #
+          # AGGREGATE ACROSS THE WHOLE LOG, not `[.[] | select(.type=="result")]
+          # | last` (#1229). /code-review spawns subagents and the stream can
+          # carry more than one `result`; a trailing result reporting 0 SHADOWS
+          # the real aggregate under `last`. Field evidence on this exact shared
+          # plugin: redrobot#1371 / PR #1362 run 28666054188 — the action's own
+          # summary reported 11 denials while a `last`-selecting guard read 0
+          # and passed green. Take the max of the recursive count-field scan and
+          # the size of the unioned permission_denials[] arrays, so neither a
+          # zeroed trailing result nor a relocated field can mask a denial.
+          is_error=$(jq -r 'any(.[] | select(.type == "result"); .is_error == true)' "$EXEC_FILE")
+          count_field=$(jq -r '[.. | .permission_denials_count? // empty] | max // 0' "$EXEC_FILE")
+          count_array=$(jq -r '[.. | .permission_denials? // empty] | add // [] | length' "$EXEC_FILE")
+          denials=$(( count_field > count_array ? count_field : count_array ))
+          echo "Review result: is_error=$is_error permission_denials_count=$denials"
+          if [ "$is_error" = "true" ]; then
+            echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
+            exit 1
+          fi
+          # STRICT TRIPWIRE — canon default. See the policy note above before
+          # changing this; a repo on the blinded-only policy must say so.
+          if [ "$denials" -gt 0 ]; then
+            echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
+            echo "Denied tool calls:"
+            jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
+                   | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
+              "$EXEC_FILE" 2>/dev/null | sort -u || true
+            exit 1
+          fi
+          echo "::notice::Code review ran cleanly (0 permission denials)."
 
   attempt-2:
     name: attempt-2
@@ -92,6 +191,7 @@ jobs:
           fi
 
       - name: Run code review (attempt 2 — retry of cause)
+        id: review
         uses: {{ code_review_marketplace }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
@@ -111,6 +211,56 @@ jobs:
           claude_args: |
             --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write,Skill(code-review:code-review)"
 
+      # Same cleanliness gate as attempt-1 — see the full policy note there
+      # (#1229). Kept byte-identical between the two attempt jobs; the parity
+      # guard tests/ci/test_canon_code_review_ran_cleanly_parity.py pins that.
+      - name: Verify review ran cleanly
+        if: always()
+        env:
+          EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+        run: |
+          set -euo pipefail
+          if [ -z "${EXEC_FILE:-}" ] || [ ! -f "$EXEC_FILE" ]; then
+            echo "::notice::No execution log (review skipped or produced no output); nothing to verify."
+            exit 0
+          fi
+          # EXEC_FILE holds the RAW SDKMessage[] written by claude-code-action's
+          # writeExecutionFile(). The real field is the array
+          # `permission_denials`; `permission_denials_count` is a display-only
+          # field synthesized by the action's console-log sanitizer and is
+          # normally absent, so reading it ALONE silently resolves to 0
+          # regardless of actual denials (#1210).
+          #
+          # AGGREGATE ACROSS THE WHOLE LOG, not `[.[] | select(.type=="result")]
+          # | last` (#1229). /code-review spawns subagents and the stream can
+          # carry more than one `result`; a trailing result reporting 0 SHADOWS
+          # the real aggregate under `last`. Field evidence on this exact shared
+          # plugin: redrobot#1371 / PR #1362 run 28666054188 — the action's own
+          # summary reported 11 denials while a `last`-selecting guard read 0
+          # and passed green. Take the max of the recursive count-field scan and
+          # the size of the unioned permission_denials[] arrays, so neither a
+          # zeroed trailing result nor a relocated field can mask a denial.
+          is_error=$(jq -r 'any(.[] | select(.type == "result"); .is_error == true)' "$EXEC_FILE")
+          count_field=$(jq -r '[.. | .permission_denials_count? // empty] | max // 0' "$EXEC_FILE")
+          count_array=$(jq -r '[.. | .permission_denials? // empty] | add // [] | length' "$EXEC_FILE")
+          denials=$(( count_field > count_array ? count_field : count_array ))
+          echo "Review result: is_error=$is_error permission_denials_count=$denials"
+          if [ "$is_error" = "true" ]; then
+            echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
+            exit 1
+          fi
+          # STRICT TRIPWIRE — canon default. See the policy note above before
+          # changing this; a repo on the blinded-only policy must say so.
+          if [ "$denials" -gt 0 ]; then
+            echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
+            echo "Denied tool calls:"
+            jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
+                   | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
+              "$EXEC_FILE" 2>/dev/null | sort -u || true
+            exit 1
+          fi
+          echo "::notice::Code review ran cleanly (0 permission denials)."
+
   verify-verdict:
     name: verify-verdict
     needs: [attempt-1, attempt-2]
@@ -119,6 +269,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # #1228: the head-lineage probe lists this workflow's own runs via the
+      # Actions API. Without `actions: read` the query 404s and, under
+      # `set -euo pipefail`, the step dies — every PR would block on an
+      # infrastructure gap rather than on a review verdict.
+      actions: read
     steps:
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). This step
       # turns the `review` check into a real verdict — without it the check is
@@ -148,7 +303,11 @@ jobs:
       #     "Found N issues:" (advisory, #956), and MINOR/NITPICK/LOW/INFO/
       #     MEDIUM-only severity sections (#963).
       #   - Selected-but-unrecognized comment → exit 1, fail-closed (#957).
-      #   - No selected comment at all → pass (plugin legitimately skipped).
+      #   - No selected comment at all → NOT an automatic pass (#1228). Probe
+      #     the PR's head lineage: if any code-review run over this PR's own
+      #     commits ended in failure, every review attempt died before it could
+      #     post and the PR was never reviewed → fail closed. A non-OPEN PR
+      #     (post-factum workflow_dispatch) passes — nothing left to gate.
       - name: Verify review verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -161,7 +320,11 @@ jobs:
           # a stale prior-SHA comment wrongly BLOCKS a clean head or wrongly
           # PASSES a dirty head when the latest review errored and posted nothing.
           # ISO-8601 UTC timestamps (…Z) compare correctly as plain strings.
-          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          pr_json=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,state)
+          HEAD_SHA=$(jq -r '.headRefOid' <<<"$pr_json")
+          # PR_STATE (#1228) gates the post-factum carve-out below: OPEN |
+          # MERGED | CLOSED.
+          PR_STATE=$(jq -r '.state' <<<"$pr_json")
           HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
 
           # Selection happens in standalone jq, not gh's --jq: gh rejects --slurp
@@ -182,9 +345,48 @@ jobs:
           body=$(jq -r '.freshBody' <<<"$sel")
 
           if [ "$total" -eq 0 ]; then
-            # No /code-review comment at all — the plugin legitimately skipped
-            # this PR (draft / closed / already reviewed / not-eligible).
-            echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
+            # No /code-review comment at all. Comment-absence alone does NOT
+            # mean "the plugin skipped" — it is ambiguous, and must be
+            # disambiguated in this order (#1228):
+            #
+            #   1. Non-OPEN PR. A workflow_dispatch re-run against a merged/
+            #      closed PR: the plugin correctly declines and posts nothing.
+            #      No merge left to gate — failing closed is pure noise. PASS.
+            #   2. Never reviewed. Every code-review run over this PR's own
+            #      commits CONCLUDED IN FAILURE, so no attempt ever got far
+            #      enough to post a verdict. jarvis PR #1226 auto-merged
+            #      completely un-reviewed through exactly this hole: three runs
+            #      died on permission denials, a later auto-rebase push skipped
+            #      review as designed, and the gate read the missing comment as
+            #      "plugin skipped". FAIL CLOSED.
+            #   3. Otherwise — a genuine skip (draft / not-eligible / no
+            #      substantive code) over a clean lineage. PASS.
+            if [ "$PR_STATE" != "OPEN" ]; then
+              echo "::notice::PR is $PR_STATE and has no /code-review comment; nothing left to gate on a post-factum run. Treating as pass."
+              exit 0
+            fi
+
+            # Head-lineage probe. Intersect this workflow's FAILED runs with the
+            # PR's own commit SHAs, so another PR's broken review can never block
+            # this one. Only `conclusion == "failure"` counts — success /
+            # cancelled / skipped / still-running are not evidence of a dead
+            # attempt. The currently-executing run is excluded by id so a re-run
+            # can never self-block on its own row.
+            lineage_shas=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+              | jq -rs 'add | map(.sha)')
+            LINEAGE_FAILED=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
+              | jq -rs --argjson shas "$lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
+                  [ .[].workflow_runs[]
+                    | select(.conclusion == "failure")
+                    | select((.id | tostring) != $cur)
+                    | select(.head_sha as $s | $shas | index($s) != null) ]
+                  | length')
+            if [ "$LINEAGE_FAILED" -gt 0 ]; then
+              echo "::error::No /code-review verdict comment exists and $LINEAGE_FAILED code-review run(s) over this PR's commits ended in failure. Every review attempt died before it could post — this PR has never been reviewed. Failing closed (#1228); fix the failing run and re-review."
+              exit 1
+            fi
+
+            echo "::notice::No /code-review comment present and no code-review run over this PR's commits failed; plugin legitimately skipped. Treating as pass."
             exit 0
           fi
 
