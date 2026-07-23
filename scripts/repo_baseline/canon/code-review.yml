@@ -269,6 +269,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      # #1228: the head-lineage probe lists this workflow's own runs via the
+      # Actions API. Without `actions: read` the query 404s and, under
+      # `set -euo pipefail`, the step dies — every PR would block on an
+      # infrastructure gap rather than on a review verdict.
+      actions: read
     steps:
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). This step
       # turns the `review` check into a real verdict — without it the check is
@@ -298,7 +303,11 @@ jobs:
       #     "Found N issues:" (advisory, #956), and MINOR/NITPICK/LOW/INFO/
       #     MEDIUM-only severity sections (#963).
       #   - Selected-but-unrecognized comment → exit 1, fail-closed (#957).
-      #   - No selected comment at all → pass (plugin legitimately skipped).
+      #   - No selected comment at all → NOT an automatic pass (#1228). Probe
+      #     the PR's head lineage: if any code-review run over this PR's own
+      #     commits ended in failure, every review attempt died before it could
+      #     post and the PR was never reviewed → fail closed. A non-OPEN PR
+      #     (post-factum workflow_dispatch) passes — nothing left to gate.
       - name: Verify review verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -311,7 +320,11 @@ jobs:
           # a stale prior-SHA comment wrongly BLOCKS a clean head or wrongly
           # PASSES a dirty head when the latest review errored and posted nothing.
           # ISO-8601 UTC timestamps (…Z) compare correctly as plain strings.
-          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          pr_json=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,state)
+          HEAD_SHA=$(jq -r '.headRefOid' <<<"$pr_json")
+          # PR_STATE (#1228) gates the post-factum carve-out below: OPEN |
+          # MERGED | CLOSED.
+          PR_STATE=$(jq -r '.state' <<<"$pr_json")
           HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
 
           # Selection happens in standalone jq, not gh's --jq: gh rejects --slurp
@@ -332,9 +345,48 @@ jobs:
           body=$(jq -r '.freshBody' <<<"$sel")
 
           if [ "$total" -eq 0 ]; then
-            # No /code-review comment at all — the plugin legitimately skipped
-            # this PR (draft / closed / already reviewed / not-eligible).
-            echo "::notice::No /code-review comment present; plugin likely skipped. Treating as pass."
+            # No /code-review comment at all. Comment-absence alone does NOT
+            # mean "the plugin skipped" — it is ambiguous, and must be
+            # disambiguated in this order (#1228):
+            #
+            #   1. Non-OPEN PR. A workflow_dispatch re-run against a merged/
+            #      closed PR: the plugin correctly declines and posts nothing.
+            #      No merge left to gate — failing closed is pure noise. PASS.
+            #   2. Never reviewed. Every code-review run over this PR's own
+            #      commits CONCLUDED IN FAILURE, so no attempt ever got far
+            #      enough to post a verdict. jarvis PR #1226 auto-merged
+            #      completely un-reviewed through exactly this hole: three runs
+            #      died on permission denials, a later auto-rebase push skipped
+            #      review as designed, and the gate read the missing comment as
+            #      "plugin skipped". FAIL CLOSED.
+            #   3. Otherwise — a genuine skip (draft / not-eligible / no
+            #      substantive code) over a clean lineage. PASS.
+            if [ "$PR_STATE" != "OPEN" ]; then
+              echo "::notice::PR is $PR_STATE and has no /code-review comment; nothing left to gate on a post-factum run. Treating as pass."
+              exit 0
+            fi
+
+            # Head-lineage probe. Intersect this workflow's FAILED runs with the
+            # PR's own commit SHAs, so another PR's broken review can never block
+            # this one. Only `conclusion == "failure"` counts — success /
+            # cancelled / skipped / still-running are not evidence of a dead
+            # attempt. The currently-executing run is excluded by id so a re-run
+            # can never self-block on its own row.
+            lineage_shas=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+              | jq -rs 'add | map(.sha)')
+            LINEAGE_FAILED=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
+              | jq -rs --argjson shas "$lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
+                  [ .[].workflow_runs[]
+                    | select(.conclusion == "failure")
+                    | select((.id | tostring) != $cur)
+                    | select(.head_sha as $s | $shas | index($s) != null) ]
+                  | length')
+            if [ "$LINEAGE_FAILED" -gt 0 ]; then
+              echo "::error::No /code-review verdict comment exists and $LINEAGE_FAILED code-review run(s) over this PR's commits ended in failure. Every review attempt died before it could post — this PR has never been reviewed. Failing closed (#1228); fix the failing run and re-review."
+              exit 1
+            fi
+
+            echo "::notice::No /code-review comment present and no code-review run over this PR's commits failed; plugin legitimately skipped. Treating as pass."
             exit 0
           fi
 
