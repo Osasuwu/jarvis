@@ -84,40 +84,44 @@ jobs:
       # the last `result` object. Do not "simplify" this back to `| last` — see
       # the inline comment below for the field evidence.
       #
-      # BLOCKING POLICY is deliberately NOT uniform. Two policies exist and the
-      # difference is design, not drift. If you find a repo whose policy
-      # disagrees with its declaration here, THAT is drift:
+      # BLOCKING POLICY — blinded-only is the canon default for ALL owned
+      # repos (#1242, decision bf771ebd):
       #
-      #   strict  (canon default — jarvis)
-      #     denials > 0 ⇒ fail, unconditionally.
-      #     Rationale: jarvis's allowlist is a maintained superset and a clean
-      #     run is empirically achievable (0 denials verified on run
-      #     29986227927). Under those conditions the denial count is a true
-      #     regression tripwire, and it is the gate that actually caught the
-      #     shared-plugin defect behind #1223/#1227. Standing mandate
-      #     (`code_review_allowlist_drift_class`, decision `faaf6671`): widen
-      #     the allowlist, never soften this gate.
-      #
-      #   blinded-only  (redrobot — declared exception, decision `f96089ee`,
-      #                  redrobot#1408)
+      #   blinded-only
       #     denials > 0 fails ONLY when the run also posted no fresh verdict
-      #     for the head SHA; denials are logged either way.
-      #     Rationale: redrobot's recurring denial class is compositional
-      #     pipelines whose second commands (`python3 -c`, `jq`, `awk`) are
-      #     arbitrary code execution that must NEVER be allowlisted. Widening
-      #     is therefore structurally unable to reach 0, so the denial COUNT is
-      #     the wrong signal there and "was the reviewer blinded" is the right
-      #     one. Converging redrobot up to strict would wedge its gate red on
-      #     denials it cannot legitimately eliminate.
+      #     for the head SHA (the reviewer was blinded and never completed);
+      #     denials are logged loudly either way.
       #
-      # Both policies share the same detection and the same fail-closed default;
-      # they differ only in whether a *non-blinding* denial blocks the merge.
-      # Neither repo may move DOWNWARD from its declared policy.
+      # History: until #1242 jarvis ran a STRICT tripwire (denials > 0 ⇒ fail
+      # unconditionally, #1229, mandate `faaf6671` "widen the allowlist, never
+      # soften") while redrobot was a declared blinded-only exception
+      # (decision `f96089ee`, redrobot#1408). The strict premise — 0 denials
+      # reachable via allowlist widening — was falsified in jarvis itself:
+      # observed denial classes are sandbox write-boundary redirects
+      # (PR #1241: `git show > /tmp/...` blocked by the workspace-only write
+      # sandbox, not a prefix miss) and never-allowlistable exec shapes
+      # (PR #1243: `python3 - <<EOF` heredoc, `find -exec`). Both runs
+      # completed and posted verdicts; strict false-failed healthy reviews.
+      # So the repos converged on redrobot's model and the per-repo policy
+      # asymmetry is gone.
+      #
+      # The FAIL-CLOSED FLOOR is non-negotiable: denials with NO fresh verdict
+      # must exit 1, and is_error=true must exit 1. Weakening either (e.g.
+      # "always pass, just warn") IS drift — the parity tests pin this floor.
+      # Accepted residual risk: a fresh verdict does not prove the reviewer
+      # recovered from every denial; mitigants — the denied op was BLOCKED by
+      # the sandbox (never executed), and the verdict guard still classifies
+      # the posted comment, fail-closing on blocking/unparseable verdicts.
       # ---------------------------------------------------------------------
       - name: Verify review ran cleanly
         if: always()
         env:
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          # Needed for the verdict-presence query below: a denial only fails
+          # the gate when it left NO fresh verdict for the head SHA (#1242).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ -z "${EXEC_FILE:-}" ] || [ ! -f "$EXEC_FILE" ]; then
@@ -149,17 +153,39 @@ jobs:
             echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
             exit 1
           fi
-          # STRICT TRIPWIRE — canon default. See the policy note above before
-          # changing this; a repo on the blinded-only policy must say so.
-          if [ "$denials" -gt 0 ]; then
-            echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
-            echo "Denied tool calls:"
-            jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
-                   | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
-              "$EXEC_FILE" 2>/dev/null | sort -u || true
-            exit 1
+          if [ "$denials" -eq 0 ]; then
+            echo "::notice::Code review ran cleanly (0 permission denials)."
+            exit 0
           fi
-          echo "::notice::Code review ran cleanly (0 permission denials)."
+          # BLINDED-ONLY — canon default (#1242, decision bf771ebd; see the
+          # policy note above). Denials fail ONLY when the run posted no fresh
+          # verdict for the head SHA. The fail-closed floor below (denials +
+          # no fresh verdict ⇒ exit 1) is pinned by the parity tests — do not
+          # weaken it to warn-and-pass.
+          echo "::warning::Code review hit $denials permission denial(s). Checking whether a fresh verdict was still posted before deciding to fail."
+          echo "Denied tool calls:"
+          jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
+                 | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
+            "$EXEC_FILE" 2>/dev/null | sort -u || true
+
+          # Freshness-anchored verdict-presence check — same comment selector
+          # and head-time anchor as the verify-verdict job. If the query
+          # fails, `set -e` aborts the step ⇒ fail closed, never pass on an
+          # unverifiable claim.
+          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
+          fresh=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            | jq -rs --arg head "$HEAD_TIME" 'add
+                | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
+                | map(select(.created_at >= $head)) | length')
+
+          if [ "${fresh:-0}" -gt 0 ]; then
+            echo "::warning::A fresh /code-review verdict was posted for $HEAD_SHA despite $denials denial(s); treating denials as non-fatal (#1242). The verify-verdict job classifies the posted comment."
+            exit 0
+          fi
+
+          echo "::error::Code review hit $denials permission denial(s) AND posted no fresh verdict for $HEAD_SHA — the reviewer was blinded and never completed. Failing closed; re-run code-review."
+          exit 1
 
   attempt-2:
     name: attempt-2
@@ -218,6 +244,11 @@ jobs:
         if: always()
         env:
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          # Needed for the verdict-presence query below: a denial only fails
+          # the gate when it left NO fresh verdict for the head SHA (#1242).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ -z "${EXEC_FILE:-}" ] || [ ! -f "$EXEC_FILE" ]; then
@@ -249,17 +280,39 @@ jobs:
             echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
             exit 1
           fi
-          # STRICT TRIPWIRE — canon default. See the policy note above before
-          # changing this; a repo on the blinded-only policy must say so.
-          if [ "$denials" -gt 0 ]; then
-            echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
-            echo "Denied tool calls:"
-            jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
-                   | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
-              "$EXEC_FILE" 2>/dev/null | sort -u || true
-            exit 1
+          if [ "$denials" -eq 0 ]; then
+            echo "::notice::Code review ran cleanly (0 permission denials)."
+            exit 0
           fi
-          echo "::notice::Code review ran cleanly (0 permission denials)."
+          # BLINDED-ONLY — canon default (#1242, decision bf771ebd; see the
+          # policy note above). Denials fail ONLY when the run posted no fresh
+          # verdict for the head SHA. The fail-closed floor below (denials +
+          # no fresh verdict ⇒ exit 1) is pinned by the parity tests — do not
+          # weaken it to warn-and-pass.
+          echo "::warning::Code review hit $denials permission denial(s). Checking whether a fresh verdict was still posted before deciding to fail."
+          echo "Denied tool calls:"
+          jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
+                 | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
+            "$EXEC_FILE" 2>/dev/null | sort -u || true
+
+          # Freshness-anchored verdict-presence check — same comment selector
+          # and head-time anchor as the verify-verdict job. If the query
+          # fails, `set -e` aborts the step ⇒ fail closed, never pass on an
+          # unverifiable claim.
+          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
+          fresh=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            | jq -rs --arg head "$HEAD_TIME" 'add
+                | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
+                | map(select(.created_at >= $head)) | length')
+
+          if [ "${fresh:-0}" -gt 0 ]; then
+            echo "::warning::A fresh /code-review verdict was posted for $HEAD_SHA despite $denials denial(s); treating denials as non-fatal (#1242). The verify-verdict job classifies the posted comment."
+            exit 0
+          fi
+
+          echo "::error::Code review hit $denials permission denial(s) AND posted no fresh verdict for $HEAD_SHA — the reviewer was blinded and never completed. Failing closed; re-run code-review."
+          exit 1
 
   verify-verdict:
     name: verify-verdict

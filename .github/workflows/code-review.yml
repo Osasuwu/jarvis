@@ -260,13 +260,29 @@ jobs:
       # When (b) happens the verdict guard says "errored, re-run" but a re-run
       # hits the SAME wall silently. This step reads the action's execution log
       # and fails LOUDLY with the exact denied tool calls, so allowlist drift is
-      # self-diagnosing instead of presenting as a flaky verdict gate. jarvis is
-      # the allowlist source-of-truth (already a superset), so in steady state
-      # this should always pass with 0 denials — it is a regression tripwire.
+      # self-diagnosing instead of presenting as a flaky verdict gate.
+      #
+      # POLICY (#1242, decision bf771ebd): BLINDED-ONLY — a denial fails the
+      # gate only when it left NO fresh verdict for the head SHA. This
+      # supersedes the #1229 strict tripwire (mandate faaf6671: "widen the
+      # allowlist, never soften"), whose premise — 0 denials reachable via
+      # allowlist widening — was falsified by the observed denial classes:
+      # sandbox write-boundary redirects (PR #1241: `git show > /tmp/...`
+      # blocked by the workspace-only write sandbox, not a prefix miss) and
+      # never-allowlistable exec shapes (PR #1243: `python3 - <<EOF` heredoc,
+      # `find -exec`). Both runs completed and posted their verdicts; the
+      # strict gate false-failed healthy reviews. Same conclusion redrobot
+      # reached earlier (redrobot#1408, decision f96089ee) — the two repos now
+      # share one canon policy.
       - name: Verify review ran cleanly
         if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true')
         env:
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          # Needed for the verdict-presence query below: a denial only fails the
+          # gate when it left NO fresh verdict for the head SHA (#1242).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ steps.pr.outputs.number }}
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           if [ -z "${EXEC_FILE:-}" ] || [ ! -f "$EXEC_FILE" ]; then
@@ -302,19 +318,51 @@ jobs:
             echo "::error::Code review run reported is_error=true — the model call failed. Failing loudly (not masking as a verdict-guard fail-closed)."
             exit 1
           fi
-          # STRICT TRIPWIRE (jarvis policy, #1229): any denial fails the gate.
-          # Deliberately NOT redrobot's blinded-only model — see the policy note
-          # in scripts/repo_baseline/canon/code-review.yml for why the two repos
-          # differ by design. Mandate: widen the allowlist, never soften this.
-          if [ "$denials" -gt 0 ]; then
-            echo "::error::Code review hit $denials permission denial(s) — its subagents were blocked from tools they need, so the review is incomplete and may not have posted. Add the tools below to the claude_args --allowed-tools and re-run."
-            echo "Denied tool calls:"
-            jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
-                   | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
-              "$EXEC_FILE" 2>/dev/null | sort -u || true
-            exit 1
+          if [ "$denials" -eq 0 ]; then
+            echo "::notice::Code review ran cleanly (0 permission denials)."
+            exit 0
           fi
-          echo "::notice::Code review ran cleanly (0 permission denials)."
+          # BLINDED-ONLY (#1242, decision bf771ebd; canon policy shared with
+          # redrobot per f96089ee): denials>0 fails the gate ONLY when the run
+          # posted no fresh verdict for the head — i.e. the denial actually
+          # BLINDED the reviewer into never completing. The observed denial
+          # classes (sandbox write-boundary redirects, `python3` heredocs,
+          # `find -exec`) are structurally un-allowlistable, so the denial
+          # COUNT is the wrong signal; a run that hit one yet still posted a
+          # complete verdict is not blinded. Accepted residual risk: a fresh
+          # verdict does not prove the reviewer recovered from every denial —
+          # mitigated because the denied op was BLOCKED by the sandbox (never
+          # executed) and the verdict guard below still classifies the posted
+          # comment, fail-closing on blocking/unparseable verdicts. Always log
+          # the denied calls loudly (allowlist tuning signal — add read-only
+          # ones if they recur; NEVER allowlist python3/jq/awk/sed).
+          echo "::warning::Code review hit $denials permission denial(s). Checking whether a fresh verdict was still posted before deciding to fail."
+          echo "Denied tool calls:"
+          jq -r '[.. | .permission_denials? // empty] | add // [] | .[]
+                 | "  - \(.tool_name): \(.tool_input | tostring | .[0:160])"' \
+            "$EXEC_FILE" 2>/dev/null | sort -u || true
+
+          # Freshness-anchored verdict-presence check — same comment selector
+          # and head-time anchor as the verdict guard below (#993). Plain
+          # HEAD_TIME is safe here: this step is skipped on autobase pushes
+          # (`steps.autobase.outputs.skip != 'true'` above), so the #1134
+          # non-bot-head anchor case cannot arise. If the query fails, the
+          # `set -e` pipeline aborts the step → fail closed, never pass on an
+          # unverifiable claim.
+          HEAD_SHA=$(gh pr view "$PR" --repo "$REPO" --json headRefOid -q .headRefOid)
+          HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
+          fresh=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            | jq -rs --arg head "$HEAD_TIME" 'add
+                | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
+                | map(select(.created_at >= $head)) | length')
+
+          if [ "${fresh:-0}" -gt 0 ]; then
+            echo "::warning::A fresh /code-review verdict was posted for $HEAD_SHA despite $denials denial(s); treating denials as non-fatal (#1242). The verdict guard below classifies the posted comment."
+            exit 0
+          fi
+
+          echo "::error::Code review hit $denials permission denial(s) AND posted no fresh verdict for $HEAD_SHA — the reviewer was blinded and never completed. Failing closed; re-run code-review."
+          exit 1
 
       - name: Verify review verdict
         # #1134: RUN on the osasuwu-ci[bot] auto-rebase push too (do NOT gate on
@@ -413,9 +461,10 @@ jobs:
             #      auto-merge shipped the PR completely un-reviewed. FAIL CLOSED.
             #   3. Ran-but-silent. The review step WAS eligible and ran. The
             #      prior "Verify review ran cleanly" step already confirmed
-            #      is_error=false and 0 permission denials (this step would
-            #      never be reached otherwise — that step exits 1 on either
-            #      failure), yet the model posted zero comments. Passing it
+            #      is_error=false, and under its blinded-only policy (#1242) a
+            #      denial-bearing run with NO fresh verdict fails there — so
+            #      reaching here with zero comments implies the run was in
+            #      fact denial-free, yet the model posted zero comments. Passing it
             #      ships the PR unreviewed (PR #1179 incident). FAIL CLOSED.
             #      EXEC_FILE is only ever populated when the review step
             #      actually ran, so its presence alone identifies this state.
