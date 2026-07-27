@@ -123,18 +123,20 @@ def compute_denials_buggy(result: dict) -> int:
     return int(result.get("permission_denials_count") or 0)
 
 
-def gate_passes(exec_file: list[dict]) -> bool:
-    """True if the step would exit 0 (no is_error, no denials).
+def gate_passes(exec_file: list[dict], *, fresh_verdict_exists: bool = False) -> bool:
+    """True if the step would exit 0.
 
-    Encodes the STRICT tripwire (jarvis policy, #1229): any denial fails.
-    redrobot runs the blinded-only policy by declared exception — see the
-    policy note in scripts/repo_baseline/canon/code-review.yml.
+    Encodes the BLINDED-ONLY policy (#1242, decision bf771ebd — canon default
+    for all owned repos, converged on redrobot's f96089ee model): is_error
+    always fails; denials fail ONLY when no fresh verdict comment exists for
+    the head SHA (the reviewer was blinded and never completed). The default
+    `fresh_verdict_exists=False` mirrors the step's fail-closed floor.
     """
     if compute_is_error(exec_file):
         return False
-    if compute_denials(exec_file) > 0:
-        return False
-    return True
+    if compute_denials(exec_file) == 0:
+        return True
+    return fresh_verdict_exists
 
 
 # -- Fixtures mirroring the real raw SDKMessage[] shape ---------------------
@@ -358,14 +360,86 @@ class TestRanCleanlyStepWiring:
         run = ran_cleanly_step["run"]
         assert "[.. | .permission_denials? // empty] | add // [] | .[]" in run
 
-    def test_strict_tripwire_is_the_jarvis_policy(self, ran_cleanly_step):
-        # AC3 (#1229): jarvis's gate is no weaker than the strict tripwire —
-        # ANY denial fails, with no "was a fresh verdict posted" escape hatch
-        # (that is redrobot's declared exception, decision f96089ee).
+    def test_blinded_only_is_the_policy(self, ran_cleanly_step):
+        # #1242 (decision bf771ebd): denials are non-fatal when a fresh
+        # verdict exists for the head SHA. Supersedes the #1229 strict
+        # tripwire (mandate faaf6671), whose "0 denials via allowlist
+        # widening" premise was falsified by sandbox write-boundary and
+        # never-allowlistable exec denial classes (PRs #1241/#1243).
         run = ran_cleanly_step["run"]
-        assert 'if [ "$denials" -gt 0 ]; then' in run
-        assert "STRICT TRIPWIRE" in run
-        assert "created_at" not in _code_only(run), (
-            "a freshness/blinded-only carve-out would soften jarvis below the "
-            "strict tripwire — mandate faaf6671 forbids moving downward"
+        assert "BLINDED-ONLY" in run
+        code = _code_only(run)
+        # The forgiveness branch: fresh verdict ⇒ denials non-fatal.
+        assert "created_at >= $head" in code
+        assert 'if [ "${fresh:-0}" -gt 0 ]; then' in code
+
+    def test_fail_closed_floor_is_pinned(self, ran_cleanly_step):
+        # The carve-out must not widen to always-pass: denials with NO fresh
+        # verdict exit 1, and is_error exits 1. This is the ratchet that
+        # replaces the strict tripwire's (#1242, cold-critic disposition).
+        run = ran_cleanly_step["run"]
+        assert "posted no fresh verdict" in run
+        assert run.count("exit 1") >= 2, (
+            "both fail paths (is_error, blinded denial) must hard-exit 1"
         )
+
+    def test_freshness_query_uses_head_commit_anchor(self, ran_cleanly_step):
+        # Same anchor as the verdict guard (#993): a comment is a verdict for
+        # THIS head only if created at/after the head commit time. Plain
+        # HEAD_TIME is safe here because the step is skipped on autobase
+        # pushes (the #1134 non-bot-head case cannot arise) — pinned below.
+        run = ran_cleanly_step["run"]
+        assert "HEAD_TIME=$(gh api \"repos/$REPO/commits/$HEAD_SHA\"" in run
+
+    def test_step_skipped_on_autobase_push(self, ran_cleanly_step):
+        # Load-bearing for the plain-HEAD_TIME anchor above: on an autobase
+        # push HEAD is the bot's merge commit and HEAD_TIME would be an
+        # anchor-trap (#1134). The step must not run there.
+        assert "steps.autobase.outputs.skip != 'true'" in ran_cleanly_step.get("if", "")
+
+
+class TestBlindedOnlyScenarios:
+    """The two observed incidents (#1242) plus the blinded case, end-to-end
+    through the Python mirror of the gate logic."""
+
+    def test_pr1241_scenario_recovered_denial_with_fresh_verdict_passes(self):
+        # Run 30037164513: 1 denial — `git show > /tmp/...` blocked by the
+        # sandbox write-boundary; subagent recovered, review completed and
+        # posted its verdict. The strict tripwire false-failed this run.
+        denial = make_denial(
+            "Bash",
+            "git show 849ca5d4:tests/ci/test_merge_train_guard.py > /tmp/pr1241_test.py",
+        )
+        exec_file = make_exec_file(is_error=False, permission_denials=[denial])
+        assert compute_denials(exec_file) == 1
+        assert gate_passes(exec_file, fresh_verdict_exists=True) is True
+
+    def test_pr1243_scenario_exec_shape_denials_with_fresh_verdict_pass(self):
+        # Run 30043773839: 2 denials — a `python3 - <<EOF` heredoc and
+        # `find -exec` — both never-allowlistable exec shapes. Review
+        # completed and posted.
+        denials = [
+            make_denial("Bash", "python3 - <<'EOF'\nprint('x')\nEOF"),
+            make_denial("Bash", "find . -name '*.py' -exec grep -l foo {} \\;"),
+        ]
+        exec_file = make_exec_file(is_error=False, permission_denials=denials)
+        assert compute_denials(exec_file) == 2
+        assert gate_passes(exec_file, fresh_verdict_exists=True) is True
+
+    def test_blinded_denial_without_fresh_verdict_fails_closed(self):
+        # The floor: a denial that left no fresh verdict means the reviewer
+        # was blinded and never completed — fail, exactly as before #1242.
+        exec_file = make_exec_file(is_error=False, permission_denials=[make_denial()])
+        assert gate_passes(exec_file, fresh_verdict_exists=False) is False
+
+    def test_is_error_fails_even_with_fresh_verdict(self):
+        # is_error is not forgiven by a fresh comment — a failed model call
+        # must surface loudly regardless.
+        exec_file = make_exec_file(is_error=True, permission_denials=[])
+        assert gate_passes(exec_file, fresh_verdict_exists=True) is False
+
+    def test_clean_run_needs_no_verdict_lookup(self):
+        # 0 denials passes without consulting comments at all (the step
+        # exits 0 before the gh queries — no API dependency on clean runs).
+        exec_file = make_exec_file(is_error=False, permission_denials=[])
+        assert gate_passes(exec_file, fresh_verdict_exists=False) is True

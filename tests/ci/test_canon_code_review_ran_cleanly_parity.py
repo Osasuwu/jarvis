@@ -6,7 +6,7 @@ them. The asymmetry cost real diagnosis time: identical plugin behaviour
 produced opposite CI outcomes, which read as jarvis-specific config drift rather
 than the shared plugin bug it actually was.
 
-The resolution (decision `8cfd030b`, mandate `faaf6671`) splits the gate in two:
+The resolution (decision `8cfd030b`, mandate `faaf6671`) split the gate in two:
 
   DETECTION is uniform everywhere — aggregate denials across the WHOLE
   execution log. Selecting a single `result` with `| last` is the #1229
@@ -14,13 +14,19 @@ The resolution (decision `8cfd030b`, mandate `faaf6671`) splits the gate in two:
   summary reported 11 denials while a `last`-selecting guard read 0 and passed
   green). Every repo, every attempt job, same detection.
 
-  BLOCKING POLICY is deliberately per-repo. jarvis is the canon default:
-  a STRICT TRIPWIRE — any denial fails. redrobot is a declared exception
-  (decision `f96089ee`, redrobot#1408) because `python3 -c` / `jq` / `awk` are
-  arbitrary code execution that must never be allowlisted there, making a
-  0-denial run structurally unreachable.
+  BLOCKING POLICY: as of #1242 (decision `bf771ebd`) the canon default is
+  BLINDED-ONLY everywhere — denials fail only when the run also posted no
+  fresh verdict for the head SHA. This superseded jarvis's strict tripwire
+  (mandate `faaf6671`, #1229) after its premise — 0 denials reachable via
+  allowlist widening — was falsified in jarvis itself: the observed denial
+  classes (sandbox write-boundary redirects on PR #1241, `python3` heredoc /
+  `find -exec` exec shapes on PR #1243) are structurally un-allowlistable,
+  the same conclusion that earlier earned redrobot its `f96089ee` exception.
+  Both repos now share one policy; the per-repo asymmetry is gone.
 
-This guard pins the uniform half and pins jarvis at strict. It compares three
+This guard pins the uniform detection half and pins the blinded-only policy's
+FAIL-CLOSED FLOOR (denials + no fresh verdict ⇒ exit 1; is_error ⇒ exit 1) so
+the carve-out cannot silently widen to always-pass. It compares three
 copies of the step — live `review`, canon `attempt-1`, canon `attempt-2` — since
 the canon's retry wrapper needs the gate inside each attempt job (EXEC_FILE is a
 runner-local path and cannot cross a job boundary).
@@ -150,25 +156,53 @@ class TestUniformDetection:
         )
 
 
-class TestStrictTripwireIsCanonDefault:
-    """AC3 (#1229): the canon policy is no weaker than jarvis's strict gate."""
+class TestBlindedOnlyIsCanonDefault:
+    """#1242 (decision bf771ebd): blinded-only everywhere, floor pinned."""
 
-    def test_strict_tripwire_present(self, all_runs):
+    def test_blinded_only_marker_present(self, all_runs):
         for where, run in all_runs.items():
-            assert "STRICT TRIPWIRE" in run, f"{where} lost the strict-tripwire marker"
-            assert 'if [ "$denials" -gt 0 ]; then' in run, f"{where} must fail on ANY denial"
+            assert "BLINDED-ONLY" in run, f"{where} lost the blinded-only marker"
 
-    def test_no_freshness_carveout(self, all_runs):
-        # redrobot's blinded-only model resolves HEAD_SHA/HEAD_TIME and forgives
-        # denials when a fresh verdict comment exists. That is its declared
-        # exception (f96089ee) — it must not leak into the canon default.
+    def test_forgiveness_branch_present(self, all_runs):
+        # Denials are non-fatal ONLY via the freshness-anchored verdict check:
+        # a /code-review comment created at/after the head commit time.
         for where, run in all_runs.items():
-            for carveout in ("created_at >=", "HEAD_TIME"):
-                assert carveout not in _code_only(run), (
-                    f"{where} carries redrobot's blinded-only carve-out "
-                    f"({carveout!r}). Neither repo may move DOWNWARD from its "
-                    f"declared policy — mandate faaf6671."
-                )
+            code = _code_only(run)
+            assert "created_at >= $head" in code, (
+                f"{where} lost the freshness-anchored verdict-presence check — "
+                f"without it a denial-bearing run either always fails (the "
+                f"#1242 false-fail) or is forgiven on a STALE comment."
+            )
+            assert 'if [ "${fresh:-0}" -gt 0 ]; then' in code, (
+                f"{where} must forgive denials only behind the fresh-verdict "
+                f"branch, defaulting to fail when the query yields nothing."
+            )
+
+    def test_fail_closed_floor_present(self, all_runs):
+        # The ratchet that replaced the strict tripwire: the carve-out must
+        # not widen to always-pass. Denials with no fresh verdict exit 1;
+        # is_error exits 1.
+        for where, run in all_runs.items():
+            code = _code_only(run)
+            assert "posted no fresh verdict" in run, (
+                f"{where} lost the blinded fail path — denials that left no "
+                f"fresh verdict mean the reviewer never completed; exit 1."
+            )
+            assert code.count("exit 1") >= 2, (
+                f"{where} must hard-exit 1 on both fail paths (is_error, "
+                f"blinded denial) — decision bf771ebd pins this floor."
+            )
+
+    def test_no_unconditional_denial_fail(self, all_runs):
+        # The strict shape (any denial ⇒ error+exit) must be gone — it is the
+        # #1242 false-fail. `denials -gt 0` may appear only as the entry to
+        # the blinded-only branch, never followed directly by an ::error.
+        for where, run in all_runs.items():
+            code = _code_only(run)
+            assert "STRICT TRIPWIRE" not in run, (
+                f"{where} regressed to the strict tripwire — superseded by "
+                f"#1242 (decision bf771ebd)."
+            )
 
 
 class TestCanonPolicyNoteIsDocumented:
@@ -189,9 +223,11 @@ class TestCanonPolicyNoteIsDocumented:
         [
             "REVIEW-CLEANLINESS GATE",
             "#1229",
+            "#1242",
             "strict",
             "blinded-only",
             "f96089ee",
+            "bf771ebd",
         ],
     )
     def test_policy_note_documents_the_asymmetry(self, canon_source, marker):
