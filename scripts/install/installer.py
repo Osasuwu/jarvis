@@ -615,15 +615,13 @@ def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> s
     )
 
 
-def template_content(source: Path, repo_root: Path, claude_home: Path) -> bytes:
-    """Read source, apply templating, return bytes to write at dest.
+def _template_bytes(raw: bytes, ext: str, repo_root: Path, claude_home: Path) -> bytes:
+    """Templating core shared by `template_content` and git-history reads.
 
-    For .json files: parse, rewrite relative `scripts/`/`config/` paths to
-    absolute, pretty-print. For other files: plain placeholder replace.
-    Non-text / non-json files fall back to a raw copy (no transformation).
+    For .json content: parse, rewrite relative `scripts/`/`config/` paths to
+    absolute, pretty-print. For other content: plain placeholder replace.
+    Non-text / non-json content falls back to a raw copy (no transformation).
     """
-    ext = source.suffix.lower()
-    raw = source.read_bytes()
     if ext == ".json":
         try:
             data = json.loads(raw.decode("utf-8"))
@@ -637,6 +635,32 @@ def template_content(source: Path, repo_root: Path, claude_home: Path) -> bytes:
     except UnicodeDecodeError:
         return raw
     return _substitute_placeholders(text, repo_root, claude_home).encode("utf-8")
+
+
+def template_content(source: Path, repo_root: Path, claude_home: Path) -> bytes:
+    """Read source, apply templating, return bytes to write at dest."""
+    return _template_bytes(source.read_bytes(), source.suffix.lower(), repo_root, claude_home)
+
+
+def _git_show_at(repo_root: Path, sha: str, rel_path: str) -> bytes | None:
+    """Return file bytes at `sha:rel_path` in `repo_root`'s git history.
+
+    None on any failure — no git repo, unknown sha, or the path didn't exist
+    at that commit. Callers must treat None as "no base to diff against" and
+    fall back to plain union (no pruning).
+    """
+    try:
+        result = subprocess.run(
+            ["git", "show", f"{sha}:{rel_path}"],
+            cwd=repo_root,
+            capture_output=True,
+            timeout=_ENV_SUBPROCESS_TIMEOUT,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout
 
 
 # ---------- planning ----------
@@ -841,7 +865,7 @@ def _copy_file(
 _JARVIS_OWNED_REPLACE_PARENTS = ("hooks", "mcpServers")
 
 
-def _deep_merge_jarvis_json(existing: Any, source: Any) -> Any:
+def _deep_merge_jarvis_json(existing: Any, source: Any, base: Any = None) -> Any:
     """Merge `source` onto `existing` using jarvis-aware semantics.
 
     - For dict parents named in `_JARVIS_OWNED_REPLACE_PARENTS`
@@ -859,10 +883,19 @@ def _deep_merge_jarvis_json(existing: Any, source: Any) -> Any:
       1-element list so a scalar/array mismatch unions cleanly.
     - For other non-dicts at the leaf: `source` wins.
 
+    `base` (optional) is the source's content at the previously-installed
+    commit — the missing third state that lets list-leaf merges distinguish
+    "jarvis removed this entry upstream" (prune from `existing`) from "the
+    user added this entry locally, it was never in any source version"
+    (always preserved, since it's never in `base`). Pass `None` (default) to
+    reproduce the plain union-only behavior — used when there's no previous
+    install, no git history, or the file wasn't tracked at that commit.
+
     Not a general-purpose deep-merge — tuned for the two files M3 ships.
     """
     if not isinstance(existing, dict) or not isinstance(source, dict):
         return source
+    base_dict = base if isinstance(base, dict) else {}
     out = dict(existing)
     for key, src_val in source.items():
         if (
@@ -875,26 +908,36 @@ def _deep_merge_jarvis_json(existing: Any, source: Any) -> Any:
                 merged_child[child_key] = child_val
             out[key] = merged_child
         elif isinstance(src_val, dict) and isinstance(out.get(key), dict):
-            out[key] = _deep_merge_jarvis_json(out[key], src_val)
+            out[key] = _deep_merge_jarvis_json(out[key], src_val, base_dict.get(key))
         elif isinstance(src_val, list) or isinstance(out.get(key), list):
-            out[key] = _union_list_leaf(out.get(key), src_val)
+            out[key] = _union_list_leaf(out.get(key), src_val, base_dict.get(key))
         else:
             out[key] = src_val
     return out
 
 
-def _union_list_leaf(existing: Any, source: Any) -> list[Any]:
+def _union_list_leaf(existing: Any, source: Any, base: Any = None) -> list[Any]:
     """Stable-dedup union of two list-valued leaves, existing entries first.
 
     Either argument may be a scalar (coerced to a 1-element list) or absent
     (``None`` → empty list). Preserves order and drops duplicates by value,
     so re-applying the installer is idempotent. See `_deep_merge_jarvis_json`
     for why list leaves union rather than source-wins.
+
+    When `base` is given, entries present in `base` but absent from `source`
+    are treated as deliberately removed upstream and pruned from `existing`
+    before the union — this is what lets a source-side deletion actually
+    reach the mirror instead of surviving forever via the union. Entries
+    never seen in `base` (genuinely user-added) are untouched by pruning.
     """
     existing_items = (
         existing if isinstance(existing, list) else ([] if existing is None else [existing])
     )
     source_items = source if isinstance(source, list) else ([] if source is None else [source])
+    if base is not None:
+        base_items = base if isinstance(base, list) else [base]
+        removed = [item for item in base_items if item not in source_items]
+        existing_items = [item for item in existing_items if item not in removed]
     merged: list[Any] = list(existing_items)
     for item in source_items:
         if item not in merged:
@@ -908,12 +951,19 @@ def _merge_json_file(
     template: bool,
     repo_root: Path,
     claude_home: Path,
+    previous_sha: str | None = None,
 ) -> None:
     """Write `src` to `dest`, deep-merging with any existing dest JSON.
 
     If dest exists and parses as JSON, merge (user keys jarvis doesn't own
     are preserved). If dest is absent or unparseable, fall through to a
     plain write — identical to `_copy_file` in that case.
+
+    `previous_sha`, when given, is used to fetch `src`'s content as of the
+    previously-installed commit (`git show <sha>:<rel_path>`) as the merge's
+    "base" state — see `_deep_merge_jarvis_json`. Any failure to resolve it
+    (no git history, path not tracked at that commit, `src` outside
+    `repo_root`) degrades silently to the old union-only behavior.
     """
     if template:
         new_bytes = template_content(src, repo_root, claude_home)
@@ -928,11 +978,29 @@ def _merge_json_file(
         dest.write_bytes(new_bytes)
         return
 
+    base_data: Any = None
+    if previous_sha and dest.exists():
+        try:
+            rel_src = src.resolve().relative_to(repo_root.resolve()).as_posix()
+        except ValueError:
+            rel_src = None
+        if rel_src:
+            base_bytes = _git_show_at(repo_root, previous_sha, rel_src)
+            if base_bytes is not None:
+                if template:
+                    base_bytes = _template_bytes(
+                        base_bytes, src.suffix.lower(), repo_root, claude_home
+                    )
+                try:
+                    base_data = json.loads(base_bytes.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    base_data = None
+
     merged: Any = new_data
     if dest.exists():
         try:
             existing = json.loads(dest.read_text(encoding="utf-8"))
-            merged = _deep_merge_jarvis_json(existing, new_data)
+            merged = _deep_merge_jarvis_json(existing, new_data, base_data)
         except (OSError, json.JSONDecodeError):
             # Unparseable existing → treat as absent (backup already captured it).
             merged = new_data
@@ -1045,6 +1113,7 @@ def apply_plan(
                 action.template,
                 plan.repo_root,
                 plan.target_root,
+                plan.previous_sha,
             )
         elif action.kind == "copy_dir":
             # Re-derive include from manifest — cheaper than threading it through.

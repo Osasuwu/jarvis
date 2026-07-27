@@ -18,14 +18,7 @@
       "Edit(**/.env.development)",
       "Edit(**/.env.staging)",
       "Edit(**/.env.test)",
-      "Edit(**/.env.*.local)",
-      "Write(**/.env)",
-      "Write(**/.env.local)",
-      "Write(**/.env.production)",
-      "Write(**/.env.development)",
-      "Write(**/.env.staging)",
-      "Write(**/.env.test)",
-      "Write(**/.env.*.local)"
+      "Edit(**/.env.*.local)"
     ],
     "allow": [
       "Bash(git status)",

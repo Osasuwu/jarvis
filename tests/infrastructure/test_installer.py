@@ -1734,6 +1734,114 @@ def test_deep_merge_list_leaf_when_existing_absent() -> None:
     assert merged["fallbackModel"] == ["a", "b"]
 
 
+# ---------- three-way merge: prune source-removed entries via `base` ----------
+
+
+def test_union_list_leaf_prunes_entries_removed_from_base() -> None:
+    """An entry present in `base` (prior source) but dropped from `source`
+    (current) is pruned from `existing` — the dead-entry cleanup case."""
+    existing = ["Write(**/.env)", "Edit(**/.env)"]
+    base = ["Write(**/.env)", "Edit(**/.env)"]
+    source = ["Edit(**/.env)"]
+    merged = installer._union_list_leaf(existing, source, base)
+    assert merged == ["Edit(**/.env)"]
+
+
+def test_union_list_leaf_preserves_user_entry_never_in_base() -> None:
+    """An entry the user added locally — never present in `base` — survives
+    pruning even though `source` doesn't carry it either."""
+    existing = ["Write(**/.env)", "Bash(rm -rf *)"]
+    base = ["Write(**/.env)"]
+    source: list[str] = []
+    merged = installer._union_list_leaf(existing, source, base)
+    assert merged == ["Bash(rm -rf *)"]
+
+
+def test_union_list_leaf_no_base_reproduces_plain_union() -> None:
+    """`base=None` (the default) must behave exactly like the old two-arg
+    union — no pruning, existing entries always survive."""
+    existing = ["Write(**/.env)", "Bash(rm -rf *)"]
+    source = ["Edit(**/.env)"]
+    assert installer._union_list_leaf(existing, source) == installer._union_list_leaf(
+        existing, source, None
+    )
+    merged = installer._union_list_leaf(existing, source, None)
+    assert merged == ["Write(**/.env)", "Bash(rm -rf *)", "Edit(**/.env)"]
+
+
+def test_deep_merge_prunes_nested_list_leaf_using_base() -> None:
+    """`base` threads through nested dict recursion so
+    `permissions.deny`-style nested arrays get pruned too."""
+    existing = {"permissions": {"deny": ["Write(**/.env)", "Edit(**/.env)", "Bash(rm -rf *)"]}}
+    base = {"permissions": {"deny": ["Write(**/.env)", "Edit(**/.env)"]}}
+    source = {"permissions": {"deny": ["Edit(**/.env)"]}}
+    merged = installer._deep_merge_jarvis_json(existing, source, base)
+    assert merged["permissions"]["deny"] == ["Edit(**/.env)", "Bash(rm -rf *)"]
+
+
+def test_merge_json_prunes_source_removed_array_entries_on_reapply(
+    manifest: Path, fake_repo: Path
+) -> None:
+    """Full flow: source removes an array entry between installs (mirrors the
+    dead `Write(**/.env*)` deny-rule cleanup) — re-apply must prune it from
+    the mirror, while a genuinely user-added entry (never in any source
+    commit) survives untouched."""
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    for g in data["groups"]:
+        if g["id"] == "hooks_settings":
+            g["files"][0]["merge"] = True
+    manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    def _commit(msg: str) -> None:
+        subprocess.run(["git", "add", "-A"], cwd=fake_repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                msg,
+            ],
+            cwd=fake_repo,
+            check=True,
+        )
+
+    settings_src = fake_repo / ".claude" / "settings.json"
+    initial = json.loads(settings_src.read_text(encoding="utf-8"))
+    initial["permissions"] = {"deny": ["Write(**/.env)", "Edit(**/.env)"]}
+    settings_src.write_text(json.dumps(initial, indent=2), encoding="utf-8")
+    _commit("add dead deny rule")
+
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    settings_dest = plan1.target_root / "settings.json"
+    on_disk = json.loads(settings_dest.read_text(encoding="utf-8"))
+    assert on_disk["permissions"]["deny"] == ["Write(**/.env)", "Edit(**/.env)"]
+
+    # User manually adds their own deny rule — never present in any source commit.
+    on_disk["permissions"]["deny"].append("Bash(rm -rf *)")
+    settings_dest.write_text(json.dumps(on_disk), encoding="utf-8")
+
+    # Source removes the dead entry (mirrors the real .env deny-rule cleanup).
+    initial["permissions"]["deny"] = ["Edit(**/.env)"]
+    settings_src.write_text(json.dumps(initial, indent=2), encoding="utf-8")
+    _commit("remove dead deny rule")
+
+    plan2 = installer.build_plan(m, fake_repo)
+    assert plan2.state == "outdated"
+    installer.apply_plan(plan2, m, run_env=None)
+
+    final = json.loads(settings_dest.read_text(encoding="utf-8"))
+    assert final["permissions"]["deny"] == ["Edit(**/.env)", "Bash(rm -rf *)"]
+
+
 # ---------- #3: prune orphan user-scope MCP servers ----------
 
 
