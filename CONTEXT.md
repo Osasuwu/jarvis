@@ -12,6 +12,118 @@ This file **grows organically** through `/grill` sessions — every time an impl
 
 Terms used across the codebase. Definitions are domain-meaningful, not implementation-detail. If a term doesn't carry weight beyond "the obvious" — don't add it.
 
+### Index
+
+- **Pillar** — Multi-milestone capability area; narrative grouping only, never structural.
+- **Milestone** — GitHub grouping of ≥2 capability-coherent slices with PRD; closed on capability ship.
+- **Slice** — Single vertical PR (schema→service→API→UI→tests); one-offs skip milestone.
+- **Skill** — Atomic reusable agent capability in `.claude-userlevel/skills/<name>/SKILL.md`.
+- **Subagent** — Isolated agent dispatched via Agent tool from parent session.
+- **Memory** — Durable cross-session knowledge in Supabase; typed user/project/decision/feedback/reference.
+- **Recall** — Query-to-ranked-hits pipeline: rewriter→embed→semantic+keyword→RRF merge→temporal→link expansion→gate.
+- **RecallConfig** — Frozen dataclass of pipeline toggles and constants; prod all-on defaults.
+- **RecallHit** — Structured result row with multi-axis scores and provenance source.
+- **Outcome** — Recorded delegated-task result, used by `/reflect` and `/verify` for attribution.
+- **Decision** — `decision_made` episode via `record_decision`; rationale+alternatives+memories+reversibility.
+- **FOK** — First-of-Kind recall calibration metric; novelty of surfaced memories.
+- **Episode** — Structured memory-layer event (decision, recall, outcome) with UUID cross-references.
+- **Goal** — Strategic priority in goals table; drives Jarvis autonomous decisions.
+- **Deriver** — Per-session-end pass emitting ≤5 implicit-memory candidates with `requires_review=true`.
+- **Dreamer** — Scheduled cross-corpus consolidation; fires on ≥30 pending candidates or ≥7d idle.
+- **Candidate** — Memory row with `requires_review=true`; hidden from default recall until accepted.
+- **Merge proposal** — Dreamer-emitted candidate with `merge_targets`; meta-row skipped by recall.
+- **Curation** — Owner-invoked weekly hygiene pass; stale rows surfaced for per-row confirm.
+- **Banner blindness** — Over-frequent hygiene hints causing user to dismiss all including legitimate ones.
+- **Access-bias** — Feedback loop from session-start auto-load bumping recall rank via `last_accessed_at`.
+- **Recall axis** — Eval-set taxonomy separating lexical/lifecycle/hybrid queries to avoid conflated failures.
+- **Always-gate** — Review policy requiring explicit owner accept before Deriver/Dreamer writes enter recall.
+- **Sandcastle** — Docker-isolated AFK coding runtime; one container per issue, open PR but never merge.
+- **Watchdog** — PowerShell wrapper auto-starting Docker+Ollama, parsing results, firing Telegram on infra failure.
+- **Safe-hours window** — Clock-bound AFK interval (e.g. 22:00–08:00) with soft-stop: no new iterations after close.
+- **Sandcastle model tier** — Workshop primary `qwen2.5-coder:14b`, downgrade 7b; RTX 5080 VRAM bound.
+- **Reactive-core model split** — Orchestrator on local `gemma4:e4b`, AFK worker on cloud Claude; per-role substrate.
+- **PR-rework** — AFK second-pass: sandcastle with `SANDCASTLE_TARGET_PR` applies review fixes on existing branch.
+- **review_negative event** — Events row when any reviewer asks changes; discriminates human vs `claude_bot`.
+- **AFK system** — Jobs running end-to-end without human presence; Telegram escalation is last-resort.
+- **event_queue** — Durable EVENT substrate: `pending/claimed/processed/parked` states + `dedup_key`.
+- **task_queue** — Durable TASK substrate: `pending→claimed→running→done|failed|parked` FSM.
+- **dedup_key** — Event-side sha256 identity hash collapsing repeat GitHub signals into one row.
+- **idempotency_key** — Task-side identity hash allowing safe retry without double-effects.
+- **wake_driver** — Algorithmic loop driver: `LISTEN`/`NOTIFY` cold-boots orchestrator on events channel.
+- **orchestrator** — Per-event router: `handle_inline` / `emit_task` / `escalate_to_human`.
+- **executor** — Spawn primitive running `claude -p` in sandcastle with env sanitization.
+- **task-dispatch loop** — Drains pending sandcastle rows inside `wake_driver` tick, up to 5-running cap.
+- **Model P completion** — Poll-driven `running→done` transition freeing concurrency cap same-tick.
+- **PID sidecar** — Per-spawn JSON with `{pid, create_time, task_id, spawned_at}` for crash recovery.
+- **Terminal-transition events** — Driver emits events row per terminal transition; event-first for crash safety.
+- **Loop closure** — Three paths: external GitHub workflows, parked-event re-queue, fresh decision event.
+- **SANDCASTLE_TARGET_PR** — Env var switching sandcastle to rework mode; absent means fresh-path.
+- **quota_pressure event** — Events row at 80% Max-subscription threshold; pauses AFK with resume estimate.
+- **CLAUDE_QUOTA_PRESSURE** — GH Actions variable broadcast by Workshop watcher; gates workflow jobs.
+- **rework_stuck event** — Events row when max-attempts/scope-creep/no-convergence/conflict trigger; severity=medium.
+- **Convergence target** — `n_critical==0 AND n_major<=2`; gates human-merge readiness in rework loop.
+- **Merge-gate failure axis** — fail-CLOSED (false-FAILING, visible) vs fail-OPEN (false-PASSING, invisible, dangerous).
+- **Merge-freeze doctrine** — Known fail-OPEN bug suspends auto-merge for affected check-class until fixed.
+- **Rework history section** — Append-only PR body section updated by sandcastle at terminal state only.
+- **Readiness axis** — Scalar AFK-ready vs HITL-required; measured by pre-dispatch gate at dispatch time.
+- **Pre-dispatch gate** — Four-condition check: `sandcastle` label, no `needs-*`, AC section, decision UUID.
+- **In-flight (dispatch dedup)** — Open PR/branch referencing issue #N detected; atomic claim via ref push.
+- **AFK-fit checklist** — Four-question gate at slice creation deciding the `sandcastle` label.
+- **status:owner-queue label** — Landing zone for pre-dispatch-gate refuses; surfaced by `/status`.
+- **/rework skill** — Parses structured code-review verdict, applies fixes per severity; separate from `/implement`.
+- **Strategic-ideation lane (C15)** — Strategy-generation arm: produces non-memory improvement proposals; owner-gated.
+- **strategic_proposal_queue** — Sibling of `memory_review_queue`; proposal menu with FSM and confidence.
+- **Proposal candidate shape** — `tier`/`benefit_kind`/`traceability` fields; trust state is separate config.
+- **strategic_proposal_emitted event** — Lane's single operational event on `events` table; consumed synchronously.
+- **GO-gate (4-D)** — Validation between Phase-1 and Phase-2: acceptance×substance×engagement×proposal-quality.
+- **Trust ladder (C15)** — Per-class evidence-gated monotonic-up with auto-demote on regression (Phase-2).
+- **repo-baseline** — Single canonical installable+re-syncable GitHub-repo setup across owned repos.
+- **Managed-standalone-overwrite** — Distributes complete workflow/config files byte-for-byte per repo (no `workflow_call`).
+- **3-class file model** — MANAGED / LANGUAGE-TEST / REPO-CUSTOM classification for every baseline-touched file.
+- **Axis** — Parameterized substitution in MANAGED/LANGUAGE files; values from per-repo manifest.
+- **Per-account sync pass** — Orchestration runs once per GitHub account with that account's credential.
+- **Ordering invariant** — Distribute workflows FIRST, apply branch-protection contexts SECOND.
+- **Audit-first slice** — First implementation is empirical 6-repo dump populating manifest axis values from reality.
+- **Destructive-once label migration** — One-time rename-in-place to clean schema; routine sync is additive-only.
+- **Association-preserving rename** — `gh label edit --name` that preserves issue/PR associations; delete-recreate detaches.
+- **addLabels merge→rename window** — GH Actions auto-creates referenced label names; creates ordering hazard for renaming.
+- **community-health source boundary** — Non-overlapping single-source: `.github` for Osasuwu repos, local for redrobot.
+- **Two-gate model** — `review` check: Verify verdict + Verify ran cleanly, independent verdicts over same run.
+- **Cleanliness tripwire** — Gate 2, blinded-only: denials+fresh verdict→pass, denials+no verdict→fail.
+- **Fail-closed verdict parsing** — Unrecognized/unparseable review comment exits non-zero; plugin skip is the only pass.
+- **Exact-prefix allowlist** — Permission matches literal command prefix; compounds with `>`, `;`, `&&` are structurally denied.
+- **Post-verdict denial** — Empirically wrong framing; resolved by blinded-only tripwire + freshness test.
+- **Silent no-review** — Review runs with `is_error=false` and no output; root cause was background dispatch in headless mode.
+- **Review-blind carve-out** — Label for PRs the bot structurally cannot review (e.g. self-modifying workflow).
+- **Sanctioned stop-gap merge** — Admin-merge around false-FAILING gate, valid only with linked root-cause issue.
+- **Acceptance criteria (AC)** — Buffer between scope and tests; must be literally verifiable.
+- **Vertical slice / tracer bullet** — Full-stack task crossing schema→service→API→UI→tests.
+- **Smart zone** — Context window region of high reasoning quality (~first 100K tokens).
+- **Plan / Execute / Clear** — Long-session rhythm: write plan, execute, dump state, fresh window.
+- **Deep module** — Small interface with large hidden implementation; caller knows minimum.
+- **Deletion test** — Diagnostic: delete the module and see where complexity reappears.
+- **Implicit assumption** — Domain rule obvious to human but unwritten; source of scope shrinkage.
+- **Sycophancy** — Model tendency to agree regardless of correctness; industry baseline ~63.7%.
+- **Personalization-sycophancy paradox** — Heavy user-modeling increases agreement bias (MIT/ICLR 2026).
+- **Cross-context review** — Anti-sycophancy: scrubbed-context subagent critiques proposal cold.
+- **4-channel research intake** — Mandatory parallel pulls: end-user, domain, quantitative, adversarial/failure.
+- **Research-pass gate** — Blocks unless 4-channel artifact exists; owner waiver override.
+- **TDD-mode** — Operating mode: one acceptance-criterion at a time, red→green→refactor.
+- **Testable interface** — Designed for verification without reaching into implementation.
+- **Status synthesis** — Three-layer deterministic status across repos: baseline, delta, synthesis (0 LLM tokens default).
+- **Backlog vs ready** — `status:*` labels are source of truth; ProjectV2 board is read-only projection.
+- **Detector (status)** — Deterministic anomaly signal over repo+decision state; six detectors, each with provenance.
+- **Type 1 trigger** — Event/cron-driven skill invocation in fresh session without model deciding.
+- **Type 2 trigger** — User/orchestrator intent-shaped prompt matched to skill description.
+- **Type 3 trigger** — Mid-task self-trigger by model; not designed for (ADR-0001).
+- **Tier 1 — durable prompt rules** — User-level CLAUDE.md rules via SessionStart; default home for cross-skill rules.
+- **Tier 2 — mechanical hooks** — PreToolUse/PostToolUse deterministic fences for binary checks.
+- **Tier 3 — skill-specific gates** — Belong to one skill; never duplicate Tier 1 content (ADR-0002).
+- **3 devices** — Lenovo laptop, desktop, MacBook; different usernames, never device-pinned.
+- **Workshop PC** — Sole routine host for all Jarvis routines; SPOF with gap canary via `status-record`.
+- **JARVIS_HOME** — Env var resolved at install time to absolute repo root; use in templated configs.
+- **~/.claude/** — User-level mirror of `.claude-userlevel/`; never edit directly, edit canonical source.
+
 ### Core entities
 
 - **Pillar** — a multi-milestone capability area. Lives forever in memory, never closes. Narrative grouping only; not a structural unit. Examples: Memory, Autonomy, Identity, Multi-agent. **A pillar is not a task** — closing one milestone within a pillar doesn't close the pillar.
