@@ -14,6 +14,7 @@ import importlib.util
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 # Load mcp-status/server.py under a UNIQUE module name ("status_server"), not the
@@ -383,11 +384,12 @@ def test_no_cache_means_no_contradiction_hit():
 def test_gather_timeout_returns_one_line_error():
     """When gather() exceeds the timeout, return a one-line error (no traceback)."""
     async def _test():
+        params = SimpleNamespace(name="status_digest", arguments={"jarvis_home": ""})
         with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
-            result = await status_server.call_tool("status_digest", {"jarvis_home": ""})
-            assert len(result) == 1
-            assert "timed out" in result[0].text
-            assert "Traceback" not in result[0].text
+            result = await status_server.call_tool(None, params)
+            assert len(result.content) == 1
+            assert "timed out" in result.content[0].text
+            assert "Traceback" not in result.content[0].text
 
     asyncio.run(_test())
 
@@ -395,10 +397,11 @@ def test_gather_timeout_returns_one_line_error():
 def test_exception_returns_one_line_error_no_traceback():
     """Exception in gather returns one-line error; traceback is server-side only."""
     async def _test():
+        params = SimpleNamespace(name="status_digest", arguments={"jarvis_home": ""})
         with patch.object(status_server, "gather", side_effect=ValueError("test error")):
-            result = await status_server.call_tool("status_digest", {"jarvis_home": ""})
-            assert len(result) == 1
-            assert "Error in status_digest" in result[0].text
-            assert "Traceback" not in result[0].text
+            result = await status_server.call_tool(None, params)
+            assert len(result.content) == 1
+            assert "Error in status_digest" in result.content[0].text
+            assert "Traceback" not in result.content[0].text
 
     asyncio.run(_test())

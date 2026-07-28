@@ -27,15 +27,14 @@ dependencies = [
 [project.optional-dependencies]
 # Core: MCP memory server (cross-device persistent memory via Supabase)
 memory = [
-  # Upper-bounded: mcp 2.0 is a breaking rewrite of the low-level Server API
-  # (decorator registration -> `Server(on_list_tools=...)` constructor params,
-  # `server.request_context` removed, handlers take `(ctx, params)` and return
-  # full result types, `inputSchema` -> `input_schema`). mcp-memory/server.py
-  # is written against the v1 decorator API, so an unbounded `>=1.0.0` turned
-  # every CI run red the day 2.0.0 shipped. Port tracked in #1294; lift this
-  # bound only in the same PR as that port — unpinning first reproduces the
-  # outage. tests/memory/test_memory_server_script_launch.py is the tripwire.
-  "mcp>=1.0.0,<2",
+  # Floor raised to 2.0 in #1294: mcp-memory/server.py, mcp-status/server.py,
+  # and scripts/telegram-mcp-server.py are now all ported to the v2 API
+  # (constructor-param `Server(on_list_tools=..., on_call_tool=...)` in place
+  # of 1.x decorator registration; `MCPServer`/`Context` from
+  # `mcp.server.mcpserver` in place of `mcp.server.fastmcp.FastMCP`).
+  # tests/memory/test_memory_server_script_launch.py is the tripwire that
+  # would go red again on a v1-only environment.
+  "mcp>=2.0.0",
   "supabase>=2.0.0",
   "voyageai>=0.2.3",
   "httpx>=0.27",

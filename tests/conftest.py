@@ -23,6 +23,9 @@ from unittest.mock import MagicMock
 
 _mcp_types = types.ModuleType("mcp.types")
 _mcp_types.CallToolResult = MagicMock
+_mcp_types.CallToolRequestParams = MagicMock
+_mcp_types.ListToolsResult = MagicMock
+_mcp_types.PaginatedRequestParams = MagicMock
 
 
 class _FakeTextContent:
@@ -35,7 +38,7 @@ _mcp_types.TextContent = _FakeTextContent
 _mcp_types.Tool = MagicMock
 
 
-def _noop_decorator(*args, **kwargs):
+def _noop_decorator(*_args, **_kwargs):
     def decorator(fn):
         return fn
 
@@ -43,6 +46,15 @@ def _noop_decorator(*args, **kwargs):
 
 
 class _FakeServer:
+    """Stand-in for mcp.server.Server — supports both the 1.x decorator API
+    and the 2.x constructor-param API (on_list_tools=/on_call_tool=).
+
+    mcp-memory/server.py and mcp-status/server.py (both ported, #1294) use
+    the 2.x constructor kwargs. The 1.x decorator methods below are kept as
+    no-ops for backward compatibility with any stub consumer still using
+    `@server.list_tools()` style registration.
+    """
+
     def __init__(self, *args, **kwargs):
         pass
 
@@ -55,6 +67,7 @@ class _FakeServer:
 
 _mcp_server = types.ModuleType("mcp.server")
 _mcp_server.Server = _FakeServer
+_mcp_server.ServerRequestContext = MagicMock
 
 _mcp_server_stdio = types.ModuleType("mcp.server.stdio")
 _mcp_server_stdio.stdio_server = MagicMock
