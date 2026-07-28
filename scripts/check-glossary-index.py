@@ -5,6 +5,7 @@ Scans the `## Glossary` section:
   - Reads indexed entries under `### Index`
   - Reads actual entries under every other `###` category
   - Reports mismatches in either direction
+  - Reports terms defined (or indexed) more than once
   - Exits 0 if consistent, 1 if not
 
 Usage:
@@ -15,6 +16,7 @@ Usage:
 import argparse
 import re
 import sys
+from collections import Counter
 
 
 _TERM_RE = re.compile(r'^-\s+\*\*(.+?)\*\*')
@@ -39,23 +41,35 @@ def _normalize(name: str) -> str:
     return name.strip()
 
 
-def _parse_index_terms(text: str) -> set[str]:
-    """Return set of indexed term names under ### Index."""
+def _duplicates(terms: list[str]) -> list[str]:
+    """Return the sorted names appearing more than once in `terms`."""
+    return sorted(t for t, n in Counter(terms).items() if n > 1)
+
+
+def _parse_index_terms(text: str) -> list[str]:
+    """Return indexed term names under ### Index, in order, duplicates kept."""
     m = re.search(r'^### Index\s*$.*?(?=^### |\Z)', text, re.MULTILINE | re.DOTALL)
     if not m:
-        return set()
-    terms: set[str] = set()
+        return []
+    terms: list[str] = []
     for line in m.group(0).splitlines():
         entry = _TERM_RE.match(line.strip())
         if entry:
-            terms.add(_normalize(entry.group(1)))
+            terms.append(_normalize(entry.group(1)))
     return terms
 
 
-def _parse_section_entries(text: str) -> set[str]:
-    """Return set of entry names under every ### category EXCEPT Index."""
+def _parse_section_entries(text: str) -> list[str]:
+    """Return entry names under every ### category EXCEPT Index, duplicates kept.
+
+    Returns a list rather than a set on purpose: a term defined twice is the
+    one drift class this file has actually suffered (51fce34 removed a
+    duplicated glossary block by hand). A set collapses the second copy and
+    reports the file as clean, so the checker would be structurally blind to
+    a repeat of the very incident it exists to catch.
+    """
     sections = re.split(r'^### ', text, flags=re.MULTILINE)
-    terms: set[str] = set()
+    terms: list[str] = []
     for sec in sections:
         sec = sec.strip()
         if not sec:
@@ -67,7 +81,7 @@ def _parse_section_entries(text: str) -> set[str]:
         for line in lines:
             entry = _TERM_RE.match(line)
             if entry:
-                terms.add(_normalize(entry.group(1)))
+                terms.append(_normalize(entry.group(1)))
     return terms
 
 
@@ -80,8 +94,10 @@ def check(text: str) -> int:
         return 1
     glossary_body = m.group(0)
 
-    indexed = _parse_index_terms(glossary_body)
-    actual = _parse_section_entries(glossary_body)
+    indexed_list = _parse_index_terms(glossary_body)
+    actual_list = _parse_section_entries(glossary_body)
+    indexed = set(indexed_list)
+    actual = set(actual_list)
 
     if not indexed:
         print("ERROR: no entries found under ### Index", file=sys.stderr)
@@ -92,6 +108,8 @@ def check(text: str) -> int:
 
     missing_from_index = sorted(actual - indexed)
     missing_from_bodies = sorted(indexed - actual)
+    dup_in_bodies = _duplicates(actual_list)
+    dup_in_index = _duplicates(indexed_list)
     n_issues = 0
 
     if missing_from_index:
@@ -103,6 +121,22 @@ def check(text: str) -> int:
     if missing_from_bodies:
         print("ERROR: entries in index but NOT in any section:")
         for t in missing_from_bodies:
+            print(f"  - {t}")
+        n_issues += 1
+
+    # Set-difference above is blind to duplication: a term defined twice is
+    # present in both directions and reads as in-sync. Duplicated blocks are
+    # the drift this file already suffered once (51fce34), so they get their
+    # own check.
+    if dup_in_bodies:
+        print("ERROR: terms defined more than once across glossary sections:")
+        for t in dup_in_bodies:
+            print(f"  - {t}")
+        n_issues += 1
+
+    if dup_in_index:
+        print("ERROR: terms listed more than once under ### Index:")
+        for t in dup_in_index:
             print(f"  - {t}")
         n_issues += 1
 
