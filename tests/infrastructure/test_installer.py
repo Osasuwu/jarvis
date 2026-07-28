@@ -1239,24 +1239,32 @@ def test_every_source_skill_is_whitelisted() -> None:
 def test_backup_tolerates_vanished_file(
     manifest: Path, fake_repo: Path, monkeypatch, capsys
 ) -> None:
-    """Claude Code rotates files in ~/.claude/debug/ while the installer runs.
-    shutil.copytree would abend the whole install with shutil.Error; we patch
-    _copy_tolerant onto shutil.copy2 so the backup completes and the install
-    proceeds, logging the skipped entry to stderr."""
+    """Files inside installer-managed dirs (e.g. skills/) can vanish mid-copy
+    (concurrent process, AV scanner). shutil.copytree would abend the whole
+    install with shutil.Error; we patch _copy_tolerant onto shutil.copy2 so
+    the backup completes and the install proceeds, logging the skipped entry
+    to stderr.
+
+    Backups are scoped to installer-managed dest paths only (see
+    install_apply_not_during_active_claude_session) — unmanaged runtime dirs
+    like ~/.claude/debug/ are never backed up at all now, so this exercises
+    the tolerance via a file inside the managed `skills/` dest instead."""
     m = installer.load_manifest(manifest)
     plan1 = installer.build_plan(m, fake_repo)
     installer.apply_plan(plan1, m, run_env=None)
 
-    # Create an extra debug entry that will "vanish" during the next backup.
-    debug_dir = plan1.target_root / "debug"
-    debug_dir.mkdir(exist_ok=True)
-    vanishing = debug_dir / "latest"
-    vanishing.write_text("ephemeral\n", encoding="utf-8")
+    # Managed file that will "vanish" during the next backup.
+    vanishing = plan1.target_root / "skills" / "implement" / "SKILL.md"
+    assert vanishing.exists()
 
     real_copy2 = installer.shutil.copy2
+    target_root = plan1.target_root
 
     def flaky_copy2(src, dst, *, follow_symlinks=True):
-        if str(src).endswith("latest"):
+        # Only intercept the backup-side read (source under target_root) —
+        # the same filename is also copied repo -> target_root during the
+        # real install step, which must not be disturbed.
+        if str(src).startswith(str(target_root)) and str(src).endswith("SKILL.md"):
             raise FileNotFoundError(2, "simulated mid-copy vanish", str(src))
         return real_copy2(src, dst, follow_symlinks=follow_symlinks)
 
@@ -1272,25 +1280,28 @@ def test_backup_tolerates_vanished_file(
 
     assert plan2.backup_path.exists()
     assert (plan2.backup_path / "SOUL.md").exists()
-    assert not (plan2.backup_path / "debug" / "latest").exists()  # the vanishing one
+    assert not (plan2.backup_path / "skills" / "implement" / "SKILL.md").exists()
     stderr = capsys.readouterr().err
-    assert re.search(r"backup:\s+skipped unreadable entry.*latest", stderr)
+    assert re.search(r"backup:\s+skipped unreadable entry.*SKILL\.md", stderr)
 
 
 def test_backup_tolerates_locked_file(manifest: Path, fake_repo: Path, monkeypatch, capsys) -> None:
-    """Windows log rotation can hold a PermissionError on the file being appended to.
-    Same tolerance applies (#350 review nit)."""
+    """Windows log rotation can hold a PermissionError on a file being appended
+    to. Same tolerance applies (#350 review nit), exercised via a managed
+    `skills/` dest file — see test_backup_tolerates_vanished_file docstring
+    for why this no longer uses ~/.claude/debug/."""
     m = installer.load_manifest(manifest)
     plan1 = installer.build_plan(m, fake_repo)
     installer.apply_plan(plan1, m, run_env=None)
 
-    (plan1.target_root / "debug").mkdir(exist_ok=True)
-    (plan1.target_root / "debug" / "locked.log").write_text("x\n", encoding="utf-8")
+    locked = plan1.target_root / "skills" / "implement" / "SKILL.md"
+    assert locked.exists()
 
     real_copy2 = installer.shutil.copy2
+    target_root = plan1.target_root
 
     def locked_copy2(src, dst, *, follow_symlinks=True):
-        if str(src).endswith("locked.log"):
+        if str(src).startswith(str(target_root)) and str(src).endswith("SKILL.md"):
             raise PermissionError(13, "file is locked by another process", str(src))
         return real_copy2(src, dst, follow_symlinks=follow_symlinks)
 
@@ -1301,9 +1312,66 @@ def test_backup_tolerates_locked_file(manifest: Path, fake_repo: Path, monkeypat
     installer.apply_plan(plan2, m, run_env=None)
 
     assert plan2.backup_path.exists()
-    assert not (plan2.backup_path / "debug" / "locked.log").exists()
+    assert not (plan2.backup_path / "skills" / "implement" / "SKILL.md").exists()
     err = capsys.readouterr().err
-    assert re.search(r"backup:\s+skipped unreadable entry.*locked\.log", err)
+    assert re.search(r"backup:\s+skipped unreadable entry.*SKILL\.md", err)
+
+
+# ── backup is scoped to installer-managed dests, rollback is non-destructive
+# ── of everything else (install_apply_not_during_active_claude_session) ────
+
+
+def test_backup_skips_unmanaged_directories(manifest: Path, fake_repo: Path) -> None:
+    """target_root can hold large unmanaged runtime state (session transcripts,
+    logs) the installer never writes to. Backing that up wholesale is what
+    made backups slow enough to be interrupted mid-copy while a Claude Code
+    session is actively writing to it. The backup must only touch
+    installer-managed dest paths."""
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    # Simulate an active session writing large unmanaged state under target_root.
+    projects_dir = plan1.target_root / "projects" / "some-session"
+    projects_dir.mkdir(parents=True)
+    (projects_dir / "transcript.jsonl").write_text("{}\n", encoding="utf-8")
+
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan2, m, run_env=None)
+
+    assert plan2.backup_path.exists()
+    assert (plan2.backup_path / "SOUL.md").exists()  # managed dest — backed up
+    assert not (plan2.backup_path / "projects").exists()  # unmanaged — skipped
+    assert projects_dir.exists()  # untouched in target_root itself
+
+
+def test_rollback_from_scoped_backup_preserves_unmanaged_state(
+    manifest: Path, fake_repo: Path
+) -> None:
+    """rollback() must undo only what the scoped backup covers. The old
+    full-tree rmtree(target_root)+copytree(backup_path) implementation would
+    have deleted unmanaged runtime state (session transcripts, caches) that
+    was never part of the backup in the first place."""
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    projects_dir = plan1.target_root / "projects" / "some-session"
+    projects_dir.mkdir(parents=True)
+    (projects_dir / "transcript.jsonl").write_text("{}\n", encoding="utf-8")
+
+    original_soul = (plan1.target_root / "SOUL.md").read_text(encoding="utf-8")
+
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan2, m, run_env=None)
+    (plan1.target_root / "SOUL.md").write_text("corrupted\n", encoding="utf-8")
+
+    installer.rollback(plan1.target_root, plan2.backup_path)
+
+    assert (plan1.target_root / "SOUL.md").read_text(encoding="utf-8") == original_soul
+    assert (projects_dir / "transcript.jsonl").exists()  # not wiped by rollback
 
 
 # ---------- legacy parent-dir .mcp.json quarantine ----------
