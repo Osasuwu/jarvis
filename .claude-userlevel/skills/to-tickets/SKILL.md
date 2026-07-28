@@ -125,8 +125,10 @@ Publish issues in dependency order (blockers first) so you can reference real is
 # blocker_id is the blocker's NUMERIC REST database id — NOT the issue number, NOT the GraphQL node_id.
 # Fetch it:  gh api repos/<owner>/<repo>/issues/<blockerN> --jq .id
 # Then POST the edge on the BLOCKED issue. On Windows/Git-Bash, prefix MSYS_NO_PATHCONV=1 and drop the
-# leading slash so the endpoint is not rewritten to a filesystem path:
-MSYS_NO_PATHCONV=1 gh api --method POST repos/<owner>/<repo>/issues/<blockedN>/dependencies/blocked_by -f issue_id=<blocker_id>
+# leading slash so the endpoint is not rewritten to a filesystem path.
+# Use -F, not -f: -f sends the id as a string and the endpoint rejects it with
+# 422 "Invalid property /issue_id: ... is not of type integer".
+MSYS_NO_PATHCONV=1 gh api --method POST repos/<owner>/<repo>/issues/<blockedN>/dependencies/blocked_by -F issue_id=<blocker_id>
 ```
 
 Keep the prose "## Blocked by" section too — it is the human-readable rationale — but the native edge is the source of truth for tooling. Set every edge the DAG requires, including transitive blockers a slice lists explicitly.

@@ -1239,24 +1239,32 @@ def test_every_source_skill_is_whitelisted() -> None:
 def test_backup_tolerates_vanished_file(
     manifest: Path, fake_repo: Path, monkeypatch, capsys
 ) -> None:
-    """Claude Code rotates files in ~/.claude/debug/ while the installer runs.
-    shutil.copytree would abend the whole install with shutil.Error; we patch
-    _copy_tolerant onto shutil.copy2 so the backup completes and the install
-    proceeds, logging the skipped entry to stderr."""
+    """Files inside installer-managed dirs (e.g. skills/) can vanish mid-copy
+    (concurrent process, AV scanner). shutil.copytree would abend the whole
+    install with shutil.Error; we patch _copy_tolerant onto shutil.copy2 so
+    the backup completes and the install proceeds, logging the skipped entry
+    to stderr.
+
+    Backups are scoped to installer-managed dest paths only (see
+    install_apply_not_during_active_claude_session) — unmanaged runtime dirs
+    like ~/.claude/debug/ are never backed up at all now, so this exercises
+    the tolerance via a file inside the managed `skills/` dest instead."""
     m = installer.load_manifest(manifest)
     plan1 = installer.build_plan(m, fake_repo)
     installer.apply_plan(plan1, m, run_env=None)
 
-    # Create an extra debug entry that will "vanish" during the next backup.
-    debug_dir = plan1.target_root / "debug"
-    debug_dir.mkdir(exist_ok=True)
-    vanishing = debug_dir / "latest"
-    vanishing.write_text("ephemeral\n", encoding="utf-8")
+    # Managed file that will "vanish" during the next backup.
+    vanishing = plan1.target_root / "skills" / "implement" / "SKILL.md"
+    assert vanishing.exists()
 
     real_copy2 = installer.shutil.copy2
+    target_root = plan1.target_root
 
     def flaky_copy2(src, dst, *, follow_symlinks=True):
-        if str(src).endswith("latest"):
+        # Only intercept the backup-side read (source under target_root) —
+        # the same filename is also copied repo -> target_root during the
+        # real install step, which must not be disturbed.
+        if str(src).startswith(str(target_root)) and str(src).endswith("SKILL.md"):
             raise FileNotFoundError(2, "simulated mid-copy vanish", str(src))
         return real_copy2(src, dst, follow_symlinks=follow_symlinks)
 
@@ -1272,25 +1280,28 @@ def test_backup_tolerates_vanished_file(
 
     assert plan2.backup_path.exists()
     assert (plan2.backup_path / "SOUL.md").exists()
-    assert not (plan2.backup_path / "debug" / "latest").exists()  # the vanishing one
+    assert not (plan2.backup_path / "skills" / "implement" / "SKILL.md").exists()
     stderr = capsys.readouterr().err
-    assert re.search(r"backup:\s+skipped unreadable entry.*latest", stderr)
+    assert re.search(r"backup:\s+skipped unreadable entry.*SKILL\.md", stderr)
 
 
 def test_backup_tolerates_locked_file(manifest: Path, fake_repo: Path, monkeypatch, capsys) -> None:
-    """Windows log rotation can hold a PermissionError on the file being appended to.
-    Same tolerance applies (#350 review nit)."""
+    """Windows log rotation can hold a PermissionError on a file being appended
+    to. Same tolerance applies (#350 review nit), exercised via a managed
+    `skills/` dest file — see test_backup_tolerates_vanished_file docstring
+    for why this no longer uses ~/.claude/debug/."""
     m = installer.load_manifest(manifest)
     plan1 = installer.build_plan(m, fake_repo)
     installer.apply_plan(plan1, m, run_env=None)
 
-    (plan1.target_root / "debug").mkdir(exist_ok=True)
-    (plan1.target_root / "debug" / "locked.log").write_text("x\n", encoding="utf-8")
+    locked = plan1.target_root / "skills" / "implement" / "SKILL.md"
+    assert locked.exists()
 
     real_copy2 = installer.shutil.copy2
+    target_root = plan1.target_root
 
     def locked_copy2(src, dst, *, follow_symlinks=True):
-        if str(src).endswith("locked.log"):
+        if str(src).startswith(str(target_root)) and str(src).endswith("SKILL.md"):
             raise PermissionError(13, "file is locked by another process", str(src))
         return real_copy2(src, dst, follow_symlinks=follow_symlinks)
 
@@ -1301,9 +1312,66 @@ def test_backup_tolerates_locked_file(manifest: Path, fake_repo: Path, monkeypat
     installer.apply_plan(plan2, m, run_env=None)
 
     assert plan2.backup_path.exists()
-    assert not (plan2.backup_path / "debug" / "locked.log").exists()
+    assert not (plan2.backup_path / "skills" / "implement" / "SKILL.md").exists()
     err = capsys.readouterr().err
-    assert re.search(r"backup:\s+skipped unreadable entry.*locked\.log", err)
+    assert re.search(r"backup:\s+skipped unreadable entry.*SKILL\.md", err)
+
+
+# ── backup is scoped to installer-managed dests, rollback is non-destructive
+# ── of everything else (install_apply_not_during_active_claude_session) ────
+
+
+def test_backup_skips_unmanaged_directories(manifest: Path, fake_repo: Path) -> None:
+    """target_root can hold large unmanaged runtime state (session transcripts,
+    logs) the installer never writes to. Backing that up wholesale is what
+    made backups slow enough to be interrupted mid-copy while a Claude Code
+    session is actively writing to it. The backup must only touch
+    installer-managed dest paths."""
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    # Simulate an active session writing large unmanaged state under target_root.
+    projects_dir = plan1.target_root / "projects" / "some-session"
+    projects_dir.mkdir(parents=True)
+    (projects_dir / "transcript.jsonl").write_text("{}\n", encoding="utf-8")
+
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan2, m, run_env=None)
+
+    assert plan2.backup_path.exists()
+    assert (plan2.backup_path / "SOUL.md").exists()  # managed dest — backed up
+    assert not (plan2.backup_path / "projects").exists()  # unmanaged — skipped
+    assert projects_dir.exists()  # untouched in target_root itself
+
+
+def test_rollback_from_scoped_backup_preserves_unmanaged_state(
+    manifest: Path, fake_repo: Path
+) -> None:
+    """rollback() must undo only what the scoped backup covers. The old
+    full-tree rmtree(target_root)+copytree(backup_path) implementation would
+    have deleted unmanaged runtime state (session transcripts, caches) that
+    was never part of the backup in the first place."""
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    projects_dir = plan1.target_root / "projects" / "some-session"
+    projects_dir.mkdir(parents=True)
+    (projects_dir / "transcript.jsonl").write_text("{}\n", encoding="utf-8")
+
+    original_soul = (plan1.target_root / "SOUL.md").read_text(encoding="utf-8")
+
+    (plan1.target_root / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
+    plan2 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan2, m, run_env=None)
+    (plan1.target_root / "SOUL.md").write_text("corrupted\n", encoding="utf-8")
+
+    installer.rollback(plan1.target_root, plan2.backup_path)
+
+    assert (plan1.target_root / "SOUL.md").read_text(encoding="utf-8") == original_soul
+    assert (projects_dir / "transcript.jsonl").exists()  # not wiped by rollback
 
 
 # ---------- legacy parent-dir .mcp.json quarantine ----------
@@ -1732,6 +1800,114 @@ def test_deep_merge_list_leaf_when_existing_absent() -> None:
     """Source list with no existing counterpart is taken as-is."""
     merged = installer._deep_merge_jarvis_json({}, {"fallbackModel": ["a", "b"]})
     assert merged["fallbackModel"] == ["a", "b"]
+
+
+# ---------- three-way merge: prune source-removed entries via `base` ----------
+
+
+def test_union_list_leaf_prunes_entries_removed_from_base() -> None:
+    """An entry present in `base` (prior source) but dropped from `source`
+    (current) is pruned from `existing` — the dead-entry cleanup case."""
+    existing = ["Write(**/.env)", "Edit(**/.env)"]
+    base = ["Write(**/.env)", "Edit(**/.env)"]
+    source = ["Edit(**/.env)"]
+    merged = installer._union_list_leaf(existing, source, base)
+    assert merged == ["Edit(**/.env)"]
+
+
+def test_union_list_leaf_preserves_user_entry_never_in_base() -> None:
+    """An entry the user added locally — never present in `base` — survives
+    pruning even though `source` doesn't carry it either."""
+    existing = ["Write(**/.env)", "Bash(rm -rf *)"]
+    base = ["Write(**/.env)"]
+    source: list[str] = []
+    merged = installer._union_list_leaf(existing, source, base)
+    assert merged == ["Bash(rm -rf *)"]
+
+
+def test_union_list_leaf_no_base_reproduces_plain_union() -> None:
+    """`base=None` (the default) must behave exactly like the old two-arg
+    union — no pruning, existing entries always survive."""
+    existing = ["Write(**/.env)", "Bash(rm -rf *)"]
+    source = ["Edit(**/.env)"]
+    assert installer._union_list_leaf(existing, source) == installer._union_list_leaf(
+        existing, source, None
+    )
+    merged = installer._union_list_leaf(existing, source, None)
+    assert merged == ["Write(**/.env)", "Bash(rm -rf *)", "Edit(**/.env)"]
+
+
+def test_deep_merge_prunes_nested_list_leaf_using_base() -> None:
+    """`base` threads through nested dict recursion so
+    `permissions.deny`-style nested arrays get pruned too."""
+    existing = {"permissions": {"deny": ["Write(**/.env)", "Edit(**/.env)", "Bash(rm -rf *)"]}}
+    base = {"permissions": {"deny": ["Write(**/.env)", "Edit(**/.env)"]}}
+    source = {"permissions": {"deny": ["Edit(**/.env)"]}}
+    merged = installer._deep_merge_jarvis_json(existing, source, base)
+    assert merged["permissions"]["deny"] == ["Edit(**/.env)", "Bash(rm -rf *)"]
+
+
+def test_merge_json_prunes_source_removed_array_entries_on_reapply(
+    manifest: Path, fake_repo: Path
+) -> None:
+    """Full flow: source removes an array entry between installs (mirrors the
+    dead `Write(**/.env*)` deny-rule cleanup) — re-apply must prune it from
+    the mirror, while a genuinely user-added entry (never in any source
+    commit) survives untouched."""
+    data = yaml.safe_load(manifest.read_text(encoding="utf-8"))
+    for g in data["groups"]:
+        if g["id"] == "hooks_settings":
+            g["files"][0]["merge"] = True
+    manifest.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    def _commit(msg: str) -> None:
+        subprocess.run(["git", "add", "-A"], cwd=fake_repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                msg,
+            ],
+            cwd=fake_repo,
+            check=True,
+        )
+
+    settings_src = fake_repo / ".claude" / "settings.json"
+    initial = json.loads(settings_src.read_text(encoding="utf-8"))
+    initial["permissions"] = {"deny": ["Write(**/.env)", "Edit(**/.env)"]}
+    settings_src.write_text(json.dumps(initial, indent=2), encoding="utf-8")
+    _commit("add dead deny rule")
+
+    m = installer.load_manifest(manifest)
+    plan1 = installer.build_plan(m, fake_repo)
+    installer.apply_plan(plan1, m, run_env=None)
+
+    settings_dest = plan1.target_root / "settings.json"
+    on_disk = json.loads(settings_dest.read_text(encoding="utf-8"))
+    assert on_disk["permissions"]["deny"] == ["Write(**/.env)", "Edit(**/.env)"]
+
+    # User manually adds their own deny rule — never present in any source commit.
+    on_disk["permissions"]["deny"].append("Bash(rm -rf *)")
+    settings_dest.write_text(json.dumps(on_disk), encoding="utf-8")
+
+    # Source removes the dead entry (mirrors the real .env deny-rule cleanup).
+    initial["permissions"]["deny"] = ["Edit(**/.env)"]
+    settings_src.write_text(json.dumps(initial, indent=2), encoding="utf-8")
+    _commit("remove dead deny rule")
+
+    plan2 = installer.build_plan(m, fake_repo)
+    assert plan2.state == "outdated"
+    installer.apply_plan(plan2, m, run_env=None)
+
+    final = json.loads(settings_dest.read_text(encoding="utf-8"))
+    assert final["permissions"]["deny"] == ["Edit(**/.env)", "Bash(rm -rf *)"]
 
 
 # ---------- #3: prune orphan user-scope MCP servers ----------

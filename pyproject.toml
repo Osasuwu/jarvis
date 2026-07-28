@@ -27,7 +27,14 @@ dependencies = [
 [project.optional-dependencies]
 # Core: MCP memory server (cross-device persistent memory via Supabase)
 memory = [
-  "mcp>=1.0.0",
+  # Upper-bounded: mcp 2.0 is a breaking rewrite of the low-level Server API
+  # (decorator registration -> `Server(on_list_tools=...)` constructor params,
+  # `server.request_context` removed, handlers take `(ctx, params)` and return
+  # full result types, `inputSchema` -> `input_schema`). mcp-memory/server.py
+  # is written against the v1 decorator API, so an unbounded `>=1.0.0` turned
+  # every CI run red the day 2.0.0 shipped. Migration tracked separately;
+  # lift this bound only together with that port.
+  "mcp>=1.0.0,<2",
   "supabase>=2.0.0",
   "voyageai>=0.2.3",
   "httpx>=0.27",
