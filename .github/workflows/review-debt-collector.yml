@@ -33,7 +33,7 @@ jobs:
     # silent death is visible; the heartbeat row is the positive liveness signal.
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v7
         with:
