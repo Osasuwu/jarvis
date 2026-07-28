@@ -999,19 +999,63 @@ def _copy_tolerant(src: str, dst: str, *, follow_symlinks: bool = True) -> str |
         return None
 
 
-def _backup_target_root(target_root: Path, backup_path: Path) -> None:
-    """Copy ``target_root`` to ``backup_path`` tolerating mid-copy disappearance/locks.
+_BACKUP_MANIFEST_NAME = ".jarvis-backup-manifest.json"
+_DESTRUCTIVE_KINDS = {"copy_file", "copy_dir", "merge_json"}
+
+
+def _backup_target_root(target_root: Path, backup_path: Path, actions: list[Action]) -> None:
+    """Back up only the paths ``actions`` will overwrite, not the whole target_root tree.
+
+    ``target_root`` can hold hundreds of MB of unrelated runtime state
+    (session transcripts under ``projects/``, telemetry, debug logs) that the
+    installer never writes to and that may be actively growing/locked while a
+    Claude Code session is running on the device. Copying the whole tree made
+    backups slow enough to be interrupted mid-copy (see memory
+    ``install_apply_not_during_active_claude_session``). Scoping the backup to
+    actual write targets keeps it fast and avoids racing live writers.
+
+    A manifest of the touched relative paths ships alongside the backup so
+    ``rollback`` can undo exactly this set — including dest paths that didn't
+    exist yet pre-apply (nothing to restore, but still removed on rollback).
 
     ``symlinks=True`` preserves symlinks as symlinks rather than dereferencing;
     combined with ``ignore_dangling_symlinks=True`` this future-proofs against
     broken junctions inside the target tree (Claude Code can create them).
     """
-    shutil.copytree(
-        target_root,
-        backup_path,
-        copy_function=_copy_tolerant,
-        symlinks=True,
-        ignore_dangling_symlinks=True,
+    touched: list[str] = []
+    seen: set[str] = set()
+    for action in actions:
+        if action.kind not in _DESTRUCTIVE_KINDS:
+            continue
+        try:
+            rel_str = Path(action.dest).relative_to(target_root).as_posix()
+        except ValueError:
+            continue
+        if rel_str in seen:
+            continue
+        seen.add(rel_str)
+        touched.append(rel_str)
+
+    backup_path.mkdir(parents=True, exist_ok=True)
+    for rel_str in touched:
+        src = target_root / rel_str
+        if not src.exists():
+            continue
+        dst = backup_path / rel_str
+        if src.is_dir():
+            shutil.copytree(
+                src,
+                dst,
+                copy_function=_copy_tolerant,
+                symlinks=True,
+                ignore_dangling_symlinks=True,
+            )
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            _copy_tolerant(str(src), str(dst))
+
+    (backup_path / _BACKUP_MANIFEST_NAME).write_text(
+        json.dumps(touched, indent=2), encoding="utf-8"
     )
 
 
@@ -1025,7 +1069,7 @@ def apply_plan(
     if plan.state == "current":
         return
     if plan.backup_path is not None:
-        _backup_target_root(plan.target_root, plan.backup_path)
+        _backup_target_root(plan.target_root, plan.backup_path, plan.actions)
 
     plan.target_root.mkdir(parents=True, exist_ok=True)
 
@@ -1135,11 +1179,41 @@ def prune_backups(target_root: Path, prefix: str, retain: int) -> list[Path]:
 
 
 def rollback(target_root: Path, backup_path: Path) -> None:
+    """Restore ``target_root`` from ``backup_path``.
+
+    Scoped backups (see ``_backup_target_root``) carry a manifest of exactly
+    which relative paths were touched — rollback removes and restores only
+    those, leaving unrelated target_root state (session transcripts, caches)
+    untouched. Backups without a manifest (pre-scoping legacy format, or a
+    hand-built directory as in tests/manual ``--rollback <path>`` use) fall
+    back to a full wholesale replace.
+    """
     if not backup_path.exists():
         raise FileNotFoundError(f"backup {backup_path} not found")
-    if target_root.exists():
-        shutil.rmtree(target_root)
-    shutil.copytree(backup_path, target_root)
+
+    manifest_file = backup_path / _BACKUP_MANIFEST_NAME
+    if not manifest_file.exists():
+        if target_root.exists():
+            shutil.rmtree(target_root)
+        shutil.copytree(backup_path, target_root)
+        return
+
+    touched: list[str] = json.loads(manifest_file.read_text(encoding="utf-8"))
+    for rel_str in touched:
+        dst = target_root / rel_str
+        if dst.exists():
+            if dst.is_dir():
+                shutil.rmtree(dst)
+            else:
+                dst.unlink()
+        src = backup_path / rel_str
+        if not src.exists():
+            continue
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.is_dir():
+            shutil.copytree(src, dst, symlinks=True)
+        else:
+            shutil.copy2(src, dst)
 
 
 def _rollback_failed_apply(plan: Plan) -> None:
