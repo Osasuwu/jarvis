@@ -100,3 +100,23 @@ class TestArtifactUploadStepParity:
                 f"{job_id}: upload step must run before the cleanliness gate "
                 f"consumes EXEC_FILE, so the artifact captures the same log."
             )
+
+    def test_artifact_name_is_job_scoped(self, canon_attempt1_step, canon_attempt2_step):
+        """Canon has two jobs (attempt-1, attempt-2) sharing one `github.run_id` /
+        `github.run_attempt` pair — the internal attempt-1→attempt-2 retry wrapper
+        does not increment `run_attempt`. Live has only one `review` job, so it
+        never hits this. Without a per-job discriminator in the artifact `name:`,
+        a retry where both jobs actually execute (attempt-1 fails, attempt-2
+        runs) uploads two identically-named artifacts in the same run, and
+        `actions/upload-artifact@v7` rejects the second as a duplicate (#1300
+        rework, self-introduced this round).
+        """
+        for step, job_id in (
+            (canon_attempt1_step, "attempt-1"),
+            (canon_attempt2_step, "attempt-2"),
+        ):
+            assert "github.job" in step["with"]["name"], (
+                f"{job_id}: artifact name must include ${{{{ github.job }}}} (or "
+                f"equivalent per-job discriminator) — run_id/run_attempt alone "
+                f"collide across attempt-1/attempt-2 in the same run."
+            )

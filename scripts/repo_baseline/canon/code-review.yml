@@ -36,6 +36,13 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    outputs:
+      # Surfaces "did the review step actually produce an execution log" to
+      # verify-verdict, which runs in a SEPARATE job and so cannot read
+      # EXEC_FILE itself (it's a path on this job's own runner — see the
+      # cleanliness-gate policy note below). This is the job-boundary
+      # workaround for the #1239/#1182 "ran-but-silent" fail-closed check.
+      execution_ran: ${{ steps.review.outputs.execution_file != '' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -88,11 +95,18 @@ jobs:
       # not in scope because the allowed-tools set is read-only and the agents
       # never read .env. Retention is short on purpose — this is a tripwire
       # payload, not an archive.
+      #
+      # `name:` includes `${{ github.job }}` (live has no equivalent — it has
+      # only one job) because `github.run_id`/`run_attempt` are constants for
+      # the WHOLE workflow run, not per-job: when attempt-2 retries after
+      # attempt-1 fails, both jobs execute in the same run and would upload an
+      # identically-named artifact without the job discriminator, which
+      # `actions/upload-artifact@v7` rejects as a duplicate (#1300 rework).
       - name: Upload review execution log
         if: always() && steps.review.outputs.execution_file != ''
         uses: actions/upload-artifact@v7
         with:
-          name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}
+          name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           path: ${{ steps.review.outputs.execution_file }}
           retention-days: 7
           if-no-files-found: warn
@@ -233,6 +247,10 @@ jobs:
       contents: read
       pull-requests: write
       id-token: write
+    outputs:
+      # Same job-boundary workaround as attempt-1's `execution_ran` output —
+      # see the comment there.
+      execution_ran: ${{ steps.review.outputs.execution_file != '' }}
 
     steps:
       - uses: actions/checkout@v7
@@ -278,7 +296,7 @@ jobs:
         if: always() && steps.review.outputs.execution_file != ''
         uses: actions/upload-artifact@v7
         with:
-          name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}
+          name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.job }}
           path: ${{ steps.review.outputs.execution_file }}
           retention-days: 7
           if-no-files-found: warn
@@ -412,6 +430,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          # #1239/#1182/#1195/#1300: "ran but silent" fail-closed check below
+          # needs to know whether the review step actually executed. EXEC_FILE
+          # itself is a path on the attempt job's own runner and does not cross
+          # the job boundary (see the `execution_ran` output declared on
+          # attempt-1/attempt-2 above), so it's surfaced here as a job output
+          # instead of a raw file check.
+          EXEC_RAN_1: ${{ needs.attempt-1.outputs.execution_ran }}
+          EXEC_RAN_2: ${{ needs.attempt-2.outputs.execution_ran }}
         run: |
           set -euo pipefail
           # Freshness anchor (#993): resolve the head commit's committer time and
@@ -482,6 +508,21 @@ jobs:
                   | length')
             if [ "$LINEAGE_FAILED" -gt 0 ]; then
               echo "::error::No /code-review verdict comment exists and $LINEAGE_FAILED code-review run(s) over this PR's commits ended in failure. Every review attempt died before it could post — this PR has never been reviewed. Failing closed (#1228); fix the failing run and re-review."
+              exit 1
+            fi
+
+            # Ran-but-silent fail-closed check (#1239/#1182/#1195, canon parity
+            # #1300). Neither attempt job failed outright, but if one of them
+            # actually ran the review step (execution log produced) and still
+            # posted zero /code-review comments, that's a silent no-review, not
+            # a legitimate skip — the exact #1179 incident where PR #1226
+            # auto-merged fully unreviewed. Prefer attempt-2's flag when it ran
+            # (its retry is authoritative); fall back to attempt-1's when
+            # attempt-2 was skipped (its output is then an empty string, not
+            # "false").
+            EXEC_RAN="${EXEC_RAN_2:-$EXEC_RAN_1}"
+            if [ "$EXEC_RAN" = "true" ]; then
+              echo "::error::Code review ran cleanly (execution log present, 0 errors/denials per the prior step) but posted zero /code-review comments. This is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
               exit 1
             fi
 
