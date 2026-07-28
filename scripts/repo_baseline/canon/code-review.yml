@@ -512,16 +512,17 @@ jobs:
             fi
 
             # Ran-but-silent fail-closed check (#1239/#1182/#1195, canon parity
-            # #1300). Neither attempt job failed outright, but if one of them
+            # #1300). Neither attempt job failed outright, but if EITHER one
             # actually ran the review step (execution log produced) and still
             # posted zero /code-review comments, that's a silent no-review, not
             # a legitimate skip — the exact #1179 incident where PR #1226
-            # auto-merged fully unreviewed. Prefer attempt-2's flag when it ran
-            # (its retry is authoritative); fall back to attempt-1's when
-            # attempt-2 was skipped (its output is then an empty string, not
-            # "false").
-            EXEC_RAN="${EXEC_RAN_2:-$EXEC_RAN_1}"
-            if [ "$EXEC_RAN" = "true" ]; then
+            # auto-merged fully unreviewed. OR-aggregate across both attempts
+            # (matching the #1229 lesson above, not a "prefer-the-latest" `:-`
+            # fallback): a job output is always defined once its job runs, so
+            # if attempt-2 fails before its own review step executes,
+            # EXEC_RAN_2 resolves to the literal "false" — a `:-` fallback
+            # would never reach attempt-1's real "true" in that case (#1309).
+            if [ "$EXEC_RAN_1" = "true" ] || [ "$EXEC_RAN_2" = "true" ]; then
               echo "::error::Code review ran cleanly (execution log present, 0 errors/denials per the prior step) but posted zero /code-review comments. This is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
               exit 1
             fi
