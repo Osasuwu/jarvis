@@ -441,6 +441,20 @@ def main():
     if drift_section:
         sections.append(drift_section)
 
+    # 5d. Managed-venv drift check + self-heal (#1312) — hash+import-probe
+    #     against the registered "main" env; silent when in sync, otherwise
+    #     a visible healed/heal-failed block. Never raises.
+    env_drift_section = _check_env_drift()
+    if env_drift_section:
+        sections.append(env_drift_section)
+
+    # 5e. MCP bootstrap failure breadcrumbs (#1312) — surfaces
+    #     .claude/mcp-failures.jsonl entries newer than 24h, deduped so a
+    #     failure never re-reports across sessions.
+    mcp_failures_section = _check_mcp_failures()
+    if mcp_failures_section:
+        sections.append(mcp_failures_section)
+
     # 6. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
     #    live memories (name + type + scope + short description) so Jarvis
     #    knows what exists and can pull full content on demand via memory_get
@@ -768,7 +782,7 @@ def _check_milestone_sweep(
     Thresholds are configurable via env (MILESTONE_SWEEP_DAYS,
     MILESTONE_SWEEP_MIN_SLICES) or overridden per-call.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     if repo is None:
         return None
@@ -897,6 +911,131 @@ def _check_mirror_drift(
         f"HEAD ({head[:12]}) — run `install.ps1 -Apply` or "
         f"`install.sh --apply` to sync."
     )
+
+
+# ---------------------------------------------------------------------------
+# Managed-venv drift detection + self-heal (#1312)
+# ---------------------------------------------------------------------------
+
+
+def _check_env_drift(env_name: str = "main", _env_sync_module=None) -> str | None:
+    """Check the long-lived MCP venv via scripts/lib/env_sync.py and self-heal
+    on drift (AC#3). Silent when in sync; never raises.
+    """
+    try:
+        if _env_sync_module is not None:
+            env_sync = _env_sync_module
+        else:
+            sys.path.insert(0, str(_root / "scripts" / "lib"))
+            import env_sync
+
+        env = env_sync.get_env(env_name)
+        if env is None:
+            return None
+
+        result = env_sync.check(env)
+        if result.in_sync:
+            return None
+
+        heal_result = env_sync.heal(env)
+        if heal_result.success:
+            old = (heal_result.old_hash or "none")[:12]
+            new = (heal_result.new_hash or "?")[:12]
+            return (
+                "## Environment Drift — Healed\n"
+                f"⚠ `{env.name}` venv was out of sync ({result.reason}) — "
+                f"auto-healed ({old} → {new})."
+            )
+        return (
+            "## Environment Drift — Heal Failed\n"
+            f"⚠ `{env.name}` venv is out of sync ({result.reason}) and "
+            f"auto-heal failed ({heal_result.reason}). Run manually:\n"
+            f"`{env.venv_python} -m pip install -r {env.manifest}`\n"
+            f"See log: {heal_result.log_path}"
+        )
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# MCP bootstrap failure breadcrumbs (#1312 AC#5)
+# ---------------------------------------------------------------------------
+
+_MCP_FAILURES_PATH = _root / ".claude" / "mcp-failures.jsonl"
+_MCP_FAILURES_REPORTED_PATH = _root / ".claude" / "mcp-failures.reported.json"
+_MCP_FAILURES_FRESHNESS_HOURS = 24
+
+
+def _check_mcp_failures(
+    failures_path: Path | None = None,
+    reported_path: Path | None = None,
+    _now=None,
+) -> str | None:
+    """Surface MCP bootstrap failures logged to .claude/mcp-failures.jsonl
+    newer than 24h, deduped against previously-reported entries so a failure
+    never re-reports across sessions. Never raises.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    fp = failures_path if failures_path is not None else _MCP_FAILURES_PATH
+    rp = reported_path if reported_path is not None else _MCP_FAILURES_REPORTED_PATH
+
+    try:
+        now = _now if _now is not None else datetime.now(timezone.utc)
+        if not fp.exists():
+            return None
+        try:
+            lines = fp.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        try:
+            reported_raw = json.loads(rp.read_text(encoding="utf-8")) if rp.exists() else []
+            reported = set(reported_raw) if isinstance(reported_raw, list) else set()
+        except (OSError, ValueError):
+            reported = set()
+
+        cutoff = now - timedelta(hours=_MCP_FAILURES_FRESHNESS_HOURS)
+        new_entries = []
+        all_signatures = set()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            ts_str = entry.get("timestamp")
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            signature = f"{entry.get('server', '?')}|{ts_str}"
+            all_signatures.add(signature)
+            if ts < cutoff or signature in reported:
+                continue
+            new_entries.append((ts, entry))
+
+        try:
+            rp.parent.mkdir(parents=True, exist_ok=True)
+            rp.write_text(json.dumps(sorted(reported | all_signatures)), encoding="utf-8")
+        except OSError:
+            pass
+
+        if not new_entries:
+            return None
+
+        new_entries.sort(key=lambda x: x[0])
+        lines_out = [
+            f"- `{entry.get('server', '?')}` exited {entry.get('exit_code', '?')} "
+            f"at {ts.isoformat()} — see `.claude/logs/mcp-{entry.get('server', '?')}.stderr.log`"
+            for ts, entry in new_entries
+        ]
+        return "## MCP Bootstrap Failures\n" + "\n".join(lines_out)
+    except Exception:
+        return None
 
 
 def _parse_json_field(val):
