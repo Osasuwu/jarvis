@@ -117,7 +117,7 @@ Three places work can land. Pick by **who's present** and **how the work was tri
 - **`/delegate`** — operator present and chose to fan out; AFK-eligible issues → parallel sandcastle subagents, admitted by CONTEXT.md → *Pre-dispatch gate*. Operator-driven dispatch, **not** the orchestrator.
 - **Reactive-core orchestrator (M44)** — no operator; events cold-boot it and it triages **one** event into one of three dispositions, then hands off (CONTEXT.md → *orchestrator*, *Loop closure*).
 
-Boundary: **orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-tickets`'s checklist applies regardless of who emits the task, and an AFK-unsafe row goes to owner attention (no auto-spawn), same landing zone as a `/delegate` refusal. The orchestrator routes, it is not the principal (CONTEXT.md → *Invariants → Skills, infra & eval*).
+Boundary: **orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-tickets`'s checklist applies regardless of who emits the task, and an AFK-unsafe row goes to the principal (no auto-spawn), same landing zone as a `/delegate` refusal. The orchestrator routes, it is not the principal (CONTEXT.md → *Invariants → Skills, infra & eval*).
 
 ## Autonomous work
 
