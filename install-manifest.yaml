@@ -56,6 +56,17 @@ groups:
         dest: "CLAUDE.md"
         template: false
 
+  - id: doctrine
+    description: "DOCTRINE.md — shared cross-repo norms, delivered via @import from CLAUDE.md (#1315)"
+    enabled: true
+    files:
+      # Canonical source at .claude-userlevel/DOCTRINE.md (git-versioned,
+      # PR-reviewed). Installer copies to ~/.claude/DOCTRINE.md; user-level
+      # CLAUDE.md pulls it in with a bare @DOCTRINE.md import line.
+      - source: ".claude-userlevel/DOCTRINE.md"
+        dest: "DOCTRINE.md"
+        template: false
+
   - id: hooks_settings
     description: "settings.json — hooks pointing at JARVIS_HOME scripts (M3 #338)"
     enabled: true
