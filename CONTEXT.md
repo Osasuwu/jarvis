@@ -292,6 +292,9 @@ Where load-bearing rules live, in order of preference:
 - **`mcp-memory/schema.sql` is aspirational, not a bootstrap** — no migration builds `memories` from zero.
 - **Secrets never land in any persistent surface** — metadata OK, values never; never read `.env*`; no OS/SSH/cloud creds unless asked.
 - **`mcp-memory/server.py`, `.mcp.json`, Supabase schema shared with redrobot** — verify before pushing; .mcp.json device-portable.
+- **MCP servers are registered per-device by absolute path into the MAIN checkout** (`~/.claude.json`), so every session in every worktree shares exactly one long-lived `.venv` — worktrees are never in the causal path of an MCP failure (#1307 misdiagnosis, #1312).
+- **An MCP bootstrap's stdout IS the JSON-RPC transport** — anything it prints (pip progress, diagnostics) corrupts the handshake and produces the silent-tools-missing symptom; and it runs under Claude Code's startup timeout, so long work there gets killed mid-flight. Healing belongs in the SessionStart hook, never in a bootstrap (#1312).
+- **Manifest hash ≠ environment health** — a hash-only stamp certifies a broken venv as healthy when code imports deps the manifest never declared (`nest_asyncio`, `pythonjsonlogger`); the check must also import-probe. Even then it guarantees only *satisfies the range*, not *reproduces CI's resolution* (#1312, gap tracked in #1313).
 
 ### AFK & delegation
 
