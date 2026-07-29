@@ -76,7 +76,42 @@ def test_run_server_tracked_records_failure_on_nonzero_exit(tmp_path):
     failures_path = tmp_path / ".claude" / "mcp-failures.jsonl"
     assert failures_path.exists()
     entry = json.loads(failures_path.read_text(encoding="utf-8").strip())
-    assert entry == {"server": "memory", "timestamp": now.isoformat(), "exit_code": 1}
+    assert entry == {
+        "server": "memory",
+        "timestamp": now.isoformat(),
+        "exit_code": 1,
+        "stderr_tail": "",
+    }
+
+
+def test_run_server_tracked_includes_stderr_tail_on_failure(tmp_path):
+    class WritingFakeRun(FakeRun):
+        def __call__(self, cmd, **kwargs):
+            kwargs["stderr"].write(b"boom: traceback line\n")
+            return super().__call__(cmd, **kwargs)
+
+    fake_run = WritingFakeRun(returncode=1)
+    mcp_bootstrap.run_server_tracked(
+        "memory", "python-exe", "server.py", tmp_path, _subprocess_run=fake_run
+    )
+
+    failures_path = tmp_path / ".claude" / "mcp-failures.jsonl"
+    entry = json.loads(failures_path.read_text(encoding="utf-8").strip())
+    assert entry["stderr_tail"] == "boom: traceback line\n"
+
+
+def test_run_server_tracked_bounds_stderr_log_size(tmp_path, monkeypatch):
+    monkeypatch.setattr(mcp_bootstrap, "_MAX_LOG_BYTES", 100)
+    log_path = tmp_path / ".claude" / "logs" / "mcp-memory.stderr.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_bytes(b"x" * 200)
+
+    fake_run = FakeRun(returncode=0)
+    mcp_bootstrap.run_server_tracked(
+        "memory", "python-exe", "server.py", tmp_path, _subprocess_run=fake_run
+    )
+
+    assert log_path.stat().st_size < 200
 
 
 def test_run_server_tracked_no_failure_recorded_on_zero_exit(tmp_path):
