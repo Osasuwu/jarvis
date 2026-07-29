@@ -160,18 +160,21 @@ class TestCanonExecRanFailClosed:
         )
 
     def test_exec_ran_branch_present_and_fails_closed(self, canon_verdict_run):
-        assert 'EXEC_RAN="${EXEC_RAN_2:-$EXEC_RAN_1}"' in canon_verdict_run, (
-            "Missing the ran-but-silent fail-closed check — a review that "
-            "actually executed (per either attempt job's execution_ran "
-            "output) but posted zero comments must fail closed, matching "
-            "live's EXEC_FILE check (#1239/#1182/#1195)."
+        assert '[ "$EXEC_RAN_1" = "true" ] || [ "$EXEC_RAN_2" = "true" ]' in canon_verdict_run, (
+            "Missing the ran-but-silent fail-closed check, or it regressed to "
+            'a `:-` "prefer the latest" fallback. A job output is always '
+            "defined once its job runs, so if attempt-2 fails before its own "
+            "review step executes, EXEC_RAN_2 resolves to the literal "
+            '"false" (not empty) — a `:-` fallback would never reach '
+            'attempt-1\'s real "true" in that case (#1309). Must '
+            "OR-aggregate across both attempts instead, matching live's "
+            "EXEC_FILE check (#1239/#1182/#1195)."
         )
-        assert 'if [ "$EXEC_RAN" = "true" ]; then' in canon_verdict_run
 
     def test_exec_ran_branch_is_correctly_ordered(self, canon_verdict_run):
         run = canon_verdict_run
         lineage_exit = run.index("LINEAGE_FAILED", run.index('if [ "$LINEAGE_FAILED" -gt 0 ]'))
-        exec_ran_check = run.index('EXEC_RAN="${EXEC_RAN_2:-$EXEC_RAN_1}"')
+        exec_ran_check = run.index('[ "$EXEC_RAN_1" = "true" ] || [ "$EXEC_RAN_2" = "true" ]')
         legitimate_skip = run.index("legitimately skipped")
         assert lineage_exit < exec_ran_check < legitimate_skip, (
             "The ran-but-silent check must run after the LINEAGE_FAILED "
