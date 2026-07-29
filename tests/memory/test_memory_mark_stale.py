@@ -46,6 +46,9 @@ def _noop_decorator(*_args, **_kwargs):
 
 
 class _FakeServer:
+    """Stand-in for mcp.server.Server — supports both the 1.x decorator API
+    and the 2.x constructor-param API (see tests/conftest.py for why both)."""
+
     def __init__(self, *_args, **_kwargs):
         pass
 
@@ -58,9 +61,16 @@ class _FakeServer:
 
 _stub_module(
     "mcp.types",
-    {"CallToolResult": MagicMock, "TextContent": _FakeTextContent, "Tool": MagicMock},
+    {
+        "CallToolResult": MagicMock,
+        "CallToolRequestParams": MagicMock,
+        "ListToolsResult": MagicMock,
+        "PaginatedRequestParams": MagicMock,
+        "TextContent": _FakeTextContent,
+        "Tool": MagicMock,
+    },
 )
-_stub_module("mcp.server", {"Server": _FakeServer})
+_stub_module("mcp.server", {"Server": _FakeServer, "ServerRequestContext": MagicMock})
 _stub_module("mcp.server.stdio", {"stdio_server": MagicMock})
 _stub_module("mcp")
 try:
