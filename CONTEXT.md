@@ -127,7 +127,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 ### Core entities
 
 - **Pillar** — a multi-milestone capability area. Lives forever in memory, never closes. Narrative grouping only; not a structural unit. Examples: Memory, Autonomy, Identity, Multi-agent. **A pillar is not a task** — closing one milestone within a pillar doesn't close the pillar.
-- **Milestone** — GitHub milestone grouping ≥2 capability-coherent slices that share a goal or have inter-dependencies. Description carries the PRD or PRD-equivalent (output of `/grill-me` + `/to-spec`). Closes when capability ships, not on a date — no date in title; 0 open issues + state=open is a bug. Term "epic" is **not** used; milestone is the single grouping primitive (`milestone_hierarchy_v3`).
+- **Milestone** — GitHub milestone grouping ≥2 capability-coherent slices that share a goal or have inter-dependencies. Description carries the PRD or PRD-equivalent (output of `/grill-me` + `/to-spec`). Closes when capability ships, not on a date — no date in title; 0 open issues + state=open is a bug. Term "epic" is **not** used; milestone is the single grouping primitive (`milestone_hierarchy_v3`, decision `2a7ae10e`).
 - **Slice** — one PR, vertical (schema → service → API → UI → tests). A single independent slice with no inter-deps ships **without** a milestone — no ceremony for one-offs.
 - **Skill** — atomic, reusable agent capability defined in `.claude-userlevel/skills/<name>/SKILL.md`. Universal (not project-specific). Loaded by Claude Code at session start.
 - **Subagent** — agent dispatched via the `Agent` tool from a parent session. Runs in isolation (own context, own worktree if requested), reports back. Not the same as "skill".
