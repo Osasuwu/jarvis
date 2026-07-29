@@ -283,6 +283,7 @@ Where load-bearing rules live, in order of preference:
 
 - **Skills live in `.claude-userlevel/skills/`** (canonical; rare project override, e.g. redrobot `/sprint-report`); `~/.claude/` mirrors, drifts if edited.
 - **`config/SOUL.md` is this instance's identity**, shared interactive + autonomous — orchestrator runs routing-policy only.
+- **Context layering is one-directional** — a repo file may cite user-level; user-level must never point at a repo's `CONTEXT.md`. It loads in *every* repo, so the pointer misdirects (resolves to the wrong document) rather than dangling. Shared norms → user-level `DOCTRINE.md`; jarvis mechanics stay here, cited as "jarvis `CONTEXT.md` → *X*" (#1315, decision `7958c69d`).
 - **`review` gate can't see edits to its own workflow** — silently passes; `auto-merge-enable` withholds merge there.
 - **App perms are installation-wide** (hits redrobot); tokens scoped per-workflow via `create-github-app-token`.
 - **Holdout secrecy unachievable solo** — one principal wears every hat; defense is paraphrase regen + paired scoring per run.
