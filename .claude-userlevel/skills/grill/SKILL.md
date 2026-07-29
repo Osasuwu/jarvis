@@ -37,6 +37,18 @@ Interview the user relentlessly about every aspect of their plan until we reach 
 
 **Anti-sycophancy note** (decision 316c5911-9f06-44de-8f99-20fe3e9fa448): This third-person reviewer framing (based on arxiv 2505.23840) reduces agreement-bias in LLM responses to user proposals by ~64% in multi-turn dialogues. The goal is crisp pushback, not reflexive agreement.
 
+### Experiment-discipline checklist
+
+Fires when the plan rests on an empirical run — a measurement campaign, a test matrix, a robot day, a benchmark, anything whose conclusion is drawn from collected cases. Add these three to the Phase 2 question set (one at a time, like every other question).
+
+They are carried **verbatim**. Paraphrasing them into general wording is exactly the failure they exist to prevent — the three absent questions are what produced "измерили трижды" as three independent episodes with no accumulating case set (research #1248 §AC4, revision #1298, decision `ed1f5dc9-8e21-4fed-abe2-ceac735182ba`).
+
+1. **Оси**: какие оси неопределённости у этой задачи, какие из них прогон фиксирует, а какие варьирует?
+2. **Непонятные результаты**: в каких ячейках уже были непонятные результаты и что по ним известно?
+3. **Порог выборки**: какой порог выборки считается достаточным для вывода — и почему именно он?
+
+Question 2 ships with a heuristic: **прогон без единого непонятного результата подозрителен**. A clean sheet is more often a reporting artefact than a clean run — press for what was seen and waved off. The heuristic points one way only, and deliberately so: it says a spotless run is suspicious, and it says nothing about what a count of anomalies implies. Do not extend it into a claim that more of them reported means the work is in better shape.
+
 ### Research-pass gate (precondition to Phase 3)
 
 Before entering the CRITIC subagent phase, check whether a recent 4-channel
