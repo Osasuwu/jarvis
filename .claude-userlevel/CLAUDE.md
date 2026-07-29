@@ -105,9 +105,9 @@ Auto-merge, `delete_branch_on_merge`, branch protection and the required-check c
 
 ### When to break the rules
 
-Two structural cases where a gate *cannot* run and admin-merge is the only path — the **review-blind carve-out**: (a) a PR that modifies `code-review.yml` itself, which `anthropics/claude-code-action@v1` refuses to run on; (b) redrobot's self-hosted runner being down (verify locally, per the `redrobot_billing_blocked_manual_merge_protocol` precedent).
+Two structural cases where a gate *cannot* run and admin-merge is the only path — the **review-blind carve-out**: (a) a PR that modifies `code-review.yml` itself; (b) redrobot's self-hosted runner being down (verify locally, per the `redrobot_billing_blocked_manual_merge_protocol` precedent).
 
-**A flaky or false-failing gate is NOT on this list** — that's a bug to fix, not a bypass to normalize: file an issue and take at most one **sanctioned stop-gap merge**. Twice around the same gate ⇒ stop and fix the gate. Definitions: CONTEXT.md → *Review-blind carve-out*, *Sanctioned stop-gap merge*, *Merge-freeze doctrine*.
+**A flaky or false-failing gate is NOT on this list** — that's a bug to fix, not a bypass to normalize: file an issue and take at most one **sanctioned stop-gap merge**. Definitions: CONTEXT.md → *Review-blind carve-out*, *Sanctioned stop-gap merge*, *Merge-freeze doctrine*.
 
 ## Filing issues — route through the right skill
 
