@@ -891,12 +891,24 @@ def _deep_merge_jarvis_json(existing: Any, source: Any, base: Any = None) -> Any
     reproduce the plain union-only behavior — used when there's no previous
     install, no git history, or the file wasn't tracked at that commit.
 
+    The same distinction applies one level up, at whole dict keys: a key
+    present in `base` but dropped from `source` (e.g. a deprecated top-level
+    setting like `skillOverrides`) is pruned from `existing` too, provided
+    `existing` still matches what `base` had there — i.e. the local mirror
+    was never customized away from the installed default. A key the user
+    edited locally so it differs from `base` is left alone; a key that was
+    never in `base` at all (genuinely user-added) is untouched regardless.
+
     Not a general-purpose deep-merge — tuned for the two files M3 ships.
     """
     if not isinstance(existing, dict) or not isinstance(source, dict):
         return source
     base_dict = base if isinstance(base, dict) else {}
     out = dict(existing)
+    if base is not None:
+        for key in base_dict:
+            if key not in source and key in out and out[key] == base_dict[key]:
+                del out[key]
     for key, src_val in source.items():
         if (
             key in _JARVIS_OWNED_REPLACE_PARENTS

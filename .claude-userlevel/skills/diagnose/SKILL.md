@@ -1,6 +1,6 @@
 ---
 name: diagnose
-description: Disciplined diagnosis loop for hard bugs and performance regressions. Reproduce → minimise → hypothesise → instrument → fix → regression-test. Use when user says "diagnose this" / "debug this", reports a bug, says something is broken/throwing/failing, or describes a performance regression.
+description: Disciplined diagnosis loop: reproduce → minimise → hypothesise → instrument → fix → regression-test. Triggers: "diagnose this"/"debug this", a reported bug, "broken/throwing/failing", or a performance regression.
 model: opus
 effort: xhigh
 context: fork

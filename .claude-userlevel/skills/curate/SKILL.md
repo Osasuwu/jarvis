@@ -1,6 +1,6 @@
 ---
 name: curate
-description: "Owner-invoked weekly memory hygiene. Surfaces stale/inflated/aging memory candidates deterministically, lets the owner mark each as stale (expired_at) or supersede with a named replacement (superseded_by). Use when owner says /curate, 'почисти память', 'memory hygiene', or after 2+ recall-quality complaints."
+description: "Owner-invoked weekly memory hygiene: surfaces stale/inflated/aging memory candidates, owner marks stale or supersedes with a replacement. Triggers: /curate, 'почисти память', 'memory hygiene', or after 2+ recall-quality complaints."
 ---
 
 # Curate

@@ -214,12 +214,5 @@
   "statusLine": {
     "type": "command",
     "command": "python scripts/statusline.py"
-  },
-  "skillOverrides": {
-    "setup-tasks": "name-only",
-    "last-work-report": "name-only",
-    "caveman": "name-only",
-    "status-record": "name-only",
-    "autonomous-loop": "name-only"
   }
 }
