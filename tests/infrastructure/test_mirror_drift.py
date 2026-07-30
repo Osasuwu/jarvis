@@ -1,11 +1,12 @@
-"""Unit tests for scripts/session-context.py mirror drift detection (#753).
+"""Unit tests for scripts/session-context.py mirror drift detection (#753, #1076 §2).
 
 Covers the drift-detection predicate:
-  - Missing version marker → no warning
+  - Missing version marker → loud "never installed" warning (#1252 AC4)
   - Installed SHA matches HEAD → no warning
   - Installed SHA differs from HEAD → warning with SHAs + commit count
   - Git unavailable → graceful no-op (no crash, no warning)
-  - Empty marker file → graceful no-op
+  - Empty/whitespace-only marker file → loud "install state unknown" warning
+  - Unreadable marker (OSError) → graceful no-op (distinct failure class)
   - Same session-context scope as test_milestone_sweep.py.
 """
 
@@ -49,34 +50,41 @@ def _write_marker(home_dir: Path, sha: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def test_mirror_drift_none_when_marker_missing():
-    """No .jarvis-version file → no warning."""
+def test_mirror_drift_warns_when_marker_missing():
+    """No .jarvis-version file → loud 'never installed' warning (#1076 §2)."""
     result = sc._check_mirror_drift(
         version_path=Path("/nonexistent/path/.jarvis-version"),
         repo_root=Path("/mock/repo"),
     )
-    assert result is None
+    assert result is not None
+    assert "Mirror Drift" in result
+    assert "never have been installed" in result
+    assert "install.ps1" in result or "install.sh" in result
 
 
-def test_mirror_drift_none_when_marker_empty(monkeypatch, tmp_path):
-    """Empty marker file → treat as absent → no warning."""
+def test_mirror_drift_warns_when_marker_empty(monkeypatch, tmp_path):
+    """Empty marker file → loud 'install state unknown' warning."""
     marker = _write_marker(tmp_path, "")
     marker.write_text("", encoding="utf-8")
     result = sc._check_mirror_drift(
         version_path=marker,
         repo_root=tmp_path,
     )
-    assert result is None
+    assert result is not None
+    assert "Mirror Drift" in result
+    assert "install state unknown" in result
 
 
-def test_mirror_drift_none_when_marker_whitespace_only(monkeypatch, tmp_path):
-    """Whitespace-only marker → treat as absent → no warning."""
+def test_mirror_drift_warns_when_marker_whitespace_only(monkeypatch, tmp_path):
+    """Whitespace-only marker → loud 'install state unknown' warning."""
     marker = _write_marker(tmp_path, "  \n  ")
     result = sc._check_mirror_drift(
         version_path=marker,
         repo_root=tmp_path,
     )
-    assert result is None
+    assert result is not None
+    assert "Mirror Drift" in result
+    assert "install state unknown" in result
 
 
 # ---------------------------------------------------------------------------

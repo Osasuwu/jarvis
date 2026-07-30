@@ -518,10 +518,23 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None, compact=False
     return None, []
 
 
+# always_load admission cap: DOCTRINE.md > Baseline carrier selection ranks
+# always_load as the worst-position, always-pays carrier — reserved for
+# dynamic/device-scoped/time-bounded content with no file home. Cap changes
+# require a new record_decision citing the prior UUID in memories_used — keep
+# this in sync with scripts/eval-recall.py's copy of the same constants
+# (decision 3e6594f6-27da-45d9-96d8-516a46716425, #1252 AC3).
+ALWAYS_LOAD_MAX_ENTRIES = 4
+ALWAYS_LOAD_MAX_BYTES = 6000
+
+
 def _query_always_load(client, *, compact=False):
     """Query memories tagged 'always_load' (evergreen, cross-project rules).
 
-    Returns (formatted_text, ids).
+    Returns (formatted_text, ids). Enforced at read time against
+    ALWAYS_LOAD_MAX_ENTRIES / ALWAYS_LOAD_MAX_BYTES (decision
+    3e6594f6-27da-45d9-96d8-516a46716425) — over-tagged data degrades
+    gracefully (truncated, not blocked) with a loud stderr warning.
     """
     try:
         result = (
@@ -531,12 +544,40 @@ def _query_always_load(client, *, compact=False):
             .order("updated_at", desc=True)
             .execute()
         )
-        if result.data:
-            fmt = _fmt_memory_compact if compact else _fmt_memory
-            sep = "\n" if compact else "\n---\n"
-            text = sep.join(fmt(m) for m in result.data)
-            ids = [m["id"] for m in result.data if m.get("id")]
-            return text, ids
+        rows = result.data or []
+        if not rows:
+            return None, []
+
+        if len(rows) > ALWAYS_LOAD_MAX_ENTRIES:
+            print(
+                f"[session-context] always_load has {len(rows)} tagged memories, "
+                f"cap is {ALWAYS_LOAD_MAX_ENTRIES} — truncating to the most recently "
+                "updated. Untag the rest or move them to a file (DOCTRINE.md > "
+                "Baseline carrier selection).",
+                file=sys.stderr,
+            )
+            rows = rows[:ALWAYS_LOAD_MAX_ENTRIES]
+
+        fmt = _fmt_memory_compact if compact else _fmt_memory
+        sep = "\n" if compact else "\n---\n"
+        kept = []
+        total_bytes = 0
+        for i, m in enumerate(rows):
+            rendered = fmt(m)
+            size = len(rendered.encode("utf-8"))
+            if kept and total_bytes + size > ALWAYS_LOAD_MAX_BYTES:
+                print(
+                    f"[session-context] always_load byte budget ({ALWAYS_LOAD_MAX_BYTES}B) "
+                    f"exceeded after {i}/{len(rows)} entries — truncating remainder.",
+                    file=sys.stderr,
+                )
+                break
+            kept.append((rendered, m))
+            total_bytes += size
+
+        text = sep.join(rendered for rendered, _ in kept)
+        ids = [m["id"] for _, m in kept if m.get("id")]
+        return text, ids
     except Exception as e:
         print(f"[session-context] always_load query failed: {e}", file=sys.stderr)
     return None, []
@@ -868,7 +909,17 @@ def _check_mirror_drift(
     """Compare installed version marker against repo HEAD.
 
     Returns a formatted drift warning when the installed SHA differs from
-    HEAD, or None when in sync / marker absent / git unavailable.
+    HEAD, when the marker is missing/empty (mirror never installed or
+    install state unknown), or None when in sync / marker unreadable / git
+    unavailable.
+
+    A missing or empty marker used to return None (silent) — #1076 §2 asked
+    for a loud warning specifically for this case: a device that never ran
+    the installer has zero Tier-1 mirror content (DOCTRINE.md, CLAUDE.md,
+    skills) and, before this change, nothing said so (decision
+    b95ef864-4585-45d6-9baf-8979b29c983b, #1252 AC4). OSError-on-read stays
+    silent — a distinct "unreadable/transient" failure class, not
+    "never installed".
 
     Both parameters are injectable for testing: version_path defaults to
     ~/.claude/.jarvis-version, repo_root defaults to the discovered repo root.
@@ -877,14 +928,25 @@ def _check_mirror_drift(
     rr = repo_root if repo_root is not None else _root
 
     if not vp.exists():
-        return None
+        return (
+            "## Mirror Drift\n"
+            "⚠ No `~/.claude/.jarvis-version` marker found — the user-level "
+            "mirror (CLAUDE.md, DOCTRINE.md, skills) may never have been "
+            "installed on this device. Run `install.ps1 -Apply` or "
+            "`install.sh --apply` to sync."
+        )
 
     try:
         installed = vp.read_text(encoding="utf-8").strip()
     except OSError:
         return None
     if not installed:
-        return None
+        return (
+            "## Mirror Drift\n"
+            "⚠ `~/.claude/.jarvis-version` marker is empty — mirror install "
+            "state unknown. Run `install.ps1 -Apply` or `install.sh --apply` "
+            "to sync."
+        )
 
     try:
         head = subprocess.run(
