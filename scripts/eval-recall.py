@@ -700,6 +700,12 @@ async def run_all(
 CONTEXT_CHARS_PER_TOKEN = 4
 CONTEXT_USER_LIMIT = 2  # match scripts/session-context.py
 
+# Mirrors scripts/session-context.py:ALWAYS_LOAD_MAX_ENTRIES / _MAX_BYTES.
+# Cap changes require a new record_decision citing the prior UUID as
+# memories_used — keep both copies in sync (decision 3e6594f6-27da-45d9-96d8-516a46716425, #1252 AC3).
+ALWAYS_LOAD_MAX_ENTRIES = 4
+ALWAYS_LOAD_MAX_BYTES = 6000
+
 
 def _load_session_context(client) -> tuple[str, dict]:
     """Load the items the SessionStart hook injects, return a single keyword
@@ -742,6 +748,9 @@ def _load_session_context(client) -> tuple[str, dict]:
         print(f"[context-rot] user query failed: {e}", file=sys.stderr)
 
     # 2. always_load memories (evergreen rules)
+    # Enforced at read time against ALWAYS_LOAD_MAX_ENTRIES / ALWAYS_LOAD_MAX_BYTES
+    # (decision 3e6594f6-27da-45d9-96d8-516a46716425) — over-tagged data degrades
+    # gracefully (truncated, not blocked) with a loud stderr warning.
     try:
         r = (
             client.table("memories")
@@ -751,9 +760,31 @@ def _load_session_context(client) -> tuple[str, dict]:
             .order("updated_at", desc=True)
             .execute()
         )
-        for m in r.data or []:
-            parts.append(_mem_text(m))
+        rows = r.data or []
+        if len(rows) > ALWAYS_LOAD_MAX_ENTRIES:
+            print(
+                f"[context-rot] always_load has {len(rows)} tagged memories, "
+                f"cap is {ALWAYS_LOAD_MAX_ENTRIES} — truncating to the most recently "
+                "updated. Untag the rest or move them to a file (DOCTRINE.md > "
+                "Baseline carrier selection).",
+                file=sys.stderr,
+            )
+            rows = rows[:ALWAYS_LOAD_MAX_ENTRIES]
+
+        total_bytes = 0
+        for i, m in enumerate(rows):
+            rendered = _mem_text(m)
+            size = len(rendered.encode("utf-8"))
+            if i and total_bytes + size > ALWAYS_LOAD_MAX_BYTES:
+                print(
+                    f"[context-rot] always_load byte budget ({ALWAYS_LOAD_MAX_BYTES}B) "
+                    f"exceeded after {i}/{len(rows)} entries — truncating remainder.",
+                    file=sys.stderr,
+                )
+                break
+            parts.append(rendered)
             counts["always_load"] += 1
+            total_bytes += size
     except Exception as e:
         print(f"[context-rot] always_load query failed: {e}", file=sys.stderr)
 

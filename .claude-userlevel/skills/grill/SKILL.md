@@ -188,6 +188,10 @@ When the user uses vague or overloaded terms, propose a precise canonical term. 
 
 When domain relationships are being discussed, stress-test them with specific scenarios. Invent scenarios that probe edge cases and force the user to be precise about the boundaries between concepts.
 
+### Субстрат guideword
+
+When the plan resolves into a new standing rule, constraint, or behavior the agent should follow going forward — not a one-off decision — ask **на каком субстрате это будет жить?** before letting it default to prose in CLAUDE.md/SOUL.md or an `always_load` tag. Walk the DOCTRINE.md → *Baseline carrier selection* order (code/CI gate → PreToolUse deny hook → file `@import` → `.claude/rules/` + `paths:` → hook-inject → retrieval → `always_load`) and pick the first carrier that fits the rule's actual violation cost. A rule that "feels important" is not evidence it needs the expensive carriers — importance without a stated violation-cost story is exactly how content ends up on `always_load` by default.
+
 ### Cross-reference with code
 
 When the user states how something works, check whether the code agrees. If you find a contradiction, surface it: "Your code cancels entire Orders, but you just said partial cancellation is possible — which is right?"

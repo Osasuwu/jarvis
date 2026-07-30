@@ -246,3 +246,5 @@ This is the contract that lets `/delegate`'s pre-dispatch gate (issue #642) trus
 - If confidence <50 → recommend follow-up
 
 **Grounding rule.** Every finding must trace to a URL that *this run actually retrieved*. A claim you recognize as true but did not fetch is not a finding — it goes in the report as an explicitly-labelled prior, or it doesn't go in. The structure of this report is trivially satisfiable from parametric knowledge alone; the format proves nothing. That is precisely how `firecrawl_agent` failed its test, and the same failure mode is available to you.
+
+**Субстрат guideword.** If a finding is actionable *because it should become a standing rule the agent follows* (not just a one-off fix), the report's recommendation must name the intended carrier — same order as DOCTRINE.md → *Baseline carrier selection* (code/CI gate → PreToolUse deny hook → file `@import` → `.claude/rules/` + `paths:` → hook-inject → retrieval → `always_load`). "Add to memory" or "add to CLAUDE.md" is not itself a recommendation — say why that carrier, not a cheaper one, fits the rule's violation cost.

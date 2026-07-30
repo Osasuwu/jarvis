@@ -130,6 +130,8 @@ User-scope MCP servers (registered by the installer from `.claude-userlevel/.mcp
 
 `context7` provides **live, version-current library docs** (via `resolve-library-id` → `query-docs`). Reach for it BEFORE answering from memory whenever a task touches a library, framework, SDK, API, CLI, or cloud service — even ones you "know" (React/Three.js/FastAPI/mujoco/etc.). Training data lags; context7 doesn't. Prefer it over web search for library docs. Triggers: API syntax, config, version-migration, library-specific debugging, setup/CLI usage.
 
+**The harness is a library too.** Claude Code itself — hooks, skills, MCP config, slash commands, subagent semantics, settings.json shape — is exactly the kind of fast-moving, version-current surface this rule exists for; treating it as "just how I work" instead of "a library with docs" is the same training-data-lag mistake as guessing a framework's API from memory. Before asserting harness behavior from memory (what a hook receives, what a subagent inherits, what a settings key does), pull context7 (or `claude-code-guide`) first, same as any other library.
+
 Do **not** use it for: refactoring, writing scripts from scratch, debugging business logic, code review, or general programming concepts — that's reasoning, not docs lookup.
 
 Rule of thumb: about to state a library's API surface or config from memory → pull context7 first and cite what it returns.

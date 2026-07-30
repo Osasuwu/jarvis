@@ -1,6 +1,6 @@
 # DOCTRINE.md — shared cross-repo norms
 
-Loaded via `@import` from user-level `CLAUDE.md` in every top-level session, every repo. **Carve-out**: cloud/scheduled runners and non-top-level readers (subagents, headless workflow steps) skip the user-level directory — this file is interactive-session guidance, not an enforcement mechanism; that lives in each repo's own `.github/workflows/code-review.yml` and `scripts/rework_policy.py`.
+Loaded via `@import` from user-level `CLAUDE.md`. Subagents (Task tool) and headless `claude -p` both load `~/.claude/` by default — this file reaches them too. **Carve-out**: only cloud/scheduled task runners (fresh clone, no local file access), the built-in `Explore`/`Plan` subagent types, and the `--bare` flag skip the user-level directory — this file is interactive-session guidance there, not an enforcement mechanism; that lives in each repo's own `.github/workflows/code-review.yml` and `scripts/rework_policy.py`.
 
 Every line clears the always-loaded bar (≥30% of tasks, decision `ff994ca2`). A repo's own tooling internals, issue history, or incident logs stay in that repo's `CONTEXT.md`, cited as e.g. "jarvis `CONTEXT.md` → *X*" — a qualified pointer fails visibly instead of misdirecting a different repo's session.
 
@@ -13,6 +13,42 @@ Durable behavior rules live in three tiers, each a backstop for the one above:
 - **Tier 3 — skill-specific gates.** Belong to one skill; never duplicate Tier 1 content.
 
 A rule escalates Tier 1 → Tier 2 when soft enforcement measurably fails (e.g. compliance dropping despite the rule existing) — the escalation call and its tracking are repo-specific.
+
+## Baseline carrier selection
+
+When a behavioral baseline needs a home (a rule, a fact, a constraint that should reliably reach the agent), the carrier is picked by **cost of the rule being violated**, not by how important the rule feels. Importance without a violation-cost story is how everything ends up `always_load` — the tag decays into a junk drawer instead of a scarce resource. Ordered worst-case-first:
+
+| Carrier | Delivery | Compliance | Token cost |
+|---|---|---|---|
+| Код / CI-гейт | 100% | 100% (mechanical) | 0 |
+| PreToolUse deny hook | 100%, incl. subagents/MCP | 100% (mechanical) | 0 |
+| File + `@import` (this file, CLAUDE.md, SOUL.md) | 100% | probabilistic (prompt-level) | always pays |
+| `.claude/rules/` + `paths:` filter | 100% when file matches | probabilistic | 0 when not relevant |
+| Hook-inject (SessionStart/UserPromptSubmit) | 100%, but absent headless without `~/.claude/` | probabilistic | always pays |
+| `--append-system-prompt` | 100%, headless-only | probabilistic | always pays |
+| Retrieval / recall | ~50% (situational) | probabilistic | pays only when it fires |
+| `always_load` memory tag | 100% delivery, worst prompt position (lost-in-middle) | probabilistic | always pays |
+
+Selection order — pick the first that fits:
+
+1. **Checkable at the tool-call boundary** → PreToolUse deny hook.
+2. **Checkable on the produced artifact** → test / CI gate.
+3. **Not mechanically checkable, always needed, stable** → a file loaded via `@import` (this file or CLAUDE.md).
+4. **Not checkable, but scoped to a code area** → `.claude/rules/` + `paths:` filter.
+5. **Not checkable, situational** → retrieval (`memory_recall`), never a baseline.
+6. **`always_load` only** for content that is dynamic, device-scoped, or time-bounded with no natural file home (e.g. an active incident, a device-specific gotcha) — almost nothing else qualifies. If a memory has settled into something stable and general, it belongs in a file, not the tag.
+
+Reference: research memory `research_baseline_delivery_carriers_2026_07_30` (project `jarvis`), superseded by this section — see *`always_load` admission criterion* below for the cap this table motivates.
+
+## `always_load` admission criterion
+
+`always_load` is the worst-position, always-pays carrier in the table above — reserved for content that is dynamic, device-scoped, or time-bounded with no natural file home (rule 6). It is not a general-purpose "important, so tag it" bucket; unchecked growth degrades every session's prompt with lost-in-middle content that pays tokens on every turn regardless of relevance.
+
+**Cap: 4 entries, 6000 bytes combined**, enforced at *read time* (not write time — tagging isn't blocked, but only the most recently updated entries within budget are actually injected) in both `scripts/session-context.py` (`_query_always_load`) and `scripts/eval-recall.py` (`_load_session_context`'s always_load block). Over-cap data degrades gracefully — truncated to the freshest entries/bytes, with a loud stderr warning — rather than failing the session-start hook outright.
+
+Before tagging a memory `always_load`, walk rule 6 above: if the content has settled into something stable and general, it belongs in a file (this file, CLAUDE.md, a repo's CONTEXT.md), not the tag. Untag once the content is ported.
+
+**Changing the cap** requires a new `record_decision` that cites the prior cap's decision UUID in `memories_used`, and the new UUID must be cited in-code at both enforcement points. Current cap set by decision `3e6594f6-27da-45d9-96d8-516a46716425` (#1252 AC3).
 
 ## status:owner-queue label
 
