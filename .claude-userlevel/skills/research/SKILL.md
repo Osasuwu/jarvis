@@ -198,7 +198,7 @@ One paragraph, lead with recommendation if it's a decision.
 - **Alternative** — why rejected or when better
 
 ## Sources
-1. [Title](URL) — what it contributed
+1. Title — URL — what it contributed
 
 ## Confidence: N/100
 One sentence: what makes this confident or uncertain.
