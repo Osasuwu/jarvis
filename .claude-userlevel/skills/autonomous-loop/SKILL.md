@@ -2,6 +2,7 @@
 name: autonomous-loop
 description: "[SUPERSEDED 2026-05-26 — pre-M44 catch-up baseline ONLY; do not invoke for new flows.] Legacy autonomous orchestrator: perceive events, evaluate against goals, decide and act within safety bounds. Cron entry removed; opt-in manual invocation only."
 version: 1.2.0
+disable-model-invocation: true
 ---
 
 # Autonomous Loop Orchestrator

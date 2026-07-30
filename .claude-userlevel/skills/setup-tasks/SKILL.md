@@ -2,6 +2,7 @@
 name: setup-tasks
 description: "Bootstrap all scheduled tasks on a new device. Idempotent — safe to re-run."
 version: 2.1.0
+disable-model-invocation: true
 ---
 
 # Setup Tasks
