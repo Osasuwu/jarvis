@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: This skill should be used when the principal asks Jarvis to dispatch one or more GitHub issues to coding subagents (typically multiple issues in parallel), or says "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z". Also used by autonomous-loop to hand off a single subagent-scoped job (e.g. CI debug). For a single issue the main session will do itself, use /implement instead. Jarvis's own judgment on task complexity OVERRIDES blind delegation — if a task is unfit for a subagent (needs session context, cross-cutting reasoning, safety review), keep it inline even if principal said "раскидай".
+description: Dispatch one or more GitHub issues to parallel coding subagents. Triggers: "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z"; also used by autonomous-loop for single subagent-scoped jobs (e.g. CI debug). Single issue → /implement instead. Jarvis's judgment on fitness overrides blind delegation — context-heavy/cross-cutting/safety-critical work stays inline even if asked to delegate.
 version: 2.0.0
 ---
 

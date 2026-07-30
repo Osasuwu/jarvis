@@ -1,6 +1,6 @@
 ---
 name: dnd-prep
-description: Prepare D&D 5e worlds, oneshots, and campaign segments using Lazy DM + Fronts/Clocks methodology, with mandatory grill causal audit and scaffolding into Petr's Obsidian vault. Use when the user says "подготовь мир/ваншот", "новый сегмент кампейна", "придумай BBEG", "проработай мир X", "/dnd-prep", or describes prepping a D&D session that does not yet exist. Do NOT use for in-session play (that is /dnd), rules questions, character sheets, or generic GM advice (that is /gm-craft).
+description: Prepare D&D 5e worlds/oneshots/campaign segments (Lazy DM + Fronts/Clocks), with grill causal audit, scaffolded into Petr's Obsidian vault. Triggers: "подготовь мир/ваншот", "новый сегмент кампейна", "придумай BBEG", "проработай мир X", /dnd-prep. NOT for in-session play (/dnd), rules Q&A, character sheets, or generic GM advice (/gm-craft).
 ---
 
 # /dnd-prep — D&D world & oneshot preparation
