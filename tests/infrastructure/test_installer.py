@@ -1847,6 +1847,36 @@ def test_deep_merge_prunes_nested_list_leaf_using_base() -> None:
     assert merged["permissions"]["deny"] == ["Edit(**/.env)", "Bash(rm -rf *)"]
 
 
+def test_deep_merge_prunes_dict_key_removed_from_base() -> None:
+    """A whole top-level key dropped from `source` (e.g. deprecated
+    `skillOverrides`) is pruned from `existing` too, when `existing` still
+    matches what `base` had there (never locally customized)."""
+    existing = {"skillOverrides": {"caveman": "name-only"}, "fallbackModel": ["a"]}
+    base = {"skillOverrides": {"caveman": "name-only"}, "fallbackModel": ["a"]}
+    source = {"fallbackModel": ["a"]}
+    merged = installer._deep_merge_jarvis_json(existing, source, base)
+    assert "skillOverrides" not in merged
+
+
+def test_deep_merge_preserves_locally_customized_key_removed_from_base() -> None:
+    """If the user edited the key away from `base` before it was dropped
+    upstream, their local edit wins over pruning — never silently destroy a
+    user customization just because jarvis stopped shipping the key."""
+    existing = {"skillOverrides": {"caveman": "name-only", "extra": "user-added"}}
+    base = {"skillOverrides": {"caveman": "name-only"}}
+    source: dict = {}
+    merged = installer._deep_merge_jarvis_json(existing, source, base)
+    assert merged["skillOverrides"] == {"caveman": "name-only", "extra": "user-added"}
+
+
+def test_deep_merge_dict_key_prune_no_base_reproduces_plain_union() -> None:
+    """`base=None` (the default) must not prune anything — old behavior."""
+    existing = {"skillOverrides": {"caveman": "name-only"}}
+    source: dict = {}
+    merged = installer._deep_merge_jarvis_json(existing, source)
+    assert merged["skillOverrides"] == {"caveman": "name-only"}
+
+
 def test_merge_json_prunes_source_removed_array_entries_on_reapply(
     manifest: Path, fake_repo: Path
 ) -> None:

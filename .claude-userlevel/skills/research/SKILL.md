@@ -1,6 +1,6 @@
 ---
 name: research
-description: "Investigate a topic, validate decisions, compare options, or run autonomous discovery. Absorbs intel and nightly-research. Trigger: 'Ð¸ÑÑÐ»ÐµÐ´ÑÐ¹', 'research', 'Ð¸Ð·ÑÑÐ¸', 'ÑÑÐ¾ Ð»ÑÑÑÐµ', 'ÑÑÐ°Ð²Ð½Ð¸'."
+description: "Investigate a topic, validate decisions, compare options, or run autonomous discovery. Absorbs intel and nightly-research. Triggers: 'исследуй', 'research', 'изучи', 'что лучше', 'сравни'."
 version: 5.1.0
 ---
 
