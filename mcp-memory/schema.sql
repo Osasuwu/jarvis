@@ -1144,6 +1144,14 @@ create index if not exists idx_episodes_actor on episodes(actor);
 -- Chronological audit.
 create index if not exists idx_episodes_created on episodes(created_at desc);
 
+-- #1269: decision_list recovery query — partial expression index over the
+-- session id stamped into decision_made payloads by the PreToolUse gate.
+-- session_id lives in payload jsonb (not a column) so the C17 dual-write
+-- to events_canonical carries it without schema changes there.
+create index if not exists idx_episodes_payload_session_id
+  on episodes ((payload->>'session_id'))
+  where (payload->>'session_id') is not null;
+
 alter table episodes enable row level security;
 
 create policy "Allow all for authenticated" on episodes

@@ -254,6 +254,7 @@ from handlers.decision import (  # noqa: E402, F401
     _looks_like_uuid,
     _resolve_memory_refs,
     _handle_record_decision,
+    _handle_decision_list,
 )
 
 
@@ -295,6 +296,8 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             result = await _handle_outcome_record(arguments)
         elif name == "record_decision":
             result = await _handle_record_decision(arguments)
+        elif name == "decision_list":
+            result = _big_result(await _handle_decision_list(arguments))
         elif name == "outcome_update":
             result = await _handle_outcome_update(arguments)
         elif name == "outcome_list":

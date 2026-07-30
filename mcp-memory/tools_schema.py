@@ -804,6 +804,16 @@ def tool_definitions() -> list[Tool]:
                         "type": ["string", "null"],
                         "description": "Optional project scope for the decision payload.",
                     },
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Harness session id, stamped into the episode payload "
+                            "for query-based UUID recovery via decision_list (#1269). "
+                            "Normally injected by the PreToolUse gate hook "
+                            "(updatedInput) — do not fill by hand; invalid values "
+                            "are dropped server-side, never fail the write."
+                        ),
+                    },
                     "llm": {
                         "type": "object",
                         "description": (
@@ -823,6 +833,37 @@ def tool_definitions() -> list[Tool]:
                             "provider": {"type": "string"},
                             "operation": {"type": "string"},
                         },
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="decision_list",
+            description=(
+                "List decision_made episodes stamped with a harness session id "
+                "(#1269). Query-based UUID recovery after context loss: returns "
+                "'episode_uuid | created_at | decision one-liner' rows for the "
+                "given session_id. Read-only."
+            ),
+            input_schema={
+                "type": "object",
+                "required": ["session_id"],
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": (
+                            "Harness session id to recover decisions for "
+                            "(shape ^[A-Za-z0-9_-]{1,128}$)."
+                        ),
+                    },
+                    "project": {
+                        "type": ["string", "null"],
+                        "description": "Optional project filter (payload.project).",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results (default 50).",
+                        "default": 50,
                     },
                 },
             },
