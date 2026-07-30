@@ -1,4 +1,5 @@
-"""PreToolUse hook: block ``record_decision`` with empty ``memories_used`` (#524).
+"""PreToolUse hook: block ``record_decision`` with empty ``memories_used`` (#524)
+and stamp the harness session id into allowed calls (#1269).
 
 Tier 2 mechanical backstop for the Tier 1 prompt rule in
 ``~/.claude/CLAUDE.md`` — "Memory & decision protocol", brief-mode → UUID
@@ -16,6 +17,17 @@ Contract
   to acknowledge no memory informed the decision. The server emits the
   flag into the episode payload so ``/learn`` (#526) can track the rate;
   sustained >10% is a flag for human review.
+- Allowed calls (#1269): when stdin carries a valid ``session_id``, emit
+  ``hookSpecificOutput.updatedInput`` = tool_input + ``session_id`` so the
+  MCP server stamps the episode payload with the harness session id —
+  zero model involvement, so it can't be hallucinated or forgotten the
+  way ``memories_used`` was (#325). No ``permissionDecision`` is emitted
+  alongside: plain input mutation neither bypasses permission dialogs nor
+  races the sibling ``pretooluse-recall-hook`` on the same matcher. The
+  harness stdin sid overrides any model-supplied ``session_id``.
+- Missing/malformed stdin ``session_id`` → allow silently without
+  stamping (fail-open; recovery via ``decision_list`` simply won't cover
+  that episode).
 - Any other tool name → silent exit 0 (defense-in-depth: this hook is
   also registered under a narrow matcher).
 - Parse failure / malformed input → silent exit 0. Never block on
@@ -25,9 +37,13 @@ Contract
 from __future__ import annotations
 
 import json
+import re
 import sys
 
 TOOL_NAME = "mcp__memory__record_decision"
+
+# Matches _safe_session_id in session-context.py / pre-compact-backup.py.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 BLOCK_REASON = (
     "record_decision blocked: memories_used is empty.\n"
@@ -58,6 +74,32 @@ def _emit_deny(reason: str) -> None:
 
 
 def _silent_exit() -> None:
+    sys.exit(0)
+
+
+def sanitize_session_id(raw: object) -> str | None:
+    """Return the session id iff it matches the harness sid shape, else None.
+
+    Pure function — testable without stdin/stdout plumbing.
+    """
+    if not isinstance(raw, str):
+        return None
+    if not _SESSION_ID_RE.match(raw):
+        return None
+    return raw
+
+
+def _emit_updated_input(tool_input: dict, session_id: str) -> None:
+    """Output updatedInput JSON stamping session_id, exit 0 (allow)."""
+    updated = dict(tool_input)
+    updated["session_id"] = session_id
+    payload = {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "updatedInput": updated,
+        }
+    }
+    json.dump(payload, sys.stdout)
     sys.exit(0)
 
 
@@ -96,6 +138,13 @@ def main() -> None:
 
     if evaluate(tool_name, tool_input):
         _emit_deny(BLOCK_REASON)
+
+    # #1269: allowed record_decision call — stamp the harness session id.
+    if tool_name == TOOL_NAME and isinstance(tool_input, dict):
+        sid = sanitize_session_id(data.get("session_id"))
+        if sid is not None:
+            _emit_updated_input(tool_input, sid)
+
     _silent_exit()
 
 
