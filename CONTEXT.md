@@ -106,6 +106,8 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Research-pass gate** — Blocks unless 4-channel artifact exists; owner waiver override.
 - **TDD-mode** — Operating mode: one acceptance-criterion at a time, red→green→refactor.
 - **Testable interface** — Designed for verification without reaching into implementation.
+- **Exposure ledger** — Append-only per-domain memory (`exposure_ledger_<domain>`) of dated evidence events tracking what a reader has actually been shown, not claimed knowledge; feeds `/primer`'s negative filter and `/status`'s pending-primer detector.
+- **Primer** — Skill that closes a reader's background-knowledge gap on a `docs/research/` doc: picks an unexplained-concept cluster, filters the doc's own Sources by "teaches vs assumes," and hands over a paste-ready NotebookLM source list — no MCP, user pastes and generates manually.
 - **Status synthesis** — Three-layer deterministic status across repos: baseline, delta, synthesis (0 LLM tokens default).
 - **Backlog vs ready** — `status:*` labels are source of truth; ProjectV2 board is read-only projection.
 - **Detector (status)** — Deterministic anomaly signal over repo+decision state; six detectors, each with provenance.
