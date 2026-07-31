@@ -10,8 +10,8 @@ Key design rules, per #1273:
 
 - **Import the real assembler, not a reimplementation.** The pushed CONTEXT.md
   part is measured by calling ``scripts/session-context.py._load_project_context``
-  (with the module's actual ``_CONTEXT_MAX_BYTES`` cap), not by re-slicing the
-  file here.
+  (the section-aware push: compressed Invariants + Glossary category index,
+  bounded by ``ASSEMBLY_BUDGET_CHARS``), not by re-slicing the file here.
 - **Item definition is pinned and load-bearing.** bullet at any nesting depth +
   numbered line; only block-level HTML comments are excluded. Fenced code, YAML
   frontmatter, and ``.claude/rules/*`` without a ``paths:`` key are all counted
@@ -321,13 +321,25 @@ class TestFixtureIntegrity:
             )
 
     def test_assembly_cap_pinned(self):
-        """The CONTEXT pushed-part byte ceiling must at least pin the assembly
-        cap — raising _CONTEXT_MAX_BYTES without updating the fixture fails red."""
+        """The pushed CONTEXT part must fit the whole assembly budget on its own
+        — a single section must not be able to blow the budget by itself
+        (#1271). It must also be strictly smaller than the 8 KiB byte-slice cap
+        it replaced (#1271 AC7), and the fixture ceiling must cover it."""
         fixture = _load_fixture()
+        section = assembly._load_project_context(REPO_ROOT)
+        assert section is not None
+        assert len(section) <= assembly.ASSEMBLY_BUDGET_CHARS, (
+            f"CONTEXT push is {len(section)} chars — over the assembly budget "
+            f"{assembly.ASSEMBLY_BUDGET_CHARS}"
+        )
+        assert len(section.encode("utf-8")) < 8 * 1024, (
+            "section-aware push must be smaller than the byte-slice truncation "
+            "it replaced"
+        )
         ctx_bytes = fixture["surfaces"]["context_md_pushed"]["bytes"]
-        assert ctx_bytes >= assembly._CONTEXT_MAX_BYTES, (
-            f"context_md_pushed bytes ceiling {ctx_bytes} is below the assembly "
-            f"cap _CONTEXT_MAX_BYTES={assembly._CONTEXT_MAX_BYTES}"
+        assert ctx_bytes >= len(section.encode("utf-8")), (
+            f"context_md_pushed bytes ceiling {ctx_bytes} is below the measured "
+            f"push {len(section.encode('utf-8'))}"
         )
 
     def test_same_pr_raise_documented(self):
