@@ -1,0 +1,490 @@
+{
+  "branch_protection": null,
+  "dependabot_ecosystems": [],
+  "labels": [
+    {
+      "color": "C2E0C6",
+      "description": "Code architecture & refactoring",
+      "name": "architecture"
+    },
+    {
+      "color": "d4e9c8",
+      "description": "CI and quality infrastructure",
+      "name": "area:ci-quality"
+    },
+    {
+      "color": "1d76db",
+      "description": "Config files (SOUL.md, device.json, .mcp.json) and setup",
+      "name": "area:config"
+    },
+    {
+      "color": "ededed",
+      "description": "Core agent functionality",
+      "name": "area:core-agent"
+    },
+    {
+      "color": "0075ca",
+      "description": "Documentation and planning",
+      "name": "area:docs"
+    },
+    {
+      "color": "d93f0b",
+      "description": "Risk domain: hardware",
+      "name": "area:hardware"
+    },
+    {
+      "color": "f9d0c4",
+      "description": "Platform, LLM, hosting, integrations",
+      "name": "area:infrastructure"
+    },
+    {
+      "color": "e4e669",
+      "description": "Risk domain: cross-system integration",
+      "name": "area:integration"
+    },
+    {
+      "color": "8fbcdb",
+      "description": "Memory subsystem (mcp-memory, recall, derivation)",
+      "name": "area:memory"
+    },
+    {
+      "color": "bfe5bf",
+      "description": "Testing and quality gates",
+      "name": "area:quality"
+    },
+    {
+      "color": "B60205",
+      "description": "Risk domain: safety-critical",
+      "name": "area:safety"
+    },
+    {
+      "color": "e99695",
+      "description": "Security & digital hygiene",
+      "name": "area:security"
+    },
+    {
+      "color": "6F42C1",
+      "description": "Risk domain: simulation/physics",
+      "name": "area:simulation"
+    },
+    {
+      "color": "0052cc",
+      "description": "Skill and subagent development",
+      "name": "area:skills"
+    },
+    {
+      "color": "0075ca",
+      "description": "Risk domain: software",
+      "name": "area:software"
+    },
+    {
+      "color": "d73a4a",
+      "description": "Something isn't working",
+      "name": "bug"
+    },
+    {
+      "color": "FBCA04",
+      "description": "Camera & robot calibration",
+      "name": "calibration"
+    },
+    {
+      "color": "0e8a16",
+      "description": "CI/CD and automation",
+      "name": "ci"
+    },
+    {
+      "color": "0366d6",
+      "description": "Dependency updates",
+      "name": "dependencies"
+    },
+    {
+      "color": "c5def5",
+      "description": "Rough idea, not ready for triage",
+      "name": "draft"
+    },
+    {
+      "color": "1D76DB",
+      "description": "TCP/robot communication",
+      "name": "driver"
+    },
+    {
+      "color": "a2eeef",
+      "description": "New feature or request",
+      "name": "enhancement"
+    },
+    {
+      "color": "8B0000",
+      "description": "SculptureVision integration sprint",
+      "name": "facehugger"
+    },
+    {
+      "color": "0052cc",
+      "description": "L4 Feature \u2014 functional capability",
+      "name": "feature"
+    },
+    {
+      "color": "D93F0B",
+      "description": "Forming passes (sand/concrete/milling)",
+      "name": "forming"
+    },
+    {
+      "color": "5319E7",
+      "description": "Frontend (React/TypeScript)",
+      "name": "frontend"
+    },
+    {
+      "color": "000000",
+      "description": "GitHub Actions code",
+      "name": "github-actions"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "L2-6.3 3D Visualization",
+      "name": "L2:3d-visualization"
+    },
+    {
+      "color": "c5def5",
+      "description": "L2-5.1 Application Lifecycle",
+      "name": "L2:app-lifecycle"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "L2-6.5 App Shell",
+      "name": "L2:app-shell"
+    },
+    {
+      "color": "006b75",
+      "description": "L2-8.1 Direct Robot Control CLI",
+      "name": "L2:cli-tools"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "L2-6.2 Control UI",
+      "name": "L2:control-ui"
+    },
+    {
+      "color": "e4e669",
+      "description": "L2-7.1 Core Data Models",
+      "name": "L2:core-models"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "L2-6.4 Debug Interface",
+      "name": "L2:debug-interface"
+    },
+    {
+      "color": "fbca04",
+      "description": "L2-4.3 Diff Engine",
+      "name": "L2:diff-engine"
+    },
+    {
+      "color": "5319e7",
+      "description": "L2-2.2 Forward Kinematics",
+      "name": "L2:forward-kinematics"
+    },
+    {
+      "color": "c5def5",
+      "description": "L2-5.4 Input Validation",
+      "name": "L2:input-validation"
+    },
+    {
+      "color": "5319e7",
+      "description": "L2-2.3 Inverse Kinematics",
+      "name": "L2:inverse-kinematics"
+    },
+    {
+      "color": "1d76db",
+      "description": "L2-1.2 Mock Robot (Development Mode)",
+      "name": "L2:mock-robot"
+    },
+    {
+      "color": "0e8a16",
+      "description": "L2-3.3 Motion Planning",
+      "name": "L2:motion-planning"
+    },
+    {
+      "color": "5319e7",
+      "description": "L2-2.4 MuJoCo Integration",
+      "name": "L2:mujoco"
+    },
+    {
+      "color": "fbca04",
+      "description": "L2-4.6 Pipeline Orchestration",
+      "name": "L2:pipeline"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "L2-6.1 Real-Time Communication",
+      "name": "L2:realtime-comms"
+    },
+    {
+      "color": "c5def5",
+      "description": "L2-5.2 REST API",
+      "name": "L2:rest-api"
+    },
+    {
+      "color": "5319e7",
+      "description": "L2-2.1 Robot Parameters",
+      "name": "L2:robot-params"
+    },
+    {
+      "color": "b60205",
+      "description": "L2-3.1 Safety Validation",
+      "name": "L2:safety-validation"
+    },
+    {
+      "color": "fbca04",
+      "description": "L2-4.5 Sand Physics",
+      "name": "L2:sand-physics"
+    },
+    {
+      "color": "e4e669",
+      "description": "L2-7.2 System Configuration",
+      "name": "L2:system-config"
+    },
+    {
+      "color": "fbca04",
+      "description": "L2-4.1 Target Surface",
+      "name": "L2:target-surface"
+    },
+    {
+      "color": "1d76db",
+      "description": "L2-1.1 TCP/JSON Communication Driver",
+      "name": "L2:tcp-driver"
+    },
+    {
+      "color": "bfd4f2",
+      "description": "L2-9.1 Test Suite",
+      "name": "L2:test-suite"
+    },
+    {
+      "color": "fbca04",
+      "description": "L2-4.4 Trajectory Generation",
+      "name": "L2:trajectory-gen"
+    },
+    {
+      "color": "0e8a16",
+      "description": "L2-3.2 Trajectory Math",
+      "name": "L2:trajectory-math"
+    },
+    {
+      "color": "fbca04",
+      "description": "L2-4.2 Virtual Sensing",
+      "name": "L2:virtual-sensing"
+    },
+    {
+      "color": "c5def5",
+      "description": "L2-5.3 WebSocket",
+      "name": "L2:websocket"
+    },
+    {
+      "color": "fdd835",
+      "description": "Needs /grill before implementation",
+      "name": "needs-grill"
+    },
+    {
+      "color": "ffc844",
+      "description": "Needs PRD before slicing",
+      "name": "needs-prd"
+    },
+    {
+      "color": "f0f8f0",
+      "description": "Needs investigation",
+      "name": "needs-research"
+    },
+    {
+      "color": "b60205",
+      "description": "Mandatory safety review / \u041e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u0430\u044f \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0431\u0435\u0437\u043e\u043f\u0430\u0441\u043d\u043e\u0441\u0442\u0438",
+      "name": "needs-safety-review"
+    },
+    {
+      "color": "ffe082",
+      "description": "Missing required metadata (type/milestone/AC) \u2014 set by issue-hygiene gate, clears when fixed",
+      "name": "needs-triage"
+    },
+    {
+      "color": "F9D0C4",
+      "description": "Pass 1: sand forming",
+      "name": "pass:1-sand"
+    },
+    {
+      "color": "FEF2C0",
+      "description": "Pass 2: wet concrete",
+      "name": "pass:2-concrete"
+    },
+    {
+      "color": "C5DEF5",
+      "description": "Pass 3: milling hardened concrete",
+      "name": "pass:3-milling"
+    },
+    {
+      "color": "0E8A16",
+      "description": "Cameras & 3D scanning",
+      "name": "photogrammetry"
+    },
+    {
+      "color": "0E8A16",
+      "description": "Pipeline V3 architecture",
+      "name": "pipeline-v3"
+    },
+    {
+      "color": "006B75",
+      "description": "Trajectory planning & waypoints",
+      "name": "planning"
+    },
+    {
+      "color": "7b0000",
+      "description": "Blocking, must fix now",
+      "name": "priority:critical"
+    },
+    {
+      "color": "d93f0b",
+      "description": "High priority",
+      "name": "priority:high"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Low priority",
+      "name": "priority:low"
+    },
+    {
+      "color": "fbca04",
+      "description": "Medium priority",
+      "name": "priority:medium"
+    },
+    {
+      "color": "2b67c6",
+      "description": "Python code",
+      "name": "python"
+    },
+    {
+      "color": "FBCA04",
+      "description": "Code quality and architecture improvements",
+      "name": "refactor"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "research"
+    },
+    {
+      "color": "5319e7",
+      "description": "AFK queue: safe for sandcastle agent",
+      "name": "sandcastle"
+    },
+    {
+      "color": "b60205",
+      "description": "Blocked / \u0417\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u043e",
+      "name": "status:blocked"
+    },
+    {
+      "color": "0e8a16",
+      "description": "Hardware test passed / \u0410\u043f\u043f\u0430\u0440\u0430\u0442\u043d\u044b\u0439 \u0442\u0435\u0441\u0442 \u043f\u0440\u043e\u0439\u0434\u0435\u043d",
+      "name": "status:hardware-done"
+    },
+    {
+      "color": "d93f0b",
+      "description": "Needs physical testing / \u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f \u0442\u0435\u0441\u0442 \u043d\u0430 \u0440\u043e\u0431\u043e\u0442\u0435",
+      "name": "status:hardware-ready"
+    },
+    {
+      "color": "fef2c0",
+      "description": "Work in progress",
+      "name": "status:in-progress"
+    },
+    {
+      "color": "f9a03c",
+      "description": "Needs owner manual touch",
+      "name": "status:owner-queue"
+    },
+    {
+      "color": "c2e0c6",
+      "description": "Ready to start / \u0413\u043e\u0442\u043e\u0432\u043e \u043a \u0440\u0430\u0431\u043e\u0442\u0435",
+      "name": "status:ready"
+    },
+    {
+      "color": "d4c5f9",
+      "description": "Needs code review / \u0422\u0440\u0435\u0431\u0443\u0435\u0442\u0441\u044f \u0440\u0435\u0432\u044c\u044e",
+      "name": "status:review"
+    },
+    {
+      "color": "006b75",
+      "description": "L5 Task \u2014 executable work item",
+      "name": "task"
+    },
+    {
+      "color": "D4C5F9",
+      "description": "Known technical debt \u2014 umbrella-tracked",
+      "name": "tech-debt"
+    },
+    {
+      "color": "0E8A16",
+      "description": "Test quality audit slice (Phase 1)",
+      "name": "test-audit"
+    },
+    {
+      "color": "1D76DB",
+      "description": "Test fix issue from audit findings (Phase 3)",
+      "name": "test-audit-fix"
+    },
+    {
+      "color": "BFD4F2",
+      "description": "Tests & CI/CD",
+      "name": "testing"
+    },
+    {
+      "color": "51dd5f",
+      "description": "Tier 1: auto-dispatch",
+      "name": "tier:1-auto"
+    },
+    {
+      "color": "dbab09",
+      "description": "Tier 2: owner review required",
+      "name": "tier:2-review"
+    },
+    {
+      "color": "d73a4a",
+      "description": "Tier 3: owner-driven only",
+      "name": "tier:3-human"
+    },
+    {
+      "color": "e92c42",
+      "description": "Not safe for sandcastle agent",
+      "name": "unsafe-for-afk"
+    },
+    {
+      "color": "5319E7",
+      "description": "Web interface (FastAPI + React)",
+      "name": "web-ui"
+    }
+  ],
+  "repo": "SergazyNarynov/redrobot",
+  "settings": {
+    "allow_auto_merge": false,
+    "allow_merge_commit": true,
+    "allow_rebase_merge": true,
+    "allow_squash_merge": true,
+    "default_branch": "master",
+    "delete_branch_on_merge": true,
+    "visibility": "private"
+  },
+  "workflows": [
+    "dynamic/copilot-swe-agent/copilot",
+    ".github/workflows/ci.yml",
+    ".github/workflows/pr-merged.yml",
+    ".github/workflows/parent-notify.yml",
+    "dynamic/copilot-pull-request-reviewer/copilot-pull-request-reviewer",
+    ".github/workflows/hardware-lifecycle.yml",
+    ".github/workflows/issue-domain-label-sync.yml",
+    ".github/workflows/issue-schema-check.yml",
+    ".github/workflows/project-sync.yml",
+    ".github/workflows/pr-checks.yml",
+    ".github/workflows/security.yml",
+    ".github/workflows/event-dispatch.yml",
+    ".github/workflows/code-review.yml",
+    ".github/workflows/_runner-smoke.yml",
+    "dynamic/agents/copilot-pull-request-reviewer",
+    ".github/workflows/owner-queue-guard.yml",
+    ".github/workflows/runner-health-check.yml"
+  ]
+}
