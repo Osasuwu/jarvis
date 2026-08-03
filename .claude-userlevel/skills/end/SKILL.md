@@ -124,11 +124,94 @@ Skip if the session didn't advance any goal (e.g., pure discussion, research wit
 
 ## Step 5 — Working state (non-negotiable)
 
-Save `working_state_<current session's project>` (type=project, e.g. `working_state_jarvis`, `working_state_redrobot`) to Supabase. Always. Content:
+Save `working_state_<current session's project>` (type=project, e.g. `working_state_jarvis`, `working_state_redrobot`) to Supabase. Always. Use **read-modify-write** semantics to prevent parallel sessions from overwriting each other's checkpoints.
+
+### RMW (read-modify-write) pattern
+
+**Before writing**, read the current document:
+```python
+state = memory_get(name=f"working_state_{project}", project=project)
+current_content = state.content if state else ""
+```
+
+If not found (first write for this project), proceed with empty string.
+
+### Merge-doc format
+
+The document is a markdown merge-doc with per-session `### [entry]` blocks. Structure:
+
+```
+# Working state — <project>
+
+### [entry] <branch-or-task-slug> — <YYYY-MM-DD> — <status>
+
 - What was done this session
 - Open items: unfinished work, things to fix, deferred tasks
 - Key context for next session (blockers, decisions pending review)
-- **Suggested next skills** — explicit chain hint for the next session, e.g. `/status → /implement #532 → /verify`. One line, ordered. Omit only if truly nothing pending (rare; usually at least `/status`). Lets the next session skip the "what should I run first" decision; mirrors the one useful idea from Pocock's `/handoff` skill without forking durable storage out of Supabase.
+- **Suggested next skills** — explicit chain hint, e.g. `/status → /implement #532 → /verify`. One line, ordered. Omit only if truly nothing pending (rare; usually at least `/status`).
+
+[... possibly other old entries from previous sessions ...]
+```
+
+**Your session's block:** Replace **only your own** `### [entry]` block (identified by branch/task slug — the slug must match what you used this session). If your block doesn't exist yet, append a new one. Other blocks are copied verbatim.
+
+### Garbage collection (GC)
+
+Before writing, scan all blocks and **delete** a foreign block only if **both** conditions hold:
+
+1. **Status is resolved** — its PR is merged OR its issue is closed, **OR**
+2. **Age >14 days** — `updated_at` older than 14 days ago (conservative: err on keeping)
+
+All other blocks are preserved. GC is conservative by design: a wrong date results in "keep longer", not "delete too soon".
+
+### Size cap & eviction
+
+Total document size must be ≤**1500 characters** of content, and ≤**3 entries**.
+
+If adding your block would exceed either limit:
+1. Identify old blocks (oldest by date first)
+2. Evict them one at a time until both constraints are satisfied
+3. For each evicted block: **leave a tombstone** (see below)
+
+### Tombstone marking
+
+When you evict a foreign block (GC or size cap), replace it with a single-line marker:
+
+```
+### [evicted] <slug> — <date> — <reason>
+```
+
+Where `<reason>` is one of:
+- `GC: PR merged` or `GC: issue closed`
+- `GC: age >14 days`
+- `Size cap: ≤3 entries`
+- `Size cap: ≤1500 chars`
+
+Keep the marker short (≤80 chars total line). Tombstones count toward the 1500-char cap and 3-entry limit, but aid debugging when a session's checkpoint disappears.
+
+### Scoping of gates
+
+If you have code that reads `working_state_<project>` to check for decision UUIDs or issue numbers (e.g., `implement/SKILL.md:42`, `delegate/SKILL.md:178`, `_shared/research-pass-gate.md:42`):
+
+- **Search only within your own `### [entry]` block**, not the entire document
+- Treat all other blocks as foreign history; don't use their content to make decisions
+
+This prevents the merge-doc from becoming monotonically more permissive as entries accumulate.
+
+### Read-after-write verification
+
+After calling `memory_store` with the updated document, **immediately read it back**:
+
+```python
+updated_state = memory_get(name=f"working_state_{project}", project=project)
+# Verify your block is present and matches what you wrote
+if not updated_state or "<your-slug>" not in updated_state.content:
+    # Report loudly in Step 8: "Working state: failed to persist own block"
+```
+
+This catches silent data loss (e.g., due to quota exceeded, permission error, or race condition) and makes it visible rather than discovering it in the next session.
+
+<!-- ceiling: read-modify-write contract is prose, dominant failure mode is LLM skipping the instruction (not timing race). Long-term substrate: mode="merge_section" in memory_store API (#1351) would enforce this at write-time, not via prose. -->
 
 This is the handoff to the next session. If open items exist in Step 8 output, they MUST be in this memory too — output is ephemeral, memory persists.
 
@@ -196,6 +279,10 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 ### Outcome enrichment (Step 3)
 - <"Outcomes created: N" OR "No deliverable hints detected" — only render when enrichment fired>
 
+### Working state (Step 5)
+- <"Saved — <project> (N entries, Y chars)" if success | "FAILED to persist own block" if read-after-write check failed>
+- <"Evicted: <slug-1>, <slug-2>" if tombstones were created | omit if none>
+
 ### Saved to memory (N)
 - <name> — <one-line>
 
@@ -209,4 +296,4 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 - <unfinished work, deferred tasks, things for next session>
 ```
 
-Keep it concise. This is a handoff, not a report. Render the CONTEXT.md gap and Outcome enrichment sections only when their respective steps fire (heuristic triggers).
+Keep it concise. This is a handoff, not a report. Render the CONTEXT.md gap, Outcome enrichment, and Working state sections only when their respective steps fire (heuristic triggers).

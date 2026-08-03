@@ -448,7 +448,7 @@ def test_format_recovery_section_has_header_and_body():
 
 
 # ---------------------------------------------------------------------------
-# _load_project_context — domain-context auto-load (PR #489)
+# _load_project_context — section-aware CONTEXT push (#489, reworked #1271)
 # ---------------------------------------------------------------------------
 def test_load_project_context_returns_none_when_missing(tmp_path):
     """No CONTEXT.md at project_root → silently skip."""
@@ -461,45 +461,85 @@ def test_load_project_context_returns_none_when_empty(tmp_path):
     assert sc._load_project_context(tmp_path) is None
 
 
+def test_load_project_context_returns_none_without_sections(tmp_path):
+    """A CONTEXT.md with neither Invariants nor Glossary → nothing to push."""
+    (tmp_path / "CONTEXT.md").write_text(
+        "# CONTEXT\n\nSome domain notes without a Glossary or Invariants.",
+        encoding="utf-8",
+    )
+    assert sc._load_project_context(tmp_path) is None
+
+
 def test_load_project_context_returns_section_when_present(tmp_path):
-    """Normal CONTEXT.md → wrapped in '## Project Context' header, no truncation."""
-    body = "# CONTEXT\n\nGlossary entry: **Pillar** — multi-sprint capability."
+    """CONTEXT.md with Glossary + Invariants → wrapped in '## Project Context'
+    carrying the compressed Invariants + Glossary category index; the per-term
+    ### Index and category bodies stay pull-only (#1271 AC6)."""
+    body = (
+        "# CONTEXT\n\n"
+        "## Glossary\n\n"
+        "### Index\n\n"
+        "- **Term1** — index entry (must NOT be pushed)\n"
+        "### Core entities\n\n"
+        "- **Pillar** — multi-sprint capability.\n"
+        "- **Milestone** — capability-coherent slices.\n"
+        "### Devices & paths\n\n"
+        "- **Workshop PC** — sole routine host.\n\n"
+        "## Invariants (must always hold)\n\n"
+        "- **Supabase = cross-device truth** — GitHub is state.\n"
+        "### Memory & persistence\n\n"
+        "- **memory_store** — needs source_provenance.\n"
+    )
     (tmp_path / "CONTEXT.md").write_text(body, encoding="utf-8")
     out = sc._load_project_context(tmp_path)
     assert out is not None
     assert out.startswith("## Project Context\n")
-    assert "Glossary entry: **Pillar**" in out
+    assert "### Invariants" in out
+    assert "### Glossary categories" in out
+    assert "- Core entities — 2 entries" in out
+    assert "- Devices & paths — 1 entry" in out
+    # Per-term index + category bodies are pull-only.
+    assert "### Index" not in out
+    assert "index entry" not in out
+    assert "multi-sprint capability" not in out
     assert "_(truncated" not in out
 
 
-def test_load_project_context_truncates_at_byte_cap(tmp_path):
-    """File larger than _CONTEXT_MAX_BYTES → truncated with note."""
-    cap = sc._CONTEXT_MAX_BYTES
-    # ASCII payload — bytes == chars, easy to reason about.
-    body = "# CONTEXT\n\n" + ("x" * (cap + 500))
+def test_load_project_context_does_not_byte_slice(tmp_path):
+    """Byte-slice truncation is removed (#1271 AC7): a CONTEXT.md larger than
+    the old 8 KiB cap is not cut — section-aware extraction supersedes it."""
+    body = (
+        "# CONTEXT\n\n"
+        "## Invariants\n\n"
+        "- **Invariant** — " + ("z" * 10000) + "\n\n"
+        "## Architectural shape\n\n"
+        "- not pushed\n"
+    )
     (tmp_path / "CONTEXT.md").write_text(body, encoding="utf-8")
     out = sc._load_project_context(tmp_path)
     assert out is not None
-    assert "_(truncated — full file at `CONTEXT.md`)_" in out
-    # The injected text (excluding header + truncation note) should not exceed
-    # the cap. Strip our wrapper to measure the body we actually emitted.
-    inner = out[len("## Project Context\n"):].split("\n\n_(truncated")[0]
-    assert len(inner.encode("utf-8")) <= cap
+    assert "_(truncated" not in out
+    assert ("z" * 10000) in out      # Invariants body kept whole
+    assert "not pushed" not in out   # non-invariant sections not pushed
 
 
-def test_load_project_context_byte_cap_handles_multibyte(tmp_path):
-    """Multi-byte UTF-8 (Cyrillic) cut at byte boundary doesn't produce U+FFFD."""
-    cap = sc._CONTEXT_MAX_BYTES
-    # Cyrillic each char = 2 bytes in UTF-8, so 5000 chars = 10000 bytes > cap.
-    body = "# CONTEXT\n\n" + ("я" * 5000)
+def test_load_project_context_glossary_bodies_pull_only(tmp_path):
+    """Glossary category bodies are never pushed, however large — the removed
+    byte-slice path cannot corrupt them anymore (#1271 AC6/AC7)."""
+    body = (
+        "# CONTEXT\n\n"
+        "## Glossary\n\n"
+        "### Core entities\n\n"
+        "- **Pillar** — " + ("я" * 5000) + "\n"
+        "## Invariants\n\n"
+        "- **Rule** — " + ("я" * 100) + "\n"
+    )
     (tmp_path / "CONTEXT.md").write_text(body, encoding="utf-8")
     out = sc._load_project_context(tmp_path)
     assert out is not None
-    assert "_(truncated" in out
-    # No replacement-char artefact from a mid-codepoint cut.
     assert "�" not in out
-    inner = out[len("## Project Context\n"):].split("\n\n_(truncated")[0]
-    assert len(inner.encode("utf-8")) <= cap
+    assert ("я" * 5000) not in out   # glossary body absent
+    assert ("я" * 100) in out        # invariants body pushed
+    assert "- Core entities — 1 entry" in out
 
 
 def test_load_project_context_resolves_per_project_root(tmp_path):
@@ -513,9 +553,13 @@ def test_load_project_context_resolves_per_project_root(tmp_path):
     proj_b = tmp_path / "proj_b"
     proj_a.mkdir()
     proj_b.mkdir()
-    (proj_a / "CONTEXT.md").write_text("# Project A context", encoding="utf-8")
+    (proj_a / "CONTEXT.md").write_text(
+        "# Project A context\n\n## Invariants\n\n- **A rule**\n",
+        encoding="utf-8",
+    )
     # proj_b deliberately has NO CONTEXT.md
-    assert "Project A" in sc._load_project_context(proj_a)
+    out_a = sc._load_project_context(proj_a)
+    assert out_a is not None and "A rule" in out_a
     assert sc._load_project_context(proj_b) is None
 
 

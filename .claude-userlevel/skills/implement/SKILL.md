@@ -1,6 +1,6 @@
 ---
 name: implement
-description: This skill should be used when the principal asks Jarvis to implement a SINGLE GitHub issue directly in the current session, or says "реализуй #42", "сделай #42", "implement #X". For MULTIPLE issues that can run in parallel use /delegate instead. Do NOT trigger for viewing, triaging, or discussing issues — only for actual implementation requests.
+description: Implement a SINGLE GitHub issue directly in the current session. Triggers: "реализуй #42", "сделай #42", "implement #X". Multiple parallel issues → /delegate. NOT for viewing, triaging, or discussing issues — implementation requests only.
 version: 2.0.0
 ---
 

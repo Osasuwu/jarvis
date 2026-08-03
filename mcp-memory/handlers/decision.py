@@ -9,6 +9,7 @@ propagate at call time.
 from __future__ import annotations
 
 import asyncio
+import re
 import uuid
 
 from datetime import datetime, timezone  # noqa: F401
@@ -29,6 +30,18 @@ def _pin_task(task: asyncio.Task) -> None:
     """Strong-ref *task* until completion so it can't be GC-collected mid-flight."""
     _PENDING_TASKS.add(task)
     task.add_done_callback(_PENDING_TASKS.discard)
+
+
+# #1269: session-id shape shared with scripts/record-decision-gate.py and
+# _safe_session_id in scripts/session-context.py — keep in sync.
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def _sanitize_session_id(raw: object) -> str | None:
+    """Return raw iff it matches the harness session-id shape, else None."""
+    if not isinstance(raw, str) or not _SESSION_ID_RE.match(raw):
+        return None
+    return raw
 
 
 def _looks_like_uuid(s: str) -> bool:
@@ -283,6 +296,12 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
         payload["project"] = project
     if bool(args.get("intentionally_empty")):
         payload["intentionally_empty"] = True
+    # #1269: stamped by the PreToolUse gate (updatedInput) — payload field,
+    # not a column, so the C17 dual-write below carries it for free. Invalid
+    # or absent → omit; never fail the write over a bad sid.
+    session_id = _sanitize_session_id(args.get("session_id"))
+    if session_id is not None:
+        payload["session_id"] = session_id
 
     try:
         result = (
@@ -397,3 +416,59 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             "pass memory UUID from recall)"
         )
     return [TextContent(type="text", text=msg)]
+
+
+async def _handle_decision_list(args: dict) -> list[TextContent]:
+    """List decision_made episodes stamped with a session id (#1269).
+
+    Query-based UUID recovery surface: after context loss (compaction,
+    crash), `decision_list(session_id=<harness sid>)` returns the decision
+    episode UUIDs recorded this session — device-portable, no Supabase
+    connector needed. Read-only.
+    """
+    session_id = _sanitize_session_id(args.get("session_id"))
+    if session_id is None:
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    "Error: session_id is required and must match "
+                    "^[A-Za-z0-9_-]{1,128}$ (the harness session id)."
+                ),
+            )
+        ]
+    project = args.get("project")
+    limit = args.get("limit") or 50
+
+    client = server._get_client()
+    query = (
+        client.table("episodes")
+        .select("id, created_at, payload")
+        .eq("kind", "decision_made")
+        .eq("payload->>session_id", session_id)
+    )
+    if project:
+        query = query.eq("payload->>project", project)
+    try:
+        result = query.order("created_at", desc=False).limit(limit).execute()
+    except Exception as exc:
+        # Same privacy posture as record_decision: surface the type only.
+        return [TextContent(type="text", text=f"Error listing decisions: {type(exc).__name__}")]
+
+    rows = result.data or []
+    if not rows:
+        return [
+            TextContent(
+                type="text",
+                text=f"No decisions found for session {session_id}.",
+            )
+        ]
+
+    lines = [f"Decisions for session {session_id} ({len(rows)}):"]
+    for row in rows:
+        payload = row.get("payload") or {}
+        one_liner = (payload.get("decision") or "").strip().replace("\n", " ")
+        if len(one_liner) > 120:
+            one_liner = one_liner[:117] + "..."
+        lines.append(f"{row.get('id')} | {row.get('created_at')} | {one_liner}")
+    return [TextContent(type="text", text="\n".join(lines))]

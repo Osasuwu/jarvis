@@ -241,24 +241,170 @@ def _format_recovery_section(snapshot: str) -> str:
     )
 
 
-# Cap injected CONTEXT.md size so a runaway file can't blow the smart-zone
-# budget at session start. Full file is one Read away if Jarvis needs it.
-_CONTEXT_MAX_BYTES = 8 * 1024
+# ---------------------------------------------------------------------------
+# Budget-aware assembly (#1271 C.1 rows 4-5, decisions 7fe96e01/6c32b280/
+# 02b48a04). Units are CHARS everywhere (not bytes). 9,500 leaves 500 chars of
+# headroom against the 10,000-char harness cap; the self-log makes spill a
+# trendable signal instead of a silent truncation.
+# ---------------------------------------------------------------------------
+
+ASSEMBLY_BUDGET_CHARS = 9500
+
+# Section drop-priority, HIGHEST = 0 (dropped last) → higher number = dropped
+# first. Pre-Compact Recovery outranks everything; the durable layer
+# (always-load, user profile, working state, goals) outranks the CONTEXT push
+# and the one-line reminders, so a compact resume still delivers it (#1271 AC2).
+_PRIORITY_RECOVERY = 0
+_PRIORITY_ALWAYS_LOAD = 1
+_PRIORITY_USER_PROFILE = 2
+_PRIORITY_WORKING_STATE = 3
+_PRIORITY_GOALS = 4
+_PRIORITY_CONTEXT_PUSH = 5
+_PRIORITY_REMINDER = 6
+
+_BANNER = "MEMORY CONTEXT (auto-loaded — do NOT re-fetch with MCP tools)"
+_FOOTER = "=" * 60
+_BANNER_BLOCK = f"{_FOOTER}\n{_BANNER}\n{_FOOTER}"
+
+# Self-log location. `.claude/logs/` is gitignored, so the log is
+# device-local and never committed.
+_SELF_LOG_PATH = _root / ".claude" / "logs" / "session-context-size.jsonl"
+
+# Section-aware CONTEXT push (#1271 C.1 row 3, decision 37f0639e): the push
+# carries the compressed ## Invariants + a Glossary category index; the
+# per-term ### Index and the category bodies stay pull-only (one Read away).
+_BULLET_RE = re.compile(r"^[-*+] ")
+_NUMBERED_RE = re.compile(r"^\d+[.)]\s")
+
+
+def _render(kept: list, dropped_names: list[str]) -> str:
+    """Assemble the final output string. The banner block, the reserved
+    `dropped:` line and section separators are all accounted here, so
+    `len(returned)` is exactly the char count the budget enforces."""
+    parts = []
+    if dropped_names:
+        parts.append("dropped: " + ", ".join(dropped_names))
+    parts.extend(rendered for _, _, rendered, _ in kept)
+    body = "\n\n".join(parts)
+    return f"{_BANNER_BLOCK}\n\n{body}\n\n{_FOOTER}"
+
+
+def assemble_sections(sections, budget_chars: int = ASSEMBLY_BUDGET_CHARS):
+    """Drop lowest-priority sections until the rendered output fits the budget.
+
+    ``sections`` is a list of ``(priority, name, rendered, ids)`` tuples in
+    OUTPUT order. priority 0 = highest (dropped last); a higher number = lower
+    priority (dropped first). ``ids`` are the memory ids the section was built
+    from — only KEPT sections' ids are returned, so a dropped section is never
+    fed to ``_touch_accessed`` (#1271 C.1 row 6).
+
+    Returns ``(output, dropped_names, emitted_ids, emitted_chars)`` where
+    ``dropped_names`` lists dropped sections in drop order and ``emitted_ids``
+    is the deduped, order-preserving union of kept sections' ids.
+    """
+    kept = list(sections)
+    dropped_names: list[str] = []
+    while True:
+        output = _render(kept, dropped_names)
+        if len(output) <= budget_chars or len(kept) <= 1:
+            break
+        # Lowest priority (max number) first; ties → later output position
+        # drops first, so the last-appended reminder is the first to go.
+        drop_idx = max(range(len(kept)), key=lambda i: (kept[i][0], i))
+        dropped_names.append(kept[drop_idx][1])
+        del kept[drop_idx]
+    emitted_ids = list(dict.fromkeys(sid for _, _, _, ids in kept for sid in ids))
+    return output, dropped_names, emitted_ids, len(output)
+
+
+def _self_log(emitted_chars: int, dropped_names: list[str], compact_resume: bool) -> None:
+    """Append one JSON line per run to the size self-log (#1271 C.1 row 5).
+
+    Log location: ``.claude/logs/session-context-size.jsonl`` under the repo
+    root. Spill (emitted_chars > budget) becomes observable and trendable.
+    Never raises — a log write failure must not break session start.
+    """
+    from datetime import datetime, timezone
+    try:
+        _SELF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "emitted_chars": emitted_chars,
+            "budget_chars": ASSEMBLY_BUDGET_CHARS,
+            "dropped": dropped_names,
+            "compact_resume": compact_resume,
+        }
+        with open(_SELF_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
+
+
+def _extract_invariants(raw: str) -> str | None:
+    """Return the body of the `## Invariants` section, or None when absent.
+
+    Sub-category headings (`###`) are demoted to `####` so they nest under the
+    `### Invariants` push header. A trailing `---` separator is dropped. The
+    Invariants content is already the post-Column-1 compressed form —
+    extraction must not re-compress it.
+    """
+    m = re.search(
+        r"^## Invariants[^\n]*\n(.*?)(?=^## |\Z)",
+        raw, re.MULTILINE | re.DOTALL,
+    )
+    if not m:
+        return None
+    body = re.sub(r"\n---\s*$", "", m.group(1)).strip()
+    if not body:
+        return None
+    return re.sub(r"^### ", "#### ", body, flags=re.MULTILINE)
+
+
+def _glossary_category_index(raw: str) -> str | None:
+    """Return one line per Glossary category (name + top-level entry count),
+    excluding `### Index`. The per-term index and category bodies are pull-only.
+
+    Only column-0 bullets count as entries — a nested sub-bullet is part of a
+    term's description, not a separate term.
+    """
+    m = re.search(r"^## Glossary\s*$.*?(?=^## |\Z)", raw, re.MULTILINE | re.DOTALL)
+    if not m:
+        return None
+    lines = []
+    for sec in re.split(r"^### ", m.group(0), flags=re.MULTILINE):
+        sec = sec.strip()
+        if not sec:
+            continue
+        heading, _, rest = sec.partition("\n")
+        heading = heading.strip()
+        if heading == "Index":
+            continue
+        count = sum(
+            1 for line in rest.splitlines()
+            if _BULLET_RE.match(line) or _NUMBERED_RE.match(line)
+        )
+        if count:
+            noun = "entry" if count == 1 else "entries"
+            lines.append(f"- {heading} — {count} {noun}")
+    return "\n".join(lines) if lines else None
 
 
 def _load_project_context(project_root: Path) -> str | None:
-    """Return formatted '## Project Context' section if `CONTEXT.md` exists
-    at `project_root`. Truncates at `_CONTEXT_MAX_BYTES` with a note.
+    """Return '## Project Context' with the compressed Invariants + Glossary
+    category index if `CONTEXT.md` exists at `project_root`, else None.
 
     `project_root` is the repo of the *current* session (resolved by the
     caller from cwd). This must NOT default to the jarvis repo — sessions
     started in other tracked repos (e.g. redrobot) would otherwise inject
     jarvis's CONTEXT.md into their context.
 
-    Returns None when:
-      - the file is missing
-      - the file is empty / whitespace-only
-      - read fails (logged to stderr)
+    The byte-0 head-slice truncation is gone (#1271 AC7): extraction is
+    section-aware, and overall size is owned by the assembly budget
+    (``assemble_sections``), not by slicing here.
+
+    Returns None when the file is missing, empty/whitespace-only, read fails
+    (logged to stderr), or carries neither an Invariants section nor a
+    Glossary section.
     """
     ctx_path = project_root / "CONTEXT.md"
     if not ctx_path.exists():
@@ -270,16 +416,16 @@ def _load_project_context(project_root: Path) -> str | None:
         return None
     if not raw.strip():
         return None
-    encoded = raw.encode("utf-8")
-    truncated = False
-    if len(encoded) > _CONTEXT_MAX_BYTES:
-        # Strict byte cap: slice the bytes, then decode with errors="ignore"
-        # so a multi-byte sequence cut in the middle is dropped cleanly
-        # rather than producing a U+FFFD replacement char.
-        raw = encoded[:_CONTEXT_MAX_BYTES].decode("utf-8", errors="ignore")
-        truncated = True
-    suffix = "\n\n_(truncated — full file at `CONTEXT.md`)_" if truncated else ""
-    return f"## Project Context\n{raw.rstrip()}{suffix}"
+    parts = []
+    invariants = _extract_invariants(raw)
+    if invariants:
+        parts.append("### Invariants\n" + invariants)
+    glossary_index = _glossary_category_index(raw)
+    if glossary_index:
+        parts.append("### Glossary categories\n" + glossary_index)
+    if not parts:
+        return None
+    return "## Project Context\n" + "\n\n".join(parts)
 
 
 def _run_smoke_check() -> None:
@@ -330,15 +476,20 @@ def main():
     if not url or not key:
         print("[session-context] SUPABASE_URL/KEY not set", file=sys.stderr)
         # Still try local fallback on compact resume — a disconnected dev
-        # shouldn't lose pre-compact context entirely.
+        # shouldn't lose pre-compact context entirely. Routed through the
+        # assembler so the size self-log records the fallback too.
         if compact_resume and session_id:
             snap = _load_snapshot_from_local(session_id)
             if snap:
-                print("=" * 60)
-                print("MEMORY CONTEXT (auto-loaded — do NOT re-fetch with MCP tools)")
-                print("=" * 60)
-                print(_format_recovery_section(snap))
-                print("=" * 60)
+                sections = [(
+                    _PRIORITY_RECOVERY, "recovery",
+                    _format_recovery_section(snap), [],
+                )]
+                output, dropped_names, emitted_ids, emitted_chars = (
+                    assemble_sections(sections)
+                )
+                _self_log(emitted_chars, dropped_names, compact_resume)
+                print(output)
         return
 
     try:
@@ -348,8 +499,10 @@ def main():
         return
 
     project, project_root = _detect_project()
+    # Each section is (priority, name, rendered, memory_ids): priority 0 =
+    # highest (dropped last), higher number = lower priority. Output order is
+    # the append order here; ids feed _touch_accessed for KEPT sections only.
     sections = []
-    touched_ids: list[str] = []
 
     # 0. Pre-Compact Recovery — prepended before everything else on compact
     #    resume. Supabase first, local fallback second. Freshness guarded to
@@ -359,47 +512,47 @@ def main():
         if not snapshot:
             snapshot = _load_snapshot_from_local(session_id)
         if snapshot:
-            sections.append(_format_recovery_section(snapshot))
+            sections.append((
+                _PRIORITY_RECOVERY, "recovery",
+                _format_recovery_section(snapshot), [],
+            ))
 
     # 1. User memories — who is the owner (always). Compact one-line format:
     #    full bodies rot the context; names + descriptions are enough to
     #    remind Jarvis what exists. Full content via memory_get on demand.
     section, ids = _query_memories(client, mem_type="user", limit=2, compact=True)
     if section:
-        sections.append("## User Profile\n" + section)
-        touched_ids.extend(ids)
+        sections.append((
+            _PRIORITY_USER_PROFILE, "user_profile",
+            "## User Profile\n" + section, ids,
+        ))
 
     # 2. Always-load memories — evergreen rules not tied to any single project.
     #    Everything else (feedback/decisions) is loaded task-aware via
     #    UserPromptSubmit hook (scripts/memory-recall-hook.py).
     #    Compact one-line format for the same reason as user profile.
-    #    NOTE: Do NOT touch always_load memories (bump last_accessed_at) to prevent
-    #    access-bias feedback loop (#767). Recency should not dominate semantic recall.
-    section, ids = _query_always_load(client, compact=True)
+    #    NOTE: ids deliberately NOT carried — always_load memories are never
+    #    touched (#767) to avoid an access-bias feedback loop.
+    section, _ids = _query_always_load(client, compact=True)
     if section:
-        sections.append("## Always-Load Rules\n" + section)
-        # CHANGE #767: Skip touching always_load memories to de-bias access-boost
-        # touched_ids.extend(ids)
+        sections.append((
+            _PRIORITY_ALWAYS_LOAD, "always_load",
+            "## Always-Load Rules\n" + section, [],
+        ))
 
-    # 3a. Project domain context (CONTEXT.md) — glossary + invariants + arch
-    #     shape. Read order at session start: CLAUDE.md (rules) → SOUL.md
+    # 3a. Project domain context (CONTEXT.md) — compressed Invariants +
+    #     Glossary category index; Glossary bodies are pull-only (#1271 C.1
+    #     row 3). Read order at session start: CLAUDE.md (rules) → SOUL.md
     #     (identity) → CONTEXT.md (domain). Loaded only when session is inside
-    #     a project dir AND the file exists.
-    #
-    #     Project root is resolved from cwd (the directory the session was
-    #     launched in), not from `_root` — `_root` is the jarvis repo and
-    #     would inject jarvis's CONTEXT.md into a redrobot session.
-    #     `_detect_project()` returns the matched root alongside the name:
-    #     the worktree root for worktree sessions (its own CONTEXT.md
-    #     checkout), the repo directory otherwise.
-    #
-    #     CONTEXT.md is canonical at repo root per Pocock convention;
-    #     multi-context repos use CONTEXT-MAP.md. Truncated at 8KB to avoid
-    #     blowing the smart-zone budget — full file is one Read away.
+    #     a project dir AND the file exists. Project root is resolved from
+    #     cwd, not from `_root`, so a redrobot session gets redrobot's
+    #     CONTEXT.md (or none), never jarvis's.
     if project and project_root:
         ctx_section = _load_project_context(project_root)
         if ctx_section:
-            sections.append(ctx_section)
+            sections.append((
+                _PRIORITY_CONTEXT_PUSH, "project_context", ctx_section, [],
+            ))
 
     # 3b. Working state — ONLY when session is inside a known project dir.
     #     In a non-project cwd (e.g. scheduled research) working_state is noise.
@@ -409,21 +562,26 @@ def main():
             extra_filter=lambda q: q.eq("name", f"working_state_{project}"),
         )
         if section:
-            sections.append(f"## Working State ({project})\n" + section)
-            touched_ids.extend(ids)
+            sections.append((
+                _PRIORITY_WORKING_STATE, "working_state",
+                f"## Working State ({project})\n" + section, ids,
+            ))
 
     # 4. Active goals (always)
     goal_section = _query_goals(client)
     if goal_section:
-        sections.append(goal_section)
+        sections.append((_PRIORITY_GOALS, "goals", goal_section, []))
 
-    # 5. Pending review count — one-line reminder when candidates await review
+    # 5. One-line reminders — lowest priority, first to drop under budget.
+
+    # 5a. Pending review count — one-line reminder when candidates await review
     pending_count = _query_pending_review_count(client, project)
     if pending_count > 0:
-        sections.append(
+        sections.append((
+            _PRIORITY_REMINDER, "pending_review",
             "**Pending memory candidates:** "
-            f"{pending_count} (run `/learn` to review)"
-        )
+            f"{pending_count} (run `/learn` to review)", [],
+        ))
 
     # 5b. Architecture sweep recommendation -- recently closed milestones with
     #     enough closed slices to warrant a /improve-codebase-architecture run.
@@ -431,7 +589,7 @@ def main():
     if project:
         sweep_section = _check_milestone_sweep(repo=_PROJECT_REPO.get(project))
         if sweep_section:
-            sections.append(sweep_section)
+            sections.append((_PRIORITY_REMINDER, "milestone_sweep", sweep_section, []))
 
     # 5c. Mirror drift warning — show when ~/.claude/.jarvis-version is
     #     behind repo HEAD. Fires anywhere the script can read both SHAs
@@ -439,38 +597,40 @@ def main():
     #     git is unavailable (not a git dir / no permission).
     drift_section = _check_mirror_drift()
     if drift_section:
-        sections.append(drift_section)
+        sections.append((_PRIORITY_REMINDER, "mirror_drift", drift_section, []))
 
-    # 6. Memory catalog — lazy awareness (Phase 7.1). One-line inventory of
-    #    live memories (name + type + scope + short description) so Jarvis
-    #    knows what exists and can pull full content on demand via memory_get
-    #    / memory_recall. Replaces the old recency-based feedback/decision
-    #    dumps — those rot recall (see tests/memory-eval/context-rot-baseline.json).
-    #    NOTE: catalog ids are NOT added to touched_ids. Showing a memory in
-    #    the session-start index is not a read; bumping last_accessed_at here
-    #    would create a feedback loop (catalog is sorted by last_accessed_at)
-    #    and distort temporal scoring for genuine recall/read events.
-    section, _catalog_ids = _query_catalog(client, project)
-    if section:
-        sections.append("## Memory Catalog\n" + section)
+    # 5d. Managed-venv drift check + self-heal (#1312) — hash+import-probe
+    #     against the registered "main" env; silent when in sync, otherwise
+    #     a visible healed/heal-failed block. Never raises.
+    env_drift_section = _check_env_drift()
+    if env_drift_section:
+        sections.append((_PRIORITY_REMINDER, "env_drift", env_drift_section, []))
 
-    # Bump last_accessed_at for every memory we just loaded. Phase 1 drives the
-    # access-frequency boost in temporal scoring off this column, so
-    # session-start loads should count as access. The content_updated_at /
-    # updated_at trigger is not fired because we go through the touch_memories
-    # RPC which updates only last_accessed_at. Dedup preserves order — same
-    # memory can surface in multiple sections (e.g. always_load + user).
-    _touch_accessed(client, list(dict.fromkeys(touched_ids)))
+    # 5e. MCP bootstrap failure breadcrumbs (#1312) — surfaces
+    #     .claude/mcp-failures.jsonl entries newer than 24h, deduped so a
+    #     failure never re-reports across sessions.
+    mcp_failures_section = _check_mcp_failures()
+    if mcp_failures_section:
+        sections.append((_PRIORITY_REMINDER, "mcp_failures", mcp_failures_section, []))
 
-    # Output
-    if sections:
-        print("=" * 60)
-        print("MEMORY CONTEXT (auto-loaded — do NOT re-fetch with MCP tools)")
-        print("=" * 60)
-        print("\n\n".join(sections))
-        print("=" * 60)
-    else:
+    if not sections:
         print("[session-context] No memory data available.")
+        return
+
+    # Budget-aware assembly (#1271): drops lowest-priority sections until the
+    # output fits ASSEMBLY_BUDGET_CHARS; anything dropped is named on the
+    # `dropped:` line. Only KEPT sections' memory ids are touched.
+    output, dropped_names, emitted_ids, emitted_chars = assemble_sections(sections)
+    _touch_accessed(client, emitted_ids)
+    _self_log(emitted_chars, dropped_names, compact_resume)
+    if emitted_chars > ASSEMBLY_BUDGET_CHARS:
+        detail = ", ".join(dropped_names) if dropped_names else "no section dropped"
+        print(
+            f"[session-context] WARNING: emitted {emitted_chars} chars exceeds "
+            f"the {ASSEMBLY_BUDGET_CHARS}-char budget ({detail})",
+            file=sys.stderr,
+        )
+    print(output)
 
 
 # ---------------------------------------------------------------------------
@@ -504,10 +664,23 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None, compact=False
     return None, []
 
 
+# always_load admission cap: DOCTRINE.md > Baseline carrier selection ranks
+# always_load as the worst-position, always-pays carrier — reserved for
+# dynamic/device-scoped/time-bounded content with no file home. Cap changes
+# require a new record_decision citing the prior UUID in memories_used — keep
+# this in sync with scripts/eval-recall.py's copy of the same constants
+# (decision 3e6594f6-27da-45d9-96d8-516a46716425, #1252 AC3).
+ALWAYS_LOAD_MAX_ENTRIES = 4
+ALWAYS_LOAD_MAX_BYTES = 6000
+
+
 def _query_always_load(client, *, compact=False):
     """Query memories tagged 'always_load' (evergreen, cross-project rules).
 
-    Returns (formatted_text, ids).
+    Returns (formatted_text, ids). Enforced at read time against
+    ALWAYS_LOAD_MAX_ENTRIES / ALWAYS_LOAD_MAX_BYTES (decision
+    3e6594f6-27da-45d9-96d8-516a46716425) — over-tagged data degrades
+    gracefully (truncated, not blocked) with a loud stderr warning.
     """
     try:
         result = (
@@ -517,81 +690,43 @@ def _query_always_load(client, *, compact=False):
             .order("updated_at", desc=True)
             .execute()
         )
-        if result.data:
-            fmt = _fmt_memory_compact if compact else _fmt_memory
-            sep = "\n" if compact else "\n---\n"
-            text = sep.join(fmt(m) for m in result.data)
-            ids = [m["id"] for m in result.data if m.get("id")]
-            return text, ids
+        rows = result.data or []
+        if not rows:
+            return None, []
+
+        if len(rows) > ALWAYS_LOAD_MAX_ENTRIES:
+            print(
+                f"[session-context] always_load has {len(rows)} tagged memories, "
+                f"cap is {ALWAYS_LOAD_MAX_ENTRIES} — truncating to the most recently "
+                "updated. Untag the rest or move them to a file (DOCTRINE.md > "
+                "Baseline carrier selection).",
+                file=sys.stderr,
+            )
+            rows = rows[:ALWAYS_LOAD_MAX_ENTRIES]
+
+        fmt = _fmt_memory_compact if compact else _fmt_memory
+        sep = "\n" if compact else "\n---\n"
+        kept = []
+        total_bytes = 0
+        for i, m in enumerate(rows):
+            rendered = fmt(m)
+            size = len(rendered.encode("utf-8"))
+            if kept and total_bytes + size > ALWAYS_LOAD_MAX_BYTES:
+                print(
+                    f"[session-context] always_load byte budget ({ALWAYS_LOAD_MAX_BYTES}B) "
+                    f"exceeded after {i}/{len(rows)} entries — truncating remainder.",
+                    file=sys.stderr,
+                )
+                break
+            kept.append((rendered, m))
+            total_bytes += size
+
+        text = sep.join(rendered for rendered, _ in kept)
+        ids = [m["id"] for _, m in kept if m.get("id")]
+        return text, ids
     except Exception as e:
         print(f"[session-context] always_load query failed: {e}", file=sys.stderr)
     return None, []
-
-
-def _query_catalog(client, project):
-    """Compact one-line catalog of live memories — lazy awareness (Phase 7.1).
-
-    Returns (formatted_text, ids). Sorted by last_accessed_at desc so recently
-    touched entries surface first. Filters to live memories (not expired, not
-    superseded, not soft-deleted, valid_to in future or null) scoped to
-    current project or global (project IS NULL).
-
-    Excludes entries already rendered in other sections:
-      - type=user (User Profile)
-      - 'always_load' in tags (Always-Load Rules)
-      - name=working_state_<project> (Working State)
-
-    valid_to is filtered client-side with aware-datetime parsing because the
-    project scoping already uses one .or_() clause (PostgREST allows only one
-    `or=` parameter per query).
-    """
-    from datetime import datetime, timezone
-    now_utc = datetime.now(timezone.utc)
-    try:
-        query = (
-            client.table("memories")
-            .select("id, name, type, project, description, tags, last_accessed_at, valid_to")
-            .is_("expired_at", "null")
-            .is_("superseded_by", "null")
-            .is_("deleted_at", "null")
-        )
-        if project:
-            query = query.or_(f"project.eq.{project},project.is.null")
-        else:
-            query = query.is_("project", "null")
-        result = (
-            query.order("last_accessed_at", desc=True, nullsfirst=False)
-            .limit(50)
-            .execute()
-        )
-    except Exception as e:
-        print(f"[session-context] catalog query failed: {e}", file=sys.stderr)
-        return None, []
-
-    if not result.data:
-        return None, []
-
-    working_state_name = f"working_state_{project}" if project else None
-    entries = []
-    ids = []
-    for m in result.data:
-        if m["type"] == "user":
-            continue
-        tags = m.get("tags") or []
-        if "always_load" in tags:
-            continue
-        if working_state_name and m["name"] == working_state_name:
-            continue
-        vt = _parse_ts(m.get("valid_to"))
-        if vt and vt <= now_utc:
-            continue
-        entries.append(_fmt_catalog_entry(m, project))
-        if m.get("id"):
-            ids.append(m["id"])
-
-    if not entries:
-        return None, []
-    return "\n".join(entries), ids
 
 
 def _parse_ts(val):
@@ -607,21 +742,6 @@ def _parse_ts(val):
         except ValueError:
             return None
     return None
-
-
-def _fmt_catalog_entry(m, current_project):
-    """One-line catalog entry: `- <name> [<type>/<scope>]: <description>`."""
-    p = m.get("project")
-    if p is None:
-        scope = f"{m['type']}/global"
-    elif p == current_project:
-        scope = m["type"]
-    else:
-        scope = f"{m['type']}/{p}"
-    desc = (m.get("description") or "").strip()
-    if len(desc) > 120:
-        desc = desc[:117] + "..."
-    return f"- {m['name']} [{scope}]: {desc}"
 
 
 def _query_pending_review_count(client, project) -> int:
@@ -768,7 +888,7 @@ def _check_milestone_sweep(
     Thresholds are configurable via env (MILESTONE_SWEEP_DAYS,
     MILESTONE_SWEEP_MIN_SLICES) or overridden per-call.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
 
     if repo is None:
         return None
@@ -854,7 +974,17 @@ def _check_mirror_drift(
     """Compare installed version marker against repo HEAD.
 
     Returns a formatted drift warning when the installed SHA differs from
-    HEAD, or None when in sync / marker absent / git unavailable.
+    HEAD, when the marker is missing/empty (mirror never installed or
+    install state unknown), or None when in sync / marker unreadable / git
+    unavailable.
+
+    A missing or empty marker used to return None (silent) — #1076 §2 asked
+    for a loud warning specifically for this case: a device that never ran
+    the installer has zero Tier-1 mirror content (DOCTRINE.md, CLAUDE.md,
+    skills) and, before this change, nothing said so (decision
+    b95ef864-4585-45d6-9baf-8979b29c983b, #1252 AC4). OSError-on-read stays
+    silent — a distinct "unreadable/transient" failure class, not
+    "never installed".
 
     Both parameters are injectable for testing: version_path defaults to
     ~/.claude/.jarvis-version, repo_root defaults to the discovered repo root.
@@ -863,14 +993,25 @@ def _check_mirror_drift(
     rr = repo_root if repo_root is not None else _root
 
     if not vp.exists():
-        return None
+        return (
+            "## Mirror Drift\n"
+            "⚠ No `~/.claude/.jarvis-version` marker found — the user-level "
+            "mirror (CLAUDE.md, DOCTRINE.md, skills) may never have been "
+            "installed on this device. Run `install.ps1 -Apply` or "
+            "`install.sh --apply` to sync."
+        )
 
     try:
         installed = vp.read_text(encoding="utf-8").strip()
     except OSError:
         return None
     if not installed:
-        return None
+        return (
+            "## Mirror Drift\n"
+            "⚠ `~/.claude/.jarvis-version` marker is empty — mirror install "
+            "state unknown. Run `install.ps1 -Apply` or `install.sh --apply` "
+            "to sync."
+        )
 
     try:
         head = subprocess.run(
@@ -897,6 +1038,131 @@ def _check_mirror_drift(
         f"HEAD ({head[:12]}) — run `install.ps1 -Apply` or "
         f"`install.sh --apply` to sync."
     )
+
+
+# ---------------------------------------------------------------------------
+# Managed-venv drift detection + self-heal (#1312)
+# ---------------------------------------------------------------------------
+
+
+def _check_env_drift(env_name: str = "main", _env_sync_module=None) -> str | None:
+    """Check the long-lived MCP venv via scripts/lib/env_sync.py and self-heal
+    on drift (AC#3). Silent when in sync; never raises.
+    """
+    try:
+        if _env_sync_module is not None:
+            env_sync = _env_sync_module
+        else:
+            sys.path.insert(0, str(_root / "scripts" / "lib"))
+            import env_sync
+
+        env = env_sync.get_env(env_name)
+        if env is None:
+            return None
+
+        result = env_sync.check(env)
+        if result.in_sync:
+            return None
+
+        heal_result = env_sync.heal(env)
+        if heal_result.success:
+            old = (heal_result.old_hash or "none")[:12]
+            new = (heal_result.new_hash or "?")[:12]
+            return (
+                "## Environment Drift — Healed\n"
+                f"⚠ `{env.name}` venv was out of sync ({result.reason}) — "
+                f"auto-healed ({old} → {new})."
+            )
+        return (
+            "## Environment Drift — Heal Failed\n"
+            f"⚠ `{env.name}` venv is out of sync ({result.reason}) and "
+            f"auto-heal failed ({heal_result.reason}). Run manually:\n"
+            f"`{env.venv_python} -m pip install -r {env.manifest}`\n"
+            f"See log: {heal_result.log_path}"
+        )
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# MCP bootstrap failure breadcrumbs (#1312 AC#5)
+# ---------------------------------------------------------------------------
+
+_MCP_FAILURES_PATH = _root / ".claude" / "mcp-failures.jsonl"
+_MCP_FAILURES_REPORTED_PATH = _root / ".claude" / "mcp-failures.reported.json"
+_MCP_FAILURES_FRESHNESS_HOURS = 24
+
+
+def _check_mcp_failures(
+    failures_path: Path | None = None,
+    reported_path: Path | None = None,
+    _now=None,
+) -> str | None:
+    """Surface MCP bootstrap failures logged to .claude/mcp-failures.jsonl
+    newer than 24h, deduped against previously-reported entries so a failure
+    never re-reports across sessions. Never raises.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    fp = failures_path if failures_path is not None else _MCP_FAILURES_PATH
+    rp = reported_path if reported_path is not None else _MCP_FAILURES_REPORTED_PATH
+
+    try:
+        now = _now if _now is not None else datetime.now(timezone.utc)
+        if not fp.exists():
+            return None
+        try:
+            lines = fp.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return None
+        try:
+            reported_raw = json.loads(rp.read_text(encoding="utf-8")) if rp.exists() else []
+            reported = set(reported_raw) if isinstance(reported_raw, list) else set()
+        except (OSError, ValueError):
+            reported = set()
+
+        cutoff = now - timedelta(hours=_MCP_FAILURES_FRESHNESS_HOURS)
+        new_entries = []
+        all_signatures = set()
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            ts_str = entry.get("timestamp")
+            if not ts_str:
+                continue
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            signature = f"{entry.get('server', '?')}|{ts_str}"
+            all_signatures.add(signature)
+            if ts < cutoff or signature in reported:
+                continue
+            new_entries.append((ts, entry))
+
+        try:
+            rp.parent.mkdir(parents=True, exist_ok=True)
+            rp.write_text(json.dumps(sorted(reported | all_signatures)), encoding="utf-8")
+        except OSError:
+            pass
+
+        if not new_entries:
+            return None
+
+        new_entries.sort(key=lambda x: x[0])
+        lines_out = [
+            f"- `{entry.get('server', '?')}` exited {entry.get('exit_code', '?')} "
+            f"at {ts.isoformat()} — see `.claude/logs/mcp-{entry.get('server', '?')}.stderr.log`"
+            for ts, entry in new_entries
+        ]
+        return "## MCP Bootstrap Failures\n" + "\n".join(lines_out)
+    except Exception:
+        return None
 
 
 def _parse_json_field(val):

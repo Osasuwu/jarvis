@@ -166,7 +166,7 @@ class TestCheckMode:
     """AC1 — generate_snapshots --check re-audits and diffs without writing."""
 
     def test_clean_match_returns_empty_drifts(self, tmp_path):
-        """When committed snapshot matches a fresh audit, check returns []. """
+        """When committed snapshot matches a fresh audit, check returns []."""
         # First, write a snapshot via generate.
         gen.generate(
             ["Osasuwu/jarvis"],
@@ -215,3 +215,54 @@ class TestCheckMode:
         assert len(drifts) == 1
         assert "Osasuwu/jarvis" in drifts[0]
         assert "no committed snapshot" in drifts[0]
+
+
+class TestAccountPasses:
+    """``--account`` scoping (#940 — the second, cross-owner account pass).
+
+    The generator is keyed by *account pass* rather than one flat repo list
+    because a pass is the credential unit: one ``gh`` token per owner. The
+    property that matters is that no account can silently drop out of the
+    default scope — that is precisely how redrobot stayed un-snapshotted while
+    the downstream slices were built assuming its fixtures existed.
+    """
+
+    def test_default_scope_covers_every_account(self):
+        every = {repo for repos in gen.ACCOUNT_PASSES.values() for repo in repos}
+        assert set(gen.resolve_account("all")) == every
+
+    def test_redrobot_pass_is_a_distinct_owner(self):
+        """The reason the pass exists at all: a different owner, hence a
+        different credential domain. If redrobot ever ends up in the Osasuwu
+        list, the split has been flattened and this catches it."""
+        assert gen.ACCOUNT_PASSES["redrobot"] == ["SergazyNarynov/redrobot"]
+        assert all(r.startswith("Osasuwu/") for r in gen.ACCOUNT_PASSES["osasuwu"])
+        assert "SergazyNarynov/redrobot" not in gen.ACCOUNT_PASSES["osasuwu"]
+
+    def test_single_account_scopes_to_that_pass(self):
+        assert gen.resolve_account("redrobot") == ["SergazyNarynov/redrobot"]
+        assert gen.resolve_account("osasuwu") == list(gen.ACCOUNT_PASSES["osasuwu"])
+
+    def test_resolve_account_returns_a_copy(self):
+        """Mutating the returned list must not corrupt the module-level pass —
+        ``generate`` and ``check`` both take the list by reference."""
+        got = gen.resolve_account("redrobot")
+        got.append("Osasuwu/should-not-leak")
+        assert gen.ACCOUNT_PASSES["redrobot"] == ["SergazyNarynov/redrobot"]
+
+    def test_unknown_account_raises_rather_than_auditing_nothing(self):
+        """An empty scope would report a false clean ('all 0 repos match')."""
+        with pytest.raises(KeyError, match="unknown account pass"):
+            gen.resolve_account("osasuwo")  # typo
+
+    def test_every_account_pass_has_a_committed_snapshot(self):
+        """The end-state assertion for #940: each repo in each pass has its
+        fixtures on disk. Guards against adding a repo to a pass and forgetting
+        to run the generator."""
+        missing = [
+            repo
+            for repo in gen.resolve_account("all")
+            if not (gen.SNAPSHOTS_DIR / f"{gen._slug(repo)}.snapshot.json").exists()
+            or not (gen.MANIFESTS_DIR / f"{gen._slug(repo)}.manifest.yml").exists()
+        ]
+        assert missing == [], f"account-pass repos without committed fixtures: {missing}"

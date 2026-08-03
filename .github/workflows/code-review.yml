@@ -187,7 +187,7 @@ jobs:
       # payload, not an archive.
       - name: Upload review execution log
         if: always() && steps.review.outputs.execution_file != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: claude-execution-output-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.review.outputs.execution_file }}
@@ -240,15 +240,25 @@ jobs:
       #     informational-only by design (see event-dispatch.yml).
       #
       # Runs on BOTH pull_request and workflow_dispatch. The dispatch path is
-      # the retry (code-review-retry.yml dispatches with --ref <head_branch>,
-      # so its check attaches to the PR head SHA and feeds the `review` gate).
-      # If the verdict step were gated to pull_request only, a retry that
-      # surfaced findings would post them but skip this gate → the run goes
-      # green → auto-merge with findings. That hole was dormant only because
-      # the `allowed_bots` jam made retries fail at the action level; closing
-      # that jam (above) makes retries succeed, so this gate must enforce on
-      # the dispatch path too. steps.pr.outputs.number resolves on dispatch
-      # via inputs.pr_number, so the lookup works for both events.
+      # the retry. CORRECTED (#1325): a workflow_dispatch check-run DOES attach
+      # to the PR head SHA correctly — verified live via the check-runs API.
+      # The real gap was elsewhere: code-review-retry.yml used to fire a FRESH
+      # `gh workflow run` dispatch on every retry, which creates a NEW run (and
+      # a new `review` check-run) alongside the earlier failing one instead of
+      # replacing it — a stale failing check-run persisting next to a later
+      # success left `mergeStateStatus` BLOCKED with no self-heal (#1325
+      # Finding 2). Since #1325, the retry instead reruns the SAME failed run
+      # in place (`gh run rerun <id> --failed`, code_review_retry.py::_dispatch),
+      # so the one `review` check-run is updated to the new conclusion rather
+      # than shadowed by a second one — closer to how a real `pull_request`
+      # synchronize re-run behaves. If the verdict step were gated to
+      # pull_request only, a retry that surfaced findings would post them but
+      # skip this gate → the run goes green → auto-merge with findings. That
+      # hole was dormant only because the `allowed_bots` jam made retries fail
+      # at the action level; closing that jam (above) makes retries succeed, so
+      # this gate must enforce on the dispatch path too. steps.pr.outputs.number
+      # resolves on dispatch via inputs.pr_number, so the lookup works for both
+      # events.
       # Loud-fail diagnostic (mirror of SergazyNarynov/redrobot PR #1304). The
       # verdict guard below fails CLOSED on a missing/unparseable comment — which
       # masks two very different causes as one "re-run code-review" message:

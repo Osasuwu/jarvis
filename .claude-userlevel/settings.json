@@ -18,14 +18,7 @@
       "Edit(**/.env.development)",
       "Edit(**/.env.staging)",
       "Edit(**/.env.test)",
-      "Edit(**/.env.*.local)",
-      "Write(**/.env)",
-      "Write(**/.env.local)",
-      "Write(**/.env.production)",
-      "Write(**/.env.development)",
-      "Write(**/.env.staging)",
-      "Write(**/.env.test)",
-      "Write(**/.env.*.local)"
+      "Edit(**/.env.*.local)"
     ],
     "allow": [
       "Bash(git status)",
@@ -87,7 +80,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
+            "command": "python scripts/device-info.py"
           },
           {
             "type": "command",
@@ -100,7 +93,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
+            "command": "python scripts/device-info.py"
           },
           {
             "type": "command",
@@ -221,12 +214,5 @@
   "statusLine": {
     "type": "command",
     "command": "python scripts/statusline.py"
-  },
-  "skillOverrides": {
-    "setup-tasks": "name-only",
-    "last-work-report": "name-only",
-    "caveman": "name-only",
-    "status-record": "name-only",
-    "autonomous-loop": "name-only"
   }
 }

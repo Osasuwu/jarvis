@@ -20,18 +20,35 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
+# Every dependency below carries an explicit upper bound (next major, or <1
+# while still pre-1.0) — #1296, precedent: the 2026-07-28 mcp 2.0 outage
+# (#1292/#1294) where an unbounded `mcp>=1.0.0` turned every CI run red the
+# instant a breaking major shipped, with no PR/merge needed to trigger it.
+# Bounds are lifted by Dependabot's weekly constraint-bump PRs (already
+# configured for this file in .github/dependabot.yml) once that PR's own CI
+# run proves the new major resolves cleanly — not by hand ahead of time.
+# tests/ci/test_dependency_bounds_guard.py fails closed if a bare `>=`-only
+# spec is reintroduced here.
 dependencies = [
-  "python-dotenv>=1.0.1",
+  "python-dotenv>=1.0.1,<2",
 ]
 
 [project.optional-dependencies]
 # Core: MCP memory server (cross-device persistent memory via Supabase)
 memory = [
-  "mcp>=1.0.0",
-  "supabase>=2.0.0",
-  "voyageai>=0.2.3",
-  "httpx>=0.27",
-  "pyyaml>=6.0",
+  # Floor raised to 2.0 in #1294: mcp-memory/server.py, mcp-status/server.py,
+  # and scripts/telegram-mcp-server.py are now all ported to the v2 API
+  # (constructor-param `Server(on_list_tools=..., on_call_tool=...)` in place
+  # of 1.x decorator registration; `MCPServer`/`Context` from
+  # `mcp.server.mcpserver` in place of `mcp.server.fastmcp.FastMCP`).
+  # tests/memory/test_memory_server_script_launch.py is the tripwire that
+  # would go red again on a v1-only environment. Upper-bounded <3 per #1296 —
+  # lift once the ported files are re-verified against the v3 API when it ships.
+  "mcp>=2.0.0,<3",
+  "supabase>=2.0.0,<3",
+  "voyageai>=0.2.3,<1",
+  "httpx>=0.27,<1",
+  "pyyaml>=6.0,<7",
 ]
 # Pillar 7: reactive-core agents (Ollama + Postgres + Supabase bridge).
 # LangGraph (langgraph / langgraph-checkpoint-postgres / langchain-ollama) was
@@ -42,20 +59,20 @@ memory = [
 # can't open. psutil is conditional (lazy import in pid_sidecar #952) — used to
 # re-adopt live processes across driver restarts.
 agents = [
-  "psycopg[binary,pool]>=3.1",
+  "psycopg[binary,pool]>=3.1,<4",
   # STAGED-DORMANT (do-not-retire): no live consumer yet — staged for the
   # orchestrator local-inference tick (decision a0a4ce7b, no tracking issue by
   # design). See agents/ollama_client.py. Keep through native-first sweeps.
-  "ollama>=0.4.0",
+  "ollama>=0.4.0,<1",
   # Supabase bridge — agents read/write memories/events/goals/audit_log directly
   # (MCP is Claude-Code-only, so graph nodes need a native client).
-  "supabase>=2.0.0",
+  "supabase>=2.0.0,<3",
   # GitHub Events API client. supabase-py pulls httpx transitively today,
   # but agents/github_client.py depends on it unconditionally — declare it
   # explicitly so the contract doesn't depend on a transitive.
-  "httpx>=0.27",
+  "httpx>=0.27,<1",
   # Process liveness tracking — survives driver restarts via PID sidecar (#952).
-  "psutil>=5.9.0",
+  "psutil>=5.9.0,<8",
 ]
 # All runtime components
 full = [
@@ -64,9 +81,9 @@ full = [
 ]
 # Development
 dev = [
-  "pytest>=7.4",
-  "pytest-asyncio>=0.23",
-  "ruff>=0.3",
+  "pytest>=7.4,<10",
+  "pytest-asyncio>=0.23,<2",
+  "ruff>=0.3,<1",
 ]
 
 [project.urls]

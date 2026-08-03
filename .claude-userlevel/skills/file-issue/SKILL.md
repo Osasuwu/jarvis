@@ -1,6 +1,6 @@
 ---
 name: file-issue
-description: File ONE well-formed follow-up issue (a finding, tech-debt item, bug, or drive-by task) with the metadata the project's issue schema requires — without the full /to-tickets vertical-slice pipeline. Use whenever you would otherwise reach for a raw `gh issue create` / `mcp github issue_write` mid-session. For decomposing a plan or PRD into multiple slices, use /to-tickets instead.
+description: File ONE well-formed follow-up issue (finding, tech-debt, bug, drive-by task) with required schema metadata, skipping the full /to-tickets pipeline. Use instead of a raw `gh issue create`/`issue_write` mid-session. Decomposing a plan/PRD into multiple slices → /to-tickets.
 ---
 
 # File Issue

@@ -75,6 +75,7 @@ ALLOWLIST: dict[str, object] = {
     ".out-of-scope/": ALL,  # audit snapshots — historical record
     ".hex-skills/runtime-artifacts/": ALL,  # captured run artifacts — historical record
     "docs/design/": ALL,  # design-history docs — lineage mentions
+    "docs/research/": ALL,  # research drafts — verbatim external/pre-retirement captures
     # -- specific files, restricted to their correct-by-design tokens ---------
     "pyproject.toml": {  # retirement-rationale comment block (#734)
         "langgraph",

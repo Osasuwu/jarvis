@@ -120,6 +120,69 @@ def canon_verdict_run(canon_verdict_job) -> str:
     return _verdict_run(canon_verdict_job["steps"])
 
 
+@pytest.fixture(scope="module")
+def canon_doc() -> dict:
+    return yaml.safe_load(_rendered_canon())
+
+
+class TestCanonExecRanFailClosed:
+    """Canon-only structural guard (#1300 rework) for the "ran but silent"
+    branch (#1239/#1182/#1195). This is deliberately NOT a VERDICT_INVARIANTS
+    literal-text entry: canon's implementation is structurally different from
+    live's `[ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]` file check, because
+    EXEC_FILE is a path on the attempt job's own runner and cannot cross into
+    the separate verify-verdict job. Canon instead surfaces a boolean job
+    output (`execution_ran`) from each attempt job and reads it via `needs.*`.
+    """
+
+    @pytest.mark.parametrize("job_id", ["attempt-1", "attempt-2"])
+    def test_attempt_job_declares_execution_ran_output(self, canon_doc, job_id):
+        outputs = canon_doc["jobs"][job_id].get("outputs") or {}
+        assert "execution_ran" in outputs, (
+            f"{job_id} must declare an `execution_ran` job output so "
+            f"verify-verdict can detect a silent no-review run across the "
+            f"job boundary."
+        )
+        assert "steps.review.outputs.execution_file" in outputs["execution_ran"], (
+            f"{job_id}'s execution_ran output must derive from the review "
+            f"step's execution_file output."
+        )
+
+    def test_verdict_reads_both_attempt_outputs(self, canon_verdict_job):
+        env = canon_verdict_job["steps"]
+        step = next(s for s in env if s.get("name") == "Verify review verdict")
+        step_env = step.get("env") or {}
+        assert "needs.attempt-1.outputs.execution_ran" in step_env.get("EXEC_RAN_1", ""), (
+            "verify-verdict's env must wire EXEC_RAN_1 from needs.attempt-1.outputs.execution_ran."
+        )
+        assert "needs.attempt-2.outputs.execution_ran" in step_env.get("EXEC_RAN_2", ""), (
+            "verify-verdict's env must wire EXEC_RAN_2 from needs.attempt-2.outputs.execution_ran."
+        )
+
+    def test_exec_ran_branch_present_and_fails_closed(self, canon_verdict_run):
+        assert '[ "$EXEC_RAN_1" = "true" ] || [ "$EXEC_RAN_2" = "true" ]' in canon_verdict_run, (
+            "Missing the ran-but-silent fail-closed check, or it regressed to "
+            'a `:-` "prefer the latest" fallback. A job output is always '
+            "defined once its job runs, so if attempt-2 fails before its own "
+            "review step executes, EXEC_RAN_2 resolves to the literal "
+            '"false" (not empty) — a `:-` fallback would never reach '
+            'attempt-1\'s real "true" in that case (#1309). Must '
+            "OR-aggregate across both attempts instead, matching live's "
+            "EXEC_FILE check (#1239/#1182/#1195)."
+        )
+
+    def test_exec_ran_branch_is_correctly_ordered(self, canon_verdict_run):
+        run = canon_verdict_run
+        lineage_exit = run.index("LINEAGE_FAILED", run.index('if [ "$LINEAGE_FAILED" -gt 0 ]'))
+        exec_ran_check = run.index('[ "$EXEC_RAN_1" = "true" ] || [ "$EXEC_RAN_2" = "true" ]')
+        legitimate_skip = run.index("legitimately skipped")
+        assert lineage_exit < exec_ran_check < legitimate_skip, (
+            "The ran-but-silent check must run after the LINEAGE_FAILED "
+            "fail-closed exit and before the final 'legitimately skipped' "
+            "pass — it disambiguates the remaining case between those two."
+        )
+
+
 class TestCanonVerdictParity:
     @pytest.mark.parametrize("pattern", VERDICT_INVARIANTS)
     def test_invariant_present_in_canon(self, canon_verdict_run, pattern):

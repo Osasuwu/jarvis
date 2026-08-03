@@ -1,0 +1,7 @@
+auto_merge: false
+branch_protection: false
+dependabot_ecosystems: []
+profile: minimal
+repo: SergazyNarynov/redrobot
+required_check_contexts: []
+visibility: private

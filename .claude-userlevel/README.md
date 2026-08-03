@@ -19,7 +19,9 @@ keeps project-specific bits now (see [`.claude/README.md`](../.claude/README.md)
 
 `SOUL.md` is not in this tree — its canonical location is
 [`config/SOUL.md`](../config/SOUL.md); the installer copies it to
-`~/.claude/SOUL.md` (M4 #339).
+`~/.claude/SOUL.md` (M4 #339). It's loaded into every session via a bare
+`@SOUL.md` import in `CLAUDE.md` — same mechanism as `@DOCTRINE.md` — not a
+SessionStart hook step (#1328).
 
 ## M3: how `settings.json` / `.mcp.json` land at `~/.claude/`
 

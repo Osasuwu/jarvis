@@ -163,6 +163,90 @@ class TestRecordDecisionInsert:
         assert "intentionally_empty" not in payload
 
     @pytest.mark.asyncio
+    async def test_session_id_persisted_into_payload(self, monkeypatch):
+        """#1269 — sanitized session_id lands in the episode payload AND
+        flows into the events_canonical dual-write (payload is copied)."""
+        client = make_client()
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        sid = "fe22ddae-340c-4c5b-b8d7-82a4df8396ee"
+        await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "memories_used": [UID_A],
+                "session_id": sid,
+            }
+        )
+
+        all_inserts = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        episode_inserts = [
+            p for p in all_inserts if "kind" in p and "trace_id" not in p
+        ]
+        assert episode_inserts[0]["payload"]["session_id"] == sid
+
+        canonical_inserts = [p for p in all_inserts if "trace_id" in p]
+        assert canonical_inserts, "dual-write to events_canonical expected"
+        assert canonical_inserts[0]["payload"]["session_id"] == sid
+
+    @pytest.mark.asyncio
+    async def test_invalid_session_id_omitted_write_succeeds(self, monkeypatch):
+        """#1269 — malformed sid never fails the write; it is just dropped."""
+        client = make_client("ep-77")
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "memories_used": [UID_A],
+                "session_id": "not a valid sid!",
+            }
+        )
+        assert "ep-77" in result[0].text
+
+        all_inserts = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        episode_inserts = [
+            p for p in all_inserts if "kind" in p and "trace_id" not in p
+        ]
+        assert "session_id" not in episode_inserts[0]["payload"]
+
+    @pytest.mark.asyncio
+    async def test_absent_session_id_omitted(self, monkeypatch):
+        """#1269 — backward compatible: no sid arg → no payload key."""
+        client = make_client()
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "memories_used": [UID_A],
+            }
+        )
+
+        all_inserts = [
+            c.args[0]
+            for c in client.table.return_value.insert.call_args_list
+            if c.args
+        ]
+        episode_inserts = [
+            p for p in all_inserts if "kind" in p and "trace_id" not in p
+        ]
+        assert "session_id" not in episode_inserts[0]["payload"]
+
+    @pytest.mark.asyncio
     async def test_db_failure_returns_error_text(self, monkeypatch):
         client = MagicMock()
         client.table.return_value.insert.return_value.execute.side_effect = RuntimeError(
@@ -363,6 +447,137 @@ def test_handler_defined_before_main_entry():
         f"_handle_record_decision bound at line {binding_line} is AFTER "
         f'``if __name__ == "__main__"`` at line {main_guard_line} — the binding '
         "will never run when the module starts as __main__."
+    )
+
+
+"""#1269 — decision_list handler + registration + schema index."""
+
+
+class _FakeQuery:
+    """Chainable query double recording eq/order/limit calls."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self.eq_calls: list[tuple[str, object]] = []
+        self.order_calls: list = []
+        self.limit_value = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self.eq_calls.append((column, value))
+        return self
+
+    def order(self, *args, **kwargs):
+        self.order_calls.append((args, kwargs))
+        return self
+
+    def limit(self, n):
+        self.limit_value = n
+        return self
+
+    def execute(self):
+        return MagicMock(data=self._rows)
+
+
+def _make_list_client(rows):
+    client = MagicMock()
+    query = _FakeQuery(rows)
+    client.table.return_value = query
+    return client, query
+
+
+_SID = "fe22ddae-340c-4c5b-b8d7-82a4df8396ee"
+
+
+class TestDecisionList:
+    @pytest.mark.asyncio
+    async def test_returns_stamped_decisions(self, monkeypatch):
+        from server import _handle_decision_list
+
+        rows = [
+            {
+                "id": "ep-1",
+                "created_at": "2026-07-30T10:00:00+00:00",
+                "payload": {"decision": "use payload jsonb", "session_id": _SID},
+            },
+            {
+                "id": "ep-2",
+                "created_at": "2026-07-30T11:00:00+00:00",
+                "payload": {"decision": "expression index", "session_id": _SID},
+            },
+        ]
+        client, query = _make_list_client(rows)
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_decision_list({"session_id": _SID})
+        text = result[0].text
+        assert "ep-1" in text and "ep-2" in text
+        assert "use payload jsonb" in text
+        client.table.assert_called_once_with("episodes")
+        assert ("kind", "decision_made") in query.eq_calls
+        assert ("payload->>session_id", _SID) in query.eq_calls
+
+    @pytest.mark.asyncio
+    async def test_requires_valid_session_id(self, monkeypatch):
+        from server import _handle_decision_list
+
+        client, _ = _make_list_client([])
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        for bad in ({}, {"session_id": "not a sid!"}, {"session_id": None}):
+            result = await _handle_decision_list(bad)
+            assert "session_id" in result[0].text
+            client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_project_filter_applied(self, monkeypatch):
+        from server import _handle_decision_list
+
+        client, query = _make_list_client([])
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_decision_list({"session_id": _SID, "project": "jarvis"})
+        assert ("payload->>project", "jarvis") in query.eq_calls
+
+    @pytest.mark.asyncio
+    async def test_empty_result_says_so(self, monkeypatch):
+        from server import _handle_decision_list
+
+        client, _ = _make_list_client([])
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_decision_list({"session_id": _SID})
+        assert "No decisions" in result[0].text
+
+    def test_tool_registered_in_schema(self):
+        import inspect
+
+        from tools_schema import tool_definitions
+
+        src = inspect.getsource(tool_definitions)
+        assert "decision_list" in src
+        # record_decision schema surfaces the optional session_id param.
+        assert "session_id" in src
+
+    def test_server_dispatches_decision_list(self):
+        import inspect
+
+        import server as server_module
+
+        src = inspect.getsource(server_module.call_tool)
+        assert 'name == "decision_list"' in src
+
+
+def test_session_id_expression_index_in_schema():
+    """#1269 — schema.sql carries the partial expression index used by
+    decision_list's payload->>session_id filter."""
+    schema = (
+        Path(__file__).resolve().parents[2] / "mcp-memory" / "schema.sql"
+    ).read_text()
+    assert "payload->>'session_id'" in schema, (
+        "schema.sql missing the session_id expression index for decision_list"
     )
 
 

@@ -11,14 +11,21 @@ Runs the live :class:`~scripts.repo_baseline.auditor.Auditor` over every repo in
 
 Re-runnable: re-auditing is the whole point of a *re-syncable* baseline. Output is
 deterministic (sorted-key JSON *and* sorted-key YAML) so a no-op re-audit produces
-no diff regardless of the order keys are emitted in the source. ``SergazyNarynov/
-redrobot`` is intentionally out of scope — different owner, credential-blocked
-under the Osasuwu token; deferred to issue #940.
+no diff regardless of the order keys are emitted in the source.
+
+Scope is keyed by **account pass** (:data:`ACCOUNT_PASSES`), the orchestration unit
+of the PRD: ``osasuwu`` (the five Osasuwu repos) and ``redrobot`` (#940). Auditing
+is read-only, so the default covers *both* — an account silently missing from the
+default scope is exactly how redrobot stayed absent from the fixture set while the
+downstream slices were built against it.
 
 Usage::
 
-    # Generate (or re-generate) committed fixtures
+    # Generate (or re-generate) committed fixtures for every account
     python -m scripts.repo_baseline.generate_snapshots
+
+    # One account pass only
+    python -m scripts.repo_baseline.generate_snapshots --account redrobot
 
     # Check for drift without writing
     python -m scripts.repo_baseline.generate_snapshots --check
@@ -35,6 +42,7 @@ import yaml
 
 from .auditor import (
     OSASUWU_REPOS,
+    REDROBOT_REPOS,
     Auditor,
     GhRunner,
     RepoSnapshot,
@@ -46,6 +54,29 @@ from .auditor import (
 _MODULE_DIR = Path(__file__).resolve().parent
 SNAPSHOTS_DIR = _MODULE_DIR / "snapshots"
 MANIFESTS_DIR = _MODULE_DIR / "manifests"
+
+# One entry per GitHub account pass — the PRD's orchestration unit (story 7).
+# Keyed rather than concatenated so ``--account`` can scope a run to a single
+# credential domain; ``resolve_account`` is the only place the two lists are
+# allowed to be flattened together.
+ACCOUNT_PASSES: dict[str, list[str]] = {
+    "osasuwu": OSASUWU_REPOS,
+    "redrobot": REDROBOT_REPOS,
+}
+
+
+def resolve_account(account: str) -> list[str]:
+    """Map an ``--account`` value to its repo list. ``all`` = every pass.
+
+    Raises :class:`KeyError` on an unknown account so a typo fails loudly
+    instead of silently auditing nothing (an empty scope reports "0 repos
+    match their snapshots" — a false clean).
+    """
+    if account == "all":
+        return [repo for repos in ACCOUNT_PASSES.values() for repo in repos]
+    if account not in ACCOUNT_PASSES:
+        raise KeyError(f"unknown account pass {account!r}; known: {sorted(ACCOUNT_PASSES)}, all")
+    return list(ACCOUNT_PASSES[account])
 
 
 def _slug(repo: str) -> str:
@@ -139,7 +170,9 @@ def check(
     for repo in repos:
         try:
             committed = RepoSnapshot.from_dict(
-                json.loads((snapshots_dir / f"{_slug(repo)}.snapshot.json").read_text(encoding="utf-8"))
+                json.loads(
+                    (snapshots_dir / f"{_slug(repo)}.snapshot.json").read_text(encoding="utf-8")
+                )
             )
             fresh_scrubbed = scrub_topology(auditor.audit(repo).to_dict())
             committed_dict = scrub_topology(committed.to_dict())
@@ -173,20 +206,28 @@ def main() -> None:
         action="store_true",
         help="Re-audit and diff against committed snapshots. Exit non-zero on drift.",
     )
+    parser.add_argument(
+        "--account",
+        default="all",
+        choices=[*sorted(ACCOUNT_PASSES), "all"],
+        help="Which account pass to audit (default: all).",
+    )
     args = parser.parse_args()
 
+    repos = resolve_account(args.account)
+
     if args.check:
-        drifts = check(OSASUWU_REPOS)
+        drifts = check(repos)
         if drifts:
-            print(f"Drift detected in {len(drifts)} of {len(OSASUWU_REPOS)} repo(s):")
+            print(f"Drift detected in {len(drifts)} of {len(repos)} repo(s):")
             for d in drifts:
                 print(f"  {d}")
             sys.exit(1)
-        print(f"All {len(OSASUWU_REPOS)} repo(s) match their committed snapshots.")
+        print(f"All {len(repos)} repo(s) match their committed snapshots.")
         return
 
-    written = generate(OSASUWU_REPOS)
-    print(f"Wrote {len(written)} files for {len(OSASUWU_REPOS)} repos:")
+    written = generate(repos)
+    print(f"Wrote {len(written)} files for {len(repos)} repos:")
     for path in written:
         print(f"  {path}")
 

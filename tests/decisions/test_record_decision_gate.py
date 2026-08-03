@@ -91,6 +91,34 @@ def test_intentionally_empty_overrides_even_with_full_list():
     )
 
 
+# ── Session-id sanitizer (#1269) ─────────────────────────────────────
+
+
+def test_sanitize_accepts_harness_uuid():
+    sid = "fe22ddae-340c-4c5b-b8d7-82a4df8396ee"
+    assert gate.sanitize_session_id(sid) == sid
+
+
+def test_sanitize_accepts_underscore_and_dash():
+    assert gate.sanitize_session_id("abc_DEF-123") == "abc_DEF-123"
+
+
+def test_sanitize_rejects_bad_chars():
+    assert gate.sanitize_session_id("abc def") is None
+    assert gate.sanitize_session_id("abc/../etc") is None
+    assert gate.sanitize_session_id("") is None
+
+
+def test_sanitize_rejects_overlong():
+    assert gate.sanitize_session_id("a" * 129) is None
+    assert gate.sanitize_session_id("a" * 128) == "a" * 128
+
+
+def test_sanitize_rejects_non_string():
+    assert gate.sanitize_session_id(None) is None
+    assert gate.sanitize_session_id(42) is None
+
+
 # ── End-to-end: subprocess with stdin JSON ───────────────────────────
 
 
@@ -175,3 +203,109 @@ def test_subprocess_silent_on_empty_stdin():
         timeout=10,
     )
     assert proc.returncode == 0
+
+
+# ── Session-id stamping via updatedInput (#1269) ─────────────────────
+
+
+_SID = "fe22ddae-340c-4c5b-b8d7-82a4df8396ee"
+_UUID = "11111111-1111-1111-1111-111111111111"
+
+
+def test_subprocess_injects_session_id_on_allow():
+    rc, out = _run_hook(
+        {
+            "session_id": _SID,
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID]},
+        }
+    )
+    assert rc == 0
+    payload = json.loads(out)
+    inner = payload["hookSpecificOutput"]
+    assert inner["hookEventName"] == "PreToolUse"
+    # updatedInput without permissionDecision: transparent input mutation
+    # that neither bypasses permission dialogs nor races the sibling
+    # pretooluse-recall-hook on the same matcher.
+    assert "permissionDecision" not in inner
+    updated = inner["updatedInput"]
+    assert updated["memories_used"] == [_UUID]
+    assert updated["session_id"] == _SID
+
+
+def test_subprocess_injects_on_intentionally_empty_allow():
+    rc, out = _run_hook(
+        {
+            "session_id": _SID,
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [], "intentionally_empty": True},
+        }
+    )
+    assert rc == 0
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert updated["session_id"] == _SID
+    assert updated["intentionally_empty"] is True
+
+
+def test_subprocess_harness_sid_overrides_model_supplied():
+    # The harness stdin sid is ground truth; a model-hallucinated value in
+    # tool_input must not survive.
+    rc, out = _run_hook(
+        {
+            "session_id": _SID,
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID], "session_id": "made-up"},
+        }
+    )
+    assert rc == 0
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert updated["session_id"] == _SID
+
+
+def test_subprocess_silent_when_sid_missing():
+    rc, out = _run_hook(
+        {
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID]},
+        }
+    )
+    assert rc == 0
+    assert out == ""
+
+
+def test_subprocess_silent_when_sid_malformed():
+    rc, out = _run_hook(
+        {
+            "session_id": "not a valid sid!",
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID]},
+        }
+    )
+    assert rc == 0
+    assert out == ""
+
+
+def test_subprocess_no_injection_for_other_tools():
+    rc, out = _run_hook(
+        {
+            "session_id": _SID,
+            "tool_name": "Bash",
+            "tool_input": {"command": "ls"},
+        }
+    )
+    assert rc == 0
+    assert out == ""
+
+
+def test_subprocess_deny_still_wins_with_sid_present():
+    rc, out = _run_hook(
+        {
+            "session_id": _SID,
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": []},
+        }
+    )
+    assert rc == 2
+    inner = json.loads(out)["hookSpecificOutput"]
+    assert inner["permissionDecision"] == "deny"
+    assert "updatedInput" not in inner

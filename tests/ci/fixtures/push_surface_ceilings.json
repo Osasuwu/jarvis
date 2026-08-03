@@ -1,0 +1,66 @@
+{
+  "_meta": {
+    "title": "Push-surface ratchet ceilings (#1273)",
+    "description": "Anti-regrowth ratchet on the always-pushed context layer. Each surface has two ceilings (items and bytes); the guard fails red when a surface exceeds either. CONTEXT.md as a whole file is deliberately NOT capped (see context_md_whole_file).",
+    "item_definition": "An 'item' is a line whose stripped form is a bullet ('- ', '* ', or '+ ' at any nesting depth) or a numbered list line ('N. ' or 'N) '). Block-level HTML comments (<!-- ... -->) are excluded before counting. Fenced code, YAML frontmatter, and .claude/rules/* files without a paths: key are all COUNTED — they are pushed at session start. This definition is load-bearing and is asserted by a synthetic-fixture test in tests/ci/test_push_surface_guard.py.",
+    "margin": {
+      "pct": 20,
+      "statement": "Ceilings = per-surface 90-day maximum (git-history max over the last 90 days, computed at fixture-writing time 2026-07-31) + 20% margin, rounded up. context_md_pushed was re-measured 2026-07-31 after the #1271 section-aware push (compressed Invariants + Glossary category index) replaced the 8 KiB byte-slice; its ceiling follows the same 20%-margin policy as the other surfaces — the push is no longer hard-bounded by a cap constant, only by the 9,500-char assembly budget.",
+      "uuids": "Each surface entry carries the record_decision UUID that set its ceiling (adjacent comment), per the Quota-Probe.ps1 precedent. Bumping a ceiling without a fresh record_decision UUID is a review failure."
+    },
+    "provenance": {
+      "issue": 1273,
+      "source": "Issue #1273 records aggregate 90-day maxima of 129 items / 49,632 bytes across the four source files. Per-surface ceilings here are computed from per-surface git-history maxima: soul_md 38/9512, project_claude_md 65/25283 (pre-#1252 compression), userlevel_claude_md 30/16498, userlevel_doctrine_md 9/6870 (file created 2026-07-30, max == current), context_md_pushed 37 items / 5,143 bytes (re-measured 2026-07-31 after the #1271 section-aware push).",
+      "basis": "post-compression sizes (#1265-#1268 closed)"
+    },
+    "same_pr_raise": "The JSON IS the fixture: the guard reads ceilings only from this file, so raising a ceiling is impossible without editing it in the same PR. Regrowth is therefore a reviewable act.",
+    "assembly": {
+      "module": "scripts/session-context.py",
+      "entrypoint": "_load_project_context",
+      "cap_constant": "ASSEMBLY_BUDGET_CHARS",
+      "note": "The pushed CONTEXT.md part is measured by calling the real assembler (_load_project_context — section-aware push of compressed Invariants + Glossary category index), NOT by reimplementing the extraction. A new push surface in the assembly that the fixture does not list fails red (see test_fixture_covers_discovered_surfaces)."
+    },
+    "context_md_whole_file": {
+      "has_ceiling": false,
+      "note": "CONTEXT.md as a whole file has NO ceiling — pull-only Glossary bodies may grow freely (that is the push/pull split). Only the pushed part (surface context_md_pushed: Invariants + Glossary category index) is ratcheted."
+    }
+  },
+  "surfaces": {
+    "soul_md": {
+      "path": "config/SOUL.md",
+      "decision_uuid": "511d5140-54ad-47e3-878f-42cb81a4b195",
+      "items": 46,
+      "bytes": 11415,
+      "note": "Identity. Loaded via a bare `@SOUL.md` import in .claude-userlevel/CLAUDE.md, not a SessionStart hook step (#1328)."
+    },
+    "project_claude_md": {
+      "path": "CLAUDE.md",
+      "decision_uuid": "4145af74-59d2-44b0-ba12-8946ad50df92",
+      "items": 78,
+      "bytes": 30340,
+      "note": "Repo rules. Loaded by the harness into every jarvis session."
+    },
+    "userlevel_claude_md": {
+      "path": ".claude-userlevel/CLAUDE.md",
+      "decision_uuid": "3110716e-6b99-48be-8142-874b9c1b6233",
+      "items": 36,
+      "bytes": 19798,
+      "note": "User-level CLAUDE.md source (installer source, not the repo-local mirror). Loaded into every session on every device."
+    },
+    "userlevel_doctrine_md": {
+      "path": ".claude-userlevel/DOCTRINE.md",
+      "decision_uuid": "067b6566-b0ea-44aa-82dd-76f5679ba2f4",
+      "items": 11,
+      "bytes": 8244,
+      "note": "Shared cross-repo norms, @import-ed from user-level CLAUDE.md."
+    },
+    "context_md_pushed": {
+      "path": "CONTEXT.md",
+      "assembly": "scripts/session-context.py::_load_project_context",
+      "decision_uuid": "6903c19c-80fc-4080-8793-0e6e2cf3fea3",
+      "items": 45,
+      "bytes": 6172,
+      "note": "The pushed part of CONTEXT.md — compressed ## Invariants + Glossary category index (per-term ### Index and category bodies are pull-only), re-measured 2026-07-31 after #1271 replaced the 8 KiB byte-slice. Ceiling = measured 37 items / 5,143 bytes + 20% margin, rounded up. The whole push must fit the 9,500-char assembly budget on its own (see test_assembly_cap_pinned)."
+    }
+  }
+}

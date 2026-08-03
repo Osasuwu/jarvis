@@ -9,6 +9,7 @@ from .renderer import Renderer, RenderError
 from .planner import Planner, Action, ActionKind
 from .auditor import (
     OSASUWU_REPOS,
+    REDROBOT_REPOS,
     Auditor,
     BranchProtection,
     GhNotFound,
@@ -46,6 +47,7 @@ __all__ = [
     "Action",
     "ActionKind",
     "OSASUWU_REPOS",
+    "REDROBOT_REPOS",
     "Auditor",
     "BranchProtection",
     "GhNotFound",

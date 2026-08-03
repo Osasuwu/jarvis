@@ -1,6 +1,6 @@
 ---
 name: reflect
-description: "Cross-session behavioral audit: extract communication and work patterns from Claude Code sessions on ALL devices in one run. Phase A runs locally, then remotely over SSH on each other device (hosts from local ~/.ssh/config — never hardcoded); patterns files are pulled back via scp. Phase B merges them and produces a comprehensive behavioral report. Manual file transfer remains the fallback when SSH is unavailable. Triggers: weekly audit, on-demand 'что я делаю не так', 'analyze comms', 'паттерны общения', 'merge comms'."
+description: "Cross-session behavioral audit: extracts communication/work patterns from Claude Code sessions on all devices (local + remote via SSH, manual transfer as fallback) and merges them into one report. Triggers: weekly audit, 'что я делаю не так', 'analyze comms', 'паттерны общения', 'merge comms'."
 ---
 
 # Reflect

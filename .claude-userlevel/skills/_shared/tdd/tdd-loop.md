@@ -10,7 +10,7 @@ MIT — see THIRD_PARTY_LICENSES/aihero-skills-MIT.txt.
 
 # TDD Loop — Red → Green → Refactor
 
-Reference doc for `/implement` and `/delegate` when they engage TDD-mode (see CONTEXT.md → "TDD-mode" glossary entry). Procedure, not a skill — there is no `/tdd-loop` invocation. The host skill drives the loop; this file is what it consults.
+Reference doc for `/implement` and `/delegate` when they engage TDD-mode (see jarvis `CONTEXT.md` → "TDD-mode" glossary entry). Procedure, not a skill — there is no `/tdd-loop` invocation. The host skill drives the loop; this file is what it consults.
 
 ## Philosophy
 

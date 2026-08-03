@@ -47,15 +47,32 @@ class GhRunner(Protocol):
 
 # The baseline audit scope — the five Osasuwu repos named in the milestone #48
 # PRD problem statement. NOT ``config/repos.conf`` (which is the narrower
-# daily-triage list of jarvis + redrobot). ``SergazyNarynov/redrobot`` is
-# out of scope here: a different owner, credential-blocked under the
-# Osasuwu-only token, and deferred to issue #940.
+# daily-triage list of jarvis + redrobot). ``SergazyNarynov/redrobot`` lives in
+# its own list below: a different owner, hence a separate account pass (#940).
 OSASUWU_REPOS: list[str] = [
     "Osasuwu/jarvis",
     "Osasuwu/music-intel-mcp",
     "Osasuwu/like_spotify_mobile_app",
     "Osasuwu/dnd-calendar",
     "Osasuwu/farming-evolution",
+]
+
+# The second account pass (#940). Kept a separate list rather than appended to
+# ``OSASUWU_REPOS`` because "one pass per GitHub account" is the orchestration
+# unit (PRD story 7) — a single flat list would silently invite a one-credential
+# run across two accounts.
+#
+# The pass was originally split on the belief that the Osasuwu token could not
+# reach this repo at all. That is wrong and worth recording so nobody re-derives
+# it: Osasuwu is a *collaborator with push*, so every audit read here (settings,
+# labels, workflows, protection) succeeds under the Osasuwu token — verified
+# 2026-08-03. What push does NOT carry is ``admin``, so repo-settings and
+# branch-protection writes are the genuinely credential-blocked part. Both of
+# redrobot's governance axes are ``off``, so this pass plans nothing that needs
+# admin; a future axis flip does, and that is when the owner credential becomes
+# load-bearing.
+REDROBOT_REPOS: list[str] = [
+    "SergazyNarynov/redrobot",
 ]
 
 
@@ -212,9 +229,7 @@ class Auditor:
                 # name matches — that workflow's path is the provenance source.
                 # Contexts not produced by any local workflow (e.g. marketplace
                 # app checks like "review") get a null entry.
-                bp.contexts_source = [
-                    wf_name_map.get(ctx) for ctx in bp.contexts
-                ]
+                bp.contexts_source = [wf_name_map.get(ctx) for ctx in bp.contexts]
             return RepoSnapshot(
                 repo=repo,
                 settings=settings,
@@ -508,8 +523,23 @@ def gh_runner(path: str, *, paginate: bool = False) -> Any:
     # A bounded timeout so a hung gh process (network stall, auth prompt waiting
     # on a tty that will never arrive) fails loudly instead of blocking the whole
     # audit_all batch indefinitely.
+    #
+    # ``encoding="utf-8"`` is load-bearing, not tidiness: GitHub's API is always
+    # UTF-8, but bare ``text=True`` decodes with the *locale* codepage. On a
+    # Russian-locale Windows box that is cp1251, which silently mojibakes every
+    # non-ASCII label description ("Блокировано" -> "Р—Р°Р±Р»РѕРєРёСЂРѕРІР°РЅРѕ")
+    # instead of failing. Two consequences, both bad: corrupted text lands in the
+    # committed fixtures, and a Linux CI re-audit (UTF-8 locale) decodes the same
+    # bytes correctly, so ``--check`` reports permanent phantom drift on the
+    # labels axis. The bug was live from slice 1 and had *already* corrupted the
+    # committed baseline — ``Osasuwu__jarvis.snapshot.json`` carried five
+    # mojibaked em-dashes ("вЂ”") in its own label descriptions. It went unnoticed
+    # because the Osasuwu repos are near-ASCII: a lone punctuation mark expanding
+    # to three bytes reads as noise, not as breakage. Only the first pass over a
+    # repo with genuinely non-ASCII labels (SergazyNarynov/redrobot, #940) made
+    # it unmissable.
     try:
-        proc = subprocess.run(args, capture_output=True, text=True, timeout=60)
+        proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", timeout=60)
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(f"gh api {path!r} timed out after 60s") from e
     if proc.returncode != 0:
