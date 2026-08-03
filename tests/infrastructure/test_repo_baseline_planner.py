@@ -34,8 +34,7 @@ class Test3ClassRouting:
     def test_managed_file_gets_write_action(self):
         """MANAGED files generate WRITE_FILE actions."""
         actions = _plan(_manifest())
-        code_review_actions = [a for a in actions
-                               if a.path == ".github/workflows/code-review.yml"]
+        code_review_actions = [a for a in actions if a.path == ".github/workflows/code-review.yml"]
         assert len(code_review_actions) == 1
         a = code_review_actions[0]
         assert a.kind == ActionKind.WRITE_FILE
@@ -49,8 +48,7 @@ class Test3ClassRouting:
 
         # No action should exist for a non-listed custom file
         actions = _plan(manifest)
-        custom_actions = [a for a in actions
-                          if a.path == "scripts/some_custom_script.py"]
+        custom_actions = [a for a in actions if a.path == "scripts/some_custom_script.py"]
         assert len(custom_actions) == 0
 
     def test_repo_custom_file_in_allowlist_is_preserved(self):
@@ -62,8 +60,7 @@ class Test3ClassRouting:
     def test_language_test_file_gets_write_action(self):
         """LANGUAGE-TEST files generate WRITE_FILE actions with language_test class."""
         actions = _plan(_manifest())
-        pytest_actions = [a for a in actions
-                          if a.path == ".github/workflows/pytest.yml"]
+        pytest_actions = [a for a in actions if a.path == ".github/workflows/pytest.yml"]
         assert len(pytest_actions) == 1
         a = pytest_actions[0]
         assert a.kind == ActionKind.WRITE_FILE
@@ -73,6 +70,22 @@ class Test3ClassRouting:
         """A path in none of the file lists is REPO_CUSTOM (default-deny)."""
         manifest = _manifest()
         assert manifest.class_for_file(".github/random-unknown.yml") == FileClass.REPO_CUSTOM
+
+    def test_managed_file_in_custom_files_gets_no_write(self):
+        """A path in both managed_files and custom_files is REPO_CUSTOM — never WRITE_FILE."""
+        manifest = _manifest(
+            managed_files=[".github/workflows/code-review.yml"],
+            custom_files=[".github/workflows/code-review.yml"],
+        )
+        actions = _plan(manifest)
+        assert not any(a.path == ".github/workflows/code-review.yml" for a in actions)
+
+    def test_language_test_file_in_custom_files_gets_no_write(self):
+        """A path in both language_test_files and custom_files is REPO_CUSTOM — never
+        WRITE_FILE, even though it would otherwise be the LANGUAGE-TEST class."""
+        manifest = _manifest(custom_files=[".github/workflows/pytest.yml"])
+        actions = _plan(manifest)
+        assert not any(a.path == ".github/workflows/pytest.yml" for a in actions)
 
 
 class TestPlannerOrdering:
@@ -93,14 +106,15 @@ class TestPlannerOrdering:
 
     def test_check_contexts_contains_required_names(self):
         """SET_CHECK_CONTEXTS carries the manifest's required_check_contexts."""
-        manifest = _manifest(required_check_contexts=[
-            "review",
-            "pytest",
-            "owner-queue-guard",
-        ])
+        manifest = _manifest(
+            required_check_contexts=[
+                "review",
+                "pytest",
+                "owner-queue-guard",
+            ]
+        )
         actions = _plan(manifest)
-        ctx_actions = [a for a in actions
-                       if a.kind == ActionKind.SET_CHECK_CONTEXTS]
+        ctx_actions = [a for a in actions if a.kind == ActionKind.SET_CHECK_CONTEXTS]
         assert len(ctx_actions) == 1
         assert ctx_actions[0].context_names == [
             "review",
@@ -114,10 +128,8 @@ class TestPlannerOrdering:
         minimal = _manifest(profile="minimal")
         full_actions = _plan(full)
         minimal_actions = _plan(minimal)
-        full_write_count = sum(1 for a in full_actions
-                               if a.kind == ActionKind.WRITE_FILE)
-        minimal_write_count = sum(1 for a in minimal_actions
-                                  if a.kind == ActionKind.WRITE_FILE)
+        full_write_count = sum(1 for a in full_actions if a.kind == ActionKind.WRITE_FILE)
+        minimal_write_count = sum(1 for a in minimal_actions if a.kind == ActionKind.WRITE_FILE)
         assert minimal_write_count < full_write_count
 
 
@@ -140,30 +152,43 @@ class TestSetCheckContexts:
         assert len(ctx_actions) == 0
 
     def test_delete_file_for_unmanaged_actual_path(self):
-        """Files in actual state but not in any managed set get DELETE_FILE actions."""
+        """With prune=True, files in actual state but not in any managed set get
+        DELETE_FILE actions."""
         actual = ActualState(files={".github/workflows/stale.yml": ""})
-        actions = Planner(_manifest()).plan(actual)
+        actions = Planner(_manifest(prune=True)).plan(actual)
         assert any(
             a.kind == ActionKind.DELETE_FILE and a.path == ".github/workflows/stale.yml"
             for a in actions
         )
 
+    def test_no_delete_file_by_default(self):
+        """prune defaults to False — unmanaged actual paths are left alone."""
+        actual = ActualState(files={".github/workflows/stale.yml": ""})
+        actions = Planner(_manifest()).plan(actual)
+        assert not any(a.kind == ActionKind.DELETE_FILE for a in actions)
+
+    def test_dynamic_paths_never_deleted_even_with_prune(self):
+        """``dynamic/`` paths are excluded from DELETE_FILE regardless of prune."""
+        actual = ActualState(files={"dynamic/generated.json": ""})
+        actions = Planner(_manifest(prune=True)).plan(actual)
+        assert not any(a.kind == ActionKind.DELETE_FILE for a in actions)
+
 
 class TestClassifyFile:
     def test_classify_managed(self):
         manifest = _manifest()
-        assert Planner(manifest).classify_file(
-            ".github/workflows/code-review.yml"
-        ) == FileClass.MANAGED
+        assert (
+            Planner(manifest).classify_file(".github/workflows/code-review.yml")
+            == FileClass.MANAGED
+        )
 
     def test_classify_language_test(self):
         manifest = _manifest()
-        assert Planner(manifest).classify_file(
-            ".github/workflows/pytest.yml"
-        ) == FileClass.LANGUAGE_TEST
+        assert (
+            Planner(manifest).classify_file(".github/workflows/pytest.yml")
+            == FileClass.LANGUAGE_TEST
+        )
 
     def test_classify_custom(self):
         manifest = _manifest(custom_files=["scripts/foo.py"])
-        assert Planner(manifest).classify_file(
-            "scripts/foo.py"
-        ) == FileClass.REPO_CUSTOM
+        assert Planner(manifest).classify_file("scripts/foo.py") == FileClass.REPO_CUSTOM

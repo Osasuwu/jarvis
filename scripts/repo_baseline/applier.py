@@ -69,6 +69,7 @@ __all__ = [
     "load_manifest",
     "load_snapshot",
     "plan_account_pass",
+    "summarize_account_pass",
 ]
 
 _MODULE_DIR = Path(__file__).resolve().parent
@@ -379,6 +380,35 @@ class RepoPlan:
     malformed manifest/snapshot, render defect). Isolated per-repo so one bad
     repo never discards the rest of the account pass (PRD story 9)."""
 
+    @property
+    def gapped(self) -> bool:
+        """True when this repo was fenced off by a canon gap (``calls`` left
+        empty, not translated)."""
+        return bool(self.canon_gaps)
+
+    @property
+    def applyable(self) -> bool:
+        """True when this repo's plan translated cleanly: no canon gap, no
+        load/translate error. ``calls`` may still be ``[]`` for an applyable
+        repo — that means "already synced", not "fenced off"."""
+        return not self.canon_gaps and self.error is None
+
+
+def summarize_account_pass(plans: list[RepoPlan]) -> dict[str, int]:
+    """Aggregate counts over an account pass, so an all-gapped run is visibly
+    distinguishable from a clean one instead of silently reading as empty.
+
+    ``applyable`` and ``gapped`` are mutually exclusive per repo (an errored
+    repo is neither); the three counts need not sum to ``total`` as a result.
+    """
+    return {
+        "total": len(plans),
+        "applyable": sum(1 for p in plans if p.applyable),
+        "gapped": sum(1 for p in plans if p.gapped),
+        "errored": sum(1 for p in plans if p.error is not None),
+        "total_calls": sum(len(p.calls) for p in plans),
+    }
+
 
 def plan_account_pass(
     repos: list[str],
@@ -396,6 +426,23 @@ def plan_account_pass(
     the whole pass; a repo that fails to load/translate at all is reported with
     ``error`` set. Either way the rest of the account pass continues — staged
     blast-radius (PRD story 9) starts with knowing which repos are applyable.
+
+    Why a canon gap fences off the *whole* repo instead of just the ungapped
+    paths: it is tempting to justify this as avoiding a "SET_CHECK_CONTEXTS
+    deadlock" (branch protection landing before its required workflow exists).
+    That justification does not hold — ``Applier.translate()``'s idempotency
+    check (this module, the ``sorted(desired) == sorted(actual...)`` comparison
+    a few dozen lines up) already drops SET_CHECK_CONTEXTS when desired equals
+    actual, which is true for every committed snapshot; no deadlock is actually
+    at risk. The real reason is narrower and more important: a *partial* plan
+    — one that silently skips the gapped WRITE_FILE but still emits every other
+    action — would leave the DELETE_FILE hazard for that same file's siblings
+    unfixed while the repo's plan looks otherwise clean and applyable. Fencing
+    the whole repo off (``calls=[]``, ``canon_gaps`` populated) makes that
+    cross-axis drift visible instead of silently shipping a half-synced repo
+    that reads as synced. See ``RepoPlan.applyable``/``gapped`` and
+    :func:`summarize_account_pass` for how a caller distinguishes "clean" from
+    "gapped" without inspecting every repo by hand.
 
     This performs **no live writes**: it is the planning half of slice 5. The
     live sync-PR executor that consumes these ``RepoPlan``\\ s is the supervised

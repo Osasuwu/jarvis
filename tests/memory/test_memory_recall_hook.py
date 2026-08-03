@@ -11,9 +11,13 @@ plain import statement.
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
-from supabase_stubs import StubClient, TableStub
+from lib import recall_dedup as rd
+from supabase_stubs import FakeClient, StubClient, TableStub
 
 
 _HOOK_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "memory-recall-hook.py"
@@ -402,6 +406,12 @@ class TestBriefModeConstants:
         # And CHAR_BUDGET reflects the active mode.
         expected = mrh.CHAR_BUDGET_BRIEF if mrh.BRIEF_MODE else mrh.CHAR_BUDGET_FULL
         assert mrh.CHAR_BUDGET == expected
+
+    def test_widen_gate_full_budget_capped(self):
+        # (#1276) a widened full-mode turn must not silently inject ~10K tokens;
+        # cap lives in the 15-20K char range and a top-N safety net backs it up.
+        assert mrh.CHAR_BUDGET_FULL <= 20_000
+        assert mrh.MAX_FULL_ENTRIES >= 1
 
 
 
@@ -841,3 +851,195 @@ class TestMemoryRecallEventEmit:
             pass  # Hook catches and swallows exceptions
 
         # If we get here, the hook's fail-soft contract is maintained
+
+
+# ---------------------------------------------------------------------------
+# main() integration — (id, mode, generation) dedup, widen-gate, accessed-fix
+# (#1276). These run the full UserPromptSubmit path with embed/rewrite/_recall
+# mocked so only the hook's caller-policy code is under test.
+# ---------------------------------------------------------------------------
+
+
+def _mem(mid: str, name: str | None = None, content: str = "") -> dict:
+    return {
+        "id": mid,
+        "name": name or mid,
+        "type": "feedback",
+        "project": "jarvis",
+        "description": f"description for {mid}",
+        "content": content,
+    }
+
+
+def _hit(mem: dict, source: str = "semantic") -> mrh.RecallHit:
+    return mrh.RecallHit(
+        memory=mem,
+        semantic_score=0.8,
+        keyword_score=0.2,
+        rrf_score=0.5,
+        temporal_score=0.0,
+        final_score=0.5,
+        source=source,
+    )
+
+
+def _run_main(
+    stdin_payload: dict,
+    monkeypatch,
+    tmp_path,
+    *,
+    hits: list,
+    widen: bool = False,
+) -> tuple[int, str, FakeClient]:
+    """Invoke mrh.main() with stdin/embed/rewrite/_recall/supabase mocked.
+
+    Returns (exit_code, stdout, client) so tests can assert on the emitted
+    context and on which RPCs/table writes actually fired.
+    """
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(mrh, "STATS_FILE", cache_dir / "memory-recall-stats.json")
+    monkeypatch.setattr(rd, "COMPACTION_DIR", tmp_path / "compaction-counts")
+    monkeypatch.setattr(rd, "DEDUP_DIR", cache_dir / "recall-dedup")
+
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+    client = FakeClient()
+    monkeypatch.setattr(mrh, "create_client", lambda *a, **k: client)
+    monkeypatch.setattr(mrh, "embed", lambda *a, **k: None)
+    monkeypatch.setattr(mrh, "rewrite_prompt", lambda *a, **k: None)
+    monkeypatch.setattr(mrh, "check_known_unknown_gate", lambda *a, **k: widen)
+
+    async def fake_recall(*args, **kwargs):
+        return hits
+
+    monkeypatch.setattr(mrh, "_recall", fake_recall)
+
+    raw = json.dumps(stdin_payload).encode("utf-8")
+    fake_stdin = MagicMock()
+    fake_stdin.buffer.read.return_value = raw
+    monkeypatch.setattr("sys.stdin", fake_stdin)
+
+    buf = io.StringIO()
+    monkeypatch.setattr("sys.stdout", buf)
+
+    exit_code = 0
+    try:
+        mrh.main()
+    except SystemExit as exc:
+        exit_code = exc.code or 0
+    return exit_code, buf.getvalue(), client
+
+
+class TestMainIdModeDedup:
+    """Same (id, mode) injected ≤1 time per compaction generation."""
+
+    def _payload(self, session_id: str, prompt: str = "delegate this audit to a subagent now"):
+        return {
+            "prompt": prompt,
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": session_id,
+        }
+
+    def test_same_memory_not_reinjected_same_generation(self, monkeypatch, tmp_path):
+        mem = _mem("mem-1", content="always verify agent output against memory")
+        payload = self._payload("sess-d1")
+
+        code1, out1, _ = _run_main(payload, monkeypatch, tmp_path, hits=[_hit(mem)])
+        assert code1 == 0
+        assert out1, "first turn injects the memory"
+
+        code2, out2, client2 = _run_main(payload, monkeypatch, tmp_path, hits=[_hit(mem)])
+        assert code2 == 0
+        assert out2 == "", "same (id, mode) in the same generation is deduped"
+        touch = [c for c in client2.rpc_calls if c["name"] == "touch_memories"]
+        assert touch == [], "accessed-fix: a deduped memory must not bump recency"
+
+    def test_compaction_bump_resets(self, monkeypatch, tmp_path):
+        mem = _mem("mem-2")
+        payload = self._payload("sess-d2")
+
+        code1, out1, _ = _run_main(payload, monkeypatch, tmp_path, hits=[_hit(mem)])
+        assert code1 == 0
+        assert out1
+
+        # PreCompact bumped the generation counter → stored generation mismatch.
+        rd.COMPACTION_DIR.mkdir(parents=True, exist_ok=True)
+        f = rd.COMPACTION_DIR / f"{rd.sanitize_session_id('sess-d2')}.txt"
+        f.write_text("2", encoding="utf-8")
+
+        code2, out2, _ = _run_main(payload, monkeypatch, tmp_path, hits=[_hit(mem)])
+        assert code2 == 0
+        assert out2, "post-compaction the memory must be injected again"
+
+    def test_deduped_counter_inspectable(self, monkeypatch, tmp_path):
+        mem = _mem("mem-3")
+        payload = self._payload("sess-d3")
+        _run_main(payload, monkeypatch, tmp_path, hits=[_hit(mem)])
+        _run_main(payload, monkeypatch, tmp_path, hits=[_hit(mem)])
+
+        stats = json.loads(
+            (tmp_path / "cache" / "memory-recall-stats.json").read_text(encoding="utf-8")
+        )
+        assert stats.get("fired") == 2
+        assert stats.get("emitted") == 1
+        assert stats.get("deduped") == 1
+
+
+class TestMainWidenGate:
+    """Widened full mode is bounded by the #1276 cap (char + top-N)."""
+
+    def _payload(self, session_id: str):
+        return {
+            "prompt": "this prompt is long enough to trigger a widened recall",
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": session_id,
+        }
+
+    def test_full_mode_within_char_budget(self, monkeypatch, tmp_path):
+        big = "x" * 5_000
+        hits = [_hit(_mem(f"mem-big-{i}", content=big)) for i in range(10)]
+        code, out, client = _run_main(
+            self._payload("sess-w1"), monkeypatch, tmp_path, hits=hits, widen=True
+        )
+        assert code == 0
+        assert out
+        assert len(out) <= mrh.CHAR_BUDGET_FULL, "full-mode injection must respect the char cap"
+        headers = out.count("## ")
+        assert 0 < headers < 10, "char budget must cut the tail of a pathological recall"
+        touch = [c for c in client.rpc_calls if c["name"] == "touch_memories"]
+        assert len(touch) == 1
+        touched_ids = touch[0]["params"]["memory_ids"]
+        assert len(touched_ids) == headers
+        assert all(mid.startswith("mem-big-") for mid in touched_ids)
+
+    def test_full_mode_entry_cap(self, monkeypatch, tmp_path):
+        hits = [_hit(_mem(f"mem-cap-{i}", content="small body")) for i in range(12)]
+        code, out, client = _run_main(
+            self._payload("sess-w2"), monkeypatch, tmp_path, hits=hits, widen=True
+        )
+        assert code == 0
+        assert out
+        assert out.count("## ") == mrh.MAX_FULL_ENTRIES
+        touch = [c for c in client.rpc_calls if c["name"] == "touch_memories"]
+        assert len(touch[0]["params"]["memory_ids"]) == mrh.MAX_FULL_ENTRIES
+
+
+class TestMainAccessedFix:
+    """touch_memories fires only for sections actually emitted."""
+
+    def test_brief_cap_touches_only_emitted(self, monkeypatch, tmp_path):
+        hits = [_hit(_mem(f"mem-a-{i}")) for i in range(10)]
+        payload = {
+            "prompt": "this prompt is long enough to trigger recall",
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": "sess-a1",
+        }
+        code, out, client = _run_main(payload, monkeypatch, tmp_path, hits=hits)
+        assert code == 0
+        assert out
+        touch = [c for c in client.rpc_calls if c["name"] == "touch_memories"]
+        assert len(touch) == 1
+        touched_ids = touch[0]["params"]["memory_ids"]
+        assert touched_ids == [f"mem-a-{i}" for i in range(mrh.MAX_BRIEF_ENTRIES)]
+        assert len(touched_ids) == mrh.MAX_BRIEF_ENTRIES

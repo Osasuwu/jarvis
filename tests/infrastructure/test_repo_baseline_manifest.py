@@ -167,6 +167,32 @@ class TestAxisResolution:
         assert m.dependabot_ecosystems == ["pip", "github-actions"]
 
 
+class TestResolvedLanguageTestFiles:
+    """language_test_files is unset by default — derived from ci_language."""
+
+    def test_python_default_derives_pytest_yml(self):
+        m = Manifest.from_dict({"repo": "x"})
+        assert m.resolved_language_test_files == [".github/workflows/pytest.yml"]
+
+    def test_non_python_derives_empty(self):
+        m = Manifest.from_dict({"repo": "x", "ci_language": "dart"})
+        assert m.resolved_language_test_files == []
+
+    def test_explicit_override_wins_regardless_of_ci_language(self):
+        m = Manifest.from_dict(
+            {
+                "repo": "x",
+                "ci_language": "dart",
+                "language_test_files": [".github/workflows/custom-test.yml"],
+            }
+        )
+        assert m.resolved_language_test_files == [".github/workflows/custom-test.yml"]
+
+    def test_explicit_empty_override_not_replaced_by_derivation(self):
+        m = Manifest.from_dict({"repo": "x", "language_test_files": []})
+        assert m.resolved_language_test_files == []
+
+
 class TestJarvisSplitPreserved:
     """jarvis's existing split: pytest=LANGUAGE-TEST, ci-meta=MANAGED,
     schema-drift-check/issue-checks=REPO-CUSTOM."""

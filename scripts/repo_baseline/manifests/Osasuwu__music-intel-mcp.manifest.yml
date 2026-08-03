@@ -1,5 +1,8 @@
 auto_merge: false
 branch_protection: false
+ci_language: python
+custom_files:
+- .github/workflows/pytest.yml
 dependabot_ecosystems: []
 profile: minimal
 repo: Osasuwu/music-intel-mcp

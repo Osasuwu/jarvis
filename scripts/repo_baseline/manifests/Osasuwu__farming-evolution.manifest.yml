@@ -1,5 +1,6 @@
 auto_merge: false
 branch_protection: false
+ci_language: "none"
 dependabot_ecosystems: []
 profile: minimal
 repo: Osasuwu/farming-evolution
