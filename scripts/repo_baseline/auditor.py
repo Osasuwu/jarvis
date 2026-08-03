@@ -531,9 +531,13 @@ def gh_runner(path: str, *, paginate: bool = False) -> Any:
     # instead of failing. Two consequences, both bad: corrupted text lands in the
     # committed fixtures, and a Linux CI re-audit (UTF-8 locale) decodes the same
     # bytes correctly, so ``--check`` reports permanent phantom drift on the
-    # labels axis. Surfaced by the first pass over a repo with Cyrillic labels
-    # (SergazyNarynov/redrobot, #940) — the five Osasuwu repos are ASCII-only,
-    # which is why the whole baseline was built without tripping it.
+    # labels axis. The bug was live from slice 1 and had *already* corrupted the
+    # committed baseline — ``Osasuwu__jarvis.snapshot.json`` carried five
+    # mojibaked em-dashes ("вЂ”") in its own label descriptions. It went unnoticed
+    # because the Osasuwu repos are near-ASCII: a lone punctuation mark expanding
+    # to three bytes reads as noise, not as breakage. Only the first pass over a
+    # repo with genuinely non-ASCII labels (SergazyNarynov/redrobot, #940) made
+    # it unmissable.
     try:
         proc = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", timeout=60)
     except subprocess.TimeoutExpired as e:
