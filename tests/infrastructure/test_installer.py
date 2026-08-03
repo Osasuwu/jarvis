@@ -830,27 +830,21 @@ def test_real_manifest_m4_all_groups_enabled() -> None:
     assert soul_entry.get("merge", False) is False
 
 
-def test_userlevel_settings_points_soul_at_user_level(fake_repo: Path) -> None:
-    """M4 (#339) acceptance: rendered SessionStart command reads SOUL from
-    {{CLAUDE_USER_HOME}}/SOUL.md (so it works in any CWD, not tied to
-    JARVIS_HOME — user-level install becomes the source of SOUL at runtime)."""
+def test_userlevel_settings_no_longer_cats_soul(fake_repo: Path) -> None:
+    """#1328 acceptance: SOUL.md is delivered via a bare `@SOUL.md` import in
+    CLAUDE.md (see test_soul_import_guard.py), not a SessionStart hook step —
+    no rendered SessionStart command may reference SOUL.md at all."""
     repo_root = Path(__file__).resolve().parents[2]
     settings_src = repo_root / ".claude-userlevel" / "settings.json"
     claude_home = Path("/opt/fakehome/.claude")
     rendered = installer.template_content(settings_src, repo_root, claude_home).decode("utf-8")
     data = json.loads(rendered)
-    # Every SessionStart cat must reference the user-level SOUL, not
-    # <JARVIS_HOME>/config/SOUL.md.
     for entry in data["hooks"]["SessionStart"]:
         for hook in entry["hooks"]:
             cmd = hook["command"]
-            if "SOUL.md" in cmd:
-                assert f"{claude_home.as_posix()}/SOUL.md" in cmd, (
-                    f"SessionStart SOUL path not rewritten to user level: {cmd}"
-                )
-                assert "config/SOUL.md" not in cmd, (
-                    f"leftover relative config/SOUL.md reference: {cmd}"
-                )
+            assert "SOUL.md" not in cmd, (
+                f"SessionStart hook must not cat a static file (#1328): {cmd}"
+            )
 
 
 def test_userlevel_source_files_exist() -> None:
@@ -1147,8 +1141,8 @@ def test_merge_action_kind_in_plan(manifest: Path, fake_repo: Path) -> None:
 def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None:
     """The real .claude-userlevel/ templates must get scripts/ -> abs rewritten.
 
-    Post-M4 (#339): settings.json no longer has a `config/SOUL.md`
-    reference — SOUL is read from `{{CLAUDE_USER_HOME}}/SOUL.md`.
+    Post-#1328: settings.json no longer references SOUL.md at all — SOUL is
+    delivered via a bare `@SOUL.md` import in CLAUDE.md, not read by any hook.
     """
     repo_root = Path(__file__).resolve().parents[2]
     settings_src = repo_root / ".claude-userlevel" / "settings.json"
