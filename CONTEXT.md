@@ -82,6 +82,9 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Per-account sync pass** — Orchestration runs once per GitHub account with that account's credential.
 - **Ordering invariant** — Distribute workflows FIRST, apply branch-protection contexts SECOND.
 - **Audit-first slice** — First implementation is empirical 6-repo dump populating manifest axis values from reality.
+- **Canon-gap fuse** — Missing canon template is repo-fatal (`canon_gaps` populated, zero calls): partial plans hide cross-axis drift. Deliberate semantics, not an artifact (#1347, decision `44df7f8e`).
+- **Prune axis** — `DELETE_FILE` is opt-in per manifest (`prune`, default false); unmanaged files are never deleted by default, mirroring REPO-CUSTOM's default-deny for writes (#1347).
+- **ci_language-derived test files** — `language_test_files` derives from the manifest's explicit `ci_language` (python → pytest.yml, else empty), never a hardcoded default; non-Python repos plan no test workflow (#1347).
 - **Destructive-once label migration** — One-time rename-in-place to clean schema; routine sync is additive-only.
 - **Association-preserving rename** — `gh label edit --name` that preserves issue/PR associations; delete-recreate detaches.
 - **addLabels merge→rename window** — GH Actions auto-creates referenced label names; creates ordering hazard for renaming.
