@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import base64
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -16,6 +18,7 @@ from scripts.repo_baseline import Manifest
 from scripts.repo_baseline import auditor as auditor_mod
 from scripts.repo_baseline.auditor import (
     OSASUWU_REPOS,
+    REDROBOT_REPOS,
     Auditor,
     BranchProtection,
     GhNotFound,
@@ -657,9 +660,18 @@ class TestAuditAll:
             "Osasuwu/dnd-calendar",
             "Osasuwu/farming-evolution",
         ]
-        # redrobot is NOT in the Osasuwu baseline scope — credential-blocked,
-        # different owner, deferred to #940.
+        # redrobot is NOT in the Osasuwu list — different owner, hence its own
+        # account pass (REDROBOT_REPOS, #940). Not a credential story: the
+        # Osasuwu token *can* read it (collaborator with push), it just cannot
+        # write repo settings or protection (no admin).
         assert not any("redrobot" in r for r in OSASUWU_REPOS)
+
+    def test_redrobot_repos_is_a_separate_account_pass(self):
+        """#940 — one list per GitHub account, because a pass is a credential
+        unit. Flattening the two into a single list would silently invite a
+        one-credential run across two accounts."""
+        assert REDROBOT_REPOS == ["SergazyNarynov/redrobot"]
+        assert set(REDROBOT_REPOS).isdisjoint(OSASUWU_REPOS)
 
 
 class TestGhRunner:
@@ -683,6 +695,35 @@ class TestGhRunner:
         # A bounded timeout is mandatory — an unbounded gh call can wedge the
         # whole 25-call audit on a single network stall. (#978 MAJOR 2.)
         assert captured["kwargs"].get("timeout") is not None
+
+    def test_decodes_response_as_utf8_not_locale_codepage(self, monkeypatch):
+        """GitHub responses are UTF-8; the decode must not follow the locale.
+
+        Bare ``text=True`` decodes with the preferred locale encoding. On a
+        Russian-locale Windows box that is cp1251, which mojibakes non-ASCII
+        label descriptions *silently* — corrupting the committed fixtures and
+        making a Linux CI ``--check`` see permanent phantom drift on the labels
+        axis. Found on the first repo with Cyrillic labels (#940).
+
+        Two assertions, deliberately: the round-trip through a real child
+        process proves the decode works here, and the explicit kwarg check is
+        what still fails if the fix is reverted on a UTF-8-locale runner where
+        the round-trip would pass anyway.
+        """
+        payload = '[{"description": "Блокировано", "name": "status:blocked"}]'
+        real_run = subprocess.run
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["kwargs"] = kwargs
+            script = f"import sys; sys.stdout.buffer.write({payload.encode('utf-8')!r})"
+            return real_run([sys.executable, "-c", script], **kwargs)
+
+        monkeypatch.setattr(auditor_mod.subprocess, "run", fake_run)
+        out = gh_runner("repos/SergazyNarynov/redrobot/labels")
+
+        assert captured["kwargs"].get("encoding") == "utf-8"
+        assert out == [{"description": "Блокировано", "name": "status:blocked"}]
 
     def test_timeout_maps_to_runtime_error(self, monkeypatch):
         """subprocess.TimeoutExpired must surface as a RuntimeError naming the

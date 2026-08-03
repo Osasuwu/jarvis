@@ -82,6 +82,11 @@
       "name": "area:skills"
     },
     {
+      "color": "D93F0B",
+      "description": "Auto-merge withheld: /code-review cannot run on this PR (#1234)",
+      "name": "automerge-withheld:review-blind"
+    },
+    {
       "color": "d73a4a",
       "description": "Something isn't working",
       "name": "bug"
@@ -98,13 +103,18 @@
     },
     {
       "color": "C5DEF5",
-      "description": "Rough idea, not ready for triage \u0432\u0402\u201d author still shaping it",
+      "description": "Rough idea, not ready for triage \u2014 author still shaping it",
       "name": "draft"
     },
     {
       "color": "a2eeef",
       "description": "New feature or request",
       "name": "enhancement"
+    },
+    {
+      "color": "000000",
+      "description": "Pull requests that update GitHub Actions code",
+      "name": "github_actions"
     },
     {
       "color": "000000",
@@ -118,12 +128,12 @@
     },
     {
       "color": "FBCA04",
-      "description": "Plan/AC not yet stress-tested \u0432\u0402\u201d run /grill before /implement or /delegate",
+      "description": "Plan/AC not yet stress-tested \u2014 run /grill before /implement or /delegate",
       "name": "needs-grill"
     },
     {
       "color": "FBCA04",
-      "description": "Scope defined but no PRD yet \u0432\u0402\u201d run /to-spec before slicing",
+      "description": "Scope defined but no PRD yet \u2014 run /to-spec before slicing",
       "name": "needs-prd"
     },
     {
@@ -183,7 +193,7 @@
     },
     {
       "color": "F9A03C",
-      "description": "Pre-dispatch gate refused AFK dispatch \u0432\u0402\u201d needs owner manual touch (add sandcastle, fill AC, etc.)",
+      "description": "Pre-dispatch gate refused AFK dispatch \u2014 needs owner manual touch (add sandcastle, fill AC, etc.)",
       "name": "status:owner-queue"
     },
     {
@@ -195,6 +205,11 @@
       "color": "d4c5f9",
       "description": "In review",
       "name": "status:review"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "status:rework-in-progress"
     },
     {
       "color": "0e8a16",
@@ -228,7 +243,7 @@
     },
     {
       "color": "B60205",
-      "description": "Sandcastle guard: issue requires action on a protected file \u0432\u0402\u201d orchestrator must handle",
+      "description": "Sandcastle guard: issue requires action on a protected file \u2014 orchestrator must handle",
       "name": "unsafe-for-afk"
     }
   ],
