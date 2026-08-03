@@ -77,6 +77,17 @@ try:
 except ImportError:
     pass
 
+# Per-session (id, mode, generation) dedup state, shared with the
+# UserPromptSubmit recall hook (#1276). A memory already shown mid-turn this
+# generation is not re-shown via a different tool query.
+if str(_ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(_ROOT / "scripts"))
+from lib.recall_dedup import (  # noqa: E402
+    MODE_PRETOOLUSE,
+    filter_emittable,
+    record_emitted,
+)
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -90,7 +101,8 @@ ALLOWED_TYPES = {"feedback", "decision", "reference"}
 
 # Stats file for per-session fire-rate audit (#434). Best-effort, never blocks.
 # Keys: fired (total invocations that ran the RPC), emitted (yielded ≥1 row),
-# deduped (skipped via cache). Reset by `--reset-stats` flag or manual delete.
+# deduped (skipped via cache), deduped_ids ((id, mode) generation dedup, #1276).
+# Reset by `--reset-stats` flag or manual delete.
 STATS_FILE = None  # set lazily, depends on _CLAUDE_HOME below
 
 # Projects Jarvis tracks — cwd basename must match to scope recall.
@@ -107,7 +119,7 @@ CACHE_FILE = CACHE_DIR / "pretooluse-recall-dedup.json"
 STATS_FILE = CACHE_DIR / "pretooluse-recall-stats.json"
 
 
-def _bump_stat(key: str) -> None:
+def _bump_stat(key: str, delta: int = 1) -> None:
     """Increment a counter in the stats file. Best-effort; never raises."""
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -120,7 +132,7 @@ def _bump_stat(key: str) -> None:
                 data = {}
         else:
             data = {}
-        data[key] = int(data.get(key, 0)) + 1
+        data[key] = int(data.get(key, 0)) + delta
         # session_started_at is set on first write so /reflect can compute rate
         data.setdefault("session_started_at", time.time())
         tmp = STATS_FILE.with_suffix(".json.tmp")
@@ -339,6 +351,10 @@ def main() -> None:
     if not tool_name:
         silent_exit()
 
+    # session_id keys the per-session compaction generation + dedup state.
+    # Missing → dedup disabled (filter_emittable/record_emitted no-op).
+    session_id = data.get("session_id") or data.get("sessionId") or ""
+
     query = _derive_query(tool_name, tool_input)
     if not query or len(query) < MIN_QUERY_CHARS:
         silent_exit()
@@ -388,11 +404,24 @@ def main() -> None:
     rows = resp.data or []
     rows = [r for r in rows if r.get("type") in ALLOWED_TYPES]
     rows = [r for r in rows if (r.get("rank") or 0) >= MIN_MATCH_SCORE]
+    # (id, mode) generation dedup (#1276): a memory already injected mid-turn
+    # in this compaction generation is not re-shown via a different query. The
+    # query-hash dedup above only catches identical queries; this catches the
+    # same memory surfacing from different tool triggers.
+    kept = filter_emittable(session_id, rows, MODE_PRETOOLUSE)
+    if len(kept) < len(rows):
+        _bump_stat("deduped_ids", delta=len(rows) - len(kept))
+    rows = kept
     rows = rows[:MAX_BRIEF_ENTRIES]
     if not rows:
         silent_exit()
 
     _bump_stat("emitted")
+    record_emitted(
+        session_id,
+        [r.get("id") or r.get("name") for r in rows],
+        MODE_PRETOOLUSE,
+    )
 
     header = (
         f"# Mid-turn recall for {tool_name}"
