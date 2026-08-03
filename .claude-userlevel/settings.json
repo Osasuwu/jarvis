@@ -80,7 +80,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
+            "command": "python scripts/device-info.py"
           },
           {
             "type": "command",
@@ -93,7 +93,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/device-info.py && echo '' && cat {{CLAUDE_USER_HOME}}/SOUL.md && echo ''"
+            "command": "python scripts/device-info.py"
           },
           {
             "type": "command",

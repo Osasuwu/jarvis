@@ -31,7 +31,7 @@
       "decision_uuid": "511d5140-54ad-47e3-878f-42cb81a4b195",
       "items": 46,
       "bytes": 11415,
-      "note": "Identity. Loaded by the SessionStart hook into every interactive session."
+      "note": "Identity. Loaded via a bare `@SOUL.md` import in .claude-userlevel/CLAUDE.md, not a SessionStart hook step (#1328)."
     },
     "project_claude_md": {
       "path": "CLAUDE.md",

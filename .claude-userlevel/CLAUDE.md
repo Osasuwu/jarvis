@@ -4,7 +4,7 @@ Process and protocol rules that apply across every project, loaded into every Cl
 
 **Edit the source, never the mirror** — `<jarvis-repo>/.claude-userlevel/CLAUDE.md` is canonical, `install.ps1 -Apply` propagates it to `~/.claude/CLAUDE.md`.
 
-Shared cross-repo norms (merge gates, protocol-layer model, owner-queue semantics, the sanctioned admin-merge cases) live in @DOCTRINE.md, installed alongside this file and loaded into every session the same way. This file carries jarvis's own process on top of that shared floor — every project-repo CLAUDE.md, including jarvis's own, is a repo like any other and points *up* to this file and DOCTRINE.md, never the reverse.
+Identity lives in @SOUL.md, installed alongside this file from `<jarvis-repo>/config/SOUL.md` and loaded into every session by import — no SessionStart hook step delivers it (#1328). Shared cross-repo norms (merge gates, protocol-layer model, owner-queue semantics, the sanctioned admin-merge cases) live in @DOCTRINE.md, installed alongside this file and loaded into every session the same way. This file carries jarvis's own process on top of that shared floor — every project-repo CLAUDE.md, including jarvis's own, is a repo like any other and points *up* to this file and DOCTRINE.md, never the reverse.
 
 ## Memory & decision protocol
 
