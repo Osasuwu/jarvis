@@ -41,7 +41,7 @@ Installed to `~/.claude/` by `scripts/install/installer.py` (entry points `insta
 
 | Component | Source in repo | Installed to | Purpose |
 |-----------|----------------|--------------|---------|
-| Identity | `config/SOUL.md` | `~/.claude/SOUL.md` | Personality, tone, behavior rules (loaded by SessionStart) |
+| Identity | `config/SOUL.md` | `~/.claude/SOUL.md` | Personality, tone, behavior rules (loaded via `@SOUL.md` import in CLAUDE.md, #1328) |
 | Universal skills | `.claude-userlevel/skills/*/SKILL.md` | `~/.claude/skills/*/SKILL.md` | Core slash commands: `implement`, `delegate`, `verify`, `status`, `reflect`, `end` (with `--quick` flag), `research`, `goals`, `self-improve`, `setup-tasks`. (`autonomous-loop` retained on disk but SUPERSEDED 2026-05-26 — do not invoke for new flows.) |
 | Hooks | `.claude-userlevel/settings.json` | `~/.claude/settings.json` (deep-merged) | SessionStart, PreCompact, PreToolUse secret/dedup/protected-file scans, UserPromptSubmit memory recall |
 | MCP servers | `.claude-userlevel/.mcp.json` | `~/.claude/.mcp.json` (deep-merged) | memory, github, context7, etc. |
