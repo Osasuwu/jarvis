@@ -33,8 +33,9 @@ groups:
     enabled: true
     files:
       # Canonical source stays at jarvis/config/SOUL.md (git-versioned,
-      # PR-reviewed). Installer copies to ~/.claude/SOUL.md so the
-      # user-level SessionStart hook reads it regardless of CWD.
+      # PR-reviewed). Installer copies to ~/.claude/SOUL.md, which is
+      # loaded into every session via a bare `@SOUL.md` import in
+      # ~/.claude/CLAUDE.md, not a SessionStart hook step (#1328).
       # Edit flow: edit jarvis/config/SOUL.md -> PR review -> merge ->
       # `git pull && install.ps1` on each device propagates.
       - source: "config/SOUL.md"

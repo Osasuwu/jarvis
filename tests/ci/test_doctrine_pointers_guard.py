@@ -23,6 +23,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from ._md_helpers import strip_code_spans_and_fences
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 USERLEVEL_DIR = REPO_ROOT / ".claude-userlevel"
 CLAUDE_MD_PATH = USERLEVEL_DIR / "CLAUDE.md"
@@ -48,14 +50,6 @@ def find_unqualified_pointers(paths: list[Path]) -> list[str]:
                 f"{path.relative_to(REPO_ROOT)}:{line_no}: {lines[line_no - 1].strip()}"
             )
     return violations
-
-
-def strip_code_spans_and_fences(text: str) -> str:
-    """Drop fenced code blocks and inline `code spans` — import-line parsing
-    skips code spans, so a match only counts if it survives outside one."""
-    text = re.sub(r"```.*?```", "", text, flags=re.DOTALL)
-    text = re.sub(r"`[^`\n]*`", "", text)
-    return text
 
 
 class TestNoUnqualifiedContextPointers:
