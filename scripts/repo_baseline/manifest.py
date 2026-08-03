@@ -38,6 +38,7 @@ class AxisProfile:
     dependabot_ecosystems: List[str] = field(default_factory=lambda: ["pip", "github-actions"])
     managed_files: List[str] = field(default_factory=lambda: list(_MANAGED_FILES_DEFAULT))
     custom_files: List[str] = field(default_factory=list)
+    prune: bool = False
 
 
 # ── Canonical set  ────────────────────────────────────────────────────
@@ -84,6 +85,7 @@ class Manifest:
     branch_protection: Optional[bool] = None
     test_extras: Optional[str] = None
     dependabot_ecosystems: Optional[List[str]] = None
+    prune: Optional[bool] = None
 
     # ── Explicit check-contexts (required axis — no fallback) ──────────
     required_check_contexts: List[str] = field(default_factory=list)
@@ -92,12 +94,8 @@ class Manifest:
     managed_files: Optional[List[str]] = None
     custom_files: List[str] = field(default_factory=list)
 
-    # ── LANGUAGE-TEST class files ───────────────────────────────────────
-    language_test_files: List[str] = field(
-        default_factory=lambda: [
-            ".github/workflows/pytest.yml",
-        ]
-    )
+    # ── LANGUAGE-TEST class files (None = derive from ci_language) ──────
+    language_test_files: Optional[List[str]] = None
 
     # ── Profiles (class constant — not a field) ────────────────────────
     _PROFILES: ClassVar[Dict[str, AxisProfile]] = {
@@ -132,6 +130,7 @@ class Manifest:
             "managed_files",
             "custom_files",
             "language_test_files",
+            "prune",
         }
         extra = set(data) - valid
         if extra:
@@ -151,12 +150,8 @@ class Manifest:
             required_check_contexts=data.get("required_check_contexts", []),
             managed_files=data.get("managed_files"),
             custom_files=data.get("custom_files", []),
-            language_test_files=data.get(
-                "language_test_files",
-                [
-                    ".github/workflows/pytest.yml",
-                ],
-            ),
+            prune=data.get("prune"),
+            language_test_files=data.get("language_test_files"),
         )
 
     def resolve_axis(self, key: str) -> str | int | bool | list | None:
@@ -185,11 +180,20 @@ class Manifest:
             return list(_MANAGED_FILES_DEFAULT)
         return result
 
+    @property
+    def resolved_language_test_files(self) -> List[str]:
+        """Language-test files: explicit override → derived from ci_language."""
+        if self.language_test_files is not None:
+            return self.language_test_files
+        if self.resolve_axis("ci_language") == "python":
+            return [".github/workflows/pytest.yml"]
+        return []
+
     def class_for_file(self, path: str) -> FileClass:
         """Determine the file class for a given repo-path."""
         if path in self.custom_files:
             return FileClass.REPO_CUSTOM
-        if path in self.language_test_files:
+        if path in self.resolved_language_test_files:
             return FileClass.LANGUAGE_TEST
         if path in self.resolved_managed_files:
             return FileClass.MANAGED

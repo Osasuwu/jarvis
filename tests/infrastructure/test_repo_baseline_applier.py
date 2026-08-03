@@ -25,6 +25,7 @@ from scripts.repo_baseline.applier import (
     load_manifest,
     load_snapshot,
     plan_account_pass,
+    summarize_account_pass,
 )
 from scripts.repo_baseline.auditor import BranchProtection, RepoSettings, RepoSnapshot
 from scripts.repo_baseline.manifest import Manifest
@@ -313,7 +314,12 @@ def test_load_canon_real_fixtures_skip_dunder():
     canon = load_canon()
     assert "code-review.yml" in canon
     assert "__init__.py" not in canon
-    # The pytest.yml canon gap this slice surfaces is real (no canon authored yet).
+    # No canon template for pytest.yml yet (tracked as a follow-up, #1347's AC5
+    # note) — but this no longer surfaces as a *planning*-layer canon gap: the
+    # three python repos list it in custom_files (REPO_CUSTOM, never written) and
+    # non-python repos derive an empty resolved_language_test_files, so the
+    # missing canon entry is simply never looked up. See
+    # test_plan_account_pass_no_pytest_canon_gap below.
     assert "pytest.yml" not in canon
 
 
@@ -349,16 +355,27 @@ def test_plan_account_pass_reports_per_repo():
     assert all(isinstance(p, RepoPlan) for p in plans)
 
 
-def test_plan_account_pass_surfaces_pytest_canon_gap():
-    # Full-profile repos plan a write for the language-test pytest.yml, which has
-    # no canon template yet — the orchestrator must flag it, not crash, and must
-    # leave that repo's calls empty (not partially applied).
-    plans = {p.repo: p for p in plan_account_pass(OSASUWU_REPOS)}
-    flagged = [p for p in plans.values() if p.canon_gaps]
-    assert flagged, "expected at least one repo to surface the pytest.yml canon gap"
-    for p in flagged:
-        assert ".github/workflows/pytest.yml" in p.canon_gaps
-        assert p.calls == []
+def test_plan_account_pass_no_pytest_canon_gap():
+    # AC6: the REPO_CUSTOM write-filter (AC2/AC5, pytest.yml lives in custom_files
+    # for the three python repos) plus the derived ci_language axis (AC3/AC4,
+    # non-python repos resolve an empty language_test_files) mean pytest.yml is
+    # never planned as a WRITE_FILE or DELETE_FILE anywhere in the account pass —
+    # every repo comes back applyable, not fenced off by a canon gap.
+    plans = plan_account_pass(OSASUWU_REPOS)
+    summary = summarize_account_pass(plans)
+    assert summary["total"] == len(OSASUWU_REPOS)
+    assert summary["gapped"] == 0
+    assert summary["errored"] == 0
+    assert summary["applyable"] == len(OSASUWU_REPOS)
+    for p in plans:
+        assert p.canon_gaps == []
+        assert p.applyable
+        assert not p.gapped
+        for call in p.calls:
+            assert call.path != ".github/workflows/pytest.yml"
+    assert any(p.calls for p in plans), (
+        "expected at least one repo to plan a non-empty call sequence"
+    )
 
 
 def test_plan_account_pass_injected_canon_makes_repo_applyable():
