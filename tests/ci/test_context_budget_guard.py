@@ -199,6 +199,17 @@ class TestContextPushStructure:
         assert "### Invariants" in output
         assert "### Glossary categories" in output
 
+    def test_glossary_categories_carries_unconditional_pull_notice(self):
+        """#1327 AC: the injected Glossary categories block carries an
+        explicit, unconditional one-line notice that category bodies are
+        omitted and how to read them — fires whenever CONTEXT.md has a
+        Glossary section, not only when the push is dropped/size-constrained."""
+        section = _ctx_push()
+        idx = section.index("### Glossary categories")
+        block = section[idx:]
+        assert "pull-only" in block
+        assert "CONTEXT.md" in block
+
 
 class TestSelfLog:
     """AC4: every run appends its emitted size to the self-log."""

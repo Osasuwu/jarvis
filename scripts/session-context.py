@@ -386,7 +386,10 @@ def _glossary_category_index(raw: str) -> str | None:
         if count:
             noun = "entry" if count == 1 else "entries"
             lines.append(f"- {heading} — {count} {noun}")
-    return "\n".join(lines) if lines else None
+    if not lines:
+        return None
+    notice = "_bodies are pull-only — `Read CONTEXT.md` for full entries_"
+    return notice + "\n" + "\n".join(lines)
 
 
 def _load_project_context(project_root: Path) -> str | None:
