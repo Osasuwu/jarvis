@@ -43,6 +43,11 @@
 .PARAMETER Force
     Allow registration on non-Workshop devices (dev rehearsal).
 
+.PARAMETER NoExecute
+    Load function definitions only, then return -- no device guard, no
+    Task Scheduler calls. For dot-sourcing from Pester tests
+    (tests/install/Register-WakeDriver.Tests.ps1).
+
 .EXAMPLE
     .\register-wake-driver.ps1
     # Registers Wake-Driver to run at user logon, watchdog=300s.
@@ -62,10 +67,48 @@ param(
 
     [switch]$WhatIfOnly,
 
-    [switch]$Force
+    [switch]$Force,
+
+    [switch]$NoExecute
 )
 
 $ErrorActionPreference = 'Stop'
+
+# ---------------------------------------------------------------------------
+# Functions -- defined up front so -NoExecute can dot-source this script for
+# Pester tests without triggering the device guard or a real Task Scheduler
+# call (mirrors scripts/sandcastle/Register-SandcastleTask.ps1).
+# ---------------------------------------------------------------------------
+
+function Get-PowerShellExe {
+    $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+    if ($pwshCmd) {
+        return $pwshCmd.Source
+    }
+    return (Get-Command powershell -ErrorAction Stop).Source
+}
+
+function Format-WakeDriverActionArgs {
+    param(
+        [Parameter(Mandatory)][string]$PythonExe,
+        [Parameter(Mandatory)][int]$WatchdogSeconds
+    )
+
+    # Single-quote the inner python path and double any literal single
+    # quotes so an embedded quote in $PythonExe can't break out of the
+    # PowerShell string -- nesting double quotes here breaks Windows argv
+    # parsing instead (the bug fixed in this PR's own history).
+    $escapedPythonExe = $PythonExe -replace "'", "''"
+    $innerCommand = "`$env:JARVIS_PRINCIPAL = 'autonomous'; & '$escapedPythonExe' -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
+
+    return @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-Command', "`"$innerCommand`""
+    )
+}
+
+if ($NoExecute) { return }
 
 # ---------------------------------------------------------------------------
 # Device guard -- Workshop only, matching Orchestrator-Watcher / Sandcastle.
@@ -109,14 +152,6 @@ if (-not $PythonExe) {
     $PythonExe = $cmd.Source
 }
 
-function Get-PowerShellExe {
-    $pwshCmd = Get-Command pwsh -ErrorAction SilentlyContinue
-    if ($pwshCmd) {
-        return $pwshCmd.Source
-    }
-    return (Get-Command powershell -ErrorAction Stop).Source
-}
-
 $pwshExe = Get-PowerShellExe
 
 # ---------------------------------------------------------------------------
@@ -130,14 +165,7 @@ $taskName = 'Wake-Driver'
 # the launched process (agent-boundaries.md headless-launcher requirement).
 # ---------------------------------------------------------------------------
 
-$escapedPythonExe = $PythonExe -replace "'", "''"
-$innerCommand = "`$env:JARVIS_PRINCIPAL = 'autonomous'; & '$escapedPythonExe' -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
-
-$argParts = @(
-    '-NoProfile',
-    '-ExecutionPolicy', 'Bypass',
-    '-Command', "`"$innerCommand`""
-)
+$argParts = Format-WakeDriverActionArgs -PythonExe $PythonExe -WatchdogSeconds $WatchdogSeconds
 
 $action = New-ScheduledTaskAction -Execute $pwshExe `
     -Argument ($argParts -join ' ') `
@@ -161,7 +189,8 @@ $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -MultipleInstances IgnoreNew `
     -RestartCount 5 `
-    -RestartInterval ([timespan]::FromMinutes(1))
+    -RestartInterval ([timespan]::FromMinutes(1)) `
+    -ExecutionTimeLimit ([timespan]::Zero)
 
 # ---------------------------------------------------------------------------
 # Register (idempotent)
