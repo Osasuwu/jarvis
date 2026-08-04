@@ -262,6 +262,10 @@ def compute_criterion(matrix: Matrix) -> float | None:
 
 
 def load_protocol_constants(path: Path) -> ProtocolConstants:
+    # ceiling: regex-parses the protocol doc's prose; a wording edit to the
+    # Horizon/stop-rule sentences (not just the numbers) breaks this silently
+    # into the raise below rather than a wrong value. Upgrade path: a small
+    # frontmatter/YAML constants block in the doc if the prose keeps drifting.
     text = Path(path).read_text(encoding="utf-8")
     min_verdicts_m = _MIN_VERDICTS_RE.search(text)
     horizon_days_m = _HORIZON_DAYS_RE.search(text)
