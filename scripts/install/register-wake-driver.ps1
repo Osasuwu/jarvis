@@ -130,7 +130,8 @@ $taskName = 'Wake-Driver'
 # the launched process (agent-boundaries.md headless-launcher requirement).
 # ---------------------------------------------------------------------------
 
-$innerCommand = "`$env:JARVIS_PRINCIPAL = 'autonomous'; & `"$PythonExe`" -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
+$escapedPythonExe = $PythonExe -replace "'", "''"
+$innerCommand = "`$env:JARVIS_PRINCIPAL = 'autonomous'; & '$escapedPythonExe' -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
 
 $argParts = @(
     '-NoProfile',
