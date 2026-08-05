@@ -4,6 +4,20 @@ ci_language: python
 custom_files:
 - .github/workflows/pytest.yml
 dependabot_ecosystems: []
+# minimal profile's managed_files omits community-health (right for Osasuwu repos,
+# which get it from the Osasuwu/.github fallback — decision 261937d0). redrobot is
+# cross-account so that fallback can't reach it; #940 AC3 requires it written here
+# locally. code-review.yml stays excluded — canon vs. live has an open gap (#1304)
+# that would regress redrobot's existing gating steps if overwritten now.
+managed_files:
+- .github/workflows/owner-queue-guard.yml
+- .github/workflows/pr-body-check.yml
+- .github/workflows/ci-meta.yml
+- .github/dependabot.yml
+- .github/ISSUE_TEMPLATE/bug.yml
+- .github/ISSUE_TEMPLATE/task.yml
+- .github/ISSUE_TEMPLATE/config.yml
+- .github/PULL_REQUEST_TEMPLATE.md
 profile: minimal
 repo: SergazyNarynov/redrobot
 required_check_contexts: []
