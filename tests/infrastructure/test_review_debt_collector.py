@@ -202,6 +202,7 @@ def test_info_only_cluster_needs_more_to_reach_threshold():
         "### CRITICAL findings\nsomething",
         "## MAJOR\nboom",
         "#### 🔴 BLOCKING\nnope",
+        "### MEDIUM\nstate-corrupting in the moment",  # #1385 follow-up
     ],
 )
 def test_has_blocking_finding_true_for_allcaps_severity_headings(body):
@@ -215,10 +216,36 @@ def test_has_blocking_finding_true_for_allcaps_severity_headings(body):
         "### MINOR\njust a nit",
         "No issues found.",
         "Found 3 issues:",
+        "Medium priority follow-up recommended.",  # title-case advisory prose
     ],
 )
 def test_has_blocking_finding_false_for_nonblocking(body):
     assert has_blocking_finding(body) is False
+
+
+def test_json_block_medium_severity_still_collected_after_gate_promotion():
+    # #1385 follow-up: the merge gate now blocks on a prose "### MEDIUM"
+    # heading, but the JSON findings-block `severity` field is a distinct,
+    # bucket-derived signal (§8.1) that never gates the merge. A merged PR's
+    # comment can legitimately carry `"severity": "MEDIUM"` findings without
+    # ever tripping has_blocking_finding — collected_severities must still
+    # include MEDIUM.
+    body = _wrap(
+        {
+            "schema_version": 1,
+            "findings": [
+                {
+                    "severity": "MEDIUM",
+                    "rule": "bug-scan",
+                    "file": "scripts/x/y.py",
+                    "line": 1,
+                    "description": "d",
+                }
+            ],
+        }
+    )
+    assert has_blocking_finding(body) is False
+    assert len(parse_findings_block(body)) == 1
 
 
 # ── AC5: TTL age-out + issued-state exclusion ──────────────────────────────
