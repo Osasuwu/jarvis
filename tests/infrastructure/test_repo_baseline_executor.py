@@ -15,12 +15,14 @@ from scripts.repo_baseline.applier import GhCall, GhCallKind
 from scripts.repo_baseline.auditor import (
     OSASUWU_REPOS,
     BranchProtection,
+    GhNotFound,
     RepoSettings,
     RepoSnapshot,
 )
 from scripts.repo_baseline.executor import (
     SYNC_BRANCH,
     IdentityError,
+    RepoOutcome,
     apply_protection,
     diff_phase,
     ensure_sync_branch,
@@ -28,6 +30,7 @@ from scripts.repo_baseline.executor import (
     execute_account_pass,
     execute_repo,
     find_sync_pr,
+    main,
     preflight_identity,
     render_pr_body,
     resolve_repos,
@@ -569,3 +572,84 @@ def test_execute_account_pass_isolates_per_repo_errors():
         assert by_repo[repo].protection_status == "skipped"
 
     assert write_runner.calls == []
+
+
+def test_execute_account_pass_isolates_ghnotfound_from_find_sync_pr(monkeypatch):
+    """find_sync_pr's pulls lookup (executor.py ~line 480) is called outside
+    any per-repo try/except; a 404 there (GhNotFound) must still be caught
+    at the account-pass isolation boundary rather than aborting the whole
+    pass — this is what _ISOLATION_EXCEPTIONS existing without GhNotFound
+    would miss."""
+    import scripts.repo_baseline.executor as executor_mod
+
+    responses = {}
+    not_found = set()
+    for repo in OSASUWU_REPOS:
+        responses[f"repos/{repo}"] = {"default_branch": "main"}
+        responses[f"repos/{repo}/labels"] = []
+        responses[f"repos/{repo}/actions/workflows?per_page=100"] = {"workflows": []}
+        not_found.add(f"repos/{repo}/branches/main/protection")
+        not_found.add(f"repos/{repo}/contents/.github/dependabot.yml")
+
+    failing_repo = "Osasuwu/dnd-calendar"
+    runner = FakeRunner(responses, not_found=not_found)
+    write_runner = FakeWriteRunner()
+
+    real_execute_repo = executor_mod.execute_repo
+
+    def fake_execute_repo(repo, manifest, **kw):
+        if repo == failing_repo:
+            raise GhNotFound(f"repos/{repo}/pulls?head=Osasuwu:{SYNC_BRANCH}&state=all")
+        return real_execute_repo(repo, manifest, **kw)
+
+    monkeypatch.setattr(executor_mod, "execute_repo", fake_execute_repo)
+
+    outcomes = execute_account_pass(
+        "osasuwu", runner=runner, write_runner=write_runner, execute=False, canon={}
+    )
+
+    assert [o.repo for o in outcomes] == OSASUWU_REPOS
+    by_repo = {o.repo: o for o in outcomes}
+
+    failed = by_repo[failing_repo]
+    assert failed.file_status == "errored"
+    assert failed.protection_status == "skipped"
+    assert "GhNotFound" in failed.error
+
+    for repo in OSASUWU_REPOS:
+        if repo == failing_repo:
+            continue
+        assert by_repo[repo].file_status == "gapped"
+
+
+# ── main — exit code reflects both status fields ────────────────────────
+
+
+def test_main_exit_code_reflects_protection_failure(monkeypatch):
+    """A protection-write failure must fail the process even when every
+    repo's file_status looks clean — main()'s old exit-code check only
+    inspected file_status and would silently exit 0 here."""
+    monkeypatch.setattr(
+        "scripts.repo_baseline.executor.execute_account_pass",
+        lambda *a, **kw: [
+            RepoOutcome(
+                repo="Osasuwu/jarvis", file_status="applied", protection_status="failed: boom"
+            ),
+        ],
+    )
+
+    assert main(["--account", "osasuwu"]) == 1
+
+
+def test_main_exit_code_zero_when_both_statuses_clean(monkeypatch):
+    monkeypatch.setattr(
+        "scripts.repo_baseline.executor.execute_account_pass",
+        lambda *a, **kw: [
+            RepoOutcome(repo="Osasuwu/jarvis", file_status="applied", protection_status="applied"),
+            RepoOutcome(
+                repo="Osasuwu/dnd-calendar", file_status="skipped", protection_status="skipped"
+            ),
+        ],
+    )
+
+    assert main(["--account", "osasuwu"]) == 0

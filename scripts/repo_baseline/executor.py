@@ -548,10 +548,13 @@ _ISOLATION_EXCEPTIONS = (
     json.JSONDecodeError,
     RuntimeError,
     yaml.YAMLError,
+    GhNotFound,
 )
-"""Broader than the Applier's own tuple (mirrors it plus the two failure modes
-that only exist on the live path): RuntimeError from Auditor.audit, and
-yaml.YAMLError from a malformed on-disk manifest."""
+"""Broader than the Applier's own tuple (mirrors it plus the failure modes
+that only exist on the live path): RuntimeError from Auditor.audit,
+yaml.YAMLError from a malformed on-disk manifest, and GhNotFound from
+find_sync_pr's unguarded lookup (a repo 404 mid-pass must not abort the
+remaining repos)."""
 
 
 def execute_account_pass(
@@ -622,7 +625,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         pr = f" {o.pr_url}" if o.pr_url else ""
         err = f" ({o.error})" if o.error else ""
         print(f"{o.repo}: files={o.file_status} protection={o.protection_status}{pr}{err}")
-    return 1 if any(o.file_status.startswith(("failed", "errored")) for o in outcomes) else 0
+    return (
+        1
+        if any(
+            o.file_status.startswith(("failed", "errored"))
+            or o.protection_status.startswith("failed")
+            for o in outcomes
+        )
+        else 0
+    )
 
 
 if __name__ == "__main__":
