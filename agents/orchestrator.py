@@ -20,13 +20,16 @@ from __future__ import annotations
 import enum
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Callable, Mapping
 
 from agents import safety, task_queue
 from agents.github_client import parse_goal_shape
 from agents.task_dispatch import format_lineage_key
+
+logger = logging.getLogger(__name__)
 
 # Re-drive ceiling (#953 AC7). A task that produced no PR evidence is re-driven
 # at most once; ``attempt >= MAX_ATTEMPTS`` escalates to the owner instead of
@@ -48,6 +51,27 @@ _ESCALATE_PRIORITY_BOOST = 10
 
 # Pure-pipeline events that need no triage — acknowledge and move on (AC1).
 _NOOP_EVENT_TYPES: frozenset[str] = frozenset({"pr_approved", "pr_merged", "ci_success"})
+
+# Telemetry/observability events (#1385 AC-B) — high-volume, no actionable
+# follow-up. Matched on event_type alone, severity-independent:
+# consolidation_run fires at both "info" and "high", so gating on severity
+# would still leak escalations for the same noise. dispatcher_escalation is
+# deliberately excluded — retired scaffolding (3 historical rows, all April
+# 2026, no live producer); falling through to fail-safe ESCALATE is correct
+# for it. github.* events (a namespace, not a fixed set) match by prefix in
+# handle_event rather than being enumerated here.
+_TELEMETRY_EVENT_TYPES: frozenset[str] = frozenset(
+    {
+        "memory_recall",
+        "review_debt_collected",
+        "consolidation_run",
+        "consolidation_applied",
+        "consolidation_rejected",
+        "evolve_run",
+        "fok_run",
+        "memory_migration",
+    }
+)
 
 _ASSIGNEE_WORKER = "sandcastle"
 _ASSIGNEE_OWNER = "owner"
@@ -255,7 +279,9 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
     2. Enumerated ``(event_type, severity)`` pairs → their specific route.
     3. Pure-pipeline events (``pr_approved`` / ``pr_merged`` / ``ci_success``)
        → inline no-op (the wake_driver marks the event processed).
-    4. Anything else → fail-safe ``ESCALATE``.
+    4. Telemetry/observability events (``_TELEMETRY_EVENT_TYPES`` + any
+       ``github.``-prefixed type) → inline no-op, severity-independent (AC-B).
+    5. Anything else → fail-safe ``ESCALATE``.
     """
     event_type = str(event.get("event_type", ""))
     severity = str(event.get("severity") or "info")
@@ -411,7 +437,11 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
     if event_type in _NOOP_EVENT_TYPES:
         return _inline_noop(event_type, severity, target, key)
 
-    # 4. Fail-safe (AC1) — unknown (event_type, severity) goes to a human.
+    # 4. Telemetry/observability events → acknowledge, no work (#1385 AC-B).
+    if event_type in _TELEMETRY_EVENT_TYPES or event_type.startswith("github."):
+        return _inline_noop(event_type, severity, target, key)
+
+    # 5. Fail-safe (AC1) — unknown (event_type, severity) goes to a human.
     return _escalate(
         event_type,
         severity,
@@ -525,8 +555,19 @@ def dispatch(
         notice = escalation_notice(decision.severity, now)
         notified = False
         if notice is EscalationNotice.TELEGRAM_NOW and notifier is not None:
-            notifier(decision)
-            notified = True
+            # #1385 AC-D: the owner row above already landed — a notifier
+            # failure (network, bad token) must not undo that or abort the
+            # tick that's draining this event. `notified` stays False so
+            # callers can see the ping didn't go out.
+            try:
+                notifier(decision)
+                notified = True
+            except Exception:
+                logger.exception(
+                    "dispatch: notifier raised for %s/%s — continuing",
+                    decision.event_type,
+                    decision.severity,
+                )
         return DispatchResult(
             route=decision.route,
             enqueued=row is not None,
@@ -545,6 +586,26 @@ def dispatch(
         notified=False,
         noop=decision.noop,
     )
+
+
+def build_production_orchestrator(
+    *,
+    client: Any,
+    notifier: Callable[[Decision], Any] | None = None,
+    clock: Callable[[], datetime] | None = None,
+) -> Callable[[Mapping[str, Any]], DispatchResult]:
+    """Close ``handle_event`` over ``dispatch`` for wake_driver's live routing.
+
+    ``clock`` defaults to real UTC now (mirrors ``escalation._now_utc``);
+    inject a fixed clock in tests instead of monkeypatching ``datetime``.
+    """
+    resolved_clock = clock or (lambda: datetime.now(UTC))
+
+    def _orchestrator(event: Mapping[str, Any]) -> DispatchResult:
+        decision = handle_event(event)
+        return dispatch(decision, now=resolved_clock(), client=client, notifier=notifier)
+
+    return _orchestrator
 
 
 # ---------------------------------------------------------------------------

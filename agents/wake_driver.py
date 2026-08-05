@@ -18,11 +18,14 @@ Behavior:
   re-claims rows older than a threshold so a dead orchestrator never strands
   work. The watchdog also fires on the wait timeout, so it runs even when no
   NOTIFY arrives.
-- The orchestrator is **injected** (a ``Callable[[dict], None]``). The default
-  is a trivial no-op stub (this slice tests wake mechanics without the real
-  model). wake_driver deliberately does **not** import
-  :func:`agents.orchestrator.handle_event` — the driver is a decisionless
-  program and the router is a separate concern.
+- The orchestrator is **injected** (an ``Orchestrator = Callable[[dict], Any]``).
+  ``default_orchestrator`` (a trivial log-and-return stub) exists only for the
+  pure-loop unit tests. ``main()`` (#1385) wires
+  :func:`agents.orchestrator.build_production_orchestrator` instead — a
+  closure over the real ``handle_event`` → ``dispatch`` router — via a
+  function-local import, so the module itself still never imports
+  ``agents.orchestrator`` at load time; the driver stays mechanics-only at
+  import time, live routing is main()'s wiring choice, not a module coupling.
 - **Path B (#745)** — the tick optionally runs the parked-event re-queue poller
   before draining, so events that were parked because their blocking task
   completed are re-queued to ``pending`` and picked up on the same tick.
@@ -131,6 +134,15 @@ class EventQueuePort(Protocol):
     def mark_processed(self, event_id: str, *, action: str = "") -> bool:
         """Commit a ``claimed`` event to ``processed``."""
 
+    def park(self, event_id: str, *, reason: str = "") -> bool:
+        """Commit a ``claimed`` event to ``parked`` (#1385 AC-C poison-pill).
+
+        A parked event carries no ``blocked_by_task_id`` in its payload, so
+        :mod:`agents.poller` (Path B, #745) never re-queues it — a
+        crash-parked event stays parked until a human intervenes. Wiring a
+        live requeue path for this case is out of scope (#1393).
+        """
+
     def reclaim_stale(self, *, older_than_seconds: float) -> int:
         """Return ``claimed`` rows older than the threshold to ``pending``."""
 
@@ -138,6 +150,14 @@ class EventQueuePort(Protocol):
         """Block until a NOTIFY arrives or the timeout elapses.
 
         Returns ``True`` on a wake signal, ``False`` on timeout.
+        """
+
+    def recent_events(self, *, limit: int) -> list[dict[str, Any]]:
+        """Return the ``limit`` most-recently-created events, read-only.
+
+        No claim, no state change (#1385 AC-E Stage 1 ``--dry-run``) — a
+        plain ``SELECT`` so a preview never competes with the live loop for
+        the same rows.
         """
 
 
@@ -180,21 +200,50 @@ def default_orchestrator(event: dict[str, Any]) -> None:
     )
 
 
-def drain_pending(port: EventQueuePort, orchestrator: Orchestrator) -> int:
+def drain_pending(
+    port: EventQueuePort,
+    orchestrator: Orchestrator,
+    *,
+    failed_events: dict[str, int] | None = None,
+) -> int:
     """Drain every ``pending`` event, one at a time, until the queue is empty.
 
     Claims, hands the event to ``orchestrator``, then commits ``processed`` —
     advancing to the next event as soon as the prior finishes (no interval).
 
-    Crash-safety: if ``orchestrator`` raises, ``mark_processed`` is **not**
-    reached, so the event is left ``claimed`` (recoverable by the watchdog)
-    rather than lost or marked done. The exception propagates — a mid-tick
-    failure aborts the drain, exactly as a process kill would.
+    Crash-safety (attempt 1): if ``orchestrator`` raises on an event id seen
+    for the first time in ``failed_events``, the exception propagates and
+    ``mark_processed`` is **not** reached — the event is left ``claimed``
+    (recoverable by the watchdog) rather than lost or marked done, exactly as
+    a process kill would leave it.
+
+    Poison-pill handling (attempt 2, #1385 AC-C): if the *same* event id
+    raises again — meaning a prior ``drain_pending`` call already recorded
+    one failure for it in the same ``failed_events`` mapping (``run`` owns
+    one such mapping across the whole loop; see its docstring) — the event is
+    parked instead of re-raised, and the drain continues to the next event.
+    This distinguishes a transient infra failure (attempt 1: abort, let the
+    watchdog retry) from a permanently-broken event (attempt 2: stop retrying
+    forever, park it for a human).
+
+    ``failed_events`` defaults to a fresh, call-local dict when omitted —
+    each isolated call then behaves as if poison-pill tracking didn't exist
+    (a first failure always re-raises), which is what every pre-#1385 caller
+    (and test) expects.
     """
+    attempts = failed_events if failed_events is not None else {}
     processed = 0
     while (event := port.claim_next()) is not None:
-        orchestrator(event)
-        port.mark_processed(str(event["id"]))
+        event_id = str(event["id"])
+        try:
+            orchestrator(event)
+        except Exception as exc:
+            attempts[event_id] = attempts.get(event_id, 0) + 1
+            if attempts[event_id] < 2:
+                raise
+            port.park(event_id, reason=f"poison-pill: {type(exc).__name__}: {exc}")
+            continue
+        port.mark_processed(event_id)
         processed += 1
     return processed
 
@@ -230,6 +279,7 @@ def tick(
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
     task_dedup: DedupConfig | None = None,
+    failed_events: dict[str, int] | None = None,
 ) -> TickResult:
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
 
@@ -264,6 +314,10 @@ def tick(
     NOTIFY — a task is born from an event that already woke the driver, or is
     swept by the idle-timeout watchdog (AC1; task-NOTIFY latency deferred to
     #922).
+
+    ``failed_events`` is the cross-tick poison-pill attempt counter for Step 3
+    (#1385 AC-C) — see :func:`drain_pending` and :func:`run`, which owns the
+    mapping across the whole loop.
 
     The task steps (0, 2 and 4) are each isolated in their own try/except: the
     task_queue rides supabase-py while events ride psycopg, so a task-store
@@ -338,7 +392,7 @@ def tick(
             )
 
     # Step 3 — event drain.
-    processed = drain_pending(port, orchestrator)
+    processed = drain_pending(port, orchestrator, failed_events=failed_events)
 
     # Step 4 — task drain (claim → running → spawn, capped, Ordering B), then
     # fold the new handles into the liveness map for later ticks to close.
@@ -436,9 +490,20 @@ def run(
     A tick that raises is logged and swallowed so a transient failure does
     not tear down the driver — the offending event stays ``claimed`` and the
     watchdog re-claims it next pass (at-least-once, never silently lost).
+
+    ``run`` owns ``failed_events``, the poison-pill attempt counter (#1385
+    AC-C): one ``{event_id: attempt_count}`` dict created here and handed to
+    every :func:`tick` call, so a second failure on the same event id — even
+    across a watchdog reclaim between ticks — parks it instead of retrying
+    forever. ``ceiling:`` the map is in-process only and resets on restart,
+    same limitation as the ``task_procs`` liveness map above; an event that
+    poisoned a prior process life gets one more retry after a restart, which
+    is acceptable (restarts are rare; an infinite in-process retry loop is
+    the failure mode this exists to prevent).
     """
     keep_going = should_continue or (lambda: True)
     procs = task_procs if task_procs is not None else ({} if task_port is not None else None)
+    failed_events: dict[str, int] = {}
 
     # AC3 (#952) — boot adoption: re-adopt live processes from the sidecar directory.
     # Only in resident mode (task_port supplied, procs map exists).
@@ -475,6 +540,7 @@ def run(
                 task_evidence_client=task_evidence_client,
                 task_stdout_reader=task_stdout_reader,
                 task_dedup=task_dedup,
+                failed_events=failed_events,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
@@ -518,6 +584,13 @@ class PsycopgEventQueue:
         self._conn.commit()
         return ok
 
+    def park(self, event_id: str, *, reason: str = "") -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT park_event(%s, %s)", (event_id, reason))
+            ok = bool(cur.fetchone()[0])
+        self._conn.commit()
+        return ok
+
     def reclaim_stale(self, *, older_than_seconds: float) -> int:
         with self._conn.cursor() as cur:
             cur.execute(
@@ -535,6 +608,56 @@ class PsycopgEventQueue:
         for _notify in self._conn.notifies(timeout=timeout_seconds, stop_after=1):
             return True
         return False
+
+    def recent_events(self, *, limit: int) -> list[dict[str, Any]]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM events ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            rows = cur.fetchall()
+            cols = [d.name for d in cur.description]
+        self._conn.commit()
+        return [dict(zip(cols, row, strict=True)) for row in rows]
+
+
+def dry_run(
+    events: list[dict[str, Any]],
+    handle_event: Callable[[dict[str, Any]], Any],
+) -> list[Any]:
+    """Stage 1 of the #1385 AC-E staged rollout — pure preview, no side effects.
+
+    Maps ``handle_event`` (the deterministic router alone, not the
+    ``dispatch``-wrapping production orchestrator) over a batch of events.
+    Deliberately does not call :func:`drain_pending` — that claims and marks
+    events processed; this only reads and routes in memory.
+    """
+    return [handle_event(event) for event in events]
+
+
+def _print_dry_run_table(events: list[dict[str, Any]], decisions: list[Any]) -> None:
+    """Render the Stage 1 preview as a columnar table on stdout.
+
+    ``print`` (not ``logger``) — this is direct CLI output for a human
+    running ``--dry-run``, not an operational log line.
+    """
+    header = f"{'event_type':<30} {'severity':<10} {'route':<20} {'reason'}"
+    print(header)
+    print("-" * len(header))
+    escalate_count = 0
+    for event, decision in zip(events, decisions, strict=True):
+        route = getattr(decision, "route", None)
+        route_name = getattr(route, "name", str(route))
+        if route_name == "ESCALATE":
+            escalate_count += 1
+        reason = getattr(decision, "escalated_reason", None) or ""
+        print(
+            f"{event.get('event_type', '?'):<30} "
+            f"{event.get('severity', '?'):<10} "
+            f"{route_name:<20} "
+            f"{reason}"
+        )
+    print(f"\n{len(events)} events previewed, {escalate_count} would ESCALATE")
 
 
 def _build_psycopg_queue() -> PsycopgEventQueue:
@@ -607,16 +730,56 @@ def main() -> int:
         action="store_true",
         help="Run a single tick (watchdog + drain) and exit (smoke test).",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "#1385 AC-E Stage 1: read-only preview — route the most recent "
+            "events through handle_event and print the decisions, no claim, "
+            "no side effect. Exits immediately after printing."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run-limit",
+        type=int,
+        default=200,
+        help="Number of recent events to preview under --dry-run (default: 200).",
+    )
+    parser.add_argument(
+        "--no-task-drain",
+        action="store_true",
+        help=(
+            "#1385 AC-E Stage 2: run with task_port=None — tick's task "
+            "completion-poll/watchdog/drain steps are skipped, so routing "
+            "and escalation stay live but zero `claude -p` is spawned. "
+            "Permanent flag, not temporary rollout scaffolding."
+        ),
+    )
     args = parser.parse_args()
 
+    if args.dry_run:
+        # Deliberately does not build SupabaseTaskQueue / the evidence client /
+        # the Supabase event client / build_production_orchestrator — none of
+        # that live wiring is needed for a read-only preview, and constructing
+        # it would defeat the "no side effect" guarantee this stage exists for.
+        queue = _build_psycopg_queue()
+        from agents.orchestrator import handle_event
+
+        events = queue.recent_events(limit=args.dry_run_limit)
+        decisions = dry_run(events, handle_event)
+        _print_dry_run_table(events, decisions)
+        return 0
+
     queue = _build_psycopg_queue()
-    task_port = SupabaseTaskQueue()  # tasks ride supabase-py; events ride psycopg
+    # tasks ride supabase-py; events ride psycopg. --no-task-drain (Stage 2)
+    # passes None so tick's task steps 0/2/4 skip (each already gated on
+    # `task_port is not None`) — routing/escalation stay live, spawn doesn't.
+    task_port = None if args.no_task_drain else SupabaseTaskQueue()
 
     # #953 — evidence + terminal-event emission wiring. The repo scopes both the
     # GitHub evidence client (PR lookups) and the emitted events; the stdout
     # reader recovers a claimed PR number from the executor's JSON log when the
-    # fresh-shape branch lookup comes up empty (AC3). The orchestrator stays the
-    # out-of-scope stub — #953 is detection + emission, not live routing.
+    # fresh-shape branch lookup comes up empty (AC3).
     from agents.github_client import default_github_client
 
     repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
@@ -629,6 +792,14 @@ def main() -> int:
 
     event_client = get_client()
     event_emit = _default_event_emit(repo=repo, client=event_client)
+
+    # #1385 — live routing. The stub only logged; this closes handle_event's
+    # Decision over dispatch's side effects (task_queue enqueue / escalation),
+    # sharing the same lifetime Supabase client built above.
+    from agents.notify import telegram_notifier
+    from agents.orchestrator import build_production_orchestrator
+
+    orchestrator = build_production_orchestrator(client=event_client, notifier=telegram_notifier)
 
     if args.once:
         # Deliberately no task_procs: a one-shot tick has no map from a prior
@@ -646,7 +817,7 @@ def main() -> int:
         try:
             result = tick(
                 queue,
-                default_orchestrator,
+                orchestrator,
                 stale_after_seconds=args.watchdog_seconds,
                 task_port=task_port,
             )
@@ -677,7 +848,7 @@ def main() -> int:
     try:
         run(
             queue,
-            default_orchestrator,
+            orchestrator,
             stale_after_seconds=args.watchdog_seconds,
             task_port=task_port,
             task_event_emit=event_emit,
