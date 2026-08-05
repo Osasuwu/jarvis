@@ -48,6 +48,7 @@ class FakeEventQueue:
         # Scripted wake signals consumed by wait_for_wake (True=NOTIFY).
         self.wake_signals: list[bool] = []
         self.processed_calls: list[str] = []
+        self.parked_calls: list[tuple[str, str]] = []
 
     # -- EventQueuePort surface --------------------------------------------
 
@@ -82,6 +83,18 @@ class FakeEventQueue:
         if self.wake_signals:
             return self.wake_signals.pop(0)
         return False
+
+    def park(self, event_id: str, *, reason: str = "") -> bool:
+        for e in self.events:
+            if e["id"] == event_id and e["state"] == "claimed":
+                e["state"] = "parked"
+                e["action_taken"] = reason
+                self.parked_calls.append((event_id, reason))
+                return True
+        return False
+
+    def recent_events(self, *, limit: int) -> list[dict]:
+        return [dict(e) for e in self.events[:limit]]
 
     # -- test helpers ------------------------------------------------------
 
@@ -118,6 +131,88 @@ def test_drain_pending_claims_highest_severity_first():
 def test_drain_pending_empty_queue_is_a_noop():
     q = FakeEventQueue([])
     assert wake_driver.drain_pending(q, wake_driver.default_orchestrator) == 0
+
+
+# --- #1385 AC-C: poison-pill handling — park after the second failure ------
+
+
+def test_drain_pending_first_failure_reraises_and_leaves_claimed():
+    q = FakeEventQueue([_ev("boom")])
+    failed_events: dict[str, int] = {}
+
+    def crashing(event: dict) -> None:
+        raise RuntimeError("simulated crash")
+
+    with pytest.raises(RuntimeError):
+        wake_driver.drain_pending(q, crashing, failed_events=failed_events)
+
+    assert q.state_of("boom") == "claimed"
+    assert failed_events["boom"] == 1
+    assert q.parked_calls == []
+
+
+def test_drain_pending_second_failure_same_event_id_parks_and_continues():
+    q = FakeEventQueue([_ev("boom"), _ev("ok")])
+    # Simulates a prior tick already having failed once on "boom".
+    failed_events: dict[str, int] = {"boom": 1}
+
+    def crash_on_boom(event: dict) -> None:
+        if event["id"] == "boom":
+            raise ValueError("still broken")
+
+    processed = wake_driver.drain_pending(q, crash_on_boom, failed_events=failed_events)
+
+    assert q.state_of("boom") == "parked"
+    assert q.parked_calls == [("boom", "poison-pill: ValueError: still broken")]
+    # Drain continued past the poison event instead of aborting the tick.
+    assert q.state_of("ok") == "processed"
+    assert processed == 1
+
+
+def test_drain_pending_without_failed_events_kwarg_still_reraises_once():
+    # Back-compat: callers that don't pass failed_events (pre-#1385 call sites)
+    # get a fresh per-call dict — a first failure still re-raises.
+    q = FakeEventQueue([_ev("boom")])
+
+    def crashing(event: dict) -> None:
+        raise RuntimeError("simulated crash")
+
+    with pytest.raises(RuntimeError):
+        wake_driver.drain_pending(q, crashing)
+
+    assert q.state_of("boom") == "claimed"
+
+
+def test_run_parks_poison_pill_event_after_second_tick_failure():
+    q = FakeEventQueue([_ev("boom")])
+    calls = {"n": 0}
+
+    def always_crash(event: dict) -> None:
+        calls["n"] += 1
+        raise RuntimeError("poison")
+
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            # Advance the clock past the watchdog threshold so tick 2's
+            # watchdog step reclaims the row stranded by tick 1's failure.
+            q.clock = 400.0
+        return ticks["n"] <= 2
+
+    q.wake_signals = [True, True]
+
+    wake_driver.run(
+        q,
+        always_crash,
+        stale_after_seconds=300,
+        should_continue=should_continue,
+    )
+
+    assert q.state_of("boom") == "parked"
+    assert q.parked_calls == [("boom", "poison-pill: RuntimeError: poison")]
+    assert calls["n"] == 2
 
 
 def test_drain_advances_to_next_without_a_fixed_interval():
@@ -1155,4 +1250,221 @@ def test_main_once_closes_evidence_client(monkeypatch):
     monkeypatch.setattr(wake_driver, "tick", lambda *a, **k: tick_result)
 
     assert wake_driver.main() == 0
+    assert client.closed == 1
+
+
+# --- AC-A (#1385): main() wires build_production_orchestrator, not the stub -
+
+
+def test_main_wires_build_production_orchestrator_into_run(monkeypatch):
+    # #1385 AC-A: the long-running loop must route through the real
+    # orchestrator factory, not the mechanics-only default_orchestrator stub.
+    sentinel = object()
+    monkeypatch.setattr("agents.orchestrator.build_production_orchestrator", lambda **k: sentinel)
+    captured: dict[str, object] = {}
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["orchestrator"] = orchestrator
+
+    _wire_main(monkeypatch, run_impl=_capture_run)
+
+    assert wake_driver.main() == 0
+    assert captured["orchestrator"] is sentinel
+
+
+def test_main_wires_telegram_notifier_into_build_production_orchestrator(monkeypatch):
+    # #1385 AC-D: the live driver must pass agents.notify.telegram_notifier,
+    # not leave the escalation path silently un-notified.
+    captured_kwargs: dict[str, object] = {}
+
+    def _capture_factory(**kwargs):
+        captured_kwargs.update(kwargs)
+        return object()
+
+    monkeypatch.setattr("agents.orchestrator.build_production_orchestrator", _capture_factory)
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+
+    assert wake_driver.main() == 0
+
+    from agents.notify import telegram_notifier
+
+    assert captured_kwargs.get("notifier") is telegram_notifier
+
+
+def test_main_once_wires_build_production_orchestrator_into_tick(monkeypatch):
+    # Same factory, one-shot path.
+    sentinel = object()
+    monkeypatch.setattr("agents.orchestrator.build_production_orchestrator", lambda **k: sentinel)
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["orchestrator"] = orchestrator
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--once"])
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["orchestrator"] is sentinel
+
+
+# --- AC-E (#1385): staged rollout — --dry-run / --no-task-drain -------------
+
+
+def test_dry_run_maps_handle_event_over_events_with_no_side_effects():
+    # Pure preview: handle_event alone (not dispatch), no queue writes.
+    events = [_ev("a"), _ev("b")]
+    seen: list[dict] = []
+    sentinel_decisions = [object(), object()]
+
+    def fake_handle_event(event):
+        seen.append(event)
+        return sentinel_decisions[len(seen) - 1]
+
+    decisions = wake_driver.dry_run(events, fake_handle_event)
+
+    assert decisions == sentinel_decisions
+    assert seen == events
+    # Events themselves are untouched — still "pending", never claimed.
+    assert events[0]["state"] == "pending"
+    assert events[1]["state"] == "pending"
+
+
+def test_fake_event_queue_recent_events_is_read_only_and_limited():
+    q = FakeEventQueue([_ev("a"), _ev("b"), _ev("c")])
+
+    result = q.recent_events(limit=2)
+
+    assert [e["id"] for e in result] == ["a", "b"]
+    assert all(e["state"] == "pending" for e in q.events)  # no claim side effect
+
+
+def _wire_main_dry_run(monkeypatch, *, recent_events, handle_event=None):
+    """Wire main() for --dry-run: block every heavy/live-side-effect builder.
+
+    If any of SupabaseTaskQueue / default_github_client / get_client /
+    build_production_orchestrator is invoked, the test fails loudly — the
+    dry-run preview must never construct them.
+    """
+
+    def _forbidden(name):
+        def _raise(*a, **k):
+            raise AssertionError(f"{name} must not be called under --dry-run")
+
+        return _raise
+
+    fake_queue = types.SimpleNamespace(recent_events=recent_events)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--dry-run"])
+    monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda: fake_queue)
+    monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", _forbidden("SupabaseTaskQueue"))
+    monkeypatch.setattr(
+        "agents.github_client.default_github_client", _forbidden("default_github_client")
+    )
+    monkeypatch.setattr("agents.supabase_client.get_client", _forbidden("get_client"))
+    monkeypatch.setattr(
+        "agents.orchestrator.build_production_orchestrator",
+        _forbidden("build_production_orchestrator"),
+    )
+    monkeypatch.setattr(
+        "agents.orchestrator.handle_event",
+        handle_event or (lambda event: object()),
+    )
+    monkeypatch.setattr(wake_driver, "run", _forbidden("run"))
+    monkeypatch.setattr(wake_driver, "tick", _forbidden("tick"))
+
+
+def test_main_dry_run_previews_without_building_live_side_effects(monkeypatch, capsys):
+    # Stage 1 of the #1385 AC-E rollout: read-only preview, no claim, no
+    # SupabaseTaskQueue/evidence-client/orchestrator-factory construction.
+    calls: dict[str, object] = {}
+
+    def _recent_events(*, limit):
+        calls["limit"] = limit
+        return [{"id": "a", "event_type": "github.pr.opened", "severity": "info"}]
+
+    _wire_main_dry_run(monkeypatch, recent_events=_recent_events)
+
+    assert wake_driver.main() == 0
+    assert calls["limit"] == 200  # default --dry-run-limit
+
+
+def test_main_dry_run_limit_flag_is_threaded_through(monkeypatch):
+    calls: dict[str, object] = {}
+
+    def _recent_events(*, limit):
+        calls["limit"] = limit
+        return []
+
+    _wire_main_dry_run(monkeypatch, recent_events=_recent_events)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--dry-run", "--dry-run-limit", "50"])
+
+    assert wake_driver.main() == 0
+    assert calls["limit"] == 50
+
+
+def test_main_no_task_drain_passes_none_task_port_into_run(monkeypatch):
+    # Stage 2: task_port=None so tick's steps 0/2/4 (each already gated on
+    # `task_port is not None`) skip — zero `claude -p` spawn — while routing
+    # and escalation (independent of task_port) still run live.
+    captured: dict[str, object] = {}
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["task_port"] = kwargs.get("task_port")
+
+    def _forbidden_task_queue(*a, **k):
+        raise AssertionError("SupabaseTaskQueue must not be built under --no-task-drain")
+
+    client = _wire_main(monkeypatch, run_impl=_capture_run)
+    monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", _forbidden_task_queue)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--no-task-drain"])
+
+    assert wake_driver.main() == 0
+    assert captured["task_port"] is None
+    assert client.closed == 1
+
+
+def test_main_no_task_drain_still_wires_production_orchestrator(monkeypatch):
+    # Routing/escalation must stay live under --no-task-drain — only task
+    # spawn is suppressed, not the router or the notifier plumbing.
+    sentinel = object()
+    captured: dict[str, object] = {}
+
+    def _capture_factory(**kwargs):
+        return sentinel
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["orchestrator"] = orchestrator
+
+    monkeypatch.setattr("agents.orchestrator.build_production_orchestrator", _capture_factory)
+    _wire_main(monkeypatch, run_impl=_capture_run)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--no-task-drain"])
+
+    assert wake_driver.main() == 0
+    assert captured["orchestrator"] is sentinel
+
+
+def test_main_without_no_task_drain_still_builds_supabase_task_queue(monkeypatch):
+    # Default (no flag): task_port stays a live SupabaseTaskQueue.
+    sentinel_task_port = object()
+    captured: dict[str, object] = {}
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["task_port"] = kwargs.get("task_port")
+
+    client = _wire_main(monkeypatch, run_impl=_capture_run)
+    monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", lambda *a, **k: sentinel_task_port)
+
+    assert wake_driver.main() == 0
+    assert captured["task_port"] is sentinel_task_port
     assert client.closed == 1

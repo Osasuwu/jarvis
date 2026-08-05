@@ -84,16 +84,44 @@ python -m agents.wake_driver --once
 
 # Custom watchdog / wait-for-wake timeout (seconds).
 python -m agents.wake_driver --watchdog-seconds 120
+
+# Preview only — read-only SELECT of recent events through the router,
+# no claim, no side effect. Prints a Decision table and exits.
+python -m agents.wake_driver --dry-run
+python -m agents.wake_driver --dry-run --dry-run-limit 50
+
+# Live routing/escalation, task_queue enqueue + claude -p spawn disabled.
+python -m agents.wake_driver --no-task-drain
 ```
 
 The driver `LISTEN`s on the `events` channel; each `NOTIFY` (fired by the
 `notify_events_insert` trigger on `events` insert) wakes a tick. A tick
-re-claims stale rows, drains pending events through `orchestrator.handle_event`,
-enqueues the resulting `task_queue` rows, and spawns `claude -p` workers via
-`executor.spawn`. Ctrl-C stops cleanly.
+re-claims stale rows, then drains pending events through the production
+orchestrator — `agents.orchestrator.build_production_orchestrator` closes the
+pure `handle_event` router over `dispatch`'s side effects (`task_queue`
+enqueue on `HANDLE_INLINE`/route-to-task, escalation on `ESCALATE`) — and
+spawns `claude -p` workers via `executor.spawn` for the resulting `task_queue`
+rows. Ctrl-C stops cleanly.
 
 `SUPABASE_URL` / `SUPABASE_KEY` have no default — the Supabase bridge fails
 loudly (`RuntimeError`) if an agent tries to call Supabase without them.
+
+### Staged rollout (#1385 AC-E)
+
+`--dry-run` and `--no-task-drain` are permanent flags, not temporary
+scaffolding — a fresh device or a post-incident restart re-validates routing
+before re-enabling task drain, same procedure every time:
+
+1. **`--dry-run`** — routes recent events through `handle_event` with no
+   claim and no side effect; confirms the routing table looks sane before
+   anything touches the queue.
+2. **`--no-task-drain`** — runs the live LISTEN/NOTIFY loop with routing and
+   escalation active but `task_port=None`, so nothing is enqueued and no
+   `claude -p` worker spawns.
+3. **Default (no flags)** — full loop, task drain and worker spawn enabled.
+   Spawn concurrency itself is capped by `executor.spawn`'s
+   `DEFAULT_CONCURRENCY_CAP`; further worker-isolation hardening is tracked
+   separately in #1390.
 
 ## Production deploy / teardown
 
