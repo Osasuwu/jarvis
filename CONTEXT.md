@@ -89,6 +89,11 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Association-preserving rename** — `gh label edit --name` that preserves issue/PR associations; delete-recreate detaches.
 - **addLabels merge→rename window** — GH Actions auto-creates referenced label names; creates ordering hazard for renaming.
 - **community-health source boundary** — Non-overlapping single-source: `.github` for Osasuwu repos, local for redrobot.
+- **Executor two-phase write cycle** — Read-only diff phase (GET+blob-sha, skip identical) precedes a write phase that fires only when ≥1 real write remains.
+- **Sync-PR lifecycle** — Fixed `repo-baseline/sync` branch per repo; open PR → `pending`, closed-unmerged → `declined`, orphan branch → lazy reset.
+- **Protection reportability guard + write fork** — Context applied only if reportable (mapped+present workflow, or already live); unreportable defers with a named reason. PATCH-vs-PUT fork on existing vs bare protection.
+- **Executor identity preflight** — `--execute` asserts `gh api user` login equals the pass owner before any mutating call; mismatch aborts the pass.
+- **Two-field executor summary** — Per-repo status is two independent fields (file phase, protection phase), never one scalar.
 - **Two-gate model** — `review` check: Verify verdict + Verify ran cleanly, independent verdicts over same run.
 - **Cleanliness tripwire** — Gate 2, blinded-only: denials+fresh verdict→pass, denials+no verdict→fail.
 - **Fail-closed verdict parsing** — Unrecognized/unparseable review comment exits non-zero; plugin skip is the only pass.
