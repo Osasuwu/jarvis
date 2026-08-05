@@ -95,7 +95,7 @@ def test_migration_is_additive_only():
 
 CLUSTER_N = 4.0
 WEIGHTS = {"MEDIUM": 1.0, "INFO": 0.5}
-BLOCK_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING)\b", re.M)
+BLOCK_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING|MEDIUM)\b", re.M)
 
 
 def _mirror_dedup_key(f: dict) -> str:
@@ -161,9 +161,11 @@ def test_threshold_rule_matches_module(rows, expected):
         ("### CRITICAL\nx", True),
         ("## MAJOR findings", True),
         ("#### 🔴 BLOCKING", True),
+        ("### MEDIUM\nx", True),  # #1385 follow-up: MEDIUM heading now blocks
         ("### Blocking issues — None", False),  # title-case prose
         ("### MINOR\nnit", False),
         ("No issues found.", False),
+        ("Medium priority follow-up.", False),  # title-case advisory prose
     ],
 )
 def test_blocking_skip_rule_matches_module(body, expected):
