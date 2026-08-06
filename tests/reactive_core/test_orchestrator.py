@@ -393,6 +393,37 @@ def test_dispatch_noncritical_weekend_does_not_ping():
     assert res.row is not None and res.row["assignee"] == "owner"
 
 
+def test_dispatch_escalate_notifier_routes_through_safety_gate(monkeypatch: pytest.MonkeyPatch):
+    """#1385 review finding: the ESCALATE ping must go through safety.gate(),
+    not call the notifier directly — so it's classified + audited like every
+    other action-agent side effect.
+    """
+    cli = _FakeClient()
+    gate_calls: list[dict] = []
+    real_gate = safety.gate
+
+    def _spy_gate(**kwargs):
+        gate_calls.append(kwargs)
+        return real_gate(**kwargs)
+
+    monkeypatch.setattr("agents.orchestrator.safety.gate", _spy_gate)
+
+    pinged: list[Decision] = []
+    d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
+    res = dispatch(d, now=_SATURDAY, client=cli, notifier=pinged.append)
+
+    assert res.notified is True
+    assert pinged == [d]
+    assert len(gate_calls) == 1
+    call = gate_calls[0]
+    assert call["area"] == "messaging"
+    assert call["action"] == "notify_owner_escalation"
+    assert call["tool_name"] == "telegram_notifier"
+    assert safety.classify(call["tool_name"], call["action"], "x", area=call["area"]) == (
+        safety.Tier.AUTO
+    )
+
+
 def test_dispatch_notifier_exception_does_not_abort_tick():
     """#1385 AC-D: a raising notifier must not propagate out of dispatch.
 

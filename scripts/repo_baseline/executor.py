@@ -69,10 +69,15 @@ __all__ = [
 SYNC_BRANCH = "repo-baseline/sync"
 
 # The two account passes (PRD story 7). Keyed by CLI-facing lowercase name;
-# the login each pass's `gh` identity must present before any write — see
-# `preflight_identity`. This is the safety gate that currently blocks a
-# redrobot `--execute` run under the Osasuwu token (push, not admin — see
-# auditor.REDROBOT_REPOS's own comment on the credential split).
+# the login each pass's `gh` identity must present before an admin-scoped
+# write — see `preflight_identity`. The gate is action-scoped (#1401): a
+# mismatched identity only defers the branch-protection write for a repo
+# whose manifest actually declares `required_check_contexts`, it does not
+# block the push-level file/PR writes every repo needs. A push-permission
+# token (e.g. Osasuwu on SergazyNarynov/redrobot — see
+# auditor.REDROBOT_REPOS's comment) is sufficient whenever a manifest's
+# `branch_protection`/`auto_merge` axes are both `false`, as redrobot's
+# currently is.
 ACCOUNT_REPOS: dict[str, list[str]] = {
     "osasuwu": OSASUWU_REPOS,
     "redrobot": REDROBOT_REPOS,
@@ -186,8 +191,11 @@ def resolve_repos(account: str, repo: Optional[str] = None) -> list[str]:
 
 
 def preflight_identity(runner: GhRunner, *, account: str) -> None:
-    """Abort before any mutating call if the authenticated identity doesn't
-    match the account this pass is scoped to (AC1)."""
+    """Raise if the authenticated identity doesn't match the account this
+    pass is scoped to (AC1). Called from :func:`apply_protection`,
+    immediately before an admin-scoped branch-protection write — push-level
+    writes (file sync, PR open) don't call this and proceed under whatever
+    identity is authenticated."""
     me = runner("user")
     login = me.get("login")
     expected = ACCOUNT_LOGIN.get(account)
@@ -404,10 +412,19 @@ def apply_protection(
     default_branch: str,
     context_names: list[str],
     snapshot: RepoSnapshot,
+    *,
+    account: Optional[str] = None,
 ) -> str:
     """Apply the protection-guard verdict (AC6): PATCH the check-contexts slice
     when protection already exists (live ``strict`` preserved), else PUT the
-    full doctrine-pinned payload on a bare branch."""
+    full doctrine-pinned payload on a bare branch.
+
+    ``account``, when given, gates this specific write behind
+    :func:`preflight_identity` (AC1) — a mismatched identity raises
+    ``IdentityError`` here, after the reportability guard, so an unreportable
+    context still defers without ever checking who's authenticated. ``None``
+    skips the identity gate entirely (used by callers that don't need AC1,
+    e.g. direct unit tests of the write shape)."""
     reportable, reason = evaluate_protection_guard(
         context_names,
         snapshot,
@@ -415,6 +432,9 @@ def apply_protection(
     )
     if not reportable:
         return f"deferred: {reason}"
+
+    if account is not None:
+        preflight_identity(runner, account=account)
 
     if snapshot.branch_protection is not None:
         write_runner(
@@ -443,6 +463,7 @@ def execute_repo(
     runner: GhRunner,
     write_runner: GhWriteRunner,
     execute: bool,
+    account: Optional[str] = None,
     canon: Optional[dict[str, str]] = None,
 ) -> RepoOutcome:
     """Run the full live pipeline for one repo (AC2): audit -> plan ->
@@ -453,6 +474,11 @@ def execute_repo(
     boundary (AC2's "errored" status). Write-phase failures are caught here
     and reported as ``failed: <call> -> <error>`` without aborting the
     protection phase evaluation for this same repo (AC7).
+
+    ``account`` is forwarded to :func:`apply_protection`, which is the only
+    place AC1's identity gate now fires (#1401) — a mismatch defers just the
+    protection write (``"deferred: ..."``), the push-level file/PR path above
+    it is untouched.
     """
     canon = canon if canon is not None else load_canon()
     snapshot = Auditor(runner).audit(repo)
@@ -472,8 +498,16 @@ def execute_repo(
             return "skipped"
         try:
             return apply_protection(
-                runner, write_runner, repo, default_branch, context_call.contexts, snapshot
+                runner,
+                write_runner,
+                repo,
+                default_branch,
+                context_call.contexts,
+                snapshot,
+                account=account,
             )
+        except IdentityError as e:
+            return f"deferred: {e}"
         except (GhNotFound, RuntimeError) as e:
             return f"failed: {e}"
 
@@ -565,11 +599,14 @@ def execute_account_pass(
 ) -> list[RepoOutcome]:
     """Executor-level per-repo isolation (AC2): any exception in a repo's
     audit/plan/translate cycle is caught here and reported as ``errored`` —
-    the pass continues to the next repo. Runs the identity preflight (AC1)
-    once, before the first repo, only when ``execute`` is set."""
+    the pass continues to the next repo. The identity preflight (AC1) is no
+    longer a blanket check here (#1401): it now fires per-repo, inside
+    :func:`apply_protection`, and only when that repo's plan actually
+    includes a reportable branch-protection write. A mismatched identity
+    defers that one repo's protection status instead of aborting the whole
+    pass — push-level writes (file sync, PR open) proceed regardless of who's
+    authenticated."""
     repos = resolve_repos(account, repo)
-    if execute:
-        preflight_identity(runner, account=account)
     canon = canon if canon is not None else load_canon()
 
     outcomes: list[RepoOutcome] = []
@@ -577,7 +614,13 @@ def execute_account_pass(
         try:
             manifest = load_manifest(r)
             outcome = execute_repo(
-                r, manifest, runner=runner, write_runner=write_runner, execute=execute, canon=canon
+                r,
+                manifest,
+                runner=runner,
+                write_runner=write_runner,
+                execute=execute,
+                account=account,
+                canon=canon,
             )
         except _ISOLATION_EXCEPTIONS as e:
             outcome = RepoOutcome(
