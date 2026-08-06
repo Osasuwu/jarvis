@@ -406,6 +406,99 @@ class TestPersistSupabaseMissingEnv:
 
 
 # ---------------------------------------------------------------------------
+# _purge_stale_snapshots — TTL retention (#1272 AC3)
+# ---------------------------------------------------------------------------
+class _PurgeTable:
+    def __init__(self, rows, call_log):
+        self._rows = rows
+        self._call_log = call_log
+
+    def delete(self):
+        self._call_log.append(("delete", (), {}))
+        return self
+
+    def like(self, *a, **kw):
+        self._call_log.append(("like", a, kw))
+        return self
+
+    def lt(self, *a, **kw):
+        self._call_log.append(("lt", a, kw))
+        return self
+
+    def execute(self):
+        self._call_log.append(("execute", (), {}))
+        return types.SimpleNamespace(data=list(self._rows))
+
+
+class _PurgeClient:
+    def __init__(self, rows):
+        self._rows = rows
+        self.call_log = []
+
+    def table(self, name):
+        self.call_log.append(("table", name))
+        return _PurgeTable(self._rows, self.call_log)
+
+
+class TestPurgeStaleSnapshots:
+    def test_deletes_matching_rows_with_ttl_cutoff(self):
+        from datetime import datetime, timezone
+
+        client = _PurgeClient([{"id": 1}, {"id": 2}])
+        deleted = pcb._purge_stale_snapshots(client)
+        assert deleted == 2
+        assert ("table", "memories") in client.call_log
+        assert ("delete", (), {}) in client.call_log
+        assert ("like", ("name", "session_snapshot_%"), {}) in client.call_log
+        lt_calls = [c for c in client.call_log if c[0] == "lt"]
+        assert len(lt_calls) == 1
+        field, cutoff_str = lt_calls[0][1]
+        assert field == "updated_at"
+        cutoff = datetime.fromisoformat(cutoff_str)
+        age = (datetime.now(timezone.utc) - cutoff).total_seconds()
+        assert 29 * 86400 <= age <= 31 * 86400
+
+    def test_never_raises_on_error(self, capsys):
+        class _Boom:
+            def table(self, _):
+                raise RuntimeError("boom")
+
+        assert pcb._purge_stale_snapshots(_Boom()) is None
+        assert "snapshot TTL purge failed" in capsys.readouterr().err
+
+    def test_zero_rows_is_success(self):
+        client = _PurgeClient([])
+        assert pcb._purge_stale_snapshots(client) == 0
+
+    def test_persist_supabase_runs_purge_after_upsert(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+
+        calls = []
+
+        class _Exec:
+            def execute(self):
+                return self
+
+        class _Table:
+            def upsert(self, payload, **kw):
+                calls.append("upsert")
+                return _Exec()
+
+        class _Client:
+            def table(self, name):
+                return _Table()
+
+        monkeypatch.setattr(sys.modules["supabase"], "create_client", lambda url, key: _Client())
+        monkeypatch.setattr(
+            pcb, "_purge_stale_snapshots", lambda client: calls.append("purge") or 0
+        )
+
+        assert pcb._persist_supabase("s", "jarvis", "auto", "content") is True
+        assert calls == ["upsert", "purge"]
+
+
+# ---------------------------------------------------------------------------
 # _append_hook_log — heartbeat
 # ---------------------------------------------------------------------------
 def _read_hook_log(root: Path) -> str:
