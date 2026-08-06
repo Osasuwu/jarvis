@@ -56,9 +56,11 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from logging.handlers import RotatingFileHandler
 from typing import TYPE_CHECKING, Any, Protocol
 
 from dotenv import load_dotenv
@@ -107,6 +109,85 @@ DEFAULT_STALE_AFTER_SECONDS = 300
 
 # Identifies this driver in events.claimed_by for traceability.
 CLAIMER = "wake_driver"
+
+# Repo-root-anchored (not CWD-relative) so the log lands in the same place
+# regardless of the Scheduled Task's working directory — same anchoring
+# rationale as executor._STDERR_LOG_DIR.
+_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "wake_driver")
+
+# Cold-boot retry: AtLogOn can fire before the network/DNS/Supabase is
+# reachable (observed: task started 07:31, died within ~5min after
+# exhausting Task Scheduler's RestartCount=5/1-min budget, manual restart at
+# 14:30 worked immediately — a boot-time race, not a code defect). Retrying
+# in-process closes that race faster than five minute-apart process restarts,
+# and produces one continuous log instead of five truncated ones.
+_STARTUP_RETRY_ATTEMPTS = 5
+_STARTUP_RETRY_BASE_SECONDS = 5.0
+_STARTUP_RETRY_MAX_SECONDS = 60.0
+
+
+def _configure_logging() -> None:
+    """Console + rotating file logging.
+
+    Task Scheduler does not capture stdout/stderr for an AtLogOn task, so a
+    boot-time crash previously left no trace beyond the exit code. A file
+    handler under ``logs/wake_driver/`` survives that gap. Falls back to
+    console-only if the log directory can't be created (e.g. permissions) —
+    a logging setup failure must never be the reason startup dies silently.
+    """
+    if logging.getLogger().hasHandlers():
+        return  # already configured — e.g. main() invoked more than once in-process
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    try:
+        os.makedirs(_LOG_DIR, exist_ok=True)
+        handlers.append(
+            RotatingFileHandler(
+                os.path.join(_LOG_DIR, "wake_driver.log"),
+                maxBytes=5 * 1024 * 1024,
+                backupCount=3,
+                encoding="utf-8",
+            )
+        )
+    except OSError as exc:
+        print(f"[wake_driver] file logging unavailable ({exc}); console only", file=sys.stderr)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
+
+
+def _call_with_retry(
+    build: Callable[[], Any],
+    *,
+    what: str,
+    attempts: int = _STARTUP_RETRY_ATTEMPTS,
+    base_delay: float = _STARTUP_RETRY_BASE_SECONDS,
+    max_delay: float = _STARTUP_RETRY_MAX_SECONDS,
+) -> Any:
+    """Retry a cold-boot connection builder with exponential backoff.
+
+    Transient — DNS/network/Supabase not yet reachable seconds after boot.
+    Not a general-purpose retry: only for the one-shot builders called during
+    startup, before the loop is otherwise live.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return build()
+        except Exception as exc:
+            last_exc = exc
+            if attempt == attempts:
+                break
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+            logger.warning(
+                "[wake_driver] startup: %s failed (attempt %d/%d): %s — retrying in %.0fs",
+                what,
+                attempt,
+                attempts,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+    logger.error("[wake_driver] startup: %s failed after %d attempts, giving up", what, attempts)
+    assert last_exc is not None
+    raise last_exc
 
 # The NOTIFY channel from the #739 substrate (notify_events_insert).
 EVENTS_CHANNEL = "events"
@@ -713,8 +794,8 @@ def _default_event_emit(*, repo: str, client: Any | None = None) -> EventEmit:
 
 
 def main() -> int:
+    _configure_logging()
     load_dotenv()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--watchdog-seconds",
@@ -762,7 +843,7 @@ def main() -> int:
         # the Supabase event client / build_production_orchestrator — none of
         # that live wiring is needed for a read-only preview, and constructing
         # it would defeat the "no side effect" guarantee this stage exists for.
-        queue = _build_psycopg_queue()
+        queue = _call_with_retry(_build_psycopg_queue, what="psycopg event-queue connect")
         from agents.orchestrator import handle_event
 
         events = queue.recent_events(limit=args.dry_run_limit)
@@ -770,7 +851,7 @@ def main() -> int:
         _print_dry_run_table(events, decisions)
         return 0
 
-    queue = _build_psycopg_queue()
+    queue = _call_with_retry(_build_psycopg_queue, what="psycopg event-queue connect")
     # tasks ride supabase-py; events ride psycopg. --no-task-drain (Stage 2)
     # passes None so tick's task steps 0/2/4 skip (each already gated on
     # `task_port is not None`) — routing/escalation stay live, spawn doesn't.

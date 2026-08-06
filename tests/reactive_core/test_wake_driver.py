@@ -16,8 +16,10 @@ unit-tested here (no live DB).
 from __future__ import annotations
 
 import inspect
+import logging
 import tomllib
 import types
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import pytest
@@ -352,8 +354,16 @@ def test_wake_driver_has_no_busy_sleep_poll_loop():
     # The retired scheduler used `while True:` + `time.sleep(...)` as a
     # resident interval poller. wake_driver must be event-driven instead.
     assert "while True" not in src, "wake_driver must not contain a `while True` resident loop"
-    assert "time.sleep(" not in src, (
-        "wake_driver must not busy-sleep; it blocks on the NOTIFY socket"
+
+    # _call_with_retry's bounded, cold-boot-only backoff (startup DB/network
+    # readiness race fix) is the one deliberate exception: a finite number of
+    # attempts during startup only, not a resident poll. Everything else must
+    # stay event-driven (block on the NOTIFY socket).
+    retry_helper_src = inspect.getsource(wake_driver._call_with_retry)
+    src_outside_retry_helper = src.replace(retry_helper_src, "")
+    assert "time.sleep(" not in src_outside_retry_helper, (
+        "wake_driver must not busy-sleep outside the bounded startup retry helper; "
+        "the run loop blocks on the NOTIFY socket"
     )
 
 
@@ -1196,6 +1206,7 @@ def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
     local import rebinds the name from there at call time)."""
     client = _CloseRecordingClient()
     monkeypatch.setattr("sys.argv", ["wake_driver"])
+    monkeypatch.setattr(wake_driver, "_configure_logging", lambda: None)
     monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda: object())
     monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", lambda *a, **k: object())
@@ -1365,6 +1376,7 @@ def _wire_main_dry_run(monkeypatch, *, recent_events, handle_event=None):
 
     fake_queue = types.SimpleNamespace(recent_events=recent_events)
     monkeypatch.setattr("sys.argv", ["wake_driver", "--dry-run"])
+    monkeypatch.setattr(wake_driver, "_configure_logging", lambda: None)
     monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda: fake_queue)
     monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", _forbidden("SupabaseTaskQueue"))
@@ -1467,4 +1479,146 @@ def test_main_without_no_task_drain_still_builds_supabase_task_queue(monkeypatch
 
     assert wake_driver.main() == 0
     assert captured["task_port"] is sentinel_task_port
+    assert client.closed == 1
+
+
+# --- boot-time reliability: file logging + startup retry --------------------
+#
+# Incident: the AtLogOn Scheduled Task failed at boot 2026-08-06, exhausted
+# its RestartCount=5/1-min budget within ~5 minutes with zero diagnosable
+# output (Task Scheduler captures no stdout/stderr), and sat dead until a
+# manual restart worked immediately — a boot-time network/DB-readiness race.
+
+
+def _reset_root_logger():
+    root = logging.getLogger()
+    saved_handlers = root.handlers[:]
+    saved_level = root.level
+    root.handlers = []
+    return root, saved_handlers, saved_level
+
+
+def _restore_root_logger(root, saved_handlers, saved_level):
+    for h in root.handlers:
+        h.close()
+    root.handlers = saved_handlers
+    root.setLevel(saved_level)
+
+
+def test_configure_logging_adds_rotating_file_handler(tmp_path, monkeypatch):
+    monkeypatch.setattr(wake_driver, "_LOG_DIR", str(tmp_path))
+    root, saved_handlers, saved_level = _reset_root_logger()
+    try:
+        wake_driver._configure_logging()
+        file_handlers = [h for h in root.handlers if isinstance(h, RotatingFileHandler)]
+        assert len(file_handlers) == 1
+        assert file_handlers[0].baseFilename == str(tmp_path / "wake_driver.log")
+    finally:
+        _restore_root_logger(root, saved_handlers, saved_level)
+
+
+def test_configure_logging_falls_back_to_console_on_oserror(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(wake_driver, "_LOG_DIR", str(tmp_path))
+
+    def _boom(*a, **k):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(wake_driver.os, "makedirs", _boom)
+    root, saved_handlers, saved_level = _reset_root_logger()
+    try:
+        wake_driver._configure_logging()  # must not raise
+        assert not any(isinstance(h, RotatingFileHandler) for h in root.handlers)
+        assert any(isinstance(h, logging.StreamHandler) for h in root.handlers)
+        assert "file logging unavailable" in capsys.readouterr().err
+    finally:
+        _restore_root_logger(root, saved_handlers, saved_level)
+
+
+def test_configure_logging_is_a_noop_when_already_configured(monkeypatch):
+    # main() may run more than once in-process (tests, --once loops); a
+    # second _configure_logging() must not open a second file handle.
+    root, saved_handlers, saved_level = _reset_root_logger()
+    marker = logging.StreamHandler()
+    root.addHandler(marker)
+    try:
+        wake_driver._configure_logging()
+        assert root.handlers == [marker]
+    finally:
+        _restore_root_logger(root, saved_handlers, saved_level)
+
+
+def test_call_with_retry_returns_on_first_success(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(wake_driver.time, "sleep", lambda s: sleeps.append(s))
+
+    result = wake_driver._call_with_retry(lambda: "ok", what="thing")
+
+    assert result == "ok"
+    assert sleeps == []
+
+
+def test_call_with_retry_retries_then_succeeds(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(wake_driver.time, "sleep", lambda s: sleeps.append(s))
+    attempts = {"n": 0}
+
+    def _build():
+        attempts["n"] += 1
+        if attempts["n"] < 3:
+            raise ConnectionError("not ready yet")
+        return "connected"
+
+    result = wake_driver._call_with_retry(
+        _build, what="thing", attempts=5, base_delay=1.0, max_delay=10.0
+    )
+
+    assert result == "connected"
+    assert attempts["n"] == 3
+    assert sleeps == [1.0, 2.0]  # exponential backoff between the 2 failed attempts
+
+
+def test_call_with_retry_raises_last_exception_after_exhausting_attempts(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(wake_driver.time, "sleep", lambda s: sleeps.append(s))
+
+    def _build():
+        raise ConnectionError("still not ready")
+
+    with pytest.raises(ConnectionError, match="still not ready"):
+        wake_driver._call_with_retry(_build, what="thing", attempts=3, base_delay=1.0, max_delay=10.0)
+
+    assert len(sleeps) == 2  # attempts-1 sleeps, no sleep after the final failure
+
+
+def test_call_with_retry_caps_delay_at_max_delay(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(wake_driver.time, "sleep", lambda s: sleeps.append(s))
+
+    def _build():
+        raise ConnectionError("nope")
+
+    with pytest.raises(ConnectionError):
+        wake_driver._call_with_retry(_build, what="thing", attempts=6, base_delay=5.0, max_delay=15.0)
+
+    assert sleeps == [5.0, 10.0, 15.0, 15.0, 15.0]
+
+
+def test_main_wraps_build_psycopg_queue_in_startup_retry(monkeypatch):
+    # The transient boot-time DB/network failure must self-heal in-process
+    # instead of relying solely on Task Scheduler's restart count.
+    calls = {"n": 0}
+
+    def _flaky_build_queue():
+        calls["n"] += 1
+        if calls["n"] < 2:
+            raise ConnectionError("boot-time DNS not ready")
+        return object()
+
+    client = _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr(wake_driver, "_build_psycopg_queue", _flaky_build_queue)
+    monkeypatch.setattr(wake_driver.time, "sleep", lambda s: None)
+
+    assert wake_driver.main() == 0
+    assert calls["n"] == 2
+    assert client.closed == 1
     assert client.closed == 1
