@@ -288,6 +288,25 @@ def test_apply_protection_patches_when_protection_exists():
     assert body == {"strict": True, "contexts": ["review"]}
 
 
+def test_apply_protection_raises_identity_error_when_account_mismatched():
+    # account is opt-in (None skips AC1 entirely, see the tests above); when
+    # a caller does pass it, a mismatch must raise before any write.
+    snapshot = _snapshot(protection=BranchProtection(strict=True, contexts=["review"]))
+    runner = FakeRunner({"user": {"login": "SomeoneElse"}})
+    write_runner = FakeWriteRunner()
+    with pytest.raises(IdentityError):
+        apply_protection(
+            runner,
+            write_runner,
+            "Osasuwu/jarvis",
+            "main",
+            ["review"],
+            snapshot,
+            account="osasuwu",
+        )
+    assert write_runner.calls == []
+
+
 def test_apply_protection_puts_full_payload_when_no_protection():
     snapshot = _snapshot(protection=None)
     runner = FakeRunner(
@@ -484,17 +503,67 @@ def test_execute_repo_guard_defers_on_unreportable_context():
     assert write_runner.calls == []
 
 
-def test_execute_repo_identity_preflight_aborts_before_any_write():
-    runner = FakeRunner({"user": {"login": "SomeoneElse"}})
+def test_execute_repo_identity_mismatch_defers_only_protection_write():
+    # #1401: identity is checked per-write, not once for the whole pass — a
+    # repo whose plan includes a reportable protection write defers just
+    # that write ("deferred: ...") while the file/PR path is untouched.
+    manifest = _manifest(
+        managed_files=[], language_test_files=[], required_check_contexts=["review"]
+    )
+    responses = _jarvis_responses()
+    responses[PULLS_PATH] = []
+    responses["user"] = {"login": "SomeoneElse"}
+    runner = FakeRunner(responses)
     write_runner = FakeWriteRunner()
 
-    with pytest.raises(IdentityError):
-        execute_account_pass(
-            "osasuwu", runner=runner, write_runner=write_runner, execute=True, canon={}
-        )
+    outcome = execute_repo(
+        "Osasuwu/jarvis",
+        manifest,
+        runner=runner,
+        write_runner=write_runner,
+        execute=True,
+        account="osasuwu",
+    )
 
+    assert outcome.file_status == "skipped"
+    assert outcome.protection_status.startswith("deferred:")
     assert write_runner.calls == []
-    assert runner.calls == [("user", False)]
+
+
+def test_execute_account_pass_identity_mismatch_does_not_block_file_writes():
+    # A mismatched identity must not abort push-level writes for repos whose
+    # plan has no protection action at all — only apply_protection gates on it.
+    manifest = _manifest(
+        managed_files=["a.yml"], language_test_files=[], required_check_contexts=[]
+    )
+    responses = _jarvis_responses()
+    responses[PULLS_PATH] = []
+    responses["repos/Osasuwu/jarvis/git/refs/heads/main"] = {"object": {"sha": "base-sha"}}
+    not_found = {
+        "repos/Osasuwu/jarvis/contents/a.yml?ref=main",
+        f"repos/Osasuwu/jarvis/git/refs/heads/{SYNC_BRANCH}",
+    }
+    runner = FakeRunner(responses, not_found=not_found)
+    write_runner = FakeWriteRunner(
+        responses={("POST", "repos/Osasuwu/jarvis/pulls"): {"html_url": "https://x/pr/9"}}
+    )
+
+    outcome = execute_repo(
+        "Osasuwu/jarvis",
+        manifest,
+        runner=runner,
+        write_runner=write_runner,
+        execute=True,
+        account="osasuwu",
+        canon={"a.yml": "content\n"},
+    )
+
+    assert outcome.file_status == "applied"
+    assert outcome.pr_url == "https://x/pr/9"
+    assert outcome.protection_status == "skipped"
+    # No "user" response was configured at all — proves preflight_identity
+    # was never even called on this path.
+    assert ("user", False) not in runner.calls
 
 
 def test_execute_repo_fails_fast_on_write_error():
