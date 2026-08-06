@@ -365,6 +365,19 @@ def _dependabot_b64(*ecosystems: str) -> dict:
     }
 
 
+def _workflow_b64(text: str) -> dict:
+    """Contents-API envelope for a workflow file body (#1406).
+
+    The auditor reads each workflow's body to observe its ``runs-on:`` labels,
+    so a fixture repo with workflows must register a contents response per
+    workflow path — same base64 envelope shape as ``_dependabot_b64``.
+    """
+    return {
+        "content": base64.b64encode(text.encode()).decode(),
+        "encoding": "base64",
+    }
+
+
 def _jarvis_responses() -> dict:
     return {
         "repos/Osasuwu/jarvis": {
@@ -395,6 +408,17 @@ def _jarvis_responses() -> dict:
         "repos/Osasuwu/jarvis/contents/.github/dependabot.yml": _dependabot_b64(
             "pip", "github-actions"
         ),
+        "repos/Osasuwu/jarvis/contents/.github/workflows/code-review.yml": _workflow_b64(
+            "name: Code Review\njobs:\n  review:\n    runs-on: ubuntu-latest\n"
+        ),
+        "repos/Osasuwu/jarvis/contents/.github/workflows/pytest.yml": _workflow_b64(
+            "name: pytest\njobs:\n  pytest:\n    runs-on: [ubuntu-latest]\n"
+        ),
+        # A directory listing — the auditor only cares that the path resolves
+        # (#1406). jarvis really does have tests/ci, so the fixture says so.
+        "repos/Osasuwu/jarvis/contents/tests/ci": [
+            {"name": "test_schema_drift_guard.py", "type": "file"},
+        ],
     }
 
 
