@@ -1,13 +1,15 @@
 """Meta-test for the `Verify review verdict` step in code-review.yml.
 
 Two-gate model (#988, milestone #52): the MERGE gate blocks ONLY on a real
-merge-blocking finding — an all-caps CRITICAL / MAJOR / BLOCKING severity
-heading. MINOR / NITPICK / LOW / INFO / MEDIUM never block merge, and a bare
-"Found N issues:" line (no blocking heading) no longer blocks — in practice the
-plugin emits severity sections for real bugs (#963/#964/#965/#966) and the
-canonical "Found N issues:" has carried only advisory MEDIUM/LOW (#956). This
-unjams the #976 deadlock where clean-but-minor PRs were rejected by the gate
-while the rework loop considered them done.
+merge-blocking finding — an all-caps CRITICAL / MAJOR / BLOCKING / MEDIUM
+severity heading (MEDIUM promoted into the blocking set, #1385 follow-up: a
+MEDIUM finding can genuinely corrupt state in the moment). MINOR / NITPICK /
+LOW / INFO never block merge, and a bare "Found N issues:" line (no blocking
+heading) no longer blocks — in practice the plugin emits severity sections for
+real bugs (#963/#964/#965/#966) and the canonical "Found N issues:" has
+carried only advisory LOW (#956). This unjams the #976 deadlock where
+clean-but-minor PRs were rejected by the gate while the rework loop considered
+them done.
 
 #976 fold: the block check is case-SENSITIVE all-caps (`grep -qE`, not `-qiE`)
 so title-case prose like "Blocking issues — None" (#962) is no longer a false
@@ -44,11 +46,15 @@ REVIEW_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
 # case-insensitive, anywhere in the body (jq/Oniguruma `^` is line-anchored).
 TITLE_RE = re.compile(r"^#{1,6}[ \t]*(?:Claude[ \t]+)?Code[ \t]+Review", re.I | re.M)
 
-# BLOCK signal: an all-caps CRITICAL / MAJOR / BLOCKING severity heading. This
-# is the ONLY merge-blocking shape (two-gate model, #988). MINOR is dropped —
-# minors never block merge. Case-SENSITIVE (no re.I, #976): the real plugin
-# severity sections are all-caps ("### MAJOR", "### 🔴 BLOCKING"); title-case
-# prose ("### Blocking issues — None", #962) must NOT match. Decoration between
+# BLOCK signal: an all-caps CRITICAL / MAJOR / BLOCKING / MEDIUM severity
+# heading. This is the ONLY merge-blocking shape (two-gate model, #988).
+# MEDIUM was promoted into the blocking set (#1385 follow-up) — a MEDIUM
+# finding can genuinely corrupt state in the moment, unlike the
+# MINOR/LOW/INFO/NITPICK advisories that stay non-blocking. MINOR is
+# dropped — minors never block merge. Case-SENSITIVE (no re.I, #976): the
+# real plugin severity sections are all-caps ("### MAJOR", "### 🔴
+# BLOCKING"); title-case prose ("### Blocking issues — None", #962, or a
+# title-case "### Medium" advisory) must NOT match. Decoration between
 # the #'s and the keyword is tolerated; the class excludes \n so the decoration
 # run cannot span lines under re.M (grep matches per-line).
 #
@@ -58,7 +64,7 @@ TITLE_RE = re.compile(r"^#{1,6}[ \t]*(?:Claude[ \t]+)?Code[ \t]+Review", re.I | 
 # test_severity_greps_run_under_c_locale. Without that export the bash diverges
 # (emoji match 0 while this mirror says 1), which is exactly the merge-gate hole
 # the locale fix closes; the pin keeps this mirror truthful at runtime.
-BLOCK_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING)\b", re.M)
+BLOCK_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING|MEDIUM)\b", re.M)
 
 # Clean signal: line-start anchored, NO end anchor — the plugin spec's clean
 # example is "No issues found. Checked for bugs and CLAUDE.md compliance."
@@ -76,11 +82,16 @@ NO_BLOCKERS_RE = re.compile(r"blocking issues\b[^A-Za-z0-9\n]*none\b", re.I)
 FOUND_RE = re.compile(r"Found [0-9]+ issues?:")
 
 # Non-blocking severity sections: MINOR-only (#963), or MEDIUM/LOW/INFO/
-# NITPICK advisories with no "Found N" line. Case-INSENSITIVE (#1050, re.I):
-# the plugin sometimes emits title-case advisory headings ("#### Low" on PR
-# #1049), which the old all-caps-only match dropped → fail-closed. Only
-# consulted AFTER the case-sensitive block check, so leniency here can never
-# shadow a real all-caps CRITICAL/MAJOR/BLOCKING section. \b after the keyword
+# NITPICK advisories with no "Found N" line. MEDIUM STAYS in this alternation
+# (#1385 follow-up) — a real all-caps "### MEDIUM" finding is already caught
+# by the case-sensitive BLOCK_RE above and never reaches here; only a
+# title-case "Medium" heading (decorative prose, not a real severity signal,
+# same as title-case "Critical"/"Blocking") lands in this case-insensitive
+# branch and stays non-blocking. Case-INSENSITIVE (#1050, re.I): the plugin
+# sometimes emits title-case advisory headings ("#### Low" on PR #1049),
+# which the old all-caps-only match dropped → fail-closed. Only consulted
+# AFTER the case-sensitive block check, so leniency here can never shadow a
+# real all-caps CRITICAL/MAJOR/BLOCKING/MEDIUM section. \b after the keyword
 # keeps "### Information" / "### Lower" from matching INFO/LOW.
 NONBLOCK_SEV_RE = re.compile(
     r"^#{1,6}[^A-Za-z0-9\n]*(?:MINOR|NITPICK|LOW|INFO|MEDIUM)\b", re.M | re.I
@@ -500,10 +511,15 @@ class TestVerdictLogic:
     def test_canonical_minor_only_passes(self):
         assert verdict([CANONICAL_MINOR_ONLY]) == "pass"
 
-    def test_low_info_nitpick_medium_headings_pass(self):
-        for sev in ("LOW", "INFO", "NITPICK", "MEDIUM"):
+    def test_low_info_nitpick_headings_pass(self):
+        for sev in ("LOW", "INFO", "NITPICK"):
             body = f"## Code Review\n\n### {sev}\n\n1. advisory note\n"
             assert verdict([body]) == "pass", sev
+
+    # --- MEDIUM now blocks (#1385 follow-up: a MEDIUM finding can genuinely
+    # corrupt state in the moment, unlike MINOR/LOW/INFO/NITPICK) ---
+    def test_allcaps_medium_heading_fails(self):
+        assert verdict(["## Code Review\n\n### MEDIUM\n\n1. real issue\n"]) == "fail"
 
     def test_titlecase_nonblocking_severity_headings_pass(self):
         # #1050: the plugin sometimes title-cases advisory headings ("#### Low"
@@ -1105,12 +1121,14 @@ class TestVerdictStepWiring:
             "gh rejects --slurp combined with --jq at runtime (exit 1)."
         )
 
-    def test_block_headings_are_critical_major_blocking_only(self, verdict_step):
+    def test_block_headings_are_critical_major_blocking_medium(self, verdict_step):
         run = verdict_step["run"]
-        assert r"^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING)\b" in run, (
+        assert r"^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)\b" in run, (
             "Block pattern must cover the real plugin severity sections: "
             "'### MAJOR' (#956), '### MAJOR findings' (#957), "
-            "'### 🔴 BLOCKING' (#954) — decoration tolerated, suffix optional."
+            "'### 🔴 BLOCKING' (#954) — decoration tolerated, suffix optional. "
+            "MEDIUM is included (#1385 follow-up: a MEDIUM finding can "
+            "genuinely corrupt state in the moment, so it now blocks)."
         )
         assert "(CRITICAL|MAJOR|MINOR|BLOCKING)" not in run, (
             "MINOR must be DROPPED from the block alternation (two-gate, #988) "
@@ -1133,7 +1151,7 @@ class TestVerdictStepWiring:
             "check under the runner's C.UTF-8 default and a coexisting MINOR "
             "section flips the merge gate to a false PASS."
         )
-        assert run.index("export LC_ALL=C") < run.index("(CRITICAL|MAJOR|BLOCKING)"), (
+        assert run.index("export LC_ALL=C") < run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)"), (
             "LC_ALL=C must be exported before the first severity grep."
         )
 
@@ -1141,7 +1159,7 @@ class TestVerdictStepWiring:
         # #976: the block grep must be `-qE` (case-sensitive), NOT `-qiE` —
         # else title-case prose like "Blocking issues — None" false-blocks.
         run = verdict_step["run"]
-        assert "grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING)" in run, (
+        assert "grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)" in run, (
             "Block check must be case-sensitive (grep -qE, no -i) so all-caps "
             "is the discriminator between real severity sections and title-"
             "case prose (#976)."
@@ -1156,7 +1174,7 @@ class TestVerdictStepWiring:
             "Found-N pattern must still be recognized — as a NON-blocking "
             "pass signal now (two-gate, #988)."
         )
-        block_at = run.index("(CRITICAL|MAJOR|BLOCKING)")
+        block_at = run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)")
         found_at = run.index("Found [0-9]+ issues?:")
         assert block_at < found_at, "Block check must precede the Found-N pass branch."
         # The Found-N branch must lead to a pass (exit 0), not a block. The
@@ -1179,7 +1197,10 @@ class TestVerdictStepWiring:
     def test_nonblocking_severity_headings_pass(self, verdict_step):
         run = verdict_step["run"]
         assert r"^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b" in run, (
-            "Minor-only / advisory-only severity sections must be a positive pass signal (#963)."
+            "Minor-only / advisory-only severity sections must be a positive "
+            "pass signal (#963). MEDIUM stays here for title-case matches "
+            "only — a real all-caps MEDIUM finding is already caught by the "
+            "case-sensitive block check above (#1385 follow-up)."
         )
 
     def test_nonblocking_severity_grep_is_case_insensitive(self, verdict_step):
@@ -1201,7 +1222,7 @@ class TestVerdictStepWiring:
             "A positive LGTM/APPROVE verdict (PR #1049) must be recognized as "
             "a pass signal (#1050)."
         )
-        block_at = run.index("(CRITICAL|MAJOR|BLOCKING)")
+        block_at = run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)")
         lgtm_at = run.index(r"\bLGTM\b")
         assert block_at < lgtm_at, (
             "LGTM pass branch must run after the block check so it can never "
@@ -1218,7 +1239,7 @@ class TestVerdictStepWiring:
 
     def test_block_check_runs_before_all_pass_checks(self, verdict_step):
         run = verdict_step["run"]
-        block_at = run.index("(CRITICAL|MAJOR|BLOCKING)")
+        block_at = run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)")
         clean_at = run.index(r"^No issues found\.")
         found_at = run.index("Found [0-9]+ issues?:")
         nonblock_at = run.index("(MINOR|NITPICK|LOW|INFO|MEDIUM)")

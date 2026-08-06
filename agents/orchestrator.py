@@ -521,8 +521,10 @@ def dispatch(
       event dedups; a genuinely-new event has a different key and re-runs).
     - :attr:`Route.ESCALATE` → write an ``owner`` row carrying
       ``escalated_reason`` (AC3), then apply the weekend-aware notification
-      policy: ``critical`` pings Telegram via ``notifier``; everything else is
-      parked (weekend) or left for SessionStart (weekday).
+      policy: ``critical`` pings Telegram via ``notifier``, routed through
+      ``safety.gate()`` under the ``notify_owner_escalation`` Tier-0
+      carve-out; everything else is parked (weekend) or left for
+      SessionStart (weekday).
     - :attr:`Route.HANDLE_INLINE` → a pure-pipeline no-op is acknowledged
       here; a real inline tool call goes through :func:`run_inline_tool`.
     """
@@ -559,9 +561,22 @@ def dispatch(
             # failure (network, bad token) must not undo that or abort the
             # tick that's draining this event. `notified` stays False so
             # callers can see the ping didn't go out.
+            #
+            # Routed through safety.gate() (not called directly) so the
+            # escalation ping is classified + audited like every other
+            # action-agent side effect. `notify_owner_escalation` is the
+            # narrow Tier-0 carve-out inside the blanket "messaging" block —
+            # see agents/safety.py's `_TIER0_MESSAGING_ACTIONS` comment.
             try:
-                notifier(decision)
-                notified = True
+                outcome = safety.gate(
+                    agent_id=_INLINE_AGENT_ID,
+                    tool_name="telegram_notifier",
+                    action="notify_owner_escalation",
+                    target=decision.event_type,
+                    area="messaging",
+                    fn=lambda: notifier(decision),
+                )
+                notified = outcome.fired
             except Exception:
                 logger.exception(
                     "dispatch: notifier raised for %s/%s — continuing",
