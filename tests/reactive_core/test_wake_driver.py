@@ -1410,6 +1410,10 @@ def test_main_dry_run_previews_without_building_live_side_effects(monkeypatch, c
     assert wake_driver.main() == 0
     assert calls["limit"] == 200  # default --dry-run-limit
 
+    captured = capsys.readouterr()
+    assert "github.pr.opened" in captured.out
+    assert "1 events previewed, 0 would ESCALATE" in captured.out
+
 
 def test_main_dry_run_limit_flag_is_threaded_through(monkeypatch):
     calls: dict[str, object] = {}

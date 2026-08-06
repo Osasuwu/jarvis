@@ -546,12 +546,18 @@ jobs:
           #   findings/issues suffix is optional ("### MAJOR" bare on #956).
           # - grep -qE (NOT -qiE): the block check is case-SENSITIVE all-caps
           #   (#976). Real plugin severity sections are all-caps; title-case
-          #   prose like "### Blocking issues — None" (#962) must NOT block.
+          #   prose like "### Blocking issues — None" (#962) must NOT block,
+          #   nor does title-case "Medium" advisory prose (same precedent).
           # - MINOR is DROPPED from the alternation. Minors never block merge —
           #   they are swept best-effort by /rework while it is already in
           #   context for a bug-triggered round, not as a merge gate.
-          if grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING)\b' <<<"$body"; then
-            echo "::error::Code review posted blocking severity sections (CRITICAL/MAJOR/BLOCKING); blocking auto-merge until addressed."
+          # - MEDIUM now BLOCKS (raised from the code-review two-gate model,
+          #   #1385 follow-up): a MEDIUM finding can genuinely corrupt state
+          #   in the moment, unlike MINOR/LOW/INFO/NITPICK advisories, so it
+          #   is promoted into the same all-caps blocking alternation as
+          #   CRITICAL/MAJOR/BLOCKING rather than staying merge-gate-advisory.
+          if grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)\b' <<<"$body"; then
+            echo "::error::Code review posted blocking severity sections (CRITICAL/MAJOR/BLOCKING/MEDIUM); blocking auto-merge until addressed."
             exit 1
           fi
 
@@ -587,14 +593,21 @@ jobs:
           fi
 
           # Non-blocking severity sections only: MINOR-only (#963) or MEDIUM/
-          # LOW/INFO/NITPICK advisories with no Found-N line. Case-INSENSITIVE
-          # (-qiE, #1050): the plugin sometimes title-cases advisory headings
-          # ("#### Low" on PR #1049), which the old all-caps -qE dropped → the
-          # gate fell through to fail-closed on a clean verdict. Safe to be
-          # lenient here: this runs strictly AFTER the case-sensitive block
-          # check (line ~326), so a title-case match can never shadow a real
-          # all-caps CRITICAL/MAJOR/BLOCKING section. The block check itself
-          # stays -qE (case-sensitive) per #962/#976.
+          # LOW/INFO/NITPICK advisories with no Found-N line. MEDIUM STAYS in
+          # this alternation (#1385 follow-up) — a real all-caps "### MEDIUM"
+          # finding is already caught by the case-sensitive block check above
+          # and never reaches here; only a title-case "Medium" heading (plugin
+          # decorative prose, not a real severity signal, same as title-case
+          # "Blocking"/"Critical") lands in this case-insensitive branch and
+          # passes.
+          # Case-INSENSITIVE (-qiE, #1050): the plugin sometimes title-cases
+          # advisory headings ("#### Low" on PR #1049), which the old all-caps
+          # -qE dropped → the gate fell through to fail-closed on a clean
+          # verdict. Safe to be lenient here: this runs strictly AFTER the
+          # case-sensitive block check (line ~326), so a title-case match can
+          # never shadow a real all-caps CRITICAL/MAJOR/BLOCKING/MEDIUM
+          # section. The block check itself stays -qE (case-sensitive) per
+          # #962/#976.
           if grep -qiE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b' <<<"$body"; then
             echo "::notice::Code review posted only non-blocking severity sections; not blocking auto-merge."
             exit 0
