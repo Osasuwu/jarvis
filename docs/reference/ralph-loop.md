@@ -23,12 +23,23 @@ instead of reusing jarvis's existing handoff surface — decision recorded again
 `ralph-loop.ps1` spawns `claude -p` child processes. If you're driving it from inside a
 host-managed Claude Code session (desktop app, VS Code extension), those children read
 `~/.claude/.credentials.json` directly — and the host session's OAuth refresh happens out-of-band
-and does **not** write back to that file, so it goes stale. First iteration fails immediately with
-`Failed to authenticate: OAuth session expired and could not be refreshed` (confirmed 2026-08-08
-against jarvis#1461). Fix: run `claude auth login` once in a normal terminal (outside any
-host-managed session) to rewrite the file with independently-refreshable tokens, then re-run.
-There is no headless fix — the OAuth flow can't be driven non-interactively, and switching to
-API-key auth is off the table without explicit consent (metered billing invariant).
+and does **not** write back to that file, so it goes stale. Every iteration then fails immediately
+with `Failed to authenticate: OAuth session expired and could not be refreshed` (confirmed
+2026-08-08 against jarvis#1461).
+
+Fix: run `claude auth login` once in a normal terminal (outside any host-managed session) to
+rewrite the file with independently-refreshable tokens, then re-run. There is no headless fix — the
+OAuth flow can't be driven non-interactively, and switching to API-key auth is off the table
+without explicit consent (metered billing invariant). Symptom to watch for: iteration 1 failing in
+~30s with zero token usage. That's auth, not the task.
+
+## Per-iteration cost floor
+
+Every iteration pays for a full MCP tool-schema load before doing any work. Measured 2026-08-08 on
+Main PC: a trivial no-op prompt burned 35 422 cache-creation + 33 107 cache-read tokens ≈ **$0.22**
+purely to boot. Budget accordingly — `-MaxBudgetUsdPerIteration` set too low produces
+`error_max_budget_usd` on startup overhead alone, which looks like a task failure but isn't.
+Reducing that floor is [#1464](https://github.com/Osasuwu/jarvis/issues/1464).
 
 ## Where it lives
 
@@ -40,16 +51,52 @@ API-key auth is off the table without explicit consent (metered billing invarian
 ## How to start it
 
 ```powershell
-./scripts/ralph-loop.ps1 -Task "Implement jarvis issue #1460 end to end via /implement" -MaxIterations 6
+./scripts/ralph-loop.ps1 -Task "Take jarvis issue #1455 from grill through merged PR" -MaxIterations 6 -PermissionMode bypassPermissions
 ```
 
-Useful flags: `-MaxBudgetUsdPerIteration <usd>` (per-iteration spend cap, default 3.0), `-Model
-<alias>` (default `sonnet`), `-DryRun` (write the prompt file, print it, spawn nothing).
+Useful flags: `-MaxBudgetUsdPerIteration <usd>` (per-iteration spend cap, default 5.0), `-Model
+<alias>` (default `sonnet`), `-PermissionMode` (default `acceptEdits`), `-DryRun` (write the prompt
+file, print it, spawn nothing).
 
-Each iteration's prompt instructs the fresh agent to: recall `working_state_jarvis` first (so it
-picks up exactly where the prior iteration left off, not a stale plan), do one coherent unit of
-verifiable progress, write the new state back to `working_state_jarvis` before finishing, and end
-its final message with exactly `RALPH_STATUS: COMPLETE` or `RALPH_STATUS: CONTINUE`.
+**On `-PermissionMode`**: `acceptEdits` auto-approves file writes *inside the project dir only*, and
+nothing else. Real implementation work also runs `git`, `gh`, `pytest` — each of which would block
+on a permission prompt that no one is there to answer, hanging the iteration until its budget cap
+kills it. For genuinely unattended runs pass `bypassPermissions`. Note this does **not** lift the
+`.claude/*` manual-confirmation rule — that's enforced separately, not by the permission mode.
+
+## Phase awareness — one phase per iteration
+
+The iteration prompt does not say "make progress"; it makes the fresh agent own the whole canonical
+jarvis chain (`/reason` → `/grill` → `/to-spec` → `/to-tickets` → `/implement` → `/rework`) and pick
+**the earliest phase not yet done**, doing exactly one per iteration.
+
+This matters because of a specific deadlock: `/implement` on an issue where SOUL's grill trigger
+checkbox fires with no grill artifact exits `grill_required` and does nothing. A driver whose prompt
+just said "implement this issue" would replay that no-op every iteration until `-MaxIterations`,
+burning the boot cost each round for zero progress. The prompt names `grill_required` explicitly as
+a routing signal — next phase is `/grill`, not a retry.
+
+Chaining phases inside one iteration is prohibited by the prompt for the same reason the loop exists
+at all: chaining is what fills the context window. A short iteration that ends cleanly beats a long
+one that compacts.
+
+## Measuring the no-compaction claim
+
+The loop's whole premise is one context per iteration, so the driver verifies it instead of
+asserting it. After each iteration it locates that session's transcript by `session_id` (globbing
+`~/.claude/projects/*/<session-id>.jsonl`, rather than reproducing the cwd-mangling scheme) and
+counts `"compactMetadata":{"trigger":"auto"` records. Results land in a per-run ledger printed at
+exit:
+
+```
+Iter Session                              CostUsd Turns Compactions Status
+---- -------                              ------- ----- ----------- ------
+   1 9dda69c2-3008-49d3-be73-7d0899eb8947    1.84    41           0 CONTINUE
+```
+
+A non-zero `Compactions` value is a **failure signal even when the iteration produced good work** —
+it means that iteration bit off more than one context, and the per-iteration phase needs to shrink.
+This is what makes jarvis#1461 AC3 measurable rather than a claim.
 
 ## How to stop it
 
@@ -62,6 +109,11 @@ The driver also stops itself and exits non-zero on: a failed iteration (`claude`
 missing status sentinel (treated as a stall), or reaching `-MaxIterations` without `COMPLETE`. In
 every case, check `logs/ralph-loop/<run-id>-summary.log` before re-running — state already
 persisted in `working_state_jarvis`, so a re-run is a genuine continuation, not a restart.
+
+Budget exhaustion and a genuine crash both exit non-zero, so the driver reads `subtype` out of the
+result JSON and reports them differently — `error_max_budget_usd` prints an explicit "raise
+`-MaxBudgetUsdPerIteration` and re-run" hint. Don't read a budget stop as the task failing: the
+iteration's own checkpoint is already in `working_state_jarvis`, and re-running resumes from it.
 
 ## Known limitation — host-managed session auth
 
