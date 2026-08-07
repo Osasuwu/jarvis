@@ -340,12 +340,15 @@ TDD-mode active for this issue.
 
 Operating discipline:
 - Follow .claude-userlevel/skills/_shared/tdd/tdd-loop.md: pick one AC, write failing
-  test, confirm red, write minimal impl, confirm green, refactor if useful, next AC.
+  test, confirm red, write minimal impl, confirm green, next AC. The inner loop is
+  strictly red-green — do not refactor between AC items.
 - Every item in the issue's acceptance criteria MUST have at least one corresponding
   test. Marking an AC item as "out of scope" is a delivery defect, not a scope
   decision — escalate to the orchestrator instead of dropping the item.
-- Refactor permission extends to code freshly covered by a passing test in this
-  session. Code without test coverage is NOT in your refactor scope.
+- Once every AC item's test is green, run one refactor pass over the whole green
+  suite (tdd-loop.md §4) before finishing. Refactor permission extends to code
+  freshly covered by a passing test in this session. Code without test coverage is
+  NOT in your refactor scope.
 - **Deliberate divergences must be surfaced.** If you depart from the AC's literal
   signature, parameter names, values, default constants, or interpretation for any
   reason (cleaner interface, stricter rule, fewer args, renamed field) — add a

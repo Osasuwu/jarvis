@@ -4,7 +4,9 @@ mattpocock/skills @ 733d312884b3878a9a9cff693c5886943753a741).
 Upstream:
 https://github.com/mattpocock/skills/blob/733d312884b3878a9a9cff693c5886943753a741/skills/engineering/tdd/SKILL.md
 Jarvis adaptations: (1) anti-horizontal-slicing rule kept verbatim; (2) new
-refactor-permission clause in §Refactor (Jarvis-specific extension, #593).
+refactor-permission clause in §Refactor (Jarvis-specific extension, #593);
+(3) §Refactor made an explicit standalone post-green pass, not interleaved
+with the per-AC RED→GREEN cycle (jarvis#1153).
 MIT — see THIRD_PARTY_LICENSES/aihero-skills-MIT.txt.
 -->
 
@@ -91,9 +93,9 @@ Rules:
 - Keep tests focused on observable behavior
 - Each test links back to one acceptance-criterion bullet from the issue body — if a test does not, it is either out of scope or evidence the AC is incomplete (return to `/grill`)
 
-### 4. Refactor
+### 4. Refactor Pass (post-green, not per-test)
 
-After all tests pass, look for [refactor candidates](refactoring.md):
+This is a standalone step that runs once, after every test written for this issue's AC set is green — it is not interleaved between individual RED→GREEN cycles in §3. Interleaving it per-test forces context-switching between "make it pass" and "make it clean" on every cycle, which bloats context and muddies the feedback signal each test is supposed to give. Look for [refactor candidates](refactoring.md):
 
 - [ ] Extract duplication
 - [ ] Deepen modules (move complexity behind simple interfaces)
