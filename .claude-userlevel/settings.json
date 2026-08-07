@@ -188,10 +188,6 @@
           {
             "type": "command",
             "command": "python scripts/record-decision-gate.py"
-          },
-          {
-            "type": "command",
-            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       }
