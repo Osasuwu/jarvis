@@ -78,7 +78,7 @@ gh issue view <N> --repo <owner/repo> --json number,body,labels \
 
 **Interactive `/implement` is NOT pre-dispatch-gated.** The gate guards
 *subagent* dispatch where no operator is present. Inline `/implement` keeps
-the SOUL.md grill-checkbox as its in-skill backstop and can run on any
+the grill trigger checkbox as its in-skill backstop and can run on any
 issue (including `status:owner-queue`-tagged ones) — the operator IS the
 gate. This is intentional asymmetry, not an oversight.
 
@@ -181,7 +181,7 @@ Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/dele
 
 **Pre-dispatch gate dominance**: when the gate's four artefacts are present
 (sandcastle label + no needs-* + `## Acceptance criteria` heading + decision
-UUID), the SOUL.md grill-checkbox below is **skipped** — the artefacts'
+UUID), the grill trigger checkbox below is **skipped** — the artefacts'
 presence is itself evidence the issue has been grilled and refined. The
 checkbox runs only as a **legacy backstop** for pre-#642 issues that have
 no artefacts and no `needs-grill` label (e.g. early milestones whose slices
@@ -196,7 +196,7 @@ for N in <N1> <N2> ...; do
 done
 ```
 
-1. **SOUL.md `### Grill trigger checkbox`** — answer per issue:
+1. **Grill trigger checkbox** (canonical text: `~/.claude/reference/engineering-principles.md` → *Grill trigger checkbox*; restated verbatim below because this is where it fires) — answer per issue:
 
    - Touches user-visible behavior? (not cosmetic / refactor / doc-fix)
    - Touches domain logic / algorithmics / physics?

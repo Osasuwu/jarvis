@@ -163,7 +163,7 @@ Nightly research runs at 03:00, topics configured in `config/research-topics.yam
 - Human review required before merge
 - Protected-file list — canonical in `docs/security/agent-boundaries.md`; enforced at runtime by `scripts/protected-files.py` (PreToolUse hook for Edit/Write/NotebookEdit)
 - Cost default: Haiku; escalate to Sonnet only when reasoning required
-- Secrets never touched — PreToolUse `scripts/secret-scanner.py` blocks Bash, GitHub writes, and memory_store calls that contain credential values
+- Secrets never touched — PreToolUse `scripts/secret-scanner.py` blocks Bash, GitHub writes, memory_store calls, and file writes (Edit/Write/NotebookEdit) that contain credential values; credential paths themselves are denied by `permissions.deny` globs in `~/.claude/settings.json`
 
 ## 9. Project structure
 

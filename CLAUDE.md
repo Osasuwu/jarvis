@@ -16,10 +16,11 @@ The SessionStart hook is registered in **user-level** `~/.claude/settings.json` 
 - Hook failed (no memory block) → fall back to `memory_recall` + `goal_list`.
 - Topic-specific lookups during the session still use `memory_recall(query=<topic>)`; only the baseline is pre-loaded.
 
-Two more pieces of always-on domain context ride bare `@import` instead of the hook, so they expand at launch and never enter the hook's drop lottery (#1417 — CONTEXT.md → *Context delivery*):
+The invariants ride a bare `@import` instead of the hook, so they expand at launch and never enter the hook's drop lottery (#1417 — CONTEXT.md → *Context delivery*):
 
 @docs/context/invariants.md
-@docs/context/glossary-index.md
+
+Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, repo-baseline, merge-gate vocabulary, workflow, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
 
 ## Project
 
@@ -51,7 +52,6 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 - **Native-first priority, not a ban.** Before writing a custom script/service (any language), check skills/MCP/hooks/subagents first; if native covers it cleanly, use native. Custom code is permitted on merit — when the native solution is awkward or incomplete. (Relaxed 2026-05-20 from the prior near-prohibition; decision `d9be0390`.) Existing justified custom code: `mcp-memory/server.py`, `src/risk_radar.py`.
 - **Check native capabilities first**: Telegram → Channels; scheduling → `/loop` or scheduled tasks; background → desktop agents.
-- **Cross-project impact + MCP portability**: `mcp-memory/server.py`, `.mcp.json` and the Supabase schema are shared with redrobot; `.mcp.json` must stay device-portable (env vars, never hardcoded usernames or absolute paths). Standing invariant — CONTEXT.md → *Invariants → Skills, infra & eval*.
 
 ## Related projects
 
@@ -65,13 +65,10 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 **Subagents deliver end-to-end** — SOUL §End-to-end ownership binds them too: feature → tests + error handling included; can't complete → document what's left. Don't return "done" if it only works in isolation.
 
-**Verification (non-negotiable)**: after any agent completes, run `git diff` in its working directory — never the self-report (CONTEXT.md → *Invariants → AFK & delegation*). Reports N files edited, diff shows 0 ⇒ fabricated.
-
 ## Memory
 
-- **Supabase** is the cross-device source of truth; file-based `~/.claude/projects/…/memory/` is device-local and does not sync (CONTEXT.md → *Invariants → Memory & persistence*). Access: `memory_store` / `memory_recall` via MCP locally, `execute_sql` via the Supabase connector from cloud tasks (`.mcp.json` isn't loaded there).
+- **Access**: `memory_store` / `memory_recall` via MCP locally, `execute_sql` via the Supabase connector from cloud tasks (`.mcp.json` isn't loaded there).
 - **Save immediately** after: decision, preference, architectural discussion, new fact, rejected approach (with why), working-style observation. Don't batch.
-- **`source_provenance` on every `memory_store`** — namespaced: `skill:<name>`, `session:<YYYY-MM-DD>`, `hook:<name>`, `user:explicit`, `episode:<id>`, or URL/`external:<system>`.
 - **Working state**: save to `working_state_jarvis` at natural breakpoints; `memory_delete` when done. After context compression → `memory_recall(query="working state")` first, then targeted file reads.
 
 ## Skill routing
@@ -80,8 +77,8 @@ Use skills — don't reinvent with raw tools.
 
 | Trigger | Skill |
 |---|---|
-| "реализуй #42" — implement single issue inline | `/implement` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
-| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
+| "реализуй #42" — implement single issue inline | `/implement` (TDD-mode auto-engages via the grill trigger checkbox + working_state UUIDs) |
+| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` (TDD-mode auto-engages via the grill trigger checkbox + working_state UUIDs) |
 | "проверь результаты" / scheduled post-delegation | `/verify` |
 | "что я делаю не так", "проанализируй сессии", "паттерны общения", weekly behavioral audit | `/reflect` (cross-session comms audit; old outcome-verification scope migrated to `/verify` + `/self-improve` per #510) |
 | "исследуй", "research", "сравни" | `/research` |
@@ -112,8 +109,8 @@ Use skills — don't reinvent with raw tools.
 Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
-- **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs it at start; rule and output routing live in SOUL §Grill trigger checkbox.
-- **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
+- **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs it at start. Both skills restate it verbatim in their own dispatch contracts, which is where it fires; the canonical text and output routing live in `~/.claude/reference/engineering-principles.md`.
+- **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the grill trigger checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 - **`/status` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `статус`, `status`, or `статус <repo>` (the word as a standalone command, optionally naming a tracked repo) route to `/status`. A sentence that merely contains the word — "какой статус у PR #123", "статус деплоя в логах", "status code 500", a quoted error string — is a normal request answered in-context, never a trigger for a repo-state investigation.
 
@@ -121,7 +118,7 @@ Rules:
 
 Three places work can land. Pick by **who's present** and **how the work was triggered**, not by what the work is.
 
-- **Interactive `/implement`** — operator present, one judgment-heavy issue, full SOUL loaded; SOUL §Grill trigger checkbox is the in-skill AFK-readiness backstop.
+- **Interactive `/implement`** — operator present, one judgment-heavy issue, full SOUL loaded; the grill trigger checkbox is the in-skill AFK-readiness backstop.
 - **`/delegate`** — operator present and chose to fan out; AFK-eligible issues → parallel sandcastle subagents, admitted by CONTEXT.md → *Pre-dispatch gate*. Operator-driven dispatch, **not** the orchestrator.
 - **Reactive-core orchestrator (M44)** — no operator; events cold-boot it and it triages **one** event into one of three dispositions, then hands off (CONTEXT.md → *orchestrator*, *Loop closure*).
 
@@ -137,7 +134,7 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
 
 - Branches from `main`. **PRs are for code, not for discussions.**
   - Code change → one issue, one PR; body includes `Closes #NNN`. Drive-by fixes without parent → create post-factum issue-bucket (see #183).
-  - **Consolidation / batch PR** (bundles or supersedes the work of multiple issues — e.g. a stacked refactor that absorbs sibling branches, or a PR whose siblings get closed as "shipped via #X") → the body MUST carry a `Closes #N` line for **every** absorbed issue (here "absorbed" = its entire scope ships in this PR, not merely referenced), not just the umbrella or the one whose branch you happened to be on. Auto-close (native *and* `pr-merged.yml`) fires only from the PR's own `closingIssuesReferences`, built solely from this PR body's closing keywords (`Closes/Fixes/Resolves #N` and their `close/closed/fix/fixed/resolve/resolved` variants) — an absorbed issue you don't list gets neither close path and silently stays open with stale `sandcastle`/`in-progress` labels (this is #948 Mode 2: PR #900 shipped #845/#846/#847/#859/#860 but listed only `Closes #851`, leaving 5 open). Cross-repo: `Closes owner/other#N` is **not** auto-closed by `pr-merged.yml` (its `GITHUB_TOKEN` is repo-scoped — it skips+warns); close a foreign absorbed issue manually. When you close a sibling PR as "superseded by #X", carry over **that sibling's own** issue-closing keywords into #X's body — e.g. if the sibling listed `Closes #845, Closes #846`, add those exact lines (NOT `Closes #<siblingPR-number>`, which resolves to the wrong issue). Caveat: `closingIssuesReferences` is frozen at merge time — if **#X is already merged**, editing its body is documentation-only and fires no close; close the absorbed issues directly with `gh issue close #N --reason completed`. Never rely on a prose "shipped via #X" note — it is invisible to the linkage.
+  - **Consolidation / batch PR** → the body carries a `Closes #N` line for **every** absorbed issue (absorbed = its entire scope ships here), not just the umbrella or the branch you happened to be on. Only the PR body's own closing keywords close anything; prose does not. Mechanism, cross-repo and already-merged caveats, superseded-sibling carryover: [`docs/reference/pr-issue-linkage.md`](docs/reference/pr-issue-linkage.md).
   - Hotfix (`priority:critical`) / refactor (`refactor:` title prefix) / `[no-issue]` marker → the three bypasses of the linked-issue requirement, enumerated in user-level CLAUDE.md gate 3 `require-linked-issue`. Commit-msg still needs `[no-issue]` when there's no parent issue (`.pre-commit-config.yaml` regex, #329).
   - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
   - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
@@ -168,13 +165,7 @@ The `Fix > track` rule does **not** override the rest of the development process
 
 ### Path-filtered CI guards require a meta-test (#326)
 
-Any workflow under `.github/workflows/` with a `paths:` filter that blocks PRs must ship with a co-located fixture test in `tests/ci/test_<name>_guard.py`. Convention: `.github/workflows/X-guard.yml` ⇒ `tests/ci/test_X_guard.py`.
-
-The test covers two dimensions:
-- **Config** — assert the workflow's `paths:` filter references the canonical file(s). If the canonical path changes, red CI forces the workflow to move with it. This is the exact class of bug that produced #289/#310/#311 (guard watched `supabase/schema.sql`, canonical was `mcp-memory/schema.sql` — guard silently passed for a sprint).
-- **Logic** — reimplement the guard's decision rule in Python, assert it blocks/allows the scenarios it claims to. `schema-drift-check` is the proof-of-concept; new path-filtered guards follow the same pattern.
-
-The meta-test suite runs via `.github/workflows/ci-meta.yml` on every PR (not itself path-filtered — that would be self-undermining).
+Enforced mechanically by [`tests/ci/test_guard_test_convention.py`](tests/ci/test_guard_test_convention.py) — it fails the PR, so you don't need this rule in your head. It cannot check the **logic** half (the decision rule blocks/allows what it claims); that's on you. Naming, scope and the #289/#310/#311 precedent: [`docs/reference/ci-guard-meta-tests.md`](docs/reference/ci-guard-meta-tests.md).
 
 ### Milestone vs pillar hygiene
 

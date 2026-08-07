@@ -139,6 +139,8 @@ Method (#1270): spawn an Agent-tool subagent under a hard **no-tool** rule and a
 | `~/.claude/DOCTRINE.md` | mid-prose `@DOCTRINE.md,` from user-level `CLAUDE.md` | **NO** — and see below |
 | SessionStart hook `additionalContext` (memory block) | hook stdout | **NO** |
 
+The table records the surfaces as they stood at probe time. `docs/context/glossary-index.md` has since been retired by #1418 (replaced by a pull pointer in `CLAUDE.md`); the row is kept because the measurement it reports is still the evidence for how a bare `@import` behaves.
+
 Three findings, in ascending order of consequence:
 
 1. **Always-loaded file surfaces are paid N times per fan-out.** Both `CLAUDE.md` levels and every *bare* `@import` under them are re-paid per subagent; hook-injected context is a one-time session cost regardless of fan-out. Budgeting implication tracked in **#1324**.
