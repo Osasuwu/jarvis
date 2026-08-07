@@ -40,6 +40,13 @@ param(
     # there to answer. Use bypassPermissions for genuinely unattended runs.
     [ValidateSet('acceptEdits', 'bypassPermissions', 'plan', 'default')]
     [string]$PermissionMode = 'acceptEdits',
+    # Off by default, deliberately. docs/reference/mcp-slim-profile.md suggests wiring
+    # config/mcp-slim.json in here, but that profile's ~90k baseline was measured
+    # inside a host-managed desktop session, where claude.ai connectors (Browser,
+    # visualize, ccd_*) dominate. Headless `claude -p` never loads those: measured
+    # 2026-08-08 on identical no-op prompts, slim 66 815 tokens vs full 65 555 - no
+    # gain, within noise. Pass a profile path to opt in anyway.
+    [string]$McpConfig = '',
     [string]$Cwd = (Get-Location).Path,
     [string]$LogDir = (Join-Path (Get-Location).Path 'logs/ralph-loop'),
     [switch]$DryRun
@@ -47,10 +54,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Count auto-compactions inside one iteration's own session. Transcripts live
-# under ~/.claude/projects/<mangled-cwd>/<session-id>.jsonl; glob on the session
-# id rather than reproducing the cwd-mangling scheme.
-function Get-IterationCompactions {
+# Read one iteration's own session transcript for the two numbers that say whether
+# the loop is working: how many times it autocompacted (must be 0), and how much of
+# the context window was already spent before it did anything (the startup baseline
+# that #1464's slim MCP profile exists to shrink).
+#
+# Transcripts live under ~/.claude/projects/<mangled-cwd>/<session-id>.jsonl; glob on
+# the session id rather than reproducing the cwd-mangling scheme.
+function Get-IterationTelemetry {
     param([string]$SessionId)
 
     if (-not $SessionId) { return $null }
@@ -60,11 +71,39 @@ function Get-IterationCompactions {
     $boundaries = Select-String -Path $transcript.FullName -Pattern '"subtype":"compact_boundary"' -AllMatches
     $auto = Select-String -Path $transcript.FullName -Pattern '"compactMetadata":\{"trigger":"auto"' -AllMatches
 
+    # Effective startup context = the first assistant turn's usage, per
+    # docs/reference/mcp-slim-profile.md.
+    $startCtx = $null
+    foreach ($line in [System.IO.File]::ReadLines($transcript.FullName)) {
+        if ($line -notmatch '"type":"assistant"') { continue }
+        try { $rec = $line | ConvertFrom-Json } catch { continue }
+        $u = $rec.message.usage
+        if (-not $u) { continue }
+        $startCtx = [int]$u.input_tokens + [int]$u.cache_read_input_tokens + [int]$u.cache_creation_input_tokens
+        break
+    }
+
     [pscustomobject]@{
         Total      = @($boundaries).Count
         Auto       = @($auto).Count
+        StartCtx   = $startCtx
         Transcript = $transcript.FullName
     }
+}
+
+# stderr is merged into the captured stream on purpose (hook failures and CLI
+# diagnostics belong in the iteration log), so the capture is NOT valid JSON as a
+# whole - a SessionEnd hook warning alone is enough to break a naive parse. Pull
+# out the single JSON result object instead of parsing the mixed stream.
+function Get-ResultJson {
+    param([string[]]$Raw)
+
+    $joined = ($Raw -join "`n")
+    try { return $joined | ConvertFrom-Json } catch {}
+    foreach ($line in ($Raw | Where-Object { $_ -match '^\s*\{.*\}\s*$' })) {
+        try { return $line | ConvertFrom-Json } catch {}
+    }
+    return $null
 }
 
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -136,8 +175,24 @@ if ($DryRun) {
     exit 0
 }
 
+$claudeArgs = @(
+    '-p'
+    '--output-format', 'json'
+    '--permission-mode', $PermissionMode
+    '--max-budget-usd', $MaxBudgetUsdPerIteration
+    '--model', $Model
+    '--add-dir', $Cwd
+)
+if ($McpConfig) {
+    # --mcp-config alone ADDS to the registered surface; only --strict-mcp-config
+    # makes it replace user scope, project .mcp.json, plugins and connectors.
+    # Without the second flag the profile buys nothing.
+    $claudeArgs += @('--mcp-config', $McpConfig, '--strict-mcp-config')
+}
+
 Write-Host "ralph-loop: task=`"$Task`"" -ForegroundColor Cyan
 Write-Host "ralph-loop: maxIterations=$MaxIterations model=$Model permissionMode=$PermissionMode budget/iter=`$$MaxBudgetUsdPerIteration" -ForegroundColor DarkGray
+Write-Host "ralph-loop: mcp=$(if ($McpConfig) { "$McpConfig (strict)" } else { 'full registered surface' })" -ForegroundColor DarkGray
 Write-Host "ralph-loop: logs -> $LogDir" -ForegroundColor DarkGray
 
 $ledger = @()
@@ -147,44 +202,39 @@ for ($i = 1; $i -le $MaxIterations; $i++) {
     Write-Host "=== ralph-loop iteration $i/$MaxIterations ===" -ForegroundColor Cyan
     $iterRaw = Join-Path $LogDir "$runId-iter$i.json"
 
-    $rawOutput = Get-Content -Path $promptFile -Raw | & claude -p `
-        --output-format json `
-        --permission-mode $PermissionMode `
-        --max-budget-usd $MaxBudgetUsdPerIteration `
-        --model $Model `
-        --add-dir $Cwd `
-        2>&1
+    $rawOutput = Get-Content -Path $promptFile -Raw | & claude @claudeArgs 2>&1
     $exitCode = $LASTEXITCODE
 
     $rawOutput | Out-File -FilePath $iterRaw -Encoding utf8
 
-    $resultObj = $null
-    try { $resultObj = ($rawOutput -join "`n") | ConvertFrom-Json } catch {}
+    $resultObj = Get-ResultJson -Raw $rawOutput
     $resultText = if ($resultObj -and $resultObj.result) { $resultObj.result } else { ($rawOutput -join "`n") }
 
     # Per-iteration telemetry: the point of the loop is one context per iteration,
     # so measure that instead of trusting it.
-    $compact = Get-IterationCompactions -SessionId $resultObj.session_id
-    $compactNote = if ($null -eq $compact) { 'transcript not found' }
-                   elseif ($compact.Auto -gt 0) { "$($compact.Auto) AUTO-COMPACTION(S)" }
+    $tel = Get-IterationTelemetry -SessionId $resultObj.session_id
+    $compactNote = if ($null -eq $tel) { 'transcript not found' }
+                   elseif ($tel.Auto -gt 0) { "$($tel.Auto) AUTO-COMPACTION(S)" }
                    else { 'none' }
+    $startNote = if ($tel -and $tel.StartCtx) { "$([math]::Round($tel.StartCtx / 1000))k" } else { 'n/a' }
 
     $ledger += [pscustomobject]@{
         Iter        = $i
         Session     = $resultObj.session_id
+        StartCtxK   = if ($tel -and $tel.StartCtx) { [math]::Round($tel.StartCtx / 1000) } else { $null }
         CostUsd     = if ($resultObj.total_cost_usd) { [math]::Round($resultObj.total_cost_usd, 3) } else { $null }
         Turns       = $resultObj.num_turns
-        Compactions = if ($compact) { $compact.Auto } else { $null }
+        Compactions = if ($tel) { $tel.Auto } else { $null }
         Status      = if ($resultText -match 'RALPH_STATUS:\s*(COMPLETE|CONTINUE)') { $Matches[1] } else { 'NONE' }
     }
 
     $costNote = if ($resultObj.total_cost_usd) { '$' + [math]::Round($resultObj.total_cost_usd, 3) } else { 'n/a' }
-    Write-Host "ralph-loop: iteration $i -> cost=$costNote turns=$($resultObj.num_turns) compactions=$compactNote" -ForegroundColor DarkGray
-    if ($compact -and $compact.Auto -gt 0) {
+    Write-Host "ralph-loop: iteration $i -> startCtx=$startNote cost=$costNote turns=$($resultObj.num_turns) compactions=$compactNote" -ForegroundColor DarkGray
+    if ($tel -and $tel.Auto -gt 0) {
         Write-Host "ralph-loop: WARNING - iteration $i autocompacted. The loop is not preventing compaction; shrink the per-iteration phase." -ForegroundColor Yellow
     }
 
-    Add-Content -Path $summaryLog -Value "--- iteration $i (session $($resultObj.session_id), cost $costNote, compactions $compactNote) ---`n$resultText`n"
+    Add-Content -Path $summaryLog -Value "--- iteration $i (session $($resultObj.session_id), startCtx $startNote, cost $costNote, compactions $compactNote) ---`n$resultText`n"
 
     if ($exitCode -ne 0) {
         # Distinguish 'ran out of money' from 'crashed' - both exit non-zero.

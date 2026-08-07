@@ -33,13 +33,30 @@ OAuth flow can't be driven non-interactively, and switching to API-key auth is o
 without explicit consent (metered billing invariant). Symptom to watch for: iteration 1 failing in
 ~30s with zero token usage. That's auth, not the task.
 
-## Per-iteration cost floor
+## Per-iteration startup floor
 
-Every iteration pays for a full MCP tool-schema load before doing any work. Measured 2026-08-08 on
-Main PC: a trivial no-op prompt burned 35 422 cache-creation + 33 107 cache-read tokens ≈ **$0.22**
-purely to boot. Budget accordingly — `-MaxBudgetUsdPerIteration` set too low produces
-`error_max_budget_usd` on startup overhead alone, which looks like a task failure but isn't.
-Reducing that floor is [#1464](https://github.com/Osasuwu/jarvis/issues/1464).
+Every iteration pays a fixed startup cost before doing any work. Measured 2026-08-08 on Main PC
+with a trivial no-op prompt: **~66k tokens and ~$0.21**, against a ~136k auto-compact trigger. So an
+iteration has roughly **70k of usable window** — that budget is what the one-phase-per-iteration
+rule is sized against.
+
+Budget accordingly: `-MaxBudgetUsdPerIteration` set too low produces `error_max_budget_usd` on
+startup overhead alone, which looks like a task failure but isn't.
+
+**The slim MCP profile does not help here.** [`mcp-slim-profile.md`](mcp-slim-profile.md) suggests
+wiring `--mcp-config config/mcp-slim.json --strict-mcp-config` into these iterations, but its ~90k
+baseline was measured *inside a host-managed desktop session*, where claude.ai connectors (Browser,
+visualize, `ccd_*`) dominate the tool surface. Headless `claude -p` never loads those. A/B on
+identical no-op prompts, same cwd, same model:
+
+| profile | startup context |
+|---|---|
+| `mcp-slim.json` + `--strict-mcp-config` | 66 815 |
+| full registered surface | 65 555 |
+
+No gain, within noise. The driver therefore leaves `-McpConfig` empty by default; pass a profile
+path to opt in. Note `--mcp-config` alone only *adds* servers — it needs `--strict-mcp-config` to
+replace the surface, and the driver passes both together or neither.
 
 ## Where it lives
 
@@ -89,14 +106,23 @@ counts `"compactMetadata":{"trigger":"auto"` records. Results land in a per-run 
 exit:
 
 ```
-Iter Session                              CostUsd Turns Compactions Status
----- -------                              ------- ----- ----------- ------
-   1 9dda69c2-3008-49d3-be73-7d0899eb8947    1.84    41           0 CONTINUE
+Iter Session                              StartCtxK CostUsd Turns Compactions Status
+---- -------                              --------- ------- ----- ----------- ------
+   1 9dda69c2-3008-49d3-be73-7d0899eb8947         66    1.84    41           0 CONTINUE
 ```
 
 A non-zero `Compactions` value is a **failure signal even when the iteration produced good work** —
 it means that iteration bit off more than one context, and the per-iteration phase needs to shrink.
 This is what makes jarvis#1461 AC3 measurable rather than a claim.
+
+`StartCtxK` is the same first-assistant-turn measurement `mcp-slim-profile.md` defines
+(`input + cache_read + cache_creation`), and it is what the usable-window budget is computed from —
+if it ever climbs, every iteration gets less room to work in before the numbers above go bad.
+
+One parsing caveat the driver handles: stderr is merged into the captured stream on purpose, so
+hook failures and CLI diagnostics land in the iteration log. That makes the capture invalid JSON as
+a whole — a single `SessionEnd hook … failed` warning is enough to break a naive
+`ConvertFrom-Json`. The driver extracts the one JSON result object out of the mixed stream instead.
 
 ## How to stop it
 
