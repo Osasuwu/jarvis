@@ -359,13 +359,22 @@ def test_escalation_notice_critical_pings_any_day():
         assert escalation_notice("critical", day) is EscalationNotice.TELEGRAM_NOW
 
 
+def test_escalation_notice_high_pings_any_day():
+    """AC1/AC2 (#1392): the immediate-notify floor is >= high, not == critical —
+    critical-only made TELEGRAM_NOW practically unreachable (no live producer
+    emits critical; escalate_to_human fail-safe events land at high/medium).
+    Decision db4495da-4746-43fd-a3c6-755fc24ea0a9."""
+    for day in (_FRIDAY, _SATURDAY, _SUNDAY, _MONDAY):
+        assert escalation_notice("high", day) is EscalationNotice.TELEGRAM_NOW
+
+
 def test_escalation_notice_noncritical_weekend_parks_to_monday():
-    assert escalation_notice("high", _SATURDAY) is EscalationNotice.PARK_MONDAY
-    assert escalation_notice("medium", _SUNDAY) is EscalationNotice.PARK_MONDAY
+    assert escalation_notice("medium", _SATURDAY) is EscalationNotice.PARK_MONDAY
+    assert escalation_notice("low", _SUNDAY) is EscalationNotice.PARK_MONDAY
 
 
 def test_escalation_notice_noncritical_weekday_sessionstart():
-    assert escalation_notice("high", _FRIDAY) is EscalationNotice.SESSIONSTART
+    assert escalation_notice("medium", _FRIDAY) is EscalationNotice.SESSIONSTART
     assert escalation_notice("low", _MONDAY) is EscalationNotice.SESSIONSTART
 
 
@@ -382,8 +391,9 @@ def test_dispatch_critical_fires_notifier():
 def test_dispatch_noncritical_weekend_does_not_ping():
     cli = _FakeClient()
     pinged: list[Decision] = []
-    # Unknown (event_type, severity) → fail-safe escalate at non-critical sev.
-    d = handle_event(_ev("some_unknown_event", "high"))
+    # Unknown (event_type, severity) → fail-safe escalate below the
+    # >=high immediate-notify floor (AC1/AC2, decision db4495da).
+    d = handle_event(_ev("some_unknown_event", "medium"))
     assert d.route is Route.ESCALATE
     res = dispatch(d, now=_SATURDAY, client=cli, notifier=pinged.append)
     assert res.notice is EscalationNotice.PARK_MONDAY

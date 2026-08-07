@@ -46,13 +46,12 @@ again wherever reactive core ends up driving multi-phase work:
   trivial no-op prompt: **~66k tokens and ~$0.21** against a ~136k auto-compact trigger
   — roughly 70k of usable window per fresh context. Any driver that re-spawns fresh
   sessions needs to budget against this floor.
-- **The slim MCP profile does not help headless sessions.** A/B on identical no-op
+- **The slim MCP profile did not help headless sessions.** A/B on identical no-op
   prompts, same cwd/model: `mcp-slim.json` + `--strict-mcp-config` measured 66 815
-  startup tokens vs 65 555 on the full registered surface — no gain, within noise. The
-  slim profile's real win (documented in
-  [`mcp-slim-profile.md`](mcp-slim-profile.md)) only shows up inside host-managed
-  desktop sessions, where claude.ai connectors (Browser, visualize, `ccd_*`) dominate
-  the tool surface; headless `claude -p` never loads those.
+  startup tokens vs 65 555 on the full registered surface — no gain, within noise. This
+  headless finding held up as the general one: the profile was later measured at ~0
+  token benefit overall and removed outright (jarvis#1471, decision `3e742a0e`) —
+  `config/mcp-slim.json` and `docs/reference/mcp-slim-profile.md` no longer exist.
 - **One phase per fresh context, not "make progress."** A prompt that just says
   "implement this issue" replays a no-op exit every round when the issue needs a grill
   artifact first (SOUL's grill trigger checkbox fires, `/implement` exits
