@@ -1,7 +1,7 @@
 ---
 name: improve-codebase-architecture
 description: Find deepening opportunities in a codebase using CONTEXT.md domain language + docs/adr/ decisions. Use for: improve architecture, find refactoring opportunities, consolidate tightly-coupled modules, make code more testable/AI-navigable.
-model: opus
+model: fable
 effort: xhigh
 ---
 

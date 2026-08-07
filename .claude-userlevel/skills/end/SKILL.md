@@ -1,6 +1,8 @@
 ---
 name: end
 description: "Session close. Default: full reconciliation (decision log, CONTEXT gap check, outcome enrichment, memory save, commit, handoff, ~5 min). With --quick: checkpoint + commit only (~30 sec). Triggers: 'end', 'end session', 'end quick', 'быстро закончим'."
+model: sonnet
+effort: low
 ---
 
 # End Session

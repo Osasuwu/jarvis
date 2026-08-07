@@ -1,6 +1,6 @@
 ---
 name: status
-model: claude-haiku-4-5
+model: haiku
 description: "User-facing repo-state read via status_digest MCP tool, rendered deterministically (0 LLM tokens by default) — health line + ranked 'Куда смотреть' + 'Аномалии' per repo. `--deep` adds LLM narration. Anchored routing: only `статус`/`status`/`статус <repo>` fire it."
 ---
 
