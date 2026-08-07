@@ -231,14 +231,119 @@ def _load_snapshot_from_local(session_id: str):
         return None
 
 
-def _format_recovery_section(snapshot: str) -> str:
+def _format_recovery_section(payload: str, session_id: str) -> str:
+    sid = _safe_session_id(session_id) or "unknown-session"
     return (
         "## Pre-Compact Recovery\n"
-        "Compaction happened earlier in this session — pre-compact snapshot "
-        "below. Treat this as authoritative history for anything older than "
-        "the summary above.\n\n"
-        f"{snapshot}"
+        "Compaction happened earlier — deterministic snapshot pointer below. "
+        f"The full row is `session_snapshot_{sid}` via `memory_get`.\n\n"
+        f"{payload}"
     )
+
+
+def _extract_snapshot_header(snapshot: str) -> str | None:
+    """Return the verbatim `# Session Snapshot — <sid>` line, if present.
+
+    `/end` resolves the session id from exactly this line, so the pointer
+    payload keeps it byte-stable (#1272 AC2).
+    """
+    for ln in snapshot.splitlines():
+        ln = ln.strip()
+        if ln.startswith("# Session Snapshot — "):
+            return ln
+    return None
+
+
+def _extract_branch(snapshot: str) -> str | None:
+    """Return the git branch the snapshot recorded, if present.
+
+    The snapshot writes `- **git branch:** `<branch>` — match the label
+    anywhere in the line so the leading list marker doesn't break extraction.
+    """
+    for ln in snapshot.splitlines():
+        ln = ln.strip()
+        if "**git branch:**" in ln:
+            return ln.split("**git branch:**", 1)[1].strip().strip("`")
+    return None
+
+
+def _read_compaction_count(session_id) -> int | None:
+    """Read the per-session compaction generation counter, or None.
+
+    Mirrors the PreCompact hook's counter file
+    (`~/.claude/compaction-counts/<sanitized_session_id>.txt`,
+    `pre-compact-backup.py` → `_bump_compaction_count`). Best-effort:
+    a missing/corrupt file yields None, never an exception.
+    """
+    sid = _safe_session_id(session_id)
+    if not sid:
+        return None
+    path = Path.home() / ".claude" / "compaction-counts" / f"{sid}.txt"
+    try:
+        return int(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _count_session_decisions(client, session_id) -> int | None:
+    """Count decision_made episodes stamped with this session id.
+
+    #1269 stamps the harness session id into `payload.session_id` of every
+    `record_decision` episode, so the count is a Postgres query keyed by
+    session id — no snapshot-text parsing (the parser reads text blocks only).
+    Best-effort: query failure yields None, never an exception.
+    """
+    sid = _safe_session_id(session_id)
+    if not sid:
+        return None
+    try:
+        result = (
+            client.table("episodes")
+            .select("id", count="exact")
+            .eq("kind", "decision_made")
+            .eq("payload->>session_id", sid)
+            .limit(1)
+            .execute()
+        )
+        return result.count if result is not None else None
+    except Exception:
+        return None
+
+
+def _compose_recovery_payload(
+    snapshot: str,
+    session_id: str,
+    *,
+    generation: int | None = None,
+    decision_count: int | None = None,
+    cwd: str | None = None,
+    transcript_path: str | None = None,
+) -> str:
+    """Compose the pointer + deterministic minimum snapshot payload (#1272).
+
+    Replaces the verbatim snapshot re-injection: the durable facts move to
+    deterministic fields and everything else becomes a pointer to the full
+    snapshot row (`session_snapshot_<sid>` via `memory_get`) / transcript.
+    The `# Session Snapshot — <sid>` header is kept byte-stable so `/end`
+    still resolves the session id.
+    """
+    sid = _safe_session_id(session_id) or "unknown-session"
+    header = _extract_snapshot_header(snapshot) or f"# Session Snapshot — {sid}"
+    # Plain labels (no markdown bold): the transcript path is long, and the
+    # payload must stay ≤ ~300 chars even with a UUID-length session id.
+    lines = [header, ""]
+    if generation is not None:
+        lines.append(f"- Gen: {generation}")
+    if decision_count is not None:
+        lines.append(f"- Decisions: {decision_count}")
+    if cwd:
+        lines.append(f"- cwd: `{cwd}`")
+    branch = _extract_branch(snapshot)
+    if branch:
+        lines.append(f"- branch: `{branch}`")
+    if transcript_path:
+        lines.append(f"- Transcript: `{transcript_path}`")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -484,9 +589,17 @@ def main():
         if compact_resume and session_id:
             snap = _load_snapshot_from_local(session_id)
             if snap:
+                payload = _compose_recovery_payload(
+                    snap,
+                    session_id,
+                    generation=_read_compaction_count(session_id),
+                    decision_count=None,
+                    cwd=hook_input.get("cwd") or "",
+                    transcript_path=hook_input.get("transcript_path") or "",
+                )
                 sections = [(
                     _PRIORITY_RECOVERY, "recovery",
-                    _format_recovery_section(snap), [],
+                    _format_recovery_section(payload, session_id), [],
                 )]
                 output, dropped_names, emitted_ids, emitted_chars = (
                     assemble_sections(sections)
@@ -510,14 +623,24 @@ def main():
     # 0. Pre-Compact Recovery — prepended before everything else on compact
     #    resume. Supabase first, local fallback second. Freshness guarded to
     #    avoid cross-run pollution when Claude Code reuses session_ids.
+    #    #1272: the push is now the pointer + deterministic minimum (≤~300
+    #    chars); the full snapshot stays in the row for /end's memory_get pull.
     if compact_resume and session_id:
         snapshot = _load_snapshot_from_supabase(client, session_id, project)
         if not snapshot:
             snapshot = _load_snapshot_from_local(session_id)
         if snapshot:
+            payload = _compose_recovery_payload(
+                snapshot,
+                session_id,
+                generation=_read_compaction_count(session_id),
+                decision_count=_count_session_decisions(client, session_id),
+                cwd=hook_input.get("cwd") or "",
+                transcript_path=hook_input.get("transcript_path") or "",
+            )
             sections.append((
                 _PRIORITY_RECOVERY, "recovery",
-                _format_recovery_section(snapshot), [],
+                _format_recovery_section(payload, session_id), [],
             ))
 
     # 1. User memories — who is the owner (always). Compact one-line format:

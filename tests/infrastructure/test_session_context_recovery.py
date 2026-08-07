@@ -440,11 +440,166 @@ def test_load_snapshot_from_local_rejects_path_traversal(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 # _format_recovery_section
 # ---------------------------------------------------------------------------
-def test_format_recovery_section_has_header_and_body():
-    out = sc._format_recovery_section("# body")
+def test_format_recovery_section_wraps_payload():
+    out = sc._format_recovery_section("# Session Snapshot — abc\n- Gen: 2", "abc")
     assert out.startswith("## Pre-Compact Recovery\n")
-    assert "# body" in out
-    assert "pre-compact snapshot" in out.lower()
+    assert "# Session Snapshot — abc" in out
+    assert "- Gen: 2" in out
+    assert "snapshot pointer" in out.lower()
+    assert "memory_get" in out
+    assert "session_snapshot_abc" in out
+
+
+# ---------------------------------------------------------------------------
+# _compose_recovery_payload — pointer + deterministic minimum (#1272)
+# ---------------------------------------------------------------------------
+_SNAPSHOT_BODY = (
+    "# Session Snapshot — sess-abc\n"
+    "- **Captured at:** 2026-08-01T00:00:00Z\n"
+    "- **Trigger:** auto\n"
+    "- **cwd:** `/home/x/jarvis`\n"
+    "- **git branch:** `feat/1272`\n"
+    "- **Entries parsed:** 10\n"
+)
+
+
+def test_compose_recovery_payload_header_verbatim_and_fields():
+    payload = sc._compose_recovery_payload(
+        _SNAPSHOT_BODY,
+        "sess-abc",
+        generation=3,
+        decision_count=4,
+        cwd="/home/x/jarvis",
+        transcript_path="/home/x/.claude/sess-abc.jsonl",
+    )
+    # AC2: /end resolves the session id from exactly this line — byte-stable.
+    assert payload.splitlines()[0] == "# Session Snapshot — sess-abc"
+    assert "- Gen: 3" in payload
+    assert "- Decisions: 4" in payload
+    assert "- cwd: `/home/x/jarvis`" in payload
+    assert "- branch: `feat/1272`" in payload
+    assert "- Transcript: `/home/x/.claude/sess-abc.jsonl`" in payload
+    # The full-row pointer is carried by the wrapper text (session_id passed to
+    # _format_recovery_section), not by the payload — keeps the payload small.
+    assert "**Full:**" not in payload
+
+
+def test_compose_recovery_payload_stays_under_300_chars():
+    # Worst realistic case: a UUID-length session id and a long transcript path.
+    sid = "d47e5fb3-4609-4af1-a271-88a29004c7b3"
+    payload = sc._compose_recovery_payload(
+        f"# Session Snapshot — {sid}\n- **git branch:** `feature/very-long-branch-name`\n",
+        sid,
+        generation=12,
+        decision_count=34,
+        cwd="/home/example/GitHub/jarvis",
+        transcript_path="/home/example/.claude/projects/-home-example-GitHub-jarvis/abc.jsonl",
+    )
+    assert len(payload) <= 300
+
+
+def test_compose_recovery_payload_header_fallback():
+    payload = sc._compose_recovery_payload("# no header here", "sess-xyz")
+    assert payload.splitlines()[0] == "# Session Snapshot — sess-xyz"
+
+
+def test_compose_recovery_payload_omits_unknown_fields():
+    payload = sc._compose_recovery_payload("# Session Snapshot — s", "s")
+    assert "- Gen:" not in payload
+    assert "- Decisions:" not in payload
+    assert "- cwd:" not in payload
+    assert "- Transcript:" not in payload
+    assert "**Full:**" not in payload
+
+
+def test_compose_recovery_payload_sanitizes_session_id():
+    payload = sc._compose_recovery_payload("# x", "../../evil")
+    assert payload.splitlines()[0] == "# Session Snapshot — unknown-session"
+    assert "unknown-session" in payload
+
+
+def test_extract_snapshot_header():
+    assert sc._extract_snapshot_header(_SNAPSHOT_BODY) == "# Session Snapshot — sess-abc"
+    assert sc._extract_snapshot_header("no header") is None
+
+
+def test_extract_branch():
+    assert sc._extract_branch(_SNAPSHOT_BODY) == "feat/1272"
+    assert sc._extract_branch("# no branch") is None
+
+
+def test_read_compaction_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(sc.Path, "home", lambda: tmp_path)
+    d = tmp_path / ".claude" / "compaction-counts"
+    d.mkdir(parents=True)
+    (d / "sid.txt").write_text("5", encoding="utf-8")
+    assert sc._read_compaction_count("sid") == 5
+
+
+def test_read_compaction_count_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(sc.Path, "home", lambda: tmp_path)
+    assert sc._read_compaction_count("sid") is None
+
+
+def test_read_compaction_count_corrupt(tmp_path, monkeypatch):
+    monkeypatch.setattr(sc.Path, "home", lambda: tmp_path)
+    d = tmp_path / ".claude" / "compaction-counts"
+    d.mkdir(parents=True)
+    (d / "sid.txt").write_text("garbage", encoding="utf-8")
+    assert sc._read_compaction_count("sid") is None
+
+
+class _FakeCountTable:
+    def __init__(self, owner):
+        self._owner = owner
+
+    def select(self, *a, **kw):
+        self._owner.calls.append(("select", a, kw))
+        return self
+
+    def eq(self, *a, **kw):
+        self._owner.calls.append(("eq", a, kw))
+        return self
+
+    def limit(self, *a, **kw):
+        self._owner.calls.append(("limit", a, kw))
+        return self
+
+    def execute(self):
+        self._owner.calls.append(("execute", (), {}))
+        return types.SimpleNamespace(data=[], count=self._owner.count)
+
+
+class _FakeCountClient:
+    def __init__(self, count):
+        self.count = count
+        self.calls = []
+
+    def table(self, name):
+        self.calls.append(("table", name))
+        return _FakeCountTable(self)
+
+
+def test_count_session_decisions():
+    client = _FakeCountClient(7)
+    assert sc._count_session_decisions(client, "sid-1") == 7
+    assert ("table", "episodes") in client.calls
+    assert ("eq", ("kind", "decision_made"), {}) in client.calls
+    assert ("eq", ("payload->>session_id", "sid-1"), {}) in client.calls
+
+
+def test_count_session_decisions_handles_error():
+    class _Boom:
+        def table(self, _):
+            raise RuntimeError("boom")
+
+    assert sc._count_session_decisions(_Boom(), "sid") is None
+
+
+def test_count_session_decisions_rejects_bad_sid():
+    client = _FakeCountClient(1)
+    assert sc._count_session_decisions(client, "../../evil") is None
+    assert client.calls == []
 
 
 # ---------------------------------------------------------------------------
