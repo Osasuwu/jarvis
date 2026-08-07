@@ -134,6 +134,7 @@ groups:
           - "diagnose"
           - "grill"
           - "improve-codebase-architecture"
+          - "prototype"
           - "reason"
           - "to-spec"
           - "to-tickets"
