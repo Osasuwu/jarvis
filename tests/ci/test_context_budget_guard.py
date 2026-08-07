@@ -265,6 +265,35 @@ class TestSelfLogJoinKey:
         assert entry["compact_resume"] is False
         assert "ts" in entry
 
+    def test_resumed_runs_share_the_pair_and_are_disambiguated_by_ts(self, tmp_path, monkeypatch):
+        """`(session_id, project)` is not unique -- `ts` is the third component.
+
+        Claude Code reuses session ids across `--resume` invocations (the same
+        fact `PRE_COMPACT_FRESHNESS_MINUTES` exists to cope with), so one
+        resumed session emits several rows sharing the pair. A pull-rate reader
+        keyed on the pair alone would collapse them into one inflated
+        denominator. Every row must therefore carry a parseable, timezone-aware
+        `ts`, and rows must be appended in non-decreasing time order so the
+        reader can window transcript pulls against them.
+        """
+        from datetime import datetime
+
+        log_path = tmp_path / "session-context-size.jsonl"
+        monkeypatch.setattr(sc, "_SELF_LOG_PATH", log_path)
+        sc._self_log(1, [], False, session_id="resumed", project="jarvis")
+        sc._self_log(2, [], True, session_id="resumed", project="jarvis")
+
+        rows = [json.loads(ln) for ln in log_path.read_text(encoding="utf-8").splitlines()]
+        assert len(rows) == 2
+        assert {(r["session_id"], r["project"]) for r in rows} == {("resumed", "jarvis")}
+
+        stamps = [datetime.fromisoformat(r["ts"]) for r in rows]
+        assert all(s.tzinfo is not None for s in stamps), (
+            "ts must be timezone-aware -- a naive stamp cannot be windowed "
+            "against transcript pulls across devices"
+        )
+        assert stamps == sorted(stamps)
+
     def test_still_never_raises_with_the_new_args(self, tmp_path, monkeypatch):
         blocked = tmp_path / "blocked"
         blocked.write_text("i am a file", encoding="utf-8")

@@ -32,7 +32,11 @@ _venv_py = _root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/
 # Guard: only re-exec when run as script. When imported (e.g. by tests via
 # importlib with a non-"__main__" module name), skip the re-exec so the
 # module's top-level sys.exit doesn't kill pytest collection.
-if __name__ == "__main__" and _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
+if (
+    __name__ == "__main__"
+    and _venv_py.exists()
+    and Path(sys.executable).resolve() != _venv_py.resolve()
+):
     # Forward argv (e.g. --smoke) across the re-exec — without this the flag is
     # silently dropped and the venv child runs the full script (#963 review).
     sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve()), *sys.argv[1:]]))
@@ -165,6 +169,7 @@ def _load_snapshot_from_supabase(client, session_id: str, project: str | None = 
     selection deterministic even when the filter leaves multiple rows.
     """
     from datetime import datetime, timedelta, timezone
+
     sid = _safe_session_id(session_id)
     if not sid:
         return None
@@ -185,11 +190,7 @@ def _load_snapshot_from_supabase(client, session_id: str, project: str | None = 
             )
             if proj:
                 query = query.eq("project", proj)
-            result = (
-                query.order("updated_at", desc=True)
-                .limit(1)
-                .execute()
-            )
+            result = query.order("updated_at", desc=True).limit(1).execute()
             if result.data:
                 break
     except Exception as e:
@@ -210,6 +211,7 @@ def _load_snapshot_from_supabase(client, session_id: str, project: str | None = 
 def _load_snapshot_from_local(session_id: str):
     """Return snapshot content from `.claude/session-snapshots/<session_id>.md` if fresh."""
     from datetime import datetime, timedelta, timezone
+
     sid = _safe_session_id(session_id)
     if not sid:
         return None
@@ -438,8 +440,17 @@ def _self_log(
     always present, null when unknown — a stable row schema lets the reader
     join without probing, and null is honest about an unattributable run in a
     way a missing key is not.
+
+    ``(session_id, project)`` is NOT unique per run. Claude Code reuses
+    session ids across ``--resume`` invocations (same reason
+    ``PRE_COMPACT_FRESHNESS_MINUTES`` exists), so one resumed session emits
+    several rows sharing the pair. ``ts`` is the third component: a reader
+    computing pull-rate must key on ``(session_id, project, ts)`` and window
+    transcript pulls against the row's ``ts``, or it will conflate distinct
+    resumed runs into one inflated denominator.
     """
     from datetime import datetime, timezone
+
     # session_id arrives over stdin from Claude Code; run it through the same
     # allowlist used everywhere else it acts as a key. A value that fails it
     # cannot join against anything, so it logs as null rather than as garbage.
@@ -476,9 +487,7 @@ def _run_smoke_check() -> None:
     Always exits 0; credential absence is reported but is config state, not an
     install failure (the installer owns the venv, not the owner's ``.env``).
     """
-    have_creds = bool(
-        os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_KEY")
-    )
+    have_creds = bool(os.environ.get("SUPABASE_URL") and os.environ.get("SUPABASE_KEY"))
     creds_note = "creds present" if have_creds else "creds absent (config pending)"
     # Emit to stderr: the installer's health-check runner redirects child stdout
     # to DEVNULL and captures only stderr (#963). A stdout print would be
@@ -498,11 +507,7 @@ def main():
 
     hook_input = _read_hook_input()
     compact_resume = _is_compact_resume(hook_input)
-    session_id = (
-        hook_input.get("session_id")
-        or hook_input.get("sessionId")
-        or ""
-    )
+    session_id = hook_input.get("session_id") or hook_input.get("sessionId") or ""
 
     # Resolved before the no-credentials early return below, not after it:
     # that branch also self-logs, and a row without `project` is unjoinable
@@ -527,13 +532,15 @@ def main():
                     cwd=hook_input.get("cwd") or "",
                     transcript_path=hook_input.get("transcript_path") or "",
                 )
-                sections = [(
-                    _PRIORITY_RECOVERY, "recovery",
-                    _format_recovery_section(payload, session_id), [],
-                )]
-                output, dropped_names, emitted_ids, emitted_chars = (
-                    assemble_sections(sections)
-                )
+                sections = [
+                    (
+                        _PRIORITY_RECOVERY,
+                        "recovery",
+                        _format_recovery_section(payload, session_id),
+                        [],
+                    )
+                ]
+                output, dropped_names, emitted_ids, emitted_chars = assemble_sections(sections)
                 _self_log(
                     emitted_chars,
                     dropped_names,
@@ -573,20 +580,28 @@ def main():
                 cwd=hook_input.get("cwd") or "",
                 transcript_path=hook_input.get("transcript_path") or "",
             )
-            sections.append((
-                _PRIORITY_RECOVERY, "recovery",
-                _format_recovery_section(payload, session_id), [],
-            ))
+            sections.append(
+                (
+                    _PRIORITY_RECOVERY,
+                    "recovery",
+                    _format_recovery_section(payload, session_id),
+                    [],
+                )
+            )
 
     # 1. User memories — who is the owner (always). Compact one-line format:
     #    full bodies rot the context; names + descriptions are enough to
     #    remind Jarvis what exists. Full content via memory_get on demand.
     section, ids = _query_memories(client, mem_type="user", limit=2, compact=True)
     if section:
-        sections.append((
-            _PRIORITY_USER_PROFILE, "user_profile",
-            "## User Profile\n" + section, ids,
-        ))
+        sections.append(
+            (
+                _PRIORITY_USER_PROFILE,
+                "user_profile",
+                "## User Profile\n" + section,
+                ids,
+            )
+        )
 
     # 2. Always-load memories — evergreen rules not tied to any single project.
     #    Everything else (feedback/decisions) is loaded task-aware via
@@ -596,23 +611,33 @@ def main():
     #    touched (#767) to avoid an access-bias feedback loop.
     section, _ids = _query_always_load(client, compact=True)
     if section:
-        sections.append((
-            _PRIORITY_ALWAYS_LOAD, "always_load",
-            "## Always-Load Rules\n" + section, [],
-        ))
+        sections.append(
+            (
+                _PRIORITY_ALWAYS_LOAD,
+                "always_load",
+                "## Always-Load Rules\n" + section,
+                [],
+            )
+        )
 
     # 3. Working state — ONLY when session is inside a known project dir.
     #     In a non-project cwd (e.g. scheduled research) working_state is noise.
     if project:
         section, ids = _query_memories(
-            client, mem_type="project", limit=1,
+            client,
+            mem_type="project",
+            limit=1,
             extra_filter=lambda q: q.eq("name", f"working_state_{project}"),
         )
         if section:
-            sections.append((
-                _PRIORITY_WORKING_STATE, "working_state",
-                f"## Working State ({project})\n" + section, ids,
-            ))
+            sections.append(
+                (
+                    _PRIORITY_WORKING_STATE,
+                    "working_state",
+                    f"## Working State ({project})\n" + section,
+                    ids,
+                )
+            )
 
     # 4. Active goals (always)
     goal_section = _query_goals(client)
@@ -624,11 +649,14 @@ def main():
     # 5a. Pending review count — one-line reminder when candidates await review
     pending_count = _query_pending_review_count(client, project)
     if pending_count > 0:
-        sections.append((
-            _PRIORITY_REMINDER, "pending_review",
-            "**Pending memory candidates:** "
-            f"{pending_count} (run `/learn` to review)", [],
-        ))
+        sections.append(
+            (
+                _PRIORITY_REMINDER,
+                "pending_review",
+                f"**Pending memory candidates:** {pending_count} (run `/learn` to review)",
+                [],
+            )
+        )
 
     # 5b. Architecture sweep recommendation -- recently closed milestones with
     #     enough closed slices to warrant a /improve-codebase-architecture run.
@@ -785,6 +813,7 @@ def _query_always_load(client, *, compact=False):
 def _parse_ts(val):
     """Parse Supabase timestamp (ISO str or datetime) to aware UTC datetime, or None."""
     from datetime import datetime, timezone
+
     if val is None:
         return None
     if isinstance(val, datetime):
@@ -809,22 +838,30 @@ def _query_pending_review_count(client, project) -> int:
     # Project-scoped candidates (only when inside a known project)
     if project:
         try:
-            result = client.rpc("memory_review_list", {
-                "queue": "candidate",
-                "project_filter": project,
-                "limit_count": 1000,
-            }).execute()
+            result = client.rpc(
+                "memory_review_list",
+                {
+                    "queue": "candidate",
+                    "project_filter": project,
+                    "limit_count": 1000,
+                },
+            ).execute()
             total += len(result.data or [])
         except Exception as e:
-            print(f"[session-context] pending-review count failed ({project}): {e}", file=sys.stderr)
+            print(
+                f"[session-context] pending-review count failed ({project}): {e}", file=sys.stderr
+            )
 
     # Global candidates (project IS NULL) — always query
     try:
-        result = client.rpc("memory_review_list", {
-            "queue": "candidate",
-            "project_filter": "",
-            "limit_count": 1000,
-        }).execute()
+        result = client.rpc(
+            "memory_review_list",
+            {
+                "queue": "candidate",
+                "project_filter": "",
+                "limit_count": 1000,
+            },
+        ).execute()
         total += len(result.data or [])
     except Exception as e:
         print(f"[session-context] pending-review count failed (global): {e}", file=sys.stderr)
@@ -869,6 +906,7 @@ def _fmt_memory_compact(m):
 # Goal queries
 # ---------------------------------------------------------------------------
 
+
 def _query_goals(client):
     """Query active goals, return formatted string or None."""
     try:
@@ -904,10 +942,7 @@ def _fmt_goal(g):
     if len(desc) > 100:
         desc = desc[:97] + "..."
     tail = f" — {desc}" if desc else ""
-    return (
-        f"- [{g['priority']}] {g['title']} "
-        f"(`{g['slug']}` | {scope} | {pct_str}{deadline}){tail}"
-    )
+    return f"- [{g['priority']}] {g['title']} (`{g['slug']}` | {scope} | {pct_str}{deadline}){tail}"
 
 
 # ---------------------------------------------------------------------------
@@ -953,7 +988,9 @@ def _check_milestone_sweep(
     try:
         result = subprocess.run(
             ["gh", "api", f"repos/{repo}/milestones?state=closed&per_page=100"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
@@ -985,12 +1022,14 @@ def _check_milestone_sweep(
         age_days = (now - closed_at).total_seconds() / 86400
         if age_days > window_days:
             continue
-        qualified.append((
-            m.get("number", 0),
-            m.get("title", f"Milestone #{m.get('number', '?')}"),
-            int(closed_issues),
-            age_days,
-        ))
+        qualified.append(
+            (
+                m.get("number", 0),
+                m.get("title", f"Milestone #{m.get('number', '?')}"),
+                int(closed_issues),
+                age_days,
+            )
+        )
 
     if not qualified:
         return None
@@ -1006,10 +1045,7 @@ def _check_milestone_sweep(
             f"consider `/improve-codebase-architecture`"
         )
     plural = "s" if len(qualified) > 1 else ""
-    return (
-        f"## Architecture Sweep{plural}\n"
-        f"{chr(10).join(lines)}"
-    )
+    return f"## Architecture Sweep{plural}\n{chr(10).join(lines)}"
 
 
 # ---------------------------------------------------------------------------
@@ -1069,7 +1105,11 @@ def _check_mirror_drift(
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=rr, capture_output=True, text=True, check=True, timeout=10,
+            cwd=rr,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
         ).stdout.strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
@@ -1080,7 +1120,11 @@ def _check_mirror_drift(
     try:
         count = subprocess.run(
             ["git", "rev-list", "--count", f"{installed}..HEAD"],
-            cwd=rr, capture_output=True, text=True, check=True, timeout=10,
+            cwd=rr,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
         ).stdout.strip()
     except (subprocess.SubprocessError, FileNotFoundError):
         count = "?"
