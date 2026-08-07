@@ -119,9 +119,59 @@ before re-enabling task drain, same procedure every time:
    escalation active but `task_port=None`, so nothing is enqueued and no
    `claude -p` worker spawns.
 3. **Default (no flags)** — full loop, task drain and worker spawn enabled.
-   Spawn concurrency itself is capped by `executor.spawn`'s
-   `DEFAULT_CONCURRENCY_CAP`; further worker-isolation hardening is tracked
-   separately in #1390.
+   This is now the supported steady state: each spawned worker runs isolated
+   in its own per-task git worktree (#1390 — see *Worker isolation* below),
+   so concurrent workers can no longer race on the same working tree. Spawn
+   concurrency is capped by `executor.spawn`'s `DEFAULT_CONCURRENCY_CAP`,
+   configurable via `REACTIVE_CONCURRENCY_CAP` (default 5;
+   `register-wake-driver.ps1` pins the unattended daemon to 2).
+
+### Worker isolation (#1390)
+
+Each spawned `claude -p` worker gets its own git worktree at
+`.reactive/worktrees/<task_id>` (`.reactive/` is gitignored), created by
+`task_dispatch._create_task_worktree` before `executor.spawn` and passed
+through as the child process's `cwd`. Concurrent workers write to separate
+working trees, so their edits/commits never collide, and none of the
+isolation is visible from the repo root.
+
+By default the worktree is created on a fresh branch `task/<task_id>`. If
+the dispatched goal carries an explicit `(branch=<name>)` directive naming a
+*different* branch, `_create_task_worktree` instead attaches to that
+existing branch rather than creating `task/<task_id>` — this is how a
+fresh-shape retry lands back on the root attempt's branch:
+`orchestrator._redrive_goal` pins the retry to `(branch=task/<root_task_id>)`
+precisely because that branch already exists (freed by the root attempt's
+failed-detach, below) and must be reused, not diverged from (PR #1450
+review, MEDIUM).
+
+At the terminal boundary, `task_dispatch._finalize_task_worktree` removes
+the worktree outright on success. On failure it detaches HEAD instead of
+deleting — this frees the `task/<task_id>` branch ref so a retry can attach
+it in a fresh worktree, while the failed worktree itself is retained on disk
+for post-mortem inspection.
+
+Every tick, `task_dispatch.sweep_task_worktrees` reaps `.reactive/worktrees/`
+before draining events: absent or terminal-success worktrees are pruned
+immediately; retained failures are kept up to a TTL and a count cap (oldest
+evicted first beyond the cap) so a string of failures can't accumulate
+disk forever. The sweep finishes with a best-effort `git worktree prune` and
+logs-and-continues on any single removal failure rather than aborting the
+tick.
+
+Spawned workers also run under a narrowed `--allowedTools` list —
+`Bash(git:*)` was replaced with an explicit subcommand allowlist (`status`,
+`diff`, `log`, `show`, `rev-parse`, `checkout`, `fetch`, `add`, `commit`,
+`push`); repo-global subcommands that would reach across worktrees
+(`git gc`, `git config`, `git worktree`, `git branch -D`, `git reset --hard`)
+are unreachable. `checkout`/`fetch` *are* reachable (PR #1450 review,
+MEDIUM) — a rework-shape goal (`/rework #N`) never carries a
+`(branch=...)` directive, so its worker starts on a fresh `task/<task_id>`
+branch with no path to the PR under rework unless it can check out and
+fetch the PR's branch itself. Both are safe to expose: `checkout` is
+worktree-local (git refuses to check out a branch already checked out in a
+sibling worktree) and `fetch` only ever updates remote-tracking refs, never
+local branches.
 
 ## Production deploy / teardown
 

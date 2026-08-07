@@ -83,6 +83,42 @@ def test_spawn_allowlist_excludes_dangerous_permissions() -> None:
             )
 
 
+def test_spawn_allowlist_replaces_bare_git_wildcard() -> None:
+    """AC7 (#1390): a worktree isolates the working tree, not the repo — `git
+    gc`, `git config`, `git worktree`, `git branch -D`, and `git reset --hard`
+    all remain repo-global and reach every sibling worktree. The bare
+    `Bash(git:*)` wildcard must be replaced with an explicit subcommand list
+    that cannot reach any of them.
+    """
+    from agents.executor import _SPAWN_ALLOWED_TOOLS
+
+    assert "Bash(git:*)" not in _SPAWN_ALLOWED_TOOLS
+
+    git_tools = [tool for tool in _SPAWN_ALLOWED_TOOLS if tool.startswith("Bash(git")]
+    assert git_tools, "expected at least one scoped git entry in the allowlist"
+
+    unreachable_subcommands = ("gc", "config", "worktree", "branch", "reset")
+    for tool in git_tools:
+        for sub in unreachable_subcommands:
+            assert f"git {sub}" not in tool, (
+                f"Repo-global git subcommand '{sub}' reachable via allowlist entry '{tool}'"
+            )
+
+
+def test_spawn_allowlist_includes_checkout_and_fetch() -> None:
+    """PR #1450 review (MEDIUM): a rework-shape goal never carries a
+    (branch=...) directive (task_dispatch._augment_branch_directive), so its
+    worker starts on a fresh task/<task_id> branch with no path to the PR
+    under rework unless it can `checkout`/`fetch`. Both are worktree-local
+    (`checkout`) or read-only-remote (`fetch`) — safe, unlike the repo-global
+    subcommands excluded above.
+    """
+    from agents.executor import _SPAWN_ALLOWED_TOOLS
+
+    assert "Bash(git checkout:*)" in _SPAWN_ALLOWED_TOOLS
+    assert "Bash(git fetch:*)" in _SPAWN_ALLOWED_TOOLS
+
+
 # ---------------------------------------------------------------------------
 # _resolve_claude_binary
 # ---------------------------------------------------------------------------
@@ -301,6 +337,78 @@ def test_spawn_uses_resolved_binary_path(
     assert argv[argv.index("--permission-mode") + 1] == "acceptEdits"
     assert "--allowedTools" in argv
     assert "--dangerously-skip-permissions" not in argv
+
+
+def test_spawn_passes_cwd_to_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """AC1 (#1390): spawn passes an explicit cwd through to Popen.
+
+    No code path may rely on inheriting the driver's cwd — the worker must
+    run inside the caller-supplied working directory (a per-task worktree,
+    created upstream in task_dispatch).
+    """
+    from agents.executor import spawn
+
+    fake = tmp_path / "resolved-claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+
+    worktree_dir = tmp_path / "worktree-task-42"
+    worktree_dir.mkdir()
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "test",
+        cwd=str(worktree_dir),
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
+
+    assert result.proc is not None, "spawn should not be throttled"
+    assert len(captured.calls) == 1
+    assert captured.calls[0].get("cwd") == str(worktree_dir)
+
+
+def test_spawn_prepends_venv_and_node_modules_to_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """AC2 (#1390): a worktree cwd lacks .venv/node_modules (gitignored),
+
+    so spawn prepends the MAIN checkout's .venv/Scripts and
+    node_modules/.bin to the worker's PATH — ahead of the inherited PATH —
+    so a worker running inside a fresh worktree can still find pytest/npm.
+    """
+    import agents.executor as executor_module
+    from agents.executor import spawn
+
+    fake = tmp_path / "resolved-claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+    monkeypatch.setenv("PATH", "C:\\inherited\\bin")
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "test",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
+
+    assert result.proc is not None, "spawn should not be throttled"
+    path = captured.calls[0]["env"]["PATH"]
+    venv_scripts = os.path.join(executor_module._REPO_ROOT, ".venv", "Scripts")
+    node_bin = os.path.join(executor_module._REPO_ROOT, "node_modules", ".bin")
+    venv_idx = path.find(venv_scripts)
+    node_idx = path.find(node_bin)
+    inherited_idx = path.find("C:\\inherited\\bin")
+    assert venv_idx != -1, f"venv Scripts dir missing from PATH: {path!r}"
+    assert node_idx != -1, f"node_modules/.bin missing from PATH: {path!r}"
+    assert venv_idx < inherited_idx, "venv Scripts must come ahead of inherited PATH"
+    assert node_idx < inherited_idx, "node_modules/.bin must come ahead of inherited PATH"
 
 
 def test_spawn_passes_issue_bearing_goal_verbatim(

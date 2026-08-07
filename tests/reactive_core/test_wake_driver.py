@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import subprocess
 import tomllib
 import types
 from logging.handlers import RotatingFileHandler
@@ -24,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from agents import task_dispatch as td
 from agents import wake_driver
 from agents.task_dispatch import TaskQueuePort, TrackedProc
 
@@ -409,6 +411,7 @@ class _RecordingTaskQueue:
         self._stale_claimed = stale_claimed
         self._stale_running = list(stale_running or [])
         self.transitions: list[tuple[str, str, str | None]] = []
+        self.statuses: dict[str, str] = {}
 
     def claim_next(self, *, assignee: str):
         for i, r in enumerate(self._pending):
@@ -436,6 +439,9 @@ class _RecordingTaskQueue:
     def requeue_running(self, task_id: str) -> bool:
         self._log.append("task_requeue")
         return True
+
+    def get_status(self, task_id: str) -> str | None:
+        return self.statuses.get(task_id)
 
 
 def test_recording_task_queue_conforms_to_the_port_protocol():
@@ -532,6 +538,10 @@ def test_tick_without_task_port_is_event_only():
     assert result.tasks_failed == 0
     assert result.tasks_done == 0
     assert result.tasks_failed_exit == 0
+    assert result.worktrees_pruned == 0
+    assert result.worktrees_retained == 0
+    assert result.worktrees_ttl_pruned == 0
+    assert result.worktrees_cap_evicted == 0
 
 
 def test_tick_reports_task_counts():
@@ -718,6 +728,137 @@ def test_run_forwards_task_thresholds_to_tick():
     )
 
     assert seen == {"claimed": 111, "running": 222}
+
+
+# --- #1390 AC6: tick wires the on-disk task-worktree sweep (Step 2a) --------
+
+
+def _init_git_repo(path) -> None:
+    """A minimal real git repo with one commit on main, so a later
+    ``_create_task_worktree`` has something to branch from."""
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=path, check=True)
+    (path / "README.md").write_text("stub\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "init",
+        ],
+        cwd=path,
+        check=True,
+    )
+
+
+def test_tick_sweeps_task_worktrees_when_task_port_present(tmp_path, monkeypatch):
+    # AC6: Step 2a must actually run sweep_task_worktrees against the on-disk
+    # tree when task_port is supplied, and fold its result into the
+    # TickResult — the standalone function already has direct unit coverage
+    # (test_agents_task_dispatch.py); this proves the wiring, not the logic.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+    td._create_task_worktree("orphan")  # no queue row below -> absent -> pruned
+
+    q = FakeEventQueue([])
+    tq = _RecordingTaskQueue([])  # statuses={} -> get_status("orphan") is None
+
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+    )
+
+    assert result.worktrees_pruned == 1
+    assert result.worktrees_retained == 0
+    assert result.worktrees_ttl_pruned == 0
+    assert result.worktrees_cap_evicted == 0
+    assert not (repo / ".reactive" / "worktrees" / "orphan").exists()
+
+
+def test_tick_worktree_sweep_failure_does_not_block_drains(monkeypatch):
+    # A worktree-sweep outage (task-store or git) in Step 2a must not starve
+    # the event drain (Step 3) or the task drain (Step 4) — same isolation
+    # contract as the other task-side steps.
+    def _boom(*_a, **_k):
+        raise RuntimeError("git worktree prune unreachable")
+
+    monkeypatch.setattr(wake_driver, "sweep_task_worktrees", _boom)
+
+    log: list = []
+    q = FakeEventQueue([_ev("a")])
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+    )
+
+    assert result.processed == 1  # event drain still ran
+    assert "task_drain" in log  # task drain still ran
+    assert result.worktrees_pruned == 0
+    assert result.worktrees_retained == 0
+    assert result.worktrees_ttl_pruned == 0
+    assert result.worktrees_cap_evicted == 0
+
+
+def test_run_forwards_task_worktree_params_to_tick(monkeypatch):
+    # The worktree retention seconds/cap/clock knobs must reach
+    # sweep_task_worktrees via tick — a partial forward would silently apply
+    # the module defaults instead of what main() (or a test) injected.
+    seen: dict = {}
+
+    def _fake_sweep(port, *, retention_seconds, retention_cap, now):
+        seen["retention_seconds"] = retention_seconds
+        seen["retention_cap"] = retention_cap
+        seen["now"] = now
+        return td.WorktreeSweepResult(pruned=0, retained=0, ttl_pruned=0, cap_evicted=0)
+
+    monkeypatch.setattr(wake_driver, "sweep_task_worktrees", _fake_sweep)
+
+    def fake_now() -> float:
+        return 12345.0
+
+    q = FakeEventQueue([])
+    q.wake_signals = [False]
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] <= 1
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=_RecordingTaskQueue([]),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_worktree_retention_seconds=111,
+        task_worktree_retention_cap=7,
+        task_worktree_now=fake_now,
+    )
+
+    assert seen["retention_seconds"] == 111
+    assert seen["retention_cap"] == 7
+    assert seen["now"] is fake_now
 
 
 # --- #921 AC2/AC3/AC8: completion poll closes running→done in the tick ------

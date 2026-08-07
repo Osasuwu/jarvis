@@ -99,7 +99,10 @@ function Format-WakeDriverActionArgs {
     # PowerShell string -- nesting double quotes here breaks Windows argv
     # parsing instead (the bug fixed in this PR's own history).
     $escapedPythonExe = $PythonExe -replace "'", "''"
-    $innerCommand = "`$env:JARVIS_PRINCIPAL = 'autonomous'; & '$escapedPythonExe' -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
+    # REACTIVE_CONCURRENCY_CAP=2 (#1390 AC8) pins the autonomous driver's
+    # sandcastle concurrency lower than the interactive-session default (5) --
+    # this is an unattended box, so a smaller blast radius per tick is safer.
+    $innerCommand = "`$env:JARVIS_PRINCIPAL = 'autonomous'; `$env:REACTIVE_CONCURRENCY_CAP = '2'; & '$escapedPythonExe' -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
 
     return @(
         '-NoProfile',
