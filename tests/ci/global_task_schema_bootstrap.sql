@@ -56,7 +56,6 @@ create table if not exists events (
   title text not null,
   payload jsonb default '{}',
 
-  processed boolean not null default false,
   processed_at timestamptz,
   processed_by text,
   action_taken text,
