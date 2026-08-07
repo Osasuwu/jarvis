@@ -21,8 +21,8 @@ strip** — measured 2026-08-08 (#1461), A/B on identical no-op prompts, same cw
 66 815 tokens with the slim profile vs 65 555 on the full registered surface. No gain,
 within noise. The ~90k baseline below is a *host-managed desktop session* number, where
 claude.ai connectors (Browser, visualize, `ccd_*`) dominate the surface; headless never
-loads those. `scripts/ralph-loop.ps1` therefore exposes `-McpConfig` but leaves it empty by
-default — see [`ralph-loop.md`](ralph-loop.md) → *Per-iteration startup floor*.
+loads those — see [`ralph-loop.md`](ralph-loop.md) (retired driver, findings kept) →
+*Per-iteration/session startup floor* for the full headless measurement.
 
 Semantics (per Claude Code CLI reference, verified 2026-08-08): `--mcp-config` alone
 **adds** to registered servers; paired with `--strict-mcp-config` it **replaces** all
