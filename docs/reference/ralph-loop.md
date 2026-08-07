@@ -97,6 +97,16 @@ Chaining phases inside one iteration is prohibited by the prompt for the same re
 at all: chaining is what fills the context window. A short iteration that ends cleanly beats a long
 one that compacts.
 
+### HITL phases block the loop — `RALPH_STATUS: BLOCKED`
+
+Some phases end at a human: `/grill` waits on owner answers, a PR waits on review sign-off. A fresh
+iteration cannot manufacture that input, and `CONTINUE` would make the driver re-spawn a full-price
+iteration every round just to re-discover the same missing answer (observed on the first real run:
+iteration 1 of #1455 correctly ran `/grill`, posted its questions to the issue for async reply, and
+had nowhere to go next). So the sentinel set is three-valued: `COMPLETE`, `CONTINUE`, and `BLOCKED` —
+the latter meaning "waiting on a human, stop the loop." The driver exits 3 on it; answer what the
+iteration asked for (the summary log names it), then re-run the same command to continue.
+
 ## Measuring the no-compaction claim
 
 The loop's whole premise is one context per iteration, so the driver verifies it instead of
@@ -131,10 +141,18 @@ it already wrote to `working_state_jarvis` and git stays; nothing is rolled back
 re-run the same command — the next iteration recalls `working_state_jarvis` and continues from
 there.
 
-The driver also stops itself and exits non-zero on: a failed iteration (`claude` exit code != 0), a
-missing status sentinel (treated as a stall), or reaching `-MaxIterations` without `COMPLETE`. In
-every case, check `logs/ralph-loop/<run-id>-summary.log` before re-running — state already
-persisted in `working_state_jarvis`, so a re-run is a genuine continuation, not a restart.
+The driver also stops itself and exits non-zero on: a failed iteration (`claude` exit code != 0,
+exit 1), a missing status sentinel (treated as a stall, exit 1), `RALPH_STATUS: BLOCKED` (waiting on
+a human, exit 3), or reaching `-MaxIterations` without `COMPLETE` (exit 2). In every case, check
+`logs/ralph-loop/<run-id>-summary.log` before re-running — state already persisted in
+`working_state_jarvis`, so a re-run is a genuine continuation, not a restart.
+
+One host-specific hazard the driver defuses itself: PowerShell wraps a native command's stderr lines
+in ErrorRecords under `2>&1`, and a host running `$ErrorActionPreference = 'Stop'` (e.g. the Claude
+Code PowerShell tool) turns the first such record into a terminating error — a single benign
+`SessionEnd hook … failed` warning killed the whole driver mid-iteration on the first real run,
+losing a completed iteration's result. The invocation now relaxes the preference around the native
+call only and normalizes the stream to plain strings.
 
 Budget exhaustion and a genuine crash both exit non-zero, so the driver reads `subtype` out of the
 result JSON and reports them differently — `error_max_budget_usd` prints an explicit "raise

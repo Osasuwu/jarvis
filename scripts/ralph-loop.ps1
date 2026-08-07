@@ -163,8 +163,15 @@ Your entry must carry, explicitly:
 
 ## 5. End with exactly one status line, nothing after it
 
-- Every acceptance criterion met AND verified: RALPH_STATUS: COMPLETE
-- Otherwise:                                    RALPH_STATUS: CONTINUE
+- Every acceptance criterion met AND verified:            RALPH_STATUS: COMPLETE
+- Blocked on a HUMAN (owner answer to grill questions, design sign-off, PR review)
+  and NO phase can proceed without it - name what you are
+  waiting for and where it was requested, then emit:      RALPH_STATUS: BLOCKED
+- Otherwise:                                              RALPH_STATUS: CONTINUE
+
+BLOCKED matters: without it the driver would re-spawn you every round to re-discover
+the same missing human input, burning a full startup cost each time for zero progress.
+Emitting CONTINUE while waiting on a human is a defect, not optimism.
 "@
 
 Set-Content -Path $promptFile -Value $prompt -Encoding utf8
@@ -202,8 +209,17 @@ for ($i = 1; $i -le $MaxIterations; $i++) {
     Write-Host "=== ralph-loop iteration $i/$MaxIterations ===" -ForegroundColor Cyan
     $iterRaw = Join-Path $LogDir "$runId-iter$i.json"
 
-    $rawOutput = Get-Content -Path $promptFile -Raw | & claude @claudeArgs 2>&1
+    # Native stderr under 2>&1 arrives as ErrorRecords, and under a host running
+    # $ErrorActionPreference = 'Stop' the first hook warning on stderr terminates
+    # the whole driver mid-iteration (bitten 2026-08-08: iteration 1 of the first
+    # real run did 9 minutes of good work and the driver lost the result). Relax
+    # the preference around the native call only, and normalize every record to a
+    # plain string so the log and the JSON extraction see one uniform stream.
+    $eapBefore = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    $rawOutput = @(Get-Content -Path $promptFile -Raw | & claude @claudeArgs 2>&1 | ForEach-Object { "$_" })
     $exitCode = $LASTEXITCODE
+    $ErrorActionPreference = $eapBefore
 
     $rawOutput | Out-File -FilePath $iterRaw -Encoding utf8
 
@@ -225,7 +241,7 @@ for ($i = 1; $i -le $MaxIterations; $i++) {
         CostUsd     = if ($resultObj.total_cost_usd) { [math]::Round($resultObj.total_cost_usd, 3) } else { $null }
         Turns       = $resultObj.num_turns
         Compactions = if ($tel) { $tel.Auto } else { $null }
-        Status      = if ($resultText -match 'RALPH_STATUS:\s*(COMPLETE|CONTINUE)') { $Matches[1] } else { 'NONE' }
+        Status      = if ($resultText -match 'RALPH_STATUS:\s*(COMPLETE|BLOCKED|CONTINUE)') { $Matches[1] } else { 'NONE' }
     }
 
     $costNote = if ($resultObj.total_cost_usd) { '$' + [math]::Round($resultObj.total_cost_usd, 3) } else { 'n/a' }
@@ -252,6 +268,14 @@ for ($i = 1; $i -le $MaxIterations; $i++) {
         Write-Host "ralph-loop: task reported COMPLETE after $i iteration(s)." -ForegroundColor Green
         $ledger | Format-Table -AutoSize | Out-String | Write-Host
         exit 0
+    } elseif ($resultText -match 'RALPH_STATUS:\s*BLOCKED') {
+        # A HITL phase (grill answers, design sign-off, PR review) is waiting on a
+        # human. Re-spawning fresh iterations cannot unblock it - each would burn a
+        # full startup cost to re-discover the same missing input. Stop cleanly;
+        # re-run the same command after the human input lands.
+        Write-Host "ralph-loop: iteration $i reports BLOCKED on human input. Stopping - answer what it asked for (see $summaryLog), then re-run the same command to continue." -ForegroundColor Yellow
+        $ledger | Format-Table -AutoSize | Out-String | Write-Host
+        exit 3
     } elseif ($resultText -notmatch 'RALPH_STATUS:\s*CONTINUE') {
         Write-Host "ralph-loop: iteration $i produced no status sentinel - treating as a stall, stopping. See $iterRaw" -ForegroundColor Red
         $ledger | Format-Table -AutoSize | Out-String | Write-Host
