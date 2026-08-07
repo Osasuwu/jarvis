@@ -185,7 +185,8 @@ of a missing field, fix the call and retry — do not skip the write.
   - `CLAUDE.md`, `config/SOUL.md`, `CONTEXT.md`
   - `mcp-memory/server.py`
   - anything under `.github/workflows/`
-  - any `.env*` file other than `.env.example`
+  - any `.env*` file, `.env.example` included — the `Edit(**/.env.*)` deny
+    globs the whole family and cannot carry an exception (#1452)
 
   Note: at sandbox-ready time the runtime overwrites the worktree's `.mcp.json`
   with the container-scoped MCP config (`/opt/sandcastle/container-mcp.json`).
