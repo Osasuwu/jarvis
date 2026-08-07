@@ -25,7 +25,7 @@ A wizard is ephemeral by default — built for one run, saved to a scratch or `s
 
 Work out every manual step the human must take and every value that gets captured along the way. Read the repo first — don't ask cold:
 
-- For setup: `.env`, `.env.example`, `.env.*`, `README`, `docker-compose*`, framework config, and `.github/workflows/*` (every `secrets.*` / `vars.*` reference is a value the wizard must produce).
+- For setup: `README`, `docker-compose*`, framework config, and `.github/workflows/*` (every `secrets.*` / `vars.*` reference is a value the wizard must produce). The `.env*` family is **not** readable — including `.env.example`: the permission deny is a glob over the whole family and deny rules cannot carry allowlist exceptions, so the secret-free template shares the real files' fate. When the var list exists only in `.env.example`, ask the user to paste it; it holds no values, so pasting is safe.
 - For a migration or transition: the current state, the target state, and the irreversible actions between them.
 
 Then show the user the ordered list of stages and the values each produces, and confirm — they may add, drop, or reorder.

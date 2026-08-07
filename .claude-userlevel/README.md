@@ -45,6 +45,17 @@ server), it is replaced on apply. Backup preserves it under
 `.claude.backup-<ts>/`. Users wanting extra logic for jarvis-owned events
 should compose downstream (e.g. add logic inside `session-context.py`).
 
+**ceiling: the `.env*` permission deny is a glob, so `.env.example` is denied
+too.** `Read(**/.env.*)` / `Edit(**/.env.*)` in `settings.json` swallow the
+secret-free template along with the real files. Permission rules are evaluated
+deny → ask → allow with first-match-wins and specificity does not reorder them,
+so a deny cannot carry an allowlist exception and there is no negation operator
+to write one with. Accepted deliberately in #1452 — a readable `.env.backup` is
+the worse failure. Upgrade path: narrow the deny only if the permission system
+gains per-rule exceptions; until then consumers take env-var names from
+`README` / `docker-compose*` / `.github/workflows/*`, or ask the user to paste
+the template (it holds no values, so pasting is safe).
+
 Relative paths (`scripts/...`, `config/...`) in the source templates are
 rewritten to absolute paths inside the jarvis repo at install time by
 `installer.py:_transform_json_paths`. So these templates stay readable as
