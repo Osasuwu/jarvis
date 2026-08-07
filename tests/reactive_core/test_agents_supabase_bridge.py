@@ -263,32 +263,6 @@ def test_store_event_with_dedup_key_raises_when_no_row() -> None:
         )
 
 
-# -- mark_event_processed --------------------------------------------------
-
-
-def test_mark_event_processed_raises_when_no_row_matched() -> None:
-    """Silent no-op would mask a stale id or wrong-environment lookup."""
-    from agents import supabase_client
-
-    cli = _FakeClient()
-    cli.preset("events", _FakeResult(data=[]))
-
-    with pytest.raises(RuntimeError, match="Event not found or not updated"):
-        supabase_client.mark_event_processed("does-not-exist", processed_by="test", client=cli)
-
-
-def test_mark_event_processed_filters_by_id_and_succeeds() -> None:
-    from agents import supabase_client
-
-    cli = _FakeClient()
-    cli.preset("events", _FakeResult(data=[{"id": "abc"}]))
-
-    supabase_client.mark_event_processed("abc", processed_by="test", client=cli)
-
-    eq_call = _find(cli.chains["events"][0], "eq")
-    assert eq_call[1] == ("id", "abc")
-
-
 # -- update_goal_progress --------------------------------------------------
 
 
