@@ -162,6 +162,8 @@ def test_subprocess_blocks_empty_with_deny_json():
 
 
 def test_subprocess_passes_with_uuids():
+    # No deny — allow path now always stamps cwd (#1423), so this is no
+    # longer a fully-silent exit; assert the gate passed, not the wire shape.
     rc, out = _run_hook(
         {
             "tool_name": "mcp__memory__record_decision",
@@ -169,7 +171,9 @@ def test_subprocess_passes_with_uuids():
         }
     )
     assert rc == 0
-    assert out == ""
+    inner = json.loads(out)["hookSpecificOutput"]
+    assert "permissionDecision" not in inner
+    assert inner["updatedInput"]["memories_used"] == ["11111111-1111-1111-1111-111111111111"]
 
 
 def test_subprocess_passes_with_intentionally_empty():
@@ -180,7 +184,9 @@ def test_subprocess_passes_with_intentionally_empty():
         }
     )
     assert rc == 0
-    assert out == ""
+    inner = json.loads(out)["hookSpecificOutput"]
+    assert "permissionDecision" not in inner
+    assert inner["updatedInput"]["intentionally_empty"] is True
 
 
 def test_subprocess_silent_on_other_tool():
@@ -269,27 +275,53 @@ def test_subprocess_harness_sid_overrides_model_supplied():
     assert updated["session_id"] == _SID
 
 
-def test_subprocess_silent_when_sid_missing():
+def test_subprocess_stamps_cwd_when_sid_missing():
+    # #1423: cwd is stamped independently of session_id validity — cwd has
+    # no sanitization failure mode (falls back to os.getcwd()), so a missing
+    # sid no longer means a fully silent exit.
     rc, out = _run_hook(
         {
+            "cwd": "/some/project/path",
             "tool_name": "mcp__memory__record_decision",
             "tool_input": {"memories_used": [_UUID]},
         }
     )
     assert rc == 0
-    assert out == ""
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert updated["cwd"] == "/some/project/path"
+    assert "session_id" not in updated
 
 
-def test_subprocess_silent_when_sid_malformed():
+def test_subprocess_stamps_cwd_when_sid_malformed():
     rc, out = _run_hook(
         {
             "session_id": "not a valid sid!",
+            "cwd": "/some/project/path",
             "tool_name": "mcp__memory__record_decision",
             "tool_input": {"memories_used": [_UUID]},
         }
     )
     assert rc == 0
-    assert out == ""
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert updated["cwd"] == "/some/project/path"
+    assert "session_id" not in updated
+
+
+def test_subprocess_injects_cwd_alongside_session_id():
+    # #1423 AC: cwd stamped alongside session_id — cwd becomes the recovery
+    # key (project, cwd, window); session_id stays as forensic metadata.
+    rc, out = _run_hook(
+        {
+            "session_id": _SID,
+            "cwd": "/some/project/path",
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID]},
+        }
+    )
+    assert rc == 0
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert updated["cwd"] == "/some/project/path"
+    assert updated["session_id"] == _SID
 
 
 def test_subprocess_no_injection_for_other_tools():

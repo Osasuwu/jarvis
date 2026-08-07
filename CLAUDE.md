@@ -91,6 +91,7 @@ Use skills — don't reinvent with raw tools.
 | ~~Daily scheduled tick~~ | ~~`/autonomous-loop`~~ — **SUPERSEDED**, pre-M44 catch-up baseline only. **Do not invoke for new flows.** No live cron registration since Medium-scope cleanup 2026-05-26 (legacy per-device cron jobs must be unregistered manually). Will be deleted when reactive-core M44 (`wake_driver` + `orchestrator`) ships. |
 | "end" / "end quick" | `/end` (full) / `/end --quick` (fast) |
 | Vague intuition (no written plan yet) / "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт"; subsumes /research for in-debate factual grounding | `/reason` |
+| "how should this look/behave" discussion stalled on shape, not on whether to build it / "прототипируй", "накидай черновик", "покажи как это может выглядеть" | `/prototype` (throwaway artifact, feeds `/grill`) |
 | Stress-test plan / "grill me" / before non-trivial implementation | `/grill` |
 | Conversation context → PRD on issue tracker | `/to-spec` |
 | Plan / PRD → vertical-slice issues | `/to-tickets` |

@@ -808,10 +808,22 @@ def tool_definitions() -> list[Tool]:
                         "type": "string",
                         "description": (
                             "Harness session id, stamped into the episode payload "
-                            "for query-based UUID recovery via decision_list (#1269). "
-                            "Normally injected by the PreToolUse gate hook "
-                            "(updatedInput) — do not fill by hand; invalid values "
-                            "are dropped server-side, never fail the write."
+                            "as forensic grouping metadata (#1269). Not the "
+                            "recovery key (see cwd, #1423). Normally injected by "
+                            "the PreToolUse gate hook (updatedInput) — do not fill "
+                            "by hand; invalid values are dropped server-side, "
+                            "never fail the write."
+                        ),
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": (
+                            "Working directory the decision was made in, stamped "
+                            "into the episode payload. Recovery-key component "
+                            "alongside project+since via decision_list (#1423) — "
+                            "survives session_id changes across resume/compaction "
+                            "boundaries. Normally injected by the PreToolUse gate "
+                            "hook (updatedInput) — do not fill by hand."
                         ),
                     },
                     "llm": {
@@ -840,29 +852,53 @@ def tool_definitions() -> list[Tool]:
         Tool(
             name="decision_list",
             description=(
-                "List decision_made episodes stamped with a harness session id "
-                "(#1269). Query-based UUID recovery after context loss: returns "
-                "'episode_uuid | created_at | decision one-liner' rows for the "
-                "given session_id. Read-only."
+                "List decision_made episodes, newest first. Query-based UUID "
+                "recovery after context loss (compaction, resume, crash): "
+                "returns 'episode_uuid | created_at | decision one-liner' rows. "
+                "Recovery key is (project, cwd, since) — session_id is optional "
+                "forensic grouping metadata, not required for recovery, because "
+                "resume/compaction always mints a new session_id (#1269 broke "
+                "across that boundary; #1423 fixes it). Filters combine as AND. "
+                "session_id or project is required — never an unfiltered "
+                "cross-project scan (this server is shared with redrobot). "
+                "Read-only."
             ),
             input_schema={
                 "type": "object",
-                "required": ["session_id"],
                 "properties": {
                     "session_id": {
                         "type": "string",
                         "description": (
-                            "Harness session id to recover decisions for "
-                            "(shape ^[A-Za-z0-9_-]{1,128}$)."
+                            "Optional: narrow to one harness session "
+                            "(shape ^[A-Za-z0-9_-]{1,128}$). Not required if "
+                            "project is given."
                         ),
                     },
                     "project": {
                         "type": ["string", "null"],
-                        "description": "Optional project filter (payload.project).",
+                        "description": (
+                            "Project filter (payload.project). Required if session_id is not given."
+                        ),
+                    },
+                    "cwd": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Optional: filter to decisions stamped from this "
+                            "working directory (payload.cwd, #1423) — the "
+                            "recovery-key component that survives session_id "
+                            "changes."
+                        ),
+                    },
+                    "since": {
+                        "type": ["string", "null"],
+                        "description": (
+                            "Optional: only decisions at or after this time. "
+                            "Relative ('24h', '7d') or absolute ISO-8601."
+                        ),
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max results (default 50).",
+                        "description": "Max results, newest first (default 50).",
                         "default": 50,
                     },
                 },

@@ -47,17 +47,10 @@ class TestRecordDecisionInsert:
         client.table.assert_any_call("episodes")
         client.table.assert_any_call("events_canonical")
         # Find the episodes-shaped insert (has 'kind', no 'trace_id').
-        all_inserts = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
-        ]
-        episode_inserts = [
-            p for p in all_inserts if "kind" in p and "trace_id" not in p
-        ]
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
         assert len(episode_inserts) == 1, (
-            "expected exactly one episodes insert, got "
-            f"{len(episode_inserts)}: {all_inserts!r}"
+            f"expected exactly one episodes insert, got {len(episode_inserts)}: {all_inserts!r}"
         )
         insert_arg = episode_inserts[0]
         assert insert_arg["actor"] == "skill:delegate"
@@ -125,14 +118,8 @@ class TestRecordDecisionInsert:
             }
         )
 
-        all_inserts = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
-        ]
-        episode_inserts = [
-            p for p in all_inserts if "kind" in p and "trace_id" not in p
-        ]
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
         payload = episode_inserts[0]["payload"]
         assert payload.get("intentionally_empty") is True
 
@@ -151,14 +138,8 @@ class TestRecordDecisionInsert:
             }
         )
 
-        all_inserts = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
-        ]
-        episode_inserts = [
-            p for p in all_inserts if "kind" in p and "trace_id" not in p
-        ]
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
         payload = episode_inserts[0]["payload"]
         assert "intentionally_empty" not in payload
 
@@ -180,14 +161,8 @@ class TestRecordDecisionInsert:
             }
         )
 
-        all_inserts = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
-        ]
-        episode_inserts = [
-            p for p in all_inserts if "kind" in p and "trace_id" not in p
-        ]
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
         assert episode_inserts[0]["payload"]["session_id"] == sid
 
         canonical_inserts = [p for p in all_inserts if "trace_id" in p]
@@ -211,14 +186,8 @@ class TestRecordDecisionInsert:
         )
         assert "ep-77" in result[0].text
 
-        all_inserts = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
-        ]
-        episode_inserts = [
-            p for p in all_inserts if "kind" in p and "trace_id" not in p
-        ]
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
         assert "session_id" not in episode_inserts[0]["payload"]
 
     @pytest.mark.asyncio
@@ -236,15 +205,55 @@ class TestRecordDecisionInsert:
             }
         )
 
-        all_inserts = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
-        ]
-        episode_inserts = [
-            p for p in all_inserts if "kind" in p and "trace_id" not in p
-        ]
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
         assert "session_id" not in episode_inserts[0]["payload"]
+
+    @pytest.mark.asyncio
+    async def test_cwd_persisted_into_payload(self, monkeypatch):
+        """#1423 — cwd lands in the episode payload AND the events_canonical
+        dual-write; it is the recovery-key component alongside project+since,
+        replacing session_id in that role."""
+        client = make_client()
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        cwd = "/home/user/jarvis/.claude/worktrees/issue-1423-e026a4"
+        await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "memories_used": [UID_A],
+                "cwd": cwd,
+            }
+        )
+
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
+        assert episode_inserts[0]["payload"]["cwd"] == cwd
+
+        canonical_inserts = [p for p in all_inserts if "trace_id" in p]
+        assert canonical_inserts, "dual-write to events_canonical expected"
+        assert canonical_inserts[0]["payload"]["cwd"] == cwd
+
+    @pytest.mark.asyncio
+    async def test_absent_cwd_omitted(self, monkeypatch):
+        """#1423 — backward compatible: no cwd arg → no payload key."""
+        client = make_client()
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "x",
+                "rationale": "y",
+                "reversibility": "reversible",
+                "memories_used": [UID_A],
+            }
+        )
+
+        all_inserts = [c.args[0] for c in client.table.return_value.insert.call_args_list if c.args]
+        episode_inserts = [p for p in all_inserts if "kind" in p and "trace_id" not in p]
+        assert "cwd" not in episode_inserts[0]["payload"]
 
     @pytest.mark.asyncio
     async def test_db_failure_returns_error_text(self, monkeypatch):
@@ -292,9 +301,7 @@ class TestRecordDecisionInsert:
         # Rejected before the episode write: no insert carries a decision-shaped
         # payload (the only other insert that may fire is the events block-log).
         insert_payloads = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
+            c.args[0] for c in client.table.return_value.insert.call_args_list if c.args
         ]
         assert not any("decision" in p for p in insert_payloads), (
             f"episode was written despite a blocked project field: {insert_payloads!r}"
@@ -323,9 +330,7 @@ class TestRecordDecisionInsert:
         assert "api_key_anthropic" in text
         assert fake_key not in text
         insert_payloads = [
-            c.args[0]
-            for c in client.table.return_value.insert.call_args_list
-            if c.args
+            c.args[0] for c in client.table.return_value.insert.call_args_list if c.args
         ]
         assert not any("decision" in p for p in insert_payloads), (
             f"episode written despite a blocked memories_used entry: {insert_payloads!r}"
@@ -390,6 +395,7 @@ class TestRecordDecisionInsert:
         assert payload["memories_used"] == [UID_A, UID_B, UID_C]
         assert "memories_used_unresolved" not in payload
 
+
 def test_handler_defined_before_main_entry():
     """Regression guard: `_handle_record_decision` must be bound to the
     server module's namespace BEFORE `if __name__ == "__main__"` triggers.
@@ -421,11 +427,7 @@ def test_handler_defined_before_main_entry():
     # before ``if __name__ == "__main__"`` — same regression class as pre-#360,
     # just measured at the binding site (import) rather than the def site.
     binding_line = next(
-        (
-            i
-            for i, line in enumerate(server_src, start=1)
-            if "_handle_record_decision" in line
-        ),
+        (i for i, line in enumerate(server_src, start=1) if "_handle_record_decision" in line),
         None,
     )
     main_guard_line = next(
@@ -440,9 +442,7 @@ def test_handler_defined_before_main_entry():
         "no ``from ... import _handle_record_decision`` line found in server.py — "
         "the dispatcher will hit NameError at runtime"
     )
-    assert main_guard_line is not None, (
-        '``if __name__ == "__main__"`` not found in server.py'
-    )
+    assert main_guard_line is not None, '``if __name__ == "__main__"`` not found in server.py'
     assert binding_line < main_guard_line, (
         f"_handle_record_decision bound at line {binding_line} is AFTER "
         f'``if __name__ == "__main__"`` at line {main_guard_line} — the binding '
@@ -486,6 +486,64 @@ def _make_list_client(rows):
     query = _FakeQuery(rows)
     client.table.return_value = query
     return client, query
+
+
+class _FakeFilterableQuery:
+    """Chainable query double that actually applies eq/gte/order/limit to a
+    fixed row set — needed to assert on real filter *semantics* (AC #1423),
+    not just which chain calls were made."""
+
+    def __init__(self, rows):
+        self._rows = list(rows)
+        self.eq_calls: list[tuple[str, object]] = []
+        self.gte_calls: list[tuple[str, object]] = []
+        self.order_calls: list = []
+        self.limit_value = None
+
+    def select(self, *_args, **_kwargs):
+        return self
+
+    def eq(self, column, value):
+        self.eq_calls.append((column, value))
+        if column.startswith("payload->>"):
+            key = column.split(">>", 1)[1]
+            self._rows = [r for r in self._rows if (r.get("payload") or {}).get(key) == value]
+        return self
+
+    def gte(self, column, value):
+        self.gte_calls.append((column, value))
+        if column == "created_at":
+            self._rows = [r for r in self._rows if r.get("created_at") >= value]
+        return self
+
+    def order(self, column, desc=False, **_kwargs):
+        self.order_calls.append((column, desc))
+        self._rows = sorted(self._rows, key=lambda r: r.get("created_at"), reverse=desc)
+        return self
+
+    def limit(self, n):
+        self.limit_value = n
+        self._rows = self._rows[:n]
+        return self
+
+    def execute(self):
+        return MagicMock(data=self._rows)
+
+
+def _make_filterable_list_client(rows):
+    """Client whose .table() returns a FRESH filterable query per call, so
+    successive _handle_decision_list invocations in one test don't leak
+    filtered state into each other."""
+    client = MagicMock()
+    queries: list[_FakeFilterableQuery] = []
+
+    def _table(_name):
+        q = _FakeFilterableQuery(rows)
+        queries.append(q)
+        return q
+
+    client.table.side_effect = _table
+    return client, queries
 
 
 _SID = "fe22ddae-340c-4c5b-b8d7-82a4df8396ee"
@@ -551,6 +609,148 @@ class TestDecisionList:
         result = await _handle_decision_list({"session_id": _SID})
         assert "No decisions" in result[0].text
 
+    @pytest.mark.asyncio
+    async def test_project_alone_without_session_id_succeeds(self, monkeypatch):
+        """#1423 — session_id is optional; project alone is a valid recovery key."""
+        from server import _handle_decision_list
+
+        client, _ = _make_list_client([])
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_decision_list({"project": "jarvis"})
+        assert "Error" not in result[0].text
+        client.table.assert_called_once_with("episodes")
+
+    @pytest.mark.asyncio
+    async def test_malformed_session_id_with_project_falls_back_to_project(self, monkeypatch):
+        """Malformed session_id is silently dropped (existing sanitize contract,
+        not a new error path) — project alone still satisfies the recovery-key
+        requirement."""
+        from server import _handle_decision_list
+
+        client, query = _make_list_client([])
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_decision_list({"session_id": "not a sid!", "project": "jarvis"})
+        assert "Error" not in result[0].text
+        assert all(col != "payload->>session_id" for col, _ in query.eq_calls)
+
+    @pytest.mark.asyncio
+    async def test_neither_session_id_nor_project_errors(self, monkeypatch):
+        """#1423 AC — neither session_id nor project ⇒ error, never a full scan."""
+        from server import _handle_decision_list
+
+        client, _ = _make_list_client([])
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_decision_list({})
+        assert "Error" in result[0].text
+        client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_since_window_returns_decisions_across_session_ids(self, monkeypatch):
+        """#1423 AC — two different session_ids, same project+cwd, both inside
+        the window: a (project, cwd, since) query returns BOTH; a session_id-
+        scoped query returns only the one matching."""
+        from server import _handle_decision_list
+
+        rows = [
+            {
+                "id": "ep-aaa",
+                "created_at": "2026-08-07T10:00:00+00:00",
+                "payload": {
+                    "decision": "d1",
+                    "session_id": "sid-aaa",
+                    "project": "jarvis",
+                    "cwd": "/repo",
+                },
+            },
+            {
+                "id": "ep-bbb",
+                "created_at": "2026-08-07T11:00:00+00:00",
+                "payload": {
+                    "decision": "d2",
+                    "session_id": "sid-bbb",
+                    "project": "jarvis",
+                    "cwd": "/repo",
+                },
+            },
+        ]
+        client, _queries = _make_filterable_list_client(rows)
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        window_result = await _handle_decision_list(
+            {"project": "jarvis", "cwd": "/repo", "since": "24h"}
+        )
+        window_text = window_result[0].text
+        assert "ep-aaa" in window_text and "ep-bbb" in window_text
+
+        scoped_result = await _handle_decision_list({"session_id": "sid-aaa", "project": "jarvis"})
+        scoped_text = scoped_result[0].text
+        assert "ep-aaa" in scoped_text
+        assert "ep-bbb" not in scoped_text
+
+    @pytest.mark.asyncio
+    async def test_cwd_filter_excludes_other_cwd(self, monkeypatch):
+        """#1423 AC — a decision from a different cwd, same project, same
+        window, is NOT returned when cwd is passed."""
+        from server import _handle_decision_list
+
+        rows = [
+            {
+                "id": "ep-here",
+                "created_at": "2026-08-07T10:00:00+00:00",
+                "payload": {"decision": "d1", "project": "jarvis", "cwd": "/repo-a"},
+            },
+            {
+                "id": "ep-elsewhere",
+                "created_at": "2026-08-07T11:00:00+00:00",
+                "payload": {"decision": "d2", "project": "jarvis", "cwd": "/repo-b"},
+            },
+        ]
+        client, _queries = _make_filterable_list_client(rows)
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_decision_list(
+            {"project": "jarvis", "cwd": "/repo-a", "since": "2026-08-01T00:00:00+00:00"}
+        )
+        text = result[0].text
+        assert "ep-here" in text
+        assert "ep-elsewhere" not in text
+
+    @pytest.mark.asyncio
+    async def test_limit_returns_newest_first(self, monkeypatch):
+        """#1423 AC — with more decisions than limit, the returned set is the
+        NEWEST `limit`, and ordering is newest-first."""
+        from server import _handle_decision_list
+
+        rows = [
+            {
+                "id": "ep-old",
+                "created_at": "2026-08-01T00:00:00+00:00",
+                "payload": {"decision": "old", "project": "jarvis"},
+            },
+            {
+                "id": "ep-mid",
+                "created_at": "2026-08-05T00:00:00+00:00",
+                "payload": {"decision": "mid", "project": "jarvis"},
+            },
+            {
+                "id": "ep-new",
+                "created_at": "2026-08-07T00:00:00+00:00",
+                "payload": {"decision": "new", "project": "jarvis"},
+            },
+        ]
+        client, queries = _make_filterable_list_client(rows)
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        result = await _handle_decision_list({"project": "jarvis", "limit": 2})
+        text = result[0].text
+        assert "ep-new" in text and "ep-mid" in text
+        assert "ep-old" not in text
+        assert text.index("ep-new") < text.index("ep-mid")
+        assert queries[-1].order_calls == [("created_at", True)]
+
     def test_tool_registered_in_schema(self):
         import inspect
 
@@ -573,9 +773,7 @@ class TestDecisionList:
 def test_session_id_expression_index_in_schema():
     """#1269 — schema.sql carries the partial expression index used by
     decision_list's payload->>session_id filter."""
-    schema = (
-        Path(__file__).resolve().parents[2] / "mcp-memory" / "schema.sql"
-    ).read_text()
+    schema = (Path(__file__).resolve().parents[2] / "mcp-memory" / "schema.sql").read_text()
     assert "payload->>'session_id'" in schema, (
         "schema.sql missing the session_id expression index for decision_list"
     )
@@ -587,9 +785,7 @@ def test_decision_made_in_schema_check_constraint():
     This asserts against the actual schema artifact rather than a Python
     list, so a schema rename or removal would fail the test.
     """
-    schema = (
-        Path(__file__).resolve().parents[2] / "mcp-memory" / "schema.sql"
-    ).read_text()
+    schema = (Path(__file__).resolve().parents[2] / "mcp-memory" / "schema.sql").read_text()
     lines = [line for line in schema.splitlines() if "check (kind in" in line]
     assert lines, "No 'check (kind in ...)' clause found in schema.sql"
     assert any("'decision_made'" in line for line in lines), (
