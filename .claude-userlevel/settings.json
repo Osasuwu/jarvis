@@ -203,6 +203,7 @@
       }
     ]
   },
+  "model": "sonnet",
   "fallbackModel": ["claude-sonnet-5"],
   "env": {
     "SECURITY_REVIEW_MODEL": "claude-sonnet-5"
