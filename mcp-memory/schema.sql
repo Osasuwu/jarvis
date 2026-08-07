@@ -179,7 +179,6 @@ create table if not exists events (
   payload jsonb default '{}',        -- structured event data (PR number, workflow name, alert details)
 
   -- Processing
-  processed boolean not null default false,
   processed_at timestamptz,
   processed_by text,                 -- 'autonomous-loop', 'risk-radar', 'manual'
   action_taken text,                 -- what was done in response
@@ -197,7 +196,6 @@ create table if not exists events (
 );
 
 -- Indexes
-create index if not exists idx_events_unprocessed on events(processed, severity) where not processed;
 create index if not exists idx_events_repo on events(repo);
 create index if not exists idx_events_type on events(event_type);
 create index if not exists idx_events_created on events(created_at desc);
@@ -289,7 +287,6 @@ as $$
 begin
   update events
   set state = 'processed',
-      processed = true,
       processed_at = now(),
       processed_by = processor,
       action_taken = mark_processed.action_taken

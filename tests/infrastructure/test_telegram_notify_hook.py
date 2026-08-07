@@ -117,7 +117,6 @@ def _pending_event(event_id="e1", severity="high"):
         "payload": {},
         "created_at": "2026-07-08T00:00:00+00:00",
         "state": "pending",
-        "processed": False,
     }
 
 
@@ -130,7 +129,6 @@ def test_mark_processed_transitions_state_to_processed():
     client = FakeEventsClient([_pending_event("e1")])
     telegram_hook.mark_processed(client, "e1", "telegram sent: ok")
     assert client.rows[0]["state"] == "processed"
-    assert client.rows[0]["processed"] is True
 
 
 def test_sent_event_not_refetched_by_second_drain():

@@ -166,7 +166,6 @@ def test_supabase_client_surface() -> None:
     assert callable(sb.list_goals)
     # Writes
     assert callable(sb.store_event)
-    assert callable(sb.mark_event_processed)
     assert callable(sb.update_goal_progress)
     assert callable(sb.audit)
 
