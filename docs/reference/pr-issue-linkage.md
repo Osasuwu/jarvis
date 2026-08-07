@@ -8,11 +8,15 @@ the mechanism and the failure catalogue behind it — read once, not every sessi
 
 ## The mechanism
 
-Auto-close (native GitHub *and* `pr-merged.yml`) fires only from the PR's own
-`closingIssuesReferences`. That list is built from closing keywords — `Closes` / `Fixes` /
-`Resolves #N` and their `close/closed/fix/fixed/resolve/resolved` variants — found in **either
-the PR body or any commit message on the branch**, not the body alone. Nothing else feeds it: not
-a linked branch name, not the issue's own labels, and not prose without a real keyword.
+Auto-close (native GitHub *and* `pr-merged.yml`) fires from the PR's own
+`closingIssuesReferences` **before merge**, and — separately — from GitHub's own commit-message
+scan of whatever commit actually lands on the default branch **at merge time**. That pre-merge
+list is built from closing keywords — `Closes` / `Fixes` / `Resolves #N` and their
+`close/closed/fix/fixed/resolve/resolved` variants — found in **either the PR body or any commit
+message on the branch**, not the body alone. Nothing else feeds it: not a linked branch name, not
+the issue's own labels, and not prose without a real keyword. But a clean pre-merge read of
+`closingIssuesReferences` is **not** the whole guarantee — see the squash-composition bullet
+below.
 
 Consequences, each of which has bitten at least once:
 
@@ -57,6 +61,21 @@ Consequences, each of which has bitten at least once:
   the poisoned one as superseded without merging it. A PR number that ever carried the pattern,
   anywhere in its lifetime (body at any point, or any commit ever pushed to it even if later
   removed), cannot be trusted to report a clean `closingIssuesReferences` again.
+- **Squash-merge composes the final commit from every commit on the branch — a clean pre-merge
+  `closingIssuesReferences` does not protect against this.** GitHub's default squash-merge
+  message concatenates each branch commit's own subject and body into one composed message, and
+  *that* composed commit is what lands on the default branch and gets independently scanned there
+  — a check that runs at merge time, later than and separate from the pre-merge
+  `closingIssuesReferences` read. Hit live merging the PR that added this very file: its
+  `closingIssuesReferences` was verified empty via GraphQL right up to merge, but an early commit
+  on the branch — narrating, in ordinary past-tense prose, what the original #1468 mistake had
+  done to #1274 — spelled out the keyword-plus-number pair while describing it, and that commit's
+  body still made it into the composed squash message. Paraphrasing the *rejected* keyword when
+  explaining a Refs-vs-closing-keyword choice (an earlier bullet above) is not sufficient on its
+  own: **any** commit that will ever land on the default branch — including ones written and
+  reviewed several commits earlier in the same branch, describing the incident itself rather than
+  invoking it — needs the same scrutiny, checked against the full composed message a squash-merge
+  will produce, not just the PR body or the newest commit in isolation.
 
 ## Superseded siblings
 
