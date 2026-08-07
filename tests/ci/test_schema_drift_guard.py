@@ -95,6 +95,14 @@ class TestWorkflowConfigIntegrity:
         level. PRs touching neither path never got a check-run for that
         context and sat `mergeable_state: blocked` indefinitely. Any
         `paths:` key under `on.pull_request` reintroduces that regression.
+
+        `paths-ignore:` is the identical failure mode from the other
+        direction (see `.github/workflows/gitleaks.yml` / PR #894): a PR
+        that only touches ignored paths never fires the trigger, so the
+        required context never gets a check-run either. Both keys are
+        checked here so a future edit can't reintroduce the bug via the
+        sibling filter this test didn't originally cover (flagged in
+        code-review on PR #1440 itself).
         """
         wf = _load_workflow()
         triggers = wf.get("on") or wf.get(True)
@@ -104,6 +112,13 @@ class TestWorkflowConfigIntegrity:
             "by `paths:` — it backs a required status check, so it must "
             "produce a check-run for every PR. Move any path-based gating "
             "into the job's own script logic instead."
+        )
+        assert not pr_filter or "paths-ignore" not in pr_filter, (
+            "schema-drift-check.yml must NOT filter its pull_request trigger "
+            "by `paths-ignore:` either — same failure mode as `paths:`: a PR "
+            "touching only ignored paths never fires the trigger, so the "
+            "required context never gets a check-run and the PR sits "
+            "`mergeable_state: blocked` forever."
         )
 
 
