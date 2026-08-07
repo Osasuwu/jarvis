@@ -388,6 +388,13 @@ jobs:
           REPO: ${{ github.repository }}
           SKIP: ${{ steps.autobase.outputs.skip }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          # #1434: positive evidence that there was something to review. The diff
+          # step measures the PR's FULL base...HEAD diff, so it stays meaningful
+          # on an auto-rebase push whose own diff is empty (it read has_code=true
+          # on PR #1435's autobase run, 299 lines). Empty on workflow_dispatch,
+          # where the diff step does not run — treated as unknown, never as
+          # "nothing to review".
+          HAS_CODE: ${{ steps.diff.outputs.has_code }}
         run: |
           set -euo pipefail
           # Freshness anchor (#993): a /code-review comment is a verdict only for
@@ -400,11 +407,15 @@ jobs:
           # head commit's committer time and treat any comment older than it as
           # not-a-verdict-for-this-head. ISO-8601 UTC timestamps (…Z) from the
           # API compare correctly as plain strings.
-          pr_json=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,state)
+          pr_json=$(gh pr view "$PR" --repo "$REPO" --json headRefOid,state,isDraft)
           HEAD_SHA=$(jq -r '.headRefOid' <<<"$pr_json")
           # PR_STATE (#1228) gates the post-factum carve-out in the total==0
           # branch below: OPEN | MERGED | CLOSED.
           PR_STATE=$(jq -r '.state' <<<"$pr_json")
+          # IS_DRAFT (#1434) carves drafts out of the has_code check below: the
+          # plugin declines drafts at its eligibility check by design, and a
+          # draft cannot merge, so there is no merge to gate.
+          IS_DRAFT=$(jq -r '.isDraft' <<<"$pr_json")
           HEAD_TIME=$(gh api "repos/$REPO/commits/$HEAD_SHA" -q .commit.committer.date)
 
           # Freshness anchor (#1134). Normal path: anchor on HEAD_TIME (above).
@@ -478,32 +489,64 @@ jobs:
             #      ships the PR unreviewed (PR #1179 incident). FAIL CLOSED.
             #      EXEC_FILE is only ever populated when the review step
             #      actually ran, so its presence alone identifies this state.
+            #   4. Still being reviewed. A code-review run over this PR's own
+            #      commits has NOT completed, so nothing has verified this head
+            #      yet. This is the #1434 hole: the autobase carve-out assumes
+            #      "no new code, so the existing review stands", but state 2 only
+            #      looks at runs that already CONCLUDED in failure — a review
+            #      mid-flight is invisible to it. On 2026-08-07 an auto-rebase
+            #      push passed this gate while the real review was still running
+            #      and auto-merge shipped the PR; it happened twice in thirty
+            #      minutes (#1429, #1435), both merged unreviewed. FAIL CLOSED —
+            #      code-review-retry re-dispatches a failed run as a
+            #      workflow_dispatch, which bypasses the autobase skip and
+            #      performs a genuine review, so this self-heals.
+            #   5. Never reviewed, silently. The PR carries a substantive diff,
+            #      no verdict comment exists, nothing failed and nothing is in
+            #      flight to explain it. A completed review always posts a
+            #      comment, so this PR was not reviewed. FAIL CLOSED (#1434):
+            #      passing here requires positive evidence that there was nothing
+            #      to review, not merely the absence of a failure.
             #
-            # Falling through all three = legitimate skip (draft / has_code=false
-            # / autobase push) over a clean lineage. PASS.
+            # Falling through all five = legitimate skip: genuinely nothing to
+            # review (has_code=false), a draft the plugin declines and that
+            # cannot merge anyway, or an event that never computed has_code
+            # (workflow_dispatch → unknown, which must not fail closed). PASS.
             if [ "$PR_STATE" != "OPEN" ]; then
               echo "::notice::PR is $PR_STATE and has no /code-review comment; nothing left to gate on a post-factum run. Treating as pass."
               exit 0
             fi
 
-            # Head-lineage probe. Intersect this workflow's FAILED runs with the
-            # PR's own commit SHAs, so another PR's broken review can never block
-            # this one. Only `conclusion == "failure"` counts — success /
-            # cancelled / skipped / still-running are not evidence of a dead
-            # attempt. The currently-executing run is excluded by id: it has no
-            # conclusion yet, but excluding it explicitly keeps a re-run from
-            # ever self-blocking on its own row.
+            # Head-lineage probe. Intersect this workflow's runs with the PR's
+            # own commit SHAs once, so another PR's broken or running review can
+            # never block this one, then read two independent signals off that
+            # slice. The currently-executing run is excluded by id — it is in
+            # flight by definition and would otherwise self-block every run.
             lineage_shas=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
               | jq -rs 'add | map(.sha)')
-            LINEAGE_FAILED=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
-              | jq -rs --argjson shas "$lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
+            lineage_runs=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
+              | jq -s --argjson shas "$lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
                   [ .[].workflow_runs[]
-                    | select(.conclusion == "failure")
                     | select((.id | tostring) != $cur)
-                    | select(.head_sha as $s | $shas | index($s) != null) ]
-                  | length')
+                    | select(.head_sha as $s | $shas | index($s) != null) ]')
+
+            # (2) Dead attempts: only `conclusion == "failure"` counts — success,
+            # cancelled and skipped are not evidence of a run that died before it
+            # could post.
+            LINEAGE_FAILED=$(jq -r '[ .[] | select(.conclusion == "failure") ] | length' <<<"$lineage_runs")
             if [ "$LINEAGE_FAILED" -gt 0 ]; then
               echo "::error::No /code-review verdict comment exists and $LINEAGE_FAILED code-review run(s) over this PR's commits ended in failure. Every review attempt died before it could post — this PR has never been reviewed. Failing closed (#1228); fix the failing run and re-review."
+              exit 1
+            fi
+
+            # (4) Reviews still in flight (#1434). Keyed on `status != "completed"`
+            # rather than an enumeration of queued/waiting/in_progress/pending, so
+            # a status GitHub adds later fails closed instead of silently reading
+            # as done.
+            LINEAGE_INFLIGHT=$(jq -r '[ .[] | select(.status != "completed") ] | length' <<<"$lineage_runs")
+            if [ "$LINEAGE_INFLIGHT" -gt 0 ]; then
+              inflight_ids=$(jq -r '[ .[] | select(.status != "completed") | .id | tostring ] | join(", ")' <<<"$lineage_runs")
+              echo "::error::No /code-review verdict comment exists yet and $LINEAGE_INFLIGHT code-review run(s) over this PR's commits are still running (run id(s): $inflight_ids). Nothing has verified this head, so there is no prior review for this push to carry forward. Failing closed (#1434); the gate re-evaluates once that run posts its verdict."
               exit 1
             fi
 
@@ -512,7 +555,17 @@ jobs:
               exit 1
             fi
 
-            echo "::notice::No /code-review comment present, review did not run, and no code-review run over this PR's commits failed; plugin legitimately skipped (draft/no-code/autobase). Treating as pass."
+            # (5) Positive-evidence gate (#1434). has_code is computed over the
+            # PR's full base...HEAD diff, so it is meaningful even when this
+            # event's own push added nothing. Empty means the event never
+            # computed it (workflow_dispatch) — unknown, so pass, or post-factum
+            # dispatch breaks.
+            if [ "${HAS_CODE:-}" = "true" ] && [ "${IS_DRAFT:-}" != "true" ]; then
+              echo "::error::This PR carries a substantive diff but has no /code-review verdict comment, and no code-review run over its commits failed or is still running. A completed review always posts a comment, so this PR was never reviewed. Failing closed (#1434); re-run code-review."
+              exit 1
+            fi
+
+            echo "::notice::No /code-review comment present, review did not run, LINEAGE_FAILED=$LINEAGE_FAILED, LINEAGE_INFLIGHT=$LINEAGE_INFLIGHT, HAS_CODE='${HAS_CODE:-unknown}', IS_DRAFT='${IS_DRAFT:-unknown}' — there was nothing to review, so the plugin legitimately skipped. Treating as pass."
             exit 0
           fi
 
