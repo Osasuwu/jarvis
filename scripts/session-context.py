@@ -417,18 +417,39 @@ def assemble_sections(sections, budget_chars: int = ASSEMBLY_BUDGET_CHARS):
     return output, dropped_names, emitted_ids, len(output)
 
 
-def _self_log(emitted_chars: int, dropped_names: list[str], compact_resume: bool) -> None:
+def _self_log(
+    emitted_chars: int,
+    dropped_names: list[str],
+    compact_resume: bool,
+    session_id: str | None = None,
+    project: str | None = None,
+) -> None:
     """Append one JSON line per run to the size self-log (#1271 C.1 row 5).
 
     Log location: ``.claude/logs/session-context-size.jsonl`` under the repo
     root. Spill (emitted_chars > budget) becomes observable and trendable.
     Never raises — a log write failure must not break session start.
+
+    ``session_id`` + ``project`` are the pull-rate join key (#1275): this log
+    is the denominator (context assembled), transcript pulls are the numerator
+    (context actually used), and without a key there is nothing to join them
+    on. The log is written per-WORKTREE, not per-device, so "which run was
+    this" cannot be recovered from the file's location either. Both keys are
+    always present, null when unknown — a stable row schema lets the reader
+    join without probing, and null is honest about an unattributable run in a
+    way a missing key is not.
     """
     from datetime import datetime, timezone
+    # session_id arrives over stdin from Claude Code; run it through the same
+    # allowlist used everywhere else it acts as a key. A value that fails it
+    # cannot join against anything, so it logs as null rather than as garbage.
+    safe_session = _safe_session_id(session_id) if session_id else None
     try:
         _SELF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         entry = {
             "ts": datetime.now(timezone.utc).isoformat(),
+            "session_id": safe_session,
+            "project": project or None,
             "emitted_chars": emitted_chars,
             "budget_chars": ASSEMBLY_BUDGET_CHARS,
             "dropped": dropped_names,
@@ -483,6 +504,11 @@ def main():
         or ""
     )
 
+    # Resolved before the no-credentials early return below, not after it:
+    # that branch also self-logs, and a row without `project` is unjoinable
+    # (#1275). It is a pure cwd inspection — no network, no Supabase.
+    project, _project_root = _detect_project()
+
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
@@ -508,7 +534,13 @@ def main():
                 output, dropped_names, emitted_ids, emitted_chars = (
                     assemble_sections(sections)
                 )
-                _self_log(emitted_chars, dropped_names, compact_resume)
+                _self_log(
+                    emitted_chars,
+                    dropped_names,
+                    compact_resume,
+                    session_id=session_id,
+                    project=project,
+                )
                 print(output)
         return
 
@@ -518,7 +550,6 @@ def main():
         print(f"[session-context] Supabase connect failed: {e}", file=sys.stderr)
         return
 
-    project, _project_root = _detect_project()
     # Each section is (priority, name, rendered, memory_ids): priority 0 =
     # highest (dropped last), higher number = lower priority. Output order is
     # the append order here; ids feed _touch_accessed for KEPT sections only.
@@ -638,7 +669,13 @@ def main():
     # `dropped:` line. Only KEPT sections' memory ids are touched.
     output, dropped_names, emitted_ids, emitted_chars = assemble_sections(sections)
     _touch_accessed(client, emitted_ids)
-    _self_log(emitted_chars, dropped_names, compact_resume)
+    _self_log(
+        emitted_chars,
+        dropped_names,
+        compact_resume,
+        session_id=session_id,
+        project=project,
+    )
     if emitted_chars > ASSEMBLY_BUDGET_CHARS:
         detail = ", ".join(dropped_names) if dropped_names else "no section dropped"
         print(

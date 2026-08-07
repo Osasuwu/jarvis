@@ -15,6 +15,8 @@ What it locks in:
   ``dropped:`` line (AC3).
 - Every run self-logs its emitted size (AC4); the log lives at
   ``.claude/logs/session-context-size.jsonl`` (gitignored — device-local).
+- Every self-log row carries the ``session_id`` + ``project`` join key (#1275),
+  without which the log is a denominator nothing can be joined against.
 
 The former CONTEXT.md push (compressed Invariants + Glossary category index,
 AC6/AC7) was retired by #1417 — that content now rides `@import` from
@@ -28,6 +30,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import sys
 import types
 from pathlib import Path
@@ -68,7 +71,12 @@ class TestCleanPath:
         sections = [
             (sc._PRIORITY_ALWAYS_LOAD, "always_load", "## Always-Load Rules\n" + "a" * 1200, []),
             (sc._PRIORITY_USER_PROFILE, "user_profile", "## User Profile\n" + "u" * 500, []),
-            (sc._PRIORITY_WORKING_STATE, "working_state", "## Working State (jarvis)\n" + "w" * 700, []),
+            (
+                sc._PRIORITY_WORKING_STATE,
+                "working_state",
+                "## Working State (jarvis)\n" + "w" * 700,
+                [],
+            ),
             (sc._PRIORITY_GOALS, "goals", "## Active Goals (2)\n" + "g" * 250, []),
             (sc._PRIORITY_REMINDER, "pending_review", "**Pending memory candidates:** 3", []),
             (sc._PRIORITY_REMINDER, "milestone_sweep", "## Architecture Sweep\n- Milestone #1", []),
@@ -77,8 +85,12 @@ class TestCleanPath:
         assert chars < sc.ASSEMBLY_BUDGET_CHARS
         assert dropped == []
         for name in (
-            "always_load", "user_profile",
-            "working_state", "goals", "pending_review", "milestone_sweep",
+            "always_load",
+            "user_profile",
+            "working_state",
+            "goals",
+            "pending_review",
+            "milestone_sweep",
         ):
             assert name not in dropped
         # Delivery: every section's content is actually emitted.
@@ -96,7 +108,12 @@ class TestCompactPath:
             (sc._PRIORITY_RECOVERY, "recovery", "## Pre-Compact Recovery\n" + "s" * 2000, []),
             (sc._PRIORITY_ALWAYS_LOAD, "always_load", "## Always-Load Rules\n" + "a" * 1200, []),
             (sc._PRIORITY_USER_PROFILE, "user_profile", "## User Profile\n" + "u" * 500, []),
-            (sc._PRIORITY_WORKING_STATE, "working_state", "## Working State (jarvis)\n" + "w" * 700, []),
+            (
+                sc._PRIORITY_WORKING_STATE,
+                "working_state",
+                "## Working State (jarvis)\n" + "w" * 700,
+                [],
+            ),
             (sc._PRIORITY_GOALS, "goals", "## Active Goals (2)\n" + "g" * 250, []),
             (sc._PRIORITY_REMINDER, "pending_review", "**Pending memory candidates:** 3", []),
             (sc._PRIORITY_REMINDER, "milestone_sweep", "## Architecture Sweep\n- Milestone #1", []),
@@ -129,7 +146,9 @@ class TestDropPriority:
         ]
         output, dropped, emitted_ids, chars = sc.assemble_sections(sections, budget_chars=2000)
         assert dropped == [
-            "drift", "sweep", "pending",   # reminders — lowest priority, later first
+            "drift",
+            "sweep",
+            "pending",  # reminders — lowest priority, later first
             "goals",
             "working_state",
             "user_profile",
@@ -139,9 +158,7 @@ class TestDropPriority:
         assert "recovery" not in dropped
         assert "Pre-Compact Recovery" in output
         # Dropped sections are named on the dropped: line.
-        dropped_line = next(
-            line for line in output.splitlines() if line.startswith("dropped: ")
-        )
+        dropped_line = next(line for line in output.splitlines() if line.startswith("dropped: "))
         for name in dropped:
             assert name in dropped_line
 
@@ -185,3 +202,97 @@ class TestSelfLog:
         assert ".claude" in str(sc._SELF_LOG_PATH)
         assert "logs" in str(sc._SELF_LOG_PATH)
         assert sc._SELF_LOG_PATH.name == "session-context-size.jsonl"
+
+
+class TestSelfLogJoinKey:
+    """#1275 enabling AC: every self-log row carries the pull-rate join key.
+
+    The self-log is written per-WORKTREE, not per-device (797 rows in the
+    worktree copy vs 956 in the main checkout on 2026-08-07). Without
+    `session_id` and `project` on each row there is no key to join transcript
+    pulls (the numerator) against context-assembly runs (the denominator), so
+    the pull rate is uncomputable and #1275's numeric target cannot ship as a
+    number anyone can produce. This is the enabling AC: the rest of that slice
+    is unmeasurable until it lands.
+
+    Both keys are always PRESENT, null when unknown -- a stable row schema
+    means the reader can join on them without probing for their existence, and
+    a null is honest about "this run could not be attributed" in a way a
+    missing key is not.
+    """
+
+    def _row(self, tmp_path, monkeypatch, **kwargs):
+        log_path = tmp_path / "session-context-size.jsonl"
+        monkeypatch.setattr(sc, "_SELF_LOG_PATH", log_path)
+        sc._self_log(1234, [], False, **kwargs)
+        return json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+
+    def test_row_carries_session_id_and_project(self, tmp_path, monkeypatch):
+        entry = self._row(tmp_path, monkeypatch, session_id="abc-123_XY", project="jarvis")
+        assert entry["session_id"] == "abc-123_XY"
+        assert entry["project"] == "jarvis"
+
+    def test_keys_present_as_null_when_unknown(self, tmp_path, monkeypatch):
+        # A run outside any known repo, or one whose hook input carried no
+        # session_id. The reader must still see a well-formed row.
+        entry = self._row(tmp_path, monkeypatch)
+        assert "session_id" in entry and entry["session_id"] is None
+        assert "project" in entry and entry["project"] is None
+
+    def test_session_id_is_sanitised_not_trusted(self, tmp_path, monkeypatch):
+        # session_id arrives over stdin from Claude Code. The module already
+        # allowlists it everywhere it is used as a key (_safe_session_id); the
+        # log is not the one place that trusts it raw. An id that fails the
+        # allowlist cannot join against anything anyway, so it logs as null
+        # rather than as garbage.
+        entry = self._row(tmp_path, monkeypatch, session_id="../../etc/passwd", project="jarvis")
+        assert entry["session_id"] is None
+        assert entry["project"] == "jarvis"
+
+    def test_empty_session_id_logs_as_null(self, tmp_path, monkeypatch):
+        # main() defaults a missing id to "" rather than None -- that must not
+        # reach the log as an empty-string key that silently joins nothing.
+        entry = self._row(tmp_path, monkeypatch, session_id="", project="jarvis")
+        assert entry["session_id"] is None
+
+    def test_join_key_does_not_disturb_the_existing_row_shape(self, tmp_path, monkeypatch):
+        # The size-trend fields are what #1271 AC4 shipped; adding the join key
+        # must be additive.
+        entry = self._row(tmp_path, monkeypatch, session_id="s1", project="jarvis")
+        assert entry["emitted_chars"] == 1234
+        assert entry["budget_chars"] == sc.ASSEMBLY_BUDGET_CHARS
+        assert entry["dropped"] == []
+        assert entry["compact_resume"] is False
+        assert "ts" in entry
+
+    def test_still_never_raises_with_the_new_args(self, tmp_path, monkeypatch):
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file", encoding="utf-8")
+        monkeypatch.setattr(sc, "_SELF_LOG_PATH", blocked / "x.jsonl")
+        sc._self_log(0, [], False, session_id="s1", project="jarvis")
+
+    def test_every_call_site_passes_the_join_key(self):
+        """Wiring: a call site that omits the key writes an unjoinable row.
+
+        There are two `_self_log` calls in main() -- the no-credentials early
+        return and the normal path. The early-return one is the easy one to
+        forget, and it is exactly the run a `--resume` without Supabase creds
+        produces, so its rows would silently dilute the denominator.
+        """
+        source = (REPO_ROOT / "scripts" / "session-context.py").read_text(encoding="utf-8")
+        call_sites = []
+        for match in re.finditer(r"(?<!def )_self_log\(", source):
+            # Walk to the matching close paren -- the calls span several lines,
+            # so a per-line scan would read the argument list as absent.
+            depth, i = 1, match.end()
+            while depth and i < len(source):
+                depth += {"(": 1, ")": -1}.get(source[i], 0)
+                i += 1
+            call_sites.append(" ".join(source[match.start() : i].split()))
+        assert call_sites, "no _self_log call sites found -- test is looking in the wrong place"
+        for site in call_sites:
+            assert "session_id=" in site and "project=" in site, (
+                f"_self_log call site omits the join key: {site!r}. Rows without "
+                "session_id + project cannot be joined against transcript pulls "
+                "(#1275 enabling AC)."
+            )
