@@ -1,5 +1,8 @@
 auto_merge: true
 branch_protection: true
+ci_language: python
+custom_files:
+- .github/workflows/pytest.yml
 dependabot_ecosystems:
 - pip
 - github-actions

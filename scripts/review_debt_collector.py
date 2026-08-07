@@ -1,9 +1,13 @@
 """Review-debt collector (#1211) — deterministic, no-LLM CI module.
 
 On each merged PR the code-review plugin emits a structured JSON findings block
-(schema documented in `commands/code-review.md` §8.1 of the review plugin).
-Sub-MAJOR findings (MEDIUM / INFO) never block a merge, so they evaporate today.
-This module collects them: it parses the block, persists each unique finding to
+(schema documented in `commands/code-review.md` §8.1 of the review plugin). Its
+`severity` field is bucket-derived (MEDIUM for the Code-review bucket, INFO for
+Simplification) and per §8.1 AC6 never gates the merge — those findings
+evaporate today. (This is distinct from a merge-blocking *prose heading* like
+"### MEDIUM" in the comment body, which the merge gate does act on — see
+`BLOCKING_RE` below.) This module collects the JSON-field findings: it parses
+the block, persists each unique finding to
 the `review_debt` Supabase table with weighted dedup, clusters by parent-
 directory `module_area`, and — when a cluster's weighted count crosses a
 threshold — auto-creates exactly one `review-debt-cluster` GitHub issue.
@@ -65,10 +69,25 @@ FINDINGS_BLOCK_RE = re.compile(
 
 # AC6: merge-blocking severity heading. Byte-aligned with code-review.yml's
 # BLOCK_RE and tests/ci/test_code_review_verdict_guard.py — an all-caps
-# CRITICAL/MAJOR/BLOCKING heading after 1-6 '#'s, decoration (emoji) tolerated.
-# Case-SENSITIVE (no re.I): title-case prose like "### Blocking issues — None"
-# must NOT match. MINOR is not blocking.
-BLOCKING_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING)\b", re.M)
+# CRITICAL/MAJOR/BLOCKING/MEDIUM heading after 1-6 '#'s, decoration (emoji)
+# tolerated. Case-SENSITIVE (no re.I): title-case prose like "### Blocking
+# issues — None" or advisory "Medium" text must NOT match. MINOR is not
+# blocking.
+#
+# MEDIUM added per the #1385 gate-severity follow-up: the merge gate now
+# blocks on an all-caps "### MEDIUM" heading, same as CRITICAL/MAJOR/BLOCKING.
+# This is NOT the same signal as `CONFIG["collected_severities"]` below — that
+# reads the JSON findings-block's `severity` field, which is a coarse,
+# bucket-derived value (always "MEDIUM" for the Code-review bucket, "INFO" for
+# Simplification per commands/code-review.md §8.1) that the plugin documents
+# as informational-only and never gating (§8.1 AC6: "never CRITICAL/MAJOR/
+# BLOCKING... never affects the merge-gate verdict"). A prose "### MEDIUM"
+# heading is a deviant/ad hoc bot output (same class as the historical bare
+# "### MAJOR" on #956 or "🔴 BLOCKING" on #954), not the documented findings
+# block — so a legitimately-merged PR's JSON block can still legitimately
+# carry `"severity": "MEDIUM"` findings without ever having tripped this
+# heading check. Keep `collected_severities`/`severity_weights` unchanged.
+BLOCKING_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING|MEDIUM)\b", re.M)
 
 
 # ── PURE core ──────────────────────────────────────────────────────────────

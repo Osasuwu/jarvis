@@ -11,6 +11,7 @@
     "strict": true
   },
   "dependabot_ecosystems": [],
+  "has_tests_ci": false,
   "labels": [
     {
       "color": "d4e9c8",
@@ -218,6 +219,21 @@
       "name": "ux"
     }
   ],
+  "observed_runners": {
+    ".github/workflows/ci.yml": [
+      [
+        "ubuntu-latest"
+      ],
+      [
+        "windows-latest"
+      ]
+    ],
+    ".github/workflows/code-review.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ]
+  },
   "repo": "Osasuwu/like_spotify_mobile_app",
   "settings": {
     "allow_auto_merge": false,

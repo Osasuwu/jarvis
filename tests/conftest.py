@@ -365,6 +365,19 @@ def _dependabot_b64(*ecosystems: str) -> dict:
     }
 
 
+def _workflow_b64(text: str) -> dict:
+    """Contents-API envelope for a workflow file body (#1406).
+
+    The auditor reads each workflow's body to observe its ``runs-on:`` labels,
+    so a fixture repo with workflows must register a contents response per
+    workflow path — same base64 envelope shape as ``_dependabot_b64``.
+    """
+    return {
+        "content": base64.b64encode(text.encode()).decode(),
+        "encoding": "base64",
+    }
+
+
 def _jarvis_responses() -> dict:
     return {
         "repos/Osasuwu/jarvis": {
@@ -395,6 +408,17 @@ def _jarvis_responses() -> dict:
         "repos/Osasuwu/jarvis/contents/.github/dependabot.yml": _dependabot_b64(
             "pip", "github-actions"
         ),
+        "repos/Osasuwu/jarvis/contents/.github/workflows/code-review.yml": _workflow_b64(
+            "name: Code Review\njobs:\n  review:\n    runs-on: ubuntu-latest\n"
+        ),
+        "repos/Osasuwu/jarvis/contents/.github/workflows/pytest.yml": _workflow_b64(
+            "name: pytest\njobs:\n  pytest:\n    runs-on: [ubuntu-latest]\n"
+        ),
+        # A directory listing — the auditor only cares that the path resolves
+        # (#1406). jarvis really does have tests/ci, so the fixture says so.
+        "repos/Osasuwu/jarvis/contents/tests/ci": [
+            {"name": "test_schema_drift_guard.py", "type": "file"},
+        ],
     }
 
 
@@ -403,3 +427,32 @@ class _FakeProc:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+class FakeWriteRunner:
+    """Stand-in for the live write-capable ``gh api -X <method>`` runner
+    (:func:`scripts.repo_baseline.executor.gh_write_runner`).
+
+    Records each call as a ``(method, path, body)`` tuple in ``self.calls``.
+    ``responses`` optionally maps a ``(method, path)`` pair to a canned
+    return value (default ``{}``, matching a real empty-body 2xx response).
+    ``raise_for`` maps a ``(method, path)`` pair to an exception to raise —
+    used to simulate a write failing partway through a repo's write phase
+    (the AC7 fail-fast case).
+    """
+
+    def __init__(
+        self,
+        responses: dict[tuple[str, str], object] | None = None,
+        raise_for: dict[tuple[str, str], BaseException] | None = None,
+    ):
+        self.responses = dict(responses or {})
+        self.raise_for = dict(raise_for or {})
+        self.calls: list[tuple[str, str, dict | None]] = []
+
+    def __call__(self, method: str, path: str, *, body: dict | None = None):
+        self.calls.append((method, path, body))
+        key = (method, path)
+        if key in self.raise_for:
+            raise self.raise_for[key]
+        return self.responses.get(key, {})

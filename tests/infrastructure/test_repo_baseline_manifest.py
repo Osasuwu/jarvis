@@ -3,6 +3,7 @@
 import pytest
 
 from scripts.repo_baseline import FileClass, Manifest
+from scripts.repo_baseline.applier import load_manifest
 
 
 class TestManifestFromDict:
@@ -78,14 +79,14 @@ class TestAxisResolution:
         m = Manifest.from_dict({"repo": "x"})
         assert m.resolve_axis("runs_on") == ["ubuntu-latest"]
 
-    def test_runs_on_explicit_override(self):
-        m = Manifest.from_dict(
-            {
-                "repo": "x",
-                "runs_on": ["self-hosted"],
-            }
-        )
-        assert m.resolve_axis("runs_on") == ["self-hosted"]
+    def test_runs_on_is_not_declarable(self):
+        """#1406 — ``runs_on`` is a *fact* read from the repo's own workflows,
+        resolved by :func:`~scripts.repo_baseline.applier.resolve_runs_on`. A
+        manifest declaring it would silently outrank the observation, which is
+        precisely the failure mode this issue removes, so it fails loudly as an
+        unknown key rather than being quietly ignored."""
+        with pytest.raises(ValueError, match=r"Unknown manifest keys: \['runs_on'\]"):
+            Manifest.from_dict({"repo": "x", "runs_on": ["self-hosted"]})
 
     def test_ci_language_default(self):
         m = Manifest.from_dict({"repo": "x"})
@@ -167,6 +168,32 @@ class TestAxisResolution:
         assert m.dependabot_ecosystems == ["pip", "github-actions"]
 
 
+class TestResolvedLanguageTestFiles:
+    """language_test_files is unset by default — derived from ci_language."""
+
+    def test_python_default_derives_pytest_yml(self):
+        m = Manifest.from_dict({"repo": "x"})
+        assert m.resolved_language_test_files == [".github/workflows/pytest.yml"]
+
+    def test_non_python_derives_empty(self):
+        m = Manifest.from_dict({"repo": "x", "ci_language": "dart"})
+        assert m.resolved_language_test_files == []
+
+    def test_explicit_override_wins_regardless_of_ci_language(self):
+        m = Manifest.from_dict(
+            {
+                "repo": "x",
+                "ci_language": "dart",
+                "language_test_files": [".github/workflows/custom-test.yml"],
+            }
+        )
+        assert m.resolved_language_test_files == [".github/workflows/custom-test.yml"]
+
+    def test_explicit_empty_override_not_replaced_by_derivation(self):
+        m = Manifest.from_dict({"repo": "x", "language_test_files": []})
+        assert m.resolved_language_test_files == []
+
+
 class TestJarvisSplitPreserved:
     """jarvis's existing split: pytest=LANGUAGE-TEST, ci-meta=MANAGED,
     schema-drift-check/issue-checks=REPO-CUSTOM."""
@@ -202,3 +229,27 @@ class TestJarvisSplitPreserved:
             }
         )
         assert m.class_for_file(".github/workflows/issue-checks.yml") == FileClass.REPO_CUSTOM
+
+
+class TestCommittedRedrobotManifest:
+    """The committed manifest is itself a decision record — these assert the
+    parts of it that a future edit could quietly undo (#1406).
+    """
+
+    def test_issue_templates_are_repo_custom(self):
+        """redrobot's issue forms stay redrobot's (decision f62279a8).
+
+        They are canonically *delivered* (#940 AC3) but their content is the
+        repo's own ``Component/area:*`` vocabulary, which its own
+        ``issue-schema-check.yml`` already enforces — overwriting them with
+        jarvis's canon vocabulary would break that gate on the first sync.
+        Classifying them REPO_CUSTOM is what stops the write; a per-repo
+        content axis for issue-template fields is #1411.
+        """
+        m = load_manifest("SergazyNarynov/redrobot")
+        for path in (
+            ".github/ISSUE_TEMPLATE/bug.yml",
+            ".github/ISSUE_TEMPLATE/task.yml",
+            ".github/ISSUE_TEMPLATE/config.yml",
+        ):
+            assert m.class_for_file(path) == FileClass.REPO_CUSTOM, path

@@ -9,8 +9,10 @@ fixtures.
 from __future__ import annotations
 
 import hashlib
+import json
 
 import pytest
+import yaml
 
 from scripts.repo_baseline.applier import (
     HASH_PREFIX,
@@ -25,6 +27,8 @@ from scripts.repo_baseline.applier import (
     load_manifest,
     load_snapshot,
     plan_account_pass,
+    resolve_runs_on,
+    summarize_account_pass,
 )
 from scripts.repo_baseline.auditor import BranchProtection, RepoSettings, RepoSnapshot
 from scripts.repo_baseline.manifest import Manifest
@@ -42,6 +46,8 @@ def _hash(text: str) -> str:
 _TEST_CANON = {
     "code-review.yml": "review for {{ code_review_marketplace }}\n",
     "owner-queue-guard.yml": "guard on {{ runs_on }}\n",
+    "dependabot.yml": "target-branch: {{ default_branch }}\n",
+    "ci-meta.yml": "run: pytest tests/ci/ -v{{ ci_meta_pytest_args }}\n",
 }
 
 
@@ -58,6 +64,34 @@ def test_render_content_substitutes_axes():
     applier = Applier(_manifest(), _TEST_CANON)
     out = applier.render_content(".github/workflows/code-review.yml")
     assert out == "review for anthropics/claude-code-action@v1\n"
+
+
+def test_render_content_uses_the_observed_runner_class():
+    """#1406 — the canon's ``{{ runs_on }}`` takes the observed majority, with
+    no manifest edit and no operator prompt anywhere in the path."""
+    snap = _snap({".github/workflows/build.yml": [["self-hosted", "linux", "x64"]]})
+    applier = Applier(_manifest(), _TEST_CANON, snapshot=snap)
+    out = applier.render_content(".github/workflows/owner-queue-guard.yml")
+    assert out == "guard on [self-hosted, linux, x64]\n"
+    assert applier.runs_on_defaulted is False
+
+
+def test_render_content_runs_on_falls_back_to_profile_default():
+    applier = Applier(_manifest(), _TEST_CANON, snapshot=_snap({}))
+    assert applier.render_content(".github/workflows/owner-queue-guard.yml") == (
+        "guard on [ubuntu-latest]\n"
+    )
+    assert applier.runs_on_defaulted is True
+
+
+def test_render_content_uses_the_live_default_branch():
+    """#1406 — ``default_branch`` is an observed axis too. Canon dependabot.yml
+    hardcoded ``target-branch: main``, so every dependabot PR it opened against
+    redrobot (default branch ``master``) targeted a branch that does not exist.
+    """
+    snap = _snap({}, default_branch="master")
+    applier = Applier(_manifest(), _TEST_CANON, snapshot=snap)
+    assert applier.render_content(".github/dependabot.yml") == "target-branch: master\n"
 
 
 def test_render_content_missing_canon_raises_with_path():
@@ -306,6 +340,122 @@ def test_actual_state_from_snapshot_handles_no_branch_protection():
     assert actual.required_check_contexts == []
 
 
+# ── observed axes: runs_on resolution (#1406) ─────────────────────────
+
+
+def _snap(
+    observed: dict[str, list[list[str]]],
+    repo: str = "Osasuwu/test",
+    default_branch: str = "main",
+    has_tests_ci: bool | None = None,
+) -> RepoSnapshot:
+    return RepoSnapshot(
+        repo=repo,
+        settings=RepoSettings(default_branch=default_branch),
+        workflows=sorted(observed),
+        branch_protection=None,
+        observed_runners=observed,
+        has_tests_ci=has_tests_ci,
+    )
+
+
+class TestResolveRunsOn:
+    """``runs_on`` is a fact read from the repo's own workflows, not a policy
+    declared in a manifest (#1406). Resolution is a *majority* over observed
+    runner classes rather than a match-or-abort check, because a repo may
+    legitimately mix: redrobot runs 13 of 14 workflows on ``[self-hosted, linux,
+    x64]`` and deliberately keeps ``runner-health-check.yml`` on
+    ``ubuntu-latest`` so the health check still reports when the self-hosted
+    runner is down.
+    """
+
+    def test_majority_wins_over_a_deliberate_minority(self):
+        observed = {
+            ".github/workflows/a.yml": [["self-hosted", "linux", "x64"]],
+            ".github/workflows/b.yml": [["self-hosted", "linux", "x64"]],
+            ".github/workflows/health.yml": [["ubuntu-latest"]],
+        }
+        labels, defaulted = resolve_runs_on(_snap(observed), _manifest())
+        assert labels == ["self-hosted", "linux", "x64"]
+        assert defaulted is False
+
+    def test_empty_observation_falls_back_to_profile_default_and_says_so(self):
+        labels, defaulted = resolve_runs_on(_snap({}), _manifest())
+        assert labels == ["ubuntu-latest"]
+        assert defaulted is True
+
+    def test_tie_is_broken_deterministically(self):
+        """A 1-1 tie must not depend on dict iteration order — otherwise two
+        runs over the same repo could render different workflows."""
+        observed = {
+            ".github/workflows/a.yml": [["self-hosted"]],
+            ".github/workflows/b.yml": [["ubuntu-latest"]],
+        }
+        first, _ = resolve_runs_on(_snap(observed), _manifest())
+        flipped = dict(reversed(list(observed.items())))
+        second, _ = resolve_runs_on(_snap(flipped), _manifest())
+        assert first == second
+
+    def test_managed_files_are_not_read_back_as_evidence(self):
+        """A prior mis-sync wrote its own wrong runner class into the managed
+        set. Counting those votes would let the mistake justify itself — the
+        exact loop that shipped ``ubuntu-latest`` into a billing-blocked
+        account. Only the repo's own (non-managed) workflows vote.
+        """
+        managed = [
+            ".github/workflows/owner-queue-guard.yml",
+            ".github/workflows/pr-body-check.yml",
+            ".github/workflows/ci-meta.yml",
+        ]
+        observed = {path: [["ubuntu-latest"]] for path in managed}
+        observed[".github/workflows/build.yml"] = [["self-hosted", "linux", "x64"]]
+
+        labels, defaulted = resolve_runs_on(_snap(observed), _manifest(managed_files=managed))
+
+        assert labels == ["self-hosted", "linux", "x64"]
+        assert defaulted is False
+
+    def _seed(self, tmp_path, observed):
+        """Write a minimal manifest + snapshot pair the loaders can read."""
+        manifests, snapshots = tmp_path / "m", tmp_path / "s"
+        manifests.mkdir()
+        snapshots.mkdir()
+        (manifests / "Osasuwu__test.manifest.yml").write_text(
+            yaml.safe_dump(
+                {"repo": "Osasuwu/test", "managed_files": [], "language_test_files": []}
+            ),
+            encoding="utf-8",
+        )
+        (snapshots / "Osasuwu__test.snapshot.json").write_text(
+            json.dumps(_snap(observed).to_dict()), encoding="utf-8"
+        )
+        return manifests, snapshots
+
+    def test_plan_output_says_when_the_runner_class_was_defaulted(self, tmp_path):
+        manifests, snapshots = self._seed(tmp_path, {})
+        (plan,) = plan_account_pass(
+            ["Osasuwu/test"], canon={}, manifests_dir=manifests, snapshots_dir=snapshots
+        )
+        assert any("runs_on" in note and "default" in note for note in plan.notes), plan.notes
+
+    def test_plan_output_is_quiet_when_the_runner_class_was_observed(self, tmp_path):
+        manifests, snapshots = self._seed(
+            tmp_path, {".github/workflows/build.yml": [["self-hosted", "linux", "x64"]]}
+        )
+        (plan,) = plan_account_pass(
+            ["Osasuwu/test"], canon={}, manifests_dir=manifests, snapshots_dir=snapshots
+        )
+        assert not [note for note in plan.notes if "runs_on" in note]
+
+    def test_all_observed_files_managed_falls_back_to_default(self):
+        managed = [".github/workflows/ci-meta.yml"]
+        labels, defaulted = resolve_runs_on(
+            _snap({managed[0]: [["ubuntu-latest"]]}), _manifest(managed_files=managed)
+        )
+        assert labels == ["ubuntu-latest"]
+        assert defaulted is True
+
+
 # ── loaders over committed fixtures ───────────────────────────────────
 
 
@@ -313,7 +463,12 @@ def test_load_canon_real_fixtures_skip_dunder():
     canon = load_canon()
     assert "code-review.yml" in canon
     assert "__init__.py" not in canon
-    # The pytest.yml canon gap this slice surfaces is real (no canon authored yet).
+    # No canon template for pytest.yml yet (tracked as a follow-up, #1347's AC5
+    # note) — but this no longer surfaces as a *planning*-layer canon gap: the
+    # three python repos list it in custom_files (REPO_CUSTOM, never written) and
+    # non-python repos derive an empty resolved_language_test_files, so the
+    # missing canon entry is simply never looked up. See
+    # test_plan_account_pass_no_pytest_canon_gap below.
     assert "pytest.yml" not in canon
 
 
@@ -349,16 +504,27 @@ def test_plan_account_pass_reports_per_repo():
     assert all(isinstance(p, RepoPlan) for p in plans)
 
 
-def test_plan_account_pass_surfaces_pytest_canon_gap():
-    # Full-profile repos plan a write for the language-test pytest.yml, which has
-    # no canon template yet — the orchestrator must flag it, not crash, and must
-    # leave that repo's calls empty (not partially applied).
-    plans = {p.repo: p for p in plan_account_pass(OSASUWU_REPOS)}
-    flagged = [p for p in plans.values() if p.canon_gaps]
-    assert flagged, "expected at least one repo to surface the pytest.yml canon gap"
-    for p in flagged:
-        assert ".github/workflows/pytest.yml" in p.canon_gaps
-        assert p.calls == []
+def test_plan_account_pass_no_pytest_canon_gap():
+    # AC6: the REPO_CUSTOM write-filter (AC2/AC5, pytest.yml lives in custom_files
+    # for the three python repos) plus the derived ci_language axis (AC3/AC4,
+    # non-python repos resolve an empty language_test_files) mean pytest.yml is
+    # never planned as a WRITE_FILE or DELETE_FILE anywhere in the account pass —
+    # every repo comes back applyable, not fenced off by a canon gap.
+    plans = plan_account_pass(OSASUWU_REPOS)
+    summary = summarize_account_pass(plans)
+    assert summary["total"] == len(OSASUWU_REPOS)
+    assert summary["gapped"] == 0
+    assert summary["errored"] == 0
+    assert summary["applyable"] == len(OSASUWU_REPOS)
+    for p in plans:
+        assert p.canon_gaps == []
+        assert p.applyable
+        assert not p.gapped
+        for call in p.calls:
+            assert call.path != ".github/workflows/pytest.yml"
+    assert any(p.calls for p in plans), (
+        "expected at least one repo to plan a non-empty call sequence"
+    )
 
 
 def test_plan_account_pass_injected_canon_makes_repo_applyable():
@@ -371,6 +537,117 @@ def test_plan_account_pass_injected_canon_makes_repo_applyable():
     for p in plans:
         assert p.canon_gaps == []
         assert p.error is None
+
+
+def test_committed_canon_dependabot_targets_the_live_default_branch():
+    """#1406 — the *shipped* canon, not just a test template, must take its
+    ``target-branch`` from the audit. redrobot's default branch is ``master``;
+    canon hardcoded ``main``, so every dependabot PR it wrote there targeted a
+    branch that does not exist.
+    """
+    applier = Applier(
+        _manifest(repo="SergazyNarynov/redrobot"),
+        load_canon(),
+        snapshot=_snap({}, repo="SergazyNarynov/redrobot", default_branch="master"),
+    )
+
+    rendered = applier.render_content(".github/dependabot.yml")
+
+    assert "target-branch: main" not in rendered
+    assert rendered.count("target-branch: master") == 2
+
+
+def test_committed_canon_ci_meta_push_trigger_targets_the_live_default_branch():
+    """Sibling of the dependabot bug found by grepping canon for hardcoded
+    ``main`` (#1406): ci-meta's ``push:`` trigger named a branch redrobot does
+    not have, so the workflow never ran on merges there.
+    """
+    applier = Applier(
+        _manifest(repo="SergazyNarynov/redrobot"),
+        load_canon(),
+        snapshot=_snap({}, repo="SergazyNarynov/redrobot", default_branch="master"),
+    )
+
+    rendered = applier.render_content(".github/workflows/ci-meta.yml")
+
+    assert "branches: [main]" not in rendered
+    assert "branches: [master]" in rendered
+
+
+def test_ci_meta_is_not_written_to_a_repo_without_tests_ci():
+    """#1406 — ci-meta.yml runs ``pytest tests/ci/``, which exits 4 (usage error)
+    when that directory does not exist. Writing it into such a repo manufactures
+    a permanently red required check, so an observed absence must skip the file
+    rather than ship a broken gate.
+    """
+    plan = [
+        Action(
+            kind=ActionKind.WRITE_FILE,
+            path=".github/workflows/ci-meta.yml",
+            file_class="managed",
+        ),
+        Action(
+            kind=ActionKind.WRITE_FILE,
+            path=".github/workflows/code-review.yml",
+            file_class="managed",
+        ),
+    ]
+    applier = Applier(_manifest(), _TEST_CANON, snapshot=_snap({}, has_tests_ci=False))
+
+    calls = applier.translate(plan, ActualState())
+
+    assert [c.path for c in calls] == [".github/workflows/code-review.yml"]
+    assert any("tests/ci" in n for n in applier.observed_notes())
+
+
+def test_ci_meta_is_written_when_tests_ci_is_present():
+    """The skip is driven by a *positive* observation of absence, not by silence:
+    an unobserved repo (older snapshot fixture) keeps the pre-#1406 behaviour.
+    """
+    plan = [
+        Action(
+            kind=ActionKind.WRITE_FILE,
+            path=".github/workflows/ci-meta.yml",
+            file_class="managed",
+        )
+    ]
+
+    for snapshot in (_snap({}, has_tests_ci=True), _snap({})):
+        applier = Applier(_manifest(), _TEST_CANON, snapshot=snapshot)
+        calls = applier.translate(plan, ActualState())
+        assert [c.path for c in calls] == [".github/workflows/ci-meta.yml"]
+        assert not any("tests/ci" in n for n in applier.observed_notes())
+
+
+def test_committed_canon_ci_meta_pytest_args_default_to_nothing():
+    """#1406 — the extra-args axis is opt-in: a repo that says nothing gets the
+    plain invocation it has always had, byte-for-byte. Anything else would
+    rewrite ci-meta.yml in every repo on the next sync for no reason.
+    """
+    applier = Applier(_manifest(), load_canon(), snapshot=_snap({}))
+
+    rendered = applier.render_content(".github/workflows/ci-meta.yml")
+
+    assert "run: pytest tests/ci/ -v\n" in rendered
+
+
+def test_redrobot_manifest_cuts_conftest_discovery_at_tests_ci():
+    """#1406 — pytest loads every *ancestor* conftest during collection, even for
+    a narrow target path. redrobot's root conftest imports numpy, which the
+    meta-tests job deliberately does not install, so collection died before a
+    single guard test ran. Whether cutting is safe is a per-repo fact (jarvis's
+    root conftest puts ``mcp-memory/`` and ``scripts/`` on ``sys.path`` — cutting
+    there breaks 16 tests), hence a declared axis rather than a canon constant.
+    """
+    applier = Applier(
+        load_manifest("SergazyNarynov/redrobot"),
+        load_canon(),
+        snapshot=_snap({}, repo="SergazyNarynov/redrobot", default_branch="master"),
+    )
+
+    rendered = applier.render_content(".github/workflows/ci-meta.yml")
+
+    assert "run: pytest tests/ci/ -v --confcutdir=tests/ci\n" in rendered
 
 
 def test_plan_account_pass_isolates_a_bad_repo(tmp_path):
@@ -396,7 +673,9 @@ def test_plan_account_pass_is_idempotent_against_synced_state():
     full_canon["pytest.yml"] = "name: pytest\n"
     repo = OSASUWU_REPOS[0]
     manifest = load_manifest(repo)
-    applier = Applier(manifest, full_canon)
+    # A snapshot is mandatory to render canon at all now that the observed axes
+    # have no manifest-side fallback (#1406).
+    applier = Applier(manifest, full_canon, snapshot=_snap({}, repo=repo))
     plan = Planner(manifest).plan(ActualState())
     # Build an actual state that is byte-identical to what the plan would write.
     synced_files = {}

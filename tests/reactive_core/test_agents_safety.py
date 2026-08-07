@@ -119,6 +119,31 @@ def test_tier2_messaging_area_blocked_wholesale() -> None:
     )
 
 
+def test_tier0_messaging_owner_escalation_carve_out() -> None:
+    # #1385 follow-up: paging the owner on an ESCALATE route is not
+    # impersonation — it's the review step for a critical event. Narrow
+    # carve-out inside the blanket messaging block, not a general opening.
+    assert (
+        safety.classify(
+            "telegram_notifier", "notify_owner_escalation", "github.pr.opened", area="messaging"
+        )
+        == safety.Tier.AUTO
+    )
+
+
+def test_tier2_messaging_other_actions_stay_blocked_despite_carve_out() -> None:
+    # The carve-out is scoped to the exact action name — every other
+    # messaging action must still be Tier 2.
+    assert (
+        safety.classify("tg_bot", "send_message", "chat-42", area="messaging")
+        == safety.Tier.BLOCKED
+    )
+    assert (
+        safety.classify("tg_bot", "notify_owner_escalation_typo", "chat-42", area="messaging")
+        == safety.Tier.BLOCKED
+    )
+
+
 def test_tier2_cross_repo_write_blocked() -> None:
     # Writing to a repo outside the allowed scope is Tier 2.
     assert (

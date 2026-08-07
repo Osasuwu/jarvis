@@ -17,6 +17,7 @@ from agents.orchestrator import (
     EscalationNotice,
     InlineResult,
     Route,
+    build_production_orchestrator,
     dispatch,
     escalation_notice,
     handle_event,
@@ -120,9 +121,7 @@ def test_global_task_due_defaults_dispatcher_skill_to_research():
     """A global_task_due payload missing dispatcher_skill defaults to 'research'
     (payload.get(..., 'research')) — the goal still names a concrete skill rather
     than emitting None."""
-    d = handle_event(
-        _ev("global_task_due", "low", {"output_sink": "memory", "lapse_intervals": 1})
-    )
+    d = handle_event(_ev("global_task_due", "low", {"output_sink": "memory", "lapse_intervals": 1}))
     assert d.route is Route.EMIT_TASK
     assert d.goal.startswith("global task: research")
     assert "None" not in d.goal
@@ -177,6 +176,44 @@ def test_pipeline_events_are_inline_noop(event_type):
     d = handle_event(_ev(event_type, "info"))
     assert d.route is Route.HANDLE_INLINE
     assert d.noop is True
+
+
+# -- #1385 AC-B: telemetry events route to inline no-op, any severity -------
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    [
+        "memory_recall",
+        "review_debt_collected",
+        "consolidation_run",
+        "consolidation_applied",
+        "consolidation_rejected",
+        "evolve_run",
+        "fok_run",
+        "memory_migration",
+    ],
+)
+@pytest.mark.parametrize("severity", ["info", "medium", "high", "critical"])
+def test_telemetry_events_are_inline_noop_at_any_severity(event_type, severity):
+    # consolidation_run fires at both info and high in live traffic — the
+    # route must not depend on severity for any telemetry type.
+    d = handle_event(_ev(event_type, severity))
+    assert d.route is Route.HANDLE_INLINE
+    assert d.noop is True
+
+
+@pytest.mark.parametrize("severity", ["info", "high"])
+def test_github_prefixed_events_are_inline_noop(severity):
+    d = handle_event(_ev("github.pull_request", severity))
+    assert d.route is Route.HANDLE_INLINE
+    assert d.noop is True
+
+
+def test_dispatcher_escalation_is_not_a_telemetry_route():
+    # Deliberately excluded (#1385 AC-B) — retired scaffolding with no live
+    # producer. Falling through to fail-safe ESCALATE is the correct route.
+    assert handle_event(_ev("dispatcher_escalation", "info")).route is Route.ESCALATE
 
 
 def test_unknown_event_type_failsafe_escalates():
@@ -356,6 +393,56 @@ def test_dispatch_noncritical_weekend_does_not_ping():
     assert res.row is not None and res.row["assignee"] == "owner"
 
 
+def test_dispatch_escalate_notifier_routes_through_safety_gate(monkeypatch: pytest.MonkeyPatch):
+    """#1385 review finding: the ESCALATE ping must go through safety.gate(),
+    not call the notifier directly — so it's classified + audited like every
+    other action-agent side effect.
+    """
+    cli = _FakeClient()
+    gate_calls: list[dict] = []
+    real_gate = safety.gate
+
+    def _spy_gate(**kwargs):
+        gate_calls.append(kwargs)
+        return real_gate(**kwargs)
+
+    monkeypatch.setattr("agents.orchestrator.safety.gate", _spy_gate)
+
+    pinged: list[Decision] = []
+    d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
+    res = dispatch(d, now=_SATURDAY, client=cli, notifier=pinged.append)
+
+    assert res.notified is True
+    assert pinged == [d]
+    assert len(gate_calls) == 1
+    call = gate_calls[0]
+    assert call["area"] == "messaging"
+    assert call["action"] == "notify_owner_escalation"
+    assert call["tool_name"] == "telegram_notifier"
+    assert safety.classify(call["tool_name"], call["action"], "x", area=call["area"]) == (
+        safety.Tier.AUTO
+    )
+
+
+def test_dispatch_notifier_exception_does_not_abort_tick():
+    """#1385 AC-D: a raising notifier must not propagate out of dispatch.
+
+    The escalation side effect (owner row) already landed before the notify
+    step runs — a Telegram/network failure here must not undo or block that,
+    since dispatch executes inside a live wake_driver tick.
+    """
+    cli = _FakeClient()
+
+    def _boom(_decision: Decision) -> None:
+        raise RuntimeError("telegram down")
+
+    d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
+    res = dispatch(d, now=_SATURDAY, client=cli, notifier=_boom)
+    assert res.notice is EscalationNotice.TELEGRAM_NOW
+    assert res.notified is False
+    assert res.row is not None and res.row["assignee"] == "owner"
+
+
 # ===========================================================================
 # AC5: inline tool surface routes through safety.gate (Tier 0 / 1 / 2)
 # ===========================================================================
@@ -388,3 +475,38 @@ def test_run_inline_tier2_blocks_and_audits():
     with pytest.raises(safety.GateError):
         run_inline_tool("delete", fn=lambda: ran.append("ran"))
     assert ran == []
+
+
+# ===========================================================================
+# AC-A (#1385): build_production_orchestrator wires handle_event -> dispatch
+# ===========================================================================
+
+
+def test_build_production_orchestrator_routes_event_through_dispatch():
+    cli = _FakeClient()
+    orch = build_production_orchestrator(client=cli, clock=lambda: _FRIDAY)
+    result = orch(_ev("ci_failure", "high", {"pr": 5}))
+    assert isinstance(result, DispatchResult)
+    assert result.route is Route.EMIT_TASK
+    assert result.enqueued is True
+    assert result.row is not None
+    assert result.row["assignee"] == "sandcastle"
+
+
+def test_build_production_orchestrator_wires_notifier_for_critical_escalation():
+    cli = _FakeClient()
+    pinged: list[Decision] = []
+    orch = build_production_orchestrator(
+        client=cli, notifier=pinged.append, clock=lambda: _SATURDAY
+    )
+    result = orch(_ev("security_alert", "critical", {"detail": "x"}))
+    assert result.notified is True
+    assert len(pinged) == 1
+
+
+def test_build_production_orchestrator_default_clock_and_notifier_do_not_raise():
+    cli = _FakeClient()
+    orch = build_production_orchestrator(client=cli)
+    result = orch(_ev("pr_merged"))
+    assert isinstance(result, DispatchResult)
+    assert result.route is Route.HANDLE_INLINE

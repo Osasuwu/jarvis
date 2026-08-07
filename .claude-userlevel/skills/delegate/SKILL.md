@@ -54,7 +54,10 @@ inside the dispatched sandcastle agent.
    prefix match — `## Acceptance criteria`, `## ACCEPTANCE CRITERIA (brief)`,
    etc. all match).
 4. Issue body cites at least one decision UUID (regex
-   `\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`).
+   `\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b`), or
+   carries the explicit `[no-decision]` marker for slices that legitimately
+   have none (#1099 — pure-mechanical slices aren't forced to cite a
+   synthetic UUID).
 
 **Invocation** (per issue, before classification or claim):
 
@@ -176,7 +179,7 @@ done
 2. **Grill artifact for this issue** — present iff *either* of the following holds:
 
    - **(a) working_state** — `memory_get(name="working_state_<project>", project="<project>")` where `<project>` is the short project slug (`jarvis`, `redrobot`), matching the convention in `scripts/session-context.py`. If the returned record references this issue number alongside one or more decision UUIDs, the artifact is present. The exact key shape inside the record is project-controlled — accept any structure where a decision UUID is reachable from the issue number. If working_state has no entry for this issue, fall through to (b).
-   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies. The automated `/to-tickets` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
+   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID (or the `[no-decision]` marker for mechanical slices with no informing decision). Since #1099, `/to-tickets` emits this section automatically at publish time (its own §5 "Decision citation" step) — manual annotation is still accepted for issues authored outside `/to-tickets`.
 
 **Dispatch table** — per issue, pick exactly one branch:
 

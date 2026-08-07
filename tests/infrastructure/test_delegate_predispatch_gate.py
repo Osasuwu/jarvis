@@ -60,6 +60,17 @@ def test_uuid_anywhere_in_body_satisfies():
     assert check_issue(_issue(body=body)).allow
 
 
+def test_no_decision_marker_satisfies_condition_four():
+    """#1099 — pure-mechanical slices cite `[no-decision]` instead of a synthetic UUID."""
+    body = "## Acceptance criteria\n- [ ] do thing\n\n## Decisions\n\n[no-decision]\n"
+    assert check_issue(_issue(body=body)).allow
+
+
+def test_no_decision_marker_is_case_insensitive():
+    body = "## Acceptance criteria\n- [ ] x\n[NO-DECISION]\n"
+    assert check_issue(_issue(body=body)).allow
+
+
 # ── Refusal: missing sandcastle label ───────────────────────────────────────
 
 

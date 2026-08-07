@@ -44,8 +44,9 @@ LIVE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
 # BOTH the live verdict step and the rendered canon verdict step. Drift on any
 # one is the class of bug this guard exists to catch.
 VERDICT_INVARIANTS = [
-    # case-SENSITIVE all-caps block, MINOR dropped (#976/#988)
-    r"grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING)",
+    # case-SENSITIVE all-caps block, MINOR dropped (#976/#988), MEDIUM
+    # promoted into the blocking set (#1385 follow-up)
+    r"grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)",
     # locale fix so emoji headings are consumed byte-wise (#996)
     "export LC_ALL=C",
     # non-blocking severity pass branch (two-gate, #963)
@@ -215,7 +216,7 @@ class TestCanonVerdictParity:
 
     def test_canon_block_check_runs_before_pass_checks(self, canon_verdict_run):
         run = canon_verdict_run
-        block_at = run.index("(CRITICAL|MAJOR|BLOCKING)")
+        block_at = run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)")
         for later in (
             r"^No issues found\.",
             "Found [0-9]+ issues?:",
@@ -223,12 +224,12 @@ class TestCanonVerdictParity:
         ):
             assert block_at < run.index(later), (
                 f"Block check must precede pass signal {later!r} so no pass can "
-                f"shadow a CRITICAL/MAJOR/BLOCKING heading."
+                f"shadow a CRITICAL/MAJOR/BLOCKING/MEDIUM heading."
             )
 
     def test_canon_locale_exported_before_block(self, canon_verdict_run):
         run = canon_verdict_run
-        assert run.index("export LC_ALL=C") < run.index("(CRITICAL|MAJOR|BLOCKING)"), (
+        assert run.index("export LC_ALL=C") < run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)"), (
             "LC_ALL=C must be exported before the first severity grep (#996)."
         )
 

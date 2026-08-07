@@ -1,6 +1,7 @@
 {
   "branch_protection": null,
   "dependabot_ecosystems": [],
+  "has_tests_ci": true,
   "labels": [
     {
       "color": "C2E0C6",
@@ -458,6 +459,97 @@
       "name": "web-ui"
     }
   ],
+  "observed_runners": {
+    ".github/workflows/ci.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/code-review.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/event-dispatch.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/hardware-lifecycle.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/issue-domain-label-sync.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/issue-schema-check.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/owner-queue-guard.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/parent-notify.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/pr-checks.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/pr-merged.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/project-sync.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ],
+    ".github/workflows/runner-health-check.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/security.yml": [
+      [
+        "self-hosted",
+        "linux",
+        "x64"
+      ]
+    ]
+  },
   "repo": "SergazyNarynov/redrobot",
   "settings": {
     "allow_auto_merge": false,
@@ -469,22 +561,24 @@
     "visibility": "private"
   },
   "workflows": [
-    "dynamic/copilot-swe-agent/copilot",
+    ".github/workflows/_runner-smoke.yml",
+    ".github/workflows/ci-meta.yml",
     ".github/workflows/ci.yml",
-    ".github/workflows/pr-merged.yml",
-    ".github/workflows/parent-notify.yml",
-    "dynamic/copilot-pull-request-reviewer/copilot-pull-request-reviewer",
+    ".github/workflows/code-review.yml",
+    ".github/workflows/event-dispatch.yml",
     ".github/workflows/hardware-lifecycle.yml",
     ".github/workflows/issue-domain-label-sync.yml",
     ".github/workflows/issue-schema-check.yml",
-    ".github/workflows/project-sync.yml",
-    ".github/workflows/pr-checks.yml",
-    ".github/workflows/security.yml",
-    ".github/workflows/event-dispatch.yml",
-    ".github/workflows/code-review.yml",
-    ".github/workflows/_runner-smoke.yml",
-    "dynamic/agents/copilot-pull-request-reviewer",
     ".github/workflows/owner-queue-guard.yml",
-    ".github/workflows/runner-health-check.yml"
+    ".github/workflows/parent-notify.yml",
+    ".github/workflows/pr-body-check.yml",
+    ".github/workflows/pr-checks.yml",
+    ".github/workflows/pr-merged.yml",
+    ".github/workflows/project-sync.yml",
+    ".github/workflows/runner-health-check.yml",
+    ".github/workflows/security.yml",
+    "dynamic/agents/copilot-pull-request-reviewer",
+    "dynamic/copilot-pull-request-reviewer/copilot-pull-request-reviewer",
+    "dynamic/copilot-swe-agent/copilot"
   ]
 }

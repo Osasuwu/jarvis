@@ -1,6 +1,7 @@
 {
   "branch_protection": null,
   "dependabot_ecosystems": [],
+  "has_tests_ci": false,
   "labels": [
     {
       "color": "d4e9c8",
@@ -198,6 +199,18 @@
       "name": "unsafe-for-afk"
     }
   ],
+  "observed_runners": {
+    ".github/workflows/ci.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/pr-body-check.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ]
+  },
   "repo": "Osasuwu/music-intel-mcp",
   "settings": {
     "allow_auto_merge": false,

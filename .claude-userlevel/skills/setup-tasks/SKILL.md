@@ -118,22 +118,17 @@ Polls `claude -p "/usage"`, broadcasts `CLAUDE_QUOTA_PRESSURE` repo variable wit
 .\scripts\sandcastle\Register-SandcastleTask.ps1 -QuotaProbe
 ```
 
-### Orchestrator watcher daemon (M41/#639)
+### Orchestrator watcher daemon (M41/#639) — **SUPERSEDED**
+
+**SUPERSEDED by M44 reactive-core (`wake_driver` + `orchestrator.handle_event`, #1385).** The poll-based watcher below predates the event-driven `wake_driver` LISTEN/NOTIFY loop that now routes `review_negative` (and every other event type) live. **Do not register `Orchestrator-Watcher`** — a live wake_driver instance already covers this path, and running both would double-dispatch `/rework` on the same event. Deletion of `watcher.py`, `register-watcher.ps1`, and its test, plus dropping the legacy `processed` column/index, is tracked separately in #1391 (a `refactor:` PR) — this section stays as historical context until that lands.
 
 | Task name | Schedule | Notes |
 |---|---|---|
-| `Orchestrator-Watcher` | At Workshop startup, restart on failure | Continuous poll (45s) of `events` table for `review_negative`; dispatches `claude -p "/rework <N>"` on hit. Gated by quota probe cache. |
+| ~~`Orchestrator-Watcher`~~ | ~~At Workshop startup, restart on failure~~ | ~~Continuous poll (45s) of `events` table for `review_negative`; dispatches `claude -p "/rework <N>"` on hit. Gated by quota probe cache.~~ |
 
-**Registration script:** **NOT YET WRITTEN** — tracked as a follow-up to the routine-cleanup migration. Manual registration in the interim:
+**Registration script:** **NOT YET WRITTEN**, and per the SUPERSEDED note above, never will be — do not write one. The manual registration steps that used to live here are removed; see #1391 for the removal of the underlying script.
 
-```powershell
-$action = New-ScheduledTaskAction -Execute "python" -Argument "C:\Users\<user>\GitHub\jarvis\scripts\orchestrator\watcher.py" -WorkingDirectory "C:\Users\<user>\GitHub\jarvis"
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$settings = New-ScheduledTaskSettingsSet -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 5)
-Register-ScheduledTask -TaskName "Orchestrator-Watcher" -Action $action -Trigger $trigger -Settings $settings -RunLevel Highest
-```
-
-Prerequisites for the watcher to actually dispatch:
+Prerequisites (historical, for the now-superseded watcher):
 - `SUPABASE_URL` + `SUPABASE_KEY` in the watcher's environment
 - `~/.jarvis/orchestrator/usage.json` present and fresh (written by Quota-Probe)
 - `/rework` skill installed (`install.ps1 -Apply`)

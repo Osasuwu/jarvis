@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+from lib import recall_dedup as rd
 
 # Stub optional deps so the module can import without a venv present.
 for _stub in ("dotenv", "supabase"):
@@ -280,10 +281,13 @@ def _run_main(
     supabase_key: str | None = "test-key",
 ) -> tuple[int, str]:
     """Invoke hook.main() with mocked stdin + supabase. Returns (exit_code, stdout)."""
-    # Isolate cache
+    # Isolate cache + stats + (id, mode) dedup state into the tmp dir.
     cache_dir = tmp_path / "cache"
     monkeypatch.setattr(hook, "CACHE_DIR", cache_dir)
     monkeypatch.setattr(hook, "CACHE_FILE", cache_dir / "pretooluse-recall-dedup.json")
+    monkeypatch.setattr(hook, "STATS_FILE", cache_dir / "pretooluse-recall-stats.json")
+    monkeypatch.setattr(rd, "COMPACTION_DIR", tmp_path / "compaction-counts")
+    monkeypatch.setattr(rd, "DEDUP_DIR", cache_dir / "recall-dedup")
 
     # Env
     if supabase_url is None:
@@ -502,3 +506,101 @@ class TestMainIntegration:
         )
         assert code == 0
         assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# (id, mode, generation) dedup — #1276
+# ---------------------------------------------------------------------------
+
+
+class TestIdModeDedup:
+    """The query-hash cache only catches identical queries; the (id, mode)
+    dedup stops the same memory surfacing from different tool triggers within
+    one compaction generation."""
+
+    def _row(self, **overrides):
+        row = {
+            "name": "verify_agent_findings_against_memory",
+            "type": "feedback",
+            "project": "jarvis",
+            "description": "Always cross-check agent output against memory",
+            "rank": 0.4,
+        }
+        row.update(overrides)
+        return row
+
+    def test_same_memory_via_different_query_deduped(self, monkeypatch, tmp_path):
+        rows = [self._row()]
+        task_payload = {
+            "tool_name": "Task",
+            "tool_input": {"description": "delegate audit to agent"},
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": "sess-dedup-1",
+        }
+        code1, out1 = _run_main(task_payload, monkeypatch, tmp_path, rpc_rows=rows)
+        assert code1 == 0
+        assert out1, "first call should emit"
+
+        # Different tool trigger, different derived query, SAME memory row.
+        edit_payload = {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "docs/STATUS.md"},
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": "sess-dedup-1",
+        }
+        code2, out2 = _run_main(edit_payload, monkeypatch, tmp_path, rpc_rows=rows)
+        assert code2 == 0
+        assert out2 == "", "same memory in a different query must be deduped"
+
+    def test_compaction_bump_resets_id_dedup(self, monkeypatch, tmp_path):
+        rows = [self._row()]
+        task_payload = {
+            "tool_name": "Task",
+            "tool_input": {"description": "delegate audit to agent"},
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": "sess-gen-1",
+        }
+        edit_payload = {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "docs/STATUS.md"},
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": "sess-gen-1",
+        }
+        # Different queries so the 60s query-hash cache can't suppress; only
+        # the (id, mode) dedup is under test here.
+        _, out1 = _run_main(task_payload, monkeypatch, tmp_path, rpc_rows=rows)
+        assert out1
+
+        # First call recorded at generation 0 (no counter file). A compaction
+        # bumps the counter → stored generation no longer matches → re-emit.
+        rd.COMPACTION_DIR.mkdir(parents=True, exist_ok=True)
+        f = rd.COMPACTION_DIR / f"{rd.sanitize_session_id('sess-gen-1')}.txt"
+        f.write_text("2", encoding="utf-8")
+
+        code2, out2 = _run_main(edit_payload, monkeypatch, tmp_path, rpc_rows=rows)
+        assert code2 == 0
+        assert out2, "post-compaction the memory must be injected again"
+
+    def test_deduped_ids_counter_inspectable(self, monkeypatch, tmp_path):
+        rows = [self._row()]
+        task_payload = {
+            "tool_name": "Task",
+            "tool_input": {"description": "delegate audit to agent"},
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": "sess-stats-1",
+        }
+        _run_main(task_payload, monkeypatch, tmp_path, rpc_rows=rows)
+        edit_payload = {
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "docs/STATUS.md"},
+            "cwd": "C:/Users/jdoe/GitHub/jarvis",
+            "session_id": "sess-stats-1",
+        }
+        _run_main(edit_payload, monkeypatch, tmp_path, rpc_rows=rows)
+
+        stats = json.loads(
+            (tmp_path / "cache" / "pretooluse-recall-stats.json").read_text(encoding="utf-8")
+        )
+        assert stats["fired"] >= 1
+        assert stats["emitted"] == 1
+        assert stats["deduped_ids"] >= 1

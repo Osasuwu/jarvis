@@ -36,6 +36,22 @@ from .label_schema import (
     clean_label_by_name,
     clean_label_names,
 )
+from .executor import (
+    ACCOUNT_REPOS,
+    SYNC_BRANCH,
+    GhWriteRunner,
+    IdentityError,
+    RepoOutcome,
+    WriteOp,
+    evaluate_protection_guard,
+    execute_account_pass,
+    execute_repo,
+    find_sync_pr,
+    gh_write_runner,
+    preflight_identity,
+    render_pr_body,
+    resolve_repos,
+)
 
 __all__ = [
     "FileClass",
@@ -69,4 +85,18 @@ __all__ = [
     "CleanLabel",
     "clean_label_by_name",
     "clean_label_names",
+    "ACCOUNT_REPOS",
+    "SYNC_BRANCH",
+    "GhWriteRunner",
+    "IdentityError",
+    "RepoOutcome",
+    "WriteOp",
+    "evaluate_protection_guard",
+    "execute_account_pass",
+    "execute_repo",
+    "find_sync_pr",
+    "gh_write_runner",
+    "preflight_identity",
+    "render_pr_body",
+    "resolve_repos",
 ]
