@@ -16,10 +16,11 @@ The SessionStart hook is registered in **user-level** `~/.claude/settings.json` 
 - Hook failed (no memory block) → fall back to `memory_recall` + `goal_list`.
 - Topic-specific lookups during the session still use `memory_recall(query=<topic>)`; only the baseline is pre-loaded.
 
-Two more pieces of always-on domain context ride bare `@import` instead of the hook, so they expand at launch and never enter the hook's drop lottery (#1417 — CONTEXT.md → *Context delivery*):
+The invariants ride a bare `@import` instead of the hook, so they expand at launch and never enter the hook's drop lottery (#1417 — CONTEXT.md → *Context delivery*):
 
 @docs/context/invariants.md
-@docs/context/glossary-index.md
+
+Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, repo-baseline, merge-gate vocabulary, workflow, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
 
 ## Project
 

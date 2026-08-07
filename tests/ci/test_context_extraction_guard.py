@@ -1,4 +1,4 @@
-"""Guard for #1417 — Invariants + Glossary index must be delivered by @import.
+"""Guard for #1417 — the extracted Invariants must be delivered by @import.
 
 Mirrors `test_soul_import_guard.py` / `test_doctrine_pointers_guard.py`'s
 pattern for `@SOUL.md` (#1328) / `@DOCTRINE.md` (#1315): a bare `@import`
@@ -7,14 +7,20 @@ session, bypassing the SessionStart hook's budget-constrained assembler
 entirely (the assembler used to drop `project_context` in 47% of sessions —
 see CONTEXT.md → *Context delivery*).
 
-Unlike SOUL.md/DOCTRINE.md, these two files are project-repo content (not
-user-level), so there is no install-manifest coverage to check — the whole
-jarvis repo ships as-is via `git clone`/`git pull`, and CLAUDE.md is already
-read by the harness in every jarvis session.
+Unlike SOUL.md/DOCTRINE.md, this is project-repo content (not user-level), so
+there is no install-manifest coverage to check — the whole jarvis repo ships
+as-is via `git clone`/`git pull`, and CLAUDE.md is already read by the harness
+in every jarvis session.
+
+#1417 extracted two files; #1418 retired the second. `docs/context/glossary-index.md`
+was a hand-maintained category+count snapshot of `CONTEXT.md`'s Glossary, and an
+index of where to look does not need to be always-loaded to be findable — a
+one-line pull pointer in CLAUDE.md replaced it. Only `invariants.md` still rides
+an `@import`, so only it is pinned here.
 
 Three checks pinned here:
-  - both files exist and each carries its own unique import-marker string
-  - both bare `@import` lines exist in root CLAUDE.md, outside any code span
+  - the file exists and carries its unique import-marker string
+  - its bare `@import` line exists in root CLAUDE.md, outside any code span
   - `scripts/session-context.py` no longer defines the retired assembler path
     (`_load_project_context`) — the whole point of #1417 is that this content
     no longer rides the budget-constrained push
@@ -37,22 +43,9 @@ class TestExtractedFilesExist:
     def test_invariants_md_exists(self):
         assert INVARIANTS_MD_PATH.exists(), f"missing {INVARIANTS_MD_PATH}"
 
-    def test_glossary_index_md_exists(self):
-        assert GLOSSARY_INDEX_MD_PATH.exists(), f"missing {GLOSSARY_INDEX_MD_PATH}"
-
     def test_invariants_md_has_unique_marker(self):
         text = INVARIANTS_MD_PATH.read_text(encoding="utf-8")
         assert "<!-- jarvis-context-import-marker: invariants-md -->" in text
-
-    def test_glossary_index_md_has_unique_marker(self):
-        text = GLOSSARY_INDEX_MD_PATH.read_text(encoding="utf-8")
-        assert "<!-- jarvis-context-import-marker: glossary-index-md -->" in text
-
-    def test_markers_are_distinct(self):
-        invariants_text = INVARIANTS_MD_PATH.read_text(encoding="utf-8")
-        glossary_text = GLOSSARY_INDEX_MD_PATH.read_text(encoding="utf-8")
-        assert "glossary-index-md" not in invariants_text
-        assert "invariants-md" not in glossary_text
 
 
 class TestImportLines:
@@ -68,13 +61,26 @@ class TestImportLines:
             "A mid-prose mention does not count (#1417, form asserted per #1426)."
         )
 
-    def test_bare_glossary_index_import_line_outside_code_span(self):
+    def test_glossary_index_stays_retired(self):
+        """#1418 evicted the Glossary category index from the always-loaded layer.
+
+        Reinstating it — as a file plus an `@import`, or as any other bare
+        import of that path — silently re-adds ~1.1 KB paid every session, again
+        after every compaction, and N+1 times per fan-out. The replacement is a
+        one-line pull pointer at `CONTEXT.md` -> `## Glossary`; if the index is
+        ever genuinely needed again, that is a fixture-and-decision change, not
+        a quiet re-import.
+        """
+        assert not GLOSSARY_INDEX_MD_PATH.exists(), (
+            f"{GLOSSARY_INDEX_MD_PATH} was retired by #1418 — reinstating the "
+            "always-loaded category index needs a fresh record_decision, not a "
+            "silent restore"
+        )
         text = CLAUDE_MD_PATH.read_text(encoding="utf-8")
         paths = [path for _, path in find_bare_imports(text)]
-        assert "docs/context/glossary-index.md" in paths, (
-            "expected a BARE, line-start `@docs/context/glossary-index.md` import in root "
-            f"CLAUDE.md, outside any code span or fence. Found bare imports: {paths}. "
-            "A mid-prose mention does not count (#1417, form asserted per #1426)."
+        assert "docs/context/glossary-index.md" not in paths, (
+            "root CLAUDE.md must not bare-import the retired glossary index "
+            f"(#1418). Found bare imports: {paths}."
         )
 
     def test_every_bare_import_target_exists_on_disk(self):

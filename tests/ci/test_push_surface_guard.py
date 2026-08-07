@@ -1,9 +1,12 @@
 """Anti-regrowth ratchet on the always-pushed context layer (#1273).
 
-CI ceilings on push surfaces only — the six canonical source files: the four
-original identity/rules files plus the two @import-delivered context files
-(``docs/context/invariants.md``, ``docs/context/glossary-index.md``) that
-replaced the SessionStart hook's assembly-derived CONTEXT.md push (#1417).
+CI ceilings on push surfaces only — the five canonical source files: the four
+original identity/rules files plus the @import-delivered
+``docs/context/invariants.md`` that replaced the SessionStart hook's
+assembly-derived CONTEXT.md push (#1417). #1417 extracted a second file,
+``docs/context/glossary-index.md``; #1418 retired it — a category index of
+where to look does not need to be always-loaded to be findable, so a pull
+pointer in CLAUDE.md replaced it and its surface row is gone.
 Ceilings live in checked-in JSON
 (``tests/ci/fixtures/push_surface_ceilings.json``); the guard fails red when a
 surface exceeds its ceiling, and raising a ceiling requires editing the fixture
@@ -11,12 +14,12 @@ in the same PR (the JSON IS the fixture — ``same_pr_raise`` in the fixture).
 
 Key design rules, per #1273 (as amended by #1417):
 
-- **Every canonical surface is a plain file.** All six surfaces are measured
+- **Every canonical surface is a plain file.** All five surfaces are measured
   by reading their file directly — there is no assembly-derived surface left
   since #1417 retired ``_load_project_context`` and its budget-constrained
-  push. ``docs/context/invariants.md`` / ``docs/context/glossary-index.md``
-  ride a bare ``@import`` in CLAUDE.md, which bypasses the SessionStart
-  assembler and its ``ASSEMBLY_BUDGET_CHARS`` cap entirely.
+  push. ``docs/context/invariants.md`` rides a bare ``@import`` in CLAUDE.md,
+  which bypasses the SessionStart assembler and its ``ASSEMBLY_BUDGET_CHARS``
+  cap entirely.
 - **Item definition is pinned and load-bearing.** bullet at any nesting depth +
   numbered line; only block-level HTML comments are excluded. Fenced code, YAML
   frontmatter, and ``.claude/rules/*`` without a ``paths:`` key are all counted
@@ -86,14 +89,13 @@ def count_bytes(text: str) -> int:
 # Surface discovery + measurement
 # ---------------------------------------------------------------------------
 
-# The six canonical file surfaces — all plain files, none assembly-derived.
+# The five canonical file surfaces — all plain files, none assembly-derived.
 CANONICAL_SURFACES = {
     "soul_md": "config/SOUL.md",
     "project_claude_md": "CLAUDE.md",
     "userlevel_claude_md": ".claude-userlevel/CLAUDE.md",
     "userlevel_doctrine_md": ".claude-userlevel/DOCTRINE.md",
     "invariants_md": "docs/context/invariants.md",
-    "glossary_index_md": "docs/context/glossary-index.md",
 }
 
 
@@ -498,7 +500,8 @@ class TestFixtureIntegrity:
         # The whole-file CONTEXT.md must not be ratcheted; the extracted
         # content lives in its own ratcheted files instead (#1417).
         assert "invariants_md" in fixture["surfaces"]
-        assert "glossary_index_md" in fixture["surfaces"]
+        # #1418 retired the glossary category index; its row must stay gone.
+        assert "glossary_index_md" not in fixture["surfaces"]
         assert "context_md_pushed" not in fixture["surfaces"]
         assert "context_md" not in fixture["surfaces"]
 

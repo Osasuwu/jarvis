@@ -5,18 +5,18 @@
     "item_definition": "An 'item' is a line whose stripped form is a bullet ('- ', '* ', or '+ ' at any nesting depth) or a numbered list line ('N. ' or 'N) '). Block-level HTML comments (<!-- ... -->) are excluded before counting. Fenced code, YAML frontmatter, and .claude/rules/* files without a paths: key are all COUNTED — they are pushed at session start. This definition is load-bearing and is asserted by a synthetic-fixture test in tests/ci/test_push_surface_guard.py.",
     "margin": {
       "pct": 20,
-      "statement": "Ceilings = per-surface 90-day maximum (git-history max over the last 90 days, computed at fixture-writing time 2026-07-31, except invariants_md/glossary_index_md which are new files created 2026-08-07 by #1417 — their ceiling is measured-at-creation + 20% margin) + 20% margin, rounded up. #1417 retired the SessionStart hook's budget-constrained CONTEXT.md push (context_md_pushed, dropped in 47% of sessions) in favor of two static files delivered via bare @import — invariants_md (30 items/5,359 bytes) and glossary_index_md (8 items/1,104 bytes) — which now carry their own ceilings under the same 20%-margin policy, no longer bounded by ASSEMBLY_BUDGET_CHARS.",
+      "statement": "Ceilings = per-surface 90-day maximum (git-history max over the last 90 days, computed at fixture-writing time 2026-07-31, except invariants_md which is a new file created 2026-08-07 by #1417 — its ceiling is measured-at-creation + 20% margin) + 20% margin, rounded up. #1417 retired the SessionStart hook's budget-constrained CONTEXT.md push (context_md_pushed, dropped in 47% of sessions) in favor of static files delivered via bare @import — invariants_md (30 items/5,359 bytes) — which carry their own ceilings under the same 20%-margin policy, no longer bounded by ASSEMBLY_BUDGET_CHARS.",
       "uuids": "Each surface entry carries the record_decision UUID that set its ceiling (adjacent comment), per the Quota-Probe.ps1 precedent. Bumping a ceiling without a fresh record_decision UUID is a review failure."
     },
     "provenance": {
       "issue": 1273,
-      "source": "Issue #1273 records aggregate 90-day maxima of 129 items / 49,632 bytes across the four source files. Per-surface ceilings here are computed from per-surface git-history maxima: soul_md 38/9512, project_claude_md 65/25283 (pre-#1252 compression), userlevel_claude_md 30/16498, userlevel_doctrine_md 9/6870 (file created 2026-07-30, max == current). #1417 (2026-08-07) replaced context_md_pushed with two @import-delivered files: invariants_md 30 items/5,359 bytes measured-at-creation, glossary_index_md 8 items/1,104 bytes measured-at-creation.",
-      "basis": "post-compression sizes (#1265-#1268 closed); #1417 extraction for invariants_md/glossary_index_md"
+      "source": "Issue #1273 records aggregate 90-day maxima of 129 items / 49,632 bytes across the four source files. Per-surface ceilings here are computed from per-surface git-history maxima: soul_md 38/9512, project_claude_md 65/25283 (pre-#1252 compression), userlevel_claude_md 30/16498, userlevel_doctrine_md 9/6870 (file created 2026-07-30, max == current). #1417 (2026-08-07) replaced context_md_pushed with two @import-delivered files: invariants_md 30 items/5,359 bytes measured-at-creation, glossary_index_md 8 items/1,104 bytes measured-at-creation. #1418 (2026-08-07, decision d7df1c94-4102-435c-a994-e629220e0335) retired glossary_index_md entirely — a category index of where to look does not clear the always-loaded admission bar (ff994ca2), so it was replaced by a pull pointer in CLAUDE.md and its surface row deleted.",
+      "basis": "post-compression sizes (#1265-#1268 closed); #1417 extraction for invariants_md"
     },
     "same_pr_raise": "The JSON IS the fixture: the guard reads ceilings only from this file, so raising a ceiling is impossible without editing it in the same PR. Regrowth is therefore a reviewable act.",
     "context_md_whole_file": {
       "has_ceiling": false,
-      "note": "CONTEXT.md as a whole file has NO ceiling — pull-only Glossary bodies may grow freely (that is the push/pull split). The formerly-pushed part (Invariants + Glossary category index) now lives in its own ratcheted files — see surfaces.invariants_md and surfaces.glossary_index_md — delivered via @import instead of the SessionStart hook assembler."
+      "note": "CONTEXT.md as a whole file has NO ceiling — pull-only Glossary bodies may grow freely (that is the push/pull split). The formerly-pushed Invariants now live in their own ratcheted file — see surfaces.invariants_md — delivered via @import instead of the SessionStart hook assembler. The Glossary is fully pull-only again since #1418 retired its always-loaded category index."
     },
     "fanout_budget": {
       "reference_fanout": 6,
@@ -64,13 +64,6 @@
       "items": 37,
       "bytes": 6431,
       "note": "Extracted ## Invariants, delivered via a bare @docs/context/invariants.md import in CLAUDE.md — replaces the SessionStart hook's context_md_pushed surface (#1417). Ceiling = measured-at-creation 30 items / 5,359 bytes + 20% margin, rounded up. Not bounded by ASSEMBLY_BUDGET_CHARS — @import bypasses the assembler entirely."
-    },
-    "glossary_index_md": {
-      "path": "docs/context/glossary-index.md",
-      "decision_uuid": "b6dd6074-5a8d-491c-a17f-7e0d91e9c35b",
-      "items": 10,
-      "bytes": 1325,
-      "note": "Extracted Glossary category+count index, delivered via a bare @docs/context/glossary-index.md import in CLAUDE.md — replaces the SessionStart hook's context_md_pushed surface (#1417). Ceiling = measured-at-creation 8 items / 1,104 bytes + 20% margin, rounded up. Not bounded by ASSEMBLY_BUDGET_CHARS — @import bypasses the assembler entirely."
     }
   }
 }
