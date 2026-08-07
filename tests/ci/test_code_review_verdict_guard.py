@@ -134,11 +134,46 @@ def lineage_failed_runs(
     )
 
 
+def lineage_in_flight_runs(
+    runs: list[tuple[str, str | None, str]],
+    lineage_shas: list[str],
+    current_run_id: str | None = None,
+) -> int:
+    """Count code-review runs over the PR's head lineage that have NOT completed.
+
+    Mirror of the #1434 in-flight probe. ``lineage_failed_runs`` above sees only
+    runs that already CONCLUDED in failure; a review still executing has no
+    conclusion at all and is therefore invisible to it. That blind spot is what
+    let an auto-rebase push pass the gate while the real review was mid-flight,
+    twice on 2026-08-07 (PRs #1429 and #1435 both merged unreviewed).
+
+    Keyed on ``status != "completed"`` rather than an enumeration of in-flight
+    status names (``queued`` / ``waiting`` / ``in_progress`` / ``pending``), so a
+    status GitHub adds later fails closed instead of silently reading as done.
+
+    Args:
+        runs: ``(head_sha, status, run_id)`` triples from
+            ``actions/workflows/code-review.yml/runs``.
+        lineage_shas: SHAs of the PR's commits (``pulls/<n>/commits``).
+        current_run_id: the run executing this check — always in flight by
+            definition, so counting it would make every run block on itself.
+    """
+    lineage = set(lineage_shas)
+    return sum(
+        1
+        for head_sha, status, run_id in runs
+        if status != "completed" and head_sha in lineage and run_id != current_run_id
+    )
+
+
 def verdict(
     comment_bodies: list[str],
     *,
     ran: bool = False,
     lineage_failed: int = 0,
+    lineage_in_flight: int = 0,
+    has_code: bool | None = None,
+    is_draft: bool = False,
     pr_state: str = "OPEN",
 ) -> str:
     """Reimplementation of the verdict step's decision rule.
@@ -156,6 +191,21 @@ def verdict(
             lineage (#1228). Non-zero means every review attempt died before
             posting, so "no comment" is evidence of never-reviewed, not of a
             legitimate skip. Only consulted when there is no selected comment.
+        lineage_in_flight: number of code-review runs over the PR's head lineage
+            that have not completed (#1434). The autobase carve-out's premise —
+            "no new code, so the existing review stands" — needs an existing
+            review that actually finished; a running one has verified nothing
+            yet. Only consulted when there is no selected comment.
+        has_code: whether the PR carries a substantive diff (the
+            ``Check substantive diff`` step's ``has_code``), or None when the
+            event never computed it (``workflow_dispatch``). ``True`` with no
+            verdict comment means the PR was never reviewed — a completed review
+            always posts one — so it fails closed (#1434 AC2). ``False`` is the
+            positive evidence that a skip was legitimate; ``None`` is unknown and
+            must not fail closed, or post-factum dispatch breaks.
+        is_draft: whether the PR is a draft. Drafts are declined by the plugin by
+            design and cannot merge, so there is no merge to gate — carved out of
+            the ``has_code`` check only (#1434 AC2).
         pr_state: ``OPEN`` / ``MERGED`` / ``CLOSED``. A non-OPEN PR gates
             nothing — a post-factum ``workflow_dispatch`` re-run must not fail
             closed merely because the plugin declined to review a merged PR
@@ -170,15 +220,28 @@ def verdict(
         #   2. lineage_failed > 0 → every review attempt over this PR's own
         #      commits errored, so the PR was NEVER reviewed → fail closed
         #      (#1228; PR #1226 auto-merged unreviewed through this hole).
-        #   3. ran=True → eligible + ran cleanly yet posted nothing →
+        #   3. lineage_in_flight > 0 → a review over this PR's own commits is
+        #      still running, so nothing has verified this head yet → fail
+        #      closed (#1434; PRs #1429 and #1435 both merged through this hole).
+        #   4. ran=True → eligible + ran cleanly yet posted nothing →
         #      ran-but-silent → fail closed (#1182 — PR #1179).
-        # Otherwise the plugin never ran (draft / has_code=false / autobase
-        # skip) with a clean lineage → legitimate skip → pass.
+        #   5. has_code=True on a non-draft → the PR carries reviewable code and
+        #      no verdict comment exists, with nothing failed and nothing in
+        #      flight to explain it → it was never reviewed → fail closed
+        #      (#1434 AC2: pass needs positive evidence, not absent failure).
+        # Otherwise there was genuinely nothing to review (has_code=false /
+        # draft / unknown) → legitimate skip → pass.
         if pr_state != "OPEN":
             return "pass"
         if lineage_failed > 0:
             return "fail"
-        return "fail" if ran else "pass"
+        if lineage_in_flight > 0:
+            return "fail"
+        if ran:
+            return "fail"
+        if has_code and not is_draft:
+            return "fail"
+        return "pass"
     body = selected[-1]  # latest review comment wins
     # BLOCK check runs first: a pass signal must never shadow a CRITICAL/MAJOR/
     # BLOCKING heading.
@@ -204,6 +267,9 @@ def verdict_fresh(
     *,
     ran: bool = False,
     lineage_failed: int = 0,
+    lineage_in_flight: int = 0,
+    has_code: bool | None = None,
+    is_draft: bool = False,
     pr_state: str = "OPEN",
 ) -> str:
     """Mirror of the verdict step INCLUDING the #993 freshness gate.
@@ -222,6 +288,9 @@ def verdict_fresh(
             at all (disambiguates skip vs. ran-but-silent, #1182).
         lineage_failed, pr_state: see ``verdict()`` — the #1228 never-reviewed
             signals, likewise only consulted when there is no review comment.
+        lineage_in_flight, has_code, is_draft: see ``verdict()`` — the #1434
+            in-flight and positive-evidence signals, likewise only consulted when
+            there is no review comment.
 
     Returns 'pass' (exit 0) or 'fail' (exit 1). Disambiguation:
       - no code-review comment at all → the #1228/#1182 total==0 decision table
@@ -233,7 +302,15 @@ def verdict_fresh(
     """
     review = [(b, t) for (b, t) in comments if TITLE_RE.search(b)]
     if not review:
-        return verdict([], ran=ran, lineage_failed=lineage_failed, pr_state=pr_state)
+        return verdict(
+            [],
+            ran=ran,
+            lineage_failed=lineage_failed,
+            lineage_in_flight=lineage_in_flight,
+            has_code=has_code,
+            is_draft=is_draft,
+            pr_state=pr_state,
+        )
     fresh = [b for (b, t) in review if t >= head_time]
     if not fresh:
         return "fail"  # only stale prior-SHA comment(s) — fail closed (#993)
@@ -290,6 +367,9 @@ def verdict_autobase(
     autobase: bool,
     ran: bool = False,
     lineage_failed: int = 0,
+    lineage_in_flight: int = 0,
+    has_code: bool | None = None,
+    is_draft: bool = False,
     pr_state: str = "OPEN",
 ) -> str:
     """Mirror of the full verdict step INCLUDING the #1134 autobase branch.
@@ -305,6 +385,9 @@ def verdict_autobase(
         anchor_time(commits, head_time, autobase=autobase),
         ran=ran,
         lineage_failed=lineage_failed,
+        lineage_in_flight=lineage_in_flight,
+        has_code=has_code,
+        is_draft=is_draft,
         pr_state=pr_state,
     )
 
@@ -896,6 +979,10 @@ class TestNeverReviewedLineageLogic:
         assert lineage_failed_runs(runs, self.SHAS) == 0
 
     def test_successful_and_in_progress_runs_are_not_failures(self):
+        # This probe answers "did an attempt die?", not "has this head been
+        # verified?". An in-flight run is not a dead attempt — but it is not a
+        # completed review either, which is the blind spot #1434 closes with a
+        # separate probe (see TestInFlightLineageLogic). Do not widen this one.
         runs = [("sha-a", "success", "1001"), ("sha-head", None, "1002")]
         assert lineage_failed_runs(runs, self.SHAS) == 0
 
@@ -1449,8 +1536,10 @@ class TestNeverReviewedLineageWiring:
 
     def test_probe_counts_only_failed_runs(self, zero_branch):
         assert 'conclusion == "failure"' in zero_branch, (
-            "Only runs that CONCLUDED IN FAILURE are evidence the PR was never "
-            "reviewed. success/cancelled/in-progress must not block."
+            "Only runs that CONCLUDED IN FAILURE are evidence that every review "
+            "attempt died before posting; success and cancelled must not block "
+            "through THIS probe. An in-flight run blocks through the separate "
+            "#1434 probe (see TestInFlightWiring), not by widening this one."
         )
 
     def test_probe_is_scoped_to_this_prs_commits(self, zero_branch):
@@ -1514,4 +1603,283 @@ class TestNeverReviewedLineageWiring:
         assert zero_branch.rindex("exit 0") > zero_branch.rindex("exit 1"), (
             "The genuine-skip exit 0 is the fall-through — it must come after "
             "every fail-closed branch (#993/#1134 regression guard)."
+        )
+
+
+class TestInFlightLineageLogic:
+    """#1434: a still-RUNNING sibling review is not evidence of a clean skip.
+
+    The autobase carve-out's premise is "this push added no code, so the
+    existing review still stands". That premise only holds when a review has
+    actually *completed*. The #1228 lineage probe counts runs that CONCLUDED IN
+    FAILURE; a run that has not concluded at all is invisible to it, so a race
+    between an auto-rebase push and an in-flight review passes the gate.
+
+    Fired twice on 2026-08-07:
+      - PR #1429: real run 31181563574 started 13:11:35Z; autobase run
+        31182030912 passed 13:18:47Z; auto-merge fired 13:19:44Z; the real run
+        failed closed 13:25:46Z -- six minutes after the merge.
+      - PR #1435: real run 31183547249 over e8fdd701 was still in_progress while
+        three consecutive autobase runs passed and auto-merge shipped it.
+
+    Both PRs merged having never been reviewed.
+    """
+
+    SHAS = ["sha-a", "sha-b", "sha-head"]
+
+    # --- lineage_in_flight_runs() probe ---
+    def test_in_progress_run_on_a_pr_commit_is_counted(self):
+        runs = [("sha-head", "in_progress", "1001")]
+        assert lineage_in_flight_runs(runs, self.SHAS) == 1
+
+    def test_queued_run_is_counted(self):
+        # `queued` and `waiting` are equally not-yet-verified. The probe keys on
+        # "not completed" rather than enumerating in-flight status names, so a
+        # future GitHub status can never silently read as done.
+        runs = [("sha-head", "queued", "1001"), ("sha-a", "waiting", "1002")]
+        assert lineage_in_flight_runs(runs, self.SHAS) == 2
+
+    def test_completed_run_is_not_in_flight(self):
+        runs = [("sha-a", "completed", "1001"), ("sha-b", "completed", "1002")]
+        assert lineage_in_flight_runs(runs, self.SHAS) == 0
+
+    def test_in_flight_run_outside_the_lineage_is_ignored(self):
+        # Another PR's running review must never block this one -- the same
+        # scoping rule the #1228 failure probe already applies.
+        runs = [("sha-of-other-pr", "in_progress", "1001")]
+        assert lineage_in_flight_runs(runs, self.SHAS) == 0
+
+    def test_current_run_is_excluded(self):
+        # This very run is in_progress by definition; counting it would make
+        # every autobase run block on itself.
+        runs = [("sha-head", "in_progress", "9999")]
+        assert lineage_in_flight_runs(runs, self.SHAS, current_run_id="9999") == 0
+        assert lineage_in_flight_runs(runs, self.SHAS, current_run_id="1234") == 1
+
+    # --- AC1: an in-flight sibling blocks the total==0 pass ---
+    def test_in_flight_sibling_blocks(self):
+        assert verdict([], lineage_in_flight=1) == "fail"
+
+    def test_in_flight_blocks_even_with_a_clean_failure_probe(self):
+        # The two probes are independent: zero failures is exactly the state
+        # that passed on #1429/#1435. It must no longer be sufficient.
+        assert verdict([], lineage_failed=0, lineage_in_flight=1) == "fail"
+
+    def test_in_flight_on_a_non_open_pr_still_passes(self):
+        # A merged/closed PR gates nothing; the #1228 post-factum carve-out
+        # keeps precedence over the new check (else workflow_dispatch re-runs
+        # against merged PRs go red again -- run 29986227927).
+        assert verdict([], lineage_in_flight=1, pr_state="MERGED") == "pass"
+
+
+class TestPositiveEvidenceLogic:
+    """#1434 AC2: pass requires evidence a review happened, not absence of failure.
+
+    With zero verdict comments and a clean lineage the old rule passed by
+    default. But a PR carrying substantive code and no verdict comment has, by
+    construction, not been reviewed -- a completed review always posts one. So
+    `has_code` is the discriminator between "nothing to review" (legitimate
+    skip) and "something to review that nobody reviewed" (fail closed).
+
+    `has_code` is already computed for every pull_request event by the
+    "Check substantive diff" step, and it measures the PR's FULL diff
+    (`base...HEAD`), not the push diff -- on PR #1435's autobase run it
+    correctly reported 299 lines. No new probe is needed.
+    """
+
+    def test_no_substantive_code_still_passes(self):
+        # EOL-only / non-code PRs: the review step is skipped by design and
+        # there is genuinely nothing to gate.
+        assert verdict([], has_code=False) == "pass"
+
+    def test_unknown_has_code_still_passes(self):
+        # workflow_dispatch does not run the diff step, so has_code is unset.
+        # Unknown must not fail closed -- that would break post-factum dispatch.
+        assert verdict([], has_code=None) == "pass"
+
+    def test_code_present_with_no_verdict_comment_blocks(self):
+        assert verdict([], has_code=True) == "fail"
+
+    def test_draft_with_code_still_passes(self):
+        # The plugin declines drafts at its eligibility check, and a draft
+        # cannot be merged -- there is no merge to gate, so failing closed is
+        # pure noise (same reasoning as the non-OPEN carve-out).
+        assert verdict([], has_code=True, is_draft=True) == "pass"
+
+    def test_non_open_pr_outranks_the_code_check(self):
+        assert verdict([], has_code=True, pr_state="MERGED") == "pass"
+
+    def test_a_fresh_verdict_comment_is_the_evidence(self):
+        # has_code is consulted only when total==0. Once a verdict comment
+        # exists, the content gates decide and has_code is irrelevant.
+        assert (
+            verdict_fresh(
+                [("## Code Review\n\nNo issues found.", "2026-08-07T13:40:00Z")],
+                "2026-08-07T13:36:46Z",
+                has_code=True,
+            )
+            == "pass"
+        )
+
+
+class TestPR1435Timeline:
+    """#1434 AC4: the reproducing fixture -- autobase push + in-flight review.
+
+    Replays PR #1435's actual state at 13:39:01Z, when autobase run 31183641339
+    evaluated the gate: the real review over `e8fdd701` had been running since
+    13:37:50Z and had posted nothing; an earlier autobase run had already
+    concluded success; the PR carried 299 substantive diff lines. The gate
+    passed, and auto-merge shipped it at 13:41:38Z.
+    """
+
+    HUMAN_SHA = "e8fdd701"
+    LINEAGE = [HUMAN_SHA, "a335a42d", "3ac2731c"]
+    COMMITS = [
+        ("2026-08-07T13:36:46Z", "Osasuwu"),
+        ("2026-08-07T13:38:56Z", AUTOBASE_BOT),
+    ]
+    HEAD_TIME = "2026-08-07T13:38:56Z"
+    # (head_sha, status, run_id) -- as the Actions API reported them.
+    RUNS = [
+        (HUMAN_SHA, "in_progress", "31183547249"),
+        ("a335a42d", "completed", "31183593287"),
+    ]
+    CURRENT = "31183641339"
+
+    def test_the_old_rule_saw_nothing_wrong(self):
+        # Guards the diagnosis: the #1228 failure probe genuinely reads clean
+        # here, so the fix must come from a different signal, not a tweak to it.
+        failed = [(sha, None, rid) for sha, _status, rid in self.RUNS]
+        assert lineage_failed_runs(failed, self.LINEAGE, self.CURRENT) == 0
+
+    def test_the_in_flight_probe_sees_the_running_review(self):
+        assert lineage_in_flight_runs(self.RUNS, self.LINEAGE, self.CURRENT) == 1
+
+    def test_gate_does_not_pass_the_pr_1435_state(self):
+        assert (
+            verdict_autobase(
+                [],
+                self.COMMITS,
+                self.HEAD_TIME,
+                autobase=True,
+                lineage_in_flight=lineage_in_flight_runs(self.RUNS, self.LINEAGE, self.CURRENT),
+                has_code=True,
+            )
+            == "fail"
+        )
+
+    def test_gate_still_blocks_once_the_review_finishes_silently(self):
+        # The in-flight run concludes success but posts no verdict comment.
+        # AC2 catches what AC1 no longer can: code present, nothing reviewed it.
+        finished = [(self.HUMAN_SHA, "completed", "31183547249")]
+        assert (
+            verdict_autobase(
+                [],
+                self.COMMITS,
+                self.HEAD_TIME,
+                autobase=True,
+                lineage_in_flight=lineage_in_flight_runs(finished, self.LINEAGE, self.CURRENT),
+                has_code=True,
+            )
+            == "fail"
+        )
+
+    def test_gate_passes_once_a_real_verdict_lands(self):
+        # The self-healing path: code-review-retry re-dispatches the failed run
+        # as a workflow_dispatch (which bypasses the autobase skip and performs
+        # a genuine review), a verdict comment lands, and the next evaluation
+        # carries it forward on the last-non-bot anchor (#1134).
+        assert (
+            verdict_autobase(
+                [("## Code Review -- PR #1435\n\nNo issues found.", "2026-08-07T13:50:00Z")],
+                self.COMMITS,
+                self.HEAD_TIME,
+                autobase=True,
+                has_code=True,
+            )
+            == "pass"
+        )
+
+
+class TestInFlightWiring:
+    """#1434: the bash must carry the in-flight probe and the has_code gate."""
+
+    MARKER = 'if [ "$total" -eq 0 ]; then'
+
+    @pytest.fixture(scope="class")
+    def zero_branch(self, verdict_step) -> str:
+        branch = branch_slice(verdict_step["run"], self.MARKER)
+        return "\n".join(line for line in branch.splitlines() if not line.lstrip().startswith("#"))
+
+    def test_probe_counts_not_completed_runs(self, zero_branch):
+        assert 'status != "completed"' in zero_branch, (
+            "The total==0 branch must count code-review runs over this PR's "
+            "commits that have NOT completed. Keying on 'not completed' rather "
+            "than listing in-flight status names means a future GitHub status "
+            "can never silently read as done (#1434 AC1)."
+        )
+
+    def test_in_flight_count_blocks(self, zero_branch):
+        after = zero_branch[zero_branch.index("LINEAGE_INFLIGHT") :]
+        assert "exit 1" in after, (
+            "A non-zero in-flight count must exit 1 -- the review that would "
+            "verify this PR has not finished, so the autobase carry-forward has "
+            "nothing to carry (#1434 AC1)."
+        )
+
+    def test_in_flight_check_precedes_the_fall_through_pass(self, zero_branch):
+        assert zero_branch.index("LINEAGE_INFLIGHT") < zero_branch.rindex("exit 0"), (
+            "The in-flight check must run before the genuine-skip pass, or it "
+            "is dead code and #1429/#1435 pass again."
+        )
+
+    def test_non_open_carve_out_still_precedes_it(self, zero_branch):
+        assert zero_branch.index("PR_STATE") < zero_branch.index("LINEAGE_INFLIGHT"), (
+            "A merged/closed PR gates nothing; the #1228 post-factum carve-out "
+            "must keep precedence over the new fail-closed checks."
+        )
+
+    def test_has_code_gates_the_fall_through_pass(self, zero_branch):
+        assert "HAS_CODE" in zero_branch, (
+            "The fall-through pass must require positive evidence there was "
+            "nothing to review (has_code=false), not merely the absence of a "
+            "failed run (#1434 AC2)."
+        )
+        assert zero_branch.index("HAS_CODE") < zero_branch.rindex("exit 0"), (
+            "The has_code gate must precede the genuine-skip pass."
+        )
+
+    def test_draft_is_carved_out_of_the_has_code_gate(self, zero_branch):
+        assert "IS_DRAFT" in zero_branch, (
+            "A draft PR cannot be merged and the plugin declines it by design "
+            "-- failing closed there is noise, not safety (#1434 AC2)."
+        )
+
+    def test_has_code_is_wired_from_the_diff_step(self, verdict_step):
+        # has_code is a step OUTPUT, so it must cross into the verdict step via
+        # env; unlike isDraft it cannot be re-derived from the API here.
+        env = verdict_step.get("env", {}) or {}
+        assert "HAS_CODE" in env, (
+            "HAS_CODE must be wired from steps.diff.outputs.has_code -- it "
+            "measures the PR's full base...HEAD diff, so it is meaningful even "
+            "on an autobase push whose own diff is empty."
+        )
+        assert "steps.diff.outputs.has_code" in env["HAS_CODE"]
+
+    def test_pr_query_resolves_draft_state(self, verdict_step):
+        # isDraft comes from the API, resolved in-script beside PR_STATE off the
+        # same `gh pr view` call rather than round-tripping through env.
+        run = verdict_step["run"]
+        assert "isDraft" in run, (
+            "The verdict step must resolve isDraft alongside state and "
+            "headRefOid (gh pr view --json ...,isDraft)."
+        )
+        assert "IS_DRAFT=" in run, "isDraft must be bound to IS_DRAFT for the carve-out."
+
+    def test_pass_notice_names_the_evidence_it_relied_on(self, zero_branch):
+        tail = zero_branch[zero_branch.rindex("::notice::") :]
+        assert "HAS_CODE" in tail or "LINEAGE" in tail, (
+            "The fall-through pass notice must state which signal it relied on, "
+            "so a pass is auditable from the log without re-deriving it "
+            "(#1434 AC3)."
         )
