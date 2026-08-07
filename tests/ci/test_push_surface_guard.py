@@ -21,9 +21,16 @@ Key design rules, per #1273 (as amended by #1417):
   numbered line; only block-level HTML comments are excluded. Fenced code, YAML
   frontmatter, and ``.claude/rules/*`` without a ``paths:`` key are all counted
   (they load at session start). A synthetic fixture test asserts this.
-- **A new always-pushed surface fails red.** ``.claude/rules/*.md`` without a
-  ``paths:`` key and ``CLAUDE.local.md`` load at launch; if one appears and the
-  fixture does not list it, the guard fails.
+- **A new always-pushed surface fails red.** A rules file without a ``paths:``
+  key and ``CLAUDE.local.md`` load at launch; if one appears and the fixture
+  does not list it, the guard fails. Both rules directories are scanned —
+  ``.claude/rules/`` and ``.claude-userlevel/rules/`` (#1430) — because the
+  user-level one is the repo-side source that mirrors to ``~/.claude/rules/``.
+- **A permissive ``paths:`` glob is rejected, not enrolled** (#1430). A glob
+  matching everything costs what an unscoped rule costs while claiming to be
+  conditional; enrolling it with a ceiling would legitimize the mislabel and
+  open a second, dishonest door into the always-loaded set. "Permissive" is an
+  explicit literal set, not a match-everything analyzer.
 - **CONTEXT.md as a whole file has NO ceiling** — the Invariants/Glossary
   content that used to be measured through it now lives in its own ratcheted
   files (see above); CONTEXT.md itself carries only pointers.
@@ -88,43 +95,159 @@ CANONICAL_SURFACES = {
 }
 
 
-def _has_paths_key(path: Path) -> bool:
-    """True when a .claude/rules/* file carries a ``paths:`` key in frontmatter.
+# Both rules directories are scanned (#1430). ``.claude-userlevel/rules/`` is the
+# repo-side source that mirrors to ``~/.claude/rules/``, exactly as
+# ``.claude-userlevel/CLAUDE.md`` is already a canonical surface — measuring the
+# repo copy is what makes the user-level half reviewable in a PR at all.
+_RULES_DIRS = {
+    ".claude/rules": "claude_rules",
+    ".claude-userlevel/rules": "userlevel_rules",
+}
 
-    A rule WITHOUT ``paths:`` loads at launch with the same priority as
-    ``.claude/CLAUDE.md`` — an always-pushed surface. One WITH ``paths:`` only
-    loads when the glob matches, so it is conditional and excluded. We exclude
-    by the key, never by directory — excluding the directory wholesale would
-    make ``mv`` from CLAUDE.md into ``.claude/rules/`` a zero-cost laundering
-    path (#1273).
-    """
-    text = path.read_text(encoding="utf-8")
+# "Permissive" is an explicit literal set, deliberately NOT a general
+# does-this-match-everything analyzer (#1430). An analyzer is the crutchy
+# option and false-positives on legitimately broad but bounded globs like
+# ``docs/**``; this set covers the forms someone actually writes when they mean
+# "everything".
+PERMISSIVE_GLOBS = frozenset({"*", "**", "**/*", "**/**", "./*", "./**"})
+
+
+def _frontmatter(text: str) -> str | None:
+    """The YAML frontmatter block, or None when the file has none."""
     if not text.startswith("---"):
-        return False
+        return None
     end = text.find("\n---", 3)
     if end == -1:
-        return False
-    frontmatter = text[3:end]
-    return any(
-        line.strip() == "paths:" or line.strip().startswith("paths:")
-        for line in frontmatter.splitlines()
-    )
+        return None
+    return text[3:end]
 
 
-def _discover_extra_file_surfaces() -> dict[str, str]:
-    """Always-pushed file surfaces beyond the canonical four: .claude/rules/*
-    without a paths: key, and CLAUDE.local.md if present. Returns
-    {surface_id: repo-relative path}."""
-    surfaces: dict[str, str] = {}
-    rules_dir = REPO_ROOT / ".claude" / "rules"
-    if rules_dir.exists():
+def _unquote(value: str) -> str:
+    value = value.strip().strip(",").strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        return value[1:-1]
+    return value
+
+
+def parse_rule_paths(text: str) -> list[str] | None:
+    """Return the rule's ``paths:`` globs, or None when the key is absent.
+
+    None and ``[]`` mean different things and must stay distinguishable: no key
+    means the rule loads at session start (always-pushed), while an empty value
+    means it loads nothing and therefore costs nothing. Handles the three forms
+    a rule is actually written in — inline scalar, flow sequence, block list.
+    """
+    frontmatter = _frontmatter(text)
+    if frontmatter is None:
+        return None
+    lines = frontmatter.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not (stripped == "paths:" or stripped.startswith("paths:")):
+            continue
+        inline = stripped[len("paths:") :].strip()
+        if inline:
+            if inline.startswith("["):
+                body = inline.strip("[]")
+                return [g for g in (_unquote(p) for p in body.split(",")) if g]
+            return [_unquote(inline)]
+        globs = []
+        for follow in lines[i + 1 :]:
+            if not follow.strip():
+                continue
+            if not follow.startswith((" ", "\t")) or not follow.strip().startswith("- "):
+                break
+            globs.append(_unquote(follow.strip()[2:]))
+        return globs
+    return None
+
+
+def classify_rule_scope(text: str) -> str:
+    """``unscoped`` | ``scoped`` | ``permissive`` for a rules file.
+
+    Per [code.claude.com/docs/en/claude-directory], a rule without ``paths:``
+    loads at session start like ``CLAUDE.md`` — an always-pushed surface. One
+    with a real glob is conditional. A glob that matches everything costs what
+    an unscoped rule costs while *claiming* to be conditional, so it gets its
+    own verdict rather than passing as scoped (#1430).
+
+    We classify by the key, never by directory — excluding the directory
+    wholesale would make ``mv`` from CLAUDE.md into ``.claude/rules/`` a
+    zero-cost laundering path (#1273).
+    """
+    globs = parse_rule_paths(text)
+    if globs is None:
+        return "unscoped"
+    if any(g in PERMISSIVE_GLOBS for g in globs):
+        return "permissive"
+    return "scoped"
+
+
+def _iter_rule_files(root: Path):
+    """(repo-relative posix path, surface-id prefix, Path) for every rules file."""
+    for reldir, prefix in _RULES_DIRS.items():
+        rules_dir = root / reldir
+        if not rules_dir.exists():
+            continue
         for md in sorted(rules_dir.glob("*.md")):
-            if not _has_paths_key(md):
-                surfaces[f"claude_rules:{md.name}"] = str(md.relative_to(REPO_ROOT))
-    local = REPO_ROOT / "CLAUDE.local.md"
+            yield md.relative_to(root).as_posix(), prefix, md
+
+
+def find_permissive_rules(root: Path = REPO_ROOT) -> list[tuple[str, str]]:
+    """(relpath, offending glob) for every rule whose ``paths:`` matches all."""
+    offenders = []
+    for relpath, _prefix, md in _iter_rule_files(root):
+        globs = parse_rule_paths(md.read_text(encoding="utf-8")) or []
+        for glob in globs:
+            if glob in PERMISSIVE_GLOBS:
+                offenders.append((relpath, glob))
+                break
+    return offenders
+
+
+def _discover_extra_file_surfaces(root: Path = REPO_ROOT) -> dict[str, str]:
+    """Always-pushed file surfaces beyond the canonical six: unscoped rules in
+    either rules directory, and CLAUDE.local.md if present. Returns
+    {surface_id: repo-relative path}.
+
+    Permissive rules are deliberately absent — they are rejected outright by
+    ``find_permissive_rules``, not offered an enrollment path. One canonical way
+    to be always-loaded (#1430).
+    """
+    surfaces: dict[str, str] = {}
+    for relpath, prefix, md in _iter_rule_files(root):
+        if classify_rule_scope(md.read_text(encoding="utf-8")) == "unscoped":
+            surfaces[f"{prefix}:{relpath}"] = relpath
+    local = root / "CLAUDE.local.md"
     if local.exists():
         surfaces["claude_local_md"] = "CLAUDE.local.md"
     return surfaces
+
+
+def _format_permissive_violation(relpath: str, glob: str) -> str:
+    return (
+        f"Rule '{relpath}' declares paths: '{glob}', which matches everything — "
+        "it is loaded at session start in practice while claiming to be "
+        "conditional, so it costs what an unscoped rule costs.\n"
+        "Enrolling it with a ceiling would legitimize the mislabel, so it fails "
+        "instead. Two honest fixes: narrow the glob to the files the rule "
+        "actually applies to, or drop the paths: key and enroll the file as an "
+        "always-pushed surface in CANONICAL_SURFACES plus "
+        "tests/ci/fixtures/push_surface_ceilings.json in the same PR."
+    )
+
+
+def _format_unenrolled_rule_violation(relpath: str, surface_id: str) -> str:
+    return (
+        f"Rule '{relpath}' (discovered as '{surface_id}') carries no paths: key, "
+        "so it loads at session start with the same priority as CLAUDE.md — an "
+        "always-pushed surface every session pays for, and one that is re-injected "
+        "from disk after every compaction.\n"
+        "Admitting one must be deliberate: add it to CANONICAL_SURFACES and give "
+        "it a ceiling in tests/ci/fixtures/push_surface_ceilings.json in the same "
+        "PR. If it was meant to be conditional, add a paths: glob instead — a "
+        "scoped rule costs zero always-loaded bytes."
+    )
 
 
 def _measure_surface(surface_id: str, spec: dict) -> tuple[int, int]:
@@ -390,12 +513,16 @@ class TestFixtureIntegrity:
         fixture = _load_fixture()
         fixture_paths = {spec["path"] for spec in fixture["surfaces"].values()}
         for surface_id, relpath in _discover_extra_file_surfaces().items():
-            assert relpath in fixture_paths, (
-                f"new always-pushed surface {relpath} (discovered as "
-                f"{surface_id}) is not in tests/ci/fixtures/push_surface_ceilings.json "
-                "— add a ceiling for it in the same PR, else the ratchet silently "
-                "misses it"
-            )
+            if "/rules/" in relpath:
+                message = _format_unenrolled_rule_violation(relpath, surface_id)
+            else:
+                message = (
+                    f"new always-pushed surface {relpath} (discovered as "
+                    f"{surface_id}) is not in "
+                    "tests/ci/fixtures/push_surface_ceilings.json — add a ceiling "
+                    "for it in the same PR, else the ratchet silently misses it"
+                )
+            assert relpath in fixture_paths, message
 
     def test_same_pr_raise_documented(self):
         """The JSON-is-the-fixture property must be documented so a reviewer
@@ -503,3 +630,162 @@ class TestRatchet:
         assert "Baseline carrier selection" in msg
         assert ".claude/rules/ + paths:" in msg
         assert "retrieval" in msg
+
+
+class TestRuleScopeClassification:
+    """#1430: a rule file is always-loaded unless its ``paths:`` genuinely
+    scopes it. Three outcomes — unscoped / scoped / permissive — because a glob
+    that matches everything costs the same as no glob at all while *claiming*
+    to be conditional."""
+
+    def test_no_frontmatter_is_unscoped(self):
+        assert classify_rule_scope("Some rule prose.\n") == "unscoped"
+
+    def test_frontmatter_without_paths_key_is_unscoped(self):
+        text = "---\ndescription: a rule\n---\n\nbody\n"
+        assert classify_rule_scope(text) == "unscoped"
+
+    def test_inline_glob_is_scoped(self):
+        text = '---\npaths: "src/**/*.py"\n---\n\nbody\n'
+        assert classify_rule_scope(text) == "scoped"
+
+    def test_list_glob_is_scoped(self):
+        text = '---\npaths:\n  - "src/**/*.py"\n  - tests/**\n---\n\nbody\n'
+        assert classify_rule_scope(text) == "scoped"
+
+    def test_flow_sequence_glob_is_scoped(self):
+        text = '---\npaths: ["src/**/*.py", "docs/*.md"]\n---\n\nbody\n'
+        assert classify_rule_scope(text) == "scoped"
+
+    def test_empty_paths_value_is_scoped(self):
+        """An empty ``paths:`` loads nothing, so it costs nothing. A silent
+        no-op rule is a smell, but this guard is a context-cost ratchet."""
+        assert classify_rule_scope("---\npaths:\n---\n\nbody\n") == "scoped"
+
+    def test_double_star_is_permissive(self):
+        assert classify_rule_scope('---\npaths: "**"\n---\n') == "permissive"
+
+    def test_double_star_slash_star_is_permissive(self):
+        assert classify_rule_scope('---\npaths:\n  - "**/*"\n---\n') == "permissive"
+
+    def test_single_star_is_permissive(self):
+        assert classify_rule_scope('---\npaths: "*"\n---\n') == "permissive"
+
+    def test_permissive_entry_beside_narrow_one_still_permissive(self):
+        text = '---\npaths:\n  - "src/**/*.py"\n  - "**"\n---\n'
+        assert classify_rule_scope(text) == "permissive"
+
+    def test_permissive_set_is_literal_not_analyzed(self):
+        """Deliberately NOT a match-everything analyzer — that is the crutchy
+        option, and it false-positives on broad-but-bounded globs."""
+        assert classify_rule_scope('---\npaths: "docs/**"\n---\n') == "scoped"
+
+    def test_parse_returns_none_when_key_absent(self):
+        assert parse_rule_paths("---\ndescription: x\n---\n") is None
+
+    def test_parse_returns_globs(self):
+        text = '---\npaths:\n  - "a/**"\n  - b/*.md\n---\n'
+        assert parse_rule_paths(text) == ["a/**", "b/*.md"]
+
+
+class TestRulesDirDiscovery:
+    """#1430 AC1: both rules directories are scanned, measured from the repo
+    copy. ``.claude-userlevel/rules/`` is the repo-side source that mirrors to
+    ``~/.claude/rules/``, exactly as ``.claude-userlevel/CLAUDE.md`` already is
+    a canonical surface. Driven by synthetic trees (AC5), never live files."""
+
+    @staticmethod
+    def _write(root: Path, relpath: str, text: str) -> None:
+        p = root / relpath
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+
+    def test_project_rules_dir_is_scanned(self, tmp_path):
+        self._write(tmp_path, ".claude/rules/a.md", "body\n")
+        found = _discover_extra_file_surfaces(tmp_path)
+        assert ".claude/rules/a.md" in found.values()
+
+    def test_userlevel_rules_dir_is_scanned(self, tmp_path):
+        self._write(tmp_path, ".claude-userlevel/rules/b.md", "body\n")
+        found = _discover_extra_file_surfaces(tmp_path)
+        assert ".claude-userlevel/rules/b.md" in found.values()
+
+    def test_scoped_rule_is_not_a_surface(self, tmp_path):
+        self._write(tmp_path, ".claude/rules/c.md", '---\npaths: "src/**"\n---\nbody\n')
+        assert _discover_extra_file_surfaces(tmp_path) == {}
+
+    def test_permissive_rule_is_not_silently_enrolled(self, tmp_path):
+        """A permissive glob is rejected outright (see TestPermissiveGlobs), so
+        it must not appear as an enrollable surface — one canonical way in."""
+        self._write(tmp_path, ".claude/rules/d.md", '---\npaths: "**"\n---\nbody\n')
+        assert _discover_extra_file_surfaces(tmp_path) == {}
+
+    def test_surface_ids_distinguish_the_two_dirs(self, tmp_path):
+        self._write(tmp_path, ".claude/rules/same.md", "body\n")
+        self._write(tmp_path, ".claude-userlevel/rules/same.md", "body\n")
+        found = _discover_extra_file_surfaces(tmp_path)
+        assert len(found) == 2, f"same basename in both dirs collided: {found}"
+
+    def test_claude_local_md_still_discovered(self, tmp_path):
+        self._write(tmp_path, "CLAUDE.local.md", "body\n")
+        assert _discover_extra_file_surfaces(tmp_path) == {"claude_local_md": "CLAUDE.local.md"}
+
+
+class TestPermissiveGlobs:
+    """#1430 AC3: a permissive glob fails red naming the offending glob, rather
+    than being enrolled with a ceiling. Enrolling it would legitimize a rule
+    that claims to be scoped while costing what an unscoped one costs."""
+
+    def test_finder_reports_path_and_glob(self, tmp_path):
+        p = tmp_path / ".claude/rules/wide.md"
+        p.parent.mkdir(parents=True)
+        p.write_text('---\npaths:\n  - "src/**"\n  - "**/*"\n---\nbody\n', encoding="utf-8")
+        assert find_permissive_rules(tmp_path) == [(".claude/rules/wide.md", "**/*")]
+
+    def test_finder_clean_on_scoped_tree(self, tmp_path):
+        p = tmp_path / ".claude-userlevel/rules/narrow.md"
+        p.parent.mkdir(parents=True)
+        p.write_text('---\npaths: "docs/**"\n---\nbody\n', encoding="utf-8")
+        assert find_permissive_rules(tmp_path) == []
+
+    def test_message_names_glob_and_offers_both_honest_fixes(self):
+        msg = _format_permissive_violation(".claude/rules/wide.md", "**/*")
+        assert ".claude/rules/wide.md" in msg
+        assert "**/*" in msg
+        assert "narrow" in msg.lower()
+        assert "push_surface_ceilings.json" in msg
+
+    def test_live_repo_has_no_permissive_rule(self):
+        offenders = find_permissive_rules()
+        assert not offenders, "\n" + "\n".join(
+            _format_permissive_violation(p, g) for p, g in offenders
+        )
+
+
+class TestUnenrolledRuleMessage:
+    """#1430 AC4: the rejection explains *why* the file counts as always-loaded
+    and points at the fixture, matching the existing violation formatter's tone."""
+
+    def test_message_explains_why_and_where_to_enroll(self):
+        msg = _format_unenrolled_rule_violation(".claude/rules/new.md", "claude_rules:new.md")
+        assert ".claude/rules/new.md" in msg
+        assert "paths:" in msg
+        assert "session start" in msg.lower()
+        assert "push_surface_ceilings.json" in msg
+        assert "CANONICAL_SURFACES" in msg
+
+
+class TestCanonicalSurfacesAreLoadBearing:
+    """#1430 AC2: enrollment means CANONICAL_SURFACES *and* a fixture ceiling.
+    Without this tie CANONICAL_SURFACES is dead code and the rejection message
+    asks for a step nothing verifies."""
+
+    def test_canonical_surfaces_match_the_fixture(self):
+        fixture = _load_fixture()
+        assert {sid: spec["path"] for sid, spec in fixture["surfaces"].items()} == (
+            CANONICAL_SURFACES
+        ), (
+            "CANONICAL_SURFACES and tests/ci/fixtures/push_surface_ceilings.json "
+            "disagree — every enrolled always-pushed surface must appear in both, "
+            "in the same PR"
+        )
