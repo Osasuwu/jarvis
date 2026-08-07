@@ -589,19 +589,23 @@ def main():
                 )
             )
 
-    # 1. User memories — who is the owner (always). Compact one-line format:
-    #    full bodies rot the context; names + descriptions are enough to
-    #    remind Jarvis what exists. Full content via memory_get on demand.
-    section, ids = _query_memories(client, mem_type="user", limit=2, compact=True)
-    if section:
-        sections.append(
-            (
-                _PRIORITY_USER_PROFILE,
-                "user_profile",
-                "## User Profile\n" + section,
-                ids,
+    # 1. User memories — who is the owner. Skipped on compact resume (#1460):
+    #    duplicates what the just-compacted transcript summary + Pre-Compact
+    #    Recovery pointer already carry; startup still gets the full block.
+    #    Compact one-line format: full bodies rot the context; names +
+    #    descriptions are enough to remind Jarvis what exists. Full content
+    #    via memory_get on demand.
+    if not compact_resume:
+        section, ids = _query_memories(client, mem_type="user", limit=2, compact=True)
+        if section:
+            sections.append(
+                (
+                    _PRIORITY_USER_PROFILE,
+                    "user_profile",
+                    "## User Profile\n" + section,
+                    ids,
+                )
             )
-        )
 
     # 2. Always-load memories — evergreen rules not tied to any single project.
     #    Everything else (feedback/decisions) is loaded task-aware via
@@ -639,54 +643,59 @@ def main():
                 )
             )
 
-    # 4. Active goals (always)
-    goal_section = _query_goals(client)
-    if goal_section:
-        sections.append((_PRIORITY_GOALS, "goals", goal_section, []))
+    # 4. Active goals. Skipped on compact resume (#1460) — same duplication
+    #    rationale as section 1.
+    if not compact_resume:
+        goal_section = _query_goals(client)
+        if goal_section:
+            sections.append((_PRIORITY_GOALS, "goals", goal_section, []))
 
     # 5. One-line reminders — lowest priority, first to drop under budget.
+    #    Skipped entirely on compact resume (#1460): these are session-start
+    #    nudges, redundant the moment a session is already mid-work.
 
-    # 5a. Pending review count — one-line reminder when candidates await review
-    pending_count = _query_pending_review_count(client, project)
-    if pending_count > 0:
-        sections.append(
-            (
-                _PRIORITY_REMINDER,
-                "pending_review",
-                f"**Pending memory candidates:** {pending_count} (run `/learn` to review)",
-                [],
+    if not compact_resume:
+        # 5a. Pending review count — one-line reminder when candidates await review
+        pending_count = _query_pending_review_count(client, project)
+        if pending_count > 0:
+            sections.append(
+                (
+                    _PRIORITY_REMINDER,
+                    "pending_review",
+                    f"**Pending memory candidates:** {pending_count} (run `/learn` to review)",
+                    [],
+                )
             )
-        )
 
-    # 5b. Architecture sweep recommendation -- recently closed milestones with
-    #     enough closed slices to warrant a /improve-codebase-architecture run.
-    #     Only fires in a known project dir where the sweep is meaningful.
-    if project:
-        sweep_section = _check_milestone_sweep(repo=_PROJECT_REPO.get(project))
-        if sweep_section:
-            sections.append((_PRIORITY_REMINDER, "milestone_sweep", sweep_section, []))
+        # 5b. Architecture sweep recommendation -- recently closed milestones with
+        #     enough closed slices to warrant a /improve-codebase-architecture run.
+        #     Only fires in a known project dir where the sweep is meaningful.
+        if project:
+            sweep_section = _check_milestone_sweep(repo=_PROJECT_REPO.get(project))
+            if sweep_section:
+                sections.append((_PRIORITY_REMINDER, "milestone_sweep", sweep_section, []))
 
-    # 5c. Mirror drift warning — show when ~/.claude/.jarvis-version is
-    #     behind repo HEAD. Fires anywhere the script can read both SHAs
-    #     (inside the jarvis repo). Silent when absent, in sync, or when
-    #     git is unavailable (not a git dir / no permission).
-    drift_section = _check_mirror_drift()
-    if drift_section:
-        sections.append((_PRIORITY_REMINDER, "mirror_drift", drift_section, []))
+        # 5c. Mirror drift warning — show when ~/.claude/.jarvis-version is
+        #     behind repo HEAD. Fires anywhere the script can read both SHAs
+        #     (inside the jarvis repo). Silent when absent, in sync, or when
+        #     git is unavailable (not a git dir / no permission).
+        drift_section = _check_mirror_drift()
+        if drift_section:
+            sections.append((_PRIORITY_REMINDER, "mirror_drift", drift_section, []))
 
-    # 5d. Managed-venv drift check + self-heal (#1312) — hash+import-probe
-    #     against the registered "main" env; silent when in sync, otherwise
-    #     a visible healed/heal-failed block. Never raises.
-    env_drift_section = _check_env_drift()
-    if env_drift_section:
-        sections.append((_PRIORITY_REMINDER, "env_drift", env_drift_section, []))
+        # 5d. Managed-venv drift check + self-heal (#1312) — hash+import-probe
+        #     against the registered "main" env; silent when in sync, otherwise
+        #     a visible healed/heal-failed block. Never raises.
+        env_drift_section = _check_env_drift()
+        if env_drift_section:
+            sections.append((_PRIORITY_REMINDER, "env_drift", env_drift_section, []))
 
-    # 5e. MCP bootstrap failure breadcrumbs (#1312) — surfaces
-    #     .claude/mcp-failures.jsonl entries newer than 24h, deduped so a
-    #     failure never re-reports across sessions.
-    mcp_failures_section = _check_mcp_failures()
-    if mcp_failures_section:
-        sections.append((_PRIORITY_REMINDER, "mcp_failures", mcp_failures_section, []))
+        # 5e. MCP bootstrap failure breadcrumbs (#1312) — surfaces
+        #     .claude/mcp-failures.jsonl entries newer than 24h, deduped so a
+        #     failure never re-reports across sessions.
+        mcp_failures_section = _check_mcp_failures()
+        if mcp_failures_section:
+            sections.append((_PRIORITY_REMINDER, "mcp_failures", mcp_failures_section, []))
 
     if not sections:
         print("[session-context] No memory data available.")
