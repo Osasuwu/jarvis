@@ -105,6 +105,20 @@ def test_spawn_allowlist_replaces_bare_git_wildcard() -> None:
             )
 
 
+def test_spawn_allowlist_includes_checkout_and_fetch() -> None:
+    """PR #1450 review (MEDIUM): a rework-shape goal never carries a
+    (branch=...) directive (task_dispatch._augment_branch_directive), so its
+    worker starts on a fresh task/<task_id> branch with no path to the PR
+    under rework unless it can `checkout`/`fetch`. Both are worktree-local
+    (`checkout`) or read-only-remote (`fetch`) — safe, unlike the repo-global
+    subcommands excluded above.
+    """
+    from agents.executor import _SPAWN_ALLOWED_TOOLS
+
+    assert "Bash(git checkout:*)" in _SPAWN_ALLOWED_TOOLS
+    assert "Bash(git fetch:*)" in _SPAWN_ALLOWED_TOOLS
+
+
 # ---------------------------------------------------------------------------
 # _resolve_claude_binary
 # ---------------------------------------------------------------------------

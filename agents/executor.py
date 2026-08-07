@@ -68,8 +68,17 @@ _SENSITIVE_ENV_KEYS: frozenset[str] = frozenset(
 #   `git config`, `git worktree`, `git branch -D`, and `git reset --hard`
 #   all remain repo-global and reach every sibling worktree, so none of
 #   those subcommands appear here at all (not even a read-only slice of
-#   them — the worker is already on its task branch, courtesy of
-#   `task_dispatch`, so it never needs to touch branches or refs directly).
+#   them).
+# - Included: Bash(git checkout:*) and Bash(git fetch:*) (PR #1450 review,
+#   MEDIUM). Both are worktree-local/read-only-remote, unlike the repo-global
+#   subcommands above: `checkout` only ever changes what's checked out in
+#   *this* worktree (git refuses to check out a branch already checked out
+#   elsewhere, so it can't steal a sibling's branch), and `fetch` only updates
+#   remote-tracking refs, never local branches. A rework-shape worker's
+#   worktree is NOT its task branch — `task_dispatch._augment_branch_directive`
+#   never attaches a `(branch=...)` directive to a `/rework #N` goal, so the
+#   worker starts on a fresh `task/<task_id>` branch with no path to the PR
+#   under rework unless it can `checkout`/`fetch` to reach it.
 _SPAWN_PERMISSION_MODE = "acceptEdits"
 _SPAWN_ALLOWED_TOOLS = (
     "Read",
@@ -81,6 +90,8 @@ _SPAWN_ALLOWED_TOOLS = (
     "Bash(git log:*)",
     "Bash(git show:*)",
     "Bash(git rev-parse:*)",
+    "Bash(git checkout:*)",
+    "Bash(git fetch:*)",
     "Bash(git add:*)",
     "Bash(git commit:*)",
     "Bash(git push:*)",

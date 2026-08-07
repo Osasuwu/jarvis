@@ -1065,10 +1065,26 @@ def kill_runaways(
     return killed
 
 
-def _create_task_worktree(task_id: str) -> str:
-    """Create a per-task git worktree at ``.reactive/worktrees/<task_id>`` on
-    branch ``task/<task_id>`` (#1390 AC3) — isolates concurrent spawned workers
-    from each other and from the main checkout's working tree.
+def _create_task_worktree(task_id: str, goal: str = "") -> str:
+    """Create a per-task git worktree at ``.reactive/worktrees/<task_id>``
+    (#1390 AC3) — isolates concurrent spawned workers from each other and
+    from the main checkout's working tree.
+
+    By default the worktree is created on a fresh branch ``task/<task_id>``
+    (``git worktree add -b``). If ``goal`` carries an explicit
+    ``(branch=<name>)`` directive naming a *different* branch, the worktree
+    instead **attaches** to that existing branch (``git worktree add`` with
+    no ``-b``) rather than creating ``task/<task_id>``.
+
+    This distinction matters for a fresh-shape re-drive: :func:`orchestrator._redrive_goal`
+    pins the retry to ``(branch=task/<root_task_id>)`` specifically *because*
+    the re-driven task's own ``task/<task_id>`` branch is never meant to be
+    created — the retry needs to land back on the root attempt's branch,
+    which :func:`_finalize_task_worktree` leaves detached-but-intact after a
+    failure precisely so a later attach can succeed. Creating a new branch
+    unconditionally here would silently violate that pin (MEDIUM, PR #1450
+    review) and leave the retry's evidence check looking at a branch that was
+    never populated.
 
     ``task_id`` is validated via ``_SAFE_TASK_ID_RE`` before interpolation into
     a filesystem path — same path-traversal guard as
@@ -1077,13 +1093,14 @@ def _create_task_worktree(task_id: str) -> str:
     if not _SAFE_TASK_ID_RE.match(task_id):
         raise ValueError(f"unsafe task_id for worktree path: {task_id!r}")
     worktree_path = os.path.join(_REPO_ROOT, ".reactive", "worktrees", task_id)
-    subprocess.run(
-        ["git", "worktree", "add", "-b", f"task/{task_id}", worktree_path],
-        cwd=_REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    own_branch = f"task/{task_id}"
+    branch_match = re.search(r"\(branch=([^)]+)\)", goal)
+    target_branch = branch_match.group(1).strip() if branch_match else own_branch
+    if target_branch == own_branch:
+        cmd = ["git", "worktree", "add", "-b", own_branch, worktree_path]
+    else:
+        cmd = ["git", "worktree", "add", worktree_path, target_branch]
+    subprocess.run(cmd, cwd=_REPO_ROOT, check=True, capture_output=True, text=True)
     return worktree_path
 
 
@@ -1166,8 +1183,11 @@ def default_spawn(goal: str, *, task_id: str | None = None) -> Any:
     # spurious close target nor flips the goal's shape.
     spawn_goal = _augment_closes_mandate(spawn_goal, task_id) if task_id else spawn_goal
     # AC3 (#1390): isolate each spawned worker in its own git worktree so
-    # concurrent workers never share a working tree.
-    cwd = _create_task_worktree(task_id) if task_id else None
+    # concurrent workers never share a working tree. Pass spawn_goal (not the
+    # raw goal) so a fresh-shape redrive's (branch=task/<root_task_id>) pin
+    # (added by _redrive_goal, threaded through by _augment_branch_directive)
+    # is honored — see _create_task_worktree docstring.
+    cwd = _create_task_worktree(task_id, spawn_goal) if task_id else None
     return executor_spawn(spawn_goal, task_id=task_id, cwd=cwd)
 
 

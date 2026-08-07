@@ -1418,6 +1418,105 @@ class TestFinalizeTaskWorktreeOnTerminal:
 
 
 # ---------------------------------------------------------------------------
+# PR #1450 review (MEDIUM) — _create_task_worktree must honor an explicit
+# (branch=...) directive by attaching to that branch instead of always
+# creating task/<task_id>, so a fresh-shape redrive lands back on the root
+# attempt's branch per _redrive_goal's pin.
+# ---------------------------------------------------------------------------
+
+
+class TestCreateTaskWorktreeBranchDirective:
+    def test_no_directive_creates_own_task_branch(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        worktree_path = td._create_task_worktree("t0", "do the thing")
+
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=worktree_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch == "task/t0"
+
+    def test_directive_naming_own_branch_still_creates(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        worktree_path = td._create_task_worktree("t0", "do the thing\n\n(branch=task/t0)")
+
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=worktree_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch == "task/t0"
+
+    def test_directive_naming_other_branch_attaches_not_creates(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        """A fresh-shape redrive's goal carries (branch=task/<root_task_id>)
+        (per orchestrator._redrive_goal) naming a branch that already exists
+        (freed by a prior failure's detach, per TestFinalizeTaskWorktreeOnTerminal
+        above) — _create_task_worktree must attach to it, not create
+        task/<new_task_id>, or the redrive's evidence check looks at a branch
+        that was never populated (PR #1450 review, MEDIUM)."""
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        # Simulate the root attempt: create + fail + detach, freeing task/root.
+        root_path = td._create_task_worktree("root")
+        q = FakeTaskQueue()
+        procs = {"root": TrackedProc(_FakeProc(rc=1), started_at=0.0)}
+        poll_completions(q, procs)
+        assert os.path.isdir(root_path)
+
+        redrive_goal = "Re-drive (attempt 2): do the thing\n\n(branch=task/root)"
+        redrive_path = td._create_task_worktree("root-r2", redrive_goal)
+
+        assert os.path.isdir(redrive_path)
+        assert redrive_path != root_path
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=redrive_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch == "task/root"  # attached to the root branch, not task/root-r2
+
+        # task/root-r2 must never have been created.
+        branches = subprocess.run(
+            ["git", "branch", "--list", "task/root-r2"],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branches == ""
+
+
+# ---------------------------------------------------------------------------
 # AC6 (#1390) — tick-start worktree-reaping sweep
 # ---------------------------------------------------------------------------
 
