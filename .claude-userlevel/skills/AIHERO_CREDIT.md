@@ -9,7 +9,7 @@ The following skills are imported from **Matt Pocock's** [`mattpocock/skills`](h
 | `caveman` | `productivity/caveman` | as-is |
 | `code-review` (injected) | `engineering/code-review` | Fowler-12 + 2-axis rubric adapted; injected into `/implement` and `/rework` pre-PR step — no standalone skill. PR plugin (`code-review.yml`) stays authoritative for blocking gates. |
 | `diagnose` | `engineering/diagnose` | as-is |
-| `grill` | `engineering/grill-with-docs` | renamed to `grill` (M37 — single grill skill, with-docs flavor; ADR 0001). Phase 2 sharpenings (M59): one-question-at-a-time prompting, confirmation gate before accept, structured facts-vs-decisions output. |
+| `grill` | `engineering/grill-with-docs` | renamed to `grill` (M37 — single grill skill, with-docs flavor; ADR 0001). Phase 2 sharpenings (M59): confirmation gate before accept, structured facts-vs-decisions output. Phase 1/2 reshape (#1413): dependency-gated frontier rounds replace the earlier one-at-a-time cadence; see "Partially adopted" below for the upstream `productivity/grilling` lineage of the frontier-round engine. |
 | `improve-codebase-architecture` | `engineering/improve-codebase-architecture` | as-is (refs CONTEXT.md / docs/adr/ — create lazily) |
 | `prototype` | `engineering/prototype` | **planned, not yet landed** — tracked by #1154 (A7, milestone #59): throwaway→scratchpad semantics, `?variant=` parameter to scope prototype by area. No `.claude-userlevel/skills/prototype/` directory exists as of `d574778`. |
 | `_shared/tdd/` reference docs | `engineering/tdd` | unbundled (#593/#596): standalone `/tdd` skill dropped; `tdd-loop.md`, `mocking.md`, `refactoring.md`, `tests.md` migrated to `skills/_shared/tdd/` as reference docs loaded by `/implement` and `/delegate` in TDD-mode. `deep-modules.md` and `interface-design.md` folded into `CONTEXT.md` glossary (Deep module / Deletion test / Testable interface entries). Post-green refactor-out-of-loop re-sequence (M59): **planned, not yet landed** — tracked by #1153 (A6, milestone #59); the `_shared/tdd/` docs still describe refactor inside the red→green loop as of `d574778`. |
@@ -37,11 +37,18 @@ The following upstream skills at `d574778` were reviewed and excluded from adopt
 | `engineering/resolving-merge-conflicts` | Low-frequency, high-context task — not a skill candidate. Handled ad-hoc when it arises. |
 | `engineering/wayfinder` | Adopted design-first via `/grill` + milestone hierarchy — the approach was decided, not the skill verbatim (decision `7085a34a`). |
 | `productivity/grill-me` | Superseded by `/grill` (Phase 2 confirmation gate covers the same intent). |
-| `productivity/grilling` | The grilling-as-model-invocable-engine split is over-engineered for Jarvis's single-principal use case. `/grill` as a monolithic skill is sufficient. |
 | `in-progress/claude-handoff`, `productivity/handoff` | Single-principal project; no handoff between agents needed. |
 | `in-progress/loop-me` | Jarvis uses `/loop` (scheduled tasks / CronCreate) — no need for a looping skill. |
 | `engineering/setup-matt-pocock-skills` | Adoption managed centrally via `AIHERO_CREDIT.md` + GitHub issues; a per-repo bootstrap script is redundant. |
 | `productivity/teach` | Jarvis has no teaching/training workflow. |
+
+## Partially adopted
+
+Upstream skills where part of the design was adopted and part deliberately wasn't — listed separately from "Deliberately not adopted" because a flat exclusion would misrepresent what actually shipped.
+
+| Upstream skill | What was adopted | What wasn't |
+|---|---|---|
+| `productivity/grilling` | The frontier-round engine (dependency-gated rounds, weight tags, per-round display ceiling) — adopted into `/grill` Phase 2 via #1413. | The grilling-as-model-invocable-engine skill-split itself — still rejected as over-engineered for Jarvis's single-principal use case; `/grill` stays a monolithic skill. |
 
 ## Update workflow
 
