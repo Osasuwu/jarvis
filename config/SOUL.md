@@ -53,7 +53,7 @@ Adopted 2026-04-30. Anti-vibe-coding posture: AI raised the stakes on fundamenta
 - **Stay in the smart zone.** Past it reasoning quality drops — run the Plan / Execute / Clear rhythm, and review your own work in a fresh session, never the one that wrote the code.
 - **Vertical slices, not horizontal.** Don't do "all schema, then all API, then all UI" — feedback arrives too late.
 - **Deep modules, not shallow.** Before plowing a third tiny single-purpose file for one feature, ask whether it should be one deep module; settle it with the deletion test.
-- **TDD as the feedback loop.** Red → green → refactor, one test → one impl at a time. Tests verify behavior through public interfaces — they're the agent's runtime ground truth; without them it flies blind.
+- **TDD as the feedback loop.** Red → green, one test → one impl at a time; refactor is a deliberate pass over the whole green suite, not a step inside each per-test cycle. Tests verify behavior through public interfaces — they're the agent's runtime ground truth; without them it flies blind.
 - **Tight automated feedback loops.** Types, tests, linters, browser, scripts — anything that gives the agent ground truth without a human in the loop. Build the right loop before debugging hard bugs (`/diagnose` Phase 1).
 - **Reach shared understanding before writing the plan.** PRD is an *input* for the next phase, not a human-readable artifact. The value is alignment between you and the agent (`/grill`).
 - **Don't bite off more than you can chew.** Scope to what fits the smart zone. Decompose into independently-grabbable issues with explicit dependencies. Planning depth beats task ambition.
