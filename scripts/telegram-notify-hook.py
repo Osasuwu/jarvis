@@ -59,10 +59,10 @@ DEFAULT_LIMIT = 20
 def fetch_pending_events(client, min_severity: str, limit: int) -> list[dict]:
     """Pending (unprocessed) events at or above `min_severity`, newest first.
 
-    Filters on the FSM ``state='pending'`` column (#739), not the legacy
-    ``processed`` flag. ``claim_next`` flips state to ``'claimed'`` while
-    leaving ``processed=false`` until ``mark_processed`` runs; filtering on
-    the flag would re-notify events the orchestrator already picked up.
+    Filters on the FSM ``state='pending'`` column (#739). ``claim_next``
+    flips state to ``'claimed'`` before ``mark_processed`` runs; filtering
+    on ``state`` (not a boolean flag) means events the orchestrator already
+    picked up are not re-notified.
     """
     idx = SEVERITIES.index(min_severity)
     allowed = list(SEVERITIES[: idx + 1])
@@ -139,11 +139,11 @@ def send_telegram(token: str, chat_id: str, text: str) -> tuple[bool, str]:
 def mark_processed(client, event_id: str, action: str) -> bool:
     """Mark event processed so it won't notify again.
 
-    Sets the FSM ``state='processed'`` column alongside the legacy
-    ``processed=True`` flag. ``fetch_pending_events`` keys on ``state='pending'``
-    (#739), so before #649 this drain — which set only ``processed=True`` —
-    left ``state='pending'`` and re-notified every sent event on the next run.
-    Writing ``state='processed'`` closes that re-send loop.
+    Sets the FSM ``state='processed'`` column. ``fetch_pending_events`` keys on
+    ``state='pending'`` (#739), so before #649 this drain — which set only the
+    legacy ``processed=True`` flag — left ``state='pending'`` and re-notified
+    every sent event on the next run. Writing ``state='processed'`` closes that
+    re-send loop. The legacy ``processed`` boolean itself was dropped in #1391.
 
     The update guards on ``.eq("state","pending")``: this batch drain is a
     side-channel that only claims events *still awaiting triage* and defers
@@ -172,7 +172,6 @@ def mark_processed(client, event_id: str, action: str) -> bool:
             client.table("events")
             .update(
                 {
-                    "processed": True,
                     "processed_at": now,
                     "processed_by": "telegram-notify-hook",
                     "action_taken": action,
