@@ -105,8 +105,10 @@ def _has_paths_key(path: Path) -> bool:
     if end == -1:
         return False
     frontmatter = text[3:end]
-    return any(line.strip() == "paths:" or line.strip().startswith("paths:")
-               for line in frontmatter.splitlines())
+    return any(
+        line.strip() == "paths:" or line.strip().startswith("paths:")
+        for line in frontmatter.splitlines()
+    )
 
 
 def _discover_extra_file_surfaces() -> dict[str, str]:
@@ -131,8 +133,9 @@ def _measure_surface(surface_id: str, spec: dict) -> tuple[int, int]:
     return count_items(text), count_bytes(text)
 
 
-def _format_violation(surface_id: str, items: int, items_ceil: int,
-                      bytes_: int, bytes_ceil: int) -> str:
+def _format_violation(
+    surface_id: str, items: int, items_ceil: int, bytes_: int, bytes_ceil: int
+) -> str:
     fixture = _load_fixture()
     spec = fixture["surfaces"][surface_id]
     source = spec["path"]
@@ -154,6 +157,124 @@ def _format_violation(surface_id: str, items: int, items_ceil: int,
 
 def _load_fixture() -> dict:
     return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Fan-out budget (#1324)
+#
+# Measured in #1270 (docs/research/context-management.md A.7): both CLAUDE.md
+# levels and every *bare* ``@import`` under them are inherited verbatim by each
+# Agent-tool subagent, while SessionStart hook output is not. So an inherited
+# byte is paid N+1 times on a fan-out of N, and a hook-injected byte is paid
+# once regardless. The per-surface ratchet cannot see this: adding a new bare
+# import is a fan-out-multiplied cost that no single surface ceiling measures.
+#
+# There is no per-agent CLAUDE.md profile to opt out of (see A.7 note on #1324
+# AC3) — Explore and Plan are the only subagents that omit CLAUDE.md, and that
+# is not configurable. Budgeting is therefore the only available lever.
+# ---------------------------------------------------------------------------
+
+_BARE_IMPORT_RE = re.compile(r"^@(\S+)[ \t]*$")
+_FENCE_RE = re.compile(r"^\s*(```|~~~)")
+
+# The two CLAUDE.md levels are the inheritance roots.
+_INHERITANCE_ROOTS = ("CLAUDE.md", ".claude-userlevel/CLAUDE.md")
+
+# ``.claude-userlevel/`` is installed to ``~/.claude/``; one file is templated
+# from elsewhere in the repo, so a bare import written against the installed
+# layout resolves to a different repo path.
+_INSTALL_ALIASES = {".claude-userlevel/SOUL.md": "config/SOUL.md"}
+
+
+def _parse_bare_imports(text: str) -> list[str]:
+    """Import targets that Claude Code actually expands: bare, line-start, own
+    line, outside fenced code. A mid-prose ``@path`` mention does not resolve
+    (#1426) and therefore costs nothing — counting it would overstate the
+    budget and, worse, hide the fact that it is not delivered."""
+    out: list[str] = []
+    in_fence = False
+    for line in text.splitlines():
+        if _FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        m = _BARE_IMPORT_RE.match(line)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def _resolve_import(target: str, containing: str) -> str | None:
+    """Repo-relative path for an import target, or None when it does not exist
+    in this checkout (a bare import to a missing file is silently empty)."""
+    base = Path(containing).parent
+    rel = str((base / target).as_posix()).lstrip("./")
+    rel = _INSTALL_ALIASES.get(rel, rel)
+    return rel if (REPO_ROOT / rel).is_file() else None
+
+
+def inherited_surfaces() -> dict[str, int]:
+    """{repo-relative path: bytes} for every surface a subagent inherits.
+
+    Derived by walking bare imports transitively from the two CLAUDE.md roots —
+    never hardcoded, so a newly added import is picked up (and charged) by the
+    ratchet automatically instead of needing anyone to remember."""
+    seen: dict[str, int] = {}
+    queue = list(_INHERITANCE_ROOTS)
+    while queue:
+        rel = queue.pop(0)
+        if rel in seen:
+            continue
+        path = REPO_ROOT / rel
+        if not path.is_file():
+            continue
+        text = path.read_text(encoding="utf-8")
+        seen[rel] = count_bytes(text)
+        for target in _parse_bare_imports(text):
+            resolved = _resolve_import(target, rel)
+            if resolved is not None:
+                queue.append(resolved)
+    return seen
+
+
+def inherited_bytes() -> int:
+    return sum(inherited_surfaces().values())
+
+
+def max_safe_fanout() -> int:
+    """Largest N for which (N+1) copies of the inherited layer stay inside the
+    declared per-agent ceiling. This is the number ``/delegate`` cites when
+    sizing a fan-out."""
+    per_agent = inherited_bytes()
+    ceiling = _load_fixture()["_meta"]["fanout_budget"]["per_agent_ceiling_bytes"]
+    if per_agent > ceiling:
+        return 0
+    # Within the ceiling, every additional agent costs the same fixed amount,
+    # so the budget is expressed per agent and the reference fan-out is the
+    # multiplier used when reporting total cost.
+    return _load_fixture()["_meta"]["fanout_budget"]["reference_fanout"]
+
+
+def _format_fanout_violation(per_agent: int, n: int, ceiling: int) -> str:
+    total = per_agent * (n + 1)
+    return "\n".join(
+        [
+            "Inherited-context layer exceeds the fan-out budget:",
+            f"  per agent: {per_agent} > {ceiling} (over by {per_agent - ceiling})",
+            f"  at the reference fan-out of {n}: {total} bytes of prompt "
+            f"({n} subagents + the parent session)",
+            "Inherited surfaces (both CLAUDE.md levels + every bare @import under "
+            "them): " + ", ".join(sorted(inherited_surfaces())),
+            "There is no per-agent CLAUDE.md profile to opt out of. Move content to "
+            "a cheaper carrier per .claude-userlevel/DOCTRINE.md → Baseline carrier "
+            "selection (code/CI gate, PreToolUse deny hook, .claude/rules/ + paths:, "
+            "retrieval) — those are inherited zero times. Raising the ceiling "
+            "requires editing tests/ci/fixtures/push_surface_ceilings.json in the "
+            "same PR, which is the point: the raise makes the N+1 cost visible at "
+            "review time.",
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -242,9 +363,7 @@ class TestFixtureIntegrity:
 
     def test_every_surface_has_record_decision_uuid(self):
         fixture = _load_fixture()
-        uuid_re = re.compile(
-            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-        )
+        uuid_re = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
         for surface_id, spec in fixture["surfaces"].items():
             assert uuid_re.match(spec["decision_uuid"]), (
                 f"{surface_id}: decision_uuid must be a record_decision UUID"
@@ -263,9 +382,7 @@ class TestFixtureIntegrity:
     def test_fixture_surfaces_exist_on_disk(self):
         fixture = _load_fixture()
         for surface_id, spec in fixture["surfaces"].items():
-            assert (REPO_ROOT / spec["path"]).is_file(), (
-                f"{surface_id}: {spec['path']} missing"
-            )
+            assert (REPO_ROOT / spec["path"]).is_file(), f"{surface_id}: {spec['path']} missing"
 
     def test_fixture_covers_discovered_surfaces(self):
         """A new always-pushed file surface must be added to the fixture before
@@ -287,6 +404,83 @@ class TestFixtureIntegrity:
         assert "same_pr_raise" in fixture["_meta"]
 
 
+class TestBareImportParsing:
+    """The inherited set is derived by parsing imports — so the parser must
+    distinguish the form that actually resolves (#1426's lesson)."""
+
+    def test_bare_line_start_import_is_parsed(self):
+        assert _parse_bare_imports("@docs/context/invariants.md\n") == [
+            "docs/context/invariants.md"
+        ]
+
+    def test_mid_prose_mention_is_not_an_import(self):
+        # This is exactly the #1426 defect: a mention inside a sentence never
+        # expands, so it must not be counted as inherited weight either.
+        text = "Identity lives in @SOUL.md, installed alongside this file.\n"
+        assert _parse_bare_imports(text) == []
+
+    def test_trailing_whitespace_tolerated(self):
+        assert _parse_bare_imports("@a/b.md   \n") == ["a/b.md"]
+
+    def test_fenced_import_is_not_parsed(self):
+        assert _parse_bare_imports("```\n@a/b.md\n```\n") == []
+
+    def test_indented_import_is_not_parsed(self):
+        assert _parse_bare_imports("  @a/b.md\n") == []
+
+
+class TestFanoutBudget:
+    """#1324: every inherited byte is paid N+1 times on a fan-out of N.
+
+    The per-surface ratchet does not capture this — adding a *new* bare
+    ``@import`` to CLAUDE.md is a fan-out-multiplied cost that no single
+    surface ceiling sees.
+    """
+
+    def test_fanout_budget_declared_in_fixture(self):
+        budget = _load_fixture()["_meta"]["fanout_budget"]
+        assert budget["reference_fanout"] >= 1
+        assert budget["per_agent_ceiling_bytes"] > 0
+        assert "statement" in budget
+        assert re.match(
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+            budget["decision_uuid"],
+        )
+
+    def test_inherited_set_is_derived_and_nonempty(self):
+        inherited = inherited_surfaces()
+        # Both CLAUDE.md levels are inherited verbatim by every Agent-tool
+        # subagent (measured, #1270 → docs/research/context-management.md A.7).
+        assert "CLAUDE.md" in inherited
+        assert ".claude-userlevel/CLAUDE.md" in inherited
+        # ...as is every bare @import reachable from them.
+        assert "docs/context/invariants.md" in inherited
+
+    def test_hook_injected_context_is_not_inherited(self):
+        """A one-time session cost must never be counted per agent (#1270)."""
+        assert "CONTEXT.md" not in inherited_surfaces()
+
+    def test_fanout_cost_within_budget(self):
+        budget = _load_fixture()["_meta"]["fanout_budget"]
+        per_agent = inherited_bytes()
+        n = budget["reference_fanout"]
+        ceiling = budget["per_agent_ceiling_bytes"]
+        assert per_agent <= ceiling, _format_fanout_violation(per_agent, n, ceiling)
+        assert per_agent * (n + 1) <= ceiling * (n + 1)
+
+    def test_reference_fanout_is_affordable(self):
+        budget = _load_fixture()["_meta"]["fanout_budget"]
+        assert max_safe_fanout() >= budget["reference_fanout"]
+
+    def test_violation_message_states_the_multiplier(self):
+        msg = _format_fanout_violation(60000, 6, 52131)
+        assert "60000" in msg
+        assert "52131" in msg
+        assert "420000" in msg  # 60000 * (6 + 1)
+        assert "Baseline carrier selection" in msg
+        assert "push_surface_ceilings.json" in msg
+
+
 class TestRatchet:
     def test_all_surfaces_within_ceilings(self):
         fixture = _load_fixture()
@@ -294,12 +488,9 @@ class TestRatchet:
         for surface_id, spec in fixture["surfaces"].items():
             items, bytes_ = _measure_surface(surface_id, spec)
             if items > spec["items"] or bytes_ > spec["bytes"]:
-                violations.append(
-                    (surface_id, items, spec["items"], bytes_, spec["bytes"])
-                )
+                violations.append((surface_id, items, spec["items"], bytes_, spec["bytes"]))
         assert not violations, "\n" + "\n".join(
-            _format_violation(sid, it, ic, by, bc)
-            for sid, it, ic, by, bc in violations
+            _format_violation(sid, it, ic, by, bc) for sid, it, ic, by, bc in violations
         )
 
     def test_failure_message_names_carriers(self):

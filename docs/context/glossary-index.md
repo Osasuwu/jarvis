@@ -7,7 +7,7 @@ Category+count summary of [`CONTEXT.md`](../../CONTEXT.md) `## Glossary`, extrac
 This file is a static snapshot, not computed at session start — regenerate by hand whenever a Glossary `###` heading in `CONTEXT.md` is added, renamed, or its column-0 bullet count changes.
 
 _bodies are pull-only — `Read CONTEXT.md` for full entries_
-- Core entities — 55 entries
+- Core entities — 56 entries
 - Self-improvement / strategic-ideation (C15) — 6 entries
 - Repo-baseline (canonical GitHub-setup sync) — 19 entries
 - Merge-gate vocabulary (code-review) — 6 entries

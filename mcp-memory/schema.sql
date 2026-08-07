@@ -1152,6 +1152,14 @@ create index if not exists idx_episodes_payload_session_id
   on episodes ((payload->>'session_id'))
   where (payload->>'session_id') is not null;
 
+-- #1423: session_id is demoted to forensic grouping metadata — the
+-- decision_list recovery key is (project, cwd, since), because a
+-- resume/compaction always mints a new session_id. Mirrors the index above
+-- for the field that now carries the recovery-query load.
+create index if not exists idx_episodes_payload_cwd
+  on episodes ((payload->>'cwd'))
+  where (payload->>'cwd') is not null;
+
 alter table episodes enable row level security;
 
 create policy "Allow all for authenticated" on episodes
