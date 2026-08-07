@@ -16,8 +16,13 @@ From the repo root (the profile's `memory` entry uses a repo-relative script pat
 claude --mcp-config config/mcp-slim.json --strict-mcp-config
 ```
 
-Headless is the same flags on `claude -p` (e.g. from `scripts/ralph-loop.ps1` iterations
-once PR #1463 lands — wire the two flags into its `claude -p` invocation).
+The flags work the same on headless `claude -p`, but **there is nothing there for them to
+strip** — measured 2026-08-08 (#1461), A/B on identical no-op prompts, same cwd and model:
+66 815 tokens with the slim profile vs 65 555 on the full registered surface. No gain,
+within noise. The ~90k baseline below is a *host-managed desktop session* number, where
+claude.ai connectors (Browser, visualize, `ccd_*`) dominate the surface; headless never
+loads those. `scripts/ralph-loop.ps1` therefore exposes `-McpConfig` but leaves it empty by
+default — see [`ralph-loop.md`](ralph-loop.md) → *Per-iteration startup floor*.
 
 Semantics (per Claude Code CLI reference, verified 2026-08-08): `--mcp-config` alone
 **adds** to registered servers; paired with `--strict-mcp-config` it **replaces** all
