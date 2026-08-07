@@ -68,6 +68,23 @@ groups:
         dest: "DOCTRINE.md"
         template: false
 
+  - id: reference
+    description: "Pull-only reference docs — carrier 5, read on demand, never @import'ed (#1418)"
+    enabled: true
+    directories:
+      # Destination of content evicted from the always-loaded surfaces (SOUL.md,
+      # user-level CLAUDE.md, DOCTRINE.md). These files cost ZERO tokens per
+      # session: nothing imports them, they are Read only when a decision turns
+      # on their contents. The pointers in SOUL.md/CLAUDE.md name the *installed*
+      # path (~/.claude/reference/...), not a repo-relative one — user-level
+      # surfaces load in every repo, so a repo-relative pointer resolves to the
+      # wrong document outside jarvis.
+      - source: ".claude-userlevel/reference"
+        dest: "reference"
+        template: false
+        include:
+          - "engineering-principles.md"
+
   - id: hooks_settings
     description: "settings.json — hooks pointing at JARVIS_HOME scripts (M3 #338)"
     enabled: true

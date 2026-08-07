@@ -51,7 +51,6 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 - **Native-first priority, not a ban.** Before writing a custom script/service (any language), check skills/MCP/hooks/subagents first; if native covers it cleanly, use native. Custom code is permitted on merit — when the native solution is awkward or incomplete. (Relaxed 2026-05-20 from the prior near-prohibition; decision `d9be0390`.) Existing justified custom code: `mcp-memory/server.py`, `src/risk_radar.py`.
 - **Check native capabilities first**: Telegram → Channels; scheduling → `/loop` or scheduled tasks; background → desktop agents.
-- **Cross-project impact + MCP portability**: `mcp-memory/server.py`, `.mcp.json` and the Supabase schema are shared with redrobot; `.mcp.json` must stay device-portable (env vars, never hardcoded usernames or absolute paths). Standing invariant — CONTEXT.md → *Invariants → Skills, infra & eval*.
 
 ## Related projects
 
@@ -65,13 +64,10 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 **Subagents deliver end-to-end** — SOUL §End-to-end ownership binds them too: feature → tests + error handling included; can't complete → document what's left. Don't return "done" if it only works in isolation.
 
-**Verification (non-negotiable)**: after any agent completes, run `git diff` in its working directory — never the self-report (CONTEXT.md → *Invariants → AFK & delegation*). Reports N files edited, diff shows 0 ⇒ fabricated.
-
 ## Memory
 
-- **Supabase** is the cross-device source of truth; file-based `~/.claude/projects/…/memory/` is device-local and does not sync (CONTEXT.md → *Invariants → Memory & persistence*). Access: `memory_store` / `memory_recall` via MCP locally, `execute_sql` via the Supabase connector from cloud tasks (`.mcp.json` isn't loaded there).
+- **Access**: `memory_store` / `memory_recall` via MCP locally, `execute_sql` via the Supabase connector from cloud tasks (`.mcp.json` isn't loaded there).
 - **Save immediately** after: decision, preference, architectural discussion, new fact, rejected approach (with why), working-style observation. Don't batch.
-- **`source_provenance` on every `memory_store`** — namespaced: `skill:<name>`, `session:<YYYY-MM-DD>`, `hook:<name>`, `user:explicit`, `episode:<id>`, or URL/`external:<system>`.
 - **Working state**: save to `working_state_jarvis` at natural breakpoints; `memory_delete` when done. After context compression → `memory_recall(query="working state")` first, then targeted file reads.
 
 ## Skill routing
@@ -80,8 +76,8 @@ Use skills — don't reinvent with raw tools.
 
 | Trigger | Skill |
 |---|---|
-| "реализуй #42" — implement single issue inline | `/implement` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
-| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` (TDD-mode auto-engages via SOUL.md grill-me checkbox + working_state UUIDs) |
+| "реализуй #42" — implement single issue inline | `/implement` (TDD-mode auto-engages via the grill trigger checkbox + working_state UUIDs) |
+| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` (TDD-mode auto-engages via the grill trigger checkbox + working_state UUIDs) |
 | "проверь результаты" / scheduled post-delegation | `/verify` |
 | "что я делаю не так", "проанализируй сессии", "паттерны общения", weekly behavioral audit | `/reflect` (cross-session comms audit; old outcome-verification scope migrated to `/verify` + `/self-improve` per #510) |
 | "исследуй", "research", "сравни" | `/research` |
@@ -112,8 +108,8 @@ Use skills — don't reinvent with raw tools.
 Rules:
 - GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
 - Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
-- **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs it at start; rule and output routing live in SOUL §Grill trigger checkbox.
-- **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the SOUL.md grill-me checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
+- **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs it at start. Both skills restate it verbatim in their own dispatch contracts, which is where it fires; the canonical text and output routing live in `~/.claude/reference/engineering-principles.md`.
+- **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the grill trigger checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 - **`/status` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `статус`, `status`, or `статус <repo>` (the word as a standalone command, optionally naming a tracked repo) route to `/status`. A sentence that merely contains the word — "какой статус у PR #123", "статус деплоя в логах", "status code 500", a quoted error string — is a normal request answered in-context, never a trigger for a repo-state investigation.
 
@@ -121,7 +117,7 @@ Rules:
 
 Three places work can land. Pick by **who's present** and **how the work was triggered**, not by what the work is.
 
-- **Interactive `/implement`** — operator present, one judgment-heavy issue, full SOUL loaded; SOUL §Grill trigger checkbox is the in-skill AFK-readiness backstop.
+- **Interactive `/implement`** — operator present, one judgment-heavy issue, full SOUL loaded; the grill trigger checkbox is the in-skill AFK-readiness backstop.
 - **`/delegate`** — operator present and chose to fan out; AFK-eligible issues → parallel sandcastle subagents, admitted by CONTEXT.md → *Pre-dispatch gate*. Operator-driven dispatch, **not** the orchestrator.
 - **Reactive-core orchestrator (M44)** — no operator; events cold-boot it and it triages **one** event into one of three dispositions, then hands off (CONTEXT.md → *orchestrator*, *Loop closure*).
 

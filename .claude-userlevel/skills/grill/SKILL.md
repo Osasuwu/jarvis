@@ -96,7 +96,7 @@ WHY→HOW and HOW→AC mid-session checkpoints were considered and **rejected as
 
 **Coverage tier (CRITIC-COVERAGE.md) — fires in addition when BOTH hold** (decision 44a72728-b622-42e3-b7b9-3a52b268b4ba):
 
-1. **≥2 grill-checkbox yes** — the SOUL.md `/grill` trigger checkbox (user-visible behavior / domain logic / non-trivial tests / crosses non-trivial code) has at least two boxes checked.
+1. **≥2 grill-checkbox yes** — the grill trigger checkbox (`~/.claude/reference/engineering-principles.md`) (user-visible behavior / domain logic / non-trivial tests / crosses non-trivial code) has at least two boxes checked.
 2. **Milestone-level** — the design under critique is a milestone PRD or equivalent grouping of slices, not an individual slice. Per CLAUDE.md milestone-vs-slice hygiene.
 
 Single-axis touch or lone slices ⇒ sampling tier only. Owner may invoke coverage tier explicitly ("coverage critic" / "deep critic") on any AC-lock but MAY NOT skip it when the trigger fires — that's exactly the same-frame rationalization the coverage tier exists to break.

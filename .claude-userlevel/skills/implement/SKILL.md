@@ -25,7 +25,7 @@ Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/impl
 
 **Inputs** (run both before the dispatch table):
 
-1. **SOUL.md `### Grill trigger checkbox`** against the issue body — fetch the body first:
+1. **Grill trigger checkbox** (canonical text: `~/.claude/reference/engineering-principles.md` → *Grill trigger checkbox*; restated verbatim below because this is where it fires) against the issue body — fetch the body first:
 
    ```bash
    gh issue view <N> --repo <owner/repo> --json title,body --jq '.title + "\n\n" + .body'
