@@ -1,28 +1,38 @@
 """Meta-test for .github/workflows/schema-drift-check.yml (#326).
 
-The pattern this test enforces — **every path-filtered CI guard ships with
-a co-located fixture test that proves it blocks what it should** — is the
-response to the failure mode of #289/#310/#311:
+The pattern this test enforces — **every CI guard ships with a co-located
+fixture test that proves it blocks what it should** — is the response to
+two distinct failure modes, both already hit in production:
 
   PR #289 pointed the guard at `supabase/schema.sql`, the canonical file
   is `mcp-memory/schema.sql`. The guard silently passed for a full sprint
-  on PRs that should have been blocked. There was no meta-protection
-  against "guard written, guard wrong, nobody notices."
+  on PRs that should have been blocked.
+
+  `require-paired-migration` was later added to branch protection's
+  `required_status_checks` while the workflow still had a trigger-level
+  `on.pull_request.paths` filter. Any PR that didn't touch schema/migration
+  paths never triggered the workflow at all, so no check-run was ever
+  created for that context — GitHub then leaves such PRs permanently
+  `mergeable_state: blocked` ("Expected — Waiting for status to be
+  reported"), since a required context must report *something* to clear.
+  Caught on PR #1440, which touched neither path.
 
 Two dimensions covered here; both are required for a guard to be trusted:
 
-1. **Config check** — the `paths:` filter in the workflow YAML must
-   reference the canonical schema path. If someone renames or moves
-   `mcp-memory/schema.sql`, the guard must move with it.
+1. **Config check** — the workflow must trigger on `pull_request`
+   unconditionally, with NO trigger-level `paths:` filter, precisely
+   because it's a required check: gating belongs entirely in the job's
+   own JS logic (which already no-ops gracefully via `core.info(...);
+   return;` when schema.sql is unchanged), never at the trigger level.
 2. **Logic check** — three scenarios (schema+migration, schema-only,
    unrelated change) asserted against a pure-Python reimplementation
    of the workflow's JS decision rule.
 
 The logic reimplementation is intentionally a parallel copy rather than
 an import — the workflow runs github-script (JS) on GitHub's runners.
-Drift between `_decide()` and the workflow is still possible, but the
-config check anchors the most load-bearing invariant (watched path =
-canonical path), which is the exact class of bug that motivated #326.
+Drift between `_decide()` and the workflow is still possible; the config
+check anchors the invariant that actually gates merges now (unconditional
+trigger), which is the exact class of bug that motivated #326.
 
 Convention for future guards: `.github/workflows/X-guard.yml` =>
 `tests/ci/test_X_guard.py`.
@@ -52,10 +62,14 @@ def _load_workflow() -> dict:
 
 
 class TestWorkflowConfigIntegrity:
-    """Anchor the most load-bearing invariant: the guard watches the right path.
+    """Anchor the load-bearing invariant: the guard's trigger is unconditional.
 
-    If the canonical schema path changes, this test forces the workflow
-    to be updated in the same PR — or a reviewer sees red CI.
+    `require-paired-migration` is a required branch-protection check. A
+    required check that only *sometimes* runs (trigger-level `paths:`
+    filter) leaves non-matching PRs stuck `mergeable_state: blocked`
+    forever, because GitHub never sees a check-run for that context to
+    clear the "waiting for status" state. The job's own JS logic already
+    no-ops gracefully for irrelevant PRs — that's where gating belongs.
     """
 
     def test_workflow_file_exists(self):
@@ -72,35 +86,24 @@ class TestWorkflowConfigIntegrity:
         assert triggers is not None, "Workflow must declare `on:` triggers"
         assert "pull_request" in triggers, "Guard must run on pull_request events"
 
-    def test_paths_filter_includes_canonical_schema(self):
+    def test_no_trigger_level_paths_filter(self):
+        """Regression test: a required check must fire on every PR.
+
+        Caught live on PR #1440 — `require-paired-migration` was made a
+        required context while this workflow still filtered on
+        `mcp-memory/schema.sql` / `supabase/migrations/**` at the trigger
+        level. PRs touching neither path never got a check-run for that
+        context and sat `mergeable_state: blocked` indefinitely. Any
+        `paths:` key under `on.pull_request` reintroduces that regression.
+        """
         wf = _load_workflow()
         triggers = wf.get("on") or wf.get(True)
         pr_filter = triggers["pull_request"]
-        paths = pr_filter.get("paths", [])
-        assert CANONICAL_SCHEMA_PATH in paths, (
-            f"Guard must watch `{CANONICAL_SCHEMA_PATH}` — the canonical schema. "
-            f"Current paths: {paths}. See #289/#310/#311 for why this matters."
-        )
-
-    def test_paths_filter_includes_migrations_dir(self):
-        """A migration-file change should also trigger the guard (safety net:
-        e.g. reviewer deletes migration without reverting schema)."""
-        wf = _load_workflow()
-        triggers = wf.get("on") or wf.get(True)
-        paths = triggers["pull_request"].get("paths", [])
-        assert any(p.startswith(MIGRATIONS_PREFIX) for p in paths), (
-            f"Guard must also watch `{MIGRATIONS_PREFIX}**`. Current paths: {paths}"
-        )
-
-    def test_no_wrong_legacy_path(self):
-        """Regression test for the original bug — guard previously watched
-        `supabase/schema.sql`, which is not the canonical location."""
-        wf = _load_workflow()
-        triggers = wf.get("on") or wf.get(True)
-        paths = triggers["pull_request"].get("paths", [])
-        assert "supabase/schema.sql" not in paths, (
-            "supabase/schema.sql is NOT the canonical path — "
-            "canonical is mcp-memory/schema.sql (#310)."
+        assert not pr_filter or "paths" not in pr_filter, (
+            "schema-drift-check.yml must NOT filter its pull_request trigger "
+            "by `paths:` — it backs a required status check, so it must "
+            "produce a check-run for every PR. Move any path-based gating "
+            "into the job's own script logic instead."
         )
 
 

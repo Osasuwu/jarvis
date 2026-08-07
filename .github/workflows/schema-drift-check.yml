@@ -3,9 +3,6 @@ name: Schema Drift Check
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
-    paths:
-      - 'mcp-memory/schema.sql'
-      - 'supabase/migrations/**'
 
 jobs:
   require-paired-migration:
