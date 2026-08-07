@@ -16,6 +16,7 @@ The following skills are imported from **Matt Pocock's** [`mattpocock/skills`](h
 | `to-spec` | `engineering/to-spec` | replaced `/setup-matt-pocock-skills` ref → "defined in the project's CLAUDE.md". Formerly `to-prd` (M37, renamed #1150). Test-seams step added (M59): surface test-harness insertion points during spec generation. |
 | `to-tickets` | `engineering/to-tickets` | replaced `/setup-matt-pocock-skills` ref → "defined in the project's CLAUDE.md". Formerly `to-issues` (M37, renamed #1150). Expand-contract pattern for wide refactors added (M59): guidance for splitting broad changes into safe-to-deploy intermediate steps. |
 | `triage` | `engineering/triage` | same |
+| `wayfinder` | `engineering/wayfinder` | **landed (M59, #1404)**, superseding the earlier design-only decision `7085a34a`. Thin, read-only, multi-milestone frontier scanner — reuses `needs-*` labels + milestone hierarchy + native `blocked_by` edges instead of a new map artifact; explicit guardrail against the upstream #625/#518 failure mode (decision node mistaken for dispatchable work). |
 | `write-a-skill` | `productivity/write-a-skill` | as-is (M37). Glossary + failure-mode taxonomy folded in from upstream `productivity/writing-great-skills` (M59). |
 | `zoom-out` | `engineering/zoom-out` | as-is |
 
@@ -35,7 +36,6 @@ The following upstream skills at `d574778` were reviewed and excluded from adopt
 | `engineering/domain-modeling` | Domain modeling happens inside `/grill` + CONTEXT.md expansion; standalone skill would fragment the same workflow. |
 | `engineering/research` | Jarvis `/research` already covers this — upstream adds no novel pattern. |
 | `engineering/resolving-merge-conflicts` | Low-frequency, high-context task — not a skill candidate. Handled ad-hoc when it arises. |
-| `engineering/wayfinder` | Adopted design-first via `/grill` + milestone hierarchy — the approach was decided, not the skill verbatim (decision `7085a34a`). |
 | `productivity/grill-me` | Superseded by `/grill` (Phase 2 confirmation gate covers the same intent). |
 | `in-progress/claude-handoff`, `productivity/handoff` | Single-principal project; no handoff between agents needed. |
 | `in-progress/loop-me` | Jarvis uses `/loop` (scheduled tasks / CronCreate) — no need for a looping skill. |

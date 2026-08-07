@@ -138,6 +138,7 @@ groups:
           - "to-spec"
           - "to-tickets"
           - "triage"
+          - "wayfinder"
           - "write-a-skill"
           - "zoom-out"
 

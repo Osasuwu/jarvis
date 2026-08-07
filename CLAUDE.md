@@ -103,6 +103,7 @@ Use skills — don't reinvent with raw tools.
 | `статус` / `status` / `статус <repo>` — **anchored, only these exact triggers** | `/status` (CONTEXT.md → *Status synthesis*) |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
+| "what's next across M-whatever", "chart the map", "what's blocked on what", multi-milestone frontier scan | `/wayfinder` |
 | Author/edit a skill | `/write-a-skill` |
 | "be brief", "caveman", token compression | `/caveman` |
 
