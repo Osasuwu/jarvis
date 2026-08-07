@@ -359,10 +359,15 @@ ASSEMBLY_BUDGET_CHARS = 9500
 
 # Section drop-priority, HIGHEST = 0 (dropped last) → higher number = dropped
 # first. Pre-Compact Recovery outranks everything; the durable layer
-# (always-load, user profile, working state, goals) outranks the one-line
-# reminders, so a compact resume still delivers it (#1271 AC2). The former
-# CONTEXT.md push (project_context) is gone — Invariants + Glossary index now
-# ride @import instead (#1417), which never enters this priority ladder.
+# (always-load, working state) outranks the one-line reminders, so a
+# startup session still delivers it under budget pressure (#1271 AC2).
+# On a compact resume, user_profile/goals/reminders are skipped entirely
+# before they ever reach this ladder (#1460) — they'd duplicate what the
+# just-compacted summary + Pre-Compact Recovery pointer already carry, so
+# their priority numbers below only govern startup-trigger drop order.
+# The former CONTEXT.md push (project_context) is gone — Invariants +
+# Glossary index now ride @import instead (#1417), which never enters this
+# priority ladder.
 _PRIORITY_RECOVERY = 0
 _PRIORITY_ALWAYS_LOAD = 1
 _PRIORITY_USER_PROFILE = 2
