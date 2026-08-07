@@ -129,6 +129,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **~/.claude/** — User-level mirror of `.claude-userlevel/`; never edit directly, edit canonical source.
 - **Drop lottery** — Hook-inject sections compete for the assembly budget; `@import` content is exempt.
 - **Push/pull split** — Always-loaded surfaces carry ceilings; pull-only bodies grow freely.
+- **Carrier tiers** — Tier A (`@import`, must-hold-every-time) vs Tier B (`.claude/rules/*.md`, advisory + file-scoped).
 
 ### Core entities
 
