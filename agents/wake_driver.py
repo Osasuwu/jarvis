@@ -70,6 +70,8 @@ from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
+    DEFAULT_WORKTREE_RETENTION_CAP,
+    DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     EventEmit,
     ReadUsage,
     ResolveBinary,
@@ -77,6 +79,7 @@ from agents.task_dispatch import (
     SupabaseTaskQueue,
     TaskQueuePort,
     TrackedProc,
+    WorktreeSweepResult,
     default_read_usage,
     DedupConfig,
     default_resolve_binary,
@@ -88,6 +91,7 @@ from agents.task_dispatch import (
     kill_runaways,
     poll_completions,
     reclaim_stale_tasks,
+    sweep_task_worktrees,
 )
 
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
@@ -264,6 +268,10 @@ class TickResult:
     tasks_failed: int = 0
     tasks_done: int = 0
     tasks_failed_exit: int = 0
+    worktrees_pruned: int = 0
+    worktrees_retained: int = 0
+    worktrees_ttl_pruned: int = 0
+    worktrees_cap_evicted: int = 0
 
 
 def default_orchestrator(event: dict[str, Any]) -> None:
@@ -360,13 +368,17 @@ def tick(
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
     task_dedup: DedupConfig | None = None,
+    task_worktree_retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
+    task_worktree_retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
+    task_worktree_now: Callable[[], float] = time.time,
     failed_events: dict[str, int] | None = None,
 ) -> TickResult:
-    """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B)::
+    """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B, #1390 AC6)::
 
         poll_completions() + kill_runaways()                  # Step 0, #921
         → reclaim_stale(events)                               # Step 1, event watchdog
         → reclaim_stale_tasks()                               # Step 2, task watchdog
+        → sweep_task_worktrees()                              # Step 2a, #1390 AC6
         → poll(parked events)                                 # Step 2b, Path B #745
         → drain_pending(events)                               # Step 3, event drain
         → drain_tasks()                                       # Step 4, task drain
@@ -400,12 +412,21 @@ def tick(
     (#1385 AC-C) — see :func:`drain_pending` and :func:`run`, which owns the
     mapping across the whole loop.
 
-    The task steps (0, 2 and 4) are each isolated in their own try/except: the
-    task_queue rides supabase-py while events ride psycopg, so a task-store
-    outage is an independent failure mode. It must not block the event drain
-    (Step 3) — events are the primary wake path. A failing task step is logged
-    and its rows stay in place (``claimed``/``running`` → swept next tick;
-    ``pending`` → re-drained next tick), exactly as a crash would leave them.
+    The task steps (0, 2, 2a and 4) are each isolated in their own try/except:
+    the task_queue rides supabase-py while events ride psycopg, so a
+    task-store outage is an independent failure mode. It must not block the
+    event drain (Step 3) — events are the primary wake path. A failing task
+    step is logged and its rows stay in place (``claimed``/``running`` →
+    swept next tick; ``pending`` → re-drained next tick), exactly as a crash
+    would leave them.
+
+    Step 2a (#1390 AC6) prunes on-disk task worktrees whose task row is
+    absent or terminal-non-failure, TTLs and count-caps the ones retained
+    for a failed task's retry (AC5), and runs ``git worktree prune`` so
+    git's own registration stays in sync with the filesystem. It runs after
+    the task watchdog (Step 2) so a row Step 2 just reaped to ``failed``
+    this same tick is already sweep-eligible, and before the event drain
+    (Step 3) so a stuck removal never delays the primary wake path.
     """
     # Step 0 — completion poll + runaway kill (#921 AC2/AC3/AC6). Two
     # independent halves: a completion-poll blowup must not stop the runaway
@@ -453,6 +474,23 @@ def tick(
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception(
                 "[wake_driver] task watchdog failed; stale task rows left for the next tick"
+            )
+
+    # Step 2a — task worktree sweep (#1390 AC6). Runs after the task watchdog
+    # (Step 2) so an orphaned row it just reaped to `failed` this tick becomes
+    # sweep-eligible immediately rather than waiting for the next tick.
+    worktree_sweep: WorktreeSweepResult | None = None
+    if task_port is not None:
+        try:
+            worktree_sweep = sweep_task_worktrees(
+                task_port,
+                retention_seconds=task_worktree_retention_seconds,
+                retention_cap=task_worktree_retention_cap,
+                now=task_worktree_now,
+            )
+        except Exception:  # noqa: BLE001 — task-store/git outage must not block event drain
+            logger.exception(
+                "[wake_driver] worktree sweep failed; stale worktrees left for the next tick"
             )
 
     # Step 2b — Path B parked-event re-queue (#745). Runs after the completion
@@ -522,6 +560,10 @@ def tick(
         tasks_failed=task_drain.failed if task_drain else 0,
         tasks_done=completions.done if completions else 0,
         tasks_failed_exit=(completions.failed_exit if completions else 0) + runaways_killed,
+        worktrees_pruned=worktree_sweep.pruned if worktree_sweep else 0,
+        worktrees_retained=worktree_sweep.retained if worktree_sweep else 0,
+        worktrees_ttl_pruned=worktree_sweep.ttl_pruned if worktree_sweep else 0,
+        worktrees_cap_evicted=worktree_sweep.cap_evicted if worktree_sweep else 0,
     )
 
 
@@ -545,6 +587,9 @@ def run(
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
     task_dedup: DedupConfig | None = None,
+    task_worktree_retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
+    task_worktree_retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
+    task_worktree_now: Callable[[], float] = time.time,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -558,7 +603,8 @@ def run(
     events whose blocking task has completed (Path B, #745).
 
     When ``task_port`` is supplied, each tick also sweeps and drains the
-    ``task_queue`` (#909) and the loop owns the **liveness map** (#921): one
+    ``task_queue`` (#909) — including the on-disk task-worktree sweep (#1390
+    AC6) — and the loop owns the **liveness map** (#921): one
     ``{task_id: TrackedProc}`` dict created here (or injected via
     ``task_procs``) and handed to every tick, so a process spawned in tick N
     is polled to completion in tick N+M. The map lives only in this process —
@@ -621,6 +667,9 @@ def run(
                 task_evidence_client=task_evidence_client,
                 task_stdout_reader=task_stdout_reader,
                 task_dedup=task_dedup,
+                task_worktree_retention_seconds=task_worktree_retention_seconds,
+                task_worktree_retention_cap=task_worktree_retention_cap,
+                task_worktree_now=task_worktree_now,
                 failed_events=failed_events,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick

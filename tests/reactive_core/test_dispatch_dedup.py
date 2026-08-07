@@ -321,6 +321,9 @@ class _Queue:
         self.requeued.append(task_id)
         return True
 
+    def get_status(self, task_id: str) -> str | None:
+        return None
+
 
 def _task(task_id: str, goal: str) -> dict:
     return {"id": task_id, "goal": goal, "assignee": "sandcastle", "status": "pending"}

@@ -14,6 +14,7 @@ Each test names the acceptance criterion it covers (see issue #909, grilled
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -25,11 +26,14 @@ from agents.task_dispatch import (
     SupabaseTaskQueue,
     TaskQueuePort,
     TrackedProc,
+    _resolve_concurrency_cap,
+    default_spawn,
     drain_tasks,
     kill_process_tree,
     kill_runaways,
     poll_completions,
     reclaim_stale_tasks,
+    sweep_task_worktrees,
 )
 
 
@@ -55,7 +59,11 @@ class FakeTaskQueue:
     """
 
     def __init__(
-        self, *, pending: list[dict[str, Any]] | None = None, running_count: int = 0
+        self,
+        *,
+        pending: list[dict[str, Any]] | None = None,
+        running_count: int = 0,
+        statuses: dict[str, str] | None = None,
     ) -> None:
         self._pending = list(pending or [])
         self._running_count = running_count
@@ -64,6 +72,7 @@ class FakeTaskQueue:
         self.reclaimed_count = 0
         self.stale_running: list[dict[str, Any]] = []
         self.requeued: list[str] = []
+        self.statuses: dict[str, str] = dict(statuses or {})
 
     def claim_next(self, *, assignee: str) -> dict[str, Any] | None:
         for i, row in enumerate(self._pending):
@@ -93,6 +102,9 @@ class FakeTaskQueue:
     def requeue_running(self, task_id: str) -> bool:
         self.requeued.append(task_id)
         return True
+
+    def get_status(self, task_id: str) -> str | None:
+        return self.statuses.get(task_id)
 
 
 def _always_resolve() -> str:
@@ -223,6 +235,16 @@ class TestConcurrencyCap:
 
     def test_default_cap_is_five(self) -> None:
         assert DEFAULT_CONCURRENCY_CAP == 5
+
+    def test_resolve_concurrency_cap_reads_env_var(self, monkeypatch: Any) -> None:
+        """AC8 (#1390): REACTIVE_CONCURRENCY_CAP overrides the module default so
+        register-wake-driver.ps1 can pin autonomous runs to a lower cap (2)."""
+        monkeypatch.setenv("REACTIVE_CONCURRENCY_CAP", "2")
+        assert _resolve_concurrency_cap() == 2
+
+    def test_resolve_concurrency_cap_defaults_to_five_when_unset(self, monkeypatch: Any) -> None:
+        monkeypatch.delenv("REACTIVE_CONCURRENCY_CAP", raising=False)
+        assert _resolve_concurrency_cap() == 5
 
 
 # ---------------------------------------------------------------------------
@@ -1214,4 +1236,413 @@ class TestInjectablePortArchitecture:
             q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
         )
         assert spawns == ["do t0"]
+
+
+# ---------------------------------------------------------------------------
+# AC3 (#1390) — per-task git worktree creation in default_spawn
+# ---------------------------------------------------------------------------
+
+
+def _init_git_repo(path: Any) -> None:
+    """A minimal real git repo with one commit on main, so a later
+    ``git worktree add -b`` has something to branch from."""
+    subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=path, check=True)
+    (path / "README.md").write_text("stub\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=path, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "init",
+        ],
+        cwd=path,
+        check=True,
+    )
+
+
+class TestDefaultSpawnWorktree:
+    """AC3 (#1390): default_spawn creates .reactive/worktrees/<task_id> on
+    branch task/<task_id> before spawn, and passes it as the worker's cwd."""
+
+    def test_creates_worktree_and_passes_cwd(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import agents.executor as executor
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        captured: dict[str, Any] = {}
+
+        def fake_executor_spawn(goal: str, *, task_id: str | None = None, cwd: str | None = None) -> Any:
+            captured["task_id"] = task_id
+            captured["cwd"] = cwd
+            return "spawned"
+
+        monkeypatch.setattr(executor, "spawn", fake_executor_spawn)
+
+        default_spawn("do the thing", task_id="t1")
+
+        expected_path = os.path.join(str(repo), ".reactive", "worktrees", "t1")
+        assert captured["cwd"] == expected_path
+        assert os.path.isdir(expected_path)
+
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=expected_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch == "task/t1"
         assert os.environ is not None  # sanity — no monkeypatch leaked
+
+
+# ---------------------------------------------------------------------------
+# AC4 (#1390) — isolation proven against real git, not string inequality
+# ---------------------------------------------------------------------------
+
+
+class TestWorktreeIsolationRealGit:
+    """AC4 (#1390): two worktrees off one repo never see each other's writes,
+    and neither write reaches the root checkout — proven with real git, not a
+    string-inequality assertion on two path values."""
+
+    def test_conflicting_writes_stay_isolated(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        path_a = td._create_task_worktree("task-a")
+        path_b = td._create_task_worktree("task-b")
+
+        # Same relative filename, conflicting content, one write per worktree.
+        conflict_a = os.path.join(path_a, "conflict.txt")
+        conflict_b = os.path.join(path_b, "conflict.txt")
+        with open(conflict_a, "w", encoding="utf-8") as f:
+            f.write("written by task-a\n")
+        with open(conflict_b, "w", encoding="utf-8") as f:
+            f.write("written by task-b\n")
+
+        # Each worktree sees only its own write, at the content level.
+        with open(conflict_a, encoding="utf-8") as f:
+            assert f.read() == "written by task-a\n"
+        with open(conflict_b, encoding="utf-8") as f:
+            assert f.read() == "written by task-b\n"
+
+        # Neither write reaches the root checkout — worktrees have distinct
+        # working trees, not shared ones.
+        assert not os.path.exists(os.path.join(str(repo), "conflict.txt"))
+
+
+# ---------------------------------------------------------------------------
+# AC5 (#1390) — terminal-boundary worktree finalize: remove on success,
+# detach HEAD (freeing the branch ref) on failure
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeTaskWorktreeOnTerminal:
+    """AC5 (#1390): poll_completions removes the worktree on a `done`
+    transition. On `failed` it detaches HEAD instead, so the branch ref is
+    free for `_redrive_goal`'s retry — proven by a subsequent real
+    `git worktree add <path> task/<id>` (attach, not -b) succeeding."""
+
+    def test_success_removes_worktree(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        worktree_path = td._create_task_worktree("t0")
+        assert os.path.isdir(worktree_path)
+
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_FakeProc(rc=0), started_at=0.0)}
+        res = poll_completions(q, procs)
+
+        assert res.done == 1
+        assert not os.path.exists(worktree_path)
+
+    def test_failure_detaches_head_and_frees_branch_for_retry(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        worktree_path = td._create_task_worktree("t0")
+
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_FakeProc(rc=1), started_at=0.0)}
+        res = poll_completions(q, procs)
+
+        assert res.failed_exit == 1
+        # Retained on disk for post-mortem — AC6's sweep TTL/count-caps it later.
+        assert os.path.isdir(worktree_path)
+
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=worktree_path,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert branch == "HEAD"  # detached, not still on task/t0
+
+        # The branch ref is free — a retry can attach it in a fresh worktree.
+        retry_path = str(tmp_path / "retry")
+        subprocess.run(
+            ["git", "worktree", "add", retry_path, "task/t0"],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert os.path.isdir(retry_path)
+
+
+# ---------------------------------------------------------------------------
+# AC6 (#1390) — tick-start worktree-reaping sweep
+# ---------------------------------------------------------------------------
+
+
+def _write_failed_marker(worktree_path: str, timestamp: float) -> None:
+    """Directly write the AC5 marker file with a chosen timestamp — lets the
+    AC6 TTL/cap tests control "how old" a retained failure is without
+    depending on wall-clock timing."""
+    import agents.task_dispatch as td
+
+    with open(
+        os.path.join(worktree_path, td._WORKTREE_FAILED_AT_MARKER), "w", encoding="utf-8"
+    ) as fh:
+        fh.write(str(timestamp))
+
+
+class TestSweepTaskWorktrees:
+    """AC6 (#1390): tick-start sweep prunes worktrees whose task row is absent
+    or terminal-non-failure, TTLs and count-caps retained failures, and
+    reconciles git's own registration via `git worktree prune`."""
+
+    def test_prunes_absent_and_terminal_non_failure_rows(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        gone_path = td._create_task_worktree("gone")  # no status row at all
+        done_path = td._create_task_worktree("ok-done")
+        parked_path = td._create_task_worktree("ok-parked")
+        dup_path = td._create_task_worktree("ok-dup")
+
+        queue = FakeTaskQueue(
+            statuses={
+                "ok-done": "done",
+                "ok-parked": "parked",
+                "ok-dup": "skipped_duplicate",
+            }
+        )
+
+        result = sweep_task_worktrees(queue)
+
+        assert not os.path.exists(gone_path)
+        assert not os.path.exists(done_path)
+        assert not os.path.exists(parked_path)
+        assert not os.path.exists(dup_path)
+        assert result.pruned == 4
+        assert result.retained == 0
+        assert result.ttl_pruned == 0
+        assert result.cap_evicted == 0
+
+    def test_active_states_all_untouched(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        pending_path = td._create_task_worktree("t-pending")
+        claimed_path = td._create_task_worktree("t-claimed")
+        running_path = td._create_task_worktree("t-running")
+
+        queue = FakeTaskQueue(
+            statuses={
+                "t-pending": "pending",
+                "t-claimed": "claimed",
+                "t-running": "running",
+            }
+        )
+
+        result = sweep_task_worktrees(queue)
+
+        assert os.path.isdir(pending_path)
+        assert os.path.isdir(claimed_path)
+        assert os.path.isdir(running_path)
+        assert result.pruned == 0
+        assert result.retained == 0
+
+    def test_retains_failed_within_ttl_and_cap(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        worktree_path = td._create_task_worktree("f1")
+        td._finalize_task_worktree("f1", success=False)
+
+        queue = FakeTaskQueue(statuses={"f1": "failed"})
+        result = sweep_task_worktrees(queue)
+
+        assert os.path.isdir(worktree_path)
+        assert result.pruned == 0
+        assert result.retained == 1
+        assert result.ttl_pruned == 0
+        assert result.cap_evicted == 0
+
+    def test_ttl_prunes_retained_failure_past_window(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        worktree_path = td._create_task_worktree("f2")
+        td._finalize_task_worktree("f2", success=False)
+        _write_failed_marker(worktree_path, 1000.0)
+
+        queue = FakeTaskQueue(statuses={"f2": "failed"})
+        result = sweep_task_worktrees(
+            queue, retention_seconds=100, now=lambda: 1000.0 + 10_000
+        )
+
+        assert not os.path.exists(worktree_path)
+        assert result.ttl_pruned == 1
+        assert result.retained == 0
+        assert result.cap_evicted == 0
+
+    def test_cap_evicts_oldest_first_independent_of_ttl(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        path_a = td._create_task_worktree("f-a")
+        td._finalize_task_worktree("f-a", success=False)
+        _write_failed_marker(path_a, 100.0)
+
+        path_b = td._create_task_worktree("f-b")
+        td._finalize_task_worktree("f-b", success=False)
+        _write_failed_marker(path_b, 200.0)
+
+        path_c = td._create_task_worktree("f-c")
+        td._finalize_task_worktree("f-c", success=False)
+        _write_failed_marker(path_c, 300.0)
+
+        queue = FakeTaskQueue(
+            statuses={"f-a": "failed", "f-b": "failed", "f-c": "failed"}
+        )
+        # Huge retention_seconds keeps the TTL from firing regardless of `now`;
+        # the cap is the only thing under test here.
+        result = sweep_task_worktrees(
+            queue, retention_seconds=10**9, retention_cap=2, now=lambda: 1000.0
+        )
+
+        assert not os.path.exists(path_a)  # oldest — evicted
+        assert os.path.isdir(path_b)
+        assert os.path.isdir(path_c)
+        assert result.cap_evicted == 1
+        assert result.retained == 2
+        assert result.ttl_pruned == 0
+        assert result.pruned == 0
+
+    def test_git_worktree_prune_reconciles_externally_deleted_dir(
+        self, tmp_path: Any, monkeypatch: Any
+    ) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        worktree_path = td._create_task_worktree("stale")
+        # Simulate an out-of-band deletion (e.g. a Windows handle-lock that
+        # cleared on its own, or a manual cleanup) — the directory is gone,
+        # but git's own worktree registration doesn't know that yet.
+        shutil.rmtree(worktree_path)
+
+        before = subprocess.run(
+            ["git", "worktree", "list"],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "stale" in before
+
+        sweep_task_worktrees(FakeTaskQueue())
+
+        after = subprocess.run(
+            ["git", "worktree", "list"],
+            cwd=str(repo),
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        assert "stale" not in after
+
+    def test_removal_failure_logs_and_continues(self, tmp_path: Any, monkeypatch: Any) -> None:
+        import agents.task_dispatch as td
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _init_git_repo(repo)
+        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+
+        good_path = td._create_task_worktree("good")
+        bad_path = td._create_task_worktree("bad")
+
+        real_remove = td._remove_worktree
+
+        def flaky_remove(worktree_path: str) -> bool:
+            if worktree_path == bad_path:
+                return False
+            return real_remove(worktree_path)
+
+        monkeypatch.setattr(td, "_remove_worktree", flaky_remove)
+
+        queue = FakeTaskQueue(statuses={"good": "done", "bad": "done"})
+        result = sweep_task_worktrees(queue)  # must not raise
+
+        assert not os.path.exists(good_path)
+        assert os.path.isdir(bad_path)  # removal "failed" — retried next tick
+        assert result.pruned == 1

@@ -69,6 +69,11 @@ Describe 'Format-WakeDriverActionArgs' {
         $args[4] | Should Match ([regex]::Escape("`$env:JARVIS_PRINCIPAL = 'autonomous'"))
     }
 
+    It 'sets REACTIVE_CONCURRENCY_CAP=2 in the inner command (#1390 AC8)' {
+        $args = Format-WakeDriverActionArgs -PythonExe 'C:\Python311\python.exe' -WatchdogSeconds 300
+        $args[4] | Should Match ([regex]::Escape("`$env:REACTIVE_CONCURRENCY_CAP = '2'"))
+    }
+
     It 'passes --watchdog-seconds through unchanged' {
         $args = Format-WakeDriverActionArgs -PythonExe 'C:\Python311\python.exe' -WatchdogSeconds 120
         $args[4] | Should Match '--watchdog-seconds 120'

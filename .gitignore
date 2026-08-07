@@ -21,6 +21,9 @@ yarn-error.log*
 .sandcastle/worktrees/
 .sandcastle/hfcache/
 
+# Reactive-core per-task git worktrees (#1390 AC3)
+.reactive/worktrees/
+
 # Logs
 *.log
 logs/

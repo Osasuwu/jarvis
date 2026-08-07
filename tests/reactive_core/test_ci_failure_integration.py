@@ -199,6 +199,12 @@ class _FakeStore:
                 return True
         return False
 
+    def get_status(self, task_id: str) -> str | None:
+        for row in self.rows:
+            if row["id"] == task_id:
+                return row["status"]
+        return None
+
 
 class _DummyProc:
     """Minimal ``Popen``-shaped handle a recording spawn can hand back."""

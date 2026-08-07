@@ -1647,16 +1647,43 @@ class TestClosesMandate:
         assert _augment_closes_mandate("   ", "abc123") == "   "
 
     def test_default_spawn_composes_branch_and_closes_mandate(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """`default_spawn` applies BOTH augmenters before the executor hand-off (AC1)."""
+        import subprocess
+
         import agents.executor as executor_mod
+        import agents.task_dispatch as task_dispatch_mod
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "--initial-branch=main"], cwd=repo, check=True)
+        (repo / "README.md").write_text("stub\n", encoding="utf-8")
+        subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        monkeypatch.setattr(task_dispatch_mod, "_REPO_ROOT", str(repo))
 
         captured: dict[str, Any] = {}
 
-        def fake_spawn(goal: str, *, task_id: str | None = None) -> Any:
+        def fake_spawn(goal: str, *, task_id: str | None = None, cwd: str | None = None) -> Any:
             captured["goal"] = goal
             captured["task_id"] = task_id
+            captured["cwd"] = cwd
             return object()
 
         monkeypatch.setattr(executor_mod, "spawn", fake_spawn)

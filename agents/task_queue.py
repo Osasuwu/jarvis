@@ -320,6 +320,24 @@ def requeue_running(
     return bool(result.data)
 
 
+def get_status(
+    task_id: str,
+    *,
+    client: Client | None = None,
+) -> str | None:
+    """Look up one task's current FSM status, or ``None`` if the row is absent.
+
+    Single-row status check for the #1390 AC6 worktree sweep — each on-disk
+    ``.reactive/worktrees/<task_id>`` is keyed by ``task_id``, and the sweep
+    needs to know whether that row is absent, terminal, or still active.
+    """
+    cli = client or get_client()
+    rows = (
+        cli.table("task_queue").select("status").eq("id", task_id).limit(1).execute()
+    ).data or []
+    return rows[0]["status"] if rows else None
+
+
 def list_active(
     *,
     client: Client | None = None,
