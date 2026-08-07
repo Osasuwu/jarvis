@@ -1,17 +1,22 @@
 """Anti-regrowth ratchet on the always-pushed context layer (#1273).
 
-CI ceilings on push surfaces only — the four canonical source files plus the
-pushed part of CONTEXT.md. Ceilings live in checked-in JSON
+CI ceilings on push surfaces only — the six canonical source files: the four
+original identity/rules files plus the two @import-delivered context files
+(``docs/context/invariants.md``, ``docs/context/glossary-index.md``) that
+replaced the SessionStart hook's assembly-derived CONTEXT.md push (#1417).
+Ceilings live in checked-in JSON
 (``tests/ci/fixtures/push_surface_ceilings.json``); the guard fails red when a
 surface exceeds its ceiling, and raising a ceiling requires editing the fixture
 in the same PR (the JSON IS the fixture — ``same_pr_raise`` in the fixture).
 
-Key design rules, per #1273:
+Key design rules, per #1273 (as amended by #1417):
 
-- **Import the real assembler, not a reimplementation.** The pushed CONTEXT.md
-  part is measured by calling ``scripts/session-context.py._load_project_context``
-  (the section-aware push: compressed Invariants + Glossary category index,
-  bounded by ``ASSEMBLY_BUDGET_CHARS``), not by re-slicing the file here.
+- **Every canonical surface is a plain file.** All six surfaces are measured
+  by reading their file directly — there is no assembly-derived surface left
+  since #1417 retired ``_load_project_context`` and its budget-constrained
+  push. ``docs/context/invariants.md`` / ``docs/context/glossary-index.md``
+  ride a bare ``@import`` in CLAUDE.md, which bypasses the SessionStart
+  assembler and its ``ASSEMBLY_BUDGET_CHARS`` cap entirely.
 - **Item definition is pinned and load-bearing.** bullet at any nesting depth +
   numbered line; only block-level HTML comments are excluded. Fenced code, YAML
   frontmatter, and ``.claude/rules/*`` without a ``paths:`` key are all counted
@@ -19,7 +24,9 @@ Key design rules, per #1273:
 - **A new always-pushed surface fails red.** ``.claude/rules/*.md`` without a
   ``paths:`` key and ``CLAUDE.local.md`` load at launch; if one appears and the
   fixture does not list it, the guard fails.
-- **CONTEXT.md as a whole file has NO ceiling** — only the pushed part does.
+- **CONTEXT.md as a whole file has NO ceiling** — the Invariants/Glossary
+  content that used to be measured through it now lives in its own ratcheted
+  files (see above); CONTEXT.md itself carries only pointers.
 
 Runs via ci-meta.yml (``pytest tests/ci/``, deliberately not path-filtered) on
 every PR, per the #326 guard-test pattern.
@@ -27,49 +34,12 @@ every PR, per the #326 guard-test pattern.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import re
-import sys
-import types
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "push_surface_ceilings.json"
-
-# ---------------------------------------------------------------------------
-# Robust stubs so scripts/session-context.py imports in the meta CI, which
-# installs only pytest/pytest-asyncio/pyyaml (no supabase/dotenv). The repo
-# ships a `supabase/` migrations directory that shadows the PyPI package as a
-# namespace package (import succeeds, `create_client` is missing), so we cannot
-# rely on ImportError to detect the missing dependency — check the attribute.
-# ---------------------------------------------------------------------------
-
-
-def _stub_module(name: str, attrs: dict) -> None:
-    mod = sys.modules.get(name)
-    if mod is not None and all(hasattr(mod, a) for a in attrs):
-        return
-    new = types.ModuleType(name)
-    for attr, value in attrs.items():
-        setattr(new, attr, value)
-    sys.modules[name] = new
-
-
-_stub_module("supabase", {"create_client": lambda *a, **k: None})
-_stub_module("dotenv", {"load_dotenv": lambda *a, **k: None})
-
-
-def _load_assembly_module():
-    path = REPO_ROOT / "scripts" / "session-context.py"
-    spec = importlib.util.spec_from_file_location("session_context_push_surface", path)
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["session_context_push_surface"] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-assembly = _load_assembly_module()
 
 # ---------------------------------------------------------------------------
 # Pinned item definition (#1273): bullet at any nesting depth or a numbered
@@ -107,12 +77,14 @@ def count_bytes(text: str) -> int:
 # Surface discovery + measurement
 # ---------------------------------------------------------------------------
 
-# The four canonical file surfaces + the assembly-derived CONTEXT pushed part.
+# The six canonical file surfaces — all plain files, none assembly-derived.
 CANONICAL_SURFACES = {
     "soul_md": "config/SOUL.md",
     "project_claude_md": "CLAUDE.md",
     "userlevel_claude_md": ".claude-userlevel/CLAUDE.md",
     "userlevel_doctrine_md": ".claude-userlevel/DOCTRINE.md",
+    "invariants_md": "docs/context/invariants.md",
+    "glossary_index_md": "docs/context/glossary-index.md",
 }
 
 
@@ -154,15 +126,7 @@ def _discover_extra_file_surfaces() -> dict[str, str]:
 
 
 def _measure_surface(surface_id: str, spec: dict) -> tuple[int, int]:
-    """Return (items, bytes) for a fixture surface.
-
-    The pushed CONTEXT.md part is measured through the real assembler
-    (``_load_project_context``), not a reimplementation here.
-    """
-    if surface_id == "context_md_pushed":
-        section = assembly._load_project_context(REPO_ROOT)
-        assert section is not None, "CONTEXT.md must exist and be non-empty"
-        return count_items(section), count_bytes(section)
+    """Return (items, bytes) for a fixture surface — always a plain file read."""
     text = (REPO_ROOT / spec["path"]).read_text(encoding="utf-8")
     return count_items(text), count_bytes(text)
 
@@ -171,7 +135,7 @@ def _format_violation(surface_id: str, items: int, items_ceil: int,
                       bytes_: int, bytes_ceil: int) -> str:
     fixture = _load_fixture()
     spec = fixture["surfaces"][surface_id]
-    source = spec.get("path") or spec.get("assembly", "?")
+    source = spec["path"]
     parts = [f"Push surface '{surface_id}' ({source}) exceeds its ceiling:"]
     if items > items_ceil:
         parts.append(f"  items: {items} > {items_ceil} (over by {items - items_ceil})")
@@ -289,29 +253,25 @@ class TestFixtureIntegrity:
     def test_context_md_whole_file_has_no_ceiling(self):
         fixture = _load_fixture()
         assert fixture["_meta"]["context_md_whole_file"]["has_ceiling"] is False
-        # The whole-file CONTEXT.md must not be ratcheted; only the pushed part.
-        assert "context_md_pushed" in fixture["surfaces"]
+        # The whole-file CONTEXT.md must not be ratcheted; the extracted
+        # content lives in its own ratcheted files instead (#1417).
+        assert "invariants_md" in fixture["surfaces"]
+        assert "glossary_index_md" in fixture["surfaces"]
+        assert "context_md_pushed" not in fixture["surfaces"]
         assert "context_md" not in fixture["surfaces"]
 
     def test_fixture_surfaces_exist_on_disk(self):
         fixture = _load_fixture()
         for surface_id, spec in fixture["surfaces"].items():
-            if surface_id == "context_md_pushed":
-                assert (REPO_ROOT / "CONTEXT.md").is_file()
-            else:
-                assert (REPO_ROOT / spec["path"]).is_file(), (
-                    f"{surface_id}: {spec['path']} missing"
-                )
+            assert (REPO_ROOT / spec["path"]).is_file(), (
+                f"{surface_id}: {spec['path']} missing"
+            )
 
     def test_fixture_covers_discovered_surfaces(self):
         """A new always-pushed file surface must be added to the fixture before
         the guard passes — adding one without updating the fixture fails red."""
         fixture = _load_fixture()
-        fixture_paths = {
-            spec["path"]
-            for surface_id, spec in fixture["surfaces"].items()
-            if surface_id != "context_md_pushed"
-        }
+        fixture_paths = {spec["path"] for spec in fixture["surfaces"].values()}
         for surface_id, relpath in _discover_extra_file_surfaces().items():
             assert relpath in fixture_paths, (
                 f"new always-pushed surface {relpath} (discovered as "
@@ -319,28 +279,6 @@ class TestFixtureIntegrity:
                 "— add a ceiling for it in the same PR, else the ratchet silently "
                 "misses it"
             )
-
-    def test_assembly_cap_pinned(self):
-        """The pushed CONTEXT part must fit the whole assembly budget on its own
-        — a single section must not be able to blow the budget by itself
-        (#1271). It must also be strictly smaller than the 8 KiB byte-slice cap
-        it replaced (#1271 AC7), and the fixture ceiling must cover it."""
-        fixture = _load_fixture()
-        section = assembly._load_project_context(REPO_ROOT)
-        assert section is not None
-        assert len(section) <= assembly.ASSEMBLY_BUDGET_CHARS, (
-            f"CONTEXT push is {len(section)} chars — over the assembly budget "
-            f"{assembly.ASSEMBLY_BUDGET_CHARS}"
-        )
-        assert len(section.encode("utf-8")) < 8 * 1024, (
-            "section-aware push must be smaller than the byte-slice truncation "
-            "it replaced"
-        )
-        ctx_bytes = fixture["surfaces"]["context_md_pushed"]["bytes"]
-        assert ctx_bytes >= len(section.encode("utf-8")), (
-            f"context_md_pushed bytes ceiling {ctx_bytes} is below the measured "
-            f"push {len(section.encode('utf-8'))}"
-        )
 
     def test_same_pr_raise_documented(self):
         """The JSON-is-the-fixture property must be documented so a reviewer

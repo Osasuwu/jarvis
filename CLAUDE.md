@@ -16,6 +16,11 @@ The SessionStart hook is registered in **user-level** `~/.claude/settings.json` 
 - Hook failed (no memory block) → fall back to `memory_recall` + `goal_list`.
 - Topic-specific lookups during the session still use `memory_recall(query=<topic>)`; only the baseline is pre-loaded.
 
+Two more pieces of always-on domain context ride bare `@import` instead of the hook, so they expand at launch and never enter the hook's drop lottery (#1417 — CONTEXT.md → *Context delivery*):
+
+@docs/context/invariants.md
+@docs/context/glossary-index.md
+
 ## Project
 
 **Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active scope = open GitHub milestones (capability-shipping units, see `milestone_hierarchy_v3`); `docs/PROJECT_PLAN.md` is a pointer index.

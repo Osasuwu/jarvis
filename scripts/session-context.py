@@ -357,15 +357,16 @@ ASSEMBLY_BUDGET_CHARS = 9500
 
 # Section drop-priority, HIGHEST = 0 (dropped last) → higher number = dropped
 # first. Pre-Compact Recovery outranks everything; the durable layer
-# (always-load, user profile, working state, goals) outranks the CONTEXT push
-# and the one-line reminders, so a compact resume still delivers it (#1271 AC2).
+# (always-load, user profile, working state, goals) outranks the one-line
+# reminders, so a compact resume still delivers it (#1271 AC2). The former
+# CONTEXT.md push (project_context) is gone — Invariants + Glossary index now
+# ride @import instead (#1417), which never enters this priority ladder.
 _PRIORITY_RECOVERY = 0
 _PRIORITY_ALWAYS_LOAD = 1
 _PRIORITY_USER_PROFILE = 2
 _PRIORITY_WORKING_STATE = 3
 _PRIORITY_GOALS = 4
-_PRIORITY_CONTEXT_PUSH = 5
-_PRIORITY_REMINDER = 6
+_PRIORITY_REMINDER = 5
 
 _BANNER = "MEMORY CONTEXT (auto-loaded — do NOT re-fetch with MCP tools)"
 _FOOTER = "=" * 60
@@ -374,12 +375,6 @@ _BANNER_BLOCK = f"{_FOOTER}\n{_BANNER}\n{_FOOTER}"
 # Self-log location. `.claude/logs/` is gitignored, so the log is
 # device-local and never committed.
 _SELF_LOG_PATH = _root / ".claude" / "logs" / "session-context-size.jsonl"
-
-# Section-aware CONTEXT push (#1271 C.1 row 3, decision 37f0639e): the push
-# carries the compressed ## Invariants + a Glossary category index; the
-# per-term ### Index and the category bodies stay pull-only (one Read away).
-_BULLET_RE = re.compile(r"^[-*+] ")
-_NUMBERED_RE = re.compile(r"^\d+[.)]\s")
 
 
 def _render(kept: list, dropped_names: list[str]) -> str:
@@ -443,97 +438,6 @@ def _self_log(emitted_chars: int, dropped_names: list[str], compact_resume: bool
             f.write(json.dumps(entry) + "\n")
     except Exception:
         pass
-
-
-def _extract_invariants(raw: str) -> str | None:
-    """Return the body of the `## Invariants` section, or None when absent.
-
-    Sub-category headings (`###`) are demoted to `####` so they nest under the
-    `### Invariants` push header. A trailing `---` separator is dropped. The
-    Invariants content is already the post-Column-1 compressed form —
-    extraction must not re-compress it.
-    """
-    m = re.search(
-        r"^## Invariants[^\n]*\n(.*?)(?=^## |\Z)",
-        raw, re.MULTILINE | re.DOTALL,
-    )
-    if not m:
-        return None
-    body = re.sub(r"\n---\s*$", "", m.group(1)).strip()
-    if not body:
-        return None
-    return re.sub(r"^### ", "#### ", body, flags=re.MULTILINE)
-
-
-def _glossary_category_index(raw: str) -> str | None:
-    """Return one line per Glossary category (name + top-level entry count),
-    excluding `### Index`. The per-term index and category bodies are pull-only.
-
-    Only column-0 bullets count as entries — a nested sub-bullet is part of a
-    term's description, not a separate term.
-    """
-    m = re.search(r"^## Glossary\s*$.*?(?=^## |\Z)", raw, re.MULTILINE | re.DOTALL)
-    if not m:
-        return None
-    lines = []
-    for sec in re.split(r"^### ", m.group(0), flags=re.MULTILINE):
-        sec = sec.strip()
-        if not sec:
-            continue
-        heading, _, rest = sec.partition("\n")
-        heading = heading.strip()
-        if heading == "Index":
-            continue
-        count = sum(
-            1 for line in rest.splitlines()
-            if _BULLET_RE.match(line) or _NUMBERED_RE.match(line)
-        )
-        if count:
-            noun = "entry" if count == 1 else "entries"
-            lines.append(f"- {heading} — {count} {noun}")
-    if not lines:
-        return None
-    notice = "_bodies are pull-only — `Read CONTEXT.md` for full entries_"
-    return notice + "\n" + "\n".join(lines)
-
-
-def _load_project_context(project_root: Path) -> str | None:
-    """Return '## Project Context' with the compressed Invariants + Glossary
-    category index if `CONTEXT.md` exists at `project_root`, else None.
-
-    `project_root` is the repo of the *current* session (resolved by the
-    caller from cwd). This must NOT default to the jarvis repo — sessions
-    started in other tracked repos (e.g. redrobot) would otherwise inject
-    jarvis's CONTEXT.md into their context.
-
-    The byte-0 head-slice truncation is gone (#1271 AC7): extraction is
-    section-aware, and overall size is owned by the assembly budget
-    (``assemble_sections``), not by slicing here.
-
-    Returns None when the file is missing, empty/whitespace-only, read fails
-    (logged to stderr), or carries neither an Invariants section nor a
-    Glossary section.
-    """
-    ctx_path = project_root / "CONTEXT.md"
-    if not ctx_path.exists():
-        return None
-    try:
-        raw = ctx_path.read_text(encoding="utf-8", errors="replace")
-    except OSError as e:
-        print(f"[session-context] CONTEXT.md read failed: {e}", file=sys.stderr)
-        return None
-    if not raw.strip():
-        return None
-    parts = []
-    invariants = _extract_invariants(raw)
-    if invariants:
-        parts.append("### Invariants\n" + invariants)
-    glossary_index = _glossary_category_index(raw)
-    if glossary_index:
-        parts.append("### Glossary categories\n" + glossary_index)
-    if not parts:
-        return None
-    return "## Project Context\n" + "\n\n".join(parts)
 
 
 def _run_smoke_check() -> None:
@@ -614,7 +518,7 @@ def main():
         print(f"[session-context] Supabase connect failed: {e}", file=sys.stderr)
         return
 
-    project, project_root = _detect_project()
+    project, _project_root = _detect_project()
     # Each section is (priority, name, rendered, memory_ids): priority 0 =
     # highest (dropped last), higher number = lower priority. Output order is
     # the append order here; ids feed _touch_accessed for KEPT sections only.
@@ -666,21 +570,7 @@ def main():
             "## Always-Load Rules\n" + section, [],
         ))
 
-    # 3a. Project domain context (CONTEXT.md) — compressed Invariants +
-    #     Glossary category index; Glossary bodies are pull-only (#1271 C.1
-    #     row 3). Read order at session start: CLAUDE.md (rules) → SOUL.md
-    #     (identity) → CONTEXT.md (domain). Loaded only when session is inside
-    #     a project dir AND the file exists. Project root is resolved from
-    #     cwd, not from `_root`, so a redrobot session gets redrobot's
-    #     CONTEXT.md (or none), never jarvis's.
-    if project and project_root:
-        ctx_section = _load_project_context(project_root)
-        if ctx_section:
-            sections.append((
-                _PRIORITY_CONTEXT_PUSH, "project_context", ctx_section, [],
-            ))
-
-    # 3b. Working state — ONLY when session is inside a known project dir.
+    # 3. Working state — ONLY when session is inside a known project dir.
     #     In a non-project cwd (e.g. scheduled research) working_state is noise.
     if project:
         section, ids = _query_memories(
