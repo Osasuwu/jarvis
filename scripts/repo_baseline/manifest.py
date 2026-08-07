@@ -35,6 +35,7 @@ class AxisProfile:
     branch_protection: bool = True
     visibility: str = "public"
     test_extras: str = "[full,dev]"
+    ci_meta_pytest_args: str = ""
     dependabot_ecosystems: List[str] = field(default_factory=lambda: ["pip", "github-actions"])
     managed_files: List[str] = field(default_factory=lambda: list(_MANAGED_FILES_DEFAULT))
     custom_files: List[str] = field(default_factory=list)
@@ -78,12 +79,23 @@ class Manifest:
     visibility: Optional[str] = None
 
     # ── Axis overrides (None = use profile default) ───────────────────
-    runs_on: Optional[List[str]] = None
+    # NOTE: ``runs_on`` is deliberately absent — it is an *observed* axis
+    # (#1406), resolved from the live audit by
+    # :func:`~scripts.repo_baseline.applier.resolve_runs_on`. ``AxisProfile``
+    # still carries it as the last-resort default for a repo with no
+    # observable workflows, but a manifest may not declare it: a declaration
+    # would silently outrank the observation, which is how a billing-blocked
+    # account got GitHub-hosted workflows written into it.
     ci_language: Optional[str] = None
     code_review_marketplace: Optional[str] = None
     auto_merge: Optional[bool] = None
     branch_protection: Optional[bool] = None
     test_extras: Optional[str] = None
+    # Extra argv appended to ci-meta.yml's pytest invocation. Declared, not
+    # observed (#1406): whether cutting conftest discovery is safe depends on
+    # what the repo's root conftest does for its *other* suites, which the
+    # audit cannot see.
+    ci_meta_pytest_args: Optional[str] = None
     dependabot_ecosystems: Optional[List[str]] = None
     prune: Optional[bool] = None
 
@@ -119,12 +131,12 @@ class Manifest:
             "repo",
             "profile",
             "visibility",
-            "runs_on",
             "ci_language",
             "code_review_marketplace",
             "auto_merge",
             "branch_protection",
             "test_extras",
+            "ci_meta_pytest_args",
             "dependabot_ecosystems",
             "required_check_contexts",
             "managed_files",
@@ -140,12 +152,12 @@ class Manifest:
             repo=data.get("repo", ""),
             profile=data.get("profile", "full"),
             visibility=data.get("visibility"),
-            runs_on=data.get("runs_on"),
             ci_language=data.get("ci_language"),
             code_review_marketplace=data.get("code_review_marketplace"),
             auto_merge=data.get("auto_merge"),
             branch_protection=data.get("branch_protection"),
             test_extras=data.get("test_extras"),
+            ci_meta_pytest_args=data.get("ci_meta_pytest_args"),
             dependabot_ecosystems=data.get("dependabot_ecosystems"),
             required_check_contexts=data.get("required_check_contexts", []),
             managed_files=data.get("managed_files"),

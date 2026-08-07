@@ -29,7 +29,7 @@ from scripts.repo_baseline.auditor import (
     seed_manifest,
 )
 
-from conftest import FakeRunner, _FakeProc, _dependabot_b64, _jarvis_responses
+from conftest import FakeRunner, _FakeProc, _dependabot_b64, _jarvis_responses, _workflow_b64
 
 
 class TestRepoSnapshotParsing:
@@ -131,6 +131,7 @@ class TestRepoSnapshotParsing:
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
             "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+            "repos/Osasuwu/dnd-calendar/contents/tests/ci",
         }
         auditor = Auditor(FakeRunner(responses, not_found))
         snap = auditor.audit("Osasuwu/dnd-calendar")
@@ -235,6 +236,7 @@ class TestRepoSnapshotParsing:
         not_found = {
             "repos/Osasuwu/x/branches/main/protection",
             "repos/Osasuwu/x/contents/.github/dependabot.yml",
+            "repos/Osasuwu/x/contents/tests/ci",
         }
         snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/x")
         assert snap.settings.allow_squash_merge is True
@@ -299,6 +301,7 @@ class TestSnapshotSerialization:
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
             "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+            "repos/Osasuwu/dnd-calendar/contents/tests/ci",
         }
         snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/dnd-calendar")
         assert RepoSnapshot.from_dict(snap.to_dict()) == snap
@@ -364,6 +367,7 @@ class TestContextsSource:
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
             "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+            "repos/Osasuwu/dnd-calendar/contents/tests/ci",
         }
         snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/dnd-calendar")
         assert snap.branch_protection is None
@@ -391,6 +395,105 @@ class TestContextsSource:
         assert snap.branch_protection.strict is True
         assert snap.branch_protection.contexts == ["review"]
         assert snap.branch_protection.contexts_source is None
+
+
+class TestObservedRunners:
+    """#1406 — ``RepoSnapshot`` carries runner labels observed from the repo's
+    own workflows, populated during :meth:`Auditor.audit`.
+
+    ``runs_on`` is a *fact* about a repo, not a policy choice, so it is read
+    from the live audit rather than declared in a manifest. The value is keyed
+    by workflow path (not flattened) so the majority resolution can exclude the
+    repo-baseline-managed files — a prior mis-sync's own output must never be
+    read back as evidence of the correct runner class.
+    """
+
+    def test_audit_captures_runs_on_per_workflow(self):
+        snap = Auditor(FakeRunner(_jarvis_responses())).audit("Osasuwu/jarvis")
+        assert snap.observed_runners == {
+            ".github/workflows/code-review.yml": [["ubuntu-latest"]],
+            ".github/workflows/pytest.yml": [["ubuntu-latest"]],
+        }
+
+    def test_non_file_entries_skipped_and_per_file_404_tolerated(self):
+        """The workflows API lists entries whose file cannot be fetched.
+
+        Two distinct cases, both non-fatal: a synthetic ``dynamic/…`` entry
+        (GitHub's own auto-generated workflows) is filtered before any fetch,
+        and a real ``.github/workflows`` path whose blob 404s — redrobot's
+        ``_runner-smoke.yml`` does this today — is skipped, not raised.
+        """
+        responses = _jarvis_responses()
+        responses["repos/Osasuwu/jarvis/actions/workflows?per_page=100"] = {
+            "workflows": [
+                {"name": "pytest", "path": ".github/workflows/pytest.yml"},
+                {"name": "smoke", "path": ".github/workflows/_runner-smoke.yml"},
+                {"name": "pages", "path": "dynamic/pages/pages-build-deployment"},
+            ]
+        }
+        not_found = {"repos/Osasuwu/jarvis/contents/.github/workflows/_runner-smoke.yml"}
+        runner = FakeRunner(responses, not_found)
+
+        snap = Auditor(runner).audit("Osasuwu/jarvis")
+
+        assert snap.observed_runners == {".github/workflows/pytest.yml": [["ubuntu-latest"]]}
+        # The synthetic entry is filtered by shape — never fetched at all.
+        assert "repos/Osasuwu/jarvis/contents/dynamic/pages/pages-build-deployment" not in (
+            runner.paths()
+        )
+
+    def test_yaml_extension_is_observed(self):
+        responses = _jarvis_responses()
+        responses["repos/Osasuwu/jarvis/actions/workflows?per_page=100"] = {
+            "workflows": [{"name": "ci", "path": ".github/workflows/ci.yaml"}]
+        }
+        responses["repos/Osasuwu/jarvis/contents/.github/workflows/ci.yaml"] = _workflow_b64(
+            "jobs:\n  build:\n    runs-on: self-hosted\n"
+        )
+
+        snap = Auditor(FakeRunner(responses)).audit("Osasuwu/jarvis")
+
+        assert snap.observed_runners == {".github/workflows/ci.yaml": [["self-hosted"]]}
+
+    def test_scalar_normalises_and_expression_runs_on_is_skipped(self):
+        """A scalar ``runs-on:`` becomes a single-element list; one carrying a
+        ``${{ … }}`` expression is unresolvable at audit time and must be
+        skipped rather than counted as a literal label. Distinct classes within
+        one file are deduped to one vote each."""
+        responses = _jarvis_responses()
+        responses["repos/Osasuwu/jarvis/actions/workflows?per_page=100"] = {
+            "workflows": [{"name": "mixed", "path": ".github/workflows/mixed.yml"}]
+        }
+        responses["repos/Osasuwu/jarvis/contents/.github/workflows/mixed.yml"] = _workflow_b64(
+            "jobs:\n"
+            "  scalar:\n    runs-on: ubuntu-latest\n"
+            "  listed:\n    runs-on: [self-hosted, linux, x64]\n"
+            "  dupe:\n    runs-on: ubuntu-latest\n"
+            "  matrixed:\n    runs-on: ${{ matrix.os }}\n"
+            "  partly:\n    runs-on: [self-hosted, '${{ matrix.arch }}']\n"
+        )
+
+        snap = Auditor(FakeRunner(responses)).audit("Osasuwu/jarvis")
+
+        assert snap.observed_runners == {
+            ".github/workflows/mixed.yml": [
+                ["ubuntu-latest"],
+                ["self-hosted", "linux", "x64"],
+            ]
+        }
+
+    def test_workflow_with_no_resolvable_runner_is_absent(self):
+        responses = _jarvis_responses()
+        responses["repos/Osasuwu/jarvis/actions/workflows?per_page=100"] = {
+            "workflows": [{"name": "reusable", "path": ".github/workflows/reusable.yml"}]
+        }
+        responses["repos/Osasuwu/jarvis/contents/.github/workflows/reusable.yml"] = _workflow_b64(
+            "on: workflow_call\njobs:\n  call:\n    uses: ./.github/workflows/other.yml\n"
+        )
+
+        snap = Auditor(FakeRunner(responses)).audit("Osasuwu/jarvis")
+
+        assert snap.observed_runners == {}
 
 
 class TestSeedManifest:
@@ -427,6 +530,7 @@ class TestSeedManifest:
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
             "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+            "repos/Osasuwu/dnd-calendar/contents/tests/ci",
         }
         snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/dnd-calendar")
         m = Manifest.from_dict(seed_manifest(snap))
@@ -490,6 +594,7 @@ class TestSeedManifest:
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
             "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+            "repos/Osasuwu/dnd-calendar/contents/tests/ci",
         }
         snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/dnd-calendar")
         seed = seed_manifest(snap)
@@ -517,6 +622,7 @@ class TestSeedManifest:
         not_found = {
             "repos/Osasuwu/x/branches/main/protection",
             "repos/Osasuwu/x/contents/.github/dependabot.yml",
+            "repos/Osasuwu/x/contents/tests/ci",
         }
         snap = Auditor(FakeRunner(responses, not_found)).audit("Osasuwu/x")
         seed = seed_manifest(snap)
@@ -601,6 +707,7 @@ class TestAuditAll:
         not_found = {
             "repos/Osasuwu/dnd-calendar/branches/main/protection",
             "repos/Osasuwu/dnd-calendar/contents/.github/dependabot.yml",
+            "repos/Osasuwu/dnd-calendar/contents/tests/ci",
         }
         auditor = Auditor(FakeRunner(responses, not_found))
         result = auditor.audit_all(["Osasuwu/jarvis", "Osasuwu/dnd-calendar"])

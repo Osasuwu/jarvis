@@ -9,7 +9,7 @@ from __future__ import annotations
 import base64
 
 import pytest
-from conftest import FakeRunner, FakeWriteRunner, _jarvis_responses
+from conftest import FakeRunner, FakeWriteRunner, _jarvis_responses, _workflow_b64
 
 from scripts.repo_baseline.applier import GhCall, GhCallKind
 from scripts.repo_baseline.auditor import (
@@ -21,6 +21,7 @@ from scripts.repo_baseline.auditor import (
 from scripts.repo_baseline.executor import (
     SYNC_BRANCH,
     IdentityError,
+    RepoOutcome,
     apply_protection,
     diff_phase,
     ensure_sync_branch,
@@ -28,6 +29,7 @@ from scripts.repo_baseline.executor import (
     execute_account_pass,
     execute_repo,
     find_sync_pr,
+    format_outcome,
     preflight_identity,
     render_pr_body,
     resolve_repos,
@@ -436,6 +438,10 @@ def test_execute_repo_delete_carries_blob_sha():
     responses["repos/Osasuwu/jarvis/contents/.github/workflows/stale.yml?ref=main"] = {
         "sha": "stale-sha"
     }
+    # The auditor also reads each workflow's body to observe its runs-on (#1406).
+    responses["repos/Osasuwu/jarvis/contents/.github/workflows/stale.yml"] = _workflow_b64(
+        "name: stale\njobs:\n  stale:\n    runs-on: ubuntu-latest\n"
+    )
     responses["repos/Osasuwu/jarvis/git/refs/heads/main"] = {"object": {"sha": "base-sha"}}
     not_found = {f"repos/Osasuwu/jarvis/git/refs/heads/{SYNC_BRANCH}"}
     runner = FakeRunner(responses, not_found=not_found)
@@ -459,6 +465,101 @@ def test_execute_repo_delete_carries_blob_sha():
     ]
     assert len(branch_create_calls) == 1
     assert branch_create_calls[0][2]["sha"] == "base-sha"
+
+
+def test_execute_repo_renders_canon_with_the_observed_runner_class():
+    """#1406 — the live path must render ``{{ runs_on }}`` from what the repo's
+    own workflows actually run on, with no manifest edit anywhere. This is the
+    seam that shipped GitHub-hosted workflows into a billing-blocked account:
+    the executor built its Applier without the snapshot it had just audited, so
+    the profile default silently won.
+    """
+    manifest = _manifest(managed_files=["a.yml"], language_test_files=[], prune=False)
+    responses = _jarvis_responses()
+    responses["repos/Osasuwu/jarvis/actions/workflows?per_page=100"] = {
+        "workflows": [{"path": ".github/workflows/build.yml", "name": "build"}]
+    }
+    responses["repos/Osasuwu/jarvis/contents/.github/workflows/build.yml"] = _workflow_b64(
+        "jobs:\n  build:\n    runs-on: [self-hosted, linux, x64]\n"
+    )
+    responses[PULLS_PATH] = []
+    responses["repos/Osasuwu/jarvis/git/refs/heads/main"] = {"object": {"sha": "base-sha"}}
+    runner = FakeRunner(
+        responses,
+        not_found={
+            f"repos/Osasuwu/jarvis/git/refs/heads/{SYNC_BRANCH}",
+            "repos/Osasuwu/jarvis/contents/a.yml?ref=main",
+        },
+    )
+    write_runner = FakeWriteRunner(
+        responses={("POST", "repos/Osasuwu/jarvis/pulls"): {"html_url": "https://x/pr/9"}}
+    )
+
+    execute_repo(
+        "Osasuwu/jarvis",
+        manifest,
+        runner=runner,
+        write_runner=write_runner,
+        execute=True,
+        canon={"a.yml": "runs-on: {{ runs_on }}\n"},
+    )
+
+    puts = [c for c in write_runner.calls if c[0] == "PUT" and c[1].endswith("/contents/a.yml")]
+    assert len(puts) == 1
+    content = base64.b64decode(puts[0][2]["content"]).decode("utf-8")
+    assert content == "runs-on: [self-hosted, linux, x64]\n"
+
+
+def test_execute_repo_discloses_the_ci_meta_skip_to_the_operator():
+    """#1406 — a skipped file is silent by construction (nothing is written),
+    so the outcome is the only place an operator can learn ci-meta.yml was
+    dropped. ``plan_account_pass`` already carries it in ``RepoPlan.notes``;
+    the CLI runs through ``execute_repo``, which must disclose it too, or the
+    live path re-hides exactly what the skip was added to make visible.
+    """
+    manifest = _manifest(managed_files=[".github/workflows/ci-meta.yml"], prune=False)
+    responses = _jarvis_responses()
+    responses[PULLS_PATH] = []
+    runner = FakeRunner(responses, not_found={"repos/Osasuwu/jarvis/contents/tests/ci"})
+    write_runner = FakeWriteRunner()
+
+    outcome = execute_repo(
+        "Osasuwu/jarvis",
+        manifest,
+        runner=runner,
+        write_runner=write_runner,
+        execute=True,
+        canon={"ci-meta.yml": "runs-on: {{ runs_on }}\n"},  # canon is keyed by basename
+    )
+
+    assert outcome.file_status == "skipped"
+    assert any("tests/ci" in note for note in outcome.notes)
+    assert write_runner.calls == []
+
+
+def test_format_outcome_prints_notes_under_the_repo_line():
+    """#1406 — carrying notes on the outcome is only half the disclosure; the
+    CLI is where an operator actually reads them.
+    """
+    outcome = RepoOutcome(
+        repo="Osasuwu/jarvis",
+        file_status="skipped",
+        protection_status="skipped",
+        notes=["ci-meta.yml: skipped — the repo has no tests/ci directory"],
+    )
+
+    lines = format_outcome(outcome).splitlines()
+
+    assert lines[0].startswith("Osasuwu/jarvis: files=skipped")
+    assert lines[1].strip().startswith("note: ci-meta.yml: skipped")
+
+
+def test_format_outcome_is_a_single_line_when_there_is_nothing_to_disclose():
+    outcome = RepoOutcome(repo="Osasuwu/jarvis", file_status="applied", protection_status="applied")
+
+    assert format_outcome(outcome).splitlines() == [
+        "Osasuwu/jarvis: files=applied protection=applied"
+    ]
 
 
 def test_execute_repo_declined_pr_skips_repo():
@@ -613,6 +714,7 @@ def test_execute_account_pass_isolates_per_repo_errors():
         responses[f"repos/{repo}/actions/workflows?per_page=100"] = {"workflows": []}
         not_found.add(f"repos/{repo}/branches/main/protection")
         not_found.add(f"repos/{repo}/contents/.github/dependabot.yml")
+        not_found.add(f"repos/{repo}/contents/tests/ci")
 
     failing_repo = "Osasuwu/dnd-calendar"
     raise_for = {f"repos/{failing_repo}": RuntimeError("gh api boom")}

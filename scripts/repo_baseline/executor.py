@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
 
 import subprocess
@@ -63,6 +63,7 @@ __all__ = [
     "render_pr_body",
     "execute_repo",
     "execute_account_pass",
+    "format_outcome",
     "main",
 ]
 
@@ -133,6 +134,11 @@ class RepoOutcome:
     ``file_status`` in {"applied", "pending", "declined", "failed", "skipped",
     "gapped", "errored"}; ``protection_status`` in {"applied",
     "deferred: <reason>", "failed", "skipped"}.
+
+    ``notes`` carries the applier's observed-state disclosures (#1406) —
+    what the audit overrode and what it caused to be skipped. Mirrors
+    :attr:`~scripts.repo_baseline.applier.RepoPlan.notes` so the live path
+    tells the operator the same things the dry-run plan does.
     """
 
     repo: str
@@ -140,6 +146,7 @@ class RepoOutcome:
     protection_status: str
     pr_url: Optional[str] = None
     error: Optional[str] = None
+    notes: list[str] = field(default_factory=list)
 
 
 def gh_write_runner(method: str, path: str, *, body: Optional[dict] = None) -> Any:
@@ -484,11 +491,27 @@ def execute_repo(
     snapshot = Auditor(runner).audit(repo)
     actual = actual_state_from_snapshot(snapshot)
     plan = Planner(manifest).plan(actual)
-    applier = Applier(manifest, canon)
+    applier = Applier(manifest, canon, snapshot=snapshot)
+    notes: list[str] = []
+
+    def _outcome(**kw: Any) -> RepoOutcome:
+        """Stamp the applier's disclosures onto every return path (#1406).
+
+        A skipped file leaves no other trace — nothing is written — so a
+        return that forgets ``notes`` silently re-hides exactly what the skip
+        exists to surface. Going through one constructor makes that
+        impossible to forget on a new branch.
+        """
+        return RepoOutcome(repo=repo, notes=list(notes), **kw)
+
     gaps = applier.missing_canon(plan)
     if gaps:
-        return RepoOutcome(repo=repo, file_status="gapped", protection_status="skipped")
+        notes[:] = applier.observed_notes()
+        return _outcome(file_status="gapped", protection_status="skipped")
     calls = applier.translate(plan, actual)
+    # After translate(), never before: the skip disclosures are produced by the
+    # translation itself (same ordering trap as ``plan_account_pass``).
+    notes[:] = applier.observed_notes()
 
     file_calls, context_call = split_calls(calls)
     default_branch = snapshot.settings.default_branch
@@ -514,33 +537,27 @@ def execute_repo(
     pr = find_sync_pr(runner, repo)
     status = sync_pr_status(pr)
     if status == "declined":
-        return RepoOutcome(
-            repo=repo,
+        return _outcome(
             file_status="declined",
             protection_status="skipped",
             pr_url=pr.get("html_url"),
         )
     if status == "pending":
-        return RepoOutcome(
-            repo=repo,
+        return _outcome(
             file_status="pending",
             protection_status=_protection_outcome(),
             pr_url=pr.get("html_url"),
         )
 
     if not file_calls:
-        return RepoOutcome(
-            repo=repo, file_status="skipped", protection_status=_protection_outcome()
-        )
+        return _outcome(file_status="skipped", protection_status=_protection_outcome())
 
     write_ops, _skipped = diff_phase(runner, repo, default_branch, file_calls)
     if not write_ops:
-        return RepoOutcome(
-            repo=repo, file_status="skipped", protection_status=_protection_outcome()
-        )
+        return _outcome(file_status="skipped", protection_status=_protection_outcome())
 
     if not execute:
-        return RepoOutcome(repo=repo, file_status="pending", protection_status="skipped")
+        return _outcome(file_status="pending", protection_status="skipped")
 
     try:
         ensure_sync_branch(runner, write_runner, repo, default_branch)
@@ -559,15 +576,13 @@ def execute_repo(
         )
     except (GhNotFound, RuntimeError) as e:
         failed_call = write_ops[0].call if write_ops else None
-        return RepoOutcome(
-            repo=repo,
+        return _outcome(
             file_status=f"failed: {failed_call.kind.value if failed_call else '?'} "
             f"{failed_call.path if failed_call else '?'} -> {e}",
             protection_status="skipped",
         )
 
-    return RepoOutcome(
-        repo=repo,
+    return _outcome(
         file_status="applied",
         protection_status=_protection_outcome(),
         pr_url=pr_resp.get("html_url"),
@@ -645,6 +660,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def format_outcome(outcome: RepoOutcome) -> str:
+    """The operator-facing rendering of one :class:`RepoOutcome`.
+
+    Kept as a pure function rather than inlined in :func:`main` so the
+    disclosure lines (#1406) are testable without capturing stdout.
+    """
+    pr = f" {outcome.pr_url}" if outcome.pr_url else ""
+    err = f" ({outcome.error})" if outcome.error else ""
+    head = (
+        f"{outcome.repo}: files={outcome.file_status} "
+        f"protection={outcome.protection_status}{pr}{err}"
+    )
+    return "\n".join([head, *(f"  note: {n}" for n in outcome.notes)])
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = _build_arg_parser().parse_args(argv)
     if not args.account:
@@ -662,9 +692,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         execute=args.execute,
     )
     for o in outcomes:
-        pr = f" {o.pr_url}" if o.pr_url else ""
-        err = f" ({o.error})" if o.error else ""
-        print(f"{o.repo}: files={o.file_status} protection={o.protection_status}{pr}{err}")
+        print(format_outcome(o))
     return 1 if any(o.file_status.startswith(("failed", "errored")) for o in outcomes) else 0
 
 
