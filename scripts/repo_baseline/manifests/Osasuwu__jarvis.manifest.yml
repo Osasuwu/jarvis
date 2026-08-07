@@ -16,4 +16,5 @@ required_check_contexts:
 - meta-tests
 - Detect secrets with gitleaks
 - pytest-db
+- require-paired-migration
 visibility: public
