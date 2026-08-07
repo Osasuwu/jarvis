@@ -140,6 +140,7 @@ groups:
           - "to-tickets"
           - "triage"
           - "wayfinder"
+          - "wizard"
           - "write-a-skill"
           - "zoom-out"
 

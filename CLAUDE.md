@@ -105,6 +105,7 @@ Use skills — don't reinvent with raw tools.
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
 | "what's next across M-whatever", "chart the map", "what's blocked on what", multi-milestone frontier scan | `/wayfinder` |
+| Provisioning infra, CI secrets/API keys, unfamiliar third-party dashboard, one-off migration/cutover — a manual procedure only a human can perform | `/wizard` |
 | Author/edit a skill | `/write-a-skill` |
 | "be brief", "caveman", token compression | `/caveman` |
 
