@@ -1,6 +1,7 @@
 {
   "branch_protection": null,
   "dependabot_ecosystems": [],
+  "has_tests_ci": false,
   "labels": [
     {
       "color": "d4e9c8",
@@ -173,6 +174,7 @@
       "name": "unsafe-for-afk"
     }
   ],
+  "observed_runners": {},
   "repo": "Osasuwu/dnd-calendar",
   "settings": {
     "allow_auto_merge": false,
