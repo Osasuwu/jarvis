@@ -231,9 +231,9 @@ Engaged when the §Contract dispatch table routes here. Replaces §4 — but §4
 **Operating discipline:**
 
 - §4a (already-done audit) still runs first — TDD-mode is no excuse to skip it. Symbols from the issue AC drive the grep; if the behavior already exists with tests, stop and close as `not-planned`.
-- Iterate one acceptance-criterion bullet at a time. Per AC item: write a failing test → confirm RED → write the minimal implementation → confirm GREEN → refactor only what is now under green coverage → next AC item. Do **not** write all tests first then all code (the anti-horizontal-slicing rule in `tdd-loop.md` is binding).
+- Iterate one acceptance-criterion bullet at a time. Per AC item: write a failing test → confirm RED → write the minimal implementation → confirm GREEN → next AC item. The inner loop is strictly red→green — do **not** refactor between AC items. Do **not** write all tests first then all code either (the anti-horizontal-slicing rule in `tdd-loop.md` is binding).
 - Every test must trace back to an AC bullet. If a test does not, the test is either out of scope or evidence the AC is incomplete — in the latter case stop and escalate (re-grill, do not invent AC inline).
-- Refactor permission is scoped to code freshly covered by a passing test in this session. Adjacent untested code is not in refactor scope — either write a characterization test first (then it is in scope) or flag a follow-up issue and leave it.
+- Once every AC item's test is green, run **one** refactor pass over the whole green suite (`tdd-loop.md` §4) before moving to §5. Refactor permission is scoped to code freshly covered by a passing test in this session. Adjacent untested code is not in refactor scope — either write a characterization test first (then it is in scope) or flag a follow-up issue and leave it.
 - §4c (E2E smoke) still applies before marking the outcome `success` when the change touches I/O / schema / hooks / subprocess areas.
 - ADR-0001 compliance: do not invoke `/grill` or any other skill mid-task. The reference docs in `_shared/tdd/` are read as files, not as skill invocations.
 
