@@ -23,7 +23,7 @@ Two more pieces of always-on domain context ride bare `@import` instead of the h
 
 ## Project
 
-**Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active scope = open GitHub milestones (capability-shipping units, see `milestone_hierarchy_v3`); `docs/PROJECT_PLAN.md` is a pointer index.
+**Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active scope = open GitHub milestones (capability-shipping units, see *Milestone vs pillar hygiene* below); `docs/PROJECT_PLAN.md` is a pointer index.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory + SOUL.md identity.
 
@@ -105,6 +105,7 @@ Use skills — don't reinvent with raw tools.
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
 | "what's next across M-whatever", "chart the map", "what's blocked on what", multi-milestone frontier scan | `/wayfinder` |
+| Provisioning infra, CI secrets/API keys, unfamiliar third-party dashboard, one-off migration/cutover — a manual procedure only a human can perform | `/wizard` |
 | Author/edit a skill | `/write-a-skill` |
 | "be brief", "caveman", token compression | `/caveman` |
 
@@ -150,7 +151,7 @@ After a milestone closes (capability shipped), run `/improve-codebase-architectu
 2. Surfaces numbered list of *deepening opportunities* (shallow → deep modules, friction points, untested seams).
 3. Grills you on selected candidates → architectural decisions → child issues attached to a follow-up milestone (or as standalone slices).
 
-**Trigger (planned — #605):** the automatic ≥3-closed-slices SessionStart surface described in `milestone_hierarchy_v3` Rule 6 is not implemented. Until #605 lands the trigger is **manual**; small milestones (1–2 slices) skip the sweep.
+**Trigger (planned — #605):** the automatic ≥3-closed-slices SessionStart surface described in *Milestone vs pillar hygiene* Rule 6 below is not implemented. Until #605 lands the trigger is **manual**; small milestones (1–2 slices) skip the sweep.
 
 **Cadence:** semantic, not temporal. The sweep follows capability shipping, never a date.
 
@@ -177,13 +178,21 @@ The meta-test suite runs via `.github/workflows/ci-meta.yml` on every PR (not it
 
 ### Milestone vs pillar hygiene
 
-Entity definitions (pillar / milestone / slice, why "epic" is not used) live in CONTEXT.md → *Core entities*; the standing rules — no date in title, close on capability shipping, PRD in the milestone description, single slice = no milestone, no numerical WIP limit — are memory `milestone_hierarchy_v3` Rules 1–6 (always_load, injected every session). Shape:
+Entity definitions (pillar / milestone / slice, why "epic" is not used) live in CONTEXT.md → *Core entities*. This section is the **single authoritative body** for the standing rules below — memory `milestone_hierarchy_v3` is demoted to an on-demand decision-record (rationale + history), not a duplicate source (#1157). Shape:
 
 ```
 pillar (narrative only) → goal (Type A) → milestone (capability + PRD) → slice (one PR)
 ```
 
-Mechanics not covered there:
+**Rules:**
+1. **No date in milestone title.** "Skill set redesign", not "Skill set redesign — 2026-05".
+2. **Milestone closes on capability shipping.** All slices merged → close. State=open with 0 open issues is a bug.
+3. **PRD lives in milestone description.** No separate epic-issue layer. `/to-spec` writes to milestone description.
+4. **Single slice = no milestone.** Drive-by fixes, isolated improvements: just an issue + PR, no milestone ceremony.
+5. **No numerical WIP limit on active milestones.** Self-throttle by owner-attention (HITL/grill/review) load. AFK milestones (delegated to subagents/sandcastle) cost ~0 attention.
+6. **Architecture sweep triggered on milestone close** when ≥3 closed slices. SessionStart surfaces "Milestone N closed — architecture sweep recommended" if no sweep ran since closed_at. (Automatic trigger not yet implemented — see *Architecture sweep at milestone close* above.)
+
+**Mechanics not covered by the rules above:**
 1. Retroactive — if related slices shipped without a milestone, create it, attach the issues+PRs, close it. History must be recoverable.
 2. When user rushes and skips the milestone for grouped work — catch it: "milestone for these N slices?" before creating issues. Don't be a silent executor.
 

@@ -43,7 +43,9 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+
+from ._md_helpers import find_bare_imports
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "push_surface_ceilings.json"
@@ -297,8 +299,6 @@ def _load_fixture() -> dict:
 # is not configurable. Budgeting is therefore the only available lever.
 # ---------------------------------------------------------------------------
 
-_BARE_IMPORT_RE = re.compile(r"^@(\S+)[ \t]*$")
-_FENCE_RE = re.compile(r"^\s*(```|~~~)")
 
 # The two CLAUDE.md levels are the inheritance roots.
 _INHERITANCE_ROOTS = ("CLAUDE.md", ".claude-userlevel/CLAUDE.md")
@@ -313,26 +313,26 @@ def _parse_bare_imports(text: str) -> list[str]:
     """Import targets that Claude Code actually expands: bare, line-start, own
     line, outside fenced code. A mid-prose ``@path`` mention does not resolve
     (#1426) and therefore costs nothing — counting it would overstate the
-    budget and, worse, hide the fact that it is not delivered."""
-    out: list[str] = []
-    in_fence = False
-    for line in text.splitlines():
-        if _FENCE_RE.match(line):
-            in_fence = not in_fence
-            continue
-        if in_fence:
-            continue
-        m = _BARE_IMPORT_RE.match(line)
-        if m:
-            out.append(m.group(1))
-    return out
+    budget and, worse, hide the fact that it is not delivered.
+
+    Delegates to the shared parser so the byte-accounting definition of an
+    import cannot drift from the one the import-form guards enforce (#1426)."""
+    return [path for _, path in find_bare_imports(text)]
 
 
 def _resolve_import(target: str, containing: str) -> str | None:
     """Repo-relative path for an import target, or None when it does not exist
-    in this checkout (a bare import to a missing file is silently empty)."""
-    base = Path(containing).parent
-    rel = str((base / target).as_posix()).lstrip("./")
+    in this checkout (a bare import to a missing file is silently empty).
+
+    The normalization is `PurePosixPath`, deliberately not `str.lstrip("./")`:
+    `lstrip` takes a character *set*, so it ate the leading dot of
+    `.claude-userlevel/SOUL.md` and produced `claude-userlevel/SOUL.md`, which
+    exists nowhere — the alias below never matched and both user-level imports
+    were silently dropped from the byte accounting (#1426). Same silent-nothing
+    failure class the guard exists to catch, one layer down.
+    """
+    base = PurePosixPath(containing).parent
+    rel = str(base / target) if str(base) != "." else target
     rel = _INSTALL_ALIASES.get(rel, rel)
     return rel if (REPO_ROOT / rel).is_file() else None
 
@@ -554,6 +554,50 @@ class TestBareImportParsing:
 
     def test_indented_import_is_not_parsed(self):
         assert _parse_bare_imports("  @a/b.md\n") == []
+
+
+class TestImportResolution:
+    """Parsing an import is only half the accounting — it must also resolve.
+
+    An import that parses but fails to resolve is dropped from the walk with no
+    signal, so its bytes vanish from the fan-out budget. That is the same
+    silent-nothing failure #1426 is about, one layer down, and it is how
+    SOUL.md and DOCTRINE.md stayed uncharged even after their import lines were
+    made bare.
+    """
+
+    def test_dotfile_dir_import_resolves_through_alias(self):
+        """Regression: `str.lstrip("./")` takes a character SET, so it stripped
+        the leading dot of `.claude-userlevel/SOUL.md` and produced
+        `claude-userlevel/SOUL.md` — which matched no alias and no file, so the
+        resolver returned None and the largest single surface in the layer went
+        uncounted."""
+        assert _resolve_import("SOUL.md", ".claude-userlevel/CLAUDE.md") == "config/SOUL.md"
+
+    def test_dotfile_dir_import_resolves_without_alias(self):
+        assert (
+            _resolve_import("DOCTRINE.md", ".claude-userlevel/CLAUDE.md")
+            == ".claude-userlevel/DOCTRINE.md"
+        )
+
+    def test_repo_root_import_resolves(self):
+        assert (
+            _resolve_import("docs/context/invariants.md", "CLAUDE.md")
+            == "docs/context/invariants.md"
+        )
+
+    def test_missing_target_resolves_to_none(self):
+        assert _resolve_import("nope-does-not-exist.md", "CLAUDE.md") is None
+
+    def test_both_userlevel_imports_are_counted(self):
+        """End-to-end: the two files #1426 restored must appear in the walk.
+
+        Without this, the ceiling raise in the fixture could be satisfied by
+        any 17 KB of growth rather than by these two surfaces specifically.
+        """
+        surfaces = inherited_surfaces()
+        assert "config/SOUL.md" in surfaces
+        assert ".claude-userlevel/DOCTRINE.md" in surfaces
 
 
 class TestFanoutBudget:

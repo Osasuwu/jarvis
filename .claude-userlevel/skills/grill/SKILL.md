@@ -1,7 +1,7 @@
 ---
 name: grill
 description: Stress-test a plan against the project's domain model and documented decisions, sharpening terminology and updating CONTEXT.md/ADRs inline as decisions crystallise.
-model: opus
+model: fable
 effort: xhigh
 ---
 

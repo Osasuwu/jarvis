@@ -20,9 +20,11 @@
     },
     "fanout_budget": {
       "reference_fanout": 6,
-      "per_agent_ceiling_bytes": 51652,
+      "per_agent_ceiling_bytes": 72324,
       "measured_at_creation_bytes": 43043,
-      "statement": "Every byte of the inherited layer -- both CLAUDE.md levels plus every bare @import reachable from them -- is paid N+1 times on a fan-out of N subagents (measured in #1270; see docs/research/context-management.md A.7). SessionStart hook output is NOT inherited and is excluded. The inherited set is DERIVED by walking bare imports, never hardcoded, so a newly added import is charged automatically. Ceiling = measured 43,043 bytes at creation (2026-08-07, LF) + 20% margin, rounded up -- same margin policy as the per-surface ceilings. At the reference fan-out of 6 this bounds a fan-out round at 361,564 bytes of prompt. Raising this ceiling requires editing this fixture in the same PR, which is the point: the raise makes the N+1 cost visible at review time (e.g. #1426's SOUL.md/DOCTRINE.md delivery fix adds ~16.5 KB per agent and must be reviewed as such).",
+      "measured_bytes": 60270,
+      "statement": "Every byte of the inherited layer -- both CLAUDE.md levels plus every bare @import reachable from them -- is paid N+1 times on a fan-out of N subagents (measured in #1270; see docs/research/context-management.md A.7). SessionStart hook output is NOT inherited and is excluded. The inherited set is DERIVED by walking bare imports, never hardcoded, so a newly added import is charged automatically. Ceiling = measured bytes + 20% margin, rounded up -- same margin policy as the per-surface ceilings. Raising this ceiling requires editing this fixture in the same PR, which is the point: the raise makes the N+1 cost visible at review time.",
+      "raise_history": "Created 2026-08-07 at 43,043 measured / 51,652 ceiling. Raised the same day by #1426 to 60,270 measured / 72,324 ceiling (+17,227 B/agent, 401,180 B at the reference fan-out of 6). The raise is exactly the cost the creation-time statement predicted for #1426 (~16.5 KB): SOUL.md (9,596) and DOCTRINE.md (6,870) were never actually delivered, so they had never been charged. Two independent defects hid them, both of the same silent-nothing shape: the imports were written mid-prose with a glued trailing comma and did not resolve, and _resolve_import in the guard normalized with str.lstrip('./') -- a character SET -- which ate the leading dot of .claude-userlevel/SOUL.md and silently dropped both from the walk. This is not context regrowth; it is previously-uncounted delivery becoming real and visible.",
       "no_per_agent_profile": "#1324 AC3, answered NO with a documented negative: Claude Code exposes no frontmatter field or per-agent setting to give subagents a stripped-down CLAUDE.md. Explore and Plan are the only subagents that omit CLAUDE.md and that is not configurable. Budgeting is therefore the only lever.",
       "decision_uuid": "14ae73e4-72f3-41ac-9982-dede3e40e878"
     }
@@ -33,7 +35,7 @@
       "decision_uuid": "511d5140-54ad-47e3-878f-42cb81a4b195",
       "items": 46,
       "bytes": 11415,
-      "note": "Identity. Loaded via a bare `@SOUL.md` import in .claude-userlevel/CLAUDE.md, not a SessionStart hook step (#1328)."
+      "note": "Identity. Loaded via a bare `@SOUL.md` import in .claude-userlevel/CLAUDE.md, not a SessionStart hook step (#1328). #1328 asserted this delivery but did not achieve it: the import was written mid-prose and never resolved, so no session loaded SOUL.md until #1426 made the line bare. This note describes what now happens, not what always did."
     },
     "project_claude_md": {
       "path": "CLAUDE.md",
@@ -54,7 +56,7 @@
       "decision_uuid": "067b6566-b0ea-44aa-82dd-76f5679ba2f4",
       "items": 11,
       "bytes": 8244,
-      "note": "Shared cross-repo norms, @import-ed from user-level CLAUDE.md."
+      "note": "Shared cross-repo norms, @import-ed from user-level CLAUDE.md. Same correction as soul_md: #1315 wrote the import mid-prose, so it never resolved and this file reached no session until #1426 made the line bare."
     },
     "invariants_md": {
       "path": "docs/context/invariants.md",

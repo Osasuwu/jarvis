@@ -1,7 +1,7 @@
 ---
 name: diagnose
 description: Disciplined diagnosis loop: reproduce → minimise → hypothesise → instrument → fix → regression-test. Triggers: "diagnose this"/"debug this", a reported bug, "broken/throwing/failing", or a performance regression.
-model: opus
+model: fable
 effort: xhigh
 context: fork
 ---
