@@ -12,7 +12,7 @@ import asyncio
 import re
 import uuid
 
-from datetime import datetime, timezone  # noqa: F401
+from datetime import datetime, timedelta, timezone  # noqa: F401
 
 from mcp.types import TextContent  # noqa: F401
 
@@ -42,6 +42,35 @@ def _sanitize_session_id(raw: object) -> str | None:
     if not isinstance(raw, str) or not _SESSION_ID_RE.match(raw):
         return None
     return raw
+
+
+_SINCE_RELATIVE_RE = re.compile(r"^(\d+)([hd])$", re.IGNORECASE)
+
+
+def _parse_since(raw: object) -> datetime | None:
+    """Parse a decision_list `since` filter: relative (`<N>h`/`<N>d`) or an
+    absolute ISO-8601 timestamp (#1423). Returns None for an absent/empty
+    value; raises ValueError on anything unparseable so the caller can
+    surface a clean error message instead of a raw traceback.
+    """
+    if not raw:
+        return None
+    if not isinstance(raw, str):
+        raise ValueError(f"since must be a string, got {type(raw).__name__}")
+    match = _SINCE_RELATIVE_RE.match(raw.strip())
+    if match:
+        amount, unit = int(match.group(1)), match.group(2).lower()
+        delta = timedelta(hours=amount) if unit == "h" else timedelta(days=amount)
+        return datetime.now(timezone.utc) - delta
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"since must be '<N>h', '<N>d', or an ISO-8601 timestamp, got {raw!r}"
+        ) from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _looks_like_uuid(s: str) -> bool:
@@ -302,6 +331,13 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
     session_id = _sanitize_session_id(args.get("session_id"))
     if session_id is not None:
         payload["session_id"] = session_id
+    # #1423: cwd is the recovery-key component (project, cwd, since) that
+    # replaces session_id in that role; session_id above stays as forensic
+    # grouping metadata only. Free-form path, no sanitization — the gate
+    # already sources it from hook stdin's cwd field.
+    cwd = args.get("cwd")
+    if cwd:
+        payload["cwd"] = cwd
 
     try:
         result = (
@@ -419,52 +455,67 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
 
 
 async def _handle_decision_list(args: dict) -> list[TextContent]:
-    """List decision_made episodes stamped with a session id (#1269).
+    """List decision_made episodes filtered by (project, cwd, since) and/or
+    session_id (#1269, demoted per #1423).
 
-    Query-based UUID recovery surface: after context loss (compaction,
-    crash), `decision_list(session_id=<harness sid>)` returns the decision
-    episode UUIDs recorded this session — device-portable, no Supabase
-    connector needed. Read-only.
+    Resume/compaction always mints a new harness session_id, so a
+    session_id-keyed recovery query goes unreachable across that boundary.
+    session_id is now forensic grouping metadata only — the recovery key is
+    (project, cwd, since). session_id remains an optional AND-combined
+    filter for narrowing to one session when it's still known. When
+    session_id is absent, project is required (this server is shared with
+    redrobot — an unfiltered cross-project scan is never acceptable).
+    Read-only.
     """
     session_id = _sanitize_session_id(args.get("session_id"))
-    if session_id is None:
+    project = args.get("project")
+    cwd = args.get("cwd")
+    limit = args.get("limit") or 50
+
+    if session_id is None and not project:
         return [
             TextContent(
                 type="text",
                 text=(
-                    "Error: session_id is required and must match "
-                    "^[A-Za-z0-9_-]{1,128}$ (the harness session id)."
+                    "Error: session_id or project is required (the server is "
+                    "shared with redrobot — an unfiltered cross-project scan "
+                    "is not allowed)."
                 ),
             )
         ]
-    project = args.get("project")
-    limit = args.get("limit") or 50
+
+    try:
+        since_dt = _parse_since(args.get("since"))
+    except ValueError as exc:
+        return [TextContent(type="text", text=f"Error: {exc}")]
 
     client = server._get_client()
-    query = (
-        client.table("episodes")
-        .select("id, created_at, payload")
-        .eq("kind", "decision_made")
-        .eq("payload->>session_id", session_id)
-    )
+    query = client.table("episodes").select("id, created_at, payload").eq("kind", "decision_made")
+    if session_id is not None:
+        query = query.eq("payload->>session_id", session_id)
     if project:
         query = query.eq("payload->>project", project)
+    if cwd:
+        query = query.eq("payload->>cwd", cwd)
+    if since_dt is not None:
+        query = query.gte("created_at", since_dt.isoformat())
+
     try:
-        result = query.order("created_at", desc=False).limit(limit).execute()
+        result = query.order("created_at", desc=True).limit(limit).execute()
     except Exception as exc:
         # Same privacy posture as record_decision: surface the type only.
         return [TextContent(type="text", text=f"Error listing decisions: {type(exc).__name__}")]
 
     rows = result.data or []
     if not rows:
-        return [
-            TextContent(
-                type="text",
-                text=f"No decisions found for session {session_id}.",
-            )
-        ]
+        scope = ", ".join(
+            f"{k}={v}"
+            for k, v in (("session_id", session_id), ("project", project), ("cwd", cwd))
+            if v
+        )
+        return [TextContent(type="text", text=f"No decisions found for {scope}.")]
 
-    lines = [f"Decisions for session {session_id} ({len(rows)}):"]
+    lines = [f"Decisions ({len(rows)}):"]
     for row in rows:
         payload = row.get("payload") or {}
         one_liner = (payload.get("decision") or "").strip().replace("\n", " ")
