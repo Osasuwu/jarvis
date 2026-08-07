@@ -116,8 +116,11 @@ before re-enabling task drain, same procedure every time:
    claim and no side effect; confirms the routing table looks sane before
    anything touches the queue.
 2. **`--no-task-drain`** — runs the live LISTEN/NOTIFY loop with routing and
-   escalation active but `task_port=None`, so nothing is enqueued and no
-   `claude -p` worker spawns.
+   escalation active but `task_port=None`. This only suppresses the *spawn*
+   half (Step 4's `claude -p` worker launch) — dispatch still enqueues
+   `task_queue` rows for `EMIT_TASK` routes in Step 3 regardless of
+   `task_port`, since that enqueue happens in `orchestrator.dispatch()`, not
+   in the task-drain step.
 3. **Default (no flags)** — full loop, task drain and worker spawn enabled.
    This is now the supported steady state: each spawned worker runs isolated
    in its own per-task git worktree (#1390 — see *Worker isolation* below),

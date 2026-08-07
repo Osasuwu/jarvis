@@ -117,7 +117,9 @@ CLAIMER = "wake_driver"
 # Repo-root-anchored (not CWD-relative) so the log lands in the same place
 # regardless of the Scheduled Task's working directory — same anchoring
 # rationale as executor._STDERR_LOG_DIR.
-_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "wake_driver")
+_LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "wake_driver"
+)
 
 # Cold-boot retry: AtLogOn can fire before the network/DNS/Supabase is
 # reachable (observed: task started 07:31, died within ~5min after
@@ -154,7 +156,9 @@ def _configure_logging() -> None:
         )
     except OSError as exc:
         print(f"[wake_driver] file logging unavailable ({exc}); console only", file=sys.stderr)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers
+    )
 
 
 def _call_with_retry(
@@ -192,6 +196,7 @@ def _call_with_retry(
     logger.error("[wake_driver] startup: %s failed after %d attempts, giving up", what, attempts)
     assert last_exc is not None
     raise last_exc
+
 
 # The NOTIFY channel from the #739 substrate (notify_events_insert).
 EVENTS_CHANNEL = "events"
@@ -750,6 +755,28 @@ class PsycopgEventQueue:
         self._conn.commit()
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
+    # -- PollerPort surface (#1393 — Path B consumer) ------------------------
+
+    def find_parked_events(self) -> list[dict[str, Any]]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM events WHERE state = 'parked' AND payload ? 'blocked_by_task_id'"
+            )
+            rows = cur.fetchall()
+            cols = [d.name for d in cur.description]
+        self._conn.commit()
+        return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    def get_task_status(self, task_id: str) -> str | None:
+        return SupabaseTaskQueue().get_status(task_id)
+
+    def requeue_event(self, event_id: str, *, reason: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT requeue_event(%s, %s)", (event_id, reason))
+            ok = bool(cur.fetchone()[0])
+        self._conn.commit()
+        return ok
+
 
 def dry_run(
     events: list[dict[str, Any]],
@@ -950,6 +977,7 @@ def main() -> int:
                 orchestrator,
                 stale_after_seconds=args.watchdog_seconds,
                 task_port=task_port,
+                poller_port=queue,
             )
             logger.info(
                 "[wake_driver] one-shot tick: reclaimed=%d processed=%d requeued=%d "
@@ -987,6 +1015,7 @@ def main() -> int:
             # #931 dispatch-dedup: reuse the one evidence client for the
             # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
             task_dedup=default_task_dedup(evidence_client),
+            poller_port=queue,
         )
     except KeyboardInterrupt:
         logger.info("[wake_driver] KeyboardInterrupt — stopping")

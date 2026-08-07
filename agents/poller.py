@@ -40,9 +40,13 @@ logger = logging.getLogger(__name__)
 class PollerPort(Protocol):
     """Interface the poller depends on for events and task_queue access.
 
-    Implemented by an in-memory fake in tests. No live adapter is wired yet —
-    ``main()`` passes ``poller_port=None``. Path B is inert in production until
-    the Supabase-backed adapter is written and threaded in; see #745.
+    Implemented by an in-memory fake in tests, and by
+    ``wake_driver.PsycopgEventQueue`` in production (#1393) — ``main()``
+    passes ``poller_port=queue`` unconditionally at both the ``--once`` and
+    long-running call sites. The consumer side of Path B is live; nothing in
+    production yet *writes* ``blocked_by_task_id`` into a parked event's
+    payload, so the poller runs every tick and finds nothing until a producer
+    exists — tracked in #1455.
     """
 
     def find_parked_events(self) -> list[dict[str, Any]]:

@@ -9,6 +9,8 @@ no live database is required.
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from typing import Any
 
 import pytest
@@ -603,3 +605,138 @@ def test_run_forwards_poller_port_to_tick():
     assert poller_port.state_of("e1") == "pending"
     assert poller_port.requeue_calls
     assert poller_port.requeue_calls[0][0] == "e1"
+
+
+# ---------------------------------------------------------------------------
+# E2E: live-database poller/tick behavior (AC4/AC5, issue #1393)
+# ---------------------------------------------------------------------------
+#
+# Gated on ``AGENTS_E2E_POSTGRES_URL`` — a dedicated live Postgres connection
+# string, deliberately distinct from the production ``AGENTS_POSTGRES_URL`` so
+# these tests never run against a live orchestrator's database by accident.
+# Skipped (not failed) when unset, which is every environment except a
+# deliberately provisioned E2E database (decision `7283d043`).
+
+_E2E_POSTGRES_URL = os.environ.get("AGENTS_E2E_POSTGRES_URL")
+
+_e2e = pytest.mark.skipif(
+    not _E2E_POSTGRES_URL,
+    reason="AGENTS_E2E_POSTGRES_URL not set — skipping live-database E2E test",
+)
+
+
+def _insert_parked_event(conn: Any, *, blocked_by_task_id: str | None) -> str:
+    """Insert a ``parked`` events row directly via SQL.
+
+    No RPC can build this fixture: ``park_event`` requires ``state='claimed'``
+    as a precondition and never writes ``payload`` (see
+    ``supabase/migrations/20260521130515_extend_events_queue.sql``), so a
+    parked row carrying a ``blocked_by_task_id`` payload has to be inserted
+    directly.
+    """
+    payload = {"blocked_by_task_id": blocked_by_task_id} if blocked_by_task_id else {}
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO events (event_type, severity, repo, source, title, payload, state) "
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'parked') RETURNING id",
+            (
+                "ci_failure",
+                "high",
+                "test/e2e",
+                "test_poller_e2e",
+                "E2E poller fixture",
+                json.dumps(payload),
+            ),
+        )
+        event_id = cur.fetchone()[0]
+    conn.commit()
+    return str(event_id)
+
+
+def _event_state(conn: Any, event_id: str) -> str:
+    with conn.cursor() as cur:
+        cur.execute("SELECT state FROM events WHERE id = %s", (event_id,))
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None, f"event {event_id} vanished"
+    return row[0]
+
+
+@_e2e
+def test_poller_e2e_requeues_and_processes_event_once_blocking_task_is_done():
+    """AC4: parked event + terminal blocking task → one tick → processed + follow-up task."""
+    import psycopg
+
+    from agents import orchestrator, task_queue, wake_driver
+    from agents.orchestrator import _idempotency_key, _target_of
+    from agents.supabase_client import get_client
+
+    client = get_client()
+    conn = psycopg.connect(_E2E_POSTGRES_URL)
+    event_id: str | None = None
+    blocking_task_id: str | None = None
+    followup_key: str | None = None
+    try:
+        blocking = task_queue.enqueue(
+            goal="E2E poller fixture — blocking task",
+            idempotency_key=f"e2e-poller-blocking-{uuid.uuid4()}",
+            client=client,
+        )
+        blocking_task_id = blocking["id"]
+        task_queue.transition(blocking_task_id, "claimed", client=client)
+        task_queue.transition(blocking_task_id, "running", client=client)
+        task_queue.transition(blocking_task_id, "done", client=client)
+
+        event_id = _insert_parked_event(conn, blocked_by_task_id=blocking_task_id)
+        payload = {"blocked_by_task_id": blocking_task_id}
+        followup_key = _idempotency_key("ci_failure", _target_of(payload), payload)
+
+        queue = wake_driver.PsycopgEventQueue(conn)
+        prod_orchestrator = orchestrator.build_production_orchestrator(client=client)
+
+        wake_driver.tick(queue, prod_orchestrator, stale_after_seconds=300, poller_port=queue)
+
+        assert _event_state(conn, event_id) == "processed"
+
+        rows = (
+            client.table("task_queue").select("id").eq("idempotency_key", followup_key).execute()
+        ).data
+        assert rows, f"expected a follow-up task_queue row with idempotency_key={followup_key}"
+    finally:
+        if event_id is not None:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM events WHERE id = %s", (event_id,))
+            conn.commit()
+        conn.close()
+        if blocking_task_id is not None:
+            client.table("task_queue").delete().eq("id", blocking_task_id).execute()
+        if followup_key is not None:
+            client.table("task_queue").delete().eq("idempotency_key", followup_key).execute()
+
+
+@_e2e
+def test_poller_e2e_leaves_event_parked_without_blocking_task_id():
+    """AC5: parked event with no ``blocked_by_task_id`` stays parked after one tick."""
+    import psycopg
+
+    from agents import orchestrator, wake_driver
+    from agents.supabase_client import get_client
+
+    client = get_client()
+    conn = psycopg.connect(_E2E_POSTGRES_URL)
+    event_id: str | None = None
+    try:
+        event_id = _insert_parked_event(conn, blocked_by_task_id=None)
+
+        queue = wake_driver.PsycopgEventQueue(conn)
+        prod_orchestrator = orchestrator.build_production_orchestrator(client=client)
+
+        wake_driver.tick(queue, prod_orchestrator, stale_after_seconds=300, poller_port=queue)
+
+        assert _event_state(conn, event_id) == "parked"
+    finally:
+        if event_id is not None:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM events WHERE id = %s", (event_id,))
+            conn.commit()
+        conn.close()
