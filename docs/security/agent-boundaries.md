@@ -62,7 +62,7 @@ Editing these changes behaviour for **every Claude Code session on the device**,
 | File | Why |
 |------|-----|
 | `~/.claude/settings.json` | User-level hooks — run in every session on this device |
-| `~/.claude/SOUL.md` | User-level identity — loaded via `@SOUL.md` import in `~/.claude/CLAUDE.md` (#1328) |
+| `~/.claude/SOUL.md` | User-level identity — loaded via a **bare, line-start** `@SOUL.md` import in `~/.claude/CLAUDE.md` (#1328; the import only actually resolved from #1426 — before that it sat mid-prose and delivered nothing) |
 | `~/.claude/.mcp.json` | User-level MCP config — mounts servers for every project |
 | `~/.claude/skills/*/SKILL.md` | User-level skill definitions — available in every project |
 

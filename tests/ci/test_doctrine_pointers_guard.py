@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from ._md_helpers import strip_code_spans_and_fences
+from ._md_helpers import find_bare_imports
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 USERLEVEL_DIR = REPO_ROOT / ".claude-userlevel"
@@ -74,13 +74,18 @@ class TestDoctrineImport:
         assert DOCTRINE_MD_PATH.exists(), f"missing {DOCTRINE_MD_PATH}"
 
     def test_bare_import_line_outside_code_span(self):
+        """#1426: same defect shape as the SOUL.md guard — assert the form.
+
+        See `test_soul_import_guard.py` for the full rationale; both guards
+        asserted a substring that a decorative mid-prose mention satisfied.
+        """
         text = CLAUDE_MD_PATH.read_text(encoding="utf-8")
-        stripped = strip_code_spans_and_fences(text)
-        assert "@DOCTRINE.md" in stripped, (
-            "expected a bare `@DOCTRINE.md` import in .claude-userlevel/CLAUDE.md, "
-            "outside any backtick code span or fenced code block — Claude Code's "
-            "@import parser skips code spans, so a fenced/backticked mention would "
-            "not actually load DOCTRINE.md"
+        paths = [path for _, path in find_bare_imports(text)]
+        assert "DOCTRINE.md" in paths, (
+            "expected a BARE, line-start `@DOCTRINE.md` import in "
+            ".claude-userlevel/CLAUDE.md (a line whose entire content is the "
+            f"import), outside any code span or fence. Found bare imports: {paths}. "
+            "A mid-prose mention does not count (#1426)."
         )
 
 

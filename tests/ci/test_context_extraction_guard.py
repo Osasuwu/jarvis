@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ._md_helpers import strip_code_spans_and_fences
+from ._md_helpers import find_bare_imports
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLAUDE_MD_PATH = REPO_ROOT / "CLAUDE.md"
@@ -61,23 +61,36 @@ class TestImportLines:
 
     def test_bare_invariants_import_line_outside_code_span(self):
         text = CLAUDE_MD_PATH.read_text(encoding="utf-8")
-        stripped = strip_code_spans_and_fences(text)
-        assert "@docs/context/invariants.md" in stripped, (
-            "expected a bare `@docs/context/invariants.md` import in root CLAUDE.md, "
-            "outside any backtick code span or fenced code block — Claude Code's "
-            "@import parser skips code spans, so a fenced/backticked mention would "
-            "not actually load the file (#1417)"
+        paths = [path for _, path in find_bare_imports(text)]
+        assert "docs/context/invariants.md" in paths, (
+            "expected a BARE, line-start `@docs/context/invariants.md` import in root "
+            f"CLAUDE.md, outside any code span or fence. Found bare imports: {paths}. "
+            "A mid-prose mention does not count (#1417, form asserted per #1426)."
         )
 
     def test_bare_glossary_index_import_line_outside_code_span(self):
         text = CLAUDE_MD_PATH.read_text(encoding="utf-8")
-        stripped = strip_code_spans_and_fences(text)
-        assert "@docs/context/glossary-index.md" in stripped, (
-            "expected a bare `@docs/context/glossary-index.md` import in root CLAUDE.md, "
-            "outside any backtick code span or fenced code block — Claude Code's "
-            "@import parser skips code spans, so a fenced/backticked mention would "
-            "not actually load the file (#1417)"
+        paths = [path for _, path in find_bare_imports(text)]
+        assert "docs/context/glossary-index.md" in paths, (
+            "expected a BARE, line-start `@docs/context/glossary-index.md` import in root "
+            f"CLAUDE.md, outside any code span or fence. Found bare imports: {paths}. "
+            "A mid-prose mention does not count (#1417, form asserted per #1426)."
         )
+
+    def test_every_bare_import_target_exists_on_disk(self):
+        """A bare import to a missing file loads silently as nothing.
+
+        Project `CLAUDE.md` imports resolve relative to the repo root, so this
+        one can be checked directly (unlike the user-level file, whose targets
+        resolve against the installed `~/.claude/` layout).
+        """
+        text = CLAUDE_MD_PATH.read_text(encoding="utf-8")
+        for lineno, path in find_bare_imports(text):
+            resolved = (CLAUDE_MD_PATH.parent / path).resolve()
+            assert resolved.is_file(), (
+                f"CLAUDE.md:{lineno} imports `@{path}`, which does not exist at "
+                f"{resolved} — the import would load as empty"
+            )
 
 
 class TestRetiredAssemblerPath:

@@ -23,6 +23,12 @@ keeps project-specific bits now (see [`.claude/README.md`](../.claude/README.md)
 `@SOUL.md` import in `CLAUDE.md` — same mechanism as `@DOCTRINE.md` — not a
 SessionStart hook step (#1328).
 
+"Bare" is load-bearing, not stylistic: the import must be a line whose entire
+content is `@SOUL.md`. Both imports shipped mid-prose from #1328/#1315 until
+#1426, resolved as nothing, and delivered neither file to any session for
+months — while a guard asserting the substring `@SOUL.md` stayed green the
+whole time. `tests/ci/test_soul_import_guard.py` now asserts the form.
+
 ## M3: how `settings.json` / `.mcp.json` land at `~/.claude/`
 
 Both files use **deep-merge** (not plain copy), preserving user keys that
