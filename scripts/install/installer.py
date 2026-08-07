@@ -728,6 +728,12 @@ def build_plan(
                 # test_directory_without_include_skips_orphan_check — that's
                 # deliberate for e.g. the skills group), which for `rules`
                 # means a deleted file silently comes back (#1274 AC4).
+                # ceiling: only `dest == "rules"` is guarded — a future carrier
+                # group needing the same delete-detection guarantee needs its
+                # own `== "<name>"` branch here. Upgrade path: a manifest-level
+                # `require_include: true` flag, read the same way `include`/
+                # `template` already are, so the guard is declarative instead
+                # of an enumerated string list.
                 raise ValueError(
                     f"manifest group {gid!r}: directories entry {entry.get('source')!r} "
                     "dest=rules has no `include:` whitelist — the rules carrier "
