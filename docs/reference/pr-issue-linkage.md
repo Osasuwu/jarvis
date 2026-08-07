@@ -39,11 +39,24 @@ Consequences, each of which has bitten at least once:
   it.** `closingIssuesReferences` unions keyword hits from the body *and every commit on the
   branch*. Fixing the body while a commit message still contains the literal pair leaves the
   link intact — GitHub's own docs confirm editing the PR description cannot unlink something a
-  commit-message keyword established. Hit live while opening *this very PR* (#1472): its first
-  commit's message explained the #1468 incident by quoting `"instead of Closes #1274"` — the
-  same literal-substring mistake, now in a place a body edit can't reach. The only fix is to
-  reword the commit itself (`git commit --amend` if it's HEAD, otherwise rewrite and
-  force-push) so the keyword+number pair never lands in git history at all.
+  commit-message keyword established. Hit live while opening PR #1472: its first commit's
+  message explained the #1468 incident by quoting the same literal-substring mistake spelled
+  out in full, now in a place a body edit can't reach.
+- **`closingIssuesReferences` is sticky, not a pure live recomputation — rewriting history on
+  the same PR does not reliably clear it.** The naive fix for the bullet above is "reword the
+  bad commit and force-push". That is necessary but was confirmed *insufficient* on #1472: even
+  after the body and the sole remaining commit message were both fully clean (verified via
+  direct `gh api graphql` reads against the PR, bypassing any client-side cache), the field
+  still listed #1274. The issue's own timeline (`timelineItems` via GraphQL) explains why: the
+  moment a PR is first opened with a keyword+number pair present anywhere, GitHub records a
+  `CrossReferencedEvent` with `willCloseTarget: true` against that PR number — and that
+  historical record is never retracted by a later force-push, even though the new commit is
+  independently reprocessed and correctly shows up as a non-closing reference. The association
+  is anchored to the PR number's history, not to its current content. **The only working fix is
+  to abandon that PR number** — branch from the now-clean commit, open a brand-new PR, and close
+  the poisoned one as superseded without merging it. A PR number that ever carried the pattern,
+  anywhere in its lifetime (body at any point, or any commit ever pushed to it even if later
+  removed), cannot be trusted to report a clean `closingIssuesReferences` again.
 
 ## Superseded siblings
 
