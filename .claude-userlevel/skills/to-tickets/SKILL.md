@@ -133,6 +133,12 @@ MSYS_NO_PATHCONV=1 gh api --method POST repos/<owner>/<repo>/issues/<blockedN>/d
 
 Keep the prose "## Blocked by" section too — it is the human-readable rationale — but the native edge is the source of truth for tooling. Set every edge the DAG requires, including transitive blockers a slice lists explicitly.
 
+**Decision citation (mandatory, #1099)**: `/delegate`'s pre-dispatch gate requires every `sandcastle`-labeled issue's body to cite a decision UUID (or the `[no-decision]` marker) before it can be dispatched AFK. Populate the `## Decisions` section (see `<issue-template>` below) at publish time:
+
+- If this slice's scope was informed by one or more `record_decision` episodes — from the plan/PRD's own grill trail, or from `decision_uuids[]` carried over from an upstream `/grill` session — cite every relevant UUID under `## Decisions`, one per line, each with the one-line rationale from the decision (not just the bare UUID — the gate only needs the UUID present, but a bare hex string is useless to a human reader later).
+- If the slice is genuinely mechanical and no architectural decision informed it (a pure rename, a dependency bump, a doc fix), write `[no-decision]` instead of fabricating a UUID. Do not invent or reuse an unrelated UUID just to satisfy the gate — the gate now accepts the explicit marker for this case.
+- This applies to every slice, HITL or AFK — but it is load-bearing only for `sandcastle`-labeled (AFK) issues, since `/delegate`'s gate is what actually enforces it.
+
 **Milestone assignment (every published issue MUST land in a milestone)**:
 
 An issue with no milestone falls off the board — it is invisible to milestone-scoped triage and rots. Never publish milestone-less. Resolve the milestone per slice, in this order:
@@ -160,6 +166,12 @@ Avoid specific file paths or code snippets — they go stale fast. Exception: if
 - [ ] Criterion 1
 - [ ] Criterion 2
 - [ ] Criterion 3
+
+## Decisions
+
+- `<full-8-4-4-4-12-uuid>` — one-line rationale
+
+Or `[no-decision]` if this slice is purely mechanical and no `record_decision` episode informed its scope. Required for `sandcastle`-labeled issues — `/delegate`'s pre-dispatch gate refuses dispatch without one or the other (#1099).
 
 ## Blocked by
 
