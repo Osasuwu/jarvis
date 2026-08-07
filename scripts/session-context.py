@@ -359,16 +359,21 @@ ASSEMBLY_BUDGET_CHARS = 9500
 
 # Section drop-priority, HIGHEST = 0 (dropped last) → higher number = dropped
 # first. Pre-Compact Recovery outranks everything; the durable layer
-# (always-load, user profile, working state, goals) outranks the one-line
-# reminders, so a compact resume still delivers it (#1271 AC2). The former
-# CONTEXT.md push (project_context) is gone — Invariants + Glossary index now
-# ride @import instead (#1417), which never enters this priority ladder.
+# (always-load, user profile, working state, owner tasks, goals) outranks the
+# one-line reminders, so a compact resume still delivers it (#1271 AC2). The
+# former CONTEXT.md push (project_context) is gone — Invariants + Glossary
+# index now ride @import instead (#1417), which never enters this ladder.
+# Owner tasks sit above goals (#1392 AC3): an escalation is an actionable
+# now-item dispatch() already decided the owner must see, not a standing
+# reminder — dropping it under budget pressure would defeat the point of
+# writing the row at all.
 _PRIORITY_RECOVERY = 0
 _PRIORITY_ALWAYS_LOAD = 1
 _PRIORITY_USER_PROFILE = 2
 _PRIORITY_WORKING_STATE = 3
-_PRIORITY_GOALS = 4
-_PRIORITY_REMINDER = 5
+_PRIORITY_OWNER_TASKS = 4
+_PRIORITY_GOALS = 5
+_PRIORITY_REMINDER = 6
 
 _BANNER = "MEMORY CONTEXT (auto-loaded — do NOT re-fetch with MCP tools)"
 _FOOTER = "=" * 60
@@ -638,6 +643,13 @@ def main():
                     ids,
                 )
             )
+
+    # 3b. Owner-assigned task_queue rows (always) — escalations dispatch()
+    #     wrote for the principal (#1392 AC3). Not gated on `project` since
+    #     an escalation can concern any repo.
+    owner_tasks_section = _query_owner_tasks(client)
+    if owner_tasks_section:
+        sections.append((_PRIORITY_OWNER_TASKS, "owner_tasks", owner_tasks_section, []))
 
     # 4. Active goals (always)
     goal_section = _query_goals(client)
@@ -943,6 +955,46 @@ def _fmt_goal(g):
         desc = desc[:97] + "..."
     tail = f" — {desc}" if desc else ""
     return f"- [{g['priority']}] {g['title']} (`{g['slug']}` | {scope} | {pct_str}{deadline}){tail}"
+
+
+# ---------------------------------------------------------------------------
+# Owner-assigned task_queue reader (#1392 AC3)
+#
+# dispatch() (agents/orchestrator.py) writes an assignee='owner' task_queue
+# row for every escalation, regardless of notification mode — but nothing
+# ever read those rows back before this. TELEGRAM_NOW pings immediately;
+# SESSIONSTART/PARK_MONDAY relied on a reader that didn't exist, so the row
+# sat invisible in the DB. This surfaces pending owner rows on every session
+# start.
+# ---------------------------------------------------------------------------
+
+
+def _query_owner_tasks(client):
+    """Query pending owner-assigned task_queue rows, return formatted string or None."""
+    try:
+        result = (
+            client.table("task_queue")
+            .select("*")
+            .eq("assignee", "owner")
+            .eq("status", "pending")
+            .order("priority", desc=True)
+            .order("created_at")
+            .execute()
+        )
+        if not result.data:
+            return None
+        tasks = [_fmt_owner_task(t) for t in result.data]
+        return f"## Owner-Assigned Tasks ({len(result.data)})\n" + "\n".join(tasks)
+    except Exception as e:
+        print(f"[session-context] owner tasks query failed: {e}", file=sys.stderr)
+        return None
+
+
+def _fmt_owner_task(t):
+    """One-line compact owner task: goal + why it was escalated."""
+    reason = (t.get("escalated_reason") or "").strip()
+    tail = f" — {reason}" if reason else ""
+    return f"- {t['goal']}{tail}"
 
 
 # ---------------------------------------------------------------------------
