@@ -721,6 +721,18 @@ def build_plan(
             src = repo_root / entry["source"]
             dest = target_root / entry["dest"]
             include = entry.get("include")
+            if not include and entry.get("dest") == "rules":
+                # The rules carrier is where deleting a Tier-B rule file must
+                # actually remove it from ~/.claude/rules/ on next apply. A
+                # glob-based (no include:) entry skips orphan-detection (see
+                # test_directory_without_include_skips_orphan_check — that's
+                # deliberate for e.g. the skills group), which for `rules`
+                # means a deleted file silently comes back (#1274 AC4).
+                raise ValueError(
+                    f"manifest group {gid!r}: directories entry {entry.get('source')!r} "
+                    "dest=rules has no `include:` whitelist — the rules carrier "
+                    "must declare one explicitly so deletions are detectable"
+                )
             actions.append(
                 Action(
                     kind="copy_dir",
@@ -831,6 +843,12 @@ def _copy_dir(
     repo_root: Path,
     claude_home: Path,
 ) -> None:
+    # A manifest `directories:` entry may name a source that doesn't exist
+    # yet (e.g. a `rules` group declared ahead of the first rule file) —
+    # treat that as "nothing to install for this entry" rather than crashing
+    # install.ps1 -Apply for every user (#1274).
+    if not src.exists():
+        return
     dest.mkdir(parents=True, exist_ok=True)
     allowed = set(include) if include else None
     for child in src.iterdir():
