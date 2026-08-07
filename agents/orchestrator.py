@@ -475,14 +475,19 @@ def escalation_notice(severity: str, now: datetime) -> EscalationNotice:
 
     Pure function of ``(severity, now)`` so it is assertable on fixed inputs:
 
-    - ``critical`` → :attr:`EscalationNotice.TELEGRAM_NOW` regardless of weekday
-      (a real incident overrides the no-weekend-HITL rule).
-    - non-critical on a weekend (Sat/Sun) → :attr:`EscalationNotice.PARK_MONDAY`
+    - ``severity`` rank >= ``high`` → :attr:`EscalationNotice.TELEGRAM_NOW`
+      regardless of weekday (a real incident overrides the no-weekend-HITL
+      rule). Threshold is ``>= high``, not ``== critical`` (#1392 AC1/AC2,
+      decision db4495da-4746-43fd-a3c6-755fc24ea0a9): no live producer emits
+      ``critical``, so a critical-only floor made TELEGRAM_NOW unreachable in
+      practice — the ``escalate_to_human`` fail-safe route lands at
+      high/medium severities.
+    - below-threshold on a weekend (Sat/Sun) → :attr:`EscalationNotice.PARK_MONDAY`
       (weekends are autoregulation-only — no owner HITL).
-    - non-critical on a weekday → :attr:`EscalationNotice.SESSIONSTART`
+    - below-threshold on a weekday → :attr:`EscalationNotice.SESSIONSTART`
       (no interrupting ping; surfaced at the next session and on demand).
     """
-    if severity == "critical":
+    if _SEVERITY_RANK.get(severity, -1) >= _SEVERITY_RANK["high"]:
         return EscalationNotice.TELEGRAM_NOW
     # datetime.weekday(): Monday=0 … Saturday=5, Sunday=6.
     if now.weekday() >= 5:
