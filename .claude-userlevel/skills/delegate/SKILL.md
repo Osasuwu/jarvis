@@ -89,6 +89,33 @@ shortcut that hands work directly to a subagent) would silently bypass
 the gate. Re-surface this risk in any architectural change that restructures
 the dispatch chain.
 
+### Batch sizing — the inherited-context multiplier (#1324)
+
+Every subagent inherits **both `CLAUDE.md` levels plus every bare `@import`
+under them**, verbatim, before it reads a single line of the issue (measured,
+[`docs/research/context-management.md`](../../../docs/research/context-management.md)
+§A.7). So that layer is paid `N+1` times on a fan-out of `N`, and there is **no
+per-agent `CLAUDE.md` profile to opt out of** — `Explore` and `Plan` are the
+only subagents that skip it, and that is not configurable.
+
+Consequence for this skill: batch width is not free, and its floor cost is
+fixed per agent regardless of how small the issue is. When sizing a batch,
+read the current numbers rather than guessing —
+
+```bash
+python -c "import sys; sys.path.insert(0,'tests/ci'); import test_push_surface_guard as g; print(g.inherited_bytes(), 'B/agent;', g.max_safe_fanout(), 'agents within budget')"
+```
+
+The budget itself (`_meta.fanout_budget`) lives in
+[`tests/ci/fixtures/push_surface_ceilings.json`](../../../tests/ci/fixtures/push_surface_ceilings.json)
+and is **enforced by CI**, not here — `test_push_surface_guard.py::TestFanoutBudget`
+fails the PR that grows the inherited layer past the ceiling. This note exists so
+the number is visible at dispatch time; it is not a second gate, and `/delegate`
+never refuses a batch on width alone. If the figure looks too high for the batch
+you want, the fix is to shrink the inherited layer (`.claude-userlevel/DOCTRINE.md`
+→ *Baseline carrier selection* — carriers 1, 2 and 4 are inherited zero times),
+not to raise the ceiling.
+
 ## Contract: dispatch-dedup (in-flight skip, runs before claim/spawn)
 
 Issue #931. An issue that already has an **open PR** or an **in-flight branch**
@@ -313,12 +340,15 @@ TDD-mode active for this issue.
 
 Operating discipline:
 - Follow .claude-userlevel/skills/_shared/tdd/tdd-loop.md: pick one AC, write failing
-  test, confirm red, write minimal impl, confirm green, refactor if useful, next AC.
+  test, confirm red, write minimal impl, confirm green, next AC. The inner loop is
+  strictly red-green — do not refactor between AC items.
 - Every item in the issue's acceptance criteria MUST have at least one corresponding
   test. Marking an AC item as "out of scope" is a delivery defect, not a scope
   decision — escalate to the orchestrator instead of dropping the item.
-- Refactor permission extends to code freshly covered by a passing test in this
-  session. Code without test coverage is NOT in your refactor scope.
+- Once every AC item's test is green, run one refactor pass over the whole green
+  suite (tdd-loop.md §4) before finishing. Refactor permission extends to code
+  freshly covered by a passing test in this session. Code without test coverage is
+  NOT in your refactor scope.
 - **Deliberate divergences must be surfaced.** If you depart from the AC's literal
   signature, parameter names, values, default constants, or interpretation for any
   reason (cleaner interface, stricter rule, fewer args, renamed field) — add a

@@ -37,7 +37,7 @@ Only after those three are fixed does file size become the binding constraint. A
 |---|---|---|
 | System prompt + output style | always | not part of message history |
 | Project-root `CLAUDE.md`, user-level `CLAUDE.md` | always, eager | |
-| `@path` imports inside CLAUDE.md | **always, eager** | VERIFIED, docs verbatim: splitting into imports "doesn't reduce context, since imported files load at launch". Max 4 hops. |
+| `@path` imports inside CLAUDE.md | **always, eager** — *if the import line is bare* | VERIFIED, docs verbatim: splitting into imports "doesn't reduce context, since imported files load at launch". Max 4 hops. **Caveat, MEASURED 2026-08-07 (A.7):** bare line-start imports expand; the two mid-prose imports we ship (`@SOUL.md,` / `@DOCTRINE.md,` in user-level `CLAUDE.md`) do **not**. Write imports bare. |
 | `.claude/rules/*.md` with `paths:` glob frontmatter | **lazy** — only when a matching file is touched | the only genuine lazy-loading lever for rules |
 | Nested `CLAUDE.md` below cwd | lazy — on descent | |
 | Skill descriptions (roster) | always | shared budget ≈1% of window; per-entry cap 1,536 chars; least-invoked dropped on overflow |
@@ -124,6 +124,32 @@ CLAUDE_CODE_AUTO_COMPACT_WINDOW = 200000
 - **MCP tools.** With `ENABLE_TOOL_SEARCH` on (default), the whole deferred surface costs ~120 tokens. Our large MCP footprint is nearly free.
 - **Skill count.** 27 local skills = 7,884 chars of roster (MEASURED), all descriptions under the 1,536-char cap (max: `reason`, 917). Canon explicitly supports "100+ available Skills" and states "No context penalty for large files" for skill bodies. But see D.3 — the roster is at ~98.6% of its ~1% budget from jarvis alone, before plugin entries.
 - **Shell-output filtering proxies (e.g. rtk).** Evaluated and rejected for this layer: it optimizes tool output, which auto-compact stage 1 already clears and never re-injects — a consumable, not recurring rent. Also a third-party binary intercepting every shell call on a credentialed machine.
+
+### A.7 What subagents inherit — MEASURED (resolves Open Q3)
+
+Method (#1270): spawn an Agent-tool subagent under a hard **no-tool** rule and ask it to quote a distinctive marker from each surface. The no-tool rule is what makes the measurement valid — without it an agent can simply `Read` the file and report PRESENT for a surface it never received. Both probe runs reported `tool_uses: 0`.
+
+| Surface | Carrier | Inherited by subagent? |
+|---|---|---|
+| User-level `~/.claude/CLAUDE.md` | file | **YES** |
+| Project `CLAUDE.md` | file | **YES** |
+| `docs/context/invariants.md` | bare `@import` from project `CLAUDE.md` | **YES** |
+| `docs/context/glossary-index.md` | bare `@import` from project `CLAUDE.md` | **YES** |
+| `~/.claude/SOUL.md` | mid-prose `@SOUL.md,` from user-level `CLAUDE.md` | **NO** — and see below |
+| `~/.claude/DOCTRINE.md` | mid-prose `@DOCTRINE.md,` from user-level `CLAUDE.md` | **NO** — and see below |
+| SessionStart hook `additionalContext` (memory block) | hook stdout | **NO** |
+
+Three findings, in ascending order of consequence:
+
+1. **Always-loaded file surfaces are paid N times per fan-out.** Both `CLAUDE.md` levels and every *bare* `@import` under them are re-paid per subagent; hook-injected context is a one-time session cost regardless of fan-out. Budgeting implication tracked in **#1324**.
+
+2. **`CLAUDE.md` is snapshotted at parent-session start, not re-read per spawn.** Established accidentally: a probe block appended to project `CLAUDE.md` mid-session came back ABSENT *including its own heading*, while the pre-existing content came back PRESENT. Consequence for measurement work — **you cannot test an import-form change from inside the session that made it**; it needs a fresh session.
+
+3. **The mid-prose import form does not resolve at all.** `SOUL.md` and `DOCTRINE.md` are absent from the subagent *and* from the parent session's own `claudeMd` block, which lists a `Contents of <path>` header for every surface that did expand. Confounder excluded: both marker headings exist verbatim in the installed mirror copies, so ABSENT is non-delivery and not a marker mismatch. This means #1328's "deliver SOUL.md by `@import`" has never actually delivered. Whether the cause is the trailing comma (`@SOUL.md,` → path parsed with the comma attached) or the mid-prose position is not separable without a fresh session per finding 2 — and does not need to be, because the remedy is identical under both: **write imports bare, on their own line**, the form measured working here. Tracked separately so the byte accounting stays visible to the eviction pass.
+
+**Follow-up (#1324 AC3) — can subagents get a stripped-down `CLAUDE.md` profile? NO, documented negative.** The harness exposes no control for it. Per [`code.claude.com/docs/en/sub-agents.md`](https://code.claude.com/docs/en/sub-agents.md): "Explore and Plan are the only subagents that omit CLAUDE.md and git status. There is no frontmatter field or per-agent setting to change which agents skip them." So the N+1 multiplier in finding 1 cannot be opted out of per agent — the only available levers are (a) shrink the inherited layer, and (b) budget it. #1324 ships (b) as `_meta.fanout_budget` in `tests/ci/fixtures/push_surface_ceilings.json`, enforced by `tests/ci/test_push_surface_guard.py::TestFanoutBudget`; #1418 is (a). The budget's *inherited set* is derived by walking bare imports from both `CLAUDE.md` roots — deliberately reusing finding 3's lesson, so a mid-prose mention is never counted as inherited weight and a newly added bare import is charged automatically.
+
+**Standing rule this produces:** an `@import` that is believed-loaded but silently absent is worse than no import, because every file that cites it reads as satisfied. The delivery of a push surface is only established by a marker check in a fresh session — never by the presence of the import line.
 
 ---
 
@@ -517,7 +543,7 @@ A cap with no eviction policy just becomes a blocker people work around. Propose
 
 1. ~~**Does the compaction threshold on this machine actually sit at 70%?**~~ **RESOLVED** (§A.3). Both env vars are set; the threshold is `min(0.75 × 200,000, 187,000)` = **150,000 tokens**. The open part is now a *choice*, not a fact: move it to ~55% (110k) — that is step 1 of §C.0.
 2. ~~**Do custom compaction instructions steer the summarizer at all?**~~ **DEFERRED wholesale** (decision `93fee0f9`) — block and measurement together go to a low-priority follow-up issue, out of the milestone. Part D holds the ready draft.
-3. **Do subagents inherit user-level CLAUDE.md?** One field report says directives "even those in a global CLAUDE.md" do not propagate to subagents. Combined with the cold 5-minute-TTL cache subagents get, this matters for our `/delegate`-heavy process. Needs a local check — candidate for its own small issue at ticket time.
+3. ~~**Do subagents inherit user-level CLAUDE.md?**~~ **RESOLVED — yes** (§A.7, #1270). The field report claiming global `CLAUDE.md` does not propagate is **wrong for this harness**: measured 2026-08-07, both `CLAUDE.md` levels and every bare `@import` beneath them are inherited; only hook-injected context is not. Two by-products of the probe outrank the original question — `CLAUDE.md` is snapshotted at parent-session start rather than re-read per spawn, and the mid-prose import form we use for `SOUL.md`/`DOCTRINE.md` never resolved at all. Cost implication → #1324; the non-delivery defect → its own issue.
 4. ~~**What is the real roster budget once plugin and built-in skills are counted?**~~ **RESOLVED — accepted as a platform limitation.** The plugin share is not observable from our side; documented as such in C.4, with the jarvis-side number (98.6% of ~1%) as the tracked observation. Mitigation is the roster diet + `disable-model-invocation` unification (`a54f09df`).
 5. ~~**Should the Memory Catalog exist at all?**~~ **RESOLVED — delete** (§B.9, decision `3d61f0b9`). Measured: 49 of its 50 rows are types the recall hook already fetches on demand; the 50th belongs in working state. It also sorted by recency, never by importance.
 6. ~~**Does the `## Glossary` slice still earn 2,048 bytes?**~~ **RESOLVED via the push/pull split** (C.1 row 3 + decision `37f0639e`): the pushed part becomes the compressed Invariants + a Glossary **category index** (name + one line per category, `###` anchors); Glossary bodies become pull-only, reachable via the on-demand ladder (`.claude/rules/*.md` `paths:` globs for file-scoped entries, global CLAUDE.md pull instruction + informative index for the rest). Pull-rate telemetry validates the pull level; if pull-rate is ~0 after a month, the content escalates to a deterministic push (rules-glob / hook).
