@@ -1,6 +1,8 @@
 ---
 name: reflect
 description: "Cross-session behavioral audit: extracts communication/work patterns from Claude Code sessions on all devices (local + remote via SSH, manual transfer as fallback) and merges them into one report. Triggers: weekly audit, 'что я делаю не так', 'analyze comms', 'паттерны общения', 'merge comms'."
+model: opus
+effort: high
 ---
 
 # Reflect

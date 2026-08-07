@@ -1,6 +1,8 @@
 ---
 name: file-issue
 description: File ONE well-formed follow-up issue (finding, tech-debt, bug, drive-by task) with required schema metadata, skipping the full /to-tickets pipeline. Use instead of a raw `gh issue create`/`issue_write` mid-session. Decomposing a plan/PRD into multiple slices → /to-tickets.
+model: sonnet
+effort: low
 ---
 
 # File Issue
