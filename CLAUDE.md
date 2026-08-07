@@ -165,7 +165,7 @@ The `Fix > track` rule does **not** override the rest of the development process
 
 ### Path-filtered CI guards require a meta-test (#326)
 
-Any workflow under `.github/workflows/` with a `paths:` filter that blocks PRs must ship with a co-located fixture test in `tests/ci/test_<name>_guard.py` (`X-guard.yml` ⇒ `test_X_guard.py`) covering **config** (the filter names the canonical path) and **logic** (the decision rule blocks/allows what it claims). A filter that stops matching does not error — it silently never runs, and "did not run" is indistinguishable from "passed". Rationale and the #289/#310/#311 precedent: [`docs/reference/ci-guard-meta-tests.md`](docs/reference/ci-guard-meta-tests.md).
+Enforced mechanically by [`tests/ci/test_guard_test_convention.py`](tests/ci/test_guard_test_convention.py) — it fails the PR, so you don't need this rule in your head. It cannot check the **logic** half (the decision rule blocks/allows what it claims); that's on you. Naming, scope and the #289/#310/#311 precedent: [`docs/reference/ci-guard-meta-tests.md`](docs/reference/ci-guard-meta-tests.md).
 
 ### Milestone vs pillar hygiene
 
