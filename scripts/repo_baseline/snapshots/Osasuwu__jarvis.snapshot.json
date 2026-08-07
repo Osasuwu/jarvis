@@ -25,6 +25,7 @@
     "pip",
     "github-actions"
   ],
+  "has_tests_ci": true,
   "labels": [
     {
       "color": "bfdadc",
@@ -125,6 +126,11 @@
       "color": "ededed",
       "description": "",
       "name": "installer"
+    },
+    {
+      "color": "ededed",
+      "description": "",
+      "name": "milestone:reactive-core"
     },
     {
       "color": "FBCA04",
@@ -247,6 +253,83 @@
       "name": "unsafe-for-afk"
     }
   ],
+  "observed_runners": {
+    ".github/workflows/auto-merge-enable.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/ci-meta.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/code-review-retry.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/code-review.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/event-dispatch.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/gitleaks.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/issue-checks.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/merge-train.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/owner-queue-guard.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/pr-body-check.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/pr-merged.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/project-sync.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/pytest.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/review-debt-collector.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/schema-drift-check.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ]
+  },
   "repo": "Osasuwu/jarvis",
   "settings": {
     "allow_auto_merge": true,
