@@ -578,6 +578,51 @@ jobs:
             exit 1
           fi
 
+          # STRUCTURED VERDICT FIRST (#1456). The plugin also emits a
+          # <!-- code-review-findings … --> HTML comment whose JSON gives every
+          # finding an explicit "severity". That block is authoritative: it is
+          # machine-emitted, so severity does not have to be inferred from prose
+          # shape. It runs BEFORE the prose ladder and before `export LC_ALL=C`,
+          # so jq still decodes UTF-8.
+          #
+          # Why this exists: the prose ladder only recognises a severity that
+          # appears as a line-start markdown heading. When the plugin uses the
+          # numbered-list shape ("Found N issues:" + prose bullets) the JSON is
+          # the ONLY place severity lives, and the Found-N branch treats the
+          # whole comment as advisory. PR #1452 auto-merged that way with two
+          # MEDIUM findings — a required check silently passing a PR it was
+          # meant to block. #988 accepted that residual risk on the stated basis
+          # that bare Found-N had carried only advisory MEDIUM/LOW; #1385 then
+          # promoted MEDIUM into the blocking set and the plugin gained this
+          # block, so neither half of the acceptance holds any more.
+          #
+          # Three shapes, deliberately distinct:
+          # - block present, any blocking severity  -> exit 1 here
+          # - block present but payload not valid JSON -> fail closed, same
+          #   floor as the unrecognized-format exit at the end of this step
+          # - block absent (older comments) -> fall through, prose ladder
+          #   unchanged. That is what keeps this additive.
+          # A block carrying only MINOR/LOW/INFO/NITPICK also falls through, so
+          # the two-gate model still decides those.
+          findings_block=$(sed -n '/<!-- *code-review-findings/,/-->/p' <<<"$body" | sed '1d;$d')
+          if grep -q '<!-- *code-review-findings' <<<"$body"; then
+            if ! jq -e . >/dev/null 2>&1 <<<"$findings_block"; then
+              echo "::error::code-review-findings block present but its payload is not valid JSON. Failing closed (#1456)."
+              exit 1
+            fi
+            blocking=$(jq -r '
+              [ .findings[]? | (.severity // "" | ascii_upcase)
+                | select(. == "CRITICAL" or . == "MAJOR" or . == "BLOCKING" or . == "MEDIUM") ]
+              | length' <<<"$findings_block")
+            if [ "$blocking" -gt 0 ]; then
+              sevs=$(jq -r '[ .findings[]? | (.severity // "" | ascii_upcase)
+                              | select(. == "CRITICAL" or . == "MAJOR" or . == "BLOCKING" or . == "MEDIUM") ]
+                            | unique | join(", ")' <<<"$findings_block")
+              echo "::error::Code review reported $blocking blocking finding(s) ($sevs) in its structured findings block; blocking auto-merge until addressed."
+              exit 1
+            fi
+          fi
+
           # Severity greps below classify each byte of heading decoration via the
           # POSIX class [^[:alnum:]]. Under the runner's default LANG=C.UTF-8 a
           # multibyte decoration (emoji "### 🔴 BLOCKING", #954) is read as ONE

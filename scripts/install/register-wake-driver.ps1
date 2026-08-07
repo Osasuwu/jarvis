@@ -9,6 +9,7 @@
     and restarts on crash -- a thin supervised wrapper, not a resident
     poller (the earlier NSSM jarvis-scheduler service was deliberately
     retired in #743; see scripts/install/uninstall-scheduler-service.ps1).
+    The polling Orchestrator-Watcher predecessor was decommissioned in #1391.
 
     Sets JARVIS_PRINCIPAL=autonomous on the launched process per
     docs/security/agent-boundaries.md -- any headless launcher must set
@@ -19,13 +20,11 @@
     "name" == "VividFormsPC4Workshop") unless -Force is passed --
     wake_driver's single-driver invariant (agents/pid_sidecar.py) assumes
     exactly one supervised instance, and Workshop is the production
-    target for always-on agents (matching Sandcastle-Jarvis /
-    Orchestrator-Watcher).
+    target for always-on agents (matching Sandcastle-Jarvis).
 
     No Workshop-specific paths/IPs/usernames are hardcoded here --
     RepoRoot and PythonExe are resolved from the local machine at
-    registration time, same as register-watcher.ps1 /
-    Register-SandcastleTask.ps1.
+    registration time, same as Register-SandcastleTask.ps1.
 
 .PARAMETER WatchdogSeconds
     Passed through to --watchdog-seconds (re-claim stale rows, wake-wait
@@ -114,7 +113,7 @@ function Format-WakeDriverActionArgs {
 if ($NoExecute) { return }
 
 # ---------------------------------------------------------------------------
-# Device guard -- Workshop only, matching Orchestrator-Watcher / Sandcastle.
+# Device guard -- Workshop only, matching Sandcastle.
 # ---------------------------------------------------------------------------
 
 $expectedDevice = 'VividFormsPC4Workshop'

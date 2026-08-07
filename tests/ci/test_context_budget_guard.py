@@ -176,6 +176,88 @@ class TestDropPriority:
         assert "id-drop" not in emitted_ids
 
 
+class TestMainTriggerGating:
+    """#1460: main() drops the duplicated block on the `compact` trigger.
+
+    Recovery + always-load + working-state are the durable layer and stay
+    unconditional (already covered elsewhere). User profile, active goals,
+    and every one-line reminder duplicate what the just-compacted transcript
+    summary + Pre-Compact Recovery pointer already carry, so on `compact`
+    they must not be re-emitted. `startup` keeps the full block.
+    """
+
+    def _run_main(self, monkeypatch, capsys, *, trigger):
+        monkeypatch.setattr(sys, "argv", ["session-context.py"])
+        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
+        monkeypatch.setattr(sc, "create_client", lambda *a, **k: object())
+        monkeypatch.setattr(
+            sc,
+            "_read_hook_input",
+            lambda: {"source": trigger, "session_id": "sess-1", "cwd": "", "transcript_path": ""},
+        )
+        monkeypatch.setattr(sc, "_detect_project", lambda: ("jarvis", None))
+        # Recovery's own snapshot lookups are out of scope here (covered by
+        # test_session_context_recovery.py) — no snapshot found, section absent.
+        monkeypatch.setattr(sc, "_load_snapshot_from_supabase", lambda *a, **k: None)
+        monkeypatch.setattr(sc, "_load_snapshot_from_local", lambda *a, **k: None)
+
+        monkeypatch.setattr(
+            sc,
+            "_query_memories",
+            lambda client, *, mem_type, limit, extra_filter=None, compact=False: (
+                (f"- stub {mem_type}\n", ["id-1"])
+                if mem_type == "user"
+                else ("- working\n", ["id-2"])
+            ),
+        )
+        monkeypatch.setattr(
+            sc, "_query_always_load", lambda client, *, compact=False: ("- always\n", [])
+        )
+        monkeypatch.setattr(sc, "_query_goals", lambda client: "## Active Goals (1)\n- goal\n")
+        monkeypatch.setattr(sc, "_query_pending_review_count", lambda client, project: 3)
+        monkeypatch.setattr(
+            sc, "_check_milestone_sweep", lambda repo=None: "## Architecture Sweep\n- x"
+        )
+        monkeypatch.setattr(sc, "_check_mirror_drift", lambda: "## Mirror Drift\n- x")
+        monkeypatch.setattr(sc, "_check_env_drift", lambda: "## Environment Drift\n- x")
+        monkeypatch.setattr(sc, "_check_mcp_failures", lambda: "## MCP Failures\n- x")
+
+        sc.main()
+        return capsys.readouterr().out
+
+    def test_startup_keeps_full_block(self, monkeypatch, capsys):
+        out = self._run_main(monkeypatch, capsys, trigger="startup")
+        assert "## User Profile" in out
+        assert "## Active Goals" in out
+        assert "Pending memory candidates" in out
+        assert "## Architecture Sweep" in out
+        assert "## Mirror Drift" in out
+        assert "## Environment Drift" in out
+        assert "## MCP Failures" in out
+        # Durable layer present too.
+        assert "Always-Load Rules" in out
+        assert "Working State (jarvis)" in out
+
+    def test_compact_drops_profile_goals_and_reminders(self, monkeypatch, capsys):
+        out = self._run_main(monkeypatch, capsys, trigger="compact")
+        assert "## User Profile" not in out
+        assert "## Active Goals" not in out
+        assert "Pending memory candidates" not in out
+        assert "## Architecture Sweep" not in out
+        assert "## Mirror Drift" not in out
+        assert "## Environment Drift" not in out
+        assert "## MCP Failures" not in out
+        # Durable layer survives the slim-down.
+        assert "Always-Load Rules" in out
+        assert "Working State (jarvis)" in out
+
+    def test_compact_output_under_6kb(self, monkeypatch, capsys):
+        """AC2: measured compact-trigger output <= 6 KB with populated working state."""
+        out = self._run_main(monkeypatch, capsys, trigger="compact")
+        assert len(out.encode("utf-8")) <= 6 * 1024
+
+
 class TestSelfLog:
     """AC4: every run appends its emitted size to the self-log."""
 

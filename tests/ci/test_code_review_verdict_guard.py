@@ -30,6 +30,7 @@ Two halves, per the #326 guard-test convention:
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -104,6 +105,47 @@ NONBLOCK_SEV_RE = re.compile(
 # section. Covers the clean-LGTM-with-no-findings shape that carries no
 # severity heading at all (which the non-block grep above would miss).
 LGTM_RE = re.compile(r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b", re.I)
+
+# Structured findings block (#1456). The plugin emits an HTML comment whose
+# JSON gives every finding an explicit "severity". Consulted BEFORE the prose
+# ladder, because it is machine-emitted: severity does not have to be inferred
+# from heading shape. The prose ladder only sees line-start markdown headings,
+# so when the plugin uses the numbered-list shape ("Found N issues:" + prose
+# bullets) the JSON is the ONLY place severity lives — and the FOUND_RE branch
+# then passes the whole comment as advisory. PR #1452 auto-merged that way with
+# two MEDIUM findings.
+FINDINGS_MARKER_RE = re.compile(r"<!-- *code-review-findings")
+FINDINGS_BLOCK_RE = re.compile(
+    r"<!-- *code-review-findings[^\n]*\n(.*?)\n-->", re.S
+)
+BLOCKING_SEVERITIES = frozenset({"CRITICAL", "MAJOR", "BLOCKING", "MEDIUM"})
+
+
+def structured_verdict(body: str) -> str | None:
+    """Mirror of the verdict step's structured-findings check (#1456).
+
+    Returns ``'fail'`` when the block carries a blocking severity or is present
+    but unparseable, and ``None`` when the block is absent or carries only
+    non-blocking severities — ``None`` meaning "fall through to the prose
+    ladder", which is what keeps this additive over every older comment shape.
+    """
+    if not FINDINGS_MARKER_RE.search(body):
+        return None
+    m = FINDINGS_BLOCK_RE.search(body)
+    if not m:
+        return "fail"  # marker present, block malformed → fail closed
+    try:
+        payload = json.loads(m.group(1))
+    except (ValueError, TypeError):
+        return "fail"
+    if not isinstance(payload, dict):
+        return "fail"
+    severities = {
+        str(f.get("severity", "")).upper()
+        for f in payload.get("findings", [])
+        if isinstance(f, dict)
+    }
+    return "fail" if severities & BLOCKING_SEVERITIES else None
 
 
 def lineage_failed_runs(
@@ -243,6 +285,10 @@ def verdict(
             return "fail"
         return "pass"
     body = selected[-1]  # latest review comment wins
+    # Structured findings block first (#1456) — authoritative severity, and the
+    # only signal present at all when the plugin uses the numbered-list shape.
+    if structured_verdict(body) == "fail":
+        return "fail"
     # BLOCK check runs first: a pass signal must never shadow a CRITICAL/MAJOR/
     # BLOCKING heading.
     if BLOCK_RE.search(body):
@@ -544,6 +590,74 @@ SIMPLIFICATION_COMMENT = """\
 2. Collapse branch Y
 """
 
+# --- #1456: the structured findings block ---------------------------------
+# The verbatim shape that auto-merged PR #1452: numbered-list prose, no severity
+# heading anywhere, and both MEDIUMs living ONLY inside the machine-readable
+# block. Under the prose-only ladder this hit the "Found N issues:" branch and
+# exited 0 — a required check passing a PR it was meant to block. Kept verbatim
+# (permalinks trimmed) as the regression fixture: it must now FAIL.
+PR_1452_COMMENT = """\
+### Code review
+
+Found 2 issues:
+
+1. **`.claude-userlevel/settings.json:9`** — the blanket `Read/Edit(**/.env.*)`
+   deny reverts the `.env.example` carve-out and blocks the `/wizard` skill's
+   documented Phase 1 read.
+2. **`tests/ci/test_context_extraction_guard.py:3`** — the PR body names files
+   under "Files Changed" that carry no diff hunk.
+
+<!-- code-review-findings
+{
+  "schema_version": 1,
+  "findings": [
+    {"severity": "MEDIUM", "rule": "git-blame-context",
+     "file": ".claude-userlevel/settings.json", "line": 9,
+     "description": "Blanket dotenv deny reverts the .env.example carve-out"},
+    {"severity": "MEDIUM", "rule": "diff-coherence",
+     "file": "tests/ci/test_context_extraction_guard.py", "line": 3,
+     "description": "PR body names files with no diff hunk"}
+  ]
+}
+-->
+"""
+
+# Same prose, but the block carries only advisory severities. Must fall through
+# to the prose ladder — where "Found N issues:" passes it, as before.
+FINDINGS_BLOCK_MINOR_ONLY = """\
+### Code review
+
+Found 2 issues:
+
+1. Naming drift
+2. Stale comment
+
+<!-- code-review-findings
+{
+  "schema_version": 1,
+  "findings": [
+    {"severity": "MINOR", "rule": "naming", "file": "a.py", "line": 1},
+    {"severity": "LOW", "rule": "comment", "file": "b.py", "line": 2}
+  ]
+}
+-->
+"""
+
+# Marker present, payload truncated mid-object. Fails closed — same floor as the
+# unrecognized-format exit at the end of the verdict step.
+FINDINGS_BLOCK_MALFORMED = """\
+### Code review
+
+No issues found.
+
+<!-- code-review-findings
+{
+  "schema_version": 1,
+  "findings": [
+    {"severity": "MEDIUM", "rule": "truncated
+-->
+"""
+
 RETRY_EXHAUSTED_COMMENT = (
     "WARNING: Claude code-review auto-retry exhausted after 4 attempts.\n"
     "Re-run manually: gh workflow run code-review.yml -f pr_number=957\n"
@@ -698,6 +812,67 @@ class TestVerdictLogic:
         assert verdict([CANONICAL_CLEAN_SPEC, BLOCKING_COMMENT]) == "fail"
         # Non-review comments in between don't affect selection.
         assert verdict([BLOCKING_COMMENT, "thanks, reworking", CANONICAL_CLEAN_SPEC]) == "pass"
+
+    # --- #1456: structured findings block is authoritative -------------------
+    def test_pr_1452_structured_medium_findings_fail(self):
+        # The regression fixture. Prose says only "Found 2 issues:", so the old
+        # ladder passed it and the PR auto-merged; the JSON says MEDIUM twice.
+        assert verdict([PR_1452_COMMENT]) == "fail"
+
+    def test_structured_block_blocks_every_blocking_severity(self):
+        for sev in ("CRITICAL", "MAJOR", "BLOCKING", "MEDIUM", "medium", "Major"):
+            body = (
+                "### Code review\n\nFound 1 issue:\n\n1. x\n\n"
+                "<!-- code-review-findings\n"
+                '{"findings": [{"severity": "%s"}]}\n'
+                "-->\n" % sev
+            )
+            assert verdict([body]) == "fail", sev
+
+    def test_structured_block_with_only_advisories_falls_through(self):
+        # Non-blocking severities do not block; the prose ladder still decides.
+        assert verdict([FINDINGS_BLOCK_MINOR_ONLY]) == "pass"
+
+    def test_structured_block_advisory_does_not_shadow_prose_block(self):
+        # A MINOR-only JSON block must not green-light a real "### MAJOR".
+        body = (
+            "### Code review\n\n### MAJOR\n\n1. real bug\n\n"
+            "<!-- code-review-findings\n"
+            '{"findings": [{"severity": "MINOR"}]}\n'
+            "-->\n"
+        )
+        assert verdict([body]) == "fail"
+
+    def test_structured_block_malformed_fails_closed(self):
+        # Marker present but unparseable — never infer "clean" from a broken
+        # machine block, even when the prose says "No issues found."
+        assert verdict([FINDINGS_BLOCK_MALFORMED]) == "fail"
+
+    def test_absent_block_leaves_every_prose_branch_unchanged(self):
+        # The additive guarantee: no marker ⇒ identical to pre-#1456 behavior.
+        for body, want in (
+            (CANONICAL_FINDINGS, "pass"),
+            (CANONICAL_CLEAN_SPEC, "pass"),
+            (CANONICAL_MINOR_ONLY, "pass"),
+            (PR_1049_COMMENT, "pass"),
+            (BARE_LGTM_COMMENT, "pass"),
+            (PR_962_COMMENT, "pass"),
+            (PR_954_COMMENT, "fail"),
+            (PR_956_COMMENT, "fail"),
+            (PR_957_COMMENT, "fail"),
+            ("## Code Review\n\nShip it.\n", "fail"),
+        ):
+            assert "code-review-findings" not in body
+            assert verdict([body]) == want, body[:40]
+
+    def test_empty_findings_array_does_not_block(self):
+        body = (
+            "### Code review\n\nNo issues found.\n\n"
+            "<!-- code-review-findings\n"
+            '{"schema_version": 1, "findings": []}\n'
+            "-->\n"
+        )
+        assert verdict([body]) == "pass"
 
     # --- fail-closed ---
     def test_unrecognized_review_comment_fails_closed(self):
@@ -1220,6 +1395,57 @@ class TestVerdictStepWiring:
         assert "(CRITICAL|MAJOR|MINOR|BLOCKING)" not in run, (
             "MINOR must be DROPPED from the block alternation (two-gate, #988) "
             "— minors never block merge."
+        )
+
+    # --- #1456: the structured-findings check must exist in the bash ---------
+    # Without these the Python mirror above can stay green while the workflow
+    # loses the check entirely — the mirror is only evidence if it mirrors
+    # something. Same reason the prose-ladder wiring tests exist.
+    def test_structured_findings_block_is_extracted(self, verdict_step):
+        run = verdict_step["run"]
+        assert "code-review-findings" in run, (
+            "The verdict step must read the plugin's machine-emitted "
+            "<!-- code-review-findings --> block. Prose shape alone missed two "
+            "MEDIUM findings on PR #1452 and auto-merged it (#1456)."
+        )
+        assert re.search(r"sed -n '/<!-- \*code-review-findings/,/-->/p'", run), (
+            "Extraction must slice from the marker to the closing --> so the "
+            "payload can be handed to jq."
+        )
+
+    def test_structured_check_blocks_on_blocking_severities(self, verdict_step):
+        run = verdict_step["run"]
+        for sev in ("CRITICAL", "MAJOR", "BLOCKING", "MEDIUM"):
+            assert f'== "{sev}"' in run, (
+                f"The structured severity filter must treat {sev} as blocking "
+                "— it is the same blocking set the prose ladder uses (#1385)."
+            )
+        assert "ascii_upcase" in run, (
+            "Severity comparison must be case-normalized; the plugin has "
+            "emitted title-case severities before (#1050)."
+        )
+        assert '== "MINOR"' not in run and '== "LOW"' not in run, (
+            "Advisory severities must NOT block — they fall through to the "
+            "prose ladder, preserving the two-gate model (#988)."
+        )
+
+    def test_structured_check_fails_closed_on_bad_json(self, verdict_step):
+        run = verdict_step["run"]
+        assert "not valid JSON" in run, (
+            "A present-but-unparseable findings block must fail closed, same "
+            "floor as the unrecognized-format exit (#957)."
+        )
+
+    def test_structured_check_precedes_the_locale_export(self, verdict_step):
+        # `export LC_ALL=C` makes grep byte-oriented for the emoji-decorated
+        # heading case (#954), but the workflow sets it AFTER the jq body
+        # extraction precisely so JSON decoding stays UTF-8 aware. The
+        # structured check is jq work, so it belongs on the UTF-8 side of that
+        # line — and ahead of the prose ladder it overrides.
+        run = verdict_step["run"]
+        assert run.index("code-review-findings") < run.index("export LC_ALL=C"), (
+            "The structured-findings jq must run before `export LC_ALL=C` so "
+            "the JSON payload is decoded UTF-8 aware."
         )
 
     def test_severity_greps_run_under_c_locale(self, verdict_step):
