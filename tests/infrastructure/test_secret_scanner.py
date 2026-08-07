@@ -18,6 +18,8 @@ scan_bash_dangers = secret_scanner.scan_bash_dangers
 extract_github_text = secret_scanner.extract_github_text
 extract_bash_command = secret_scanner.extract_bash_command
 extract_memory_text = secret_scanner.extract_memory_text
+extract_file_write_text = secret_scanner.extract_file_write_text
+is_self_test_fixture = secret_scanner.is_self_test_fixture
 strip_heredocs = secret_scanner.strip_heredocs
 
 
@@ -256,6 +258,67 @@ def test_memory_allows_project_state():
         "name": "working_state_jarvis",
     })
     assert not scan_secrets(text)
+
+
+# ── File writes (Edit / Write / NotebookEdit) ────────────────────────────
+#
+# Secret-shaped fixtures are assembled at runtime, never written literally —
+# the scanner's own patterns would otherwise flag this file to every other
+# tool that reads it (gitleaks, review bots) even though it is exempt here.
+
+GH_TOKEN = "ghp_" + "A" * 36
+
+
+def test_edit_new_string_is_extracted():
+    text = extract_file_write_text({"file_path": "cfg.py", "old_string": "x", "new_string": f'TOKEN = "{GH_TOKEN}"'})
+    assert scan_secrets(text)
+
+def test_write_content_is_extracted():
+    text = extract_file_write_text({"file_path": "cfg.py", "content": f'TOKEN = "{GH_TOKEN}"'})
+    assert scan_secrets(text)
+
+def test_notebook_new_source_is_extracted():
+    text = extract_file_write_text({"notebook_path": "n.ipynb", "new_source": f'TOKEN = "{GH_TOKEN}"'})
+    assert scan_secrets(text)
+
+def test_batched_edits_are_extracted():
+    text = extract_file_write_text({
+        "file_path": "cfg.py",
+        "edits": [{"old_string": "a", "new_string": "b"}, {"old_string": "c", "new_string": GH_TOKEN}],
+    })
+    assert scan_secrets(text)
+
+def test_old_string_is_not_scanned():
+    """Removing a secret already on disk must not be blocked."""
+    text = extract_file_write_text({"file_path": "cfg.py", "old_string": GH_TOKEN, "new_string": "TOKEN = os.environ['TOKEN']"})
+    assert not scan_secrets(text)
+
+def test_github_extractor_would_miss_an_edit():
+    """Why the Edit/Write/NotebookEdit dispatch branch has to exist.
+
+    Registering the hook on Edit without this branch routes Edit into the
+    GitHub extractor, which has no `new_string` key — a marker that is
+    present but inert (the #1426 failure shape).
+    """
+    edit_input = {"file_path": "cfg.py", "old_string": "x", "new_string": f'TOKEN = "{GH_TOKEN}"'}
+    assert not scan_secrets(extract_github_text(edit_input))
+    assert scan_secrets(extract_file_write_text(edit_input))
+
+def test_ordinary_code_edit_is_allowed():
+    text = extract_file_write_text({"file_path": "app.py", "new_string": "def render(request):\n    return Response(status=200)"})
+    assert not scan_secrets(text)
+
+
+# ── Self-test fixture exemption ──────────────────────────────────────────
+
+def test_own_test_file_is_exempt():
+    assert is_self_test_fixture({"file_path": "tests/infrastructure/test_secret_scanner.py"})
+    assert is_self_test_fixture({"file_path": r"C:\repo\tests\infrastructure\test_secret_scrubber.py"})
+
+def test_other_test_files_are_not_exempt():
+    assert not is_self_test_fixture({"file_path": "tests/infrastructure/test_session_context.py"})
+    assert not is_self_test_fixture({"file_path": "tests/conftest.py"})
+    assert not is_self_test_fixture({"file_path": "src/app.py"})
 
 
 # ── Run ──────────────────────────────────────────────────────────────────
