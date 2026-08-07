@@ -410,19 +410,32 @@ def _compute_recall_context(tool_input: dict, session_id: str, cwd: str | None) 
         return None
 
 
-def _emit_allow(tool_input: dict, session_id: str | None, context: str | None) -> None:
+def _emit_allow(
+    tool_input: dict, session_id: str | None, cwd: str | None, context: str | None
+) -> None:
     """Emit a single combined ``hookSpecificOutput`` for an allowed call.
 
-    ``updatedInput`` (session_id stamp, #1269) and ``additionalContext``
-    (mid-turn recall, #332) are independent optional fields on the SAME
-    payload — this is the one-process replacement for the two sibling
-    hooks that used to race on this matcher (#1421). Silent exit when
-    neither applies, matching the old per-hook silent-exit contract.
+    ``updatedInput`` carries the ``session_id`` stamp (#1269, forensic
+    grouping metadata only) and the ``cwd`` stamp (#1423, the actual
+    recovery-key component alongside ``project``+``since``) as independent
+    optional fields, plus ``additionalContext`` (mid-turn recall, #332) on
+    the SAME payload — this is the one-process replacement for the two
+    sibling hooks that used to race on this matcher (#1421). ``cwd`` has no
+    sanitization failure mode (it falls back to ``os.getcwd()`` upstream),
+    so it is stamped independently of whether ``session_id`` validated.
+    Silent exit when nothing applies, matching the old per-hook silent-exit
+    contract.
     """
     inner: dict = {"hookEventName": "PreToolUse"}
+    updated: dict | None = None
     if session_id is not None:
         updated = dict(tool_input)
         updated["session_id"] = session_id
+    if cwd:
+        if updated is None:
+            updated = dict(tool_input)
+        updated["cwd"] = cwd
+    if updated is not None:
         inner["updatedInput"] = updated
     if context:
         inner["additionalContext"] = context
@@ -463,7 +476,7 @@ def main() -> None:
     cwd = data.get("cwd") or os.getcwd()
 
     context = _compute_recall_context(tool_input, raw_session_id, cwd)
-    _emit_allow(tool_input, sid, context)
+    _emit_allow(tool_input, sid, cwd, context)
 
 
 if __name__ == "__main__":
