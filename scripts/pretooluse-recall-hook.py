@@ -17,8 +17,14 @@ Matched tools and query derivation
 - ``Task`` (agent launch) → ``"delegation " + description``
 - ``Write`` / ``Edit`` / ``NotebookEdit`` on ``*.md`` → ``"state in docs " + filename-stem``
 - ``mcp__memory__memory_store`` → ``"duplicate " + memory-name + " " + type``
-- ``mcp__memory__record_decision`` → first sentence of the ``decision`` text
 - ``Bash`` running ``gh issue create`` / ``gh pr create`` → ``"issue conventions milestone epic"``
+
+Note: ``mcp__memory__record_decision`` is deliberately NOT matched here — as
+of #1421 that matcher is owned exclusively by ``scripts/record-decision-gate.py``,
+which folds the equivalent recall query into its own combined
+``hookSpecificOutput`` to avoid racing with that script's session_id stamp
+(#1269). Registering this hook on that matcher too caused the stamp to be
+silently lost.
 
 Budget
 ------
@@ -203,12 +209,6 @@ def _derive_query(tool_name: str, tool_input: dict) -> str | None:
         if not name:
             return None
         return f"duplicate memory {name} {mtype}".strip()
-
-    if tool_name == "mcp__memory__record_decision":
-        decision = _first_sentence(tool_input.get("decision") or "")
-        if not decision:
-            return None
-        return f"decision {decision}"
 
     if tool_name == "Bash":
         command = tool_input.get("command") or ""

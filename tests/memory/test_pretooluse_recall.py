@@ -90,21 +90,15 @@ class TestDeriveQuery:
     def test_memory_store_without_name_skipped(self):
         assert hook._derive_query("mcp__memory__memory_store", {"type": "feedback"}) is None
 
-    def test_record_decision_uses_first_sentence(self):
+    def test_record_decision_no_longer_matched(self):
+        # #1421 — record-decision-gate.py owns this matcher exclusively now,
+        # folding the equivalent recall query into its own combined
+        # hookSpecificOutput to avoid racing with its session_id stamp.
         q = hook._derive_query(
             "mcp__memory__record_decision",
-            {
-                "decision": (
-                    "implement #332 inline. Rationale paragraph follows with "
-                    "multiple sentences that are less useful for recall."
-                )
-            },
+            {"decision": "implement #332 inline. Rationale paragraph follows."},
         )
-        assert q is not None
-        # First sentence only — prevents the paragraph-sized rationale from
-        # drowning the keyword signal.
-        assert "implement #332 inline" in q
-        assert "Rationale paragraph" not in q
+        assert q is None
 
     def test_bash_gh_issue_create_triggers(self):
         q = hook._derive_query(
