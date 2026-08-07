@@ -59,11 +59,13 @@ class FakePollerPort:
                 result.append(ev)
         return result
 
-    def get_task_status(self, task_id: str) -> str | None:
+    def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        result: dict[str, str] = {}
         for t in self.tasks:
-            if t.get("id") == task_id:
-                return t.get("status")
-        return None
+            tid = t.get("id")
+            if tid in task_ids and t.get("status") is not None:
+                result[tid] = t["status"]
+        return result
 
     def requeue_event(self, event_id: str, *, reason: str) -> bool:
         for ev in self.events:
@@ -81,7 +83,7 @@ class FakePollerPort:
         return next(ev["state"] for ev in self.events if ev["id"] == event_id)
 
     def task_status(self, task_id: str) -> str | None:
-        return self.get_task_status(task_id)
+        return self.get_task_statuses([task_id]).get(task_id)
 
 
 def _ev(
@@ -363,16 +365,16 @@ class TestBlockingTaskIdParsing:
 
 
 class _RaisingStatusPort(FakePollerPort):
-    """Fake whose status probe raises for one specific task id."""
+    """Fake whose batch status probe raises when a specific task id is requested."""
 
     def __init__(self, *, raise_for: str, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._raise_for = raise_for
 
-    def get_task_status(self, task_id: str) -> str | None:
-        if task_id == self._raise_for:
+    def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        if self._raise_for in task_ids:
             raise RuntimeError("status probe blew up")
-        return super().get_task_status(task_id)
+        return super().get_task_statuses(task_ids)
 
 
 class _FalseRequeuePort(FakePollerPort):
@@ -403,16 +405,20 @@ class _RaisingFindPort(FakePollerPort):
 
 
 class TestPollRobustness:
-    def test_one_bad_event_does_not_abort_the_sweep(self):
-        """A probe failure on one parked event must not strand the rest."""
+    def test_status_probe_failure_leaves_all_events_parked_for_next_pass(self):
+        """A batch status-fetch failure must not lose events, and must not
+        raise out of ``poll()`` — it leaves every parked event in this sweep
+        parked (not just the one whose task id triggered the failure), since
+        statuses are now fetched in a single batch call per sweep (#1475
+        review, MEDIUM) rather than one call per event."""
         port = _RaisingStatusPort(
             raise_for="t-bad",
             events=[_ev("e-bad", task_id="t-bad"), _ev("e-good", task_id="t-good")],
             tasks=[_task("t-bad", "done"), _task("t-good", "done")],
         )
         n = poller.poll(port)
-        assert n == 1  # the good event still requeued
-        assert port.state_of("e-good") == "pending"
+        assert n == 0  # batch failure aborts the whole sweep, not just e-bad
+        assert port.state_of("e-good") == "parked"  # left parked, not lost
         assert port.state_of("e-bad") == "parked"  # left parked, not lost
 
     def test_unconfirmed_requeue_is_not_counted(self):
@@ -528,8 +534,8 @@ class _RaisingPollerPort:
     def find_parked_events(self) -> list[dict[str, Any]]:
         raise RuntimeError("poller down")
 
-    def get_task_status(self, task_id: str) -> str | None:
-        return None
+    def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        return {}
 
     def requeue_event(self, event_id: str, *, reason: str) -> bool:
         return False
