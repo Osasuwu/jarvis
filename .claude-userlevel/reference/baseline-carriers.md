@@ -18,7 +18,7 @@ Ordered worst-case-first:
 | Код / CI-гейт | 100% | 100% (mechanical) | 0 |
 | PreToolUse deny hook | 100%, incl. subagents/MCP | 100% (mechanical) | 0 |
 | File + `@import` (DOCTRINE.md, CLAUDE.md, SOUL.md) | 100% | probabilistic (prompt-level) | always pays |
-| `.claude/rules/` + `paths:` filter | 100% when file matches | probabilistic | 0 when not relevant |
+| `.claude/rules/` + `paths:` filter | 100% when the file matches and 0% otherwise | probabilistic | 0 when not relevant |
 | Hook-inject (SessionStart/UserPromptSubmit) | 100%, but absent headless without `~/.claude/` | probabilistic | always pays |
 | `--append-system-prompt` | 100%, headless-only | probabilistic | always pays |
 | Retrieval / recall | ~50% (situational) | probabilistic | pays only when it fires |

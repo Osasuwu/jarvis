@@ -168,6 +168,116 @@ class TestSetEnvLogging:
         assert "test_value" in content
 
 
+class TestCopyDirMissingSource:
+    """Tests for #1274 AC4: a `directories:` group entry whose source dir
+    doesn't exist (yet) must not crash install.ps1 -Apply.
+    """
+
+    def test_copy_dir_missing_source_is_noop(self, tmp_path):
+        """_copy_dir must not raise, and must not create an empty dest,
+        when src doesn't exist on disk."""
+        src = tmp_path / "does-not-exist"
+        dest = tmp_path / "dest"
+
+        installer._copy_dir(src, dest, None, False, tmp_path, tmp_path)
+
+        assert not dest.exists()
+
+    def test_build_plan_and_apply_tolerate_missing_directories_source(self, tmp_path):
+        """A `directories:` entry with a nonexistent source must plan and
+        apply cleanly instead of raising FileNotFoundError."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        target_root = tmp_path / "target"
+
+        manifest = {
+            "target_root": str(target_root),
+            "groups": [
+                {
+                    "id": "rules",
+                    "enabled": True,
+                    "directories": [
+                        {
+                            "source": ".claude-userlevel/rules",
+                            "dest": "rules",
+                            "include": ["placeholder.md"],
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with mock.patch.object(installer, "current_git_sha", return_value="abc123"):
+            plan = installer.build_plan(manifest, repo_root, str(target_root))
+            installer.apply_plan(plan, manifest, run_env=None, register_mcp=None, prune_mcp=None)
+
+        assert not (target_root / "rules").exists()
+
+    def test_build_plan_rejects_rules_directories_entry_without_include(self, tmp_path):
+        """#1274 AC4: a `directories:` entry with `dest: rules` and no `include:`
+        whitelist makes deleting a global rule structurally impossible (the file
+        returns on the next install.ps1 -Apply) — build_plan must reject it.
+        Scoped to `dest: rules` specifically: a glob-based (no include:) entry is
+        a deliberately supported mode elsewhere (see
+        test_directory_without_include_skips_orphan_check in
+        tests/infrastructure/test_installer.py, e.g. for the `skills` group),
+        so the guard must not blanket-reject every directories: entry."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        target_root = tmp_path / "target"
+
+        manifest = {
+            "target_root": str(target_root),
+            "groups": [
+                {
+                    "id": "rules",
+                    "enabled": True,
+                    "directories": [
+                        {
+                            "source": ".claude-userlevel/rules",
+                            "dest": "rules",
+                            # no include: — should be rejected
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with mock.patch.object(installer, "current_git_sha", return_value="abc123"):
+            with pytest.raises(ValueError, match="include"):
+                installer.build_plan(manifest, repo_root, str(target_root))
+
+    def test_build_plan_allows_non_rules_directories_entry_without_include(self, tmp_path):
+        """Sibling case: a non-`rules` directories: entry with no `include:` must
+        NOT be rejected — that's the pre-existing copy-everything mode exercised
+        by test_directory_without_include_skips_orphan_check."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        target_root = tmp_path / "target"
+
+        manifest = {
+            "target_root": str(target_root),
+            "groups": [
+                {
+                    "id": "skills",
+                    "enabled": True,
+                    "directories": [
+                        {
+                            "source": ".claude-userlevel/skills",
+                            "dest": "skills",
+                            # no include: — allowed for non-rules destinations
+                        }
+                    ],
+                }
+            ],
+        }
+
+        with mock.patch.object(installer, "current_git_sha", return_value="abc123"):
+            plan = installer.build_plan(manifest, repo_root, str(target_root))
+
+        assert any(a.kind == "copy_dir" for a in plan.actions)
+
+
 class TestRollbackCLI:
     """Tests for --rollback CLI path (#344 test coverage gap)."""
 
