@@ -83,7 +83,9 @@ groups:
         dest: "reference"
         template: false
         include:
+          - "baseline-carriers.md"
           - "engineering-principles.md"
+          - "merge-gates.md"
 
   - id: hooks_settings
     description: "settings.json — hooks pointing at JARVIS_HOME scripts (M3 #338)"

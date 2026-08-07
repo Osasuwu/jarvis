@@ -16,18 +16,7 @@ A rule escalates Tier 1 → Tier 2 when soft enforcement measurably fails (e.g. 
 
 ## Baseline carrier selection
 
-When a behavioral baseline needs a home (a rule, a fact, a constraint that should reliably reach the agent), the carrier is picked by **cost of the rule being violated**, not by how important the rule feels. Importance without a violation-cost story is how everything ends up `always_load` — the tag decays into a junk drawer instead of a scarce resource. Ordered worst-case-first:
-
-| Carrier | Delivery | Compliance | Token cost |
-|---|---|---|---|
-| Код / CI-гейт | 100% | 100% (mechanical) | 0 |
-| PreToolUse deny hook | 100%, incl. subagents/MCP | 100% (mechanical) | 0 |
-| File + `@import` (this file, CLAUDE.md, SOUL.md) | 100% | probabilistic (prompt-level) | always pays |
-| `.claude/rules/` + `paths:` filter | 100% when file matches | probabilistic | 0 when not relevant |
-| Hook-inject (SessionStart/UserPromptSubmit) | 100%, but absent headless without `~/.claude/` | probabilistic | always pays |
-| `--append-system-prompt` | 100%, headless-only | probabilistic | always pays |
-| Retrieval / recall | ~50% (situational) | probabilistic | pays only when it fires |
-| `always_load` memory tag | 100% delivery, worst prompt position (lost-in-middle) | probabilistic | always pays |
+When a behavioral baseline needs a home (a rule, a fact, a constraint that should reliably reach the agent), the carrier is picked by **cost of the rule being violated**, not by how important the rule feels. Importance without a violation-cost story is how everything ends up `always_load` — the tag decays into a junk drawer instead of a scarce resource. The per-carrier delivery/compliance/token-cost table that grounds this order lives in `~/.claude/reference/baseline-carriers.md` — read it when placing a new baseline or arguing for a more expensive carrier than the order gives.
 
 Selection order — pick the first that fits:
 
@@ -38,11 +27,11 @@ Selection order — pick the first that fits:
 5. **Not checkable, situational** → retrieval (`memory_recall`), never a baseline.
 6. **`always_load` only** for content that is dynamic, device-scoped, or time-bounded with no natural file home (e.g. an active incident, a device-specific gotcha) — almost nothing else qualifies. If a memory has settled into something stable and general, it belongs in a file, not the tag.
 
-Reference: research memory `research_baseline_delivery_carriers_2026_07_30` (project `jarvis`), superseded by this section — see *`always_load` admission criterion* below for the cap this table motivates.
+See *`always_load` admission criterion* below for the cap this order motivates.
 
 ## `always_load` admission criterion
 
-`always_load` is the worst-position, always-pays carrier in the table above — reserved for content that is dynamic, device-scoped, or time-bounded with no natural file home (rule 6). It is not a general-purpose "important, so tag it" bucket; unchecked growth degrades every session's prompt with lost-in-middle content that pays tokens on every turn regardless of relevance.
+`always_load` is the worst-position, always-pays carrier — last in the order above, reserved for content that is dynamic, device-scoped, or time-bounded with no natural file home (rule 6). It is not a general-purpose "important, so tag it" bucket; unchecked growth degrades every session's prompt with lost-in-middle content that pays tokens on every turn regardless of relevance.
 
 **Cap: 4 entries, 6000 bytes combined**, enforced at *read time* (not write time — tagging isn't blocked, but only the most recently updated entries within budget are actually injected) in both `scripts/session-context.py` (`_query_always_load`) and `scripts/eval-recall.py` (`_load_session_context`'s always_load block). Over-cap data degrades gracefully — truncated to the freshest entries/bytes, with a loud stderr warning — rather than failing the session-start hook outright.
 

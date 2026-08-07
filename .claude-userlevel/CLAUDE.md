@@ -81,41 +81,24 @@ Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD 
 
 ## Repo policy — auto-merge & merge gates
 
-Applies to every owned repo (`Osasuwu/jarvis`, `SergazyNarynov/redrobot`, and any future personal project). Foreign-owner repos are exempt — they have their own protection rules.
+Merging in an owned repo is gated by four required CI checks on the default branch — `review`
+(the code-review verdict), `owner-queue-guard`, `require-linked-issue`, and the repo's own test
+gates. They are branch-protection-enforced, so they need no cooperation from you: gate-by-gate
+semantics, the per-repo files that implement them, and the repo-baseline settings that apply
+them live in `~/.claude/reference/merge-gates.md`. Read it when changing a gate, onboarding a
+repo, or diagnosing a stuck PR. What you must act on without reading anything:
 
-> **Caveat — auto-merge needs a paid GitHub plan on private repos.** `SergazyNarynov/redrobot` is private+Free, so `gh pr merge --auto` is rejected there: the four gates below still apply, but the final merge is **manual when CI is green** (`gh pr merge <N> --squash --delete-branch`). Don't retry `--auto`. (jarvis `CONTEXT.md` → *Per-account sync pass*.)
-
-**Goal:** AFK Path A loop closes by itself — `open → CI → review → automerge → rework → escalate`. Subagent opens a PR, Jarvis flips it to ready, GitHub merges when every gate is green. No human in the merge step *unless* a gate fires.
-
-### The four gates
-
-Every owned repo enforces the same set via **branch protection on the default branch** + repo-level `allow_auto_merge=true`:
-
-1. **`review` (Claude code-review plugin)** — the workflow runs `/code-review` and posts findings as a structured comment; the `Verify review verdict` post-step turns that comment into a pass/fail verdict, so the check signals "PR is clean", not merely "bot ran". Blocking set is all-caps `CRITICAL`/`MAJOR`/`BLOCKING`/`MEDIUM` (MEDIUM promoted from advisory, #1385 follow-up — a MEDIUM finding can genuinely corrupt state in the moment); `MINOR`/`NITPICK`/`LOW`/`INFO` stay non-blocking. Full semantics + rationale: jarvis `CONTEXT.md` → *Merge-gate vocabulary (code-review)*, *Fail-closed verdict parsing*.
-2. **`owner-queue-guard`** — fails the job when the PR carries the `status:owner-queue` label (DOCTRINE.md → *status:owner-queue label*), turning that "park this for me" signal into a hard merge block. Triggered on `opened / synchronize / labeled / unlabeled` so label changes re-evaluate the gate.
-3. **`require-linked-issue`** — PR body must reference `Closes #NNN`, OR carry the `priority:critical` label (hotfix bypass), OR contain the `[no-issue]` marker (drive-by fix-inline per jarvis#428), OR use a `refactor:` / `refactor(scope):` title prefix.
-4. **Project-specific test gates** — `pytest`, `meta-tests`, `Detect secrets with gitleaks` in jarvis; the equivalents in any other repo. These come from the repo's own CI surface.
-
-### Drafts are the manual hold
-
-A PR stays in **draft** while your attention is owed (design feedback pending, intentional batching). Drafts never auto-merge — GitHub's default, and the right one. Once flipped to ready, the four gates above are the merge gate. Use `status:owner-queue` only for the rarer case: content-complete (so it can pass review) but you still want to eyeball it. Don't reach for the label when draft already covers it.
-
-### Required files per repo
-
-- `.github/workflows/code-review.yml` — carries the `Verify review verdict` post-step. Which heading shapes block, which pass, and the fail-closed floor are pinned by `tests/ci/test_code_review_verdict_guard.py` (jarvis) and explained in jarvis `CONTEXT.md` → *Merge-gate vocabulary (code-review)*. Don't restate the parsing rules anywhere else — change the workflow and its test together.
-- `.github/workflows/owner-queue-guard.yml` — single job named `owner-queue-guard`, triggers on `opened, synchronize, labeled, unlabeled`, fails on the label.
-
-The check name `owner-queue-guard` is what branch protection references — rename in lockstep with the protection rule or the gate silently disappears (per the path-filtered-guard meta-test rule, jarvis#326).
-
-### Repo settings
-
-Auto-merge, `delete_branch_on_merge`, branch protection and the required-check context list are **applied from the per-repo manifest by repo-baseline**, not by hand — jarvis `CONTEXT.md` → *repo-baseline*, *Axis* (`auto_merge`, `branch_protection`, `required_check_contexts[]`). Two values are load-bearing: `enforce_admins=false` keeps the escape hatch open for the two structural cases below, and `required_pull_request_reviews=null` because the `review` check already encodes the AI verdict — a required human review would defeat AFK Path A.
-
-### When to break the rules
-
-Two structural cases where a gate *cannot* run and admin-merge is the only path — the **review-blind carve-out**: (a) a PR that modifies `code-review.yml` itself; (b) redrobot's self-hosted runner being down (verify locally, per the `redrobot_billing_blocked_manual_merge_protocol` precedent).
-
-**A flaky or false-failing gate is NOT on this list** — that's a bug to fix, not a bypass to normalize: file an issue and take at most one **sanctioned stop-gap merge**. Definitions: DOCTRINE.md → *Review-blind carve-out*, *Sanctioned stop-gap merge*, *Merge-freeze doctrine*.
+- **Drafts are the manual hold.** A PR stays in draft while your attention is owed (design
+  feedback pending, intentional batching); drafts never auto-merge. Once flipped to ready, the
+  four gates are the merge gate. Use `status:owner-queue` only for the rarer case:
+  content-complete, so it can pass review, but you still want to eyeball it. Don't reach for
+  the label when draft already covers it.
+- **Private+Free repos have no auto-merge.** `gh pr merge --auto` is rejected on
+  `SergazyNarynov/redrobot`. The gates still apply; the final merge is manual when CI is green
+  (`gh pr merge <N> --squash --delete-branch`). Don't retry `--auto`.
+- **Never normalize a bypass.** A gate that cannot run is not a gate that passed. The two
+  sanctioned admin-merge cases and the freeze rule are in DOCTRINE.md → *Review-blind
+  carve-out*, *Sanctioned stop-gap merge*, *Merge-freeze doctrine*.
 
 ## Filing issues — route through the right skill
 
