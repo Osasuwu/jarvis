@@ -28,7 +28,6 @@ SETTINGS_PATH = REPO_ROOT / ".claude-userlevel" / "settings.json"
 ROSTER_CHAR_BUDGET = 6500
 
 OWNER_INVOKED_ONLY_SKILLS = {
-    "autonomous-loop",
     "caveman",
     "last-work-report",
     "setup-tasks",

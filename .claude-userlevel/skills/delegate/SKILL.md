@@ -1,6 +1,6 @@
 ---
 name: delegate
-description: Dispatch one or more GitHub issues to parallel coding subagents. Triggers: "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z"; also used by autonomous-loop for single subagent-scoped jobs (e.g. CI debug). Single issue → /implement instead. Jarvis's judgment on fitness overrides blind delegation — context-heavy/cross-cutting/safety-critical work stays inline even if asked to delegate.
+description: Dispatch one or more GitHub issues to parallel coding subagents. Triggers: "делегируй #X #Y", "раскидай на агентов", "параллельно реализуй #X #Y #Z"; also used by the reactive-core orchestrator for single subagent-scoped jobs (e.g. CI debug). Single issue → /implement instead. Jarvis's judgment on fitness overrides blind delegation — context-heavy/cross-cutting/safety-critical work stays inline even if asked to delegate.
 version: 2.0.0
 ---
 

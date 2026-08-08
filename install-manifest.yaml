@@ -130,7 +130,6 @@ groups:
           # Shared reference material consumed by other skills (e.g. _shared/tdd/
           # is read by /implement and /delegate in TDD-mode). Not a skill itself.
           - "_shared"
-          - "autonomous-loop"
           - "delegate"
           - "end"
           - "file-issue"

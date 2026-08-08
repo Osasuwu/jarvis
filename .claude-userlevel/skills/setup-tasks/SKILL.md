@@ -82,7 +82,7 @@ Registered via `create_scheduled_task` MCP. All run on Workshop with full local 
 | Task ID | Why removed |
 |---|---|
 | morning-brief | superseded by `status-record` (2026-04 migration). |
-| autonomous-loop | superseded 2026-05-26 by reactive-core M44 (`wake_driver` + `task_queue`); cron pacing replaced by event-trigger (decision `a70c4460`). Skill file retained as pre-M44 catch-up baseline; cron entry removed. |
+| autonomous-loop | superseded 2026-05-26 by reactive-core M44 (`wake_driver` + `task_queue`); cron pacing replaced by event-trigger (decision `a70c4460`). Skill file deleted (#531) once M44 shipped; cron entry removed. |
 | nightly-research | removed 2026-05-26 — `/research` is a user-driven flow, scheduled blind discovery produced low-value noise. |
 | risk-radar | removed 2026-05-26 — overlapped with `status-record` + sandcastle-orchestrator gating; signal-to-noise was poor. |
 
