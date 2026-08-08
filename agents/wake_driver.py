@@ -117,7 +117,9 @@ CLAIMER = "wake_driver"
 # Repo-root-anchored (not CWD-relative) so the log lands in the same place
 # regardless of the Scheduled Task's working directory — same anchoring
 # rationale as executor._STDERR_LOG_DIR.
-_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "wake_driver")
+_LOG_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs", "wake_driver"
+)
 
 # Cold-boot retry: AtLogOn can fire before the network/DNS/Supabase is
 # reachable (observed: task started 07:31, died within ~5min after
@@ -154,7 +156,9 @@ def _configure_logging() -> None:
         )
     except OSError as exc:
         print(f"[wake_driver] file logging unavailable ({exc}); console only", file=sys.stderr)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers
+    )
 
 
 def _call_with_retry(
@@ -193,6 +197,7 @@ def _call_with_retry(
     assert last_exc is not None
     raise last_exc
 
+
 # The NOTIFY channel from the #739 substrate (notify_events_insert).
 EVENTS_CHANNEL = "events"
 
@@ -200,6 +205,16 @@ EVENTS_CHANNEL = "events"
 # Fires when a task row reaches ``pending`` after a cap-freed transition or fresh
 # insert, waking the driver to drain without waiting for the idle timeout.
 TASK_QUEUE_CHANNEL = "task_queue"
+
+# Cap on one poller sweep's parked-event fetch (#1475 review, MEDIUM — the M2
+# finding PR #964 deferred until the production adapter shipped). Nothing in
+# production writes ``blocked_by_task_id`` yet (#1455), so this is a ceiling
+# on a currently-empty query, not a tuned value — revisit once #1455 ships a
+# producer and real volume is observable.
+# ceiling: unbounded parked-event backlog beyond this count is left for the
+# next sweep rather than fetched in one pass; raise once #1455's producer
+# ships and real backlog sizes are observable.
+PARKED_EVENTS_LIMIT = 200
 
 # Orchestrator stub returns whatever it likes; the driver only cares that it
 # returned without raising before committing ``processed``.
@@ -690,9 +705,21 @@ class PsycopgEventQueue:
     above carries the logic.
     """
 
-    def __init__(self, conn: psycopg.Connection, *, claimer: str = CLAIMER) -> None:
+    def __init__(
+        self,
+        conn: psycopg.Connection,
+        *,
+        claimer: str = CLAIMER,
+        task_queue: SupabaseTaskQueue | None = None,
+    ) -> None:
         self._conn = conn
         self._claimer = claimer
+        # Defaults to an unshared instance so ad-hoc construction still works
+        # (each call then resolves its own Supabase client lazily); a
+        # long-running caller should build one client and inject it here —
+        # same MAJOR fix as PR #1011's event client (finding #1, PR #1475
+        # review).
+        self._task_queue = task_queue if task_queue is not None else SupabaseTaskQueue()
         self._conn.execute(f"LISTEN {EVENTS_CHANNEL}")
         self._conn.execute(f"LISTEN {TASK_QUEUE_CHANNEL}")
         self._conn.commit()
@@ -750,6 +777,30 @@ class PsycopgEventQueue:
         self._conn.commit()
         return [dict(zip(cols, row, strict=True)) for row in rows]
 
+    # -- PollerPort surface (#1393 — Path B consumer) ------------------------
+
+    def find_parked_events(self) -> list[dict[str, Any]]:
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM events WHERE state = 'parked' AND payload ? 'blocked_by_task_id' "
+                "LIMIT %s",
+                (PARKED_EVENTS_LIMIT,),
+            )
+            rows = cur.fetchall()
+            cols = [d.name for d in cur.description]
+        self._conn.commit()
+        return [dict(zip(cols, row, strict=True)) for row in rows]
+
+    def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        return self._task_queue.get_statuses(task_ids)
+
+    def requeue_event(self, event_id: str, *, reason: str) -> bool:
+        with self._conn.cursor() as cur:
+            cur.execute("SELECT requeue_event(%s, %s)", (event_id, reason))
+            ok = bool(cur.fetchone()[0])
+        self._conn.commit()
+        return ok
+
 
 def dry_run(
     events: list[dict[str, Any]],
@@ -790,7 +841,7 @@ def _print_dry_run_table(events: list[dict[str, Any]], decisions: list[Any]) -> 
     print(f"\n{len(events)} events previewed, {escalate_count} would ESCALATE")
 
 
-def _build_psycopg_queue() -> PsycopgEventQueue:
+def _build_psycopg_queue(*, task_queue: SupabaseTaskQueue | None = None) -> PsycopgEventQueue:
     cfg = load_config()
     if not cfg.postgres_url:
         raise RuntimeError(
@@ -803,7 +854,7 @@ def _build_psycopg_queue() -> PsycopgEventQueue:
     import psycopg
 
     conn = psycopg.connect(cfg.postgres_url, autocommit=False)
-    return PsycopgEventQueue(conn)
+    return PsycopgEventQueue(conn, task_queue=task_queue)
 
 
 def _default_event_emit(*, repo: str, client: Any | None = None) -> EventEmit:
@@ -900,11 +951,25 @@ def main() -> int:
         _print_dry_run_table(events, decisions)
         return 0
 
-    queue = _call_with_retry(_build_psycopg_queue, what="psycopg event-queue connect")
+    # Build the Supabase client ONCE and share it everywhere a long-running
+    # driver would otherwise construct one per call/event (MAJOR, PR #1011;
+    # extended to the task-queue side per #1475 review finding #1 — both
+    # SupabaseTaskQueue() at the old task_port site below and
+    # PsycopgEventQueue.get_task_statuses used to build their own unshared
+    # instance, each triggering a fresh create_client() per invocation).
+    from agents.supabase_client import get_client
+
+    event_client = get_client()
+    shared_task_queue = SupabaseTaskQueue(client=event_client)
+
+    queue = _call_with_retry(
+        lambda: _build_psycopg_queue(task_queue=shared_task_queue),
+        what="psycopg event-queue connect",
+    )
     # tasks ride supabase-py; events ride psycopg. --no-task-drain (Stage 2)
     # passes None so tick's task steps 0/2/4 skip (each already gated on
     # `task_port is not None`) — routing/escalation stay live, spawn doesn't.
-    task_port = None if args.no_task_drain else SupabaseTaskQueue()
+    task_port = None if args.no_task_drain else shared_task_queue
 
     # #953 — evidence + terminal-event emission wiring. The repo scopes both the
     # GitHub evidence client (PR lookups) and the emitted events; the stdout
@@ -914,13 +979,6 @@ def main() -> int:
 
     repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
     evidence_client = default_github_client()
-    # Build the Supabase client ONCE and inject it into the emitter (MAJOR, PR
-    # #1011). With client=None, store_event calls get_client() per event — a fresh
-    # create_client() (and its connection setup) on every terminal event. A
-    # long-running driver emits thousands; one shared client amortizes that.
-    from agents.supabase_client import get_client
-
-    event_client = get_client()
     event_emit = _default_event_emit(repo=repo, client=event_client)
 
     # #1385 — live routing. The stub only logged; this closes handle_event's
@@ -950,6 +1008,7 @@ def main() -> int:
                 orchestrator,
                 stale_after_seconds=args.watchdog_seconds,
                 task_port=task_port,
+                poller_port=queue,
             )
             logger.info(
                 "[wake_driver] one-shot tick: reclaimed=%d processed=%d requeued=%d "
@@ -987,6 +1046,7 @@ def main() -> int:
             # #931 dispatch-dedup: reuse the one evidence client for the
             # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
             task_dedup=default_task_dedup(evidence_client),
+            poller_port=queue,
         )
     except KeyboardInterrupt:
         logger.info("[wake_driver] KeyboardInterrupt — stopping")

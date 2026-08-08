@@ -1349,7 +1349,7 @@ def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
     monkeypatch.setattr("sys.argv", ["wake_driver"])
     monkeypatch.setattr(wake_driver, "_configure_logging", lambda: None)
     monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
-    monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda: object())
+    monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda **k: object())
     monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", lambda *a, **k: object())
     monkeypatch.setattr(wake_driver, "_default_event_emit", lambda **k: (lambda *a, **kk: None))
     monkeypatch.setattr("agents.github_client.default_github_client", lambda: client)
@@ -1574,16 +1574,18 @@ def test_main_no_task_drain_passes_none_task_port_into_run(monkeypatch):
     # Stage 2: task_port=None so tick's steps 0/2/4 (each already gated on
     # `task_port is not None`) skip — zero `claude -p` spawn — while routing
     # and escalation (independent of task_port) still run live.
+    #
+    # SupabaseTaskQueue IS still built under --no-task-drain (#1475 review,
+    # MEDIUM): the poller's get_task_statuses lookup needs it regardless of
+    # whether this driver instance drains/spawns tasks, and it's built once
+    # off the shared client rather than skipped and later reconstructed
+    # unshared — only task_port itself stays None.
     captured: dict[str, object] = {}
 
     def _capture_run(queue, orchestrator, **kwargs):
         captured["task_port"] = kwargs.get("task_port")
 
-    def _forbidden_task_queue(*a, **k):
-        raise AssertionError("SupabaseTaskQueue must not be built under --no-task-drain")
-
     client = _wire_main(monkeypatch, run_impl=_capture_run)
-    monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", _forbidden_task_queue)
     monkeypatch.setattr("sys.argv", ["wake_driver", "--no-task-drain"])
 
     assert wake_driver.main() == 0
@@ -1730,7 +1732,9 @@ def test_call_with_retry_raises_last_exception_after_exhausting_attempts(monkeyp
         raise ConnectionError("still not ready")
 
     with pytest.raises(ConnectionError, match="still not ready"):
-        wake_driver._call_with_retry(_build, what="thing", attempts=3, base_delay=1.0, max_delay=10.0)
+        wake_driver._call_with_retry(
+            _build, what="thing", attempts=3, base_delay=1.0, max_delay=10.0
+        )
 
     assert len(sleeps) == 2  # attempts-1 sleeps, no sleep after the final failure
 
@@ -1743,7 +1747,9 @@ def test_call_with_retry_caps_delay_at_max_delay(monkeypatch):
         raise ConnectionError("nope")
 
     with pytest.raises(ConnectionError):
-        wake_driver._call_with_retry(_build, what="thing", attempts=6, base_delay=5.0, max_delay=15.0)
+        wake_driver._call_with_retry(
+            _build, what="thing", attempts=6, base_delay=5.0, max_delay=15.0
+        )
 
     assert sleeps == [5.0, 10.0, 15.0, 15.0, 15.0]
 
@@ -1753,7 +1759,7 @@ def test_main_wraps_build_psycopg_queue_in_startup_retry(monkeypatch):
     # instead of relying solely on Task Scheduler's restart count.
     calls = {"n": 0}
 
-    def _flaky_build_queue():
+    def _flaky_build_queue(**k):
         calls["n"] += 1
         if calls["n"] < 2:
             raise ConnectionError("boot-time DNS not ready")

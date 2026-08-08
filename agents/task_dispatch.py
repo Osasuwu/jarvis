@@ -47,7 +47,10 @@ import time
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from supabase import Client
 
 from agents import task_queue
 from agents.github_client import (
@@ -292,7 +295,9 @@ def _compute_pr_evidence(
         return (None, None)
     if shape == "rework":
         assert pr_number is not None  # noqa: S101
-        evidence = check_pr_evidence_rework_shape(task_id, goal, pr_number, spawned_at, client=client)
+        evidence = check_pr_evidence_rework_shape(
+            task_id, goal, pr_number, spawned_at, client=client
+        )
         return (evidence, None)
 
     evidence = check_pr_evidence_fresh_shape(task_id, goal, spawned_at, client=client)
@@ -1706,40 +1711,49 @@ class SupabaseTaskQueue:
     Thin delegation — the FSM and SQL live in :mod:`agents.task_queue`. Tasks
     stay on supabase-py (PostgREST); only events need raw psycopg (``LISTEN``),
     so this is the task-side analogue of
-    :class:`wake_driver.PsycopgEventQueue`. Constructible without touching the
-    network (each call resolves the Supabase client lazily inside
-    ``task_queue``). Not unit-tested (needs live Supabase); the tested logic
-    lives in :func:`drain_tasks` / :func:`reclaim_stale_tasks` above.
+    :class:`wake_driver.PsycopgEventQueue`. ``client`` defaults to ``None`` so
+    ad-hoc construction still works (each call then resolves a client lazily
+    inside ``task_queue``), but a long-running caller should build one Supabase
+    client and inject it here — same MAJOR fix as PR #1011's event client,
+    applied to the task-queue side (finding #2, PR #1475 review). Not
+    unit-tested (needs live Supabase); the tested logic lives in
+    :func:`drain_tasks` / :func:`reclaim_stale_tasks` above.
     """
 
+    def __init__(self, client: Client | None = None) -> None:
+        self._client = client
+
     def claim_next(self, *, assignee: str) -> dict[str, Any] | None:
-        return task_queue.claim_next(assignee=assignee)
+        return task_queue.claim_next(assignee=assignee, client=self._client)
 
     def count_running(self, *, assignee: str) -> int:
-        return task_queue.count_running(assignee=assignee)
+        return task_queue.count_running(assignee=assignee, client=self._client)
 
     def transition(
         self, task_id: str, to_status: str, *, reason: str | None = None
     ) -> dict[str, Any]:
-        return task_queue.transition(task_id, to_status, reason=reason)
+        return task_queue.transition(task_id, to_status, reason=reason, client=self._client)
 
     def reclaim_stale_claimed(self, *, assignee: str, older_than_seconds: float) -> int:
         return task_queue.reclaim_stale_claimed(
-            assignee=assignee, older_than_seconds=older_than_seconds
+            assignee=assignee, older_than_seconds=older_than_seconds, client=self._client
         )
 
     def list_stale_running(
         self, *, assignee: str, older_than_seconds: float
     ) -> list[dict[str, Any]]:
         return task_queue.list_stale_running(
-            assignee=assignee, older_than_seconds=older_than_seconds
+            assignee=assignee, older_than_seconds=older_than_seconds, client=self._client
         )
 
     def requeue_running(self, task_id: str) -> bool:
-        return task_queue.requeue_running(task_id)
+        return task_queue.requeue_running(task_id, client=self._client)
 
     def get_status(self, task_id: str) -> str | None:
-        return task_queue.get_status(task_id)
+        return task_queue.get_status(task_id, client=self._client)
+
+    def get_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        return task_queue.get_statuses(task_ids, client=self._client)
 
 
 def reconcile_stranded_prs(
@@ -1769,10 +1783,25 @@ def reconcile_stranded_prs(
     # List open issues with the sandcastle label
     try:
         result = subprocess.run(
-            ["gh", "issue", "list", "--repo", active_repo,
-             "--label", "sandcastle", "--state", "open",
-             "--json", "number", "--jq", ".[].number"],
-            capture_output=True, text=True, check=True, timeout=30,
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                active_repo,
+                "--label",
+                "sandcastle",
+                "--state",
+                "open",
+                "--json",
+                "number",
+                "--jq",
+                ".[].number",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=30,
         )
     except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
         logger.warning(
@@ -1790,16 +1819,33 @@ def reconcile_stranded_prs(
         # Search for merged PRs closing this issue
         try:
             search_result = subprocess.run(
-                ["gh", "pr", "list", "--repo", active_repo,
-                 "--state", "merged", "--json", "number", "title", "body",
-                 "--search", f"closes #{issue_number} in:body",
-                 "--limit", "1"],
-                capture_output=True, text=True, check=True, timeout=30,
+                [
+                    "gh",
+                    "pr",
+                    "list",
+                    "--repo",
+                    active_repo,
+                    "--state",
+                    "merged",
+                    "--json",
+                    "number",
+                    "title",
+                    "body",
+                    "--search",
+                    f"closes #{issue_number} in:body",
+                    "--limit",
+                    "1",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
             )
         except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
             logger.warning(
                 "[task_dispatch] reconcile_stranded_prs: search for #%s failed: %s",
-                issue_number, exc,
+                issue_number,
+                exc,
             )
             continue
 
@@ -1812,21 +1858,32 @@ def reconcile_stranded_prs(
         logger.info(
             "[task_dispatch] reconcile_stranded_prs: issue #%s has "
             "merged PR #%s but is still open — closing",
-            issue_number, pr_number,
+            issue_number,
+            pr_number,
         )
         if not dry_run:
             try:
                 subprocess.run(
-                    ["gh", "issue", "close", str(issue_number),
-                     "--repo", active_repo,
-                     "--comment", f"Auto-closed: merged PR #{pr_number} links this issue"],
-                    capture_output=True, check=True, timeout=30,
+                    [
+                        "gh",
+                        "issue",
+                        "close",
+                        str(issue_number),
+                        "--repo",
+                        active_repo,
+                        "--comment",
+                        f"Auto-closed: merged PR #{pr_number} links this issue",
+                    ],
+                    capture_output=True,
+                    check=True,
+                    timeout=30,
                 )
                 closed += 1
             except (subprocess.CalledProcessError, OSError) as exc:
                 logger.warning(
                     "[task_dispatch] reconcile_stranded_prs: close #%s failed: %s",
-                    issue_number, exc,
+                    issue_number,
+                    exc,
                 )
 
     return closed
