@@ -69,6 +69,15 @@ VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 10.0
 
+# Calibrated 2026-08-09 (#1216): two live --record runs against the same
+# 82-query set/corpus, same day, measured cosine distance per query between
+# runs (float-precision + API non-determinism noise floor, not real drift):
+# min=0.0, max=0.000163, mean=0.000015, p99=0.000163. Threshold set ~2 orders
+# of magnitude above the observed noise ceiling so it flags genuine drift
+# (model swap, input_type change, corpus/text change) without false-firing
+# on run-to-run noise.
+EMBEDDING_DRIFT_THRESHOLD = 0.01
+
 
 def _load_hook_module():
     """Load scripts/memory-recall-hook.py to import its rewriter (#499 fix-forward).
@@ -123,6 +132,24 @@ async def _embed_query(text: str) -> list[float]:
         )
         resp.raise_for_status()
         return resp.json()["data"][0]["embedding"]
+
+
+def _cosine_distance(a: list[float], b: list[float]) -> float:
+    """1 - cosine_similarity. NaN when either vector has zero norm."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return float("nan")
+    return 1.0 - dot / (norm_a * norm_b)
+
+
+async def _compute_embedding_fingerprints(queries: list[dict]) -> dict[str, list[float]]:
+    """One _embed_query() call per query — reuses the canonical embed call site (AC1/AC3)."""
+    fingerprints: dict[str, list[float]] = {}
+    for q in queries:
+        fingerprints[q["id"]] = await _embed_query(q["query"])
+    return fingerprints
 
 
 # ---------------------------------------------------------------------------
@@ -1134,6 +1161,38 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
     print()
 
 
+def print_drift_report(
+    current_fingerprints: dict[str, list[float]],
+    baseline_fingerprints: dict[str, list[float]] | None,
+    threshold: float = EMBEDDING_DRIFT_THRESHOLD,
+) -> list[str]:
+    """Independent of recall metrics (AC2) — per-query cosine distance vs the
+    baseline's embedding fingerprints. Returns the list of drifted query ids."""
+    print("=== EMBEDDING DRIFT vs baseline.json ===")
+    if not baseline_fingerprints:
+        print(
+            "(no embedding_fingerprints in baseline — drift check skipped; "
+            "run --save-baseline with this version to enable)"
+        )
+        print()
+        return []
+
+    drifted = []
+    for qid, cur_vec in current_fingerprints.items():
+        base_vec = baseline_fingerprints.get(qid)
+        if base_vec is None:
+            continue
+        dist = _cosine_distance(cur_vec, base_vec)
+        if math.isnan(dist) or dist > threshold:
+            drifted.append(qid)
+            print(f"DRIFT  {qid}: cosine_distance={dist:.6f}  (threshold {threshold})")
+
+    if not drifted:
+        print(f"no queries exceeded drift threshold {threshold}")
+    print()
+    return drifted
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -1228,7 +1287,12 @@ def main() -> int:
         doc = yaml.safe_load(f)
     queries = doc["queries"]
 
-    # --replay / --ci skip Supabase client — load from cached snapshot
+    # --replay / --ci skip Supabase client — load from cached snapshot. Cannot
+    # detect embedding drift (#1216 AC5): the snapshot's embeddings are frozen
+    # at --record time, so replaying it never calls VoyageAI again and has
+    # nothing fresh to compare against the baseline's fingerprints. Drift
+    # detection only runs on the live path (--diff baseline / --save-baseline
+    # below, without --replay/--ci).
     if args.replay or args.ci:
         snapshot_path = Path(args.replay or args.ci)
         if not snapshot_path.exists():
@@ -1368,6 +1432,14 @@ def main() -> int:
     report = asyncio.run(run_all(queries, client, config=cfg))
     print_report(report, quiet=args.quiet)
 
+    # One extra _embed_query() call per query, only when a baseline is being
+    # written or compared — reuses _embed_query (AC3), matches the
+    # one-call-per-query shape _record_snapshot already uses (AC1).
+    need_fingerprints = args.save_baseline or args.diff == "baseline"
+    current_fingerprints = (
+        asyncio.run(_compute_embedding_fingerprints(queries)) if need_fingerprints else None
+    )
+
     if args.diff == "baseline":
         if not baseline_path.exists():
             print(f"(no baseline at {baseline_path} — run --save-baseline first)")
@@ -1375,11 +1447,14 @@ def main() -> int:
             with baseline_path.open("r", encoding="utf-8") as f:
                 baseline = json.load(f)
             print_diff(report, baseline)
+            print_drift_report(current_fingerprints, baseline.get("embedding_fingerprints"))
 
     if args.save_baseline:
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = asdict(report)
+        payload["embedding_fingerprints"] = current_fingerprints
         with baseline_path.open("w", encoding="utf-8") as f:
-            json.dump(asdict(report), f, indent=2, ensure_ascii=False)
+            json.dump(payload, f, indent=2, ensure_ascii=False)
         print(f"Baseline saved to {baseline_path}")
 
     # exit code: 0 if all queries passed, 1 otherwise — CI-friendly
