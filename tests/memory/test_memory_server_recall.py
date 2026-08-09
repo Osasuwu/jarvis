@@ -159,6 +159,63 @@ class TestRecallLifecycleFilters:
         assert any("valid_to" in s for s in select_args)
 
     @pytest.mark.asyncio
+    async def test_keyword_recall_bare_percent_matches_nothing(self):
+        """#1081: a bare `%` keyword must not become a match-everything ILIKE."""
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(client, "%", project=None, mem_type=None, limit=10)
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        assert not any("ilike" in f for f in or_filters)
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_strips_dsl_metacharacters(self):
+        """#1081: `,` `(` `)` `.` in a keyword must not alter or_() filter structure."""
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(client, "a,b(c).d", project=None, mem_type=None, limit=10)
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        ilike_filters = [f for f in or_filters if "ilike" in f]
+        assert len(ilike_filters) == 1
+        assert ilike_filters[0] == "name.ilike.%abcd%,description.ilike.%abcd%,content.ilike.%abcd%"
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_strips_underscore_wildcard(self):
+        """#1081: `_` is also an ILIKE wildcard — stripped like `%`."""
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(client, "foo_bar", project=None, mem_type=None, limit=10)
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        ilike_filters = [f for f in or_filters if "ilike" in f]
+        assert ilike_filters == [
+            "name.ilike.%foobar%,description.ilike.%foobar%,content.ilike.%foobar%"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_plain_alphanumeric_unchanged(self):
+        """#1081: normal keywords behave exactly as before the sanitization fix."""
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(client, "hello world", project=None, mem_type=None, limit=10)
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        ilike_filters = [f for f in or_filters if "ilike" in f]
+        assert ilike_filters == [
+            "name.ilike.%hello%,description.ilike.%hello%,content.ilike.%hello%,"
+            "name.ilike.%world%,description.ilike.%world%,content.ilike.%world%"
+        ]
+
+    @pytest.mark.asyncio
     async def test_keyword_recall_filters_past_valid_to(self):
         now = datetime.now(timezone.utc)
         past = (now - timedelta(days=1)).isoformat()

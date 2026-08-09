@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 from mcp.types import TextContent
@@ -376,6 +377,20 @@ async def _hybrid_recall(
     return all_rows, [TextContent(type="text", text=text)]
 
 
+# #1081: keywords are interpolated into an ilike pattern (%term%) and then
+# into a PostgREST or_() DSL string. Left raw, `%`/`_` are LIKE wildcards
+# (a bare `%` matches every row) and `,`/`(`/`)`/`.` are or_() separators
+# that can rewrite the filter's structure. Whitelisting to
+# [A-Za-z0-9_-] and dropping `_` sidesteps both classes at once instead of
+# hand-rolling escaping for an under-documented DSL quoting scheme.
+_KEYWORD_UNSAFE_RE = re.compile(r"[^A-Za-z0-9-]+")
+
+
+def _sanitize_ilike_term(term: str) -> str:
+    """Strip LIKE wildcards and or_() DSL metacharacters from a keyword."""
+    return _KEYWORD_UNSAFE_RE.sub("", term)
+
+
 async def _keyword_recall(
     client,
     query_text: str,
@@ -431,11 +446,13 @@ async def _keyword_recall(
         q = q.eq("type", mem_type)
 
     if query_text:
-        terms = query_text.split()
-        clauses = ",".join(
-            f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%" for t in terms
-        )
-        q = q.or_(clauses)
+        terms = [_sanitize_ilike_term(t) for t in query_text.split()]
+        terms = [t for t in terms if t]
+        if terms:
+            clauses = ",".join(
+                f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%" for t in terms
+            )
+            q = q.or_(clauses)
 
     # Fetch extra rows so the client-side valid_to filter still leaves `limit`
     # live rows in the worst case. 2x is a simple heuristic; tombstoned
