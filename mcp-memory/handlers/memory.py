@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from datetime import datetime, timezone
 
 from mcp.types import TextContent
@@ -376,6 +377,26 @@ async def _hybrid_recall(
     return all_rows, [TextContent(type="text", text=text)]
 
 
+# #1081: keywords are interpolated into an ilike pattern (%term%) and then
+# into a PostgREST or_() DSL string. Left raw, `%`/`_` are LIKE wildcards
+# (a bare `%` matches every row) and `,`/`(`/`)`/`.` are or_() separators
+# that can rewrite the filter's structure. Whitelisting to
+# [A-Za-z0-9_-] and dropping `_` sidesteps both classes at once instead of
+# hand-rolling escaping for an under-documented DSL quoting scheme.
+#
+# Same regex also sanitizes the `project` param (#1080 review follow-up):
+# `project` reaches these call sites raw from `args.get("project")` and is
+# interpolated into the same or_() DSL string (`project.eq.{project},...`)
+# — sibling of the query_text finding, same metacharacter class, same fix.
+_OR_DSL_UNSAFE_RE = re.compile(r"[^A-Za-z0-9-]+")
+
+
+def _sanitize_or_dsl_term(term: str) -> str:
+    """Strip LIKE wildcards and or_() DSL metacharacters from a term
+    headed into a PostgREST `.or_()` filter string (ilike keyword or eq value)."""
+    return _OR_DSL_UNSAFE_RE.sub("", term)
+
+
 async def _keyword_recall(
     client,
     query_text: str,
@@ -426,16 +447,18 @@ async def _keyword_recall(
         q = q.eq("requires_review", False)
 
     if project is not None:
-        q = q.or_(f"project.eq.{project},project.is.null")
+        q = q.or_(f"project.eq.{_sanitize_or_dsl_term(project)},project.is.null")
     if mem_type:
         q = q.eq("type", mem_type)
 
     if query_text:
-        terms = query_text.split()
-        clauses = ",".join(
-            f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%" for t in terms
-        )
-        q = q.or_(clauses)
+        terms = [_sanitize_or_dsl_term(t) for t in query_text.split()]
+        terms = [t for t in terms if t]
+        if terms:
+            clauses = ",".join(
+                f"name.ilike.%{t}%,description.ilike.%{t}%,content.ilike.%{t}%" for t in terms
+            )
+            q = q.or_(clauses)
 
     # Fetch extra rows so the client-side valid_to filter still leaves `limit`
     # live rows in the worst case. 2x is a simple heuristic; tombstoned
@@ -573,7 +596,7 @@ async def _backfill_missing_embeddings(client, project) -> None:
         q = client.table("memories").select("id, name, description, tags, content")
         q = q.is_(primary_col, "null").is_("deleted_at", "null")
         if project is not None:
-            q = q.or_(f"project.eq.{project},project.is.null")
+            q = q.or_(f"project.eq.{_sanitize_or_dsl_term(project)},project.is.null")
         rows = q.execute().data
         if not rows:
             return
@@ -1161,7 +1184,7 @@ async def _handle_list(args: dict) -> list[TextContent]:
     )
 
     if project is not None:
-        q = q.or_(f"project.eq.{project},project.is.null")
+        q = q.or_(f"project.eq.{_sanitize_or_dsl_term(project)},project.is.null")
     if mem_type:
         q = q.eq("type", mem_type)
 
