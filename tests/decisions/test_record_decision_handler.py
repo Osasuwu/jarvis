@@ -9,6 +9,7 @@ Covers:
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -654,10 +655,11 @@ class TestDecisionList:
         scoped query returns only the one matching."""
         from server import _handle_decision_list
 
+        now = datetime.now(timezone.utc)
         rows = [
             {
                 "id": "ep-aaa",
-                "created_at": "2026-08-07T10:00:00+00:00",
+                "created_at": (now - timedelta(hours=2)).isoformat(),
                 "payload": {
                     "decision": "d1",
                     "session_id": "sid-aaa",
@@ -667,7 +669,7 @@ class TestDecisionList:
             },
             {
                 "id": "ep-bbb",
-                "created_at": "2026-08-07T11:00:00+00:00",
+                "created_at": (now - timedelta(hours=1)).isoformat(),
                 "payload": {
                     "decision": "d2",
                     "session_id": "sid-bbb",
