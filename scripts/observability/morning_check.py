@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -30,8 +31,54 @@ _ALARM_CATEGORIES = frozenset(
         "high_failure_rate",
         "dispatcher_gap",
         "no_audit_rows",
+        "wake_driver_silence",
     }
 )
+
+# Repo-root-anchored, mirroring agents/wake_driver.py's _LOG_DIR pattern --
+# this file sits two directories under repo root (scripts/observability/)
+# vs. wake_driver.py's one (agents/).
+_WAKE_DRIVER_LOG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "logs",
+    "wake_driver",
+    "wake_driver.log",
+)
+
+
+def _wake_driver_log_mtime() -> float | None:
+    """Return the wake_driver log file's mtime (epoch seconds), or None if missing.
+
+    A dedicated accessor so tests can mock filesystem state instead of
+    depending on a real logs/wake_driver/wake_driver.log (#1479 AC3).
+    """
+    try:
+        return os.path.getmtime(_WAKE_DRIVER_LOG_PATH)
+    except OSError:
+        return None
+
+
+def _check_wake_driver_silence(gap_minutes: int) -> str | None:
+    """Return an alarm message if wake_driver's log is missing or stale.
+
+    wake_driver never writes audit_log rows (it's an event-driven daemon,
+    not a dispatched task) -- unlike dispatcher_gap, this can't be a
+    row-timestamp-gap check, so it's file-mtime based instead, and it must
+    run independent of whether audit_log has any rows at all (#1479 AC3).
+    """
+    mtime = _wake_driver_log_mtime()
+    if mtime is None:
+        return (
+            "wake_driver: log file missing (logs/wake_driver/wake_driver.log) "
+            "-- daemon may never have started"
+        )
+    age_min = (datetime.now(timezone.utc).timestamp() - mtime) / 60
+    if age_min > gap_minutes:
+        return (
+            f"wake_driver: log silent for {age_min:.0f}min "
+            f"(threshold {gap_minutes}min) -- daemon may be dead"
+        )
+    return None
 
 
 def _fmt_ts(ts: str) -> str:
@@ -105,6 +152,12 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help="Enqueue alarms as task_queue rows (default: off)",
     )
+    parser.add_argument(
+        "--wake-driver-gap-minutes",
+        type=int,
+        default=20,
+        help="Flag wake_driver log silence exceeding N minutes (default 20)",
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -112,6 +165,17 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:
         print(f"FAILED to connect to Supabase: {e}", file=sys.stderr)
         return 2
+
+    alarms: list[str] = []
+
+    # wake_driver never writes audit_log rows, so this check runs up front,
+    # independent of the audit_log query below and its own rows/no-rows
+    # branches (#1479 AC3).
+    wake_driver_alarm = _check_wake_driver_silence(args.wake_driver_gap_minutes)
+    if wake_driver_alarm:
+        alarms.append(wake_driver_alarm)
+        if args.enqueue_on_alarm:
+            _enqueue_alarm(client, "wake_driver_silence", wake_driver_alarm, wake_driver_alarm)
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     cutoff_iso = cutoff.isoformat()
@@ -138,6 +202,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.enqueue_on_alarm:
             details = "no_audit_rows"
             _enqueue_alarm(client, "no_audit_rows", details, msg)
+        if alarms:
+            print()
+            print("ALARMS:")
+            for a in alarms:
+                print(f"  - {a}")
         return 1
 
     # Per-agent rollup
@@ -151,8 +220,6 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(f"{'agent_id':<30} {'rows':>6} {'failures':>10} {'first':<20} {'last':<20}")
     print("-" * 96)
-
-    alarms: list[str] = []
 
     def _is_failure(outcome: str | None) -> bool:
         # 'failure:<ExceptionType>' is the canonical failure marker (see

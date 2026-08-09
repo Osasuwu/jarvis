@@ -127,6 +127,23 @@ class _StubClient:
         self.tables["audit_log"].extend(rows)
 
 
+@pytest.fixture(autouse=True)
+def _healthy_wake_driver_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default the wake_driver log mtime to "just written" (#1479 AC3).
+
+    Pre-existing tests in this file (written before AC3) seed audit_log
+    only and know nothing about the wake_driver log file. Without this
+    default, they'd hit the real filesystem, find no
+    logs/wake_driver/wake_driver.log, and pick up an unrelated alarm. Tests
+    that actually exercise the wake_driver-silence alarm override this via
+    monkeypatch in their own body.
+    """
+    monkeypatch.setattr(
+        "scripts.observability.morning_check._wake_driver_log_mtime",
+        lambda: datetime.now(UTC).timestamp(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stub contract: verify the stub satisfies real client expectations
 # ---------------------------------------------------------------------------
@@ -151,9 +168,7 @@ def test_stub_contract_smoke() -> None:
     assert result.data[0]["agent_id"] == "a"
 
     # Upsert chain: table().upsert().execute()
-    stub.table("task_queue").upsert(
-        {"key": "v"}, on_conflict="k", ignore_duplicates=True
-    ).execute()
+    stub.table("task_queue").upsert({"key": "v"}, on_conflict="k", ignore_duplicates=True).execute()
     upserts = [c for c in stub.calls if c[0] == "upsert"]
     assert len(upserts) == 1
 
@@ -318,6 +333,105 @@ def test_no_audit_rows_enqueues_alarm() -> None:
         payload = upserts[0][2]["payload"]
         assert payload["approved_by"] == "cron:morning_check"
         assert "No audit_log rows" in payload["goal"]
+
+
+# ---------------------------------------------------------------------------
+# wake_driver silence alarm (#1479 AC3) -- file-mtime based, sibling of
+# dispatcher_gap but independent of audit_log (wake_driver never writes rows).
+# ---------------------------------------------------------------------------
+
+
+def test_wake_driver_silence_alarm_missing_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No wake_driver log file at all -> alarm (daemon may never have started)."""
+    from scripts.observability.morning_check import main
+
+    monkeypatch.setattr(
+        "scripts.observability.morning_check._wake_driver_log_mtime",
+        lambda: None,
+    )
+
+    stub = _StubClient()
+    stub.seed_audit_log([_audit_row(agent_id="task-dispatcher", outcome="success")])
+
+    with patch("scripts.observability.morning_check.get_client", return_value=stub):
+        exit_code = main(argv=["--enqueue-on-alarm"])
+        assert exit_code == 1
+
+        upserts = [c for c in stub.calls if c[0] == "upsert"]
+        wake_driver_upserts = [c for c in upserts if "wake_driver" in c[2]["payload"]["goal"]]
+        assert len(wake_driver_upserts) == 1
+        assert "log file missing" in wake_driver_upserts[0][2]["payload"]["goal"]
+
+
+def test_wake_driver_silence_alarm_stale_log(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Log last written beyond the silence threshold -> alarm."""
+    from scripts.observability.morning_check import main
+
+    stale_ts = (_now_utc() - timedelta(minutes=45)).timestamp()
+    monkeypatch.setattr(
+        "scripts.observability.morning_check._wake_driver_log_mtime",
+        lambda: stale_ts,
+    )
+
+    stub = _StubClient()
+    stub.seed_audit_log([_audit_row(agent_id="task-dispatcher", outcome="success")])
+
+    with patch("scripts.observability.morning_check.get_client", return_value=stub):
+        exit_code = main(argv=["--enqueue-on-alarm", "--wake-driver-gap-minutes", "20"])
+        assert exit_code == 1
+
+        upserts = [c for c in stub.calls if c[0] == "upsert"]
+        wake_driver_upserts = [c for c in upserts if "wake_driver" in c[2]["payload"]["goal"]]
+        assert len(wake_driver_upserts) == 1
+        assert "45min" in wake_driver_upserts[0][2]["payload"]["goal"]
+
+
+def test_wake_driver_silence_alarm_fresh_log_no_alarm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Log recently written (within threshold) -> no wake_driver alarm."""
+    from scripts.observability.morning_check import main
+
+    fresh_ts = (_now_utc() - timedelta(minutes=2)).timestamp()
+    monkeypatch.setattr(
+        "scripts.observability.morning_check._wake_driver_log_mtime",
+        lambda: fresh_ts,
+    )
+
+    stub = _StubClient()
+    stub.seed_audit_log([_audit_row(agent_id="task-dispatcher", outcome="success")])
+
+    with patch("scripts.observability.morning_check.get_client", return_value=stub):
+        exit_code = main(argv=[])
+        assert exit_code == 0
+
+
+def test_wake_driver_silence_checked_even_with_no_audit_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """wake_driver check runs even when audit_log is completely empty --
+    it's file-mtime based, independent of the dispatcher's audit trail
+    (wake_driver never writes audit_log rows, #1479 AC3 design note)."""
+    from scripts.observability.morning_check import main
+
+    monkeypatch.setattr(
+        "scripts.observability.morning_check._wake_driver_log_mtime",
+        lambda: None,
+    )
+
+    stub = _StubClient()
+    # Empty audit_log
+
+    with patch("scripts.observability.morning_check.get_client", return_value=stub):
+        exit_code = main(argv=["--enqueue-on-alarm"])
+        assert exit_code == 1
+
+        upserts = [c for c in stub.calls if c[0] == "upsert"]
+        assert len(upserts) == 2
+
+        categories_seen = {
+            "no_audit_rows" if "No audit_log rows" in c[2]["payload"]["goal"] else "wake_driver"
+            for c in upserts
+        }
+        assert categories_seen == {"no_audit_rows", "wake_driver"}
 
 
 def test_dispatcher_gap_enqueues_alarm() -> None:
