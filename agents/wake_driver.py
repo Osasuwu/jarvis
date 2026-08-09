@@ -61,7 +61,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from logging.handlers import RotatingFileHandler
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from dotenv import load_dotenv
 
@@ -107,6 +107,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 # Re-claim a ``claimed`` row after this long with no ``processed`` commit. Also
 # the wait-for-wake timeout, so the watchdog runs on an idle queue.
 DEFAULT_STALE_AFTER_SECONDS = 300
@@ -130,6 +132,17 @@ _LOG_DIR = os.path.join(
 _STARTUP_RETRY_ATTEMPTS = 5
 _STARTUP_RETRY_BASE_SECONDS = 5.0
 _STARTUP_RETRY_MAX_SECONDS = 60.0
+
+# In-loop reconnect (#1479 AC1b): deliberately NOT _STARTUP_RETRY_* — those
+# are tuned for one-shot cold boot (worst case ~135s, raises after exhausting
+# attempts). A live daemon that hits a dropped connection needs a much
+# shorter per-cycle backoff and must NEVER raise out — exiting here is the
+# exact silent-death failure mode #1479 was filed for. _reconnect() below
+# instead loops capped-backoff cycles of _RECONNECT_ATTEMPTS_PER_CYCLE
+# forever, logging once per exhausted cycle, until connect() succeeds.
+_RECONNECT_ATTEMPTS_PER_CYCLE = 3
+_RECONNECT_BASE_SECONDS = 1.0
+_RECONNECT_MAX_SECONDS = 5.0
 
 
 def _configure_logging() -> None:
@@ -711,6 +724,7 @@ class PsycopgEventQueue:
         *,
         claimer: str = CLAIMER,
         task_queue: SupabaseTaskQueue | None = None,
+        connect: Callable[[], psycopg.Connection] | None = None,
     ) -> None:
         self._conn = conn
         self._claimer = claimer
@@ -720,86 +734,172 @@ class PsycopgEventQueue:
         # same MAJOR fix as PR #1011's event client (finding #1, PR #1475
         # review).
         self._task_queue = task_queue if task_queue is not None else SupabaseTaskQueue()
-        self._conn.execute(f"LISTEN {EVENTS_CHANNEL}")
-        self._conn.execute(f"LISTEN {TASK_QUEUE_CHANNEL}")
-        self._conn.commit()
+        # Rebuild hook for _reconnect() (#1479 AC1). None means "no
+        # reconnect available" — callers that don't pass it (e.g. ad-hoc
+        # scripts) keep the old crash-on-drop behavior instead of silently
+        # looping forever with no way to get a working connection.
+        self._connect = connect
+        self._listen(self._conn)
+
+    def _listen(self, conn: psycopg.Connection) -> None:
+        conn.execute(f"LISTEN {EVENTS_CHANNEL}")
+        conn.execute(f"LISTEN {TASK_QUEUE_CHANNEL}")
+        conn.commit()
+
+    def _reconnect(self) -> None:
+        """Rebuild ``self._conn`` and re-subscribe both LISTEN channels.
+
+        Never raises and never returns without a working connection — loops
+        capped-backoff cycles indefinitely on persistent DB-down (#1479
+        AC1b). Exiting here is the exact silent-death failure mode the issue
+        was filed for, so there is no attempt budget to exhaust out of.
+        """
+        assert self._connect is not None, (
+            "PsycopgEventQueue built without connect= cannot reconnect"
+        )
+        cycle = 1
+        while True:
+            for attempt in range(1, _RECONNECT_ATTEMPTS_PER_CYCLE + 1):
+                try:
+                    new_conn = self._connect()
+                    self._listen(new_conn)
+                    self._conn = new_conn
+                    logger.info(
+                        "[wake_driver] reconnected to DB (cycle %d, attempt %d)", cycle, attempt
+                    )
+                    return
+                except Exception as exc:  # noqa: BLE001 — must never exit the daemon
+                    delay = min(
+                        _RECONNECT_BASE_SECONDS * (2 ** (attempt - 1)), _RECONNECT_MAX_SECONDS
+                    )
+                    logger.warning(
+                        "[wake_driver] reconnect failed (cycle %d, attempt %d/%d): %s — retrying in %.0fs",
+                        cycle,
+                        attempt,
+                        _RECONNECT_ATTEMPTS_PER_CYCLE,
+                        exc,
+                        delay,
+                    )
+                    time.sleep(delay)
+            logger.error(
+                "[wake_driver] reconnect: cycle %d exhausted (%d attempts), starting new cycle",
+                cycle,
+                _RECONNECT_ATTEMPTS_PER_CYCLE,
+            )
+            cycle += 1
+
+    def _with_reconnect(self, op: Callable[[], T]) -> T:
+        import psycopg
+
+        try:
+            return op()
+        except psycopg.OperationalError as exc:
+            logger.warning("[wake_driver] DB connection dropped (%s); reconnecting", exc)
+            self._reconnect()
+            return op()
 
     def claim_next(self) -> dict[str, Any] | None:
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT * FROM claim_next(%s)", (self._claimer,))
-            row = cur.fetchone()
-            if row is None:
-                return None
-            cols = [d.name for d in cur.description]
-        self._conn.commit()
-        return dict(zip(cols, row, strict=True))
+        def op() -> dict[str, Any] | None:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT * FROM claim_next(%s)", (self._claimer,))
+                row = cur.fetchone()
+                if row is None:
+                    return None
+                cols = [d.name for d in cur.description]
+            self._conn.commit()
+            return dict(zip(cols, row, strict=True))
+
+        return self._with_reconnect(op)
 
     def mark_processed(self, event_id: str, *, action: str = "") -> bool:
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT mark_processed(%s, %s, %s)", (event_id, self._claimer, action))
-            ok = bool(cur.fetchone()[0])
-        self._conn.commit()
-        return ok
+        def op() -> bool:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT mark_processed(%s, %s, %s)", (event_id, self._claimer, action))
+                ok = bool(cur.fetchone()[0])
+            self._conn.commit()
+            return ok
+
+        return self._with_reconnect(op)
 
     def park(self, event_id: str, *, reason: str = "") -> bool:
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT park_event(%s, %s)", (event_id, reason))
-            ok = bool(cur.fetchone()[0])
-        self._conn.commit()
-        return ok
+        def op() -> bool:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT park_event(%s, %s)", (event_id, reason))
+                ok = bool(cur.fetchone()[0])
+            self._conn.commit()
+            return ok
+
+        return self._with_reconnect(op)
 
     def reclaim_stale(self, *, older_than_seconds: float) -> int:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "UPDATE events SET state = 'pending', claimed_at = NULL, claimed_by = NULL "
-                "WHERE state = 'claimed' "
-                "AND claimed_at < now() - make_interval(secs => %s) "
-                "RETURNING id",
-                (older_than_seconds,),
-            )
-            count = len(cur.fetchall())
-        self._conn.commit()
-        return count
+        def op() -> int:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE events SET state = 'pending', claimed_at = NULL, claimed_by = NULL "
+                    "WHERE state = 'claimed' "
+                    "AND claimed_at < now() - make_interval(secs => %s) "
+                    "RETURNING id",
+                    (older_than_seconds,),
+                )
+                count = len(cur.fetchall())
+            self._conn.commit()
+            return count
+
+        return self._with_reconnect(op)
 
     def wait_for_wake(self, *, timeout_seconds: float | None) -> bool:
-        for _notify in self._conn.notifies(timeout=timeout_seconds, stop_after=1):
-            return True
-        return False
+        def op() -> bool:
+            for _notify in self._conn.notifies(timeout=timeout_seconds, stop_after=1):
+                return True
+            return False
+
+        return self._with_reconnect(op)
 
     def recent_events(self, *, limit: int) -> list[dict[str, Any]]:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM events ORDER BY created_at DESC LIMIT %s",
-                (limit,),
-            )
-            rows = cur.fetchall()
-            cols = [d.name for d in cur.description]
-        self._conn.commit()
-        return [dict(zip(cols, row, strict=True)) for row in rows]
+        def op() -> list[dict[str, Any]]:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM events ORDER BY created_at DESC LIMIT %s",
+                    (limit,),
+                )
+                rows = cur.fetchall()
+                cols = [d.name for d in cur.description]
+            self._conn.commit()
+            return [dict(zip(cols, row, strict=True)) for row in rows]
+
+        return self._with_reconnect(op)
 
     # -- PollerPort surface (#1393 — Path B consumer) ------------------------
 
     def find_parked_events(self) -> list[dict[str, Any]]:
-        with self._conn.cursor() as cur:
-            cur.execute(
-                "SELECT * FROM events WHERE state = 'parked' AND payload ? 'blocked_by_task_id' "
-                "LIMIT %s",
-                (PARKED_EVENTS_LIMIT,),
-            )
-            rows = cur.fetchall()
-            cols = [d.name for d in cur.description]
-        self._conn.commit()
-        return [dict(zip(cols, row, strict=True)) for row in rows]
+        def op() -> list[dict[str, Any]]:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM events WHERE state = 'parked' AND payload ? 'blocked_by_task_id' "
+                    "LIMIT %s",
+                    (PARKED_EVENTS_LIMIT,),
+                )
+                rows = cur.fetchall()
+                cols = [d.name for d in cur.description]
+            self._conn.commit()
+            return [dict(zip(cols, row, strict=True)) for row in rows]
+
+        return self._with_reconnect(op)
 
     def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
+        # Rides SupabaseTaskQueue (supabase-py/PostgREST), not self._conn —
+        # out of scope for the psycopg reconnect wrapper (#1479 AC1).
         return self._task_queue.get_statuses(task_ids)
 
     def requeue_event(self, event_id: str, *, reason: str) -> bool:
-        with self._conn.cursor() as cur:
-            cur.execute("SELECT requeue_event(%s, %s)", (event_id, reason))
-            ok = bool(cur.fetchone()[0])
-        self._conn.commit()
-        return ok
+        def op() -> bool:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT requeue_event(%s, %s)", (event_id, reason))
+                ok = bool(cur.fetchone()[0])
+            self._conn.commit()
+            return ok
+
+        return self._with_reconnect(op)
 
 
 def dry_run(
@@ -853,8 +953,11 @@ def _build_psycopg_queue(*, task_queue: SupabaseTaskQueue | None = None) -> Psyc
         )
     import psycopg
 
-    conn = psycopg.connect(cfg.postgres_url, autocommit=False)
-    return PsycopgEventQueue(conn, task_queue=task_queue)
+    def connect() -> psycopg.Connection:
+        return psycopg.connect(cfg.postgres_url, autocommit=False)
+
+    conn = connect()
+    return PsycopgEventQueue(conn, task_queue=task_queue, connect=connect)
 
 
 def _default_event_emit(*, repo: str, client: Any | None = None) -> EventEmit:

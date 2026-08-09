@@ -110,6 +110,24 @@ function Format-WakeDriverActionArgs {
     )
 }
 
+function Set-WakeDriverRepetition {
+    param(
+        [Parameter(Mandatory)]$Trigger,
+        [Parameter(Mandatory)][timespan]$RepetitionInterval
+    )
+
+    # New-ScheduledTaskTrigger has no parameter set combining -AtLogOn with
+    # -RepetitionInterval (verified empirically, #1479 AC2) -- build a
+    # throwaway -Once trigger to get a well-formed Repetition CIM instance,
+    # then graft it onto the logon trigger. Duration is intentionally left
+    # unset: Task Scheduler's schema treats an omitted duration as "repeat
+    # indefinitely" (minOccurs=0), while passing [timespan]::MaxValue is
+    # rejected at registration (0x80041318).
+    $repetitionSource = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval $RepetitionInterval
+    $Trigger.Repetition = $repetitionSource.Repetition
+    return $Trigger
+}
+
 if ($NoExecute) { return }
 
 # ---------------------------------------------------------------------------
@@ -174,10 +192,18 @@ $action = New-ScheduledTaskAction -Execute $pwshExe `
     -WorkingDirectory $RepoRoot
 
 # ---------------------------------------------------------------------------
-# Trigger -- start at user logon, keep running.
+# Trigger -- start at user logon, keep running. A PT5M repetition is grafted
+# on as a watchdog (#1479 AC2): Task Scheduler's own restart-on-failure
+# (RestartCount/RestartInterval below) only fires on a *caught* failure exit;
+# an uncaught crash (e.g. wait_for_wake() on a dead connection outside any
+# try, per #1479's root cause) leaves the task looking "Ready" with no new
+# instance and no restart attempt. -MultipleInstances IgnoreNew (below) makes
+# each repetition tick a no-op while the daemon is already alive, so this is
+# pure "start if not running" watchdog semantics, not a duplicate launcher.
 # ---------------------------------------------------------------------------
 
 $trigger = New-ScheduledTaskTrigger -AtLogOn
+$trigger = Set-WakeDriverRepetition -Trigger $trigger -RepetitionInterval (New-TimeSpan -Minutes 5)
 
 # ---------------------------------------------------------------------------
 # Principal + settings -- restart on crash.
@@ -205,7 +231,7 @@ if ($WhatIfOnly) {
     Write-Host "         Execute   : $pwshExe"
     Write-Host "         Arguments : $($argParts -join ' ')"
     Write-Host "         WorkingDir: $RepoRoot"
-    Write-Host "         Trigger   : AtLogOn (continuous, restart on crash)"
+    Write-Host "         Trigger   : AtLogOn + PT5M repetition watchdog (continuous, restart on crash)"
     Write-Host "         Existing  : $(if ($existing) { 'YES (would be replaced)' } else { 'no' })"
     return
 }
@@ -215,7 +241,7 @@ if ($existing) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
 }
 
-$description = "Reactive-core wake_driver -- LISTEN/NOTIFY event loop, watchdog ${WatchdogSeconds}s. Restarts on crash/reboot. #1384."
+$description = "Reactive-core wake_driver -- LISTEN/NOTIFY event loop, watchdog ${WatchdogSeconds}s. Restarts on crash/reboot, PT5M repetition watchdog for uncaught-crash silent death. #1384 #1479."
 
 Register-ScheduledTask -TaskName $taskName `
     -Action $action -Trigger $trigger `

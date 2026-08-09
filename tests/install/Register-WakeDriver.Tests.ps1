@@ -103,6 +103,32 @@ Describe 'Format-WakeDriverActionArgs' {
 }
 
 # ---------------------------------------------------------------------------
+# Repetition watchdog graft (#1479 AC2) -- AtLogOn has no -RepetitionInterval
+# parameter set, so the fix builds a throwaway -Once trigger for its
+# well-formed Repetition CIM instance and grafts it onto the logon trigger.
+# ---------------------------------------------------------------------------
+
+Describe 'Set-WakeDriverRepetition' {
+    It 'grafts the requested interval onto the trigger (PT5M)' {
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $result = Set-WakeDriverRepetition -Trigger $trigger -RepetitionInterval (New-TimeSpan -Minutes 5)
+        $result.Repetition.Interval | Should Be 'PT5M'
+    }
+
+    It 'leaves the repetition duration unset so the pattern repeats indefinitely (#1479: MaxValue is rejected at registration, 0x80041318)' {
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $result = Set-WakeDriverRepetition -Trigger $trigger -RepetitionInterval (New-TimeSpan -Minutes 5)
+        [string]::IsNullOrEmpty($result.Repetition.Duration) | Should Be $true
+    }
+
+    It 'preserves the AtLogOn trigger type -- only Repetition is grafted on' {
+        $trigger = New-ScheduledTaskTrigger -AtLogOn
+        $result = Set-WakeDriverRepetition -Trigger $trigger -RepetitionInterval (New-TimeSpan -Minutes 5)
+        $result.CimClass.CimClassName | Should Be 'MSFT_TaskLogonTrigger'
+    }
+}
+
+# ---------------------------------------------------------------------------
 # NoExecute guard: loading the script without executing the main body
 # ---------------------------------------------------------------------------
 
