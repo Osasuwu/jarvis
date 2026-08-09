@@ -13,7 +13,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from server import (
+    _backfill_missing_embeddings,
     _expand_with_links,
+    _handle_list,
     _handle_outcome_record,
     _handle_outcome_update,
     _hybrid_recall,
@@ -389,6 +391,60 @@ class TestRecallLifecycleFilters:
         assert "real_mem" in text
         assert "snap1" not in text
         assert "snap2" not in text
+
+
+# ---------------------------------------------------------------------------
+# PR #1480 review follow-up: `project` is caller-controlled (args.get(
+# "project")) and reaches the same or_() DSL string as query_text — sibling
+# of the #1081 keyword-sanitization fix. Same three call sites the review
+# flagged: _keyword_recall, _backfill_missing_embeddings, _handle_list.
+# ---------------------------------------------------------------------------
+
+
+class TestProjectSanitization:
+    @staticmethod
+    def _fluent_query(data=None):
+        q = MagicMock()
+        for method in ("select", "is_", "or_", "eq", "limit", "order", "filter"):
+            getattr(q, method).return_value = q
+        q.execute.return_value = MagicMock(data=data or [])
+        return q
+
+    @pytest.mark.asyncio
+    async def test_keyword_recall_strips_dsl_metacharacters_from_project(self):
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _keyword_recall(
+            client, "", project="a,b(c).d", mem_type=None, limit=10
+        )
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        assert or_filters == ["project.eq.abcd,project.is.null"]
+
+    @pytest.mark.asyncio
+    async def test_backfill_missing_embeddings_strips_dsl_metacharacters_from_project(self):
+        query = self._fluent_query()  # empty data → returns before any Voyage call
+        client = MagicMock()
+        client.table.return_value = query
+
+        await _backfill_missing_embeddings(client, "a,b(c).d")
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        assert or_filters == ["project.eq.abcd,project.is.null"]
+
+    @pytest.mark.asyncio
+    async def test_handle_list_strips_dsl_metacharacters_from_project(self, monkeypatch):
+        query = self._fluent_query()
+        client = MagicMock()
+        client.table.return_value = query
+        monkeypatch.setattr(server_module, "_get_client", lambda: client)
+
+        await _handle_list({"project": "a,b(c).d"})
+
+        or_filters = [call.args[0] for call in query.or_.call_args_list]
+        assert or_filters == ["project.eq.abcd,project.is.null"]
 
 
 # ---------------------------------------------------------------------------
