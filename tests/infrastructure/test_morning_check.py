@@ -434,6 +434,41 @@ def test_wake_driver_silence_checked_even_with_no_audit_rows(
         assert categories_seen == {"no_audit_rows", "wake_driver"}
 
 
+def test_wake_driver_silence_alarm_dedupes_across_elapsed_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same ongoing outage, different elapsed minutes -> same idempotency_key.
+
+    _enqueue_alarm's dedup contract is keyed on (date, category, details_summary).
+    The alarm *message* embeds a continuously-growing elapsed-minute value, so
+    if that message were passed as details_summary (as goal is), every
+    morning_check.py run during one ongoing outage would mint a fresh key and
+    spam a new task_queue row instead of deduping to one per day (review
+    finding on PR #1483)."""
+    from scripts.observability.morning_check import main
+
+    stub = _StubClient()
+    stub.seed_audit_log([_audit_row(agent_id="task-dispatcher", outcome="success")])
+
+    for stale_minutes in (25, 50):
+        stale_ts = (_now_utc() - timedelta(minutes=stale_minutes)).timestamp()
+        monkeypatch.setattr(
+            "scripts.observability.morning_check._wake_driver_log_mtime",
+            lambda ts=stale_ts: ts,
+        )
+        with patch("scripts.observability.morning_check.get_client", return_value=stub):
+            main(argv=["--enqueue-on-alarm", "--wake-driver-gap-minutes", "20"])
+
+    upserts = [c for c in stub.calls if c[0] == "upsert"]
+    wake_driver_upserts = [c for c in upserts if "wake_driver" in c[2]["payload"]["goal"]]
+    assert len(wake_driver_upserts) == 2
+    keys = {c[2]["payload"]["idempotency_key"] for c in wake_driver_upserts}
+    assert len(keys) == 1, (
+        "idempotency_key must be stable across elapsed-time variation for the "
+        "same ongoing outage on the same day"
+    )
+
+
 def test_dispatcher_gap_enqueues_alarm() -> None:
     """Dispatcher gap > threshold enqueues 'dispatcher_gap' alarm."""
     from scripts.observability.morning_check import main

@@ -58,25 +58,32 @@ def _wake_driver_log_mtime() -> float | None:
         return None
 
 
-def _check_wake_driver_silence(gap_minutes: int) -> str | None:
-    """Return an alarm message if wake_driver's log is missing or stale.
+def _check_wake_driver_silence(gap_minutes: int) -> tuple[str, str] | None:
+    """Return (details_bucket, alarm_message) if wake_driver's log is missing or stale.
 
     wake_driver never writes audit_log rows (it's an event-driven daemon,
     not a dispatched task) -- unlike dispatcher_gap, this can't be a
     row-timestamp-gap check, so it's file-mtime based instead, and it must
     run independent of whether audit_log has any rows at all (#1479 AC3).
+
+    details_bucket is a coarse, day-stable category (not the elapsed-minute
+    count) -- callers use it as _enqueue_alarm's idempotency-key material so
+    one ongoing outage dedupes to a single task_queue row per day instead of
+    re-keying on every run as the elapsed-time message grows (PR #1483 review).
     """
     mtime = _wake_driver_log_mtime()
     if mtime is None:
         return (
+            "wake_driver:missing",
             "wake_driver: log file missing (logs/wake_driver/wake_driver.log) "
-            "-- daemon may never have started"
+            "-- daemon may never have started",
         )
     age_min = (datetime.now(timezone.utc).timestamp() - mtime) / 60
     if age_min > gap_minutes:
         return (
+            "wake_driver:stale",
             f"wake_driver: log silent for {age_min:.0f}min "
-            f"(threshold {gap_minutes}min) -- daemon may be dead"
+            f"(threshold {gap_minutes}min) -- daemon may be dead",
         )
     return None
 
@@ -171,11 +178,12 @@ def main(argv: list[str] | None = None) -> int:
     # wake_driver never writes audit_log rows, so this check runs up front,
     # independent of the audit_log query below and its own rows/no-rows
     # branches (#1479 AC3).
-    wake_driver_alarm = _check_wake_driver_silence(args.wake_driver_gap_minutes)
-    if wake_driver_alarm:
+    wake_driver_check = _check_wake_driver_silence(args.wake_driver_gap_minutes)
+    if wake_driver_check:
+        wake_driver_details, wake_driver_alarm = wake_driver_check
         alarms.append(wake_driver_alarm)
         if args.enqueue_on_alarm:
-            _enqueue_alarm(client, "wake_driver_silence", wake_driver_alarm, wake_driver_alarm)
+            _enqueue_alarm(client, "wake_driver_silence", wake_driver_details, wake_driver_alarm)
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     cutoff_iso = cutoff.isoformat()
