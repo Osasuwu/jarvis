@@ -59,17 +59,31 @@ def test_cosine_distance_zero_vector_is_nan():
     assert math.isnan(erc._cosine_distance([0.0, 0.0], [1.0, 0.0]))
 
 
-def test_compute_embedding_fingerprints_calls_embed_query_once_per_query():
+def test_fingerprint_sink_calls_embed_query_once_per_query():
+    """AC1/AC3: run_query() must not make a second _embed_query() call per
+    query beyond the one it already makes for recall() — the fingerprint is
+    captured from that same call via fingerprint_sink, not a separate pass."""
     queries = [{"id": "q01", "query": "foo"}, {"id": "q02", "query": "bar"}]
     fake_embed = AsyncMock(side_effect=[[1.0, 0.0], [0.0, 1.0]])
+    fake_recall = AsyncMock(return_value=[])
 
-    with patch.object(erc, "_embed_query", fake_embed):
-        fingerprints = asyncio.run(erc._compute_embedding_fingerprints(queries))
+    sink: dict = {}
+    with (
+        patch.object(erc, "_embed_query", fake_embed),
+        patch.object(erc, "recall", fake_recall),
+    ):
+        for q in queries:
+            asyncio.run(erc.run_query(None, q, fingerprint_sink=sink))
 
     assert fake_embed.await_count == 2
     fake_embed.assert_any_await("foo")
     fake_embed.assert_any_await("bar")
-    assert fingerprints == {"q01": [1.0, 0.0], "q02": [0.0, 1.0]}
+    assert sink == {"q01": [1.0, 0.0], "q02": [0.0, 1.0]}
+
+    # The embedding captured in the sink is the same one passed to recall()
+    # via query_embedding= — never a second, independently-computed vector.
+    call_embeddings = [call.kwargs["query_embedding"] for call in fake_recall.await_args_list]
+    assert call_embeddings == [[1.0, 0.0], [0.0, 1.0]]
 
 
 def test_print_drift_report_flags_query_over_threshold(capsys):
@@ -124,11 +138,17 @@ def test_russian_queries_covered_with_no_special_casing():
         )
 
     fake_embed = AsyncMock(return_value=[0.0])
-    with patch.object(erc, "_embed_query", fake_embed):
-        fingerprints = asyncio.run(erc._compute_embedding_fingerprints(doc["queries"]))
+    fake_recall = AsyncMock(return_value=[])
+    sink: dict = {}
+    with (
+        patch.object(erc, "_embed_query", fake_embed),
+        patch.object(erc, "recall", fake_recall),
+    ):
+        for q in doc["queries"]:
+            asyncio.run(erc.run_query(None, q, fingerprint_sink=sink))
 
     for qid in ru_ids:
-        assert qid in fingerprints
+        assert qid in sink
         fake_embed.assert_any_await(by_id[qid]["query"])
 
 

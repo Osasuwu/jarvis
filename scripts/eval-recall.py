@@ -144,14 +144,6 @@ def _cosine_distance(a: list[float], b: list[float]) -> float:
     return 1.0 - dot / (norm_a * norm_b)
 
 
-async def _compute_embedding_fingerprints(queries: list[dict]) -> dict[str, list[float]]:
-    """One _embed_query() call per query — reuses the canonical embed call site (AC1/AC3)."""
-    fingerprints: dict[str, list[float]] = {}
-    for q in queries:
-        fingerprints[q["id"]] = await _embed_query(q["query"])
-    return fingerprints
-
-
 # ---------------------------------------------------------------------------
 # Eval core
 # ---------------------------------------------------------------------------
@@ -575,6 +567,7 @@ async def run_query(
     q: dict,
     config: RecallConfig = PROD_RECALL_CONFIG,
     context_blob: str | None = None,
+    fingerprint_sink: dict[str, list[float]] | None = None,
 ) -> QueryResult:
     """Run one eval query and return a QueryResult.
 
@@ -585,9 +578,18 @@ async def run_query(
     Context-rot path (context_blob is not None): uses _run_query_direct()
     so the keyword leg can be polluted with the session blob. Both legs of
     the context-rot comparison use this path for a clean delta measurement.
+
+    ``fingerprint_sink`` (#1216): when given a dict, the embedding computed
+    for this query is stored at ``sink[q["id"]]`` and passed to recall() via
+    its ``query_embedding`` passthrough (#508) — one _embed_query() call
+    serves both the recall pipeline and the drift fingerprint, never two.
     """
     if context_blob is not None:
         return await _run_query_direct(client, q, context_blob=context_blob)
+
+    embedding = await _embed_query(q["query"])
+    if fingerprint_sink is not None:
+        fingerprint_sink[q["id"]] = embedding
 
     # Rewriter ablation (#499 fix-forward): when config.use_rewriter, call the
     # hook's rewrite_prompt to extract entities + types, then thread them into
@@ -618,6 +620,7 @@ async def run_query(
     hits = await recall(
         client,
         q["query"],
+        query_embedding=embedding,
         keyword_query=keyword_query,
         boost_types=boost_types,
         boost_multiplier=boost_multiplier,
@@ -671,10 +674,11 @@ async def run_all(
     queries: list[dict],
     client,
     config: RecallConfig = PROD_RECALL_CONFIG,
+    fingerprint_sink: dict[str, list[float]] | None = None,
 ) -> EvalReport:
     results = []
     for q in queries:
-        r = await run_query(client, q, config=config)
+        r = await run_query(client, q, config=config, fingerprint_sink=fingerprint_sink)
         results.append(r)
 
     total = len(results)
@@ -1429,16 +1433,16 @@ def main() -> int:
             return 1
         return 0
 
-    report = asyncio.run(run_all(queries, client, config=cfg))
-    print_report(report, quiet=args.quiet)
-
-    # One extra _embed_query() call per query, only when a baseline is being
-    # written or compared — reuses _embed_query (AC3), matches the
-    # one-call-per-query shape _record_snapshot already uses (AC1).
+    # Fingerprint sink (#1216): when a baseline is being written or compared,
+    # run_query()/run_all() capture the embedding they already compute for
+    # recall() into this dict instead of making a second _embed_query() call
+    # per query (AC1/AC3).
     need_fingerprints = args.save_baseline or args.diff == "baseline"
-    current_fingerprints = (
-        asyncio.run(_compute_embedding_fingerprints(queries)) if need_fingerprints else None
-    )
+    fingerprint_sink: dict[str, list[float]] | None = {} if need_fingerprints else None
+
+    report = asyncio.run(run_all(queries, client, config=cfg, fingerprint_sink=fingerprint_sink))
+    print_report(report, quiet=args.quiet)
+    current_fingerprints = fingerprint_sink
 
     if args.diff == "baseline":
         if not baseline_path.exists():
