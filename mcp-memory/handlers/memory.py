@@ -317,6 +317,7 @@ async def _hybrid_recall(
         use_links=include_links,
         include_unreviewed=include_unreviewed,
     )
+    degraded_sink: dict = {}
     try:
         hits = await recall(
             client,
@@ -325,6 +326,7 @@ async def _hybrid_recall(
             type_filter=mem_type,
             show_history=show_history,
             config=config,
+            degraded_sink=degraded_sink,
         )
     except asyncio.CancelledError:
         raise
@@ -333,7 +335,7 @@ async def _hybrid_recall(
         return [], [], True
 
     if not hits:
-        return [], [], False
+        return [], [], degraded_sink.get("degraded", False)
 
     direct_hits = [h for h in hits if h.source != "linked"]
     linked_hits = [h for h in hits if h.source == "linked"]

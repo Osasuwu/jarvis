@@ -613,3 +613,45 @@ class TestHybridRecallDegraded:
 
         assert len(results) == 1
         assert "degraded" not in results[0].text
+
+    # -----------------------------------------------------------------------
+    # Round-2 review finding (#1082): the tests above monkeypatch `mem.recall`
+    # itself, bypassing recall.py's real internal failure paths — which
+    # already swallow embed failures and RPC exceptions into a bare `[]`
+    # instead of raising. That means `_hybrid_recall`'s except-based degraded
+    # detection never fires for the actual failure modes it exists to catch.
+    # These tests exercise the REAL swallow sites inside recall() instead.
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_degraded_true_when_embed_returns_none_inside_recall(self, monkeypatch):
+        async def _no_embedding(_query):
+            return None
+
+        monkeypatch.setattr(server_module, "_embed_query", _no_embedding)
+
+        rows, results, degraded = await _hybrid_recall(
+            MagicMock(), query_text="anything", project="jarvis", mem_type=None, limit=5
+        )
+
+        assert rows == []
+        assert results == []
+        assert degraded is True
+
+    @pytest.mark.asyncio
+    async def test_degraded_true_when_rpc_raises_inside_recall(self, monkeypatch):
+        async def _fake_embedding(_query):
+            return [0.1, 0.2, 0.3]
+
+        monkeypatch.setattr(server_module, "_embed_query", _fake_embedding)
+
+        client = MagicMock()
+        client.rpc.side_effect = RuntimeError("RPC unavailable")
+
+        rows, results, degraded = await _hybrid_recall(
+            client, query_text="anything", project="jarvis", mem_type=None, limit=5
+        )
+
+        assert rows == []
+        assert results == []
+        assert degraded is True
