@@ -7,10 +7,12 @@ this file loads, so `from server import` works without the real deps.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 import pytest
+from mcp.types import TextContent
 
 from server import (
     _backfill_missing_embeddings,
@@ -18,10 +20,12 @@ from server import (
     _handle_list,
     _handle_outcome_record,
     _handle_outcome_update,
+    _handle_recall,
     _hybrid_recall,
     _keyword_recall,
 )
 import server as server_module
+import handlers.memory as mem
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +318,7 @@ class TestRecallLifecycleFilters:
         rpc_calls = client.rpc.call_args_list
         assert len(rpc_calls) == 2
         for call in rpc_calls:
-            rpc_name, rpc_args = call.args[0], call.args[1]
+            rpc_args = call.args[1]
             assert rpc_args.get("show_history") is False
         rpc_names = {call.args[0] for call in rpc_calls}
         assert "keyword_search_memories" in rpc_names
@@ -532,3 +536,122 @@ class TestOutcomeMemoryId:
         assert update_payload == {"memory_id": "33333333-3333-3333-3333-333333333333"}
         assert "verified_at" not in update_payload
         assert "updated" in result[0].text
+
+
+# ---------------------------------------------------------------------------
+# #1082: silent degradation observability — semantic recall failure must
+# surface a `degraded: true` flag rather than look identical to a healthy
+# keyword-only fallback.
+# ---------------------------------------------------------------------------
+
+
+class TestHybridRecallDegraded:
+    @pytest.mark.asyncio
+    async def test_degraded_true_when_recall_pipeline_raises(self, monkeypatch):
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("embedding service down")
+
+        monkeypatch.setattr(mem, "recall", _boom)
+
+        rows, results, degraded = await _hybrid_recall(
+            MagicMock(), query_text="anything", project="jarvis", mem_type=None, limit=5
+        )
+
+        assert rows == []
+        assert results == []
+        assert degraded is True
+
+    @pytest.mark.asyncio
+    async def test_degraded_false_on_legitimate_zero_hits(self, monkeypatch):
+        async def _empty(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(mem, "recall", _empty)
+
+        rows, results, degraded = await _hybrid_recall(
+            MagicMock(), query_text="anything", project="jarvis", mem_type=None, limit=5
+        )
+
+        assert rows == []
+        assert results == []
+        assert degraded is False
+
+    @pytest.mark.asyncio
+    async def test_handle_recall_surfaces_degraded_flag_on_keyword_fallback(self, monkeypatch):
+        async def _boom(*_args, **_kwargs):
+            raise RuntimeError("embedding service down")
+
+        monkeypatch.setattr(mem, "recall", _boom)
+
+        async def _fake_keyword_recall(*_args, **_kwargs):
+            return [TextContent(type="text", text="Found 1 memory (keyword search):\n\nfoo")]
+
+        monkeypatch.setattr(server_module, "_keyword_recall", _fake_keyword_recall)
+        monkeypatch.setattr(server_module, "_get_client", lambda: MagicMock())
+
+        results = await _handle_recall({"query": "anything", "project": "jarvis"})
+
+        assert len(results) == 2
+        body = json.loads(results[0].text)
+        assert body["degraded"] is True
+        assert "keyword-only" in body["reason"]
+
+    @pytest.mark.asyncio
+    async def test_handle_recall_no_degraded_flag_on_legitimate_zero_hits(self, monkeypatch):
+        async def _empty(*_args, **_kwargs):
+            return []
+
+        monkeypatch.setattr(mem, "recall", _empty)
+
+        async def _fake_keyword_recall(*_args, **_kwargs):
+            return [TextContent(type="text", text="Found 0 memories (keyword search):\n\n")]
+
+        monkeypatch.setattr(server_module, "_keyword_recall", _fake_keyword_recall)
+        monkeypatch.setattr(server_module, "_get_client", lambda: MagicMock())
+
+        results = await _handle_recall({"query": "anything", "project": "jarvis"})
+
+        assert len(results) == 1
+        assert "degraded" not in results[0].text
+
+    # -----------------------------------------------------------------------
+    # Round-2 review finding (#1082): the tests above monkeypatch `mem.recall`
+    # itself, bypassing recall.py's real internal failure paths — which
+    # already swallow embed failures and RPC exceptions into a bare `[]`
+    # instead of raising. That means `_hybrid_recall`'s except-based degraded
+    # detection never fires for the actual failure modes it exists to catch.
+    # These tests exercise the REAL swallow sites inside recall() instead.
+    # -----------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_degraded_true_when_embed_returns_none_inside_recall(self, monkeypatch):
+        async def _no_embedding(_query):
+            return None
+
+        monkeypatch.setattr(server_module, "_embed_query", _no_embedding)
+
+        rows, results, degraded = await _hybrid_recall(
+            MagicMock(), query_text="anything", project="jarvis", mem_type=None, limit=5
+        )
+
+        assert rows == []
+        assert results == []
+        assert degraded is True
+
+    @pytest.mark.asyncio
+    async def test_degraded_true_when_rpc_raises_inside_recall(self, monkeypatch):
+        async def _fake_embedding(_query):
+            return [0.1, 0.2, 0.3]
+
+        monkeypatch.setattr(server_module, "_embed_query", _fake_embedding)
+
+        client = MagicMock()
+        client.rpc.side_effect = RuntimeError("RPC unavailable")
+
+        rows, results, degraded = await _hybrid_recall(
+            client, query_text="anything", project="jarvis", mem_type=None, limit=5
+        )
+
+        assert rows == []
+        assert results == []
+        assert degraded is True

@@ -547,6 +547,7 @@ async def recall(
     boost_multiplier: float = 1.5,
     config: RecallConfig = PROD_RECALL_CONFIG,
     query_embedding: list[float] | None = None,
+    degraded_sink: dict | None = None,
 ) -> list[RecallHit]:
     """Run the hybrid-recall pipeline and return ranked RecallHits.
 
@@ -590,6 +591,15 @@ async def recall(
     embedding for its own gate check. Falls back to embedding internally
     when None (default), preserving the existing behavior for all current
     callers.
+
+    ``degraded_sink`` (#1082 round-2): optional out-param dict. When given,
+    ``recall()`` sets ``degraded_sink["degraded"] = True`` at the two genuine
+    internal-failure swallow sites (embed failure, semantic/keyword RPC
+    exception) that would otherwise return ``[]`` indistinguishably from a
+    legitimate zero-hit query. The legitimate-empty-merge path does NOT set
+    it. Opt-in and additive so existing callers (scripts/eval-recall.py,
+    scripts/memory-recall-hook.py) are unaffected — same idiom as the
+    ``fingerprint_sink`` param in eval-recall.py's run_query().
     """
     # Late-bind `server` so test patches of the embedding model + embed
     # function still apply. Same pattern as handlers/memory.py.
@@ -598,6 +608,8 @@ async def recall(
     if query_embedding is None:
         query_embedding = await server._embed_query(query)
     if query_embedding is None:
+        if degraded_sink is not None:
+            degraded_sink["degraded"] = True
         return []
 
     # Wider window when links will be merged — the BFS over get_linked_memories
@@ -637,6 +649,8 @@ async def recall(
         ).execute()
         keyword_rows = filter_excluded_tags(kw_result.data or [])
     except Exception:
+        if degraded_sink is not None:
+            degraded_sink["degraded"] = True
         return []
 
     # Capture leg membership BEFORE rrf_merge mutates row dicts — needed for
