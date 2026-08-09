@@ -28,7 +28,11 @@ string-match in the system", which earns a logic pin regardless.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -325,3 +329,143 @@ class TestParserWiring:
         assert parser_run.index("export LC_ALL=C") < parser_run.index(
             "(CRITICAL|MAJOR|BLOCKING|MEDIUM)"
         ), "LC_ALL=C must be exported before the first severity grep."
+
+
+# -- Payload escaping (#1080) --------------------------------------------------
+#
+# #1080 replaced hand-built JSON (string-interpolated shell vars, `sed
+# 's/"/\\"/g'` as the only escaping) with `jq -n --arg`/`--argjson` at 4 sites.
+# The bug `sed` left open: a PR/issue title containing a backslash or an
+# embedded newline (GitHub allows both via paste) produced invalid JSON and
+# silently dropped the event — worse, a title crafted by an external
+# contributor could corrupt the JSON structure around it. TestParserWiring
+# above pins the *severity-parsing* logic in this same step; this class pins
+# the *payload-construction* logic (all 4 `jq -n` sites) so a future edit
+# can't quietly regress back to string interpolation.
+#
+# Behavioral, not just textual: each test extracts the real `jq -n ... )`
+# pipeline from the workflow YAML and actually executes it via `jq` (present
+# on `ubuntu-latest` runners, same as the workflow itself) against an
+# adversarial title, then asserts the result is valid, correctly-escaped JSON.
+# A regression to `sed`-style interpolation would make these tests fail with
+# invalid JSON (json.loads raising) rather than a passing-but-meaningless
+# string match.
+
+HAS_JQ = shutil.which("jq") is not None
+
+# Backslash + double quote + embedded newline: the exact character classes
+# sed 's/"/\\"/g' left unescaped (issue #1080's finding).
+ADVERSARIAL_TITLE = 'fix: "quoted" path C:\\Users\\x and\nan embedded newline'
+
+
+def _load_step(job: str, step_name: str) -> dict:
+    workflow = yaml.safe_load(EVENT_WORKFLOW.read_text(encoding="utf-8"))
+    steps = workflow["jobs"][job]["steps"]
+    return next(s for s in steps if s.get("name") == step_name)
+
+
+def _extract_payload_pipeline(run_script: str) -> str:
+    """Slice out just the `PAYLOAD=$(jq -n ... )` assignment from a step's
+    `run:` script, so it can be executed in isolation without the rest of the
+    step's GitHub-Actions-context interpolation getting in the way."""
+    start = run_script.index("PAYLOAD=$(jq -n")
+    end = run_script.index("}')", start) + len("}')")
+    return run_script[start:end]
+
+
+def _run_payload_pipeline(pipeline: str, env_vars: dict) -> dict:
+    # Resolve the executable path explicitly rather than passing a bare
+    # "bash" argv[0] — on Windows a bare name can resolve to the WSL launcher
+    # shim (C:\Windows\System32\bash.exe) instead of a real POSIX shell,
+    # depending on subprocess's PATH search order vs. shutil.which's.
+    bash = shutil.which("bash")
+    script = pipeline + '\necho "$PAYLOAD"'
+    result = subprocess.run(
+        [bash, "-c", script],
+        env={**os.environ, **env_vars},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout)
+
+
+@pytest.mark.skipif(not HAS_JQ, reason="jq not installed")
+class TestPayloadEscaping:
+    def test_pr_approved_payload_escapes_adversarial_title(self):
+        step = _load_step("pr-approved", "Dispatch PR approved event")
+        pipeline = _extract_payload_pipeline(step["run"])
+        payload = _run_payload_pipeline(
+            pipeline,
+            {
+                "REPO": "Osasuwu/jarvis",
+                "PR_NUM": "1080",
+                "PR_TITLE": ADVERSARIAL_TITLE,
+                "REVIEWER": "petrk",
+                "PR_URL": "https://github.com/Osasuwu/jarvis/pull/1080",
+            },
+        )
+        assert payload["payload"]["pr_title"] == ADVERSARIAL_TITLE
+        assert payload["payload"]["pr_number"] == 1080  # --argjson: numeric, not string
+
+    def test_pr_merged_payload_escapes_adversarial_title(self):
+        step = _load_step("pr-merged", "Dispatch PR merged event")
+        pipeline = _extract_payload_pipeline(step["run"])
+        payload = _run_payload_pipeline(
+            pipeline,
+            {
+                "REPO": "Osasuwu/jarvis",
+                "PR_NUM": "1080",
+                "PR_TITLE": ADVERSARIAL_TITLE,
+                "AUTHOR": "petrk",
+                "PR_URL": "https://github.com/Osasuwu/jarvis/pull/1080",
+                "MERGE_SHA": "abc123",
+            },
+        )
+        assert payload["payload"]["pr_title"] == ADVERSARIAL_TITLE
+        assert payload["payload"]["pr_number"] == 1080
+
+    def test_review_negative_human_payload_escapes_adversarial_title(self):
+        step = _load_step(
+            "review-negative-human", "Dispatch review_negative event (human)"
+        )
+        pipeline = _extract_payload_pipeline(step["run"])
+        payload = _run_payload_pipeline(
+            pipeline,
+            {
+                "REPO": "Osasuwu/jarvis",
+                "PR_NUM": "1080",
+                "PR_TITLE": ADVERSARIAL_TITLE,
+                "REVIEWER": "petrk",
+                "REVIEW_ID": "42",
+                "REVIEW_URL": "https://github.com/Osasuwu/jarvis/pull/1080#review-42",
+            },
+        )
+        assert payload["payload"]["pr_title"] == ADVERSARIAL_TITLE
+        assert payload["payload"]["pr_number"] == 1080
+        assert payload["payload"]["review_id"] == 42
+
+    def test_review_negative_claude_bot_payload_escapes_adversarial_title(
+        self, parser_run
+    ):
+        # Same step TestParserWiring pins for severity parsing (#992) — here
+        # we isolate just its payload-construction tail (#1080).
+        pipeline = _extract_payload_pipeline(parser_run)
+        payload = _run_payload_pipeline(
+            pipeline,
+            {
+                "REPO": "Osasuwu/jarvis",
+                "PR_NUM": "1080",
+                "PR_TITLE": ADVERSARIAL_TITLE,
+                "COMMENT_ID": "99",
+                "COMMENT_URL": "https://github.com/Osasuwu/jarvis/pull/1080#comment-99",
+                "N_ISSUES": "1",
+                "N_CRITICAL": "0",
+                "N_MAJOR": "1",
+                "N_MINOR": "0",
+                "ISSUE_WORD": "issue",
+            },
+        )
+        assert payload["payload"]["pr_title"] == ADVERSARIAL_TITLE
+        assert payload["payload"]["pr_number"] == 1080
+        assert payload["payload"]["n_major"] == 1
