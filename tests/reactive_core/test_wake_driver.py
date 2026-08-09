@@ -353,19 +353,30 @@ def test_tick_reclaims_then_drains():
 
 def test_wake_driver_has_no_busy_sleep_poll_loop():
     src = inspect.getsource(wake_driver)
-    # The retired scheduler used `while True:` + `time.sleep(...)` as a
-    # resident interval poller. wake_driver must be event-driven instead.
-    assert "while True" not in src, "wake_driver must not contain a `while True` resident loop"
 
     # _call_with_retry's bounded, cold-boot-only backoff (startup DB/network
-    # readiness race fix) is the one deliberate exception: a finite number of
-    # attempts during startup only, not a resident poll. Everything else must
-    # stay event-driven (block on the NOTIFY socket).
+    # readiness race fix) and PsycopgEventQueue._reconnect's in-loop DB
+    # reconnect backoff (#1479 AC1b) are the two deliberate exceptions: both
+    # only run while the DB is unreachable, never during normal event-driven
+    # operation, and both sleep with capped backoff rather than busy-polling
+    # for work. _reconnect's outer loop is intentionally unbounded (AC1b:
+    # "never exits" — exiting is the exact silent-death bug #1479 was filed
+    # for), so it can't be a bounded-attempts helper like _call_with_retry;
+    # everything else must stay event-driven (block on the NOTIFY socket).
     retry_helper_src = inspect.getsource(wake_driver._call_with_retry)
-    src_outside_retry_helper = src.replace(retry_helper_src, "")
-    assert "time.sleep(" not in src_outside_retry_helper, (
-        "wake_driver must not busy-sleep outside the bounded startup retry helper; "
-        "the run loop blocks on the NOTIFY socket"
+    reconnect_src = inspect.getsource(wake_driver.PsycopgEventQueue._reconnect)
+    src_outside_retry_helpers = src.replace(retry_helper_src, "").replace(reconnect_src, "")
+
+    # The retired scheduler used `while True:` + `time.sleep(...)` as a
+    # resident interval poller. wake_driver must be event-driven instead.
+    assert "while True" not in src_outside_retry_helpers, (
+        "wake_driver must not contain a `while True` resident loop outside the "
+        "bounded startup retry helper or the DB reconnect backoff (#1479 AC1b)"
+    )
+    assert "time.sleep(" not in src_outside_retry_helpers, (
+        "wake_driver must not busy-sleep outside the bounded startup retry helper "
+        "or the DB reconnect backoff (#1479 AC1b); the run loop blocks on the "
+        "NOTIFY socket"
     )
 
 
@@ -1324,6 +1335,91 @@ def test_psycopg_event_queue_listens_on_both_channels_at_construction():
     assert f"LISTEN {wake_driver.EVENTS_CHANNEL}" in conn.executed
     assert f"LISTEN {wake_driver.TASK_QUEUE_CHANNEL}" in conn.executed
     assert conn.commits >= 1
+
+
+class _FlakyConn:
+    """Fake psycopg.Connection that can raise OperationalError from
+    ``notifies()`` on demand, to drive #1479 reconnect tests without a live
+    DB. Otherwise records LISTEN/commit like ``_RecordingConn``."""
+
+    def __init__(self, *, notify_raises: bool = False, notify_result: bool = True):
+        self.executed: list[str] = []
+        self.commits = 0
+        self._notify_raises = notify_raises
+        self._notify_result = notify_result
+
+    def execute(self, sql, *args):
+        self.executed.append(sql)
+        return self
+
+    def commit(self):
+        self.commits += 1
+
+    def notifies(self, *, timeout, stop_after):
+        if self._notify_raises:
+            import psycopg
+
+            raise psycopg.OperationalError("server closed the connection unexpectedly")
+        if self._notify_result:
+            yield object()
+
+
+def test_psycopg_event_queue_reconnects_and_relistens_after_operational_error():
+    """#1479 AC1: a dropped connection during wait_for_wake() does not kill
+    the daemon — reconnect swaps self._conn, re-issues LISTEN on BOTH
+    channels + commits on the fresh connection, and the retried call still
+    returns the event-driven wake result (no silent poll-only degradation)."""
+    dead_conn = _FlakyConn(notify_raises=True)
+    fresh_conn = _FlakyConn(notify_result=True)
+    connects = [fresh_conn]
+
+    def connect():
+        return connects.pop(0)
+
+    queue = wake_driver.PsycopgEventQueue(dead_conn, connect=connect)
+    dead_conn.executed.clear()  # clear the constructor's own LISTEN calls
+
+    woke = queue.wait_for_wake(timeout_seconds=1)
+
+    assert woke is True
+    assert queue._conn is fresh_conn
+    assert f"LISTEN {wake_driver.EVENTS_CHANNEL}" in fresh_conn.executed
+    assert f"LISTEN {wake_driver.TASK_QUEUE_CHANNEL}" in fresh_conn.executed
+    assert fresh_conn.commits >= 1
+
+
+def test_psycopg_event_queue_reconnect_uses_dedicated_backoff_and_never_exits(monkeypatch):
+    """#1479 AC1b: reconnect uses its own short backoff (NOT _STARTUP_RETRY_*,
+    tuned for one-shot cold boot) and never raises out of persistent DB-down —
+    it keeps cycling in capped bursts until connect() finally succeeds."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(wake_driver.time, "sleep", lambda s: sleeps.append(s))
+
+    dead_conn = _FlakyConn(notify_raises=True)
+    # Fail across two full retry cycles, then succeed on the third cycle's
+    # first attempt — proves the loop starts a new cycle instead of exiting.
+    attempts_before_success = 2 * wake_driver._RECONNECT_ATTEMPTS_PER_CYCLE
+    connect_calls = {"n": 0}
+
+    def flaky_connect():
+        connect_calls["n"] += 1
+        if connect_calls["n"] <= attempts_before_success:
+            raise ConnectionError("still down")
+        return _FlakyConn(notify_result=True)
+
+    queue = wake_driver.PsycopgEventQueue(dead_conn, connect=flaky_connect)
+
+    woke = queue.wait_for_wake(timeout_seconds=1)
+
+    assert woke is True
+    assert connect_calls["n"] == attempts_before_success + 1
+    assert sleeps  # backoff actually happened between failed attempts
+    assert all(s <= wake_driver._RECONNECT_MAX_SECONDS for s in sleeps)
+    # Dedicated constants, not the cold-boot ones -- AC1b's explicit ask.
+    assert wake_driver._RECONNECT_MAX_SECONDS < wake_driver._STARTUP_RETRY_MAX_SECONDS
+    assert wake_driver._RECONNECT_ATTEMPTS_PER_CYCLE != wake_driver._STARTUP_RETRY_ATTEMPTS or (
+        wake_driver._RECONNECT_BASE_SECONDS < wake_driver._STARTUP_RETRY_BASE_SECONDS
+    )
 
 
 # --- main() resource management (#953 PR #1011 round 3) ---------------------
