@@ -70,6 +70,22 @@ VERDICT_INVARIANTS = [
     "GITHUB_RUN_ID",
     # post-factum carve-out (#1228): a merged/closed PR has nothing left to gate
     'PR_STATE" != "OPEN"',
+    # in-flight fail-closed (#1434): a review still running over this PR's
+    # commits is NOT "no review needed" — keyed on the status complement so a
+    # status GitHub adds later fails closed instead of reading as done
+    'select(.status != "completed")',
+    "LINEAGE_INFLIGHT",
+    "Failing closed (#1434)",
+    # structured findings block (#1456): the authoritative machine-readable
+    # severity source, checked before the prose ladder — PR #1452 auto-merged
+    # MEDIUM findings whose prose took the bare Found-N pass path
+    "<!-- *code-review-findings",
+    "Failing closed (#1456)",
+    'ascii_upcase',
+    'select(. == "CRITICAL" or . == "MAJOR" or . == "BLOCKING" or . == "MEDIUM")',
+    # explicit LGTM/APPROVE pass branch (#1050), only reachable after the
+    # block + findings checks
+    r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b",
 ]
 
 # Anti-patterns: the OLD/buggy shapes. Must appear in NEITHER verdict step.
@@ -175,12 +191,15 @@ class TestCanonExecRanFailClosed:
     def test_exec_ran_branch_is_correctly_ordered(self, canon_verdict_run):
         run = canon_verdict_run
         lineage_exit = run.index("LINEAGE_FAILED", run.index('if [ "$LINEAGE_FAILED" -gt 0 ]'))
+        inflight_check = run.index('if [ "$LINEAGE_INFLIGHT" -gt 0 ]')
         exec_ran_check = run.index('[ "$EXEC_RAN_1" = "true" ] || [ "$EXEC_RAN_2" = "true" ]')
         legitimate_skip = run.index("legitimately skipped")
-        assert lineage_exit < exec_ran_check < legitimate_skip, (
-            "The ran-but-silent check must run after the LINEAGE_FAILED "
-            "fail-closed exit and before the final 'legitimately skipped' "
-            "pass — it disambiguates the remaining case between those two."
+        assert lineage_exit < inflight_check < exec_ran_check < legitimate_skip, (
+            "The total==0 disambiguation must run in order: LINEAGE_FAILED "
+            "fail-closed exit → LINEAGE_INFLIGHT fail-closed exit (#1434) → "
+            "ran-but-silent check → final 'legitimately skipped' pass. Each "
+            "later check is only meaningful once the earlier ones ruled out "
+            "their state."
         )
 
 
@@ -221,6 +240,7 @@ class TestCanonVerdictParity:
             r"^No issues found\.",
             "Found [0-9]+ issues?:",
             "(MINOR|NITPICK|LOW|INFO|MEDIUM)",
+            r"\bLGTM\b",
         ):
             assert block_at < run.index(later), (
                 f"Block check must precede pass signal {later!r} so no pass can "
@@ -231,6 +251,23 @@ class TestCanonVerdictParity:
         run = canon_verdict_run
         assert run.index("export LC_ALL=C") < run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)"), (
             "LC_ALL=C must be exported before the first severity grep (#996)."
+        )
+
+    @pytest.mark.parametrize(
+        "run_fixture", ["canon_verdict_run", "live_verdict_run"]
+    )
+    def test_findings_block_precedes_prose_ladder(self, run_fixture, request):
+        # #1456: the structured JSON block is the authoritative severity source
+        # and must be evaluated before `export LC_ALL=C` (jq needs a UTF-8
+        # aware read of the body) and before every prose check that follows it.
+        run = request.getfixturevalue(run_fixture)
+        # "\nexport ..." anchors to the executed line — both steps *mention*
+        # `export LC_ALL=C` in a comment above the findings block, which a bare
+        # index() would match first.
+        assert run.index("<!-- *code-review-findings") < run.index("\nexport LC_ALL=C"), (
+            f"{run_fixture}: the code-review-findings JSON block must run "
+            f"before `export LC_ALL=C` (and hence before the whole prose "
+            f"ladder) — it is the authoritative severity source (#1456)."
         )
 
     def test_both_jobs_grant_actions_read(self, canon_verdict_job, live_review_job):
