@@ -69,6 +69,15 @@ VOYAGE_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 10.0
 
+# Calibrated 2026-08-09 (#1216): two live --record runs against the same
+# 82-query set/corpus, same day, measured cosine distance per query between
+# runs (float-precision + API non-determinism noise floor, not real drift):
+# min=0.0, max=0.000163, mean=0.000015, p99=0.000163. Threshold set ~2 orders
+# of magnitude above the observed noise ceiling so it flags genuine drift
+# (model swap, input_type change, corpus/text change) without false-firing
+# on run-to-run noise.
+EMBEDDING_DRIFT_THRESHOLD = 0.01
+
 
 def _load_hook_module():
     """Load scripts/memory-recall-hook.py to import its rewriter (#499 fix-forward).
@@ -123,6 +132,16 @@ async def _embed_query(text: str) -> list[float]:
         )
         resp.raise_for_status()
         return resp.json()["data"][0]["embedding"]
+
+
+def _cosine_distance(a: list[float], b: list[float]) -> float:
+    """1 - cosine_similarity. NaN when either vector has zero norm."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return float("nan")
+    return 1.0 - dot / (norm_a * norm_b)
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +567,7 @@ async def run_query(
     q: dict,
     config: RecallConfig = PROD_RECALL_CONFIG,
     context_blob: str | None = None,
+    fingerprint_sink: dict[str, list[float]] | None = None,
 ) -> QueryResult:
     """Run one eval query and return a QueryResult.
 
@@ -558,9 +578,18 @@ async def run_query(
     Context-rot path (context_blob is not None): uses _run_query_direct()
     so the keyword leg can be polluted with the session blob. Both legs of
     the context-rot comparison use this path for a clean delta measurement.
+
+    ``fingerprint_sink`` (#1216): when given a dict, the embedding computed
+    for this query is stored at ``sink[q["id"]]`` and passed to recall() via
+    its ``query_embedding`` passthrough (#508) — one _embed_query() call
+    serves both the recall pipeline and the drift fingerprint, never two.
     """
     if context_blob is not None:
         return await _run_query_direct(client, q, context_blob=context_blob)
+
+    embedding = await _embed_query(q["query"])
+    if fingerprint_sink is not None:
+        fingerprint_sink[q["id"]] = embedding
 
     # Rewriter ablation (#499 fix-forward): when config.use_rewriter, call the
     # hook's rewrite_prompt to extract entities + types, then thread them into
@@ -591,6 +620,7 @@ async def run_query(
     hits = await recall(
         client,
         q["query"],
+        query_embedding=embedding,
         keyword_query=keyword_query,
         boost_types=boost_types,
         boost_multiplier=boost_multiplier,
@@ -644,10 +674,11 @@ async def run_all(
     queries: list[dict],
     client,
     config: RecallConfig = PROD_RECALL_CONFIG,
+    fingerprint_sink: dict[str, list[float]] | None = None,
 ) -> EvalReport:
     results = []
     for q in queries:
-        r = await run_query(client, q, config=config)
+        r = await run_query(client, q, config=config, fingerprint_sink=fingerprint_sink)
         results.append(r)
 
     total = len(results)
@@ -1134,6 +1165,38 @@ def print_diff(current: EvalReport, baseline: dict) -> None:
     print()
 
 
+def print_drift_report(
+    current_fingerprints: dict[str, list[float]],
+    baseline_fingerprints: dict[str, list[float]] | None,
+    threshold: float = EMBEDDING_DRIFT_THRESHOLD,
+) -> list[str]:
+    """Independent of recall metrics (AC2) — per-query cosine distance vs the
+    baseline's embedding fingerprints. Returns the list of drifted query ids."""
+    print("=== EMBEDDING DRIFT vs baseline.json ===")
+    if not baseline_fingerprints:
+        print(
+            "(no embedding_fingerprints in baseline — drift check skipped; "
+            "run --save-baseline with this version to enable)"
+        )
+        print()
+        return []
+
+    drifted = []
+    for qid, cur_vec in current_fingerprints.items():
+        base_vec = baseline_fingerprints.get(qid)
+        if base_vec is None:
+            continue
+        dist = _cosine_distance(cur_vec, base_vec)
+        if math.isnan(dist) or dist > threshold:
+            drifted.append(qid)
+            print(f"DRIFT  {qid}: cosine_distance={dist:.6f}  (threshold {threshold})")
+
+    if not drifted:
+        print(f"no queries exceeded drift threshold {threshold}")
+    print()
+    return drifted
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -1228,7 +1291,12 @@ def main() -> int:
         doc = yaml.safe_load(f)
     queries = doc["queries"]
 
-    # --replay / --ci skip Supabase client — load from cached snapshot
+    # --replay / --ci skip Supabase client — load from cached snapshot. Cannot
+    # detect embedding drift (#1216 AC5): the snapshot's embeddings are frozen
+    # at --record time, so replaying it never calls VoyageAI again and has
+    # nothing fresh to compare against the baseline's fingerprints. Drift
+    # detection only runs on the live path (--diff baseline / --save-baseline
+    # below, without --replay/--ci).
     if args.replay or args.ci:
         snapshot_path = Path(args.replay or args.ci)
         if not snapshot_path.exists():
@@ -1365,8 +1433,16 @@ def main() -> int:
             return 1
         return 0
 
-    report = asyncio.run(run_all(queries, client, config=cfg))
+    # Fingerprint sink (#1216): when a baseline is being written or compared,
+    # run_query()/run_all() capture the embedding they already compute for
+    # recall() into this dict instead of making a second _embed_query() call
+    # per query (AC1/AC3).
+    need_fingerprints = args.save_baseline or args.diff == "baseline"
+    fingerprint_sink: dict[str, list[float]] | None = {} if need_fingerprints else None
+
+    report = asyncio.run(run_all(queries, client, config=cfg, fingerprint_sink=fingerprint_sink))
     print_report(report, quiet=args.quiet)
+    current_fingerprints = fingerprint_sink
 
     if args.diff == "baseline":
         if not baseline_path.exists():
@@ -1375,11 +1451,14 @@ def main() -> int:
             with baseline_path.open("r", encoding="utf-8") as f:
                 baseline = json.load(f)
             print_diff(report, baseline)
+            print_drift_report(current_fingerprints, baseline.get("embedding_fingerprints"))
 
     if args.save_baseline:
         baseline_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = asdict(report)
+        payload["embedding_fingerprints"] = current_fingerprints
         with baseline_path.open("w", encoding="utf-8") as f:
-            json.dump(asdict(report), f, indent=2, ensure_ascii=False)
+            json.dump(payload, f, indent=2, ensure_ascii=False)
         print(f"Baseline saved to {baseline_path}")
 
     # exit code: 0 if all queries passed, 1 otherwise — CI-friendly

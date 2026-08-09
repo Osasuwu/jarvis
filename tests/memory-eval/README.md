@@ -35,6 +35,12 @@ merge → confidence → temporal scoring → metric computation) on the cached 
 without needing Supabase or VoyageAI access. `--ci` replays and exits 1 if any
 baseline-passing query regresses.
 
+**`--replay`/`--ci` cannot detect embedding drift** (see below) — the snapshot's
+embeddings are frozen at `--record` time, so replaying it never calls VoyageAI
+again and has nothing fresh to diff against the baseline's fingerprints. Drift
+detection only runs on the live path (`--diff baseline` / `--save-baseline`
+without `--replay`/`--ci`).
+
 ## Metrics
 
 | metric | meaning | target |
@@ -48,6 +54,25 @@ baseline-passing query regresses.
 
 `must_not` is the **lifecycle signal**. Phase 0.5 baseline will have violations
 (we have no supersedes filter yet). Phase 1 is expected to drive this to 0.
+
+## Embedding drift check (#1216)
+
+`--diff baseline` and `--save-baseline` (live path only, not `--replay`/`--ci`)
+also fingerprint each query's VoyageAI embedding and compare it against the
+fingerprints stored in `baseline.json`, independent of the recall metrics
+above — a silent `voyage-3-lite` behavior change (model swap, API change)
+would otherwise pass recall metrics unnoticed if hit-ranking happens to be
+stable. Reuses the single canonical `_embed_query()` call site — no extra
+VoyageAI calls beyond one per query.
+
+`EMBEDDING_DRIFT_THRESHOLD` (`scripts/eval-recall.py`) is calibrated from two
+live `--record` runs against the same 82-query set/corpus on 2026-08-09:
+per-query cosine distance between runs ranged 0.0–0.000163 (float-precision +
+API non-determinism noise floor). The threshold (0.01) sits ~2 orders of
+magnitude above that ceiling so it flags genuine drift without false-firing
+on run-to-run noise. A baseline saved before this feature shipped has no
+`embedding_fingerprints` key — the drift check prints a skip notice and
+otherwise no-ops until the baseline is refreshed with `--save-baseline`.
 
 ## Query set
 
