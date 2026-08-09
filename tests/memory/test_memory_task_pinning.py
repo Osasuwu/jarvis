@@ -46,23 +46,31 @@ async def test_pin_task_holds_until_completion_then_discards():
         await gate.wait()
         completed.set()
 
+    # _PENDING_TASKS is now the shared fire_and_forget module set (#1082) —
+    # snapshot/restore instead of clear() so this test can't wipe tasks
+    # pinned concurrently by another module (e.g. handlers.decision).
+    snapshot = set(mem._PENDING_TASKS)
     mem._PENDING_TASKS.clear()
-    # Pin the task, then drop the only local strong ref and force a GC pass.
-    # Without pinning, the task would be collectable here; with it, the
-    # module-level set keeps it alive.
-    mem._pin_task(asyncio.create_task(_gated()))
-    del _gated
-    gc.collect()
+    try:
+        # Pin the task, then drop the only local strong ref and force a GC
+        # pass. Without pinning, the task would be collectable here; with
+        # it, the module-level set keeps it alive.
+        mem._pin_task(asyncio.create_task(_gated()))
+        del _gated
+        gc.collect()
 
-    assert len(mem._PENDING_TASKS) == 1, "task must be strong-reffed while in flight"
+        assert len(mem._PENDING_TASKS) == 1, "task must be strong-reffed while in flight"
 
-    # Release the gate and let the task run to completion.
-    gate.set()
-    await asyncio.wait_for(completed.wait(), timeout=1.0)
-    # The done-callback runs on the loop after the task finishes; yield to it.
-    await asyncio.sleep(0)
+        # Release the gate and let the task run to completion.
+        gate.set()
+        await asyncio.wait_for(completed.wait(), timeout=1.0)
+        # The done-callback runs on the loop after the task finishes; yield to it.
+        await asyncio.sleep(0)
 
-    assert mem._PENDING_TASKS == set(), "completed task must be unpinned by the done-callback"
+        assert mem._PENDING_TASKS == set(), "completed task must be unpinned by the done-callback"
+    finally:
+        mem._PENDING_TASKS.clear()
+        mem._PENDING_TASKS.update(snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -102,20 +110,28 @@ async def test_hybrid_recall_pins_emit_recall_event(monkeypatch):
     monkeypatch.setattr(mem, "recall", _stub_recall)
     monkeypatch.setattr(mem, "_emit_recall_event", _gated_emit)
 
+    # Snapshot/restore rather than clear() — _PENDING_TASKS is the shared
+    # fire_and_forget module set (#1082), so wiping it outright could drop
+    # a task pinned concurrently by another module.
+    snapshot = set(mem._PENDING_TASKS)
     mem._PENDING_TASKS.clear()
-    await mem._hybrid_recall(
-        MagicMock(), query_text="anything", project="jarvis", mem_type=None, limit=5
-    )
+    try:
+        await mem._hybrid_recall(
+            MagicMock(), query_text="anything", project="jarvis", mem_type=None, limit=5
+        )
 
-    # The emit task is still gated (pending) — it must be pinned, not GC-droppable.
-    gc.collect()
-    assert len(mem._PENDING_TASKS) == 1
+        # The emit task is still gated (pending) — it must be pinned, not GC-droppable.
+        gc.collect()
+        assert len(mem._PENDING_TASKS) == 1
 
-    gate.set()
-    # Drain the pinned task so it doesn't leak into other tests.
-    await asyncio.gather(*list(mem._PENDING_TASKS))
-    await asyncio.sleep(0)
-    assert mem._PENDING_TASKS == set()
+        gate.set()
+        # Drain the pinned task so it doesn't leak into other tests.
+        await asyncio.gather(*list(mem._PENDING_TASKS))
+        await asyncio.sleep(0)
+        assert mem._PENDING_TASKS == set()
+    finally:
+        mem._PENDING_TASKS.clear()
+        mem._PENDING_TASKS.update(snapshot)
 
 
 # ---------------------------------------------------------------------------

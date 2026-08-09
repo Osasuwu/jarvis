@@ -22,11 +22,13 @@ from server import (
     _resolve_known_unknowns,
     _upsert_known_unknown,
     CLASSIFIER_APPLY_THRESHOLD,
+    CLASSIFIER_TRIGGER_SIM,
     MAX_AUTO_LINKS,
     SUPERSEDE_SIM_THRESHOLD,
 )
 from classifier import ClassifierDecision
 import server as server_module
+import handlers.memory as mem
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +70,7 @@ class TestCreateAutoLinks:
 
         links = self._first_links_upsert(mock_client)
         assert len(links) == 2
-        assert all(l["link_type"] == "related" for l in links)
+        assert all(link["link_type"] == "related" for link in links)
         assert links[0]["strength"] == 0.70
         assert links[1]["strength"] == 0.65
 
@@ -126,6 +128,110 @@ class TestCreateAutoLinks:
         await _create_auto_links(
             mock_client, "source", [{"id": "t", "type": "p", "similarity": 0.7}], "project"
         )
+
+
+# ---------------------------------------------------------------------------
+# #1082: link_decision_path — durable record of which path actually resolved
+# the auto-link decision (classifier / legacy_heuristic / classifier_failed).
+# ---------------------------------------------------------------------------
+
+
+class TestLinkDecisionPath:
+    @pytest.fixture
+    def mock_client(self):
+        client = MagicMock()
+        client.table.return_value.upsert.return_value.execute.return_value = MagicMock(data=[])
+        client.table.return_value.select.return_value.in_.return_value.execute.return_value = (
+            MagicMock(data=[])
+        )
+        client.table.return_value.update.return_value.eq.return_value.is_.return_value.execute.return_value = (
+            MagicMock(data=[{"id": "row"}])
+        )
+        client.table.return_value.insert.return_value.execute.return_value = MagicMock()
+        return client
+
+    @pytest.fixture
+    def capture_emit(self, monkeypatch):
+        calls = []
+
+        def _fake_emit_event(client, **kwargs):
+            calls.append(kwargs)
+            return {"id": "event-uuid"}
+
+        monkeypatch.setattr("events_canonical.emit_event", _fake_emit_event)
+        return calls
+
+    @pytest.mark.asyncio
+    async def test_classifier_path_recorded_on_success(self, mock_client, monkeypatch, capture_emit):
+        decision = ClassifierDecision(decision="NOOP", target_id=None, confidence=0.9, reasoning="r")
+
+        async def _fake_classify_write(_candidate, _neighbors):
+            return decision
+
+        monkeypatch.setattr(mem, "classify_write", _fake_classify_write)
+
+        similar = [
+            {"id": "old", "type": "decision", "similarity": CLASSIFIER_TRIGGER_SIM + 0.05},
+        ]
+        await _create_auto_links(
+            mock_client,
+            "new-decision",
+            similar,
+            mem_type="decision",
+            candidate={"id": "new-decision", "content": "c"},
+        )
+
+        assert len(capture_emit) == 1
+        assert capture_emit[0]["action"] == "link_decision_path"
+        assert capture_emit[0]["payload"]["path"] == "classifier"
+        assert capture_emit[0]["payload"]["memory_id"] == "new-decision"
+
+    @pytest.mark.asyncio
+    async def test_classifier_failed_no_decision_recorded_when_classify_write_errors(
+        self, mock_client, monkeypatch, capture_emit
+    ):
+        async def _fake_classify_write(_candidate, _neighbors):
+            raise RuntimeError("API timeout")
+
+        monkeypatch.setattr(mem, "classify_write", _fake_classify_write)
+
+        similar = [
+            {"id": "old", "type": "decision", "similarity": CLASSIFIER_TRIGGER_SIM + 0.05},
+        ]
+        await _create_auto_links(
+            mock_client,
+            "new-decision",
+            similar,
+            mem_type="decision",
+            candidate={"id": "new-decision", "content": "c"},
+        )
+
+        assert len(capture_emit) == 1
+        assert capture_emit[0]["payload"]["path"] == "classifier_failed_no_decision"
+
+    @pytest.mark.asyncio
+    async def test_legacy_heuristic_path_recorded_without_candidate(
+        self, mock_client, monkeypatch, capture_emit
+    ):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        similar = [
+            {"id": "old", "type": "decision", "similarity": SUPERSEDE_SIM_THRESHOLD + 0.05},
+        ]
+        # No `candidate=` kwarg -> attempted_classifier is False regardless of
+        # classify_write availability.
+        await _create_auto_links(mock_client, "new-decision", similar, mem_type="decision")
+
+        assert len(capture_emit) == 1
+        assert capture_emit[0]["payload"]["path"] == "legacy_heuristic"
+
+    @pytest.mark.asyncio
+    async def test_no_path_recorded_when_no_candidates_above_trigger(
+        self, mock_client, capture_emit
+    ):
+        similar = [{"id": "t", "type": "project", "similarity": 0.10}]
+        await _create_auto_links(mock_client, "source", similar, mem_type="project")
+
+        assert capture_emit == []
 
 
 # ---------------------------------------------------------------------------

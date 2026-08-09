@@ -7,12 +7,16 @@ should be updated with the outcome_id.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import asyncio
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 from pathlib import Path
 
 import pytest
+
+import server  # noqa: F401 — must import before handlers.decision to avoid a
+# partial-init circular import (server -> handlers.outcome -> handlers.decision)
+import handlers.decision as dec
 
 # Stable UUIDs for tests
 _UID_MEM_A = "11111111-1111-1111-1111-111111111111"
@@ -331,6 +335,138 @@ class TestFokOutcomeLinkage:
         fok_mock.update.assert_called_once_with({"outcome_id": "out-1"})
         # Targeted FOK_1, not FOK_2
         fok_mock.update.return_value.eq.assert_called_once_with("id", _UID_FOK_1)
+
+
+class TestDecisionSwallowedExceptions:
+    """#1082: every genuinely-silent except-site in decision.py logs via
+    the shared fire_and_forget.log_swallowed instead of dropping the
+    exception on the floor."""
+
+    @pytest.mark.asyncio
+    async def test_resolve_memory_refs_logs_swallowed_on_query_error(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dec, "log_swallowed", lambda site, exc: calls.append((site, exc)))
+
+        client = MagicMock()
+        client.table.return_value.select.return_value.eq.return_value.is_.return_value.order.return_value.limit.return_value.execute.side_effect = RuntimeError(
+            "db down"
+        )
+
+        resolved, unresolved = dec._resolve_memory_refs(client, ["some-name"], None)
+
+        assert resolved == []
+        assert unresolved == ["some-name"]
+        assert len(calls) == 1
+        site, exc = calls[0]
+        assert site == "decision._resolve_memory_refs"
+        assert isinstance(exc, RuntimeError)
+
+    @pytest.mark.asyncio
+    async def test_link_fok_inner_logs_swallowed_on_event_lookup_error(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dec, "log_swallowed", lambda site, exc: calls.append((site, exc)))
+
+        fok_judgments = [
+            {"id": _UID_FOK_1, "recall_event_id": _UID_EVENT_1, "project": None},
+        ]
+        client = _make_linkage_test_client(fok_judgments_to_return=fok_judgments)
+
+        # Force the events.select("payload").eq("id", ...).single().execute()
+        # chain to raise, regardless of .eq()/.single() call order.
+        events_mock = MagicMock()
+        broken_chain = MagicMock()
+        broken_chain.eq.return_value = broken_chain
+        broken_chain.single.return_value = broken_chain
+        broken_chain.execute.side_effect = RuntimeError("events table unreachable")
+        events_mock.select.return_value = broken_chain
+
+        base_table_side_effect = client.table.side_effect
+
+        def _table_with_broken_events(name):
+            if name == "events":
+                return events_mock
+            return base_table_side_effect(name)
+
+        client.table.side_effect = _table_with_broken_events
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        from server import _handle_record_decision
+
+        await _handle_record_decision(
+            {
+                "decision": "inner failure",
+                "rationale": "events lookup raises",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+        await asyncio.sleep(0)
+
+        assert any(site == "decision._link_fok_judgments_to_outcomes.judgment" for site, _ in calls)
+
+    @pytest.mark.asyncio
+    async def test_link_fok_middle_logs_swallowed_on_judgments_query_error(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dec, "log_swallowed", lambda site, exc: calls.append((site, exc)))
+
+        client = _make_linkage_test_client()
+        broken_fok = MagicMock()
+        broken_fok.select.return_value.gte.return_value.lte.return_value.is_.return_value.execute.side_effect = RuntimeError(
+            "fok_judgments table unreachable"
+        )
+
+        base_table_side_effect = client.table.side_effect
+
+        def _table_with_broken_fok(name):
+            if name == "fok_judgments":
+                return broken_fok
+            return base_table_side_effect(name)
+
+        client.table.side_effect = _table_with_broken_fok
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        from server import _handle_record_decision
+
+        await _handle_record_decision(
+            {
+                "decision": "middle failure",
+                "rationale": "fok_judgments query raises",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+        await asyncio.sleep(0)
+
+        assert any(site == "decision._link_fok_judgments_to_outcomes.memory" for site, _ in calls)
+
+    @pytest.mark.asyncio
+    async def test_link_fok_outer_logs_swallowed_on_malformed_timestamp(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(dec, "log_swallowed", lambda site, exc: calls.append((site, exc)))
+
+        # A non-ISO timestamp makes datetime.fromisoformat raise before the
+        # per-memory loop even starts — the outermost except site.
+        client = _make_linkage_test_client(decision_timestamp="not-a-timestamp")
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        from server import _handle_record_decision
+
+        await _handle_record_decision(
+            {
+                "decision": "outer failure",
+                "rationale": "malformed decision timestamp",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+        await asyncio.sleep(0)
+
+        assert any(
+            site == "decision._link_fok_judgments_to_outcomes" for site, _ in calls
+        )
 
 
 def test_fok_calibration_summary_in_schema():

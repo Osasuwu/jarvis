@@ -18,18 +18,7 @@ from mcp.types import TextContent  # noqa: F401
 
 import server  # noqa: F401  — late-bound for monkeypatch propagation
 import write_scrubber  # #555: Tier-2 write-path secret-scrubber gate
-
-# Strong references to fire-and-forget tasks. CPython holds only a weak ref to
-# a bare ``asyncio.create_task`` result, so without an external strong ref the
-# task can be GC-collected mid-flight before it completes (same pattern as
-# write_scrubber._PENDING_BLOCK_LOGS). Discard via the done-callback below.
-_PENDING_TASKS: set[asyncio.Task] = set()
-
-
-def _pin_task(task: asyncio.Task) -> None:
-    """Strong-ref *task* until completion so it can't be GC-collected mid-flight."""
-    _PENDING_TASKS.add(task)
-    task.add_done_callback(_PENDING_TASKS.discard)
+from fire_and_forget import _pin_task, log_swallowed  # noqa: F401 — #1082 dedup
 
 
 # #1269: session-id shape shared with scripts/record-decision-gate.py and
@@ -120,7 +109,8 @@ def _resolve_memory_refs(client, refs: list, project: str | None) -> tuple[list[
             if project is not None:
                 q = q.eq("project", project)
             rows = q.order("updated_at", desc=True).limit(1).execute()
-        except Exception:
+        except Exception as exc:
+            log_swallowed("decision._resolve_memory_refs", exc)
             unresolved.append(ref_s)
             continue
         data = getattr(rows, "data", None)
@@ -220,15 +210,12 @@ async def _link_fok_judgments_to_outcomes(
                             client.table("fok_judgments").update({"outcome_id": outcome_id}).eq(
                                 "id", judgment_id
                             ).execute()
-                    except Exception:
-                        # Skip individual check errors
-                        pass
-            except Exception:
-                # Skip individual memory errors, continue with next memory
-                pass
-    except Exception:
-        # Fire-and-forget: don't block decision recording
-        pass
+                    except Exception as exc:
+                        log_swallowed("decision._link_fok_judgments_to_outcomes.judgment", exc)
+            except Exception as exc:
+                log_swallowed("decision._link_fok_judgments_to_outcomes.memory", exc)
+    except Exception as exc:
+        log_swallowed("decision._link_fok_judgments_to_outcomes", exc)
 
 
 async def _handle_record_decision(args: dict) -> list[TextContent]:
