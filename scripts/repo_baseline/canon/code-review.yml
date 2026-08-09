@@ -491,30 +491,50 @@ jobs:
             #      died on permission denials, a later auto-rebase push skipped
             #      review as designed, and the gate read the missing comment as
             #      "plugin skipped". FAIL CLOSED.
-            #   3. Otherwise — a genuine skip (draft / not-eligible / no
+            #   3. Still being reviewed. A code-review run over this PR's own
+            #      commits has NOT completed, so nothing has verified this head
+            #      yet — state 2 only sees runs that already CONCLUDED in
+            #      failure; a review mid-flight is invisible to it. jarvis
+            #      #1429/#1435 both auto-merged unreviewed through exactly this
+            #      hole on 2026-08-07 (#1434). FAIL CLOSED — the gate
+            #      re-evaluates once that run posts its verdict.
+            #   4. Otherwise — a genuine skip (draft / not-eligible / no
             #      substantive code) over a clean lineage. PASS.
             if [ "$PR_STATE" != "OPEN" ]; then
               echo "::notice::PR is $PR_STATE and has no /code-review comment; nothing left to gate on a post-factum run. Treating as pass."
               exit 0
             fi
 
-            # Head-lineage probe. Intersect this workflow's FAILED runs with the
-            # PR's own commit SHAs, so another PR's broken review can never block
-            # this one. Only `conclusion == "failure"` counts — success /
-            # cancelled / skipped / still-running are not evidence of a dead
-            # attempt. The currently-executing run is excluded by id so a re-run
-            # can never self-block on its own row.
+            # Head-lineage probe. Intersect this workflow's runs with the PR's
+            # own commit SHAs once, so another PR's broken or running review can
+            # never block this one, then read two independent signals off that
+            # slice. The currently-executing run is excluded by id — it is in
+            # flight by definition and would otherwise self-block every run.
             lineage_shas=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
               | jq -rs 'add | map(.sha)')
-            LINEAGE_FAILED=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
-              | jq -rs --argjson shas "$lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
+            lineage_runs=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
+              | jq -s --argjson shas "$lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
                   [ .[].workflow_runs[]
-                    | select(.conclusion == "failure")
                     | select((.id | tostring) != $cur)
-                    | select(.head_sha as $s | $shas | index($s) != null) ]
-                  | length')
+                    | select(.head_sha as $s | $shas | index($s) != null) ]')
+
+            # (2) Dead attempts: only `conclusion == "failure"` counts — success,
+            # cancelled and skipped are not evidence of a run that died before it
+            # could post.
+            LINEAGE_FAILED=$(jq -r '[ .[] | select(.conclusion == "failure") ] | length' <<<"$lineage_runs")
             if [ "$LINEAGE_FAILED" -gt 0 ]; then
               echo "::error::No /code-review verdict comment exists and $LINEAGE_FAILED code-review run(s) over this PR's commits ended in failure. Every review attempt died before it could post — this PR has never been reviewed. Failing closed (#1228); fix the failing run and re-review."
+              exit 1
+            fi
+
+            # (3) Reviews still in flight (#1434). Keyed on `status != "completed"`
+            # rather than an enumeration of queued/waiting/in_progress/pending, so
+            # a status GitHub adds later fails closed instead of silently reading
+            # as done.
+            LINEAGE_INFLIGHT=$(jq -r '[ .[] | select(.status != "completed") ] | length' <<<"$lineage_runs")
+            if [ "$LINEAGE_INFLIGHT" -gt 0 ]; then
+              inflight_ids=$(jq -r '[ .[] | select(.status != "completed") | .id | tostring ] | join(", ")' <<<"$lineage_runs")
+              echo "::error::No /code-review verdict comment exists yet and $LINEAGE_INFLIGHT code-review run(s) over this PR's commits are still running (run id(s): $inflight_ids). Nothing has verified this head, so there is no prior review for this push to carry forward. Failing closed (#1434); the gate re-evaluates once that run posts its verdict."
               exit 1
             fi
 
@@ -545,6 +565,34 @@ jobs:
             # (#993). Fail closed; re-run code-review.
             echo "::error::/code-review has prior comments on this PR but none newer than head commit $HEAD_SHA ($HEAD_TIME) — the latest review likely errored. Failing closed; re-run code-review."
             exit 1
+          fi
+
+          # Structured findings block (#1456) — the AUTHORITATIVE severity
+          # source, checked BEFORE the prose ladder below. The reviewer emits a
+          # machine-readable JSON payload inside a `<!-- code-review-findings -->`
+          # comment; prose headings are a lossy rendering of it (PR #1452
+          # auto-merged MEDIUM findings whose prose took the bare "Found N
+          # issues:" pass path). When the block is present it decides; when its
+          # payload is malformed, fail closed rather than fall back to the very
+          # prose parsing the block exists to supersede. Runs before
+          # `export LC_ALL=C` so jq reads the body UTF-8 aware.
+          findings_block=$(sed -n '/<!-- *code-review-findings/,/-->/p' <<<"$body" | sed '1d;$d')
+          if grep -q '<!-- *code-review-findings' <<<"$body"; then
+            if ! jq -e . >/dev/null 2>&1 <<<"$findings_block"; then
+              echo "::error::code-review-findings block present but its payload is not valid JSON. Failing closed (#1456)."
+              exit 1
+            fi
+            blocking=$(jq -r '
+              [ .findings[]? | (.severity // "" | ascii_upcase)
+                | select(. == "CRITICAL" or . == "MAJOR" or . == "BLOCKING" or . == "MEDIUM") ]
+              | length' <<<"$findings_block")
+            if [ "$blocking" -gt 0 ]; then
+              sevs=$(jq -r '[ .findings[]? | (.severity // "" | ascii_upcase)
+                              | select(. == "CRITICAL" or . == "MAJOR" or . == "BLOCKING" or . == "MEDIUM") ]
+                            | unique | join(", ")' <<<"$findings_block")
+              echo "::error::Code review reported $blocking blocking finding(s) ($sevs) in its structured findings block; blocking auto-merge until addressed."
+              exit 1
+            fi
           fi
 
           # Severity greps below classify heading decoration via the POSIX class
@@ -600,6 +648,14 @@ jobs:
           # -qE) to still pass it, mirroring the live reference workflow.
           if grep -qiE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b' <<<"$body"; then
             echo "::notice::Code review posted only non-blocking severity sections; not blocking auto-merge."
+            exit 0
+          fi
+
+          # Explicit LGTM / APPROVE verdict with no severity sections or Found-N
+          # line (#1050). Only reached after the block check, so a coexisting
+          # blocking heading still wins.
+          if grep -qiE '\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b' <<<"$body"; then
+            echo "::notice::Code review posted a positive LGTM/APPROVE verdict; not blocking auto-merge."
             exit 0
           fi
 
