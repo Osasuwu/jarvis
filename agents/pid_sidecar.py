@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -200,16 +200,13 @@ def adopt_task(
         proc = psutil.Process(pid)
         # Verify process is alive and create_time matches.
         if not proc.is_running():
-            logger.debug(
-                "adopt_task failed: process exited task_id=%s pid=%s", task_id, pid
-            )
+            logger.debug("adopt_task failed: process exited task_id=%s pid=%s", task_id, pid)
             return None
 
         actual_create_time = proc.create_time()
         if abs(actual_create_time - create_time) > create_time_tolerance_sec:
             logger.debug(
-                "adopt_task failed: create_time mismatch task_id=%s pid=%s "
-                "expected=%s actual=%s",
+                "adopt_task failed: create_time mismatch task_id=%s pid=%s expected=%s actual=%s",
                 task_id,
                 pid,
                 create_time,
@@ -235,9 +232,7 @@ def kill_orphan_process(task_id: str, pid: int, reason: str = "") -> None:
     try:
         import psutil
     except ImportError:
-        logger.warning(
-            "psutil not available; cannot kill orphan task_id=%s pid=%s", task_id, pid
-        )
+        logger.warning("psutil not available; cannot kill orphan task_id=%s pid=%s", task_id, pid)
         return
 
     try:
@@ -256,9 +251,7 @@ def kill_orphan_process(task_id: str, pid: int, reason: str = "") -> None:
             except psutil.TimeoutExpired:
                 logger.warning("orphan did not die after SIGKILL task_id=%s pid=%s", task_id, pid)
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
-        logger.debug(
-            "kill_orphan failed: %s task_id=%s pid=%s", type(e).__name__, task_id, pid
-        )
+        logger.debug("kill_orphan failed: %s task_id=%s pid=%s", type(e).__name__, task_id, pid)
     except Exception as e:
         logger.exception("kill_orphan exception task_id=%s pid=%s: %s", task_id, pid, e)
     finally:
@@ -277,6 +270,10 @@ def boot_scan_sidecars() -> list[tuple[str, int, float]]:
     adopted = []
     try:
         for sidecar_file in SIDECAR_DIR.glob("*.json"):
+            # Executor writes `<task_id>.stdout.json` capture logs into this
+            # same directory (executor.py) — not sidecars, skip silently (#1491).
+            if sidecar_file.stem.endswith(".stdout"):
+                continue
             task_id = sidecar_file.stem
             entry = read_sidecar(task_id)
             if entry:

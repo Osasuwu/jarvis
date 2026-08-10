@@ -62,16 +62,15 @@ create table if not exists events (
 
   state text not null default 'pending'
     check (state in ('pending', 'claimed', 'processed', 'parked')),
-  dedup_key text,
+  -- Full UNIQUE constraint, not a partial index: PostgREST's bare
+  -- ON CONFLICT (dedup_key) cannot infer a partial index (42P10, #1491).
+  dedup_key text unique,
   claimed_at timestamptz,
   claimed_by text,
 
   created_at timestamptz default now(),
   event_at timestamptz default now()
 );
-
-create unique index if not exists idx_events_dedup_key
-  on events(dedup_key) where dedup_key is not null;
 
 alter table events enable row level security;
 
