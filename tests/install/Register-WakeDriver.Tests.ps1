@@ -103,6 +103,63 @@ Describe 'Format-WakeDriverActionArgs' {
 }
 
 # ---------------------------------------------------------------------------
+# Python interpreter resolution + validation (#1495) -- the PATH default used
+# to resolve to the Microsoft Store app-execution-alias python3 stub (exit
+# 9009), registering a task that died instantly at every start.
+# ---------------------------------------------------------------------------
+
+Describe 'Resolve-WakeDriverPython' {
+    It 'returns an explicit -PythonExe unchanged' {
+        $exe = Resolve-WakeDriverPython -PythonExe 'C:\custom\python.exe' -RepoRoot 'C:\repo'
+        $exe | Should Be 'C:\custom\python.exe'
+    }
+
+    It 'prefers <RepoRoot>\.venv\Scripts\python.exe when it exists' {
+        Mock Test-Path { return $true }
+        $exe = Resolve-WakeDriverPython -RepoRoot 'C:\repo'
+        $exe | Should Be 'C:\repo\.venv\Scripts\python.exe'
+    }
+
+    It 'falls back to python3 on PATH when the venv is absent' {
+        Mock Test-Path { return $false }
+        Mock Get-Command {
+            if ($Name -eq 'python3') { return [pscustomobject]@{ Source = 'C:\tools\python3.exe' } }
+            throw "unexpected Get-Command for '$Name'"
+        }
+        $exe = Resolve-WakeDriverPython -RepoRoot 'C:\repo'
+        $exe | Should Be 'C:\tools\python3.exe'
+    }
+
+    It 'falls back python3 -> python when python3 is absent from PATH' {
+        Mock Test-Path { return $false }
+        Mock Get-Command {
+            if ($Name -eq 'python3') { return $null }
+            if ($Name -eq 'python') { return [pscustomobject]@{ Source = 'C:\Python311\python.exe' } }
+            throw "unexpected Get-Command for '$Name'"
+        }
+        $exe = Resolve-WakeDriverPython -RepoRoot 'C:\repo'
+        $exe | Should Be 'C:\Python311\python.exe'
+    }
+}
+
+Describe 'Assert-WakeDriverPython' {
+    It 'passes when the interpreter answers --version with exit 0' {
+        Mock Start-Process { return [pscustomobject]@{ ExitCode = 0 } }
+        { Assert-WakeDriverPython -PythonExe 'C:\Python311\python.exe' } | Should Not Throw
+    }
+
+    It 'throws on the Microsoft Store stub (exit 9009), naming the resolved path' {
+        Mock Start-Process { return [pscustomobject]@{ ExitCode = 9009 } }
+        { Assert-WakeDriverPython -PythonExe 'C:\WindowsApps\python3.exe' } | Should Throw 'C:\WindowsApps\python3.exe'
+    }
+
+    It 'throws when the interpreter cannot be launched at all' {
+        Mock Start-Process { throw 'The system cannot find the file specified' }
+        { Assert-WakeDriverPython -PythonExe 'C:\missing\python.exe' } | Should Throw 'could not be executed'
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Repetition watchdog graft (#1479 AC2) -- AtLogOn has no -RepetitionInterval
 # parameter set, so the fix builds a throwaway -Once trigger for its
 # well-formed Repetition CIM instance and grafts it onto the logon trigger.

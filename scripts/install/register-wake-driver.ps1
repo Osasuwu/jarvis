@@ -31,7 +31,12 @@
     timeout). Default: 300, matching wake_driver.DEFAULT_STALE_AFTER_SECONDS.
 
 .PARAMETER PythonExe
-    Path to the Python interpreter. Defaults to the first `python3` on PATH.
+    Path to the Python interpreter. Defaults to <RepoRoot>\.venv\Scripts\python.exe
+    when it exists, else the first `python3`/`python` on PATH. Whatever is
+    resolved (default or explicit) is validated with `--version` before
+    registration -- on stock Windows the first `python3` on PATH is the
+    Microsoft Store app-execution-alias stub, which exits 9009 and leaves
+    the registered task dying instantly at every start (#1495).
 
 .PARAMETER RepoRoot
     Repository root. Defaults to the repo containing this script.
@@ -110,6 +115,53 @@ function Format-WakeDriverActionArgs {
     )
 }
 
+function Resolve-WakeDriverPython {
+    param(
+        [string]$PythonExe,
+        [Parameter(Mandatory)][string]$RepoRoot
+    )
+
+    # Explicit -PythonExe always wins (still validated by
+    # Assert-WakeDriverPython). Default prefers the repo venv: that is the
+    # interpreter agents.wake_driver actually needs (repo deps), and it
+    # sidesteps the Microsoft Store python3 stub that shadows PATH on
+    # stock Windows (#1495).
+    if ($PythonExe) {
+        return $PythonExe
+    }
+
+    $venvPython = Join-Path $RepoRoot '.venv\Scripts\python.exe'
+    if (Test-Path $venvPython) {
+        return $venvPython
+    }
+
+    $cmd = Get-Command python3 -ErrorAction SilentlyContinue
+    if (-not $cmd) { $cmd = Get-Command python -ErrorAction Stop }
+    return $cmd.Source
+}
+
+function Assert-WakeDriverPython {
+    param(
+        [Parameter(Mandatory)][string]$PythonExe
+    )
+
+    # Start-Process instead of `& $PythonExe` -- under
+    # $ErrorActionPreference='Stop' in WinPS 5.1, redirected native stderr
+    # is wrapped in NativeCommandError and throws even on exit 0.
+    try {
+        $proc = Start-Process -FilePath $PythonExe -ArgumentList '--version' `
+            -PassThru -Wait -WindowStyle Hidden
+    } catch {
+        throw "PythonExe '$PythonExe' could not be executed: $($_.Exception.Message)"
+    }
+
+    if ($proc.ExitCode -ne 0) {
+        throw ("PythonExe '$PythonExe' failed '--version' (exit $($proc.ExitCode)) -- refusing to register a task that would die at first start. " +
+            "Exit 9009 means the Microsoft Store app-execution-alias stub, not a real interpreter (#1495). " +
+            "Pass -PythonExe <repo>\.venv\Scripts\python.exe.")
+    }
+}
+
 function Set-WakeDriverRepetition {
     param(
         [Parameter(Mandatory)]$Trigger,
@@ -166,11 +218,8 @@ if (-not (Test-Path $driverModule)) {
     throw "agents/wake_driver.py not found under '$RepoRoot'. Is the repo root correct?"
 }
 
-if (-not $PythonExe) {
-    $cmd = Get-Command python3 -ErrorAction SilentlyContinue
-    if (-not $cmd) { $cmd = Get-Command python -ErrorAction Stop }
-    $PythonExe = $cmd.Source
-}
+$PythonExe = Resolve-WakeDriverPython -PythonExe $PythonExe -RepoRoot $RepoRoot
+Assert-WakeDriverPython -PythonExe $PythonExe
 
 $pwshExe = Get-PowerShellExe
 
