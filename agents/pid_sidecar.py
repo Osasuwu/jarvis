@@ -270,9 +270,9 @@ def boot_scan_sidecars() -> list[tuple[str, int, float]]:
     adopted = []
     try:
         for sidecar_file in SIDECAR_DIR.glob("*.json"):
-            # Executor writes `<task_id>-stdout.json` capture logs into this
-            # same directory — not sidecars, skip silently (#1491).
-            if sidecar_file.stem.endswith("-stdout"):
+            # Executor writes `<task_id>.stdout.json` capture logs into this
+            # same directory (executor.py) — not sidecars, skip silently (#1491).
+            if sidecar_file.stem.endswith(".stdout"):
                 continue
             task_id = sidecar_file.stem
             entry = read_sidecar(task_id)

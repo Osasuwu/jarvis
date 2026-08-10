@@ -299,11 +299,16 @@ class TestBootScanSidecars:
             assert result[0][0] == "good"
 
     def test_boot_scan_ignores_executor_stdout_logs(self, tmp_path, caplog):
-        """Executor `<task_id>-stdout.json` capture logs share the sidecar dir
-        (#1491) — the scan must skip them silently, not warn per file."""
+        """Executor `<task_id>.stdout.json` capture logs share the sidecar dir
+        (#1491) — the scan must skip them silently, not warn per file.
+
+        The filename must mirror executor.py's real format
+        (``f"{task_id}.stdout.json"``, dot-separated) — review round 1 caught
+        the filter and this fixture both assuming a hyphenated name.
+        """
         with patch("agents.pid_sidecar.SIDECAR_DIR", tmp_path):
             write_sidecar("good", 1234, 100.5)
-            (tmp_path / "bc37077f-stdout.json").write_text(
+            (tmp_path / "bc37077f.stdout.json").write_text(
                 '{"is_error": true, "result": "Failed to authenticate"}'
             )
             with caplog.at_level(logging.WARNING, logger="agents.pid_sidecar"):
