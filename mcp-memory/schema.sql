@@ -186,7 +186,10 @@ create table if not exists events (
   -- Event queue FSM (#739)
   state text not null default 'pending'
     check (state in ('pending', 'claimed', 'processed', 'parked')),
-  dedup_key text,                    -- sha256 of identifying fields; unique when set
+  -- sha256 of identifying fields. FULL unique constraint (NULLS DISTINCT), not a
+  -- partial index: PostgREST's bare ON CONFLICT (dedup_key) cannot infer a
+  -- partial unique index — every #953 emission died with 42P10 until #1491.
+  dedup_key text unique,
   claimed_at timestamptz,
   claimed_by text,                   -- who claimed it (e.g. 'orchestrator', 'wake_driver')
 
@@ -199,7 +202,9 @@ create table if not exists events (
 create index if not exists idx_events_repo on events(repo);
 create index if not exists idx_events_type on events(event_type);
 create index if not exists idx_events_created on events(created_at desc);
-create unique index if not exists idx_events_dedup_key on events(dedup_key) where dedup_key is not null;
+-- dedup_key uniqueness lives on the column (constraint events_dedup_key_key);
+-- the old partial idx_events_dedup_key was dropped by migration
+-- events_dedup_key_full_unique_constraint (#1491).
 create index if not exists idx_events_pending on events(state, severity, created_at)
   where state = 'pending';
 

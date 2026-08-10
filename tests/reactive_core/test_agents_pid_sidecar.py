@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
+import logging
 import time
-from datetime import datetime
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from agents.pid_sidecar import (
-    SIDECAR_DIR,
     Sidecar,
     SidecarEntry,
     adopt_task,
@@ -301,6 +297,20 @@ class TestBootScanSidecars:
             result = boot_scan_sidecars()
             assert len(result) == 1
             assert result[0][0] == "good"
+
+    def test_boot_scan_ignores_executor_stdout_logs(self, tmp_path, caplog):
+        """Executor `<task_id>-stdout.json` capture logs share the sidecar dir
+        (#1491) — the scan must skip them silently, not warn per file."""
+        with patch("agents.pid_sidecar.SIDECAR_DIR", tmp_path):
+            write_sidecar("good", 1234, 100.5)
+            (tmp_path / "bc37077f-stdout.json").write_text(
+                '{"is_error": true, "result": "Failed to authenticate"}'
+            )
+            with caplog.at_level(logging.WARNING, logger="agents.pid_sidecar"):
+                result = boot_scan_sidecars()
+            assert len(result) == 1
+            assert result[0][0] == "good"
+            assert not caplog.records
 
 
 class TestSidecarClass:
