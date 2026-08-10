@@ -127,9 +127,11 @@ def test_closed_pr_is_noop():
 
 def test_code_review_divergence_withholds_automerge():
     # AC4/AC7 carve-out: when the PR's code-review.yml content differs from the
-    # default branch's, claude-code-action skips on workflow validation and the
-    # required `review` context goes green with ZERO review comments. Arming
-    # auto-merge there would merge an unreviewed PR, so withhold instead.
+    # default branch's, claude-code-action skips on workflow validation and no
+    # verdict is posted. The verdict ladder fails CLOSED on that absence
+    # (#1434/#1228), but the ladder lives in the file this class edits — a
+    # self-edit can weaken it to a vacuous green. Withhold here as
+    # defense-in-depth from a workflow the class does not touch.
     assert (
         decide(
             draft=False,
@@ -144,9 +146,9 @@ def test_code_review_divergence_withholds_automerge():
 
 def test_code_review_divergence_disarms_already_armed_pr():
     # A PR can be armed BEFORE a code-review.yml change lands on main, which makes
-    # it retroactively carve-out. Leaving it armed would let it merge on a green
-    # but comment-less `review` context, so the carve-out disarms instead of
-    # merely declining to arm.
+    # it retroactively carve-out. Leaving it armed would let it merge the moment
+    # a (possibly self-edit-weakened) `review` context reads green, so the
+    # carve-out disarms instead of merely declining to arm.
     assert (
         decide(
             draft=False,
@@ -391,15 +393,14 @@ def test_workflow_carve_out_compares_code_review_yml_content():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     # AC4 (#1234): claude-code-action skips with "Skipping action due to workflow
     # validation" when its OWN calling workflow's content differs from the default
-    # branch's, and the `Verify review verdict` ladder then falls through to
-    # "plugin legitimately skipped — treating as pass". The required `review`
-    # context goes green with ZERO review comments (verified live: PR #1231, run
-    # 29992799097). Granting the workflows scope removes the accidental
-    # last-line-of-defense that used to block those merges, so this carve-out
-    # replaces it.
+    # branch's. Historically the verdict ladder read that as a legitimate skip
+    # and `review` went green with ZERO comments (PR #1231, run 29992799097);
+    # since #1434/#1228 it fails closed — but the ladder rides code-review.yml
+    # itself, so this out-of-file carve-out stays as defense-in-depth.
     assert ".github/workflows/code-review.yml" in text, (
         "carve-out dropped — a PR whose code-review.yml diverges from the default "
-        "branch would arm auto-merge and merge on a comment-less green `review`."
+        "branch would arm auto-merge, with only the PR's own (editable) copy of "
+        "the verdict ladder standing between it and an unreviewed merge."
     )
     # The predicate must be a two-dot CONTENT comparison against the default
     # branch, not a merge-base diff / changed-files list: the action's validation
@@ -441,14 +442,28 @@ def test_workflow_surfaces_permission_specific_remediation():
     assert "Workflows: Read and write" in text
 
 
-def test_workflow_documents_carve_out_removal_condition():
+def test_workflow_documents_carve_out_retention_rationale():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    # AC11: the carve-out is a STOPGAP. The real fix belongs in the required
-    # `Verify review verdict` gate (#1236). Without an in-code removal condition
-    # this becomes permanent scaffolding nobody dares delete.
-    assert "#1236" in text, (
-        "the carve-out must document that it is removable once #1236 lands — "
-        "otherwise it outlives the hole it patches."
+    # Supersedes the old removal-condition pin (#1234 AC11). The carve-out began
+    # as a STOPGAP for the vacuous-green hole (#1236); since the comment-absence
+    # gates (#1434/#1228) the `Verify review verdict` ladder fails CLOSED on
+    # this class, and the block is retained deliberately for what a red check
+    # cannot do: survive a self-edit of code-review.yml (the ladder rides the
+    # very file this class edits; this block does not) and mark the red as
+    # review-blindness (label + comment; merge-train keys branch freshness off
+    # the label). If the rationale drops the #1434/#1228 citation or the
+    # defense-in-depth framing, the next reader will either delete the block as
+    # stale scaffolding or re-introduce #1236's "goes green" confusion.
+    assert "#1434" in text and "#1228" in text, (
+        "the carve-out rationale must cite the #1434/#1228 fail-closed gates as "
+        "the primary defense for this class — the block is defense-in-depth on "
+        "top of a red `review` check, no longer the sole gate."
+    )
+    assert "Defense-in-depth" in text, (
+        "the carve-out rationale must state it is KEPT as defense-in-depth "
+        "(self-edit of code-review.yml can weaken the in-file ladder; this "
+        "block survives that) — without this framing it reads as removable "
+        "stopgap scaffolding."
     )
 
 
