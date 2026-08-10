@@ -220,13 +220,13 @@ EVENTS_CHANNEL = "events"
 TASK_QUEUE_CHANNEL = "task_queue"
 
 # Cap on one poller sweep's parked-event fetch (#1475 review, MEDIUM — the M2
-# finding PR #964 deferred until the production adapter shipped). Nothing in
-# production writes ``blocked_by_task_id`` yet (#1455), so this is a ceiling
-# on a currently-empty query, not a tuned value — revisit once #1455 ships a
-# producer and real volume is observable.
+# finding PR #964 deferred until the production adapter shipped). The #1455
+# producer (drain_pending → park_blocked_on_task) now writes these rows, so
+# the query is live — but volume is bounded by EMIT_TASK routing throughput,
+# far below this cap.
 # ceiling: unbounded parked-event backlog beyond this count is left for the
-# next sweep rather than fetched in one pass; raise once #1455's producer
-# ships and real backlog sizes are observable.
+# next sweep rather than fetched in one pass; raise if observed backlog ever
+# approaches it.
 PARKED_EVENTS_LIMIT = 200
 
 # Orchestrator stub returns whatever it likes; the driver only cares that it
@@ -250,10 +250,19 @@ class EventQueuePort(Protocol):
     def park(self, event_id: str, *, reason: str = "") -> bool:
         """Commit a ``claimed`` event to ``parked`` (#1385 AC-C poison-pill).
 
-        A parked event carries no ``blocked_by_task_id`` in its payload, so
-        :mod:`agents.poller` (Path B, #745) never re-queues it — a
-        crash-parked event stays parked until a human intervenes. Wiring a
-        live requeue path for this case is out of scope (#1393).
+        Leaves the ``blocked_by_task_id`` column NULL, so :mod:`agents.poller`
+        (Path B, #745) never re-queues it — a crash-parked event stays parked
+        until a human intervenes. Blocked-on-task parks go through
+        :meth:`park_blocked_on_task` instead (#1455).
+        """
+
+    def park_blocked_on_task(self, event_id: str, task_id: str, *, reason: str = "") -> bool:
+        """Commit a ``claimed`` event to ``parked`` blocked on ``task_id``
+        (#1455 Path B producer).
+
+        Atomically sets ``state='parked'`` AND ``blocked_by_task_id`` so the
+        #1393 poller finds the row. Distinct from :meth:`park`: poison-pill
+        parks keep the column NULL and stay parked forever (#1385 boundary).
         """
 
     def reclaim_stale(self, *, older_than_seconds: float) -> int:
@@ -347,18 +356,33 @@ def drain_pending(
     each isolated call then behaves as if poison-pill tracking didn't exist
     (a first failure always re-raises), which is what every pre-#1385 caller
     (and test) expects.
+
+    Path B producer (#1455): when the orchestrator's result carries a
+    ``blocked_by_task_id`` (an EMIT_TASK dispatch that enqueued a fresh task),
+    the event is parked blocked on that task via ``park_blocked_on_task``
+    instead of being marked processed — :mod:`agents.poller` requeues it once
+    the task reaches a terminal state, and the replayed drain closes it via an
+    enqueue collision (idempotency key unchanged because payload is immutable).
     """
     attempts = failed_events if failed_events is not None else {}
     processed = 0
     while (event := port.claim_next()) is not None:
         event_id = str(event["id"])
         try:
-            orchestrator(event)
+            result = orchestrator(event)
         except Exception as exc:
             attempts[event_id] = attempts.get(event_id, 0) + 1
             if attempts[event_id] < 2:
                 raise
             port.park(event_id, reason=f"poison-pill: {type(exc).__name__}: {exc}")
+            continue
+        # #1455 AC2 (Path B producer): a DispatchResult carrying a fresh task
+        # id parks the event blocked on that task instead of closing it —
+        # getattr keeps the Orchestrator contract Callable[[dict], Any] for
+        # plain callables that return anything else.
+        blocked = getattr(result, "blocked_by_task_id", None)
+        if blocked is not None:
+            port.park_blocked_on_task(event_id, str(blocked), reason=f"blocked on task {blocked}")
             continue
         port.mark_processed(event_id)
         processed += 1
@@ -831,6 +855,16 @@ class PsycopgEventQueue:
 
         return self._with_reconnect(op)
 
+    def park_blocked_on_task(self, event_id: str, task_id: str, *, reason: str = "") -> bool:
+        def op() -> bool:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT park_blocked_on_task(%s, %s, %s)", (event_id, task_id, reason))
+                ok = bool(cur.fetchone()[0])
+            self._conn.commit()
+            return ok
+
+        return self._with_reconnect(op)
+
     def reclaim_stale(self, *, older_than_seconds: float) -> int:
         def op() -> int:
             with self._conn.cursor() as cur:
@@ -875,7 +909,7 @@ class PsycopgEventQueue:
         def op() -> list[dict[str, Any]]:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM events WHERE state = 'parked' AND payload ? 'blocked_by_task_id' "
+                    "SELECT * FROM events WHERE state = 'parked' AND blocked_by_task_id IS NOT NULL "
                     "LIMIT %s",
                     (PARKED_EVENTS_LIMIT,),
                 )
