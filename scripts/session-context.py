@@ -641,12 +641,7 @@ def main():
     # 3. Working state — ONLY when session is inside a known project dir.
     #     In a non-project cwd (e.g. scheduled research) working_state is noise.
     if project:
-        section, ids = _query_memories(
-            client,
-            mem_type="project",
-            limit=1,
-            extra_filter=lambda q: q.eq("name", f"working_state_{project}"),
-        )
+        section, ids = _query_working_state(client, project)
         if section:
             sections.append(
                 (
@@ -763,7 +758,12 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None, compact=False
     for anything Jarvis actually needs to read verbatim (working state).
     """
     try:
-        q = client.table("memories").select(_MEMORY_COLS).eq("type", mem_type)
+        q = (
+            client.table("memories")
+            .select(_MEMORY_COLS)
+            .eq("type", mem_type)
+            .is_("deleted_at", "null")
+        )
         if extra_filter:
             q = extra_filter(q)
         result = q.order("updated_at", desc=True).limit(limit).execute()
@@ -776,6 +776,25 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None, compact=False
     except Exception as e:
         print(f"[session-context] {mem_type} query failed: {e}", file=sys.stderr)
     return None, []
+
+
+def _query_working_state(client, project):
+    """Working-state lookup for the current project.
+
+    Scoped by BOTH name and project: /end's RMW writes with
+    project=<project>, so that is the canonical row. Without the project
+    filter a stray row in another scope (e.g. a soft-deleted global
+    working_state_jarvis with a newer updated_at — 2026-08-10 incident)
+    shadows the live row via the updated_at-desc ordering.
+    """
+    return _query_memories(
+        client,
+        mem_type="project",
+        limit=1,
+        extra_filter=lambda q: q.eq("name", f"working_state_{project}").eq(
+            "project", project
+        ),
+    )
 
 
 # always_load admission cap: DOCTRINE.md > Baseline carrier selection ranks
@@ -801,6 +820,7 @@ def _query_always_load(client, *, compact=False):
             client.table("memories")
             .select(_MEMORY_COLS)
             .contains("tags", ["always_load"])
+            .is_("deleted_at", "null")
             .order("updated_at", desc=True)
             .execute()
         )
