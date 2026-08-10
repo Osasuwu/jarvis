@@ -50,6 +50,7 @@ def test_session_context_always_load_not_touched():
     mock_query = MagicMock()
     mock_query.select = MagicMock(return_value=mock_query)
     mock_query.contains = MagicMock(return_value=mock_query)
+    mock_query.is_ = MagicMock(return_value=mock_query)
     mock_query.order = MagicMock(return_value=mock_query)
     mock_query.execute = MagicMock(return_value=MagicMock(
         data=[
