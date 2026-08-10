@@ -3469,14 +3469,16 @@ create policy "Allow all for anon" on review_debt
 -- ===========================================================================
 -- scrubber_block_event_upsert: day-bucketed dedup + occurrence counter for
 -- mcp_write_scrubber_block events (AC2, #1000).
--- Applied to remote as migration 20260809180000_create_scrubber_block_event_upsert.sql;
+-- Applied to remote as migration 20260809180000_create_scrubber_block_event_upsert.sql,
+-- fixed by 20260810130000_fix_scrubber_upsert_onconflict_full_constraint.sql (#1498);
 -- documented here per #326 (schema.sql is aspirational; the migration executes).
 -- No new table — this adds an RPC over the existing `events` table (see the
 -- events block above) so write_scrubber.py's log_block_event() can upsert
--- against events.dedup_key's PARTIAL unique index instead of inserting a new
--- row per repeat fire on a hot blocked-write path. events.payload has no
--- dedicated counter column (unlike review_debt.seen_count above), so the
--- increment happens via jsonb_set/coalesce on payload.occurrence_count.
+-- against events.dedup_key's FULL unique constraint (events_dedup_key_key)
+-- instead of inserting a new row per repeat fire on a hot blocked-write path.
+-- events.payload has no dedicated counter column (unlike review_debt.seen_count
+-- above), so the increment happens via jsonb_set/coalesce on
+-- payload.occurrence_count.
 -- ===========================================================================
 create or replace function scrubber_block_event_upsert(
   p_dedup_key   text,
@@ -3499,11 +3501,11 @@ begin
     ),
     p_dedup_key, p_seen_at
   )
-  -- events.dedup_key is a PARTIAL unique index (idx_events_dedup_key ... where
-  -- dedup_key is not null), not a table-level unique constraint like
-  -- review_debt.dedup_key above — the predicate must be restated here or
-  -- Postgres won't infer it as the ON CONFLICT arbiter.
-  on conflict (dedup_key) where dedup_key is not null do update
+  -- events.dedup_key is a FULL unique constraint (events_dedup_key_key, #1491)
+  -- — a plain conflict target matches it directly; a WHERE-qualified target
+  -- (the #1000 original shape) only matches a *partial* index and 42P10s
+  -- against a full constraint (#1498).
+  on conflict (dedup_key) do update
     set payload = jsonb_set(
           e.payload, '{occurrence_count}',
           to_jsonb(coalesce((e.payload->>'occurrence_count')::int, 1) + 1)
@@ -3516,14 +3518,15 @@ end; $$;
 -- ===========================================================================
 -- scrubber_disabled_event_upsert: day-bucketed dedup + occurrence counter for
 -- mcp_write_scrubber_disabled events (AC1, #1000 — code-review round-2 fix).
--- Applied to remote as migration 20260810120000_create_scrubber_disabled_event_upsert.sql;
+-- Applied to remote as migration 20260810120000_create_scrubber_disabled_event_upsert.sql,
+-- fixed by 20260810130000_fix_scrubber_upsert_onconflict_full_constraint.sql (#1498);
 -- documented here per #326 (schema.sql is aspirational; the migration executes).
 -- Mirrors scrubber_block_event_upsert above exactly. The original
 -- log_disabled_event() called a plain `.table("events").upsert(...,
--- on_conflict="dedup_key")`, which cannot satisfy events.dedup_key's PARTIAL
--- unique index — Postgres only infers a partial index as the ON CONFLICT
--- arbiter when its predicate is restated in the conflict target, so every
--- upsert raised and was silently swallowed by the surrounding
+-- on_conflict="dedup_key")`, which could not satisfy events.dedup_key's then-
+-- PARTIAL unique index — Postgres only infers a partial index as the ON
+-- CONFLICT arbiter when its predicate is restated in the conflict target, so
+-- every upsert raised and was silently swallowed by the surrounding
 -- except-and-log-type-only handler. No disabled-gate event ever landed.
 -- ===========================================================================
 create or replace function scrubber_disabled_event_upsert(
@@ -3543,7 +3546,10 @@ begin
     jsonb_build_object('reason', p_reason, 'occurrence_count', 1),
     p_dedup_key, p_seen_at
   )
-  on conflict (dedup_key) where dedup_key is not null do update
+  -- events.dedup_key is a FULL unique constraint (events_dedup_key_key, #1491)
+  -- — see scrubber_block_event_upsert above for why the conflict target must
+  -- stay unqualified (#1498).
+  on conflict (dedup_key) do update
     set payload = jsonb_set(
           e.payload, '{occurrence_count}',
           to_jsonb(coalesce((e.payload->>'occurrence_count')::int, 1) + 1)
