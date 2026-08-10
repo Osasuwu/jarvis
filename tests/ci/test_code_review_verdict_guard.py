@@ -438,6 +438,66 @@ def verdict_autobase(
     )
 
 
+# -- Stale-only grace window (mirror of the #1469 poll loop) -------------------
+#
+# The verdict step RACES the run that posts the verdict comment — they live in
+# DIFFERENT workflow runs. On an autobase push the verdict evaluates while the
+# real review (triggered by the prior non-bot push) is still writing its
+# comment: on PR #1492 (run 31375034566) the step failed closed at 09:33:39Z
+# and the clean verdict landed at 09:34:01Z, 22 seconds later. The bash now
+# re-fetches the comment selection while the state is STALE-ONLY (comments
+# exist, none fresh for the anchor), bounded by a deadline, and only then falls
+# through to the #993 fail-closed branch. total==0 and fresh-body states never
+# poll — the window widens WHEN the verdict is read, never WHAT passes it.
+
+# 300s window / 20s sleep — the number of re-fetches the bash window allows.
+GRACE_MAX_POLLS = 15
+
+
+def grace_window_selection(
+    snapshots: list[list[tuple[str, str]]],
+    anchor: str,
+    *,
+    max_polls: int = GRACE_MAX_POLLS,
+) -> tuple[list[tuple[str, str]], int]:
+    """Mirror of the #1469 grace-window poll around the comment selection.
+
+    Args:
+        snapshots: successive comment lists (``(body, created_at)`` pairs) as
+            the issue-comments API would return them on each poll, first fetch
+            first. The last snapshot repeats if the window outlasts the list
+            (the world stopped changing).
+        anchor: freshness anchor (ISO-8601 UTC), per ``anchor_time``.
+        max_polls: bounded window — re-fetches allowed after the first.
+
+    Returns ``(selection, polls)``: the comment list the verdict ladder
+    actually evaluates, and how many re-fetches the window consumed. Polling
+    continues ONLY while the state is stale-only; a fresh comment, an empty
+    selection (total==0), or window exhaustion each stop it.
+    """
+    comments = snapshots[0]
+    polls = 0
+    while True:
+        review = [(b, t) for (b, t) in comments if TITLE_RE.search(b)]
+        fresh = [b for (b, t) in review if t >= anchor]
+        if not review or fresh:
+            return comments, polls  # not stale-only — no (further) polling
+        if polls >= max_polls:
+            return comments, polls  # window exhausted — fail closed downstream
+        polls += 1
+        comments = snapshots[polls] if polls < len(snapshots) else snapshots[-1]
+
+
+def verdict_fresh_grace(
+    snapshots: list[list[tuple[str, str]]],
+    anchor: str,
+    **kwargs,
+) -> str:
+    """``verdict_fresh`` fed through the #1469 grace-window poll."""
+    final, _ = grace_window_selection(snapshots, anchor)
+    return verdict_fresh(final, anchor, **kwargs)
+
+
 # The literal shape that false-passed the gate on PR #957: MAJOR + MINOR
 # sections. MAJOR still blocks.
 PR_957_COMMENT = """\
@@ -1652,14 +1712,17 @@ class TestFreshnessGateWiring:
         )
 
     def test_stale_only_fails_closed(self, verdict_step):
-        # total > 0 but no fresh body ($body empty) → fail closed (#993).
+        # total > 0 but no fresh body ($body empty) → fail closed (#993). The
+        # #1469 grace window delays WHEN this branch is reached (the selection
+        # re-polls while a comment may still be posting) but must never change
+        # WHAT it decides once reached.
         run = verdict_step["run"]
         marker = 'if [ -z "$body" ]; then'
         assert marker in run, (
             "Must have a stale-only branch: review comment(s) exist but none "
             "is newer than the head commit."
         )
-        stale_branch = run[run.index(marker) : run.index(marker) + 600]
+        stale_branch = branch_slice(run, marker)
         assert "exit 1" in stale_branch and "exit 0" not in stale_branch, (
             "Stale-only (no comment fresh for the head SHA) must FAIL CLOSED "
             "(exit 1) — the latest review errored; do not consume a prior-SHA "
@@ -2108,4 +2171,143 @@ class TestInFlightWiring:
             "The fall-through pass notice must state which signal it relied on, "
             "so a pass is auditable from the log without re-deriving it "
             "(#1434 AC3)."
+        )
+
+
+class TestStaleGraceWindowLogic:
+    """#1469: the verdict step races the run that posts the verdict comment.
+
+    They live in DIFFERENT workflow runs: on an autobase push the verdict
+    evaluates while the real review (triggered by the prior non-bot push) is
+    still writing its comment. On PR #1492 (run 31375034566, 2026-08-10) the
+    step failed closed at 09:33:39Z against anchor 09:23:45Z and the clean
+    "No issues found" verdict landed at 09:34:01Z — 22 seconds later. The
+    error said "re-run", but in AFK operation nobody is there to re-run, so
+    the race silently stalls auto-merge. The fix polls the stale-only state
+    for a bounded window; fail-closed semantics after the window are
+    unchanged (#993).
+    """
+
+    ANCHOR = "2026-08-10T09:23:45Z"
+    STALE = ("## Code Review — PR #1492\n\nNo issues found.", "2026-08-10T09:15:00Z")
+    FRESH_CLEAN = ("## Code Review — PR #1492\n\nNo issues found.", "2026-08-10T09:34:01Z")
+    FRESH_MAJOR = (
+        "## Code Review — PR #1492\n\n### MAJOR\n\n1. Bug.",
+        "2026-08-10T09:34:01Z",
+    )
+
+    # --- poll-trigger rule: only stale-only re-fetches --------------------
+    def test_fresh_at_first_read_does_not_poll(self):
+        _, polls = grace_window_selection([[self.STALE, self.FRESH_CLEAN]], self.ANCHOR)
+        assert polls == 0
+
+    def test_total_zero_does_not_poll(self):
+        # No comment at all is NOT the racy state — it has its own lineage
+        # probes (#1228/#1434) and self-heals via code-review-retry. Polling
+        # it would add the full window to every legitimate skip.
+        _, polls = grace_window_selection([[]], self.ANCHOR)
+        assert polls == 0
+
+    def test_non_review_comments_do_not_poll(self):
+        # Ordinary discussion comments never enter the selection, so they must
+        # not hold the window open either.
+        chatter = [("Looks good to me!", "2026-08-10T09:30:00Z")]
+        _, polls = grace_window_selection([chatter], self.ANCHOR)
+        assert polls == 0
+
+    def test_stale_only_polls_until_window_exhausted(self):
+        _, polls = grace_window_selection([[self.STALE]], self.ANCHOR)
+        assert polls == GRACE_MAX_POLLS
+
+    # --- outcome rules ----------------------------------------------------
+    def test_pr_1492_timeline_comment_landing_mid_window_passes(self):
+        # The reproducing case: stale-only at first read, clean verdict lands
+        # on a later poll → pass, no human re-run needed.
+        snapshots = [[self.STALE], [self.STALE], [self.STALE, self.FRESH_CLEAN]]
+        assert verdict_fresh_grace(snapshots, self.ANCHOR) == "pass"
+        _, polls = grace_window_selection(snapshots, self.ANCHOR)
+        assert polls == 2
+
+    def test_late_comment_carrying_blockers_still_blocks(self):
+        # The window widens WHEN the verdict is read, never WHAT passes it: a
+        # verdict that arrives mid-window is classified by the unchanged
+        # two-gate ladder.
+        snapshots = [[self.STALE], [self.STALE, self.FRESH_MAJOR]]
+        assert verdict_fresh_grace(snapshots, self.ANCHOR) == "fail"
+
+    def test_no_comment_ever_arriving_still_fails_closed(self):
+        # #993 preserved: window exhausts stale-only → fail closed.
+        assert verdict_fresh_grace([[self.STALE]], self.ANCHOR) == "fail"
+
+    def test_stale_plus_empty_total_zero_snapshot_is_impossible_but_safe(self):
+        # If comments were deleted mid-window the state flips to total==0 and
+        # the poll stops — handing over to the total==0 decision table rather
+        # than spinning on a vanished comment.
+        final, polls = grace_window_selection([[self.STALE], []], self.ANCHOR)
+        assert final == [] and polls == 1
+
+
+class TestStaleGraceWindowWiring:
+    """#1469: the bash must carry the bounded poll around the selection."""
+
+    def test_selection_runs_inside_the_grace_loop(self, verdict_step):
+        run = verdict_step["run"]
+        assert "GRACE_DEADLINE" in run, (
+            "The comment selection must sit inside a bounded grace-window "
+            "poll — the verdict step races the run that posts the comment "
+            "(PR #1492: verdict landed 22s after the step failed closed, "
+            "#1469)."
+        )
+        assert run.index("GRACE_DEADLINE") < run.index("gh api \"repos/$REPO/issues/$PR/comments\""), (
+            "The deadline must be set before the first selection fetch so the "
+            "window bounds every re-fetch, not just later ones."
+        )
+
+    def test_window_is_bounded_by_a_deadline(self, verdict_step):
+        run = verdict_step["run"]
+        assert "SECONDS + 300" in run, (
+            "The grace window must be a bounded deadline (~5 min) — an "
+            "unbounded poll would hang the required check forever on a "
+            "genuinely dead review (#1469 keeps fail-closed, just later)."
+        )
+        assert '"$SECONDS" -ge "$GRACE_DEADLINE"' in run, (
+            "The loop must compare elapsed time against the deadline and stop "
+            "polling once it passes."
+        )
+
+    def test_only_the_stale_only_state_retries(self, verdict_step):
+        # The loop must break immediately on total==0 (lineage probes own that
+        # state, #1228/#1434) and on a fresh body (verdict ready) — BEFORE the
+        # sleep, or every legitimate skip pays the full window.
+        run = verdict_step["run"]
+        breaker = 'if [ "$total" -eq 0 ] || [ -n "$body" ]; then'
+        assert breaker in run, (
+            "The poll loop must break on total==0 and on a fresh body — only "
+            "the stale-only state (comments exist, none fresh) may retry."
+        )
+        assert run.index(breaker) < run.index("sleep "), (
+            "The non-stale break must precede the sleep, or non-racy states "
+            "pay the polling delay."
+        )
+
+    def test_grace_loop_precedes_the_stale_fail_closed_branch(self, verdict_step):
+        run = verdict_step["run"]
+        assert run.index("GRACE_DEADLINE") < run.index('if [ -z "$body" ]; then'), (
+            "The poll must run BEFORE the stale-only fail-closed branch — "
+            "polling after exit 1 is dead code."
+        )
+
+    def test_retry_notice_is_visible_in_the_log(self, verdict_step):
+        # An AFK operator debugging a slow gate must be able to see the window
+        # working from the run log alone.
+        run = verdict_step["run"]
+        loop_start = run.index("GRACE_DEADLINE")
+        # Anchor on the loop-closing `done` keyword at line start, not the
+        # substring (comments say "done" too — same drift class branch_slice
+        # exists for).
+        loop = run[loop_start : run.index("\ndone", loop_start)]
+        assert "::notice::" in loop and "sleep 20" in loop, (
+            "Each retry must log a ::notice:: naming the wait, and the "
+            "interval must stay coarse (20s) — the comments endpoint is "
+            "paginated and polled repeatedly (#1469)."
         )
