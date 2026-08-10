@@ -247,6 +247,13 @@ def test_unknown_event_type_failsafe_escalates():
     assert handle_event(_ev("totally_unknown", "high")).route is Route.ESCALATE
 
 
+def test_quota_pressure_high_failsafe_escalates():
+    """#1139: telegram-notify-hook (the drain) is retired — quota_pressure's
+    only remaining Telegram path is this fail-safe ESCALATE (unenumerated
+    event_type, high severity), routed through the notifier in dispatch()."""
+    assert handle_event(_ev("quota_pressure", "high")).route is Route.ESCALATE
+
+
 def test_known_type_unenumerated_severity_failsafe_escalates():
     # ci_failure only routes to emit_task at `high`; any other severity is an
     # unknown (event_type, severity) pair → fail-safe escalate.

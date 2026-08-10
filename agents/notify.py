@@ -1,11 +1,13 @@
 """Telegram notifier for orchestrator escalations (#1385 AC-D).
 
-Lifted from ``scripts/telegram-notify-hook.py``'s ``send_telegram`` helper,
-but scoped to a single :class:`agents.orchestrator.Decision` rather than a
-raw Supabase event row — ``dispatch``'s ``ESCALATE`` branch has only the
-routing verdict, not the original event payload. Env-gated exactly like the
-hook: unset ``TELEGRAM_BOT_TOKEN``/``TELEGRAM_ALLOW_USER_ID`` means
-"notifications not configured yet", not an error.
+This is the only Telegram path left after ``scripts/telegram-notify-hook.py``
+(a standalone drain of pending events) was retired (#1139): every escalation
+now flows through the orchestrator's ``ESCALATE`` route, scoped to a single
+:class:`agents.orchestrator.Decision` rather than a raw Supabase event row —
+``dispatch``'s ``ESCALATE`` branch has only the routing verdict, not the
+original event payload. Env-gated: unset ``TELEGRAM_BOT_TOKEN``/
+``TELEGRAM_ALLOW_USER_ID`` means "notifications not configured yet", not an
+error.
 
 This is called from inside a live ``wake_driver`` tick (via
 ``dispatch``/``build_production_orchestrator``), so it must never raise — a

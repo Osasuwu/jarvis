@@ -389,7 +389,7 @@ def main():
     # into fok_judgments (154 missing-key rows recorded 2026-05-05 — a config
     # error masquerading as a run). Refuse before any DB work. Guard only the
     # real run; --dry-run keeps its smoke-test role (fetch/format/summary, no
-    # writes). Mirrors telegram-notify-hook.py's not-dry-run + missing-config gate.
+    # writes).
     if not args.dry_run:
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         # Single source of truth for both the guard and the message: whichever
