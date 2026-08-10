@@ -9,6 +9,8 @@ propagate at call time.
 
 from __future__ import annotations
 
+import json
+
 from datetime import datetime, timezone  # noqa: F401
 
 from mcp.types import TextContent  # noqa: F401
@@ -67,7 +69,7 @@ async def _handle_outcome_record(args: dict) -> list[TextContent]:
         write_path="outcome_record",
     )
     if block is not None:
-        return [TextContent(type="text", text=block)]
+        return [TextContent(type="text", text=json.dumps(block))]
 
     memory_id = args.get("memory_id")
     if memory_id is not None:
@@ -113,15 +115,11 @@ async def _handle_outcome_update(args: dict) -> list[TextContent]:
     # #999: Tier-2 write-path scrubber backstop.
     block = write_scrubber.check_write(
         client,
-        {
-            k: args[k]
-            for k in ("outcome_summary", "lessons")
-            if k in args and args[k] is not None
-        },
+        {k: args[k] for k in ("outcome_summary", "lessons") if k in args and args[k] is not None},
         write_path="outcome_update",
     )
     if block is not None:
-        return [TextContent(type="text", text=block)]
+        return [TextContent(type="text", text=json.dumps(block))]
 
     memory_id = args.get("memory_id")
     if memory_id is not None:
@@ -337,9 +335,13 @@ async def _handle_fok_calibration_summary(args: dict) -> list[TextContent]:
     if drift_signal:
         lines.append("")
         lines.append("⚠️  **Calibration drift detected** (Brier ≥ 0.25 with n ≥ 30)")
-        lines.append("Your FOK verdicts may be systematically mis-calibrated. Consider reviewing recent insufficient verdicts.")
+        lines.append(
+            "Your FOK verdicts may be systematically mis-calibrated. Consider reviewing recent insufficient verdicts."
+        )
     elif n < 30:
         lines.append("")
-        lines.append("ℹ️  Insufficient data (n < 30) for drift signal — calibration judgment deferred.")
+        lines.append(
+            "ℹ️  Insufficient data (n < 30) for drift signal — calibration judgment deferred."
+        )
 
     return [TextContent(type="text", text="\n".join(lines))]

@@ -95,6 +95,60 @@ async def _clear_pending():
     write_scrubber._PENDING_BLOCK_LOGS.clear()
 
 
+# ── disable-reason classification (AC1, #1000) ──────────────────────────────
+
+
+class TestClassifyDisableReason:
+    def test_import_error_is_module_absent(self):
+        assert write_scrubber._classify_disable_reason(ImportError()) == "module_absent"
+
+    def test_module_not_found_error_is_module_absent(self):
+        assert write_scrubber._classify_disable_reason(ModuleNotFoundError()) == "module_absent"
+
+    def test_other_exception_is_import_broken_with_type(self):
+        assert write_scrubber._classify_disable_reason(SyntaxError()) == "import_broken:SyntaxError"
+
+
+class TestDisabledEventDedupKey:
+    def test_deterministic_for_same_reason_and_date(self):
+        a = write_scrubber._disabled_event_dedup_key("module_absent", "2026-08-09")
+        b = write_scrubber._disabled_event_dedup_key("module_absent", "2026-08-09")
+        assert a == b
+
+    def test_varies_by_reason(self):
+        a = write_scrubber._disabled_event_dedup_key("module_absent", "2026-08-09")
+        b = write_scrubber._disabled_event_dedup_key("import_broken:SyntaxError", "2026-08-09")
+        assert a != b
+
+    def test_varies_by_date(self):
+        a = write_scrubber._disabled_event_dedup_key("module_absent", "2026-08-09")
+        b = write_scrubber._disabled_event_dedup_key("module_absent", "2026-08-10")
+        assert a != b
+
+
+class TestLogDisabledEvent:
+    def test_upserts_disabled_event_on_dedup_key(self):
+        client = MagicMock()
+        write_scrubber.log_disabled_event(client, "module_absent")
+
+        client.table.assert_called_with("events")
+        upsert = client.table.return_value.upsert
+        row = upsert.call_args.args[0]
+        assert upsert.call_args.kwargs.get("on_conflict") == "dedup_key"
+        assert row["event_type"] == "mcp_write_scrubber_disabled"
+        assert row["severity"] == "high"
+        assert row["source"] == "mcp_memory"
+        assert row["payload"]["reason"] == "module_absent"
+        assert "dedup_key" in row
+
+    def test_swallows_db_errors(self, capsys):
+        client = MagicMock()
+        client.table.side_effect = Exception("boom")
+        write_scrubber.log_disabled_event(client, "module_absent")  # must not raise
+        err = capsys.readouterr().err
+        assert "Exception" in err
+
+
 # ── scan_fields ───────────────────────────────────────────────────────────
 
 
@@ -167,36 +221,87 @@ class TestScanFields:
 
 class TestRejectionError:
     def test_shape(self):
-        payload = json.loads(write_scrubber.rejection_error({"api_key_openai": 1}))
+        payload = write_scrubber.rejection_error({"api_key_openai": 1})
         assert payload["error"] == "secret_pattern_detected"
         assert payload["patterns"] == {"api_key_openai": 1}
 
     def test_carries_only_names_and_counts_no_value(self):
         body = write_scrubber.rejection_error({"api_key_openai": 1})
-        # The literal secret never appears in the rejection string.
-        assert FAKE_OPENAI_KEY not in body
+        # The literal secret never appears in the rejection dict.
+        assert FAKE_OPENAI_KEY not in json.dumps(body)
 
 
 # ── log_block_event ───────────────────────────────────────────────────────
 
 
+# ── block-event dedup key (AC2, #1000) ──────────────────────────────────────
+
+
+class TestBlockEventDedupKey:
+    def test_deterministic_for_same_inputs(self):
+        a = write_scrubber._block_event_dedup_key(
+            "memory_store", {"api_key_openai": 2}, "2026-08-09"
+        )
+        b = write_scrubber._block_event_dedup_key(
+            "memory_store", {"api_key_openai": 2}, "2026-08-09"
+        )
+        assert a == b
+
+    def test_pattern_key_order_does_not_matter(self):
+        """Patterns arrive as a dict from scan_fields; iteration order must not
+        split one incident into two dedup rows."""
+        a = write_scrubber._block_event_dedup_key(
+            "memory_store", {"api_key_openai": 1, "env_block": 1}, "2026-08-09"
+        )
+        b = write_scrubber._block_event_dedup_key(
+            "memory_store", {"env_block": 1, "api_key_openai": 1}, "2026-08-09"
+        )
+        assert a == b
+
+    def test_varies_by_write_path(self):
+        a = write_scrubber._block_event_dedup_key(
+            "memory_store", {"api_key_openai": 1}, "2026-08-09"
+        )
+        b = write_scrubber._block_event_dedup_key(
+            "record_decision", {"api_key_openai": 1}, "2026-08-09"
+        )
+        assert a != b
+
+    def test_varies_by_patterns(self):
+        a = write_scrubber._block_event_dedup_key(
+            "memory_store", {"api_key_openai": 1}, "2026-08-09"
+        )
+        b = write_scrubber._block_event_dedup_key("memory_store", {"env_block": 1}, "2026-08-09")
+        assert a != b
+
+    def test_varies_by_date(self):
+        a = write_scrubber._block_event_dedup_key(
+            "memory_store", {"api_key_openai": 1}, "2026-08-09"
+        )
+        b = write_scrubber._block_event_dedup_key(
+            "memory_store", {"api_key_openai": 1}, "2026-08-10"
+        )
+        assert a != b
+
+
 class TestLogBlockEvent:
-    def test_inserts_counter_event_no_values(self):
+    def test_upserts_counter_event_via_rpc_no_values(self):
         client = MagicMock()
         write_scrubber.log_block_event(client, {"api_key_openai": 2}, write_path="memory_store")
 
-        client.table.assert_called_with("events")
-        row = client.table.return_value.insert.call_args.args[0]
-        assert row["event_type"] == "mcp_write_scrubber_block"
+        client.rpc.assert_called_once()
+        rpc_name, params = client.rpc.call_args.args
+        assert rpc_name == "scrubber_block_event_upsert"
         # An API-key fire is high-severity for triage indexing (see
         # _event_severity) — a live-key-shaped catch must not be buried at the
         # same priority as an env-block.
-        assert row["severity"] == "high"
-        assert row["repo"] == "Osasuwu/jarvis"
-        assert row["payload"]["patterns"] == {"api_key_openai": 2}
-        assert row["payload"]["write_path"] == "memory_store"
-        # No payload value leaks into the event row.
-        assert FAKE_OPENAI_KEY not in json.dumps(row)
+        assert params["p_severity"] == "high"
+        assert params["p_repo"] == "Osasuwu/jarvis"
+        assert params["p_patterns"] == {"api_key_openai": 2}
+        assert params["p_write_path"] == "memory_store"
+        assert "p_dedup_key" in params
+        # No payload value leaks into the RPC params.
+        assert FAKE_OPENAI_KEY not in json.dumps(params)
 
     def test_severity_reflects_caught_pattern(self):
         """High-entropy credential patterns → "high"; everything else (e.g. an
@@ -204,22 +309,22 @@ class TestLogBlockEvent:
         deliberate change, not an accidental flatten back to one severity."""
         client = MagicMock()
         write_scrubber.log_block_event(client, {"api_key_anthropic": 1}, write_path="memory_store")
-        assert client.table.return_value.insert.call_args.args[0]["severity"] == "high"
+        assert client.rpc.call_args.args[1]["p_severity"] == "high"
 
         client.reset_mock()
         write_scrubber.log_block_event(client, {"env_block": 1}, write_path="memory_store")
-        assert client.table.return_value.insert.call_args.args[0]["severity"] == "medium"
+        assert client.rpc.call_args.args[1]["p_severity"] == "medium"
 
         # A leaked JWT is a Supabase service-role token (full DB access) — it
         # must triage as "high" alongside the raw API keys, not as a medium
         # env-block. Pins the round-10 MINOR-3 fix.
         client.reset_mock()
         write_scrubber.log_block_event(client, {"api_key_jwt": 1}, write_path="memory_store")
-        assert client.table.return_value.insert.call_args.args[0]["severity"] == "high"
+        assert client.rpc.call_args.args[1]["p_severity"] == "high"
 
     def test_swallows_db_errors(self, capsys):
         client = MagicMock()
-        client.table.side_effect = Exception("DB down: secret-bearing context")
+        client.rpc.side_effect = Exception("DB down: secret-bearing context")
         # Must not raise — logging is fire-and-forget.
         write_scrubber.log_block_event(client, {"x": 1}, write_path="memory_store")
         # Privacy: the stderr diagnostic must carry the exception *type* only,
@@ -291,9 +396,10 @@ class TestCheckWrite:
             client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store"
         )
         assert out is not None
-        payload = json.loads(out)
-        assert payload["error"] == "secret_pattern_detected"
-        client.table.assert_called_with("events")
+        assert out["error"] == "secret_pattern_detected"
+        rpc_name, params = client.rpc.call_args.args
+        assert rpc_name == "scrubber_block_event_upsert"
+        assert params["p_write_path"] == "memory_store"
 
     def test_user_path_does_not_block(self):
         """AC#4: ~26% of the live corpus carries absolute user paths. A path
@@ -317,9 +423,8 @@ class TestCheckWrite:
             {"content": f"/home/bob/app uses {FAKE_OPENAI_KEY}"},
             write_path="memory_store",
         )
-        payload = json.loads(out)
-        assert payload["patterns"] == {"api_key_openai": 1}
-        assert "path_username" not in payload["patterns"]
+        assert out["patterns"] == {"api_key_openai": 1}
+        assert "path_username" not in out["patterns"]
 
 
 # ── every blocking pattern is exercised, not just api_key_openai ──────────
@@ -331,9 +436,9 @@ class TestAllBlockingPatterns:
         client = MagicMock()
         out = write_scrubber.check_write(client, {"content": text}, write_path="memory_store")
         assert out is not None, f"{pattern_name} did not block the write"
-        assert pattern_name in json.loads(out)["patterns"]
+        assert pattern_name in out["patterns"]
         # The raw token never leaks into the rejection payload.
-        assert text not in out
+        assert text not in json.dumps(out)
 
 
 # ── fail-open when the scrubber lib is unavailable ────────────────────────
@@ -353,7 +458,31 @@ class TestScrubUnavailable:
             client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store"
         )
         assert out is None
-        client.table.assert_not_called()
+
+    def test_check_write_logs_disabled_event_when_scrub_none(self, monkeypatch):
+        monkeypatch.setattr(write_scrubber, "scrub", None)
+        monkeypatch.setattr(write_scrubber, "_SCRUB_DISABLE_REASON", "module_absent")
+        client = MagicMock()
+        out = write_scrubber.check_write(
+            client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store"
+        )
+        assert out is None
+        client.table.assert_called_with("events")
+        upsert = client.table.return_value.upsert
+        row = upsert.call_args.args[0]
+        assert row["event_type"] == "mcp_write_scrubber_disabled"
+        assert row["payload"]["reason"] == "module_absent"
+
+    def test_check_write_does_not_call_scan_fields_when_scrub_none(self, monkeypatch):
+        monkeypatch.setattr(write_scrubber, "scrub", None)
+        monkeypatch.setattr(write_scrubber, "_SCRUB_DISABLE_REASON", "module_absent")
+        called = []
+        monkeypatch.setattr(
+            write_scrubber, "scan_fields", lambda fields: called.append(fields) or {}
+        )
+        client = MagicMock()
+        write_scrubber.check_write(client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store")
+        assert called == []
 
 
 # ── SCRUB_ONLY_PATTERNS coupling invariant ────────────────────────────────
@@ -430,16 +559,10 @@ class TestStoreGate:
 
     async def test_block_event_is_actually_logged_on_async_path(self):
         """MAJOR-fix: under asyncio_mode=auto the handler runs in a loop, so the
-        block-event insert is dispatched as a detached task. Without draining,
-        no test ever observes it. Drain with ``asyncio.sleep(0)`` and assert the
-        ``events`` insert fired with the value-free counter row."""
-        # Route each table() to its own mock so the events row is extracted from
-        # the events table specifically — not from a shared insert.call_args that
-        # grabs the last insert on ANY table (which would make the privacy check
-        # vacuous if a future insert followed the block event).
-        tables: dict = {}
-        self.client.table.side_effect = lambda name: tables.setdefault(name, MagicMock())
-
+        block-event upsert is dispatched as a detached task. Without draining,
+        no test ever observes it. Drain with ``asyncio.gather`` and assert the
+        ``scrubber_block_event_upsert`` RPC fired with the value-free counter
+        params."""
         result = await _handle_store(
             {
                 "type": "project",
@@ -451,22 +574,22 @@ class TestStoreGate:
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
 
-        # Drain the detached _log_block_event_async task(s). The insert runs via
-        # asyncio.to_thread, so awaiting the pending-task set (not bare sleep(0)
-        # ticks) is what guarantees the executor thread finished before we assert.
-        # Snapshot the set BEFORE awaiting: the done-callback discards completed
-        # tasks, so reading it after a yield could race to empty even though a
-        # task ran. The gate returns without yielding, so the task is scheduled
-        # but not yet started here — the set is reliably populated.
+        # Drain the detached _log_block_event_async task(s). The RPC call runs
+        # via asyncio.to_thread, so awaiting the pending-task set (not bare
+        # sleep(0) ticks) is what guarantees the executor thread finished before
+        # we assert. Snapshot the set BEFORE awaiting: the done-callback discards
+        # completed tasks, so reading it after a yield could race to empty even
+        # though a task ran. The gate returns without yielding, so the task is
+        # scheduled but not yet started here — the set is reliably populated.
         pending = list(write_scrubber._PENDING_BLOCK_LOGS)
         assert pending, "no block-log task was scheduled on the async path"
         await asyncio.gather(*pending)
 
-        assert "events" in tables, "block event was never inserted on the async path"
-        row = tables["events"].insert.call_args.args[0]
-        assert row["event_type"] == "mcp_write_scrubber_block"
-        assert row["payload"]["write_path"] == "memory_store"
-        assert FAKE_OPENAI_KEY not in json.dumps(row)
+        self.client.rpc.assert_called_once()
+        rpc_name, params = self.client.rpc.call_args.args
+        assert rpc_name == "scrubber_block_event_upsert"
+        assert params["p_write_path"] == "memory_store"
+        assert FAKE_OPENAI_KEY not in json.dumps(params)
 
     async def test_secret_in_name_blocks(self):
         result = await _handle_store(

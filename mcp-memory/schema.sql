@@ -3460,3 +3460,50 @@ create policy "Allow all for authenticated" on review_debt
   for all using (true) with check (true);
 create policy "Allow all for anon" on review_debt
   for all to anon using (true) with check (true);
+
+-- ===========================================================================
+-- scrubber_block_event_upsert: day-bucketed dedup + occurrence counter for
+-- mcp_write_scrubber_block events (AC2, #1000).
+-- Applied to remote as migration 20260809180000_create_scrubber_block_event_upsert.sql;
+-- documented here per #326 (schema.sql is aspirational; the migration executes).
+-- No new table — this adds an RPC over the existing `events` table (see the
+-- events block above) so write_scrubber.py's log_block_event() can upsert
+-- against events.dedup_key's PARTIAL unique index instead of inserting a new
+-- row per repeat fire on a hot blocked-write path. events.payload has no
+-- dedicated counter column (unlike review_debt.seen_count above), so the
+-- increment happens via jsonb_set/coalesce on payload.occurrence_count.
+-- ===========================================================================
+create or replace function scrubber_block_event_upsert(
+  p_dedup_key   text,
+  p_severity    text,
+  p_repo        text,
+  p_write_path  text,
+  p_patterns    jsonb,
+  p_seen_at     timestamptz default now()
+) returns events language plpgsql security invoker set search_path = public as $$
+declare result events;
+begin
+  insert into events as e (
+    event_type, severity, repo, source, title, payload, dedup_key, event_at
+  )
+  values (
+    'mcp_write_scrubber_block', p_severity, p_repo, 'mcp_memory',
+    'Write blocked by secret scrubber (' || p_write_path || ')',
+    jsonb_build_object(
+      'write_path', p_write_path, 'patterns', p_patterns, 'occurrence_count', 1
+    ),
+    p_dedup_key, p_seen_at
+  )
+  -- events.dedup_key is a PARTIAL unique index (idx_events_dedup_key ... where
+  -- dedup_key is not null), not a table-level unique constraint like
+  -- review_debt.dedup_key above — the predicate must be restated here or
+  -- Postgres won't infer it as the ON CONFLICT arbiter.
+  on conflict (dedup_key) where dedup_key is not null do update
+    set payload = jsonb_set(
+          e.payload, '{occurrence_count}',
+          to_jsonb(coalesce((e.payload->>'occurrence_count')::int, 1) + 1)
+        ),
+        event_at = excluded.event_at
+  returning e.* into result;
+  return result;
+end; $$;

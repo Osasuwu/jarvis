@@ -120,13 +120,22 @@ async def _handle_goal_set(args: dict) -> list[TextContent]:
         client,
         {
             k: args[k]
-            for k in ("title", "why", "success_criteria", "risks", "owner_focus", "jarvis_focus", "outcome", "lessons")
+            for k in (
+                "title",
+                "why",
+                "success_criteria",
+                "risks",
+                "owner_focus",
+                "jarvis_focus",
+                "outcome",
+                "lessons",
+            )
             if k in args
         },
         write_path="goal_set",
     )
     if block is not None:
-        return [TextContent(type="text", text=block)]
+        return [TextContent(type="text", text=json.dumps(block))]
 
     data = {k: args[k] for k in GOAL_FIELDS if k in args}
 
@@ -198,13 +207,22 @@ async def _handle_goal_update(args: dict) -> list[TextContent]:
         client,
         {
             k: args[k]
-            for k in ("title", "why", "success_criteria", "risks", "owner_focus", "jarvis_focus", "outcome", "lessons")
+            for k in (
+                "title",
+                "why",
+                "success_criteria",
+                "risks",
+                "owner_focus",
+                "jarvis_focus",
+                "outcome",
+                "lessons",
+            )
             if k in args
         },
         write_path="goal_update",
     )
     if block is not None:
-        return [TextContent(type="text", text=block)]
+        return [TextContent(type="text", text=json.dumps(block))]
 
     data = {k: args[k] for k in GOAL_FIELDS if k in args and k != "slug"}
 

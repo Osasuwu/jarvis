@@ -28,10 +28,11 @@ the ``credential_registry`` access model, not scrubbing.
 from __future__ import annotations
 
 import asyncio
-import json
+import hashlib
 import os
 import sys
 import threading
+from datetime import datetime, timezone
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -47,6 +48,50 @@ _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if (_SCRIPTS / "lib" / "secret_scrubber.py").is_file() and str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
 
+
+def _classify_disable_reason(exc: BaseException) -> str:
+    """Map an import-time exception to a disable-reason string (AC1, #1000).
+
+    ``module_absent`` covers the expected redrobot case (scripts/lib genuinely
+    missing); ``import_broken:<ExceptionType>`` covers a present-but-broken
+    module (syntax error, bad ref) so the two causes stay distinguishable in
+    the disabled-gate observability event.
+    """
+    if isinstance(exc, (ImportError, ModuleNotFoundError)):
+        return "module_absent"
+    return f"import_broken:{type(exc).__name__}"
+
+
+# Set at import time in the except branches below; None while the gate is
+# enabled. check_write() reads this to build the disabled-gate event (AC1).
+_SCRUB_DISABLE_REASON: str | None = None
+
+
+def _disabled_event_dedup_key(reason: str, utc_date: str) -> str:
+    """Day-bucketed dedup key for the ``mcp_write_scrubber_disabled`` event.
+
+    Each MCP handler does its own ``import write_scrubber``, so there is no
+    single process-local flag to prevent re-emitting on every cold start
+    during a multi-day outage — bucketing by UTC date instead caps the event
+    at one row/day regardless of process count (AC1, #1000).
+    """
+    return hashlib.sha256(f"scrubber_disabled|{reason}|{utc_date}".encode()).hexdigest()
+
+
+def _block_event_dedup_key(write_path: str, patterns: dict[str, int], utc_date: str) -> str:
+    """Day-bucketed dedup key for the ``mcp_write_scrubber_block`` event.
+
+    A distinct incident is a (write_path, pattern set, day) triple. Repeats of
+    the *same* incident on the same UTC day collapse into one row via
+    ``scrubber_block_event_upsert``'s ``payload.occurrence_count`` instead of
+    inserting a new row per fire (AC2, #1000). ``sorted(patterns)`` makes the
+    key order-independent — ``scan_fields``'s dict iteration order is not a
+    stable identity for the incident.
+    """
+    pattern_key = ",".join(sorted(patterns))
+    return hashlib.sha256(f"{write_path}|{pattern_key}|{utc_date}".encode()).hexdigest()
+
+
 try:
     from lib.secret_scrubber import scrub, API_KEY_PATTERNS, EXTRA_PATTERN_NAMES  # type: ignore
 except (ImportError, ModuleNotFoundError):
@@ -58,6 +103,7 @@ except (ImportError, ModuleNotFoundError):
     scrub = None  # type: ignore
     API_KEY_PATTERNS = []  # type: ignore
     EXTRA_PATTERN_NAMES = frozenset()  # type: ignore
+    _SCRUB_DISABLE_REASON = "module_absent"
     if not os.environ.get("WRITE_SCRUBBER_QUIET"):
         print(
             "[write_scrubber] WARNING: secret_scrubber unavailable (module absent) "
@@ -75,6 +121,7 @@ except Exception as exc:  # noqa: BLE001 — module FOUND but broken (syntax err
     scrub = None  # type: ignore
     API_KEY_PATTERNS = []  # type: ignore
     EXTRA_PATTERN_NAMES = frozenset()  # type: ignore
+    _SCRUB_DISABLE_REASON = _classify_disable_reason(exc)
     print(
         "[write_scrubber] ERROR: secret_scrubber import failed — the module was "
         f"found but is broken ({type(exc).__name__}); the Tier-2 gate is DISABLED. "
@@ -166,16 +213,15 @@ def scan_fields(fields: dict[str, object]) -> dict[str, int]:
     return totals
 
 
-def rejection_error(patterns: dict[str, int]) -> str:
-    """Build the structured rejection payload as a JSON string.
+def rejection_error(patterns: dict[str, int]) -> dict:
+    """Build the structured rejection payload.
 
     Carries ONLY pattern names + counts — never any payload value.
 
-    Returns a JSON *string* (handlers wrap it in a TextContent). #1000 will
-    migrate the MCP write paths to a structured ``dict`` error return; when that
-    lands, this returns the dict directly and the json.dumps moves to the edge.
+    Returns a ``dict`` (#1000 AC3) — handlers ``json.dumps()`` it themselves
+    at the edge before wrapping in a ``TextContent``.
     """
-    return json.dumps({"error": "secret_pattern_detected", "patterns": patterns})
+    return {"error": "secret_pattern_detected", "patterns": patterns}
 
 
 # High-entropy credential patterns — a fire here means a real, live-key-shaped
@@ -215,7 +261,7 @@ _BLOCK_LOG_LOCK = threading.Lock()
 
 
 def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> None:
-    """Best-effort: write an ``mcp_write_scrubber_block`` counter event.
+    """Best-effort: upsert an ``mcp_write_scrubber_block`` counter event.
 
     Records pattern names + counts only (privacy invariant). *write_path*
     identifies which handler blocked (``memory_store`` / ``record_decision``)
@@ -224,20 +270,30 @@ def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> Non
     Severity reflects which pattern fired (see ``_event_severity``) so an
     ``sk-ant-*`` catch is not buried at the same priority as an env-block.
 
+    Day-bucketed via ``_block_event_dedup_key`` and written through the
+    ``scrubber_block_event_upsert`` RPC (mirrors the ``review_debt_upsert``
+    ``on conflict (dedup_key) do update`` precedent) rather than a plain
+    insert — repeats of the same incident on the same UTC day increment
+    ``payload.occurrence_count`` instead of each getting their own row, which
+    would otherwise flood the events table on a hot repeated-write path
+    (AC2, #1000).
+
     Serialized via ``_BLOCK_LOG_LOCK`` so concurrent ``to_thread`` dispatches
     don't drive the shared client singleton from two threads at once.
     """
     try:
+        utc_date = datetime.now(timezone.utc).date().isoformat()
+        dedup_key = _block_event_dedup_key(write_path, patterns, utc_date)
         with _BLOCK_LOG_LOCK:
-            client.table("events").insert(
+            client.rpc(
+                "scrubber_block_event_upsert",
                 {
-                    "event_type": "mcp_write_scrubber_block",
-                    "severity": _event_severity(patterns),
-                    "repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
-                    "source": "mcp_memory",
-                    "title": f"Write blocked by secret scrubber ({write_path})",
-                    "payload": {"write_path": write_path, "patterns": patterns},
-                }
+                    "p_dedup_key": dedup_key,
+                    "p_severity": _event_severity(patterns),
+                    "p_repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
+                    "p_write_path": write_path,
+                    "p_patterns": patterns,
+                },
             ).execute()
     except Exception as exc:  # noqa: BLE001 — logging must never block the rejection
         # Loud-but-non-fatal: a silent pass hides "why are there no block
@@ -318,13 +374,57 @@ def _dispatch_block_log(client, patterns: dict[str, int], *, write_path: str) ->
     task.add_done_callback(_on_block_log_done)
 
 
-def check_write(client, fields: dict[str, object], *, write_path: str) -> str | None:
+def log_disabled_event(client, reason: str) -> None:
+    """Best-effort: upsert one ``mcp_write_scrubber_disabled`` event/day.
+
+    Fires from ``check_write`` when the Tier-2 gate is disabled (``scrub is
+    None``). Day-bucketed via ``_disabled_event_dedup_key`` so a multi-day
+    outage produces one row/day across every MCP handler process, not one
+    per cold start (AC1, #1000).
+
+    Mirrors ``log_block_event``'s "logging must never block the rejection"
+    pattern: any DB error here must not turn today's fail-*open* disabled
+    state into a fail-*closed* break of every memory write, so it is swallowed
+    and only the exception type is logged.
+    """
+    utc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    dedup_key = _disabled_event_dedup_key(reason, utc_date)
+    try:
+        client.table("events").upsert(
+            {
+                "event_type": "mcp_write_scrubber_disabled",
+                "severity": "high",
+                "repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
+                "source": "mcp_memory",
+                "title": "Tier-2 write-scrubber gate is disabled",
+                "payload": {"reason": reason},
+                "dedup_key": dedup_key,
+            },
+            on_conflict="dedup_key",
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 — logging must never block the write
+        print(
+            f"[write_scrubber] disabled-gate event log failed: {type(exc).__name__}",
+            file=sys.stderr,
+        )
+
+
+def check_write(client, fields: dict[str, object], *, write_path: str) -> dict | None:
     """Tier-2 gate. Scan *fields*; on any **blocking** secret fire, emit the
-    block event (off the event loop when one is running) and return the JSON
-    rejection string. Return ``None`` to allow the write. Scrub-only patterns
+    block event (off the event loop when one is running) and return the
+    rejection dict. Return ``None`` to allow the write. Scrub-only patterns
     (see ``SCRUB_ONLY_PATTERNS``) are ignored — they are normalization
     concerns, not write-blocking leaks.
+
+    When the gate itself is disabled (``scrub is None``), log the
+    disabled-gate observability event and fail open before reaching
+    ``scan_fields`` (AC1, #1000) — ``scan_fields`` already no-ops on
+    ``scrub is None``, but skipping the call makes the fail-open path
+    explicit rather than incidental.
     """
+    if scrub is None:
+        log_disabled_event(client, _SCRUB_DISABLE_REASON)
+        return None
     fires = scan_fields(fields)
     blocking = {k: v for k, v in fires.items() if k not in SCRUB_ONLY_PATTERNS}
     if not blocking:

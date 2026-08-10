@@ -9,6 +9,7 @@ propagate at call time.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import uuid
 
@@ -303,7 +304,7 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
         write_path="record_decision",
     )
     if block is not None:
-        return [TextContent(type="text", text=block)]
+        return [TextContent(type="text", text=json.dumps(block))]
 
     resolved_memories, unresolved_memories = _resolve_memory_refs(
         client, args.get("memories_used") or [], project
