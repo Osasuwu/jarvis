@@ -106,18 +106,36 @@ class _StubUpdate:
         return _StubResponse(data=matched)
 
 
+class _StubAPIError(Exception):
+    """Stands in for postgrest.APIError (23505 unique violation)."""
+
+
 class _StubInsert:
     def __init__(
-        self, parent: _StubTable, rows: list[dict[str, Any]], payload: dict[str, Any]
+        self,
+        parent: _StubTable,
+        rows: list[dict[str, Any]],
+        payload: dict[str, Any],
+        *,
+        on_conflict: str | None = None,
+        ignore_duplicates: bool = False,
     ) -> None:
         self._parent = parent
         self._rows = rows
         self._payload = payload
+        self._on_conflict = on_conflict
+        self._ignore_duplicates = ignore_duplicates
 
     def execute(self) -> _StubResponse:
         for existing in self._rows:
             if existing.get("idempotency_key") == self._payload.get("idempotency_key"):
-                return _StubResponse(data=[])
+                # Faithful PostgREST semantics: a bare insert (or an upsert
+                # without ignore_duplicates on the colliding column) raises;
+                # only upsert(on_conflict="idempotency_key",
+                # ignore_duplicates=True) resolves a duplicate to empty data.
+                if self._on_conflict == "idempotency_key" and self._ignore_duplicates:
+                    return _StubResponse(data=[])
+                raise _StubAPIError("23505: duplicate key value violates unique constraint")
         stored = {
             **self._payload,
             "id": f"tq-{len(self._rows) + 1}",
@@ -139,6 +157,25 @@ class _StubTable:
 
     def insert(self, payload: dict[str, Any]) -> _StubInsert:
         return _StubInsert(self, self._rows, payload)
+
+    def upsert(
+        self,
+        payload: dict[str, Any],
+        *,
+        on_conflict: str | None = None,
+        ignore_duplicates: bool = False,
+        **kwargs: Any,
+    ) -> _StubInsert:
+        self.calls.append(
+            ("upsert", {"on_conflict": on_conflict, "ignore_duplicates": ignore_duplicates})
+        )
+        return _StubInsert(
+            self,
+            self._rows,
+            payload,
+            on_conflict=on_conflict,
+            ignore_duplicates=ignore_duplicates,
+        )
 
     def update(self, payload: dict[str, Any]) -> _StubUpdate:
         return _StubUpdate(self, self._rows, payload)
@@ -240,6 +277,13 @@ class TestEnqueue:
         assert row["scope_files"] == ["src/main.py"]
 
     def test_idempotency_key_collision(self, client: _StubClient) -> None:
+        """#1455 AC5: the documented contract — colliding key returns None.
+
+        The stub mirrors real PostgREST: a bare insert on a duplicate key
+        RAISES; only upsert(on_conflict="idempotency_key",
+        ignore_duplicates=True) resolves the duplicate to empty data. This
+        test therefore proves enqueue actually implements its docstring
+        (it raised APIError in production before #1455)."""
         client.seed(
             "task_queue",
             [
@@ -253,6 +297,18 @@ class TestEnqueue:
             client=client,
         )
         assert row is None
+
+    def test_collision_uses_upsert_ignore_duplicates(self, client: _StubClient) -> None:
+        """#1455 AC5: the call shape is upsert(on_conflict="idempotency_key",
+        ignore_duplicates=True) — the only PostgREST form whose duplicate
+        outcome is empty data instead of a 23505 APIError."""
+        enqueue(goal="first", idempotency_key="k-shape", client=client)
+        upsert_calls = [c for c in client.table("task_queue").calls if c[0] == "upsert"]
+        assert upsert_calls, "enqueue must go through upsert, not bare insert"
+        assert upsert_calls[0][1] == {
+            "on_conflict": "idempotency_key",
+            "ignore_duplicates": True,
+        }
 
     def test_default_priority_zero(self, client: _StubClient) -> None:
         row = enqueue(

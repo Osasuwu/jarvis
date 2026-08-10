@@ -86,7 +86,14 @@ def enqueue(
     if escalated_reason is not None:
         row["escalated_reason"] = escalated_reason
 
-    result = cli.table("task_queue").insert(row).execute()
+    # #1455 AC5: upsert with ignore_duplicates is the only PostgREST call
+    # shape whose duplicate-key outcome is empty data — a bare insert raises
+    # APIError 23505, breaking the documented silent-None contract.
+    result = (
+        cli.table("task_queue")
+        .upsert(row, on_conflict="idempotency_key", ignore_duplicates=True)
+        .execute()
+    )
     data = result.data or []
     return data[0] if data else None
 

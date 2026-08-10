@@ -43,15 +43,12 @@ class FakePollerPort:
     # -- PollerPort surface --------------------------------------------------
 
     def find_parked_events(self) -> list[dict[str, Any]]:
-        """Return parked events whose payload has a ``blocked_by_task_id`` key."""
+        """Return parked events whose ``blocked_by_task_id`` column is set (#1455 AC4)."""
         result: list[dict[str, Any]] = []
         for ev in self.events:
             if ev.get("state") != "parked":
                 continue
-            payload = ev.get("payload") or {}
-            if not isinstance(payload, dict):
-                continue
-            tid = payload.get("blocked_by_task_id")
+            tid = ev.get("blocked_by_task_id")
             # Mirror the production guard (_blocking_task_id): present-but-falsy
             # ids such as int 0 must survive — a truthiness test would drop them
             # and silently strand the event.
@@ -91,13 +88,10 @@ def _ev(
     task_id: str | None = None,
     state: str = "parked",
 ) -> dict[str, Any]:
-    """Build an event dict. ``task_id`` is stored in ``payload.blocked_by_task_id``."""
-    ev: dict[str, Any] = {"id": eid, "state": state}
-    if task_id is not None:
-        ev["payload"] = {"blocked_by_task_id": task_id}
-    else:
-        ev["payload"] = {}
-    return ev
+    """Build an event dict. ``task_id`` lands in the dedicated column (#1455 AC4),
+    never in payload — payload stays immutable so the replay's idempotency key
+    is unchanged."""
+    return {"id": eid, "state": state, "blocked_by_task_id": task_id, "payload": {}}
 
 
 def _task(tid: str, status: str) -> dict[str, Any]:
@@ -288,27 +282,6 @@ class TestEdgeCases:
         assert n == 0
         assert port.state_of("e1") == "parked"
 
-    def test_json_string_payload_requeues_through_poll(self):
-        """PostgREST JSON-string payload is parsed end-to-end through ``poll()``."""
-        json_event = {
-            "id": "e-json",
-            "state": "parked",
-            "payload": json.dumps({"blocked_by_task_id": "t9"}),
-        }
-
-        class _JsonStringPayloadPort(FakePollerPort):
-            def find_parked_events(self) -> list[dict[str, Any]]:
-                return [json_event]
-
-        port = _JsonStringPayloadPort(
-            events=[json_event],  # needed for requeue_event lookup
-            tasks=[_task("t9", "done")],
-        )
-        n = poller.poll(port)
-        assert n == 1
-        assert len(port.requeue_calls) == 1
-        assert port.requeue_calls[0][0] == "e-json"
-
     def test_requeue_already_pending_event_returns_false(self):
         """FakePollerPort mirrors production: requeue only from parked state."""
         port = FakePollerPort(
@@ -320,43 +293,65 @@ class TestEdgeCases:
 
 
 # ===========================================================================
-# _blocking_task_id — payload shapes (#964 MINOR #6/#7)
+# _blocking_task_id — dedicated column, not payload (#1455 AC4)
 # ===========================================================================
 
 
 class TestBlockingTaskIdParsing:
-    """Direct tests for the payload extractor across dict / JSON-string shapes."""
+    """Direct tests for the column extractor — the payload marker is dead."""
 
     def test_preserves_integer_zero(self):
         """A falsy-but-present task id (int ``0``) must survive, not be dropped."""
-        ev = {"id": "e1", "state": "parked", "payload": {"blocked_by_task_id": 0}}
+        ev = {"id": "e1", "state": "parked", "blocked_by_task_id": 0}
         assert poller._blocking_task_id(ev) == "0"
 
     def test_empty_string_task_id_is_none(self):
-        ev = {"id": "e1", "state": "parked", "payload": {"blocked_by_task_id": ""}}
+        ev = {"id": "e1", "state": "parked", "blocked_by_task_id": ""}
         assert poller._blocking_task_id(ev) is None
 
-    def test_missing_task_id_is_none(self):
-        ev = {"id": "e1", "state": "parked", "payload": {"other": "x"}}
+    def test_missing_column_is_none(self):
+        ev = {"id": "e1", "state": "parked"}
         assert poller._blocking_task_id(ev) is None
 
-    def test_parses_json_string_payload(self):
-        """PostgREST may hand back jsonb as a string — it must be parsed."""
+    def test_null_column_is_none(self):
+        ev = {"id": "e1", "state": "parked", "blocked_by_task_id": None}
+        assert poller._blocking_task_id(ev) is None
+
+    def test_payload_marker_is_not_read(self):
+        """AC4 boundary: a legacy payload marker without the column must NOT
+        resurrect the event — the column is the only carrier."""
         ev = {
             "id": "e1",
             "state": "parked",
-            "payload": json.dumps({"blocked_by_task_id": "t9"}),
+            "blocked_by_task_id": None,
+            "payload": {"blocked_by_task_id": "t9"},
         }
-        assert poller._blocking_task_id(ev) == "t9"
-
-    def test_malformed_json_string_is_none(self):
-        ev = {"id": "e1", "state": "parked", "payload": "{not valid json"}
         assert poller._blocking_task_id(ev) is None
 
-    def test_json_string_non_object_is_none(self):
-        """A JSON string that decodes to a non-dict (e.g. a list) is skipped."""
-        ev = {"id": "e1", "state": "parked", "payload": json.dumps([1, 2, 3])}
-        assert poller._blocking_task_id(ev) is None
+
+# ===========================================================================
+# Poison-pill exclusion (#1455 AC8 — #1385 boundary preserved)
+# ===========================================================================
+
+
+class TestPoisonPillExclusion:
+    """Crash-parked events (#1385 poison-pill path, ``park()``/``park_event``)
+    carry ``blocked_by_task_id`` NULL and are structurally excluded from the
+    sweep — they stay parked until a human intervenes."""
+
+    def test_poison_pill_parked_event_is_never_requeued(self):
+        poison = {
+            "id": "e-pp",
+            "state": "parked",
+            "blocked_by_task_id": None,
+            # Sneaky legacy marker in payload — proves the column governs.
+            "payload": {"blocked_by_task_id": "t1"},
+        }
+        port = FakePollerPort(events=[poison], tasks=[_task("t1", "done")])
+        n = poller.poll(port)
+        assert n == 0
+        assert port.state_of("e-pp") == "parked"
+        assert port.requeue_calls == []
 
 
 # ===========================================================================
@@ -634,24 +629,25 @@ _e2e = pytest.mark.skipif(
 def _insert_parked_event(conn: Any, *, blocked_by_task_id: str | None) -> str:
     """Insert a ``parked`` events row directly via SQL.
 
-    No RPC can build this fixture: ``park_event`` requires ``state='claimed'``
-    as a precondition and never writes ``payload`` (see
-    ``supabase/migrations/20260521130515_extend_events_queue.sql``), so a
-    parked row carrying a ``blocked_by_task_id`` payload has to be inserted
-    directly.
+    The ``blocked_by_task_id`` column (#1455 AC4) marks the event as blocked
+    on a task — payload stays empty, mirroring production where the payload
+    is never mutated. Direct insert because the parking RPCs
+    (``park_event``, ``park_blocked_on_task``) require ``state='claimed'``
+    as a precondition, which itself needs a claimed fixture row first.
     """
-    payload = {"blocked_by_task_id": blocked_by_task_id} if blocked_by_task_id else {}
     with conn.cursor() as cur:
         cur.execute(
-            "INSERT INTO events (event_type, severity, repo, source, title, payload, state) "
-            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'parked') RETURNING id",
+            "INSERT INTO events "
+            "(event_type, severity, repo, source, title, payload, state, blocked_by_task_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'parked', %s) RETURNING id",
             (
                 "ci_failure",
                 "high",
                 "test/e2e",
                 "test_poller_e2e",
                 "E2E poller fixture",
-                json.dumps(payload),
+                json.dumps({}),
+                blocked_by_task_id,
             ),
         )
         event_id = cur.fetchone()[0]
@@ -666,6 +662,17 @@ def _event_state(conn: Any, event_id: str) -> str:
     conn.commit()
     assert row is not None, f"event {event_id} vanished"
     return row[0]
+
+
+def _event_row(conn: Any, event_id: str) -> tuple[str, str | None]:
+    """Return ``(state, blocked_by_task_id)`` for an event."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT state, blocked_by_task_id FROM events WHERE id = %s", (event_id,))
+        row = cur.fetchone()
+    conn.commit()
+    assert row is not None, f"event {event_id} vanished"
+    state, blocked = row
+    return state, (str(blocked) if blocked is not None else None)
 
 
 @_e2e
@@ -694,7 +701,10 @@ def test_poller_e2e_requeues_and_processes_event_once_blocking_task_is_done():
         task_queue.transition(blocking_task_id, "done", client=client)
 
         event_id = _insert_parked_event(conn, blocked_by_task_id=blocking_task_id)
-        payload = {"blocked_by_task_id": blocking_task_id}
+        # The requeued event drains with its ORIGINAL (empty) payload — the
+        # column carrier never touches it — so the follow-up task's
+        # idempotency key is computed over that unchanged payload (#1455 AC4).
+        payload: dict[str, Any] = {}
         followup_key = _idempotency_key("ci_failure", _target_of(payload), payload)
 
         queue = wake_driver.PsycopgEventQueue(conn)
@@ -718,6 +728,90 @@ def test_poller_e2e_requeues_and_processes_event_once_blocking_task_is_done():
             client.table("task_queue").delete().eq("id", blocking_task_id).execute()
         if followup_key is not None:
             client.table("task_queue").delete().eq("idempotency_key", followup_key).execute()
+
+
+@_e2e
+def test_poller_e2e_full_path_b_cycle():
+    """#1455 AC7: the whole Path B loop against a live database.
+
+    pending event → drain routes EMIT_TASK, enqueues a task, parks the event
+    with ``blocked_by_task_id`` set → task reaches terminal → next tick's
+    poller requeues the event → the same-tick drain replays it through the
+    orchestrator, the enqueue collides on the unchanged idempotency key, and
+    the event closes ``processed``. Exactly one task row exists throughout.
+    """
+    import psycopg
+
+    from agents import orchestrator, wake_driver
+    from agents.orchestrator import _idempotency_key, _target_of
+    from agents.supabase_client import get_client
+    from agents.task_queue import transition
+
+    client = get_client()
+    conn = psycopg.connect(_E2E_POSTGRES_URL)
+    event_id: str | None = None
+    task_key: str | None = None
+    try:
+        # Unique target → unique idempotency key per run, no cross-test bleed.
+        payload = {"target": f"e2e-path-b-cycle-{uuid.uuid4()}"}
+        task_key = _idempotency_key("ci_failure", _target_of(payload), payload)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO events (event_type, severity, repo, source, title, payload, state) "
+                "VALUES (%s, %s, %s, %s, %s, %s::jsonb, 'pending') RETURNING id",
+                (
+                    "ci_failure",
+                    "high",
+                    "test/e2e",
+                    "test_poller_e2e",
+                    "E2E Path B full-cycle fixture",
+                    json.dumps(payload),
+                ),
+            )
+            event_id = str(cur.fetchone()[0])
+        conn.commit()
+
+        queue = wake_driver.PsycopgEventQueue(conn)
+        prod_orchestrator = orchestrator.build_production_orchestrator(client=client)
+
+        # Tick 1 — drain: EMIT_TASK enqueue + park blocked on the fresh task.
+        wake_driver.tick(queue, prod_orchestrator, stale_after_seconds=300, poller_port=queue)
+
+        state, blocked = _event_row(conn, event_id)
+        assert state == "parked"
+        assert blocked is not None, "producer must set blocked_by_task_id on park"
+        rows = (
+            client.table("task_queue").select("id").eq("idempotency_key", task_key).execute()
+        ).data
+        assert len(rows) == 1
+        assert str(rows[0]["id"]) == blocked
+
+        # Blocking task reaches a terminal state.
+        transition(blocked, "claimed", client=client)
+        transition(blocked, "running", client=client)
+        transition(blocked, "done", client=client)
+
+        # Tick 2 — poller requeues, same-tick drain replays, enqueue collides
+        # on the unchanged payload key, event closes processed.
+        wake_driver.tick(queue, prod_orchestrator, stale_after_seconds=300, poller_port=queue)
+
+        state, blocked_after = _event_row(conn, event_id)
+        assert state == "processed"
+        # Lineage: the column is deliberately NOT cleared on requeue/close.
+        assert blocked_after == blocked
+        rows = (
+            client.table("task_queue").select("id").eq("idempotency_key", task_key).execute()
+        ).data
+        assert len(rows) == 1, "collision closure must not create a second task row"
+    finally:
+        if event_id is not None:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM events WHERE id = %s", (event_id,))
+            conn.commit()
+        conn.close()
+        if task_key is not None:
+            client.table("task_queue").delete().eq("idempotency_key", task_key).execute()
 
 
 @_e2e

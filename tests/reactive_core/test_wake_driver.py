@@ -53,6 +53,7 @@ class FakeEventQueue:
         self.wake_signals: list[bool] = []
         self.processed_calls: list[str] = []
         self.parked_calls: list[tuple[str, str]] = []
+        self.park_blocked_calls: list[tuple[str, str]] = []
 
     # -- EventQueuePort surface --------------------------------------------
 
@@ -94,6 +95,16 @@ class FakeEventQueue:
                 e["state"] = "parked"
                 e["action_taken"] = reason
                 self.parked_calls.append((event_id, reason))
+                return True
+        return False
+
+    def park_blocked_on_task(self, event_id: str, task_id: str, *, reason: str = "") -> bool:
+        for e in self.events:
+            if e["id"] == event_id and e["state"] == "claimed":
+                e["state"] = "parked"
+                e["action_taken"] = reason
+                e["blocked_by_task_id"] = task_id
+                self.park_blocked_calls.append((event_id, task_id))
                 return True
         return False
 
@@ -1420,6 +1431,148 @@ def test_psycopg_event_queue_reconnect_uses_dedicated_backoff_and_never_exits(mo
     assert wake_driver._RECONNECT_ATTEMPTS_PER_CYCLE != wake_driver._STARTUP_RETRY_ATTEMPTS or (
         wake_driver._RECONNECT_BASE_SECONDS < wake_driver._STARTUP_RETRY_BASE_SECONDS
     )
+
+
+# --- #1455 AC2: drain parks events whose result blocks on a task ------------
+
+
+class _BlockedResult:
+    """Duck-typed stand-in for orchestrator.DispatchResult — only the
+    attribute drain_pending reads."""
+
+    def __init__(self, blocked_by_task_id: str | None):
+        self.blocked_by_task_id = blocked_by_task_id
+
+
+def test_drain_pending_parks_event_when_result_carries_task_id():
+    """AC2: a non-None blocked_by_task_id on the orchestrator's return value
+    parks the event blocked on that task instead of marking it processed."""
+    q = FakeEventQueue([_ev("a")])
+
+    wake_driver.drain_pending(q, lambda e: _BlockedResult("task-7"))
+
+    assert q.state_of("a") == "parked"
+    assert q.park_blocked_calls == [("a", "task-7")]
+    assert q.processed_calls == []
+
+
+def test_drain_pending_parked_event_not_counted_as_processed():
+    """AC2: the drain's processed count excludes parked-blocked events but
+    the loop continues to the next pending event."""
+    q = FakeEventQueue([_ev("a"), _ev("b")])
+    results = iter([_BlockedResult("task-7"), _BlockedResult(None)])
+
+    processed = wake_driver.drain_pending(q, lambda e: next(results))
+
+    assert processed == 1
+    assert q.state_of("a") == "parked"
+    assert q.state_of("b") == "processed"
+
+
+def test_drain_pending_result_without_attribute_keeps_processed_path():
+    """AC2: plain callables returning anything without blocked_by_task_id
+    (None, strings, whatever) keep today's mark_processed behavior — the
+    Orchestrator contract stays Callable[[dict], Any]."""
+    q = FakeEventQueue([_ev("a"), _ev("b")])
+    results = iter(["not-a-dispatch-result", None])
+
+    processed = wake_driver.drain_pending(q, lambda e: next(results))
+
+    assert processed == 2
+    assert q.park_blocked_calls == []
+    assert all(e["state"] == "processed" for e in q.events)
+
+
+# --- #1455 AC3: park_blocked_on_task — port method + dedicated RPC ----------
+
+
+class _CursorRecordingConn:
+    """psycopg.Connection stand-in whose cursor() records (sql, params) and
+    returns a scripted fetchone row — enough to verify an RPC call shape
+    without a live DB."""
+
+    def __init__(self, fetchone_row=(True,), fetchall_rows=()):
+        self.executed: list[tuple[str, tuple]] = []
+        self.commits = 0
+        self._fetchone_row = fetchone_row
+        self._fetchall_rows = list(fetchall_rows)
+
+    def execute(self, sql, *args):
+        # Constructor-issued LISTEN calls land here; not under test.
+        return self
+
+    def commit(self):
+        self.commits += 1
+
+    def cursor(self):
+        conn = self
+
+        class _Cur:
+            description = []  # empty column list is fine while fetchall is empty
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, sql, params=None):
+                conn.executed.append((sql, params))
+
+            def fetchone(self):
+                return conn._fetchone_row
+
+            def fetchall(self):
+                return conn._fetchall_rows
+
+        return _Cur()
+
+
+def test_event_queue_port_declares_park_blocked_on_task():
+    """AC3: the port protocol carries park_blocked_on_task — fakes and
+    adapters must implement it alongside park()."""
+    assert hasattr(wake_driver.EventQueuePort, "park_blocked_on_task")
+
+
+def test_psycopg_park_blocked_on_task_calls_dedicated_rpc():
+    """AC3: PsycopgEventQueue.park_blocked_on_task calls the new RPC with
+    (event_id, task_id, reason) and commits — NOT the #1385 park_event RPC,
+    which must stay untouched for poison-pill parks."""
+    conn = _CursorRecordingConn(fetchone_row=(True,))
+    queue = wake_driver.PsycopgEventQueue(conn)
+
+    ok = queue.park_blocked_on_task("ev-1", "task-9", reason="blocked on task task-9")
+
+    assert ok is True
+    sql, params = conn.executed[-1]
+    assert "park_blocked_on_task" in sql
+    assert "park_event" not in sql
+    assert params == ("ev-1", "task-9", "blocked on task task-9")
+    assert conn.commits >= 1
+
+
+def test_psycopg_park_blocked_on_task_false_when_no_claimed_row():
+    """AC3: the RPC's FOUND=false (event not in claimed state) surfaces as
+    False, mirroring park()/mark_processed semantics."""
+    conn = _CursorRecordingConn(fetchone_row=(False,))
+    queue = wake_driver.PsycopgEventQueue(conn)
+
+    assert queue.park_blocked_on_task("ev-1", "task-9") is False
+
+
+def test_psycopg_find_parked_events_filters_on_column_not_payload():
+    """#1455 AC4: the poller sweep filters on the dedicated column — poison-pill
+    parks (#1385, column NULL) are structurally excluded, and the legacy
+    payload-marker probe is gone (payload stays immutable, per a4f6c602)."""
+    conn = _CursorRecordingConn(fetchall_rows=[])
+    queue = wake_driver.PsycopgEventQueue(conn)
+
+    assert queue.find_parked_events() == []
+    sql, params = conn.executed[-1]
+    assert "blocked_by_task_id IS NOT NULL" in sql
+    assert "state = 'parked'" in sql
+    assert "payload" not in sql
+    assert params == (wake_driver.PARKED_EVENTS_LIMIT,)
 
 
 # --- main() resource management (#953 PR #1011 round 3) ---------------------

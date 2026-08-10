@@ -510,6 +510,12 @@ class DispatchResult:
     notice: EscalationNotice | None  # set only for ESCALATE
     notified: bool  # a Telegram ping was actually sent
     noop: bool  # pure-pipeline event — acknowledged, no work
+    # Path B producer (#1455 AC1): the task id the source event should park
+    # blocked on. Set ONLY by a successful fresh EMIT_TASK enqueue — None on
+    # collision, ESCALATE (owner rows never reach terminal state in
+    # production — parking on them would park forever, decision 3997893d),
+    # and HANDLE_INLINE.
+    blocked_by_task_id: str | None = None
 
 
 def dispatch(
@@ -548,6 +554,7 @@ def dispatch(
             notice=None,
             notified=False,
             noop=False,
+            blocked_by_task_id=str(row["id"]) if row is not None else None,
         )
 
     if decision.route is Route.ESCALATE:
@@ -623,7 +630,18 @@ def build_production_orchestrator(
 
     def _orchestrator(event: Mapping[str, Any]) -> DispatchResult:
         decision = handle_event(event)
-        return dispatch(decision, now=resolved_clock(), client=client, notifier=notifier)
+        result = dispatch(decision, now=resolved_clock(), client=client, notifier=notifier)
+        if decision.route is Route.EMIT_TASK and not result.enqueued:
+            # #1455 AC6: the event's work is already queued under this key
+            # (Path B replay closure or a plain re-delivery) — drain will
+            # mark_processed, not park. Warn so a silent dedup stays visible.
+            logger.warning(
+                "enqueue collision: event %s dedups on idempotency_key %s — "
+                "marking processed, not parking",
+                event.get("id"),
+                decision.idempotency_key,
+            )
+        return result
 
     return _orchestrator
 
