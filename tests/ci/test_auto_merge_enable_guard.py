@@ -535,6 +535,30 @@ def test_workflow_risk_carveout_fetches_body_fresh():
     )
 
 
+def test_workflow_risk_carveout_guards_empty_body_fetch():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # #1513 review: the am/state fetch above already guards this exact
+    # degraded-output hazard (gh exits 0 with empty stdout on transient
+    # auth/API failure) — the BODY fetch must too, or a degraded response
+    # silently reads as "no risk declared" and reopens the hole this PR
+    # exists to close via a new path. `tojson` collapses the whole response
+    # to one line so its OWN emptiness (not body's value) is what's checked —
+    # a genuinely empty PR body still yields a non-empty JSON object string.
+    risk_block = text.split("---- risk carve-out", 1)[1].split(
+        "---- end risk carve-out", 1
+    )[0]
+    assert "RAW_BODY_JSON=" in risk_block and "-q 'tojson'" in risk_block, (
+        "risk carve-out must fetch the PR body via a whole-object tojson "
+        "capture so degraded (empty) gh output is distinguishable from a "
+        "genuinely empty PR body."
+    )
+    assert '[ -z "$RAW_BODY_JSON" ]' in risk_block, (
+        "risk carve-out must fail loud when gh pr view returns empty output "
+        "while fetching the body, mirroring the am/state empty-output guard "
+        "20 lines above it in the same script step."
+    )
+
+
 def test_workflow_risk_carveout_disarms_already_armed_pr():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     # Both carve-outs disarm an already-armed PR; scope the assertion to the

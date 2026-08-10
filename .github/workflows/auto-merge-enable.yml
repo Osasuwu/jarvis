@@ -219,7 +219,23 @@ jobs:
           # owner-queue-guard check, so this reuses an existing gate rather than
           # inventing a new one. Owner clears the label once satisfied.
           RISK_LABEL="status:owner-queue"
-          BODY=$(gh pr view "$PR" --repo "$REPO" --json body -q '.body // ""')
+          # Same degraded-output hazard as the am/state fetch above (gh can
+          # exit 0 with empty stdout on transient auth/API failure): a naive
+          # `-q '.body // ""'` can't tell "genuinely empty PR body" apart from
+          # "gh returned nothing", and if the body is misread as empty the
+          # grep below never matches — silently falling through to arm
+          # auto-merge on a PR that actually declares HIGH/CRITICAL risk (the
+          # exact hole this PR exists to close, reopened via a new path;
+          # #1513 review). Fetch the whole JSON object as one line (tojson
+          # collapses embedded newlines) and check ITS emptiness — a real
+          # response is never an empty string even when body itself is "" —
+          # before parsing body back out of it.
+          RAW_BODY_JSON=$(gh pr view "$PR" --repo "$REPO" --json body -q 'tojson')
+          if [ -z "$RAW_BODY_JSON" ]; then
+            echo "::error::gh pr view returned empty output for #$PR while fetching the PR body — possible auth or API failure; refusing to evaluate the risk carve-out on degraded output."
+            exit 1
+          fi
+          BODY=$(printf '%s' "$RAW_BODY_JSON" | jq -r '.body // ""')
           risk_section=$(printf '%s\n' "$BODY" | awk '/^## Risk Assessment/{f=1; next} /^## /{f=0} f')
           if printf '%s\n' "$risk_section" | grep -qE '^[[:space:]]*-[[:space:]]*\*\*(HIGH|CRITICAL)\*\*:[[:space:]]*[^<[:space:]]'; then
             already_labelled=$(
