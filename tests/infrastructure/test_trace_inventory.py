@@ -556,6 +556,32 @@ class TestEnumerationOrdering:
         assert result[2].line_number == 2
 
 
+class TestPathNormalization:
+    """``file_path`` uses POSIX separators on every OS.
+
+    On Windows ``os.walk``/``os.path.join`` produce backslashes; ``inventory``
+    must normalize before the exclude_files check and before emitting
+    candidates, or POSIX-keyed excludes silently stop matching.
+    """
+
+    def test_nested_file_path_is_posix(self):
+        root = _make_repo({
+            "pkg/sub/mod.py": "# nested comment\n",
+        })
+        result = inventory(root)
+        assert len(result) == 1
+        assert result[0].file_path == "pkg/sub/mod.py"
+        assert "\\" not in result[0].file_path
+
+    def test_posix_exclude_files_match_nested_paths(self):
+        root = _make_repo({
+            "pkg/sub/skip.py": "# excluded\n",
+            "pkg/keep.py": "# included\n",
+        })
+        result = inventory(root, exclude_files={"pkg/sub/skip.py"})
+        assert [c.file_path for c in result] == ["pkg/keep.py"]
+
+
 class TestCategoryAssignment:
     """Each comment candidate has a category."""
 
