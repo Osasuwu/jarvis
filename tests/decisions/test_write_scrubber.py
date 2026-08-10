@@ -88,11 +88,13 @@ async def _clear_pending():
     do we drop the pins. ``async`` fixture runs under ``asyncio_mode=auto``.
     """
     write_scrubber._PENDING_BLOCK_LOGS.clear()
+    write_scrubber._PENDING_DISABLED_LOGS.clear()
     yield
-    pending = list(write_scrubber._PENDING_BLOCK_LOGS)
+    pending = list(write_scrubber._PENDING_BLOCK_LOGS) + list(write_scrubber._PENDING_DISABLED_LOGS)
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
     write_scrubber._PENDING_BLOCK_LOGS.clear()
+    write_scrubber._PENDING_DISABLED_LOGS.clear()
 
 
 # ── disable-reason classification (AC1, #1000) ──────────────────────────────
@@ -127,26 +129,58 @@ class TestDisabledEventDedupKey:
 
 
 class TestLogDisabledEvent:
-    def test_upserts_disabled_event_on_dedup_key(self):
+    def test_upserts_disabled_event_via_rpc(self):
         client = MagicMock()
         write_scrubber.log_disabled_event(client, "module_absent")
 
-        client.table.assert_called_with("events")
-        upsert = client.table.return_value.upsert
-        row = upsert.call_args.args[0]
-        assert upsert.call_args.kwargs.get("on_conflict") == "dedup_key"
-        assert row["event_type"] == "mcp_write_scrubber_disabled"
-        assert row["severity"] == "high"
-        assert row["source"] == "mcp_memory"
-        assert row["payload"]["reason"] == "module_absent"
-        assert "dedup_key" in row
+        client.rpc.assert_called_once()
+        rpc_name, params = client.rpc.call_args.args
+        assert rpc_name == "scrubber_disabled_event_upsert"
+        assert params["p_reason"] == "module_absent"
+        assert params["p_repo"] == "Osasuwu/jarvis"
+        assert "p_dedup_key" in params
 
     def test_swallows_db_errors(self, capsys):
         client = MagicMock()
-        client.table.side_effect = Exception("boom")
+        client.rpc.side_effect = Exception("boom")
         write_scrubber.log_disabled_event(client, "module_absent")  # must not raise
         err = capsys.readouterr().err
         assert "Exception" in err
+
+
+class TestDispatchDisabledLog:
+    def test_no_loop_runs_inline(self, monkeypatch):
+        """Mirrors TestDispatchBlockLog.test_no_loop_runs_inline: called outside
+        any running loop (direct unit-test / sync caller) → the audit insert
+        runs inline rather than being lost to a create_task with no loop."""
+        called: list = []
+        monkeypatch.setattr(
+            write_scrubber,
+            "log_disabled_event",
+            lambda c, reason: called.append(reason),
+        )
+        write_scrubber._dispatch_disabled_log(MagicMock(), "module_absent")
+        assert called == ["module_absent"]
+
+    async def test_teardown_race_falls_back_to_inline(self, monkeypatch):
+        """Mirrors TestDispatchBlockLog.test_teardown_race_falls_back_to_inline:
+        a loop IS running but create_task raises RuntimeError (loop closing
+        during teardown) → falls back to a synchronous inline insert."""
+        called: list = []
+        monkeypatch.setattr(
+            write_scrubber,
+            "log_disabled_event",
+            lambda c, reason: called.append(reason),
+        )
+
+        def _raise(coro):
+            coro.close()  # avoid "coroutine was never awaited" noise
+            raise RuntimeError("loop is closing")
+
+        monkeypatch.setattr(write_scrubber.asyncio, "create_task", _raise)
+        write_scrubber._dispatch_disabled_log(MagicMock(), "import_broken:SyntaxError")
+        assert called == ["import_broken:SyntaxError"]
+        assert not write_scrubber._PENDING_DISABLED_LOGS
 
 
 # ── scan_fields ───────────────────────────────────────────────────────────
@@ -467,11 +501,12 @@ class TestScrubUnavailable:
             client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store"
         )
         assert out is None
-        client.table.assert_called_with("events")
-        upsert = client.table.return_value.upsert
-        row = upsert.call_args.args[0]
-        assert row["event_type"] == "mcp_write_scrubber_disabled"
-        assert row["payload"]["reason"] == "module_absent"
+        # No running loop in this sync test → _dispatch_disabled_log falls
+        # back to the inline call, so the RPC fires synchronously here.
+        client.rpc.assert_called_once()
+        rpc_name, params = client.rpc.call_args.args
+        assert rpc_name == "scrubber_disabled_event_upsert"
+        assert params["p_reason"] == "module_absent"
 
     def test_check_write_does_not_call_scan_fields_when_scrub_none(self, monkeypatch):
         monkeypatch.setattr(write_scrubber, "scrub", None)

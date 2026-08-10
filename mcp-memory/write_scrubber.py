@@ -250,14 +250,15 @@ def _event_severity(patterns: dict[str, int]) -> str:
     return "high" if any(p in _HIGH_SEVERITY_PATTERNS for p in patterns) else "medium"
 
 
-# Serialize the audit insert: concurrent blocked writes dispatch their block
-# events via asyncio.to_thread, which runs them on separate executor threads
-# against the *same* Supabase client singleton. httpx.Client is generally
-# thread-safe for concurrent requests, but the surrounding supabase-py
-# query-builder is not documented as such, and a corrupted/dropped audit event
-# is a security-signal loss. The insert is a single short round-trip on a rare
-# path (only fires on a detected secret), so serializing it is cheap insurance.
-_BLOCK_LOG_LOCK = threading.Lock()
+# Serialize the audit insert: concurrent blocked/disabled-gate writes dispatch
+# their events via asyncio.to_thread, which runs them on separate executor
+# threads against the *same* Supabase client singleton. httpx.Client is
+# generally thread-safe for concurrent requests, but the surrounding
+# supabase-py query-builder is not documented as such, and a corrupted/dropped
+# audit event is a security-signal loss. Each insert is a single short
+# round-trip on a rare path, so serializing them behind one lock is cheap
+# insurance. Shared across both event kinds — they hit the same client.
+_EVENT_LOG_LOCK = threading.Lock()
 
 
 def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> None:
@@ -278,13 +279,13 @@ def log_block_event(client, patterns: dict[str, int], *, write_path: str) -> Non
     would otherwise flood the events table on a hot repeated-write path
     (AC2, #1000).
 
-    Serialized via ``_BLOCK_LOG_LOCK`` so concurrent ``to_thread`` dispatches
+    Serialized via ``_EVENT_LOG_LOCK`` so concurrent ``to_thread`` dispatches
     don't drive the shared client singleton from two threads at once.
     """
     try:
         utc_date = datetime.now(timezone.utc).date().isoformat()
         dedup_key = _block_event_dedup_key(write_path, patterns, utc_date)
-        with _BLOCK_LOG_LOCK:
+        with _EVENT_LOG_LOCK:
             client.rpc(
                 "scrubber_block_event_upsert",
                 {
@@ -382,31 +383,91 @@ def log_disabled_event(client, reason: str) -> None:
     outage produces one row/day across every MCP handler process, not one
     per cold start (AC1, #1000).
 
+    Written through the ``scrubber_disabled_event_upsert`` RPC, not a plain
+    ``.table("events").upsert(...)`` — ``events.dedup_key`` is a PARTIAL
+    unique index (``where dedup_key is not null``), and Postgres only infers a
+    partial index as the ON CONFLICT arbiter when its predicate is restated in
+    the conflict target. The original plain-upsert version raised on every
+    call and was silently swallowed below, so no disabled-gate event ever
+    landed (code-review round-2 finding on #1000's PR). Mirrors
+    ``log_block_event``'s RPC shape exactly.
+
     Mirrors ``log_block_event``'s "logging must never block the rejection"
-    pattern: any DB error here must not turn today's fail-*open* disabled
+    pattern too: any DB error here must not turn today's fail-*open* disabled
     state into a fail-*closed* break of every memory write, so it is swallowed
     and only the exception type is logged.
     """
-    utc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    dedup_key = _disabled_event_dedup_key(reason, utc_date)
     try:
-        client.table("events").upsert(
-            {
-                "event_type": "mcp_write_scrubber_disabled",
-                "severity": "high",
-                "repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
-                "source": "mcp_memory",
-                "title": "Tier-2 write-scrubber gate is disabled",
-                "payload": {"reason": reason},
-                "dedup_key": dedup_key,
-            },
-            on_conflict="dedup_key",
-        ).execute()
+        utc_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        dedup_key = _disabled_event_dedup_key(reason, utc_date)
+        with _EVENT_LOG_LOCK:
+            client.rpc(
+                "scrubber_disabled_event_upsert",
+                {
+                    "p_dedup_key": dedup_key,
+                    "p_reason": reason,
+                    "p_repo": os.environ.get("JARVIS_REPO_SLUG", "Osasuwu/jarvis"),
+                },
+            ).execute()
     except Exception as exc:  # noqa: BLE001 — logging must never block the write
         print(
             f"[write_scrubber] disabled-gate event log failed: {type(exc).__name__}",
             file=sys.stderr,
         )
+
+
+async def _log_disabled_event_async(client, reason: str) -> None:
+    """Run the blocking disabled-gate insert off the event-loop thread.
+
+    Mirrors ``_log_block_event_async`` — see that function's docstring for why
+    ``asyncio.to_thread`` (not just ``create_task``) is required.
+    """
+    await asyncio.to_thread(log_disabled_event, client, reason)
+
+
+# Strong references to in-flight disabled-log tasks — same GC-pinning rationale
+# as ``_PENDING_BLOCK_LOGS`` (see that set's docstring). Kept as a separate set
+# rather than shared with ``_PENDING_BLOCK_LOGS`` so each event kind's pending
+# tasks stay independently inspectable/testable.
+_PENDING_DISABLED_LOGS: set[asyncio.Task] = set()
+
+
+def _on_disabled_log_done(task: asyncio.Task) -> None:
+    """Unpin a finished disabled-log task and surface any exception eagerly.
+
+    Mirrors ``_on_block_log_done`` — see that function's docstring.
+    """
+    _PENDING_DISABLED_LOGS.discard(task)
+    if not task.cancelled():
+        exc = task.exception()
+        if exc is not None:
+            print(
+                f"[write_scrubber] disabled-log task failed: {type(exc).__name__}",
+                file=sys.stderr,
+            )
+
+
+def _dispatch_disabled_log(client, reason: str) -> None:
+    """Emit the disabled-gate event off the hot path.
+
+    Mirrors ``_dispatch_block_log`` exactly — see that function's docstring
+    for the loop-detection / teardown-race rationale. ``check_write`` used to
+    call ``log_disabled_event`` directly and synchronously, blocking the MCP
+    event loop for the round-trip on every write made while the gate is
+    disabled (code-review round-2 finding on #1000's PR).
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        log_disabled_event(client, reason)
+        return
+    try:
+        task = asyncio.create_task(_log_disabled_event_async(client, reason))
+    except RuntimeError:
+        log_disabled_event(client, reason)
+        return
+    _PENDING_DISABLED_LOGS.add(task)
+    task.add_done_callback(_on_disabled_log_done)
 
 
 def check_write(client, fields: dict[str, object], *, write_path: str) -> dict | None:
@@ -417,13 +478,14 @@ def check_write(client, fields: dict[str, object], *, write_path: str) -> dict |
     concerns, not write-blocking leaks.
 
     When the gate itself is disabled (``scrub is None``), log the
-    disabled-gate observability event and fail open before reaching
+    disabled-gate observability event (off the event loop when one is
+    running, same as the block-event path) and fail open before reaching
     ``scan_fields`` (AC1, #1000) — ``scan_fields`` already no-ops on
     ``scrub is None``, but skipping the call makes the fail-open path
     explicit rather than incidental.
     """
     if scrub is None:
-        log_disabled_event(client, _SCRUB_DISABLE_REASON)
+        _dispatch_disabled_log(client, _SCRUB_DISABLE_REASON)
         return None
     fires = scan_fields(fields)
     blocking = {k: v for k, v in fires.items() if k not in SCRUB_ONLY_PATTERNS}

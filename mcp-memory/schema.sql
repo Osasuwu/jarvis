@@ -3507,3 +3507,43 @@ begin
   returning e.* into result;
   return result;
 end; $$;
+
+-- ===========================================================================
+-- scrubber_disabled_event_upsert: day-bucketed dedup + occurrence counter for
+-- mcp_write_scrubber_disabled events (AC1, #1000 — code-review round-2 fix).
+-- Applied to remote as migration 20260810120000_create_scrubber_disabled_event_upsert.sql;
+-- documented here per #326 (schema.sql is aspirational; the migration executes).
+-- Mirrors scrubber_block_event_upsert above exactly. The original
+-- log_disabled_event() called a plain `.table("events").upsert(...,
+-- on_conflict="dedup_key")`, which cannot satisfy events.dedup_key's PARTIAL
+-- unique index — Postgres only infers a partial index as the ON CONFLICT
+-- arbiter when its predicate is restated in the conflict target, so every
+-- upsert raised and was silently swallowed by the surrounding
+-- except-and-log-type-only handler. No disabled-gate event ever landed.
+-- ===========================================================================
+create or replace function scrubber_disabled_event_upsert(
+  p_dedup_key  text,
+  p_reason     text,
+  p_repo       text,
+  p_seen_at    timestamptz default now()
+) returns events language plpgsql security invoker set search_path = public as $$
+declare result events;
+begin
+  insert into events as e (
+    event_type, severity, repo, source, title, payload, dedup_key, event_at
+  )
+  values (
+    'mcp_write_scrubber_disabled', 'high', p_repo, 'mcp_memory',
+    'Tier-2 write-scrubber gate is disabled',
+    jsonb_build_object('reason', p_reason, 'occurrence_count', 1),
+    p_dedup_key, p_seen_at
+  )
+  on conflict (dedup_key) where dedup_key is not null do update
+    set payload = jsonb_set(
+          e.payload, '{occurrence_count}',
+          to_jsonb(coalesce((e.payload->>'occurrence_count')::int, 1) + 1)
+        ),
+        event_at = excluded.event_at
+  returning e.* into result;
+  return result;
+end; $$;
