@@ -1039,7 +1039,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
         write_path="memory_store",
     )
     if block is not None:
-        return [TextContent(type="text", text=block)]
+        return [TextContent(type="text", text=json.dumps(block))]
 
     # Phase 2a: canonical-form embedding — include name + tags + description + content.
     # Name and tags carry high-signal lexical cues that raw content often dilutes
