@@ -58,7 +58,11 @@ on:
     # forever after it stopped being carve-out. Re-arming on push is safe: the
     # idempotency check below no-ops when auto-merge is already enabled, and the
     # owner's holds (draft, status:owner-queue) are unaffected.
-    types: [opened, ready_for_review, reopened, synchronize]
+    #
+    # edited: required by the risk carve-out below. A PR's Risk Assessment
+    # section can be escalated (or the whole body added late) via a body-only
+    # edit with no new commit — synchronize wouldn't fire for that.
+    types: [opened, ready_for_review, reopened, synchronize, edited]
 
 # The merge is performed with the App token below, not GITHUB_TOKEN, so this
 # job's *default* token needs no write scope. NOTE: this block scopes ONLY the
@@ -201,6 +205,57 @@ jobs:
             echo "::notice::PR #$PR is $state (not OPEN) — nothing to enable."
             exit 0
           fi
+
+          # ---- risk carve-out: PR self-declares HIGH/CRITICAL risk -------------
+          # The /implement skill's §7.5 merge policy says HIGH/CRITICAL-risk PRs
+          # (or safety-critical zones) wait for principal explicit approval before
+          # merge. Until now that was prose in the PR's own "## Risk Assessment"
+          # section (SKILL.md template) with no mechanical backing — PR #1510
+          # self-declared HIGH ("drain_pending control-flow change") and still
+          # auto-merged the moment CI went green (#1512). Read the body fresh
+          # (not the possibly-stale event payload) and, if the Risk Assessment
+          # section names HIGH or CRITICAL, apply status:owner-queue instead of
+          # arming auto-merge — that label already fails the required
+          # owner-queue-guard check, so this reuses an existing gate rather than
+          # inventing a new one. Owner clears the label once satisfied.
+          RISK_LABEL="status:owner-queue"
+          # Same degraded-output hazard as the am/state fetch above (gh can
+          # exit 0 with empty stdout on transient auth/API failure): a naive
+          # `-q '.body // ""'` can't tell "genuinely empty PR body" apart from
+          # "gh returned nothing", and if the body is misread as empty the
+          # grep below never matches — silently falling through to arm
+          # auto-merge on a PR that actually declares HIGH/CRITICAL risk (the
+          # exact hole this PR exists to close, reopened via a new path;
+          # #1513 review). Fetch the whole JSON object as one line (tojson
+          # collapses embedded newlines) and check ITS emptiness — a real
+          # response is never an empty string even when body itself is "" —
+          # before parsing body back out of it.
+          RAW_BODY_JSON=$(gh pr view "$PR" --repo "$REPO" --json body -q 'tojson')
+          if [ -z "$RAW_BODY_JSON" ]; then
+            echo "::error::gh pr view returned empty output for #$PR while fetching the PR body — possible auth or API failure; refusing to evaluate the risk carve-out on degraded output."
+            exit 1
+          fi
+          BODY=$(printf '%s' "$RAW_BODY_JSON" | jq -r '.body // ""')
+          risk_section=$(printf '%s\n' "$BODY" | awk '/^## Risk Assessment/{f=1; next} /^## /{f=0} f')
+          if printf '%s\n' "$risk_section" | grep -qE '^[[:space:]]*-[[:space:]]*\*\*(HIGH|CRITICAL)\*\*:[[:space:]]*[^<[:space:]]'; then
+            already_labelled=$(
+              gh pr view "$PR" --repo "$REPO" --json labels \
+                --jq "[.labels[].name] | index(\"$RISK_LABEL\") != null"
+            )
+            if [ "$already_labelled" != "true" ]; then
+              gh pr edit "$PR" --repo "$REPO" --add-label "$RISK_LABEL" >/dev/null
+              gh pr comment "$PR" --repo "$REPO" --body \
+                "🛑 **Auto-merge withheld.** This PR's Risk Assessment section declares HIGH or CRITICAL risk. Per /implement §7.5, HIGH/CRITICAL-risk PRs wait for principal explicit approval before merge — applying \`$RISK_LABEL\` so \`owner-queue-guard\` blocks the required-check gate until you clear it."
+            fi
+            if [ "$am" = "set" ]; then
+              gh pr merge "$PR" --repo "$REPO" --disable-auto
+              echo "::notice::PR #$PR self-declared HIGH/CRITICAL risk after auto-merge was armed — auto-merge DISABLED and $RISK_LABEL applied."
+            else
+              echo "::notice::PR #$PR self-declares HIGH/CRITICAL risk in its Risk Assessment section — auto-merge withheld, $RISK_LABEL applied."
+            fi
+            exit 0
+          fi
+          # ---- end risk carve-out -----------------------------------------------
 
           # ---- carve-out: PRs /code-review cannot actually review (#1234) ------
           # claude-code-action validates its OWN calling workflow file against the

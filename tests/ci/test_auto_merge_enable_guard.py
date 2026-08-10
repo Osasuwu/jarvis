@@ -26,6 +26,7 @@ Enable rule mirrored here (see the `if:` guard + bash step in the YAML):
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -199,6 +200,112 @@ def test_fork_precedes_empty_output_fail():
     # Replaces a draft+fork case that duplicated the draft-only path (#1006 review,
     # NIT) — this one actually reaches the fork branch with am="".
     assert decide(draft=False, head_repo="fork/r", base_repo="o/r", am="") == "NOOP"
+
+
+# ---- risk carve-out dimension (#1512) ---------------------------------------
+#
+# Sibling of the #1234 code-review carve-out above, but keyed off the PR body's
+# own "## Risk Assessment" section (the /implement SKILL.md template) instead of
+# a file diff. PR #1510 self-declared HIGH risk and still auto-merged the moment
+# CI went green (#1512) because nothing ever parsed that section. Reimplements
+# the workflow's awk-section-extract + grep-regex + WITHHOLD/DISARM decision so
+# a regression in either the parsing or the decision produces a red here.
+
+RISK_SECTION_RE = re.compile(
+    r"^## Risk Assessment\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
+)
+RISK_DECLARED_RE = re.compile(
+    r"^[ \t]*-[ \t]*\*\*(HIGH|CRITICAL)\*\*:[ \t]*[^<\s]", re.MULTILINE
+)
+
+
+def risk_declared(body: str) -> bool:
+    """Mirror the workflow's awk section-extract + grep detection.
+
+    Scoped to the '## Risk Assessment' section only (awk resets `f` on the next
+    '## ' heading) and requires real content after the marker — the grep
+    character class `[^<[:space:]]` rejects an unfilled SKILL.md template
+    placeholder line (`- **HIGH**: <describe...>`) and a bare declaration with
+    no following text.
+    """
+    section_match = RISK_SECTION_RE.search(body)
+    section = section_match.group(1) if section_match else ""
+    return bool(RISK_DECLARED_RE.search(section))
+
+
+def decide_risk_carveout(*, declared: bool, am: str) -> str:
+    """Mirror the risk carve-out's terminal state.
+
+    Returns PASS / WITHHOLD / DISARM. PASS means the risk carve-out does not
+    intervene — control falls through to the #1234 carve-out / normal arm
+    decision below it in the workflow.
+    """
+    if not declared:
+        return "PASS"
+    return "DISARM" if am == "set" else "WITHHOLD"
+
+
+def test_risk_declared_withholds_unarmed_pr():
+    assert decide_risk_carveout(declared=True, am="null") == "WITHHOLD"
+
+
+def test_risk_declared_disarms_already_armed_pr():
+    # A PR can be armed BEFORE a HIGH/CRITICAL line lands via a body-only edit
+    # (the 'edited' trigger). Leaving it armed would let it merge the moment CI
+    # reads green, so the carve-out disarms instead of merely declining to arm.
+    assert decide_risk_carveout(declared=True, am="set") == "DISARM"
+
+
+def test_no_risk_declared_passes_through():
+    assert decide_risk_carveout(declared=False, am="null") == "PASS"
+
+
+def test_pr_1510_body_trips_the_carveout():
+    # Regression pin (#1512): PR #1510's actual Risk Assessment declared HIGH
+    # and still auto-merged — this body shape must trip the carve-out now.
+    body = (
+        "## Risk Assessment\n"
+        "- **HIGH**: drain_pending control-flow change alters event dispatch "
+        "ordering under concurrent producers.\n"
+    )
+    assert risk_declared(body) is True
+
+
+def test_risk_regex_matches_critical():
+    body = "## Risk Assessment\n- **CRITICAL**: touches planning/ safety zone\n"
+    assert risk_declared(body) is True
+
+
+def test_risk_regex_ignores_low_medium_only():
+    body = "## Risk Assessment\n- **LOW**: docs only\n- **MEDIUM**: n/a\n"
+    assert risk_declared(body) is False
+
+
+def test_risk_regex_ignores_unfilled_template_placeholder():
+    # The raw SKILL.md template ships `- **HIGH**: <describe change if
+    # applicable>` — an unfilled placeholder must not trip the carve-out on
+    # every PR that never touched the section.
+    body = "## Risk Assessment\n- **HIGH**: <describe change if applicable>\n"
+    assert risk_declared(body) is False
+
+
+def test_risk_regex_ignores_missing_section():
+    body = "## Summary\nA PR with no Risk Assessment section at all.\n"
+    assert risk_declared(body) is False
+
+
+def test_risk_regex_scoped_to_risk_assessment_section_only():
+    # A HIGH mention outside '## Risk Assessment' (e.g. prose in the Summary)
+    # must not trip the carve-out — only the parsed section counts, mirroring
+    # the workflow's awk /^## Risk Assessment/{f=1} ... /^## /{f=0} reset.
+    body = (
+        "## Summary\n"
+        "- **HIGH**: mentioned here only in passing, not a real declaration\n"
+        "\n"
+        "## Risk Assessment\n"
+        "- **LOW**: actual declared risk\n"
+    )
+    assert risk_declared(body) is False
 
 
 # ---- config dimension (keep YAML and test in lockstep) ----------------------
@@ -387,6 +494,106 @@ def test_workflow_documents_workflows_permission_requirement():
         "the App permission list (header + Assert step setup instructions) must "
         "name Workflows: Read and write — it has no other trace in code (#1234)."
     )
+
+
+def test_workflow_triggers_on_edited():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # #1512: a Risk Assessment escalation can land via a body-only edit with no
+    # new commit — synchronize wouldn't fire for that, so the risk carve-out
+    # needs its own trigger type.
+    assert "edited" in text, (
+        "risk carve-out needs the 'edited' trigger — a body-only Risk "
+        "Assessment escalation would otherwise never re-evaluate (#1512)."
+    )
+
+
+def test_workflow_risk_carveout_parses_risk_assessment_section():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "## Risk Assessment" in text, (
+        "risk carve-out must parse the /implement SKILL.md '## Risk "
+        "Assessment' section specifically, not grep the whole PR body."
+    )
+    assert "HIGH|CRITICAL" in text, (
+        "risk carve-out must trigger on both HIGH and CRITICAL, per "
+        "/implement §7.5's merge policy."
+    )
+
+
+def test_workflow_risk_carveout_reuses_owner_queue_guard():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert 'RISK_LABEL="status:owner-queue"' in text, (
+        "risk carve-out must reuse the existing status:owner-queue / "
+        "owner-queue-guard required check rather than inventing a new gate."
+    )
+
+
+def test_workflow_risk_carveout_fetches_body_fresh():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert 'gh pr view "$PR" --repo "$REPO" --json body' in text, (
+        "risk carve-out must fetch the PR body fresh via gh pr view, not "
+        "trust the (possibly stale) pull_request event payload body."
+    )
+
+
+def test_workflow_risk_carveout_guards_empty_body_fetch():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # #1513 review: the am/state fetch above already guards this exact
+    # degraded-output hazard (gh exits 0 with empty stdout on transient
+    # auth/API failure) — the BODY fetch must too, or a degraded response
+    # silently reads as "no risk declared" and reopens the hole this PR
+    # exists to close via a new path. `tojson` collapses the whole response
+    # to one line so its OWN emptiness (not body's value) is what's checked —
+    # a genuinely empty PR body still yields a non-empty JSON object string.
+    risk_block = text.split("---- risk carve-out", 1)[1].split(
+        "---- end risk carve-out", 1
+    )[0]
+    assert "RAW_BODY_JSON=" in risk_block and "-q 'tojson'" in risk_block, (
+        "risk carve-out must fetch the PR body via a whole-object tojson "
+        "capture so degraded (empty) gh output is distinguishable from a "
+        "genuinely empty PR body."
+    )
+    assert '[ -z "$RAW_BODY_JSON" ]' in risk_block, (
+        "risk carve-out must fail loud when gh pr view returns empty output "
+        "while fetching the body, mirroring the am/state empty-output guard "
+        "20 lines above it in the same script step."
+    )
+
+
+def test_workflow_risk_carveout_disarms_already_armed_pr():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Both carve-outs disarm an already-armed PR; scope the assertion to the
+    # risk carve-out's own block so a future edit to the #1234 block alone
+    # can't false-pass this test.
+    risk_block = text.split("---- risk carve-out", 1)[1].split(
+        "---- end risk carve-out", 1
+    )[0]
+    assert '--disable-auto' in risk_block, (
+        "risk carve-out must disarm auto-merge if the PR was armed BEFORE the "
+        "HIGH/CRITICAL line landed via a body-only edit."
+    )
+
+
+def test_workflow_risk_carveout_is_idempotent():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    risk_block = text.split("---- risk carve-out", 1)[1].split(
+        "---- end risk carve-out", 1
+    )[0]
+    assert "already_labelled" in risk_block, (
+        "risk carve-out must check for an existing status:owner-queue label "
+        "before re-adding it/re-commenting — else every 'edited'-triggered "
+        "re-run on an already-withheld PR spams a duplicate comment."
+    )
+
+
+def test_workflow_risk_carveout_precedes_code_review_carveout():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    # Ordering is not load-bearing for correctness (both carve-outs exit 0
+    # independently) but pins the file's documented block order so a future
+    # edit doesn't interleave the two and make the "end risk carve-out" /
+    # "end carve-out" markers ambiguous.
+    assert text.index("---- risk carve-out") < text.index(
+        "carve-out: PRs /code-review cannot actually review"
+    ), "risk carve-out block must precede the #1234 code-review carve-out block."
 
 
 def test_workflow_carve_out_compares_code_review_yml_content():
