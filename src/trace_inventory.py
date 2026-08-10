@@ -163,7 +163,7 @@ class CommentCandidate:
     Attributes
     ----------
     file_path:
-        Path relative to repo root.
+        Path relative to repo root, POSIX separators on every OS.
     line_number:
         1-based line number where the comment starts.
     text:
@@ -266,7 +266,9 @@ def inventory(
             if fn in skip_basenames:
                 continue
 
-            rel_path = os.path.join(rel_dir, fn) if rel_dir != "." else fn
+            # POSIX separators regardless of OS — file_path is part of the
+            # public contract and exclude_files keys are POSIX-style.
+            rel_path = (Path(rel_dir) / fn).as_posix() if rel_dir != "." else fn
             if rel_path in skip_files:
                 continue
 
