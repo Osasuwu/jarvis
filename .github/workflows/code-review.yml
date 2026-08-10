@@ -454,14 +454,42 @@ jobs:
           #     being moved between the two.
           # `total` = all code-review-titled comments (any age); `freshBody` =
           # body of the latest one created at/after the head commit ($head).
-          sel=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-            | jq -rs --arg head "$ANCHOR_TIME" 'add
-                | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
-                | { total: length,
-                    freshBody: ( map(select(.created_at >= $head)) | (.[-1].body // "") ) }
-                | @json')
-          total=$(jq -r '.total' <<<"$sel")
-          body=$(jq -r '.freshBody' <<<"$sel")
+          #
+          # Grace window (#1469): this step RACES the run that posts the
+          # verdict comment — they live in DIFFERENT workflow runs. On an
+          # autobase push this run starts while the real review (triggered by
+          # the prior non-bot push) is still writing its comment; on PR #1492
+          # this step failed closed at 09:33:39Z and the clean verdict landed
+          # at 09:34:01Z — 22 seconds later. The error text says "re-run",
+          # but in AFK operation nobody is there to re-run, so the race
+          # silently stalls auto-merge. So the STALE-ONLY state (comments
+          # exist, none fresh for the anchor) is re-polled for a bounded
+          # window before the fail-closed branch below fires. Only that state
+          # retries: total==0 breaks out immediately (it has its own lineage
+          # probes below and self-heals via code-review-retry — polling would
+          # add the full window to every legitimate skip), and a fresh body
+          # proceeds immediately. After the window the stale-only branch
+          # fails closed exactly as before (#993): the window widens WHEN the
+          # verdict is read, never WHAT passes it.
+          GRACE_DEADLINE=$(( SECONDS + 300 ))
+          while :; do
+            sel=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+              | jq -rs --arg head "$ANCHOR_TIME" 'add
+                  | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
+                  | { total: length,
+                      freshBody: ( map(select(.created_at >= $head)) | (.[-1].body // "") ) }
+                  | @json')
+            total=$(jq -r '.total' <<<"$sel")
+            body=$(jq -r '.freshBody' <<<"$sel")
+            if [ "$total" -eq 0 ] || [ -n "$body" ]; then
+              break
+            fi
+            if [ "$SECONDS" -ge "$GRACE_DEADLINE" ]; then
+              break
+            fi
+            echo "::notice::/code-review comments exist but none newer than anchor $ANCHOR_TIME yet — the posting run may still be writing (#1469). Retrying in 20s ($(( GRACE_DEADLINE - SECONDS ))s left in grace window)."
+            sleep 20
+          done
 
           if [ "$total" -eq 0 ]; then
             # No /code-review comment at all. Comment-absence alone does NOT
@@ -571,10 +599,11 @@ jobs:
 
           if [ -z "$body" ]; then
             # Prior review comment(s) exist but none is newer than the freshness
-            # anchor ($ANCHOR_TIME, computed above). The latest review errored or
-            # never posted for this head; a comment before the anchor is not its
+            # anchor ($ANCHOR_TIME, computed above), and the #1469 grace window
+            # expired without one landing. The latest review errored or never
+            # posted for this head; a comment before the anchor is not its
             # verdict (#993/#1134). Fail closed; re-run code-review.
-            echo "::error::/code-review comments exist but none newer than anchor $ANCHOR_TIME (head $HEAD_SHA @ $HEAD_TIME) — latest review likely errored. Failing closed; re-run."
+            echo "::error::/code-review comments exist but none newer than anchor $ANCHOR_TIME (head $HEAD_SHA @ $HEAD_TIME) after the grace window (#1469) — latest review likely errored. Failing closed; re-run."
             exit 1
           fi
 
