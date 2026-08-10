@@ -26,6 +26,7 @@ from mcp.types import TextContent
 
 import server  # late-bound — see module docstring
 import write_scrubber  # #555: Tier-2 write-path secret-scrubber gate
+from fire_and_forget import _PENDING_TASKS, _pin_task, log_swallowed  # noqa: F401
 
 # Recall pipeline constants and primitive helpers live in mcp-memory/recall.py
 # (deep-module split, #496). Aliased back to the legacy private names so that
@@ -90,22 +91,6 @@ MAX_CLASSIFIER_NEIGHBORS = 5
 
 GAP_THRESHOLD = 0.45  # known-unknowns: log gaps when top_similarity < this
 GAP_DEDUP_SIM = 0.9
-
-
-# Strong references to fire-and-forget tasks. CPython holds only a weak ref to
-# a bare ``asyncio.create_task`` result, so without an external strong ref the
-# task can be GC-collected mid-flight before it completes (same pattern as
-# write_scrubber._PENDING_BLOCK_LOGS and decision._PENDING_TASKS). Every
-# detached task in this module — recall touch/backfill/recall-event, store-path
-# auto-link/known-unknown resolution — is pinned here. Discard via the
-# done-callback below.
-_PENDING_TASKS: set[asyncio.Task] = set()
-
-
-def _pin_task(task: asyncio.Task) -> None:
-    """Strong-ref *task* until completion so it can't be GC-collected mid-flight."""
-    _PENDING_TASKS.add(task)
-    task.add_done_callback(_PENDING_TASKS.discard)
 
 
 async def _upsert_known_unknown(
@@ -190,8 +175,8 @@ async def _upsert_known_unknown(
                 "context": context,
             }
         ).execute()
-    except Exception:
-        pass  # best-effort, never block recall on failure
+    except Exception as exc:
+        log_swallowed("memory._upsert_known_unknown", exc)  # best-effort, never block recall on failure
 
 
 async def _resolve_known_unknowns(client, memory_embedding: list[float], memory_id: str) -> None:
@@ -217,8 +202,8 @@ async def _resolve_known_unknowns(client, memory_embedding: list[float], memory_
                         "resolved_by_memory_id": memory_id,
                     }
                 ).eq("id", row["id"]).execute()
-    except Exception:
-        pass  # best-effort, never block store on failure
+    except Exception as exc:
+        log_swallowed("memory._resolve_known_unknowns", exc)  # best-effort, never block store on failure
 
 
 async def _handle_recall(args: dict) -> list[TextContent]:
@@ -237,8 +222,9 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     brief = args.get("brief", False)
 
     # Hybrid search: combine semantic + keyword results via RRF + temporal scoring
+    degraded = False
     if query_text:
-        rows, results = await _hybrid_recall(
+        rows, results, degraded = await _hybrid_recall(
             client,
             query_text,
             project,
@@ -265,7 +251,10 @@ async def _handle_recall(args: dict) -> list[TextContent]:
                     _pin_task(asyncio.create_task(_touch_memories(client, ids_to_touch)))
             return results
 
-    # Fallback: keyword-only search (embed failure or empty hybrid result).
+    # Fallback: keyword-only search (embed failure, empty hybrid result, or
+    # semantic recall degraded — #1082 surfaces the latter to the caller
+    # instead of silently returning keyword-only results indistinguishable
+    # from a healthy hybrid search).
     # Pass include_unreviewed through so the always-gate is enforced on the
     # fallback path too — the SQL RPCs do this server-side; this client-side
     # path must mirror them.
@@ -283,6 +272,19 @@ async def _handle_recall(args: dict) -> list[TextContent]:
     if os.environ.get("VOYAGE_API_KEY"):
         _pin_task(asyncio.create_task(_backfill_missing_embeddings(client, project)))
 
+    if degraded:
+        results = [
+            TextContent(
+                type="text",
+                text=json.dumps(
+                    {
+                        "degraded": True,
+                        "reason": "semantic recall failed; results are keyword-only",
+                    }
+                ),
+            )
+        ] + results
+
     return results
 
 
@@ -297,15 +299,17 @@ async def _hybrid_recall(
     brief: bool = False,
     *,
     include_unreviewed: bool = False,
-) -> tuple[list[dict], list[TextContent]]:
+) -> tuple[list[dict], list[TextContent], bool]:
     """Adapter wrapping the recall() pipeline for the MCP recall tool.
 
     Pipeline mechanics live in mcp-memory/recall.py (#498). This wrapper owns
     the adapter-level concerns: result formatting, the "Linked memories"
     display section (preserved from the pre-#498 handler — partitioned out
     of the now-unified rank by RecallHit.source), and the recall_event
-    metacognition emit (#250). Returns ``([], [])`` on empty result so the
-    caller can take the keyword fallback path.
+    metacognition emit (#250). Returns ``([], [], degraded)`` on empty result
+    so the caller can take the keyword fallback path — ``degraded`` is True
+    only when semantic recall itself failed (#1082), not on a legitimate
+    zero-hit query.
     """
     config = dataclasses.replace(
         PROD_RECALL_CONFIG,
@@ -313,6 +317,7 @@ async def _hybrid_recall(
         use_links=include_links,
         include_unreviewed=include_unreviewed,
     )
+    degraded_sink: dict = {}
     try:
         hits = await recall(
             client,
@@ -321,14 +326,16 @@ async def _hybrid_recall(
             type_filter=mem_type,
             show_history=show_history,
             config=config,
+            degraded_sink=degraded_sink,
         )
     except asyncio.CancelledError:
         raise
-    except Exception:
-        return [], []
+    except Exception as exc:
+        log_swallowed("memory._hybrid_recall", exc)
+        return [], [], True
 
     if not hits:
-        return [], []
+        return [], [], degraded_sink.get("degraded", False)
 
     direct_hits = [h for h in hits if h.source != "linked"]
     linked_hits = [h for h in hits if h.source == "linked"]
@@ -374,7 +381,7 @@ async def _hybrid_recall(
     # Touch fans out across the whole displayed set (direct + linked) so
     # access-frequency boost matches what the user actually saw.
     all_rows = direct_rows + linked_rows
-    return all_rows, [TextContent(type="text", text=text)]
+    return all_rows, [TextContent(type="text", text=text)], False
 
 
 # #1081: keywords are interpolated into an ilike pattern (%term%) and then
@@ -502,8 +509,8 @@ async def _touch_memories(client, ids: list[str]) -> None:
     """Fire-and-forget: update last_accessed_at for accessed memories via RPC."""
     try:
         client.rpc("touch_memories", {"memory_ids": ids}).execute()
-    except Exception:
-        pass
+    except Exception as exc:
+        log_swallowed("memory._touch_memories", exc)
 
 
 async def _emit_recall_event(client, payload: dict) -> None:
@@ -519,8 +526,8 @@ async def _emit_recall_event(client, payload: dict) -> None:
                 "payload": payload,
             }
         ).execute()
-    except Exception:
-        pass
+    except Exception as exc:
+        log_swallowed("memory._emit_recall_event", exc)
 
 
 def _format_memories(
@@ -615,12 +622,44 @@ async def _backfill_missing_embeddings(client, project) -> None:
         if embeddings is None:
             return
 
+        assert len(rows) == len(embeddings), (
+            f"embedding backfill count mismatch: {len(rows)} rows vs {len(embeddings)} embeddings"
+        )
+
         for mem, embedding in zip(rows, embeddings):
             client.table("memories").update(
                 _embed_upsert_fields(embedding, server.EMBEDDING_MODEL_PRIMARY)
             ).eq("id", mem["id"]).execute()
-    except Exception:
-        pass  # fire-and-forget: silently swallow all errors so caller never fails
+    except Exception as exc:
+        # fire-and-forget: silently swallow all errors so caller never fails
+        log_swallowed("memory._backfill_missing_embeddings", exc)
+
+
+def _record_link_decision_path(client, stored_id: str, path: str) -> None:
+    """Dual-write the auto-link decision path to events_canonical (#1082).
+
+    Durable, queryable record of which path actually resolved the auto-link
+    decision — replaces an in-process counter that would reset on restart
+    and can't be queried across the fleet. Mirrors decision.py's dual-write
+    pattern: emit_event already buffers on its own failures and never
+    raises; the outer try/except here is defense-in-depth for the wrapper
+    logic (import guard, kwarg construction) around it.
+    """
+    try:
+        from events_canonical import emit_event
+    except Exception:  # noqa: BLE001 — substrate optional during rollout
+        emit_event = None
+    if emit_event is None:
+        return
+    try:
+        emit_event(
+            client,
+            actor="mcp_memory:auto_link",
+            action="link_decision_path",
+            payload={"memory_id": stored_id, "path": path},
+        )
+    except Exception as exc:  # noqa: BLE001 — defense in depth
+        log_swallowed("memory._record_link_decision_path", exc)
 
 
 async def _create_auto_links(
@@ -645,7 +684,17 @@ async def _create_auto_links(
       5. classifier unavailable (no API key, network fail, no candidate
          metadata) → fall back to the legacy SUPERSEDE_SIM_THRESHOLD
          heuristic so we never regress to "do nothing".
+
+    link_decision_path (#1082): records which path actually resolved the
+    decision — "classifier" (Haiku call succeeded), "legacy_heuristic"
+    (classifier unavailable / no candidate metadata), or
+    "classifier_failed_no_decision" (classifier was attempted but the call
+    itself failed) — via events_canonical. This task runs detached from the
+    MCP response so it can't return the true outcome to the caller directly;
+    _handle_store's response field is a synchronous prediction made before
+    dispatch, this is the durable record of what actually happened.
     """
+    link_decision_path = None
     try:
         # --- (1) base links: everything is `related` until a classifier upgrade ---
         links = []
@@ -673,23 +722,35 @@ async def _create_auto_links(
         if not candidates_for_classifier:
             return  # nothing close enough — pure ADD, no supersession to consider
 
+        attempted_classifier = candidate is not None and classify_write is not None
         decision = None
-        if candidate is not None and classify_write is not None:
+        if attempted_classifier:
             # Hydrate neighbors with description/content for richer prompting.
             # find_similar_memories only returns id/name/type/similarity.
             hydrated = await _hydrate_neighbors(client, candidates_for_classifier)
             try:
                 decision = await classify_write(candidate, hydrated)
-            except Exception:
+            except Exception as exc:
+                log_swallowed("memory._create_auto_links.classify_write", exc)
                 decision = None
+
+        if attempted_classifier:
+            link_decision_path = (
+                "classifier" if decision is not None else "classifier_failed_no_decision"
+            )
+        else:
+            link_decision_path = "legacy_heuristic"
 
         if decision is not None:
             await _apply_classifier_decision(client, stored_id, decision, candidates_for_classifier)
         else:
             # Legacy heuristic fallback: same-type + sim >= 0.85 → supersede.
             await _apply_legacy_supersede(client, stored_id, candidates_for_classifier, mem_type)
-    except Exception:
-        pass
+    except Exception as exc:
+        log_swallowed("memory._create_auto_links", exc)
+    finally:
+        if link_decision_path is not None:
+            _record_link_decision_path(client, stored_id, link_decision_path)
 
 
 async def _hydrate_neighbors(client, rows: list[dict]) -> list[dict]:
@@ -706,7 +767,8 @@ async def _hydrate_neighbors(client, rows: list[dict]) -> list[dict]:
             .execute()
         )
         full_by_id = {row["id"]: row for row in (full.data or [])}
-    except Exception:
+    except Exception as exc:
+        log_swallowed("memory._hydrate_neighbors", exc)
         return rows
 
     hydrated = []
@@ -771,7 +833,8 @@ async def _apply_classifier_decision(
                 .execute()
             )
             mutated = bool(getattr(res, "data", None))
-        except Exception:
+        except Exception as exc:
+            log_swallowed("memory._apply_classifier_decision.update", exc)
             mutated = False
         if mutated:
             # Upgrade the auto-created `related` link to `supersedes` so the
@@ -786,8 +849,9 @@ async def _apply_classifier_decision(
                     },
                     on_conflict="source_id,target_id,link_type",
                 ).execute()
-            except Exception:
-                pass  # link upgrade is cosmetic; don't roll back the supersession
+            except Exception as exc:
+                # link upgrade is cosmetic; don't roll back the supersession
+                log_swallowed("memory._apply_classifier_decision.link_upgrade", exc)
             queue_status = "auto_applied"
             applied_at = datetime.now(timezone.utc).isoformat()
         else:
@@ -808,7 +872,8 @@ async def _apply_classifier_decision(
                 .execute()
             )
             mutated = bool(getattr(res, "data", None))
-        except Exception:
+        except Exception as exc:
+            log_swallowed("memory._apply_classifier_decision.delete", exc)
             mutated = False
         if mutated:
             queue_status = "auto_applied"
@@ -848,8 +913,8 @@ async def _apply_classifier_decision(
                 "applied_at": applied_at,
             }
         ).execute()
-    except Exception:
-        pass
+    except Exception as exc:
+        log_swallowed("memory._apply_classifier_decision.review_queue_insert", exc)
 
 
 async def _apply_legacy_supersede(
@@ -882,8 +947,8 @@ async def _apply_legacy_supersede(
                 },
                 on_conflict="source_id,target_id,link_type",
             ).execute()
-    except Exception:
-        pass
+    except Exception as exc:
+        log_swallowed("memory._apply_legacy_supersede", exc)
 
 
 async def _expand_with_links(
@@ -914,7 +979,8 @@ async def _expand_with_links(
             },
         ).execute()
         return result.data or []
-    except Exception:
+    except Exception as exc:
+        log_swallowed("memory._expand_with_links", exc)
         return []
 
 
@@ -1026,6 +1092,12 @@ async def _handle_store(args: dict) -> list[TextContent]:
     # landed atomically above; nothing below this point can block or undo it.
     consolidation_names: list[str] = []
     classifier_pending = False
+    # #1082: synchronous *prediction* of which path _create_auto_links (fire-
+    # and-forget, dispatched below) will take. It can never be
+    # "classifier_failed_no_decision" here — that outcome is only knowable
+    # after the detached task actually calls the classifier; the true value
+    # is recorded via events_canonical from inside _create_auto_links itself.
+    link_decision_path: str | None = None
 
     server._audit_log(
         client, "memory_store", action, mem_name, {"project": project or "global", "type": mem_type}
@@ -1073,6 +1145,16 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     "content": content,
                     "tags": tags,
                 }
+                # Same filter _create_auto_links applies before deciding
+                # whether to attempt the classifier — mirrored here so the
+                # sync prediction matches what the async task will actually do.
+                candidates_for_classifier = [
+                    r
+                    for r in similar_rows[:MAX_CLASSIFIER_NEIGHBORS]
+                    if r.get("similarity", 0) >= CLASSIFIER_TRIGGER_SIM
+                ]
+                if candidates_for_classifier:
+                    link_decision_path = "classifier" if classify_write is not None else "legacy_heuristic"
                 _pin_task(
                     asyncio.create_task(
                         _create_auto_links(
@@ -1104,10 +1186,11 @@ async def _handle_store(args: dict) -> list[TextContent]:
                                 "resolved_by_memory_id": stored_id,
                             }
                         ).eq("id", gap["id"]).execute()
-            except Exception:
-                pass
-        except Exception:
-            pass  # auto-linking is best-effort, never blocks store
+            except Exception as exc:
+                log_swallowed("memory._handle_store.resolve_gaps", exc)
+        except Exception as exc:
+            # auto-linking is best-effort, never blocks store
+            log_swallowed("memory._handle_store.auto_link", exc)
 
         # Resolve known unknowns: if stored memory matches any open unknown > 0.7 similarity,
         # mark as resolved (fire-and-forget, best-effort)
@@ -1125,6 +1208,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
         "project": project if project is not None else "global",
         "consolidation_candidates": consolidation_names,
         "classifier_pending": classifier_pending,
+        "link_decision_path": link_decision_path,
         "message": msg,
     }
     return [TextContent(type="text", text=json.dumps(response))]
@@ -1337,8 +1421,8 @@ def _record_hygiene_outcome(client, *, action: str, mem_name: str, project, mem_
                 else ["memory-hygiene", "revival"],
             }
         ).execute()
-    except Exception:
-        pass
+    except Exception as exc:
+        log_swallowed("memory._record_hygiene_outcome", exc)
 
 
 async def _handle_memory_mark_stale(args: dict) -> list[TextContent]:
