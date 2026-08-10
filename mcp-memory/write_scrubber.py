@@ -482,10 +482,15 @@ def check_write(client, fields: dict[str, object], *, write_path: str) -> dict |
     running, same as the block-event path) and fail open before reaching
     ``scan_fields`` (AC1, #1000) — ``scan_fields`` already no-ops on
     ``scrub is None``, but skipping the call makes the fail-open path
-    explicit rather than incidental.
+    explicit rather than incidental. ``WRITE_SCRUBBER_QUIET`` suppresses the
+    dispatch entirely (not just the startup print) — on redrobot ``scrub is
+    None`` is the permanent steady state, so without this every write,
+    forever, would pay a live Supabase RPC round-trip (code-review round-3
+    finding on #1000's PR).
     """
     if scrub is None:
-        _dispatch_disabled_log(client, _SCRUB_DISABLE_REASON)
+        if not os.environ.get("WRITE_SCRUBBER_QUIET"):
+            _dispatch_disabled_log(client, _SCRUB_DISABLE_REASON)
         return None
     fires = scan_fields(fields)
     blocking = {k: v for k, v in fires.items() if k not in SCRUB_ONLY_PATTERNS}

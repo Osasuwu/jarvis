@@ -519,6 +519,22 @@ class TestScrubUnavailable:
         write_scrubber.check_write(client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store")
         assert called == []
 
+    def test_check_write_skips_disabled_dispatch_when_quiet(self, monkeypatch):
+        """WRITE_SCRUBBER_QUIET is redrobot's permanent steady-state env var
+        (scrub is None forever there — scripts/lib genuinely absent). The
+        disabled-gate dispatch must honor it the same way the startup print
+        already does, or every write forever pays a live Supabase RPC call
+        (code-review round-3 finding on #1000's PR)."""
+        monkeypatch.setattr(write_scrubber, "scrub", None)
+        monkeypatch.setattr(write_scrubber, "_SCRUB_DISABLE_REASON", "module_absent")
+        monkeypatch.setenv("WRITE_SCRUBBER_QUIET", "1")
+        client = MagicMock()
+        out = write_scrubber.check_write(
+            client, {"content": FAKE_OPENAI_KEY}, write_path="memory_store"
+        )
+        assert out is None
+        client.rpc.assert_not_called()
+
 
 # ── SCRUB_ONLY_PATTERNS coupling invariant ────────────────────────────────
 
