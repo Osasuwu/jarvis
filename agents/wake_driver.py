@@ -92,6 +92,9 @@ from agents.task_dispatch import (
     poll_completions,
     reclaim_stale_tasks,
     sweep_task_worktrees,
+    # #1085 S2 review finding 2: production outcome_record wiring for
+    # poll_completions (writes task_outcomes since /task-implement has no MCP).
+    _record_completion_outcome,
 )
 
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
@@ -419,6 +422,7 @@ def tick(
     task_event_emit: EventEmit | None = None,
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
+    task_outcome_record: Callable[[dict[str, Any]], None] | None = None,
     task_dedup: DedupConfig | None = None,
     task_worktree_retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     task_worktree_retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
@@ -494,6 +498,7 @@ def tick(
                 event_emit=task_event_emit,
                 evidence_client=task_evidence_client,
                 stdout_reader=task_stdout_reader,
+                outcome_record=task_outcome_record,
             )
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
@@ -639,6 +644,7 @@ def run(
     task_event_emit: EventEmit | None = None,
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
+    task_outcome_record: Callable[[dict[str, Any]], None] | None = None,
     task_dedup: DedupConfig | None = None,
     task_worktree_retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     task_worktree_retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
@@ -719,6 +725,7 @@ def run(
                 task_event_emit=task_event_emit,
                 task_evidence_client=task_evidence_client,
                 task_stdout_reader=task_stdout_reader,
+                task_outcome_record=task_outcome_record,
                 task_dedup=task_dedup,
                 task_worktree_retention_seconds=task_worktree_retention_seconds,
                 task_worktree_retention_cap=task_worktree_retention_cap,
@@ -1181,6 +1188,7 @@ def main() -> int:
             task_event_emit=event_emit,
             task_evidence_client=evidence_client,
             task_stdout_reader=default_stdout_reader,
+            task_outcome_record=_record_completion_outcome,
             # #931 dispatch-dedup: reuse the one evidence client for the
             # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
             task_dedup=default_task_dedup(evidence_client),
