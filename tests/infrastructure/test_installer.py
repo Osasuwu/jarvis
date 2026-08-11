@@ -1163,6 +1163,30 @@ def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None
     assert f"{repo_posix}/scripts/run-memory-server.py" in mcp_rendered
 
 
+def test_real_userlevel_mcp_json_gates_obsidian_like_uml(monkeypatch) -> None:
+    """#1201: `obsidian` must be device-gated on OBSIDIAN_VAULT_PATH the same
+    way `uml` is gated on UML_MCP_HOME, in the REAL `.claude-userlevel/.mcp.json`
+    — not just a synthetic fixture. Covers both directions (skip when unset,
+    register when set) so a future edit that drops the marker fails this test.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    mcp_src = repo_root / ".claude-userlevel" / ".mcp.json"
+
+    monkeypatch.delenv("OBSIDIAN_VAULT_PATH", raising=False)
+    monkeypatch.delenv("UML_MCP_HOME", raising=False)
+    actions = installer._plan_mcp_user_registrations(mcp_src, repo_root, repo_root / "t")
+    planned = _planned_server_names(actions)
+    assert "obsidian" not in planned
+    assert "uml" not in planned
+    assert "memory" in planned  # ungated servers still plan normally
+
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", "/opt/vault")
+    actions = installer._plan_mcp_user_registrations(mcp_src, repo_root, repo_root / "t")
+    planned = _planned_server_names(actions)
+    assert "obsidian" in planned
+    assert "uml" not in planned  # UML_MCP_HOME still unset
+
+
 def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
     """Source-of-truth directory must exist with every whitelisted skill.
 
