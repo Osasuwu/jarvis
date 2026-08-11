@@ -163,6 +163,55 @@ def test_fence_skipping_with_language_tag():
     assert len(broken) == 0
 
 
+def test_fence_skipping_many_fence_pairs_no_drift():
+    """#1335: no line-offset drift across many fence pairs.
+
+    Regression for the `re.split()` + manual offset arithmetic that
+    double-counted each fence delimiter's own line and drifted by +1 per
+    fence pair — a link-like line inside a LATE fence must stay excluded
+    regardless of how many fence pairs precede it in the file.
+    """
+    from scripts.audit_anchors import find_broken_links
+    fences = "\n".join(f"```\ncode block {i}\n```" for i in range(15))
+    text = f"# Heading\n{fences}\n```markdown\n[fake](#fake-inside-late-fence)\n```\n"
+    corpus = {REPO_ROOT / "test.md": text}
+    broken = find_broken_links(corpus)
+    assert len(broken) == 0
+
+
+def test_fence_skipping_real_broken_link_after_many_fences_still_caught():
+    """#1335: drift could also produce false negatives.
+
+    A genuinely broken link OUTSIDE any fence, positioned after many fence
+    pairs, must still be flagged — accumulated offset must not silently
+    misattribute it as "inside a fence".
+    """
+    from scripts.audit_anchors import find_broken_links
+    fences = "\n".join(f"```\ncode block {i}\n```" for i in range(15))
+    text = f"# Heading\n{fences}\n[broken](#does-not-exist)\n"
+    corpus = {REPO_ROOT / "test.md": text}
+    broken = find_broken_links(corpus)
+    assert len(broken) == 1
+    assert broken[0][3] == "#does-not-exist"
+
+
+def test_fence_skipping_exact_line_attribution():
+    """#1335: fence-line attribution is exact, not just eventually-consistent.
+
+    Places a broken link on the line immediately AFTER a late-closing fence
+    to confirm the fence/non-fence boundary itself (not just deep-inside
+    content) is attributed to the correct line number.
+    """
+    from scripts.audit_anchors import find_broken_links
+    fences = "\n".join(f"```\ncode block {i}\n```" for i in range(10))
+    text = f"{fences}\n[broken](#missing)\n"
+    corpus = {REPO_ROOT / "test.md": text}
+    broken = find_broken_links(corpus)
+    assert len(broken) == 1
+    expected_lineno = len(text.splitlines())  # the last line, right after the final fence
+    assert broken[0][1] == expected_lineno
+
+
 def test_gh_relative_path_allowlist():
     """GH-relative paths (../issues/, ../pulls/, etc.) are allowlisted."""
     from scripts.audit_anchors import is_github_relative_path

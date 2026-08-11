@@ -90,17 +90,18 @@ def find_broken_links(corpus: dict[Path, str]) -> list[tuple[Path, int, str, str
 
     broken: list[tuple[Path, int, str, str]] = []
     for f, text in corpus.items():
-        # Build a set of line numbers that are inside fences
-        parts = FENCE_DELIMITER.split(text)
+        # Build a set of line numbers that are inside fences via a direct
+        # line-by-line scan, toggling on each fence delimiter (#1335 — the
+        # prior re.split()-based offset arithmetic double-counted each
+        # delimiter's own line and drifted by +1 per fence pair).
         inside_fence_lines: set[int] = set()
-        line_offset = 0
-        for i, part in enumerate(parts):
-            is_inside_fence = (i % 2 == 1)  # Odd indices are inside fences
-            part_lines = part.count('\n')
-            if is_inside_fence:
-                for j in range(part_lines + 1):
-                    inside_fence_lines.add(line_offset + j)
-            line_offset += part_lines + 1  # +1 for the fence delimiter line itself
+        inside_fence = False
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if FENCE_DELIMITER.match(line):
+                inside_fence = not inside_fence
+                continue
+            if inside_fence:
+                inside_fence_lines.add(lineno)
 
         for lineno, line in enumerate(text.splitlines(), 1):
             # Skip if inside fence
