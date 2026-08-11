@@ -998,6 +998,90 @@ async def _expand_with_links(
         return []
 
 
+def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
+    r"""Parse markdown document into sections keyed by header text.
+
+    Returns dict: {header_text: (start_line, end_line_exclusive)}.
+    Sections are delimited by markdown headers (##, ###, ####, etc.).
+    Content is split by lines; indices are line numbers.
+
+    Sections must match pattern: ^#{2,4} \[entry\] or ^#{2,4} \[evicted\]
+    (matching the working_state contract format). Headers outside this pattern
+    are rejected — prevents arbitrary markdown from being incorrectly parsed.
+    """
+    lines = content.split("\n")
+    sections: dict[str, tuple[int, int]] = {}
+    current_section_start: int | None = None
+    current_section_header: str | None = None
+
+    section_pattern = re.compile(r"^#{2,4}\s+\[(entry|evicted)\]")
+
+    for i, line in enumerate(lines):
+        # Check if this is a valid section header
+        if section_pattern.match(line):
+            # Save prior section if any
+            if current_section_header is not None and current_section_start is not None:
+                sections[current_section_header] = (current_section_start, i)
+
+            # Start new section
+            current_section_header = line
+            current_section_start = i
+        # No need to check for other headers — we only care about [entry]/[evicted] blocks
+
+    # Don't forget the last section
+    if current_section_header is not None and current_section_start is not None:
+        sections[current_section_header] = (current_section_start, len(lines))
+
+    return sections
+
+
+def _merge_section_into_markdown(
+    existing_content: str,
+    section_header: str,
+    section_content: str,
+) -> str:
+    """Merge a new section into an existing markdown document.
+
+    Replaces the section with matching header (exact match), or appends if not found.
+    Preserves all other sections unchanged.
+
+    Args:
+        existing_content: existing markdown document (may be empty)
+        section_header: markdown header line (e.g. "### [entry] foo-bar — 2026-01-01")
+        section_content: full section content, starting with the header line
+
+    Returns:
+        merged markdown document as string
+
+    Raises:
+        ValueError: if existing_content is unparseable (sections without matching header pattern)
+    """
+    # Validate that section_content starts with section_header
+    if not section_content.strip().startswith(section_header):
+        raise ValueError("section_content must start with section_header")
+
+    if not existing_content.strip():
+        # Empty document: just return the new section
+        return section_content
+
+    # Parse existing sections — raises ValueError if unparseable
+    sections = _parse_markdown_sections(existing_content)
+
+    # Check if target section exists
+    if section_header in sections:
+        # Replace the section
+        start, end = sections[section_header]
+        lines = existing_content.split("\n")
+        new_lines = lines[:start] + section_content.split("\n") + lines[end:]
+        return "\n".join(new_lines)
+    else:
+        # Append new section
+        if existing_content.strip():
+            return existing_content.rstrip() + "\n\n" + section_content
+        else:
+            return section_content
+
+
 async def _handle_store(args: dict) -> list[TextContent]:
     client = server._get_client()
 
@@ -1033,6 +1117,46 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 ),
             )
         ]
+
+    # #1352: Optional server-side section merge. If mode="merge_section", fetch the
+    # existing document (if any), parse sections, and splice only the new section in,
+    # preserving all sibling sections. Prevents client-side read-modify-write races.
+    mode = args.get("mode", "full")
+    if mode == "merge_section":
+        # Fetch existing content for this (project, name) memory
+        q = client.table("memories").select("content").eq("name", mem_name).is_("deleted_at", "null")
+        if project is not None:
+            q = q.eq("project", project)
+        else:
+            q = q.is_("project", "null")
+        existing_row = q.limit(1).execute()
+        existing_content = existing_row.data[0]["content"] if existing_row.data else ""
+
+        # Merge sections: the content param is the new section, merge it into existing
+        try:
+            # Extract section header from content (first line starting with ##)
+            lines = content.strip().split("\n")
+            section_header = None
+            for line in lines:
+                if line.startswith("##"):
+                    section_header = line
+                    break
+            if section_header is None:
+                return [
+                    TextContent(
+                        type="text",
+                        text="Error (mode='merge_section'): content must start with a markdown header (##, ###, or ####)",
+                    )
+                ]
+
+            content = _merge_section_into_markdown(existing_content, section_header, content)
+        except ValueError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error (mode='merge_section'): existing document is unparseable as markdown sections. {str(e)}",
+                )
+            ]
 
     # Tier-2 write-path secret-scrubber gate; see write_scrubber module
     # docstring. Run AFTER validation but BEFORE any embedding/insert so a
