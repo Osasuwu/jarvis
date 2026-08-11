@@ -276,6 +276,7 @@ def _compute_pr_evidence(
     *,
     client: GitHubClient | None,
     stdout_reader: Callable[[str], str | None] | None = None,
+    issue_number: int | None = None,
 ) -> tuple[bool | None, bool | None]:
     """Compute PR evidence AND closing-ref status for one completed task.
 
@@ -287,6 +288,12 @@ def _compute_pr_evidence(
     The closing-ref channel is separate from the evidence tri-state per
     grill decision ``ec66db74`` — the two questions have independent
     None/False/True semantics.
+
+    ``issue_number`` (#1085 S1-5), when given, is the task_queue row's real
+    ``issue_number`` column value — preferred over parsing it out of ``goal``.
+    ``None`` (the default) falls back to the goal-text regex, exactly the
+    pre-#1085 behavior — every caller not yet threading the column keeps
+    working unchanged.
     """
     if client is None or spawned_at is None:
         return (None, None)
@@ -304,8 +311,10 @@ def _compute_pr_evidence(
     # #1136 AC5: advisory-only — surface a fresh-shape PR that links but does not
     # *close* its named issue. Runs at this evidence boundary regardless of the
     # freshness verdict; never blocks and never edits the PR.
-    _warn_if_pr_lacks_closing_ref(task_id, goal, client=client)
-    closing_ref = _compute_closing_ref_fresh_shape(task_id, goal, client=client)
+    _warn_if_pr_lacks_closing_ref(task_id, goal, client=client, issue_number=issue_number)
+    closing_ref = _compute_closing_ref_fresh_shape(
+        task_id, goal, client=client, issue_number=issue_number
+    )
     if evidence is False and stdout_reader is not None:
         # AC3 — the head-branch lookup found nothing; fall back to whatever PR
         # the agent claimed in its stdout, then verify it actually exists.
@@ -329,14 +338,19 @@ def _compute_closing_ref_fresh_shape(
     goal: str,
     *,
     client: GitHubClient | None = None,
+    issue_number: int | None = None,
 ) -> bool | None:
     """Compute closing-ref status for a fresh-shape task (#1169).
 
     Calls ``check_pr_closing_ref_fresh_shape`` through the gate module.
     Returns ``True`` if the PR carries a closing ref, ``False`` if it
     doesn't, ``None`` if it can't be computed.
+
+    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
+    S1-5) — see :func:`_compute_pr_evidence`.
     """
-    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        issue_number = _goal_issue_number(goal)
     if issue_number is None:
         return None
     if client is None:
@@ -359,6 +373,7 @@ def _warn_if_pr_lacks_closing_ref(
     goal: str,
     *,
     client: GitHubClient,
+    issue_number: int | None = None,
 ) -> None:
     """Log an advisory WARNING if a fresh-shape task's PR does not close its issue (#1136 AC5).
 
@@ -376,8 +391,12 @@ def _warn_if_pr_lacks_closing_ref(
     A missing issue reference, an absent PR (``None``), or a genuine ``Closes #N``
     (``True``) are all silent. The AC7 follow-up (#1169) turns this signal into a
     disposition; here it is observation only.
+
+    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
+    S1-5) — see :func:`_compute_pr_evidence`.
     """
-    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        issue_number = _goal_issue_number(goal)
     if issue_number is None:
         return
     try:
@@ -412,6 +431,7 @@ def _ensure_pr_closing_ref(
     goal: str,
     *,
     client: GitHubClient | None = None,
+    issue_number: int | None = None,
 ) -> bool | None:
     """Ensure a fresh-shape task's PR body carries a closing ref (#1169 item 1).
 
@@ -425,11 +445,15 @@ def _ensure_pr_closing_ref(
     - ``True`` — PR has (or now has) a closing ref
     - ``False`` — no PR to fix, or goal has no issue reference
     - ``None`` — unparseable or client unavailable
+
+    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
+    S1-5) — see :func:`_compute_pr_evidence`.
     """
     shape, _ = parse_goal_shape(goal)
     if shape != "fresh":
         return False
-    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        issue_number = _goal_issue_number(goal)
     if issue_number is None:
         return False
     if client is None:
@@ -559,6 +583,20 @@ def _goal_issue_number(goal: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _row_issue_number(row: dict[str, Any], goal: str) -> int | None:
+    """Issue number for a task_queue row: real column first, regex fallback (#1085 S1-5).
+
+    ``row["issue_number"]`` is populated for every row enqueued after the
+    #1085 S1-1/S1-2 migration; legacy/null rows (enqueued before the column
+    existed, or via a path that never set it) fall back to
+    :func:`_goal_issue_number` parsing ``goal`` — the pre-#1085 behavior.
+    """
+    value = row.get("issue_number")
+    if value is not None:
+        return int(value)
+    return _goal_issue_number(goal)
+
+
 def _load_gate_module() -> Any:
     """Load ``scripts/delegate_predispatch_gate.py`` for its shared predicate (#931).
 
@@ -600,8 +638,10 @@ class DedupConfig:
     evidence we could not read.
 
     ``list_active_rows`` returns live (``claimed``/``running``) task_queue rows
-    (``id``/``goal``/``status``) for the sibling check; queried fresh per task
-    so a row spawned earlier in this same drain is seen by later tasks.
+    (``id``/``goal``/``status``/``issue_number``) for the sibling check; queried
+    fresh per task so a row spawned earlier in this same drain is seen by later
+    tasks. The sibling predicate prefers each row's ``issue_number`` column
+    (#1085 S1-5), falling back to parsing ``goal`` for legacy/null rows.
 
     ``record_outcome`` (optional) is called best-effort with a small payload
     dict on each ``skipped_duplicate`` — a raise is logged and swallowed.
@@ -754,6 +794,11 @@ class TrackedProc:
     against it — a naive datetime would raise on the aware/naive compare). They
     default empty/``None`` so an adopted-after-restart proc with no recovered
     metadata yields ``pr_evidence=null`` → escalate (documented #921 limitation).
+
+    ``issue_number`` (#1085 S1-5) carries the claimed row's real ``issue_number``
+    column value (when set) so the terminal-boundary PR-evidence computation can
+    use it column-first, falling back to parsing ``goal`` for legacy/null rows —
+    same default-``None`` rationale as the fields above.
     """
 
     proc: Any
@@ -761,6 +806,7 @@ class TrackedProc:
     goal: str = ""
     idempotency_key: str = ""
     spawned_at: datetime | None = None
+    issue_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -837,7 +883,9 @@ def poll_completions(
         # #1169 item 1: for a done fresh-shape task, ensure the PR body carries
         # a closing ref. The supervisor auto-fixes if the agent omitted it.
         if rc == 0 and evidence_client is not None:
-            _ensure_pr_closing_ref(task_id, goal, client=evidence_client)
+            _ensure_pr_closing_ref(
+                task_id, goal, client=evidence_client, issue_number=tracked.issue_number
+            )
 
         # #1169 item 3: unpack the closing-ref status alongside the PR evidence.
         pr_evidence, closing_ref = _compute_pr_evidence(
@@ -846,6 +894,7 @@ def poll_completions(
             tracked.spawned_at,
             client=evidence_client,
             stdout_reader=stdout_reader,
+            issue_number=tracked.issue_number,
         )
 
         # Event emission and the FSM transition are DECOUPLED (MAJOR, PR #1011).
@@ -1333,7 +1382,7 @@ def drain_tasks(
         # targets a live PR by design and must not be eaten by the live-PR rule.
         if dedup is not None:
             shape, _ = parse_goal_shape(row["goal"])
-            issue_number = _goal_issue_number(str(row["goal"])) if shape == "fresh" else None
+            issue_number = _row_issue_number(row, str(row["goal"])) if shape == "fresh" else None
             if issue_number is not None:
                 try:
                     if in_flight_evidence is None:
@@ -1366,7 +1415,7 @@ def drain_tasks(
                         r
                         for r in active_rows
                         if str(r.get("id")) != task_id
-                        and _goal_issue_number(str(r.get("goal") or "")) == issue_number
+                        and _row_issue_number(r, str(r.get("goal") or "")) == issue_number
                     ),
                     None,
                 )
@@ -1484,6 +1533,7 @@ def drain_tasks(
                 "goal": row["goal"],
                 "idempotency_key": str(row.get("idempotency_key", "") or ""),
                 "spawned_at": spawn_started_at,
+                "issue_number": row.get("issue_number"),
             }
             # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
             if sidecar is not None:

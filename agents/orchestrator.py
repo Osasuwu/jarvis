@@ -102,6 +102,13 @@ class Decision:
     assignee: str | None = None
     escalated_reason: str | None = None
     noop: bool = False
+    # #1085 S1-4: the issue this decision's task_queue row is scoped to, for
+    # the per-issue CAS (idx_task_queue_issue_number_active). No current event
+    # type carries a genuine issue-target payload, so every route today
+    # leaves this None — it exists so a future issue-targeted event type
+    # (e.g. a github.issue_* event) has somewhere to put the number without
+    # a signature change to Decision or dispatch().
+    issue_number: int | None = None
 
 
 def priority_for(severity: str) -> int:
@@ -545,6 +552,7 @@ def dispatch(
             priority=decision.priority,
             assignee=decision.assignee,
             idempotency_key=decision.idempotency_key,
+            issue_number=decision.issue_number,
             client=client,
         )
         return DispatchResult(
@@ -564,6 +572,7 @@ def dispatch(
             assignee=decision.assignee,
             idempotency_key=decision.idempotency_key,
             escalated_reason=decision.escalated_reason,
+            issue_number=decision.issue_number,
             client=client,
         )
         notice = escalation_notice(decision.severity, now)
