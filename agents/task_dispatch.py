@@ -333,6 +333,43 @@ def _compute_pr_evidence(
     return (evidence, closing_ref)
 
 
+def _resolve_pr_url(
+    task_id: str,
+    goal: str,
+    *,
+    client: GitHubClient | None,
+) -> str | None:
+    """Best-effort PR URL for a just-completed task (#1085 S2 review finding 2).
+
+    ``_compute_pr_evidence`` and the ``check_pr_evidence_*`` functions it calls
+    only ever surface a ``bool | None`` tri-state — the PR object they fetch to
+    compute it is discarded, so callers that need the actual URL (here: the
+    completion outcome-writer) must resolve it separately. This is a SEPARATE,
+    deliberate second fetch of the PR, mirroring ``_warn_if_pr_lacks_closing_ref``'s
+    established pattern in this module rather than reaching into evidence
+    internals. Returns ``None`` on any resolution failure — never raises,
+    since the caller treats this as advisory.
+    """
+    if client is None:
+        return None
+    shape, pr_number = parse_goal_shape(goal)
+    try:
+        if shape == "rework" and pr_number is not None:
+            pr = client.get_pull_by_number(pr_number)
+        elif shape == "fresh":
+            branch_match = re.search(r"\(branch=([^)]+)\)", goal)
+            branch = branch_match.group(1).strip() if branch_match else f"task/{task_id}"
+            pr = client.get_pull_by_head_branch(branch)
+        else:
+            return None
+    except Exception:  # noqa: BLE001 — advisory lookup, never raises to the caller
+        logger.exception("[task_dispatch] PR URL resolution failed for task %s", task_id)
+        return None
+    if not pr:
+        return None
+    return pr.get("html_url")
+
+
 def _compute_closing_ref_fresh_shape(
     task_id: str,
     goal: str,
@@ -645,11 +682,22 @@ class DedupConfig:
 
     ``record_outcome`` (optional) is called best-effort with a small payload
     dict on each ``skipped_duplicate`` — a raise is logged and swallowed.
+
+    ``fetch_issue`` (optional, #1085 S2-3) fetches a single issue fresh at
+    spawn time — returns ``None`` if the issue is gone/inaccessible, raises on
+    a genuine fetch failure. Used only for rows whose ``idempotency_key``
+    starts with ``"delegate:"`` (i.e. ``/dispatch``-originated): the mechanical
+    re-run of ``check_issue`` against a fresh fetch, since ``/dispatch``'s own
+    check at enqueue time is advisory, not enforcement. ``None`` here (the
+    default) disables the re-check entirely — orchestrator-emitted and
+    ``/rework`` rows were never subject to ``check_issue``'s readiness
+    conditions and must not start being refused by omission.
     """
 
     fetch_in_flight: Callable[[], tuple[list[dict[str, Any]], list[str]]]
     list_active_rows: Callable[[], list[dict[str, Any]]]
     record_outcome: Callable[[dict[str, Any]], None] | None = None
+    fetch_issue: Callable[[int], dict[str, Any] | None] | None = None
 
 
 def _record_skip_outcome(payload: dict[str, Any]) -> None:
@@ -685,6 +733,46 @@ def _record_skip_outcome(payload: dict[str, Any]) -> None:
     ).execute()
 
 
+def _record_completion_outcome(payload: dict[str, Any]) -> None:
+    """Best-effort ``task_outcomes`` write for a completed subagent task (#1085
+    S2 review finding 2).
+
+    ``/task-implement`` runs headless with no MCP tools (HARD RULE 3, its
+    SKILL.md) — it cannot call ``outcome_record`` itself. Without this write, a
+    subagent-dispatched task never gets a ``task_outcomes`` row at all, so
+    ``/verify`` Step 1's ``outcome_list(outcome_status="pending")`` never sees
+    it and Step 2b's divergence/drive-by audit checks never run. This writes
+    the row from the orchestrator side instead, at the terminal boundary where
+    ``poll_completions`` already knows the task succeeded (exit 0).
+    ``pattern_tags`` MUST include ``"subagent"`` — that's the exact filter
+    Step 2b keys on. Sandcastle-anon insert, mirroring
+    :func:`_record_skip_outcome`'s pattern.
+    """
+    from agents.supabase_client import get_client
+
+    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
+    issue_number = payload.get("issue_number")
+    get_client().table("task_outcomes").insert(
+        {
+            "task_type": "autonomous",
+            "task_description": f"task-implement: {payload.get('goal')}",
+            "outcome_status": "pending",
+            "outcome_summary": (
+                f"Task {payload.get('task_id')} completed (exit 0); awaiting /verify audit."
+            ),
+            "project": "jarvis",
+            "issue_url": (
+                f"https://github.com/{repo}/issues/{issue_number}"
+                if issue_number is not None
+                else None
+            ),
+            "pr_url": payload.get("pr_url"),
+            "pattern_tags": ["subagent", "headless", "task-implement"],
+            "source_provenance": "sandcastle:task_dispatch-completion",
+        }
+    ).execute()
+
+
 def default_task_dedup(
     github: GitHubClient,
     *,
@@ -695,7 +783,8 @@ def default_task_dedup(
     ``fetch_in_flight`` maps the client's ``list_open_pulls`` / ``list_branch_names``
     into the ``(open_prs, open_branches)`` shape the gate predicate takes;
     ``list_active_rows`` defaults to :func:`task_queue.list_active`; ``record_outcome``
-    is the best-effort ``task_outcomes`` writer above. Wired from
+    is the best-effort ``task_outcomes`` writer above; ``fetch_issue`` is
+    ``github.get_issue`` directly (#1085 S2-3). Wired from
     :func:`wake_driver.main`; unit tests inject fakes into :class:`DedupConfig` directly.
     """
     active = list_active if list_active is not None else task_queue.list_active
@@ -707,6 +796,7 @@ def default_task_dedup(
         fetch_in_flight=fetch_in_flight,
         list_active_rows=active,
         record_outcome=_record_skip_outcome,
+        fetch_issue=github.get_issue,
     )
 
 
@@ -832,6 +922,7 @@ def poll_completions(
     event_emit: EventEmit | None = None,
     evidence_client: GitHubClient | None = None,
     stdout_reader: Callable[[str], str | None] | None = None,
+    outcome_record: Callable[[dict[str, Any]], None] | None = None,
 ) -> CompletionResult:
     """Close ``running`` rows whose process has exited (#921 AC2, Model P).
 
@@ -939,6 +1030,27 @@ def poll_completions(
                 logger.exception(
                     "[task_dispatch] event emit for task %s failed; "
                     "proceeding with transition (event self-heals on re-observation)",
+                    task_id,
+                )
+
+        # #1085 S2 review finding 2: write the task_outcomes row for a completed
+        # subagent task here, since /task-implement runs with no MCP tools and
+        # cannot call outcome_record itself (see _record_completion_outcome).
+        # Decoupled from the transition below for the same reason event_emit is —
+        # an outcome-write failure must never block the FSM transition.
+        if rc == 0 and outcome_record is not None:
+            try:
+                outcome_record(
+                    {
+                        "task_id": task_id,
+                        "goal": goal,
+                        "issue_number": tracked.issue_number,
+                        "pr_url": _resolve_pr_url(task_id, goal, client=evidence_client),
+                    }
+                )
+            except Exception:  # noqa: BLE001 — outcome write must not block transition
+                logger.exception(
+                    "[task_dispatch] completion outcome record for task %s failed",
                     task_id,
                 )
 
@@ -1467,6 +1579,62 @@ def drain_tasks(
                             task_id,
                         )
                     continue
+
+                # #1085 S2-3 — /dispatch's own check_issue at enqueue time is
+                # advisory, not enforcement. This is the mechanical re-run against
+                # a fresh fetch — unconditional for "delegate:"-prefixed rows
+                # (i.e. /dispatch-originated) regardless of what the advisory gate
+                # did or didn't catch. Orchestrator-emitted and /rework rows never
+                # went through check_issue's readiness conditions and must not
+                # start being refused by omission here.
+                idem_key = str(row.get("idempotency_key", "") or "")
+                if dedup.fetch_issue is not None and idem_key.startswith("delegate:"):
+                    try:
+                        fresh_issue = dedup.fetch_issue(issue_number)
+                    except Exception:  # noqa: BLE001 — unverifiable is never terminal
+                        try:
+                            requeued = port.requeue_running(task_id)
+                        except Exception:  # noqa: BLE001 — requeue is best-effort
+                            requeued = False
+                        logger.exception(
+                            "[task_dispatch] readiness fetch_issue failed; stopping drain — task %s %s",
+                            task_id,
+                            "requeued to pending" if requeued else "left running for the reaper",
+                        )
+                        return DrainResult(
+                            spawned=spawned,
+                            failed=failed,
+                            skipped_duplicate=skipped_duplicate,
+                            procs=tuple(procs),
+                            spawned_meta=spawned_meta,
+                        )
+
+                    if fresh_issue is None:
+                        try:
+                            port.transition(
+                                task_id,
+                                "parked",
+                                reason=f"issue #{issue_number} not found on fresh fetch",
+                            )
+                        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                            logger.exception(
+                                "[task_dispatch] could not park task %s on missing issue; "
+                                "row left running for the reaper",
+                                task_id,
+                            )
+                        continue
+
+                    readiness = _load_gate_module().check_issue(fresh_issue)
+                    if not readiness.allow:
+                        try:
+                            port.transition(task_id, "parked", reason=readiness.message)
+                        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                            logger.exception(
+                                "[task_dispatch] could not park task %s on readiness refusal; "
+                                "row left running for the reaper",
+                                task_id,
+                            )
+                        continue
 
         # Capture spawn time BEFORE launching (MAJOR, PR #1011). The terminal
         # evidence check counts PR/commit activity with timestamp > spawned_at;

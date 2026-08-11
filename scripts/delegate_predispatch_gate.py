@@ -1,7 +1,7 @@
-"""Pre-dispatch gate for /delegate (issues #642, #931, #1099).
+"""Pre-dispatch gate for /dispatch and drain_tasks (issues #642, #931, #1099, #1085).
 
-Refuses to dispatch a sandcastle subagent unless the target GitHub issue
-satisfies four readiness conditions:
+`check_issue` refuses to admit an issue unless it satisfies four readiness
+conditions:
 
   1. has the `sandcastle` label
   2. has no `needs-*` label
@@ -10,14 +10,35 @@ satisfies four readiness conditions:
      `[no-decision]` marker for slices that legitimately have none (#1099 —
      pure-mechanical slices should not be forced to cite a synthetic UUID)
 
-and additionally SKIPs an issue that already has in-flight work
+`check_issue` has two call sites, both still live:
+
+  - `/dispatch`'s advisory gate, run once per issue before enqueue — a
+    courtesy filter, not the enforcement authority (see dispatch/SKILL.md
+    §Contract: advisory readiness gate).
+  - `drain_tasks`'s mechanical re-check on a fresh issue fetch immediately
+    before spawn (#1085 S2-3) — this is the actual enforcement authority,
+    since the queue row may be stale relative to the issue by the time it's
+    claimed.
+
+`check_in_flight` additionally SKIPs an issue that already has in-flight work
 (dispatch-dedup, #931): an open PR referencing it via a closing keyword or a
 `<prefix>/<N>-` head branch, or a `feat/<N>-` branch with no open PR (stale —
-owner attention).
+owner attention). As of Slice 2 (#1085) this is a **legacy second-line check,
+not the dedup mechanism**: the real per-issue dedup is now
+`task_queue`'s partial unique index on `issue_number`
+(`idx_task_queue_issue_number_active`, Slice 1, PR #1529) — a database-level
+CAS enforced on every `enqueue()` call, not by an LLM correctly following
+prose. `check_in_flight` still runs (at both call sites above) as a second-line
+catch for pre-Slice-2 branch/PR-based in-flight work that has no queue row to
+collide against; it is not expected to fire once Slice 2 is the only active
+dispatch path. The branch-push claim `check_in_flight` used to gate against is
+retired — nothing pushes a claim branch as an atomic dispatch step anymore.
 
-The gate is invoked from the /delegate skill prose with a strict envelope on
-stdin (no bare-issue fallback — a missing or malformed `open_prs` /
-`open_branches` fails closed as SKIP):
+The gate is invoked with a strict envelope on stdin (no bare-issue fallback —
+a missing or malformed `issue` / `open_prs` / `open_branches` fails closed as
+SKIP). Callers that only want the readiness check (e.g. /dispatch's advisory
+gate) pass empty `open_prs`/`open_branches` lists, which makes
+`check_in_flight` a structural no-op rather than omitting the envelope shape:
 
   {"issue": {...}, "open_prs": [{number, body, headRefName}, ...],
    "open_branches": ["feat/123-x", ...]}
@@ -29,10 +50,6 @@ Exit codes: 0 ⇒ OK (dispatch), 1 ⇒ REFUSE (readiness failure),
 Notes:
   - This module does no network I/O — callers fetch PR/branch lists (with
     explicit pagination) and pass them in.
-  - Residual race: another dispatcher can start work between this check and
-    the claim. Negligible in practice — the atomic `feat/<N>-<slug>` branch
-    push is the *first* dispatch action, so the unguarded window is one
-    process-local step, and the push itself is a server-side CAS.
   - The closing-keyword body regex is convention-backed, not speculative: the
     `require-linked-issue` merge gate forces closing keywords into PR bodies,
     so a live PR for an issue is reliably detectable this way.
@@ -66,6 +83,10 @@ def _pr_head_re(issue_number: int) -> re.Pattern[str]:
 
 
 def _claim_branch_re(issue_number: int) -> re.Pattern[str]:
+    # ceiling: detects only the legacy pre-Slice-2 `feat/<N>-` branch-push claim
+    # (retired as the dedup mechanism — see module docstring); kept as a
+    # second-line stale-branch catch, not a live claim detector. No upgrade
+    # path needed unless a new non-queue claim convention is introduced.
     return re.compile(rf"^feat/{issue_number}-")
 
 

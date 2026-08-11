@@ -119,6 +119,17 @@ def test_spawn_allowlist_includes_checkout_and_fetch() -> None:
     assert "Bash(git fetch:*)" in _SPAWN_ALLOWED_TOOLS
 
 
+def test_spawn_allowlist_includes_issue_edit() -> None:
+    """PR #1539 review finding 1: /task-implement's Escalation section runs
+    ``gh issue edit <N> --add-label "status:owner-queue"`` when it needs to
+    park a task for the owner, but the headless executor sandbox had no
+    ``gh issue edit`` entry — every escalation attempt failed silently.
+    """
+    from agents.executor import _SPAWN_ALLOWED_TOOLS
+
+    assert "Bash(gh issue edit:*)" in _SPAWN_ALLOWED_TOOLS
+
+
 # ---------------------------------------------------------------------------
 # _resolve_claude_binary
 # ---------------------------------------------------------------------------
