@@ -207,6 +207,9 @@ class GitHubClient(Protocol):
     def get_pull_by_number(self, pr_number: int) -> dict[str, Any] | None:
         """Fetch PR by number; returns None if not found."""
 
+    def get_issue(self, issue_number: int) -> dict[str, Any] | None:
+        """Fetch issue by number; returns None if not found."""
+
     def list_commits_for_pull(self, pr_number: int) -> list[dict[str, Any]]:
         """List commits for a PR; returns empty list if not found."""
 
@@ -521,6 +524,21 @@ class HttpxGitHubClient:
     def get_pull_by_number(self, pr_number: int) -> dict[str, Any] | None:
         resp = self._client.get(
             f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}",
+        )
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_issue(self, issue_number: int) -> dict[str, Any] | None:
+        """Fetch issue by number (#1085 S2-3 — drain_tasks fresh-fetch readiness re-check).
+
+        Returns the raw REST issue shape (``labels`` as objects with ``name``,
+        ``body`` as markdown text) — exactly what
+        :func:`scripts.delegate_predispatch_gate.check_issue` expects.
+        """
+        resp = self._client.get(
+            f"https://api.github.com/repos/{self._repo}/issues/{issue_number}",
         )
         if resp.status_code == 404:
             return None

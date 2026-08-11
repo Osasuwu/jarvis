@@ -102,6 +102,7 @@ _SPAWN_ALLOWED_TOOLS = (
     "Bash(gh issue create:*)",
     "Bash(gh issue list:*)",
     "Bash(gh issue comment:*)",
+    "Bash(gh issue edit:*)",
     "Bash(gh api repos/*/issues:*)",
     "Bash(gh api repos/*/pulls:*)",
     "Bash(pytest:*)",
