@@ -1,19 +1,20 @@
-"""Dependency drift detection + self-heal for long-lived MCP venvs (#1312).
+"""Dependency drift detection + self-heal for long-lived MCP venvs (#1312, #1313).
 
 Stdlib-only by design: this module is imported from scripts/session-context.py
 during SessionStart, before any project dependency is guaranteed installed.
 
-check(env) compares the manifest's sha256 against the recorded stamp AND
+check(env) compares the lockfile's (or manifest's) sha256 against the recorded stamp AND
 import-probes env.probe_modules through the venv's own interpreter — hash-only
 checks miss the nest_asyncio/pythonjsonlogger/telethon class of bug where a
 module is imported by a server file but never declared in the manifest, so
 the hash never changes even though the venv is unhealthy.
 
-heal(env) runs `<venv python> -m pip install -r <manifest>` with its own
+heal(env) uses uv to sync from the lockfile if present (#1313), otherwise falls back
+to `<venv python> -m pip install -r <manifest>` (#1312). Both use their own
 timeout + tree-kill (see the subprocess_capture_output_grandchild_pipe_hang
 memory: capture_output=True + timeout hangs forever if a grandchild inherits
 the pipe — this redirects the child's stdout/stderr to a real log file
-instead of a PIPE). The stamp is written only when pip exits 0 AND a
+instead of a PIPE). The stamp is written only when install exits 0 AND a
 follow-up probe passes, so a "successful" but incomplete install never masks
 future drift.
 """
@@ -48,6 +49,7 @@ class ManagedEnv:
     manifest: Path
     stamp_path: Path
     probe_modules: tuple
+    lockfile: Path | None = None  # (#1313) uv.lock for reproducible installs
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ REGISTRY: list[ManagedEnv] = [
         venv_python=_VENV_PYTHON,
         manifest=_REPO_ROOT / "mcp-memory" / "requirements.txt",
         stamp_path=_REPO_ROOT / ".venv" / ".deps-stamp",
+        lockfile=_REPO_ROOT / "mcp-memory" / "uv.lock",  # (#1313)
         # Third-party top-level imports across mcp-memory/server.py,
         # mcp-status/server.py, scripts/telegram-mcp-server.py. Keep this in
         # sync with the meta-test in tests/infrastructure/test_env_sync.py —
@@ -103,6 +106,19 @@ def _manifest_hash(manifest: Path) -> str:
     return hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
+def _get_hash_source(env: ManagedEnv) -> Path:
+    """Return the file to hash for drift detection (#1313).
+
+    Prefers lockfile if it exists, falls back to manifest. This ensures
+    that when a lockfile is added, drift is detected and re-healing uses
+    the lockfile (not stale manifest range). When a lockfile is absent
+    (legacy setup), uses manifest for backward compatibility.
+    """
+    if env.lockfile and env.lockfile.exists():
+        return env.lockfile
+    return env.manifest
+
+
 def _read_stamp(stamp_path: Path) -> str | None:
     try:
         return stamp_path.read_text(encoding="utf-8").strip()
@@ -129,7 +145,8 @@ def _probe_import(python_exe: Path, module: str, timeout: int = 15) -> bool:
 
 
 def check(env: ManagedEnv) -> CheckResult:
-    new_hash = _manifest_hash(env.manifest)
+    hash_source = _get_hash_source(env)
+    new_hash = _manifest_hash(hash_source)
     old_hash = _read_stamp(env.stamp_path)
     if old_hash != new_hash:
         return CheckResult(False, "hash_mismatch", old_hash, new_hash)
@@ -206,10 +223,37 @@ def _tree_kill(pid: int) -> None:
             pass
 
 
-def _run_pip_install(python_exe: Path, manifest: Path, log_path: Path, timeout: int) -> int:
+def _run_uv_sync(env_dir: Path, log_path: Path, timeout: int) -> int:
+    """Run `uv sync` in the given project directory (#1313).
+
+    Returns subprocess return code.
+    """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with open(log_path, "ab") as logf:
-        logf.write(f"\n--- env-sync heal {time.time()} ---\n".encode("utf-8"))
+        logf.write(f"\n--- env-sync heal (uv sync) {time.time()} ---\n".encode("utf-8"))
+        proc = subprocess.Popen(
+            ["uv", "sync", "--project", str(env_dir)],
+            cwd=str(env_dir),
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+        )
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _tree_kill(proc.pid)
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return -1
+
+
+def _run_pip_install(python_exe: Path, manifest: Path, log_path: Path, timeout: int) -> int:
+    """Run `pip install -r <manifest>` for backward compatibility (#1312)."""
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "ab") as logf:
+        logf.write(f"\n--- env-sync heal (pip install) {time.time()} ---\n".encode("utf-8"))
         proc = subprocess.Popen(
             [str(python_exe), "-m", "pip", "install", "-r", str(manifest)],
             stdout=logf,
@@ -235,10 +279,21 @@ def heal(env: ManagedEnv, timeout: int = DEFAULT_HEAL_TIMEOUT) -> HealResult:
             return HealResult(False, "locked", log_path=log_path)
         try:
             old_hash = _read_stamp(env.stamp_path)
-            rc = _run_pip_install(env.venv_python, env.manifest, log_path, timeout)
+            # Use uv sync if lockfile exists (#1313), else pip install (#1312)
+            use_uv = env.lockfile and env.lockfile.exists()
+            if use_uv:
+                env_project_dir = env.lockfile.parent
+                rc = _run_uv_sync(env_project_dir, log_path, timeout)
+                install_method = "uv_sync"
+            else:
+                rc = _run_pip_install(env.venv_python, env.manifest, log_path, timeout)
+                install_method = "pip_install"
+
             if rc != 0:
-                return HealResult(False, "pip_failed", old_hash, log_path=log_path)
-            new_hash = _manifest_hash(env.manifest)
+                return HealResult(False, f"{install_method}_failed", old_hash, log_path=log_path)
+
+            hash_source = _get_hash_source(env)
+            new_hash = _manifest_hash(hash_source)
             for module in env.probe_modules:
                 if not _probe_import(env.venv_python, module):
                     return HealResult(False, f"probe_failed:{module}", old_hash, new_hash, log_path)

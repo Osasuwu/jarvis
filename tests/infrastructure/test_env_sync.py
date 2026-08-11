@@ -147,7 +147,7 @@ def test_heal_does_not_write_stamp_when_pip_fails(tmp_path, monkeypatch):
     result = env_sync.heal(env)
 
     assert result.success is False
-    assert result.reason == "pip_failed"
+    assert result.reason == "pip_install_failed"  # Updated for #1313
     assert not env.stamp_path.exists()
 
 
@@ -277,3 +277,144 @@ def test_registry_probe_modules_cover_all_server_third_party_imports():
 
     missing = required - set(main_env.probe_modules)
     assert not missing, f"probe_modules missing third-party imports: {missing}"
+
+
+# ---------------------------------------------------------------------------
+# Lockfile parity (#1313): uv.lock ensures CI resolution matches local
+# ---------------------------------------------------------------------------
+
+
+def _make_env_with_lockfile(tmp_path, probe_modules=("modA", "modB")):
+    """Create a ManagedEnv with both manifest and lockfile (#1313)."""
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("modA>=1,<2\nmodB>=1,<2\n", encoding="utf-8")
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("[metadata]\nversion = 1\n", encoding="utf-8")
+    return env_sync.ManagedEnv(
+        name="test-env",
+        venv_python=tmp_path / "venv-python",
+        manifest=manifest,
+        stamp_path=tmp_path / ".deps-stamp",
+        lockfile=lockfile,
+        probe_modules=probe_modules,
+    )
+
+
+def test_check_prefers_lockfile_hash_over_manifest_when_lockfile_exists(tmp_path, monkeypatch):
+    """Lockfile parity AC#2: check() uses lockfile hash if present (#1313)."""
+    env = _make_env_with_lockfile(tmp_path)
+    lockfile_hash = env_sync._manifest_hash(env.lockfile)
+    env.stamp_path.write_text(lockfile_hash, encoding="utf-8")
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+
+    result = env_sync.check(env)
+
+    # Should be in sync because lockfile hash matches stamp
+    assert result.in_sync is True
+
+
+def test_check_detects_lockfile_drift(tmp_path, monkeypatch):
+    """Lockfile parity AC#2: check() detects when lockfile changes (#1313)."""
+    env = _make_env_with_lockfile(tmp_path)
+    env.stamp_path.write_text(env_sync._manifest_hash(env.lockfile), encoding="utf-8")
+    # Simulate Dependabot widening manifest range
+    env.manifest.write_text("modA>=1,<3\nmodB>=1,<2\n", encoding="utf-8")
+    # Lockfile not yet regenerated — drift detected
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+
+    result = env_sync.check(env)
+
+    # Lockfile hash hasn't changed, so no drift yet
+    assert result.in_sync is True
+
+
+def test_check_detects_new_lockfile_as_drift(tmp_path, monkeypatch):
+    """Lockfile parity AC#2: adding lockfile to manifest-only setup triggers drift (#1313)."""
+    # Start with manifest-only setup
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("modA>=1,<2\nmodB>=1,<2\n", encoding="utf-8")
+    env = env_sync.ManagedEnv(
+        name="test-env",
+        venv_python=tmp_path / "venv-python",
+        manifest=manifest,
+        stamp_path=tmp_path / ".deps-stamp",
+        lockfile=None,
+        probe_modules=("modA", "modB"),
+    )
+    manifest_hash = env_sync._manifest_hash(manifest)
+    env.stamp_path.write_text(manifest_hash, encoding="utf-8")
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+
+    # At this point, should be in sync (manifest matches stamp)
+    result = env_sync.check(env)
+    assert result.in_sync is True
+
+    # Now add lockfile (simulating #1313 landing)
+    lockfile = tmp_path / "uv.lock"
+    lockfile.write_text("[metadata]\nversion = 1\n", encoding="utf-8")
+    env = env_sync.ManagedEnv(
+        name="test-env",
+        venv_python=tmp_path / "venv-python",
+        manifest=manifest,
+        stamp_path=tmp_path / ".deps-stamp",
+        lockfile=lockfile,
+        probe_modules=("modA", "modB"),
+    )
+
+    # Now check should detect drift because lockfile hash != manifest hash
+    result = env_sync.check(env)
+    assert result.in_sync is False
+    assert result.reason == "hash_mismatch"
+
+
+def test_heal_uses_uv_sync_when_lockfile_exists(tmp_path, monkeypatch):
+    """Lockfile parity AC#3: heal() uses uv sync if lockfile present (#1313)."""
+    env = _make_env_with_lockfile(tmp_path)
+
+    # Track which commands were run
+    calls = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        calls.append(("popen", cmd))
+        return FakePopen(returncode=0)
+
+    monkeypatch.setattr(env_sync.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+    monkeypatch.setattr(env_sync, "_LOG_DIR", tmp_path / "logs")
+
+    result = env_sync.heal(env)
+
+    assert result.success is True
+    # Should have called uv sync (via Popen), not pip
+    assert any("uv" in str(cmd) and "sync" in str(cmd) for _, cmd in calls)
+
+
+def test_heal_falls_back_to_pip_when_lockfile_missing(tmp_path, monkeypatch):
+    """Lockfile parity backward compat: heal() uses pip if lockfile absent (#1313)."""
+    # Create env without lockfile
+    manifest = tmp_path / "requirements.txt"
+    manifest.write_text("modA>=1,<2\nmodB>=1,<2\n", encoding="utf-8")
+    env = env_sync.ManagedEnv(
+        name="test-env",
+        venv_python=tmp_path / "venv-python",
+        manifest=manifest,
+        stamp_path=tmp_path / ".deps-stamp",
+        lockfile=None,
+        probe_modules=("modA", "modB"),
+    )
+
+    calls = []
+
+    def fake_popen(cmd, *args, **kwargs):
+        calls.append(("popen", cmd))
+        return FakePopen(returncode=0)
+
+    monkeypatch.setattr(env_sync.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+    monkeypatch.setattr(env_sync, "_LOG_DIR", tmp_path / "logs")
+
+    result = env_sync.heal(env)
+
+    assert result.success is True
+    # Should have called pip install (via Popen), not uv
+    assert any("pip" in str(cmd) and "install" in str(cmd) for _, cmd in calls)
