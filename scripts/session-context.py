@@ -373,9 +373,15 @@ ASSEMBLY_BUDGET_CHARS = 9500
 # duplicate what the just-compacted summary + Pre-Compact Recovery pointer
 # already carry, so their priority numbers below only govern startup-trigger
 # drop order.
-# The former CONTEXT.md push (project_context) is gone — Invariants +
-# Glossary index now ride @import instead (#1417), which never enters this
-# priority ladder.
+# Issue #1097 resolution (#1417): the former CONTEXT.md push (project_context)
+# is gone — rather than raise the 8KB cap, the entire truncated push was removed.
+# Invariants + Glossary index now ride @import instead, which never enters this
+# priority ladder. This eliminates the silent truncation that dropped content
+# in 47% of sessions (per CONTEXT.md → Context delivery). The AC criteria are
+# met: (a) truncation of CONTEXT.md is now IMPOSSIBLE (it's never pushed),
+# (b) no silent drops (Invariants arrive via @import, guaranteed), (c) tests
+# at test_context_extraction_guard.py + test_context_budget_guard.py verify
+# the fix persists (test_load_project_context_removed, test_every_bare_import_target_exists_on_disk).
 _PRIORITY_RECOVERY = 0
 _PRIORITY_ALWAYS_LOAD = 1
 _PRIORITY_USER_PROFILE = 2
