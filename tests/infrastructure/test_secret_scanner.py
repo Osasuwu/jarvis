@@ -173,6 +173,23 @@ EOF
 )" """
     assert scan_secrets(cmd)  # scan_secrets checks full text
 
+def test_heredoc_followed_by_more_commands_is_not_blocked():
+    """#1454: a bare (non-subshell) heredoc followed by more commands must
+    strip cleanly — only the subshell-close (`)`) and end-of-string cases
+    were handled before the fix, so anything with trailing commands after
+    the heredoc leaked its body straight into BASH_DANGER_PATTERNS."""
+    cmd = "cat > /tmp/body.md <<'EOF'\nThis PR touches .env handling, see docs.\nEOF\necho done"
+    assert not scan_bash_dangers(cmd)
+
+def test_heredoc_followed_by_more_commands_unquoted_delim():
+    cmd = "cat > /tmp/body.md <<EOF\ncat .env is mentioned here only as prose\nEOF\necho done"
+    assert not scan_bash_dangers(cmd)
+
+def test_heredoc_followed_by_real_read_is_still_blocked():
+    """The heredoc body is harmless, but a real read after it must still block."""
+    cmd = "cat > /tmp/body.md <<'EOF'\njust docs, no secrets\nEOF\ncat .env"
+    assert scan_bash_dangers(cmd)
+
 
 # ── Bash: real-world commands that must NOT be blocked ───────────────────
 
