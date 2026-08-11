@@ -106,7 +106,7 @@ jobs:
       # asserts that github.actor is absent from the job `if:` (#944 regression pin).
       - name: Skip auto-rebase push
         id: autobase
-        if: github.event_name == 'pull_request' && github.actor == 'osasuwu-ci[bot]'
+        if: github.event_name == 'pull_request' && github.actor == 'osasuwu-ci[bot]' && github.run_attempt == 1
         run: |
           echo "skip=true" >> "$GITHUB_OUTPUT"
           echo "::notice::Push by osasuwu-ci[bot] is an auto-rebase only (no new code); skipping code review."
@@ -123,8 +123,12 @@ jobs:
           # ("Workflow initiated by non-human actor") when the triggering actor
           # is a Bot. Two LEGITIMATE bot triggers exist in this pipeline and
           # both jammed the `review` check across every in-flight PR:
-          #   - code-review-retry.yml re-dispatches via workflow_dispatch
-          #     (actor: github-actions[bot]) on a failed run.
+          #   - code-review-retry.yml reruns the failed run in place (#1325:
+          #     `gh run rerun <id> --failed`, not workflow_dispatch); actor is
+          #     whatever originally triggered that run — including
+          #     osasuwu-ci[bot] on a retried autobase push, which (#1523) can
+          #     now reach this step on attempt >= 2 once the autobase skip's
+          #     own run_attempt == 1 gate disarms.
           #   - merge-train.yml's update-branch fires a `synchronize` whose
           #     actor is the merge-train GitHub App token (a [bot] login).
           # "*" is safe here despite the action's public-repo warning: the
@@ -526,9 +530,10 @@ jobs:
             #      push passed this gate while the real review was still running
             #      and auto-merge shipped the PR; it happened twice in thirty
             #      minutes (#1429, #1435), both merged unreviewed. FAIL CLOSED —
-            #      code-review-retry re-dispatches a failed run as a
-            #      workflow_dispatch, which bypasses the autobase skip and
-            #      performs a genuine review, so this self-heals.
+            #      code-review-retry reruns the failed run in place (#1325); the
+            #      autobase step's own github.run_attempt == 1 gate (#1523)
+            #      disarms the skip on that rerun and performs a genuine
+            #      review, so this self-heals.
             #   5. Never reviewed, silently. The PR carries a substantive diff,
             #      no verdict comment exists, nothing failed and nothing is in
             #      flight to explain it. A completed review always posts a

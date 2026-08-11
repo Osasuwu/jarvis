@@ -12,6 +12,15 @@ collide with the stable-PR-author contract for dependabot[bot].
 
 Predicates mirrored here:
   autobase_skip  = event == pull_request AND actor == 'osasuwu-ci[bot]'
+                   AND run_attempt == 1  (#1523: the skip only arms on the
+                   first attempt of a bot push. `code-review-retry.yml`'s
+                   in-place rerun re-executes the whole `review` job, but the
+                   autobase step's own `if:` re-evaluated to skip every time
+                   because `github.actor` stays the bot on every re-run —
+                   burning all retries on a guaranteed-identical LINEAGE_FAILED
+                   verdict. Gating on run_attempt == 1 disarms the skip on any
+                   rerun — auto-retry attempt 2+, or a manual
+                   `gh run rerun --failed` — so it executes a genuine review.)
   review_runs    = NOT autobase_skip AND (workflow_dispatch OR has_code)
   verdict_runs   = pull_request OR workflow_dispatch  (#1134: the verdict step
                    now RUNS on the autobase push too — it re-enforces the last
@@ -32,8 +41,8 @@ AUTOBASE_BOT = "osasuwu-ci[bot]"
 AUTOBASE_STEP_ID = "autobase"
 
 
-def _is_autobase_push(*, event_name: str, actor: str) -> bool:
-    return event_name == "pull_request" and actor == AUTOBASE_BOT
+def _is_autobase_push(*, event_name: str, actor: str, run_attempt: int = 1) -> bool:
+    return event_name == "pull_request" and actor == AUTOBASE_BOT and run_attempt == 1
 
 
 def _review_should_run(
@@ -41,8 +50,9 @@ def _review_should_run(
     event_name: str,
     actor: str,
     has_code: bool,
+    run_attempt: int = 1,
 ) -> bool:
-    if _is_autobase_push(event_name=event_name, actor=actor):
+    if _is_autobase_push(event_name=event_name, actor=actor, run_attempt=run_attempt):
         return False
     return event_name == "workflow_dispatch" or has_code
 
@@ -98,6 +108,24 @@ def test_jarvis_agent_push_runs_review():
     assert _review_should_run(event_name="pull_request", actor="Osasuwu", has_code=True)
 
 
+def test_autobase_bot_first_attempt_skips_review():
+    # Explicit run_attempt=1 form of test_autobase_bot_synchronize_skips_review.
+    assert not _review_should_run(
+        event_name="pull_request", actor=AUTOBASE_BOT, has_code=True, run_attempt=1
+    )
+
+
+def test_autobase_bot_rerun_disarms_skip_and_runs_review():
+    # #1523: code-review-retry.yml reruns the whole `review` job in place, but
+    # `github.actor` stays the bot across re-runs — without the run_attempt
+    # gate the skip re-arms every retry, burning all attempts on an identical
+    # LINEAGE_FAILED verdict. Gating on run_attempt == 1 means attempt 2+
+    # (auto-retry or a manual `gh run rerun --failed`) executes a real review.
+    assert _review_should_run(
+        event_name="pull_request", actor=AUTOBASE_BOT, has_code=True, run_attempt=2
+    )
+
+
 # --- Config dimension: pin the YAML structure ---
 
 
@@ -140,6 +168,21 @@ def test_autobase_step_condition_is_pull_request_scoped():
     assert "pull_request" in condition, (
         "autobase step must only fire on pull_request events "
         "(workflow_dispatch retries must not be blocked)"
+    )
+
+
+def test_autobase_step_condition_gates_on_first_attempt():
+    # #1523: without this, code-review-retry.yml's in-place rerun of the
+    # `review` job re-evaluates this step's `if:` identically on every retry
+    # (github.actor stays the bot across re-runs) — the skip re-arms and burns
+    # all retries on a guaranteed-identical LINEAGE_FAILED verdict.
+    steps = _load_steps()
+    step = _step_by_id(steps, AUTOBASE_STEP_ID)
+    condition = str(step.get("if", ""))
+    assert "github.run_attempt == 1" in condition, (
+        f"autobase step must gate on github.run_attempt == 1 so any rerun "
+        f"(auto-retry or manual) disarms the skip and runs a real review; "
+        f"got: {condition!r}"
     )
 
 
