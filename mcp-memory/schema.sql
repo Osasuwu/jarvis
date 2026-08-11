@@ -3577,3 +3577,26 @@ begin
   returning e.* into result;
   return result;
 end; $$;
+
+-- ===========================================================================
+-- driver_heartbeat: cross-device liveness signal for wake_driver (#1085).
+-- Applied to remote as migration 20260812120000_create_driver_heartbeat.sql;
+-- documented here per #326 (schema.sql is aspirational; the migration executes).
+-- The WRITE (wake_driver stamping its own tick) ships in Slice 3 (S3-1); the
+-- table ships in Slice 2 because /dispatch's post-enqueue READ (S2-6) needs
+-- real storage to query against. No row (pre-Slice-3, or never ticked) and a
+-- stale last_tick are both legitimately "stale" to any reader.
+-- ceiling: single-row usage (driver_name='wake_driver') — see migration.
+-- ===========================================================================
+create table if not exists driver_heartbeat (
+  driver_name text primary key,
+  last_tick   timestamptz not null
+);
+
+alter table driver_heartbeat enable row level security;
+drop policy if exists "Allow all for authenticated" on driver_heartbeat;
+drop policy if exists "Allow all for anon" on driver_heartbeat;
+create policy "Allow all for authenticated" on driver_heartbeat
+  for all using (true) with check (true);
+create policy "Allow all for anon" on driver_heartbeat
+  for all to anon using (true) with check (true);

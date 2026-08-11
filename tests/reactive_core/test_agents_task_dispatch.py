@@ -971,6 +971,56 @@ class TestPollCompletions:
         assert procs == {}  # both dropped — 'bad' falls to the reaper backstop
 
 
+class TestPollCompletionsOutcomeRecord:
+    """PR #1539 review finding 2: ``/task-implement`` runs headless with no
+    MCP tools, so it can never call ``outcome_record`` itself — without this
+    wiring a subagent-dispatched task never gets a ``task_outcomes`` row and
+    ``/verify`` Step 2b's divergence audit never sees it.
+    """
+
+    def test_done_task_invokes_outcome_record(self) -> None:
+        q = FakeTaskQueue()
+        procs = {
+            "t0": TrackedProc(
+                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
+            )
+        }
+        recorded: list[dict[str, Any]] = []
+        poll_completions(q, procs, outcome_record=recorded.append)
+        assert len(recorded) == 1
+        assert recorded[0]["task_id"] == "t0"
+        assert recorded[0]["goal"] == "do t0"
+        assert recorded[0]["issue_number"] == 42
+
+    def test_failed_task_does_not_invoke_outcome_record(self) -> None:
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_FakeProc(rc=1), started_at=0.0, goal="do t0")}
+        recorded: list[dict[str, Any]] = []
+        poll_completions(q, procs, outcome_record=recorded.append)
+        assert recorded == []
+
+    def test_outcome_record_failure_does_not_block_transition(self) -> None:
+        # Mirrors event_emit's decoupling (MAJOR, PR #1011): a raise inside
+        # outcome_record must never wedge the row out of the ``done`` transition.
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_FakeProc(rc=0), started_at=0.0, goal="do t0")}
+
+        def _boom(_payload: dict[str, Any]) -> None:
+            raise RuntimeError("supabase transient error")
+
+        res = poll_completions(q, procs, outcome_record=_boom)
+        assert res.done == 1
+        assert ("t0", "done", None) in q.transitions
+
+    def test_no_outcome_record_wired_is_a_noop(self) -> None:
+        # Default (no callback injected) must behave exactly like pre-#1539
+        # behavior — no AttributeError, no transition change.
+        q = FakeTaskQueue()
+        procs = {"t0": TrackedProc(_FakeProc(rc=0), started_at=0.0, goal="do t0")}
+        res = poll_completions(q, procs)
+        assert res.done == 1
+
+
 class TestPollCompletionsAdoptedProcess:
     """#952 regression — adopted psutil.Process handles (no poll()) must flow
     through poll_completions, not AttributeError-wedge the row in ``running``.
