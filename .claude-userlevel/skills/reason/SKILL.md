@@ -1,6 +1,6 @@
 ---
 name: reason
-description: Two-sided fact-grounded debate for a vague intuition ("something could be better, not sure how"). Both sides argue from evidence and can update; if neither has facts, a neutral sub-agent researches without bias. Triggers: "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт", /reason. NOT for an existing plan to stress-test (→ /grill), literature surveys (→ /research), or spec-driven build exploration (→ Superpowers /brainstorm). Subsumes /research for in-debate grounding — don't invoke /research mid-debate, use the bundled neutral-researcher instead.
+description: Two-sided fact-grounded debate for a vague intuition ("something could be better, not sure how"). Both sides argue from evidence and update; if neither has facts, a neutral sub-agent researches without bias. Triggers: "у меня ощущение что", "может быть лучше но не знаю как", "обсудим концепт", /reason. NOT for stress-testing an existing plan (→ /grill), literature surveys (→ /research), or spec-driven build exploration. Subsumes /research for in-debate grounding.
 ---
 
 <what-to-do>
