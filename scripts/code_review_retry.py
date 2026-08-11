@@ -14,10 +14,25 @@ conclusion=failure. Re-dispatches the same PR's review, with two guards:
 
 Also logs a `failure_signature` classification (`classify_failure_signature`,
 #1325 Option C') on every code path — quota-reset / permission-denied /
-no-log-available / unknown. The mechanism has a historically 0% observed
-success rate with no record of *why*; this is diagnostic only (does not
-affect the dispatch decision) and exists to give a follow-up investigation
-something to grep for instead of raw Action logs.
+blocking-finding / verdict-inflight-race / no-log-available / unknown. Two of
+these now feed the dispatch decision itself (#1514):
+
+  3. **Blocking-finding skip** — the "Verify review verdict" step failed
+     because a genuine blocking finding was posted for this exact commit
+     (structured findings-block or prose severity-heading path). No rerun
+     changes that outcome, so `decide()` skips unconditionally instead of
+     burning the retry cap and posting a misleading "auto-retry exhausted"
+     comment over a gate that did its job correctly.
+
+  4. **In-flight-review wait** — the step failed closed on LINEAGE_INFLIGHT
+     (#1434): the real review for this SHA is still running in a separate
+     workflow run (a race with, e.g., a merge-train autobase push). Rerunning
+     immediately just re-hits the same race, so `main()` polls the in-flight
+     run id(s) (bounded by `VERDICT_INFLIGHT_MAX_WAIT_SEC`) before rerunning,
+     instead of exhausting all attempts minutes before the real review posts.
+
+Other signatures remain diagnostic only and exist to give a follow-up
+investigation something to grep for instead of raw Action logs.
 
 Env contract:
   GH_TOKEN       — gh CLI auth (provided by Actions; a GitHub App installation
@@ -68,6 +83,35 @@ _PERMISSION_DENIED_RE = re.compile(
     re.IGNORECASE,
 )
 
+# #1514: two more failure classes the retrier can now tell apart instead of
+# treating every "Verify review verdict" failure identically.
+#
+# Class A — a genuine blocking verdict was already posted for this exact
+# commit (structured findings-block path or the prose severity-heading path,
+# both in code-review.yml's "Verify review verdict" step). Rerunning hits the
+# same unchanged commit and the same finding every time — no retry could ever
+# succeed, so retrying is pure noise on top of a gate that did its job.
+_BLOCKING_FINDING_RE = re.compile(
+    r"blocking finding\(s\)|blocking severity sections",
+    re.IGNORECASE,
+)
+
+# Class B — the verdict-guard fail-closed on LINEAGE_INFLIGHT (#1434): a
+# review over this PR's own commits is still running in a SEPARATE workflow
+# run. Rerunning immediately just re-hits the same race; waiting for that run
+# to finish first lets the rerun pick up its freshly posted comment instead.
+_VERDICT_INFLIGHT_RE = re.compile(
+    r"code-review run\(s\) over this PR's commits are still running",
+    re.IGNORECASE,
+)
+_INFLIGHT_RUN_IDS_RE = re.compile(
+    r"still running \(run id\(s\): ([^)]*)\)",
+    re.IGNORECASE,
+)
+
+VERDICT_INFLIGHT_POLL_INTERVAL_SEC = 20
+VERDICT_INFLIGHT_MAX_WAIT_SEC = 15 * 60  # comfortably above the review's ~10min runtime
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -82,6 +126,7 @@ def decide(
     head_sha: str,
     run_attempt: int,
     max_attempts: int = MAX_ATTEMPTS,
+    failure_signature: str | None = None,
 ) -> Decision:
     pr = next((p for p in open_prs if p.get("headRefName") == head_branch), None)
     if pr is None:
@@ -90,6 +135,17 @@ def decide(
         return Decision(
             "skip",
             f"PR head moved past {head_sha[:8]} (now {str(pr.get('headRefOid'))[:8]}) — stale retry",
+            pr_number=pr["number"],
+        )
+    # #1514 class A: a real blocking verdict already exists for this exact
+    # commit — no rerun changes that outcome, so skip unconditionally rather
+    # than burning through the attempt cap. This is "skip", not "exhausted":
+    # the mechanism didn't fail, the review worked and correctly blocked, so
+    # no misleading "auto-retry exhausted" warning should post either.
+    if failure_signature == "blocking-finding":
+        return Decision(
+            "skip",
+            "blocking finding already posted for this commit — retry cannot change the verdict",
             pr_number=pr["number"],
         )
     if run_attempt >= max_attempts:
@@ -144,7 +200,25 @@ def classify_failure_signature(log_text: str) -> str:
         return "quota-reset"
     if _PERMISSION_DENIED_RE.search(log_text):
         return "permission-denied"
+    if _BLOCKING_FINDING_RE.search(log_text):
+        return "blocking-finding"
+    if _VERDICT_INFLIGHT_RE.search(log_text):
+        return "verdict-inflight-race"
     return "unknown"
+
+
+def extract_inflight_run_ids(log_text: str) -> list[str]:
+    """Pull the in-flight review run id(s) out of a LINEAGE_INFLIGHT log line.
+
+    Matches the exact message code-review.yml's "Verify review verdict" step
+    emits (#1434): "...still running (run id(s): 123, 456)." Returns [] if the
+    signature line isn't present or carries no ids — callers treat that as
+    "nothing to wait on" and fall through to the normal dispatch path.
+    """
+    m = _INFLIGHT_RUN_IDS_RE.search(log_text)
+    if not m:
+        return []
+    return [run_id.strip() for run_id in m.group(1).split(",") if run_id.strip()]
 
 
 def _gh(*args: str) -> str:
@@ -160,6 +234,38 @@ def _fetch_failed_log(repo: str, run_id: str) -> str:
         )
     except subprocess.CalledProcessError:
         return ""
+
+
+def _wait_for_inflight_runs(
+    repo: str,
+    run_ids: list[str],
+    max_wait_sec: int,
+    poll_interval_sec: int = VERDICT_INFLIGHT_POLL_INTERVAL_SEC,
+) -> float:
+    """Poll the given run ids until each reaches status=completed or the
+    bound elapses (#1514 class B). Returns elapsed wait in seconds.
+
+    Rerunning the failed verdict-guard step while the REAL review run is
+    still executing elsewhere just re-hits the same LINEAGE_INFLIGHT race
+    (#1434) — PR #1476 exhausted all 4 attempts in ~4 minutes, a minute
+    before the genuine review posted its verdict. Waiting here first lets
+    the rerun below land after that run's comment exists.
+    """
+    start = time.monotonic()
+    pending = set(run_ids)
+    while pending and (time.monotonic() - start) < max_wait_sec:
+        for run_id in list(pending):
+            try:
+                state = json.loads(_gh("run", "view", run_id, "--repo", repo, "--json", "status"))
+            except subprocess.CalledProcessError:
+                # Run vanished/inaccessible — nothing more to wait on for it.
+                pending.discard(run_id)
+                continue
+            if state.get("status") == "completed":
+                pending.discard(run_id)
+        if pending:
+            time.sleep(poll_interval_sec)
+    return time.monotonic() - start
 
 
 def _dispatch(repo: str, run_id: str) -> None:
@@ -235,18 +341,21 @@ def main() -> int:
         )
     )
 
-    decision = decide(open_prs, head_branch, head_sha, run_attempt)
+    # #1325 Option C' / #1514: classify the failed run's log BEFORE deciding —
+    # decide() now needs failure_signature to fold Class A (blocking-finding)
+    # into a "skip" outcome rather than burning the retry cap on a verdict
+    # that can never change.
+    log_text = _fetch_failed_log(repo, failed_run_id) if failed_run_id else ""
+    failure_signature = classify_failure_signature(log_text)
+    print(f"failure_signature={failure_signature}")
+
+    decision = decide(
+        open_prs, head_branch, head_sha, run_attempt, failure_signature=failure_signature
+    )
     print(
         f"failed_run={failed_run_id} sha={head_sha[:8]} branch={head_branch} attempt={run_attempt}"
     )
     print(f"decision={decision.kind} reason={decision.reason} pr={decision.pr_number}")
-
-    # #1325 Option C': classify the failed run's log unconditionally, not only
-    # on the dispatch path — skip/exhausted outcomes are data too. The retry
-    # mechanism has a historically 0% observed success rate with no record of
-    # *why*; this is the diagnostic trail that follow-up issue is meant to read.
-    log_text = _fetch_failed_log(repo, failed_run_id) if failed_run_id else ""
-    print(f"failure_signature={classify_failure_signature(log_text)}")
 
     if decision.kind == "skip":
         return 0
@@ -273,6 +382,18 @@ def main() -> int:
                 f"({delay / 60:.1f}min) before retry"
             )
             time.sleep(delay)
+
+    # #1514 class B: the verdict-guard failed closed on LINEAGE_INFLIGHT (#1434)
+    # because the real review for this SHA is still running in a separate
+    # workflow run — rerunning immediately just re-hits the same race. Wait for
+    # that run to finish (bounded) before proceeding, so the rerun below has a
+    # chance to land after its verdict comment is posted.
+    if failure_signature == "verdict-inflight-race":
+        inflight_ids = extract_inflight_run_ids(log_text)
+        if inflight_ids:
+            print(f"waiting for in-flight review run(s) {inflight_ids} before rerun")
+            waited = _wait_for_inflight_runs(repo, inflight_ids, VERDICT_INFLIGHT_MAX_WAIT_SEC)
+            print(f"waited {waited:.0f}s for in-flight run(s)")
 
     # Finding #2: double-dispatch guard runs before every _dispatch(), not only
     # after quota-sleep. GitHub sometimes delivers duplicate workflow_run

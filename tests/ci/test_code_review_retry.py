@@ -16,8 +16,10 @@ import yaml
 
 from scripts.code_review_retry import (
     MAX_ATTEMPTS,
+    VERDICT_INFLIGHT_MAX_WAIT_SEC,
     classify_failure_signature,
     decide,
+    extract_inflight_run_ids,
     parse_reset_time_utc,
 )
 
@@ -87,6 +89,39 @@ class TestDecide:
 
     def test_matching_head_sha_dispatches(self):
         d = decide([PR], "feat/foo", "abc123", run_attempt=1)
+        assert d.kind == "dispatch"
+
+    # -- #1514 class A: blocking-finding skip --------------------------------
+    #
+    # A genuine blocking verdict already exists for this commit — no rerun
+    # changes that outcome, so decide() must skip unconditionally rather than
+    # burning the retry cap and letting main() post a misleading "auto-retry
+    # exhausted" comment over a gate that did its job correctly.
+
+    def test_blocking_finding_skips_on_first_attempt(self):
+        d = decide([PR], "feat/foo", "abc123", run_attempt=1, failure_signature="blocking-finding")
+        assert d.kind == "skip"
+        assert d.pr_number == 123
+        assert "blocking" in d.reason.lower()
+
+    def test_blocking_finding_skips_below_cap(self):
+        d = decide(
+            [PR],
+            "feat/foo",
+            "abc123",
+            run_attempt=MAX_ATTEMPTS - 1,
+            failure_signature="blocking-finding",
+        )
+        assert d.kind == "skip", "blocking-finding must skip regardless of remaining attempt budget"
+
+    def test_non_blocking_signature_still_dispatches(self):
+        d = decide(
+            [PR], "feat/foo", "abc123", run_attempt=1, failure_signature="verdict-inflight-race"
+        )
+        assert d.kind == "dispatch"
+
+    def test_no_signature_still_dispatches(self):
+        d = decide([PR], "feat/foo", "abc123", run_attempt=1, failure_signature=None)
         assert d.kind == "dispatch"
 
 
@@ -264,6 +299,109 @@ class TestClassifyFailureSignature:
             "more noise"
         )
         assert classify_failure_signature(log) == "quota-reset"
+
+    def test_structured_blocking_finding_signature_classified(self):
+        # code-review.yml's "Verify review verdict" step, structured
+        # findings-block path (#1456).
+        log = "::error::Code review reported 2 blocking finding(s) (MAJOR, MEDIUM) in its structured findings block; blocking auto-merge until addressed."
+        assert classify_failure_signature(log) == "blocking-finding"
+
+    def test_prose_blocking_severity_signature_classified(self):
+        # Same step, prose severity-heading path (#976/#1385).
+        log = "::error::Code review posted blocking severity sections (CRITICAL|MAJOR|BLOCKING|MEDIUM); blocking auto-merge until addressed."
+        assert classify_failure_signature(log) == "blocking-finding"
+
+    def test_verdict_inflight_signature_classified(self):
+        # #1434 LINEAGE_INFLIGHT fail-closed message, verbatim from code-review.yml.
+        log = (
+            "::error::No /code-review verdict comment exists yet and 1 code-review "
+            "run(s) over this PR's commits are still running (run id(s): 31225923685). "
+            "Nothing has verified this head, so there is no prior review for this push "
+            "to carry forward. Failing closed (#1434); the gate re-evaluates once that "
+            "run posts its verdict."
+        )
+        assert classify_failure_signature(log) == "verdict-inflight-race"
+
+
+# -- In-flight run id extraction (#1514 class B) -----------------------------
+
+
+class TestExtractInflightRunIds:
+    def test_extracts_single_run_id(self):
+        log = "still running (run id(s): 31225923685). Nothing has verified this head"
+        assert extract_inflight_run_ids(log) == ["31225923685"]
+
+    def test_extracts_multiple_comma_separated_ids(self):
+        log = "still running (run id(s): 111, 222, 333)."
+        assert extract_inflight_run_ids(log) == ["111", "222", "333"]
+
+    def test_returns_empty_list_when_signature_absent(self):
+        assert extract_inflight_run_ids("some unrelated log text") == []
+
+    def test_returns_empty_list_on_empty_log(self):
+        assert extract_inflight_run_ids("") == []
+
+
+# -- Waiting for in-flight review runs (#1514 class B) -----------------------
+
+
+class TestWaitForInflightRuns:
+    def test_returns_once_all_runs_completed(self, monkeypatch):
+        from scripts.code_review_retry import _wait_for_inflight_runs
+
+        calls = []
+
+        def fake_check_output(argv, **kwargs):
+            calls.append(argv)
+            return '{"status": "completed"}'
+
+        monkeypatch.setattr("scripts.code_review_retry.subprocess.check_output", fake_check_output)
+        monkeypatch.setattr("scripts.code_review_retry.time.sleep", lambda _: None)
+
+        elapsed = _wait_for_inflight_runs("owner/repo", ["999"], max_wait_sec=60)
+
+        assert elapsed >= 0
+        assert any("999" in argv for argv in calls)
+
+    def test_gives_up_after_max_wait(self, monkeypatch):
+        from scripts.code_review_retry import _wait_for_inflight_runs
+
+        monotonic_values = iter([0, 5, 10, 15, 999])
+        monkeypatch.setattr(
+            "scripts.code_review_retry.time.monotonic", lambda: next(monotonic_values)
+        )
+        monkeypatch.setattr("scripts.code_review_retry.time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            "scripts.code_review_retry.subprocess.check_output",
+            lambda argv, **kwargs: '{"status": "in_progress"}',
+        )
+
+        elapsed = _wait_for_inflight_runs("owner/repo", ["999"], max_wait_sec=10)
+
+        assert elapsed >= 10
+
+    def test_missing_run_is_treated_as_resolved(self, monkeypatch):
+        import subprocess
+
+        from scripts.code_review_retry import _wait_for_inflight_runs
+
+        def raise_called_process_error(argv, **kwargs):
+            raise subprocess.CalledProcessError(1, argv)
+
+        monkeypatch.setattr(
+            "scripts.code_review_retry.subprocess.check_output", raise_called_process_error
+        )
+        monkeypatch.setattr("scripts.code_review_retry.time.sleep", lambda _: None)
+
+        elapsed = _wait_for_inflight_runs("owner/repo", ["999"], max_wait_sec=60)
+
+        assert elapsed >= 0
+
+    def test_max_wait_constant_exceeds_typical_review_runtime(self):
+        # Issue evidence: PR #1476's real review took ~10min; the retrier
+        # exhausted all 4 attempts in ~4min. The wait bound must comfortably
+        # clear that runtime or the fix doesn't actually close the race.
+        assert VERDICT_INFLIGHT_MAX_WAIT_SEC >= 15 * 60
 
 
 # -- Workflow wiring ---------------------------------------------------------
