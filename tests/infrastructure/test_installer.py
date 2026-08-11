@@ -806,7 +806,7 @@ def test_real_manifest_m4_all_groups_enabled() -> None:
     assert by_id["skills"]["directories"][0]["source"] == ".claude-userlevel/skills"
     include = by_id["skills"]["directories"][0]["include"]
     assert "sprint-report" not in include
-    assert "implement" in include and "delegate" in include
+    assert "implement" in include and "dispatch" in include
 
     assert by_id["hooks_settings"]["enabled"] is True
     settings_entry = by_id["hooks_settings"]["files"][0]
