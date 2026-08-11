@@ -14,8 +14,9 @@ conclusion=failure. Re-dispatches the same PR's review, with two guards:
 
 Also logs a `failure_signature` classification (`classify_failure_signature`,
 #1325 Option C') on every code path — quota-reset / permission-denied /
-blocking-finding / verdict-inflight-race / no-log-available / unknown. Two of
-these now feed the dispatch decision itself (#1514):
+blocking-finding / verdict-inflight-race / plugin-install-failure /
+review-never-posted / no-log-available / unknown (last two added #1331).
+Two of these now feed the dispatch decision itself (#1514):
 
   3. **Blocking-finding skip** — the "Verify review verdict" step failed
      because a genuine blocking finding was posted for this exact commit
@@ -107,6 +108,28 @@ _VERDICT_INFLIGHT_RE = re.compile(
 _INFLIGHT_RUN_IDS_RE = re.compile(
     r"still running \(run id\(s\): ([^)]*)\)",
     re.IGNORECASE,
+)
+
+# #1331: production validation of the retry mechanism (PRs #1518/#1519/#1522,
+# 2026-08-11) surfaced two more shapes that were falling into "unknown" —
+# both stem from the same incident (the code-review Action's plugin
+# bootstrap step failed because its marketplace pin resolved to a commit SHA
+# no longer present in the jarvis-fork-plugins repo), but a rerun of the SAME
+# failed run (#1325 Option A) never cleared it — all 3 PRs hit
+# decision=exhausted before a fresh, out-of-band commit finally forced a new
+# `pull_request` run that succeeded. Diagnostic only, same as the other
+# classes below the dispatch-affecting two above.
+_PLUGIN_INSTALL_RE = re.compile(
+    r"Failed to install plugin ['\"]code-review|not found in upstream origin",
+    re.IGNORECASE,
+)
+
+# The verdict-guard's own fail-closed message (#1228) when every review
+# attempt over this PR's commits so far died before posting a verdict — the
+# cascade symptom of whatever made the upstream code-review run(s) fail
+# (often _PLUGIN_INSTALL_RE above, but not necessarily).
+_REVIEW_NEVER_POSTED_RE = re.compile(
+    r"[Ee]very review attempt died before it could post",
 )
 
 VERDICT_INFLIGHT_POLL_INTERVAL_SEC = 20
@@ -204,6 +227,10 @@ def classify_failure_signature(log_text: str) -> str:
         return "blocking-finding"
     if _VERDICT_INFLIGHT_RE.search(log_text):
         return "verdict-inflight-race"
+    if _PLUGIN_INSTALL_RE.search(log_text):
+        return "plugin-install-failure"
+    if _REVIEW_NEVER_POSTED_RE.search(log_text):
+        return "review-never-posted"
     return "unknown"
 
 
