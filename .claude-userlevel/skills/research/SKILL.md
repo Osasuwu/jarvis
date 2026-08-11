@@ -209,8 +209,11 @@ One sentence: what makes this confident or uncertain.
 Save to Supabase if finding is significant:
 
 ```
-memory_store(type="reference", name="research_{slug}", description="...", content="...", source_provenance="skill:research")
+memory_store(type="reference", name="research_{slug}", description="...", content="...", 
+             source_provenance="skill:research", tags=["topic:<topic-slug>", "research-artifact"])
 ```
+
+The `tags` array must include a `topic:<slug>` entry (kebab-case) that identifies the research topic for gate matching. Examples: `topic:agent-loop-architecture`, `topic:memory-subsystem-scaling`, `topic:ci-gate-prevention`. This tag ties the artifact to the decision topic it was researched for — the research-pass gate will only accept research_artifacts UUIDs whose `tags` contain a matching `topic:<slug>` entry (legacy pre-fix artifacts without the tag are rejected on topic mismatch).
 
 If finding is actionable → create GitHub issue in appropriate repo:
 
