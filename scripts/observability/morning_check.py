@@ -32,8 +32,17 @@ _ALARM_CATEGORIES = frozenset(
         "dispatcher_gap",
         "no_audit_rows",
         "wake_driver_silence",
+        "events_cutover_leak",
     }
 )
+
+# #1493 AC5 migration cutover: memory_recall/fok_run rows are backfilled into
+# events_canonical and purged from `events` as of this timestamp. Any row of
+# these types landing in `events` at/after this point means a producer is
+# still writing to the retired queue instead of events_canonical (AC7). This
+# is an interim tripwire per decision 56b57d6c -- retired once
+# _TELEMETRY_EVENT_TYPES drops these entries in #1524.
+_EVENTS_CUTOVER_ISO = "2026-08-11T14:00:00+00:00"
 
 # Repo-root-anchored, mirroring agents/wake_driver.py's _LOG_DIR pattern --
 # this file sits two directories under repo root (scripts/observability/)
@@ -84,6 +93,32 @@ def _check_wake_driver_silence(gap_minutes: int) -> tuple[str, str] | None:
             "wake_driver:stale",
             f"wake_driver: log silent for {age_min:.0f}min "
             f"(threshold {gap_minutes}min) -- daemon may be dead",
+        )
+    return None
+
+
+def _check_events_cutover_leak(client: Any) -> tuple[str, str] | None:
+    """Return (details_bucket, alarm_message) if memory_recall/fok_run rows have
+    landed in `events` at/after the #1493 AC5 cutover.
+
+    Runs against the live client (not audit_log) so it catches a producer
+    regression even on a day with zero audit_log activity -- same rationale
+    as the wake_driver check above.
+    """
+    resp = (
+        client.table("events")
+        .select("event_type")
+        .in_("event_type", ["memory_recall", "fok_run"])
+        .gte("created_at", _EVENTS_CUTOVER_ISO)
+        .execute()
+    )
+    rows = resp.data or []
+    if rows:
+        return (
+            "events_cutover:leak",
+            f"events: {len(rows)} memory_recall/fok_run row(s) landed after the #1493 "
+            f"cutover ({_EVENTS_CUTOVER_ISO}) -- a producer is still writing to the "
+            "retired queue instead of events_canonical",
         )
     return None
 
@@ -184,6 +219,17 @@ def main(argv: list[str] | None = None) -> int:
         alarms.append(wake_driver_alarm)
         if args.enqueue_on_alarm:
             _enqueue_alarm(client, "wake_driver_silence", wake_driver_details, wake_driver_alarm)
+
+    # events cutover tripwire (#1493 AC7) -- also independent of audit_log,
+    # runs against the live client directly.
+    events_cutover_check = _check_events_cutover_leak(client)
+    if events_cutover_check:
+        events_cutover_details, events_cutover_alarm = events_cutover_check
+        alarms.append(events_cutover_alarm)
+        if args.enqueue_on_alarm:
+            _enqueue_alarm(
+                client, "events_cutover_leak", events_cutover_details, events_cutover_alarm
+            )
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=args.hours)
     cutoff_iso = cutoff.isoformat()

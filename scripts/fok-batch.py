@@ -27,6 +27,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -276,13 +277,17 @@ def format_judgment_for_display(
 def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
     """Write FOK verdict to fok_judgments (canonical only).
 
-    Legacy mirror (events.payload.fok_verdict) dropped in 5.3-δ (#445).
+    Legacy mirror (events.payload.fok_verdict) dropped in 5.3-δ (#445). Payload
+    re-read switched from `events` to `events_canonical` (#1493 AC3) — recall
+    events no longer land in the perception queue.
     """
     db_payload: dict = {}
     judged_at = datetime.now(timezone.utc).isoformat()
 
     try:
-        current_event = client.table("events").select("payload").eq("id", event_id).execute()
+        current_event = (
+            client.table("events_canonical").select("payload").eq("event_id", event_id).execute()
+        )
         if not current_event.data:
             return
         db_payload = current_event.data[0].get("payload") or {}
@@ -307,18 +312,22 @@ def write_verdict_to_event(client, event_id: str, verdict: dict) -> None:
 
 
 def write_event(client, summary: dict, project: str) -> None:
-    """Emit fok_run summary event."""
+    """Emit fok_run summary event to events_canonical (#1493 AC3).
+
+    Was a raw insert into the `events` perception queue; rerouted onto the
+    append-only events_canonical substrate alongside the memory_recall
+    producers (AC1/AC2) so fok_run stops competing with real orchestrator
+    events for claim_next's attention.
+    """
     try:
         payload = dict(summary)
         payload["project"] = project
-        client.table("events").insert(
+        client.table("events_canonical").insert(
             {
-                "event_type": "fok_run",
-                "severity": "info",
-                "repo": project,
-                "source": "fok_batch",
-                "title": f"FOK batch run: processed {summary.get('processed', 0)}",
+                "actor": "fok-batch",
+                "action": "fok_run",
                 "payload": payload,
+                "trace_id": str(uuid.uuid4()),
             }
         ).execute()
     except Exception:
@@ -328,17 +337,19 @@ def write_event(client, summary: dict, project: str) -> None:
 def fetch_events(client, limit: int) -> list[dict]:
     """Fetch memory_recall events without corresponding fok_judgments rows from the last 24h.
 
-    Applies order + limit server-side. We over-fetch by 3x because the
-    fok_judgments matching filter can only be applied client-side (LEFT JOIN style).
+    Reads from events_canonical, not the `events` perception queue (#1493
+    AC3) — memory_recall telemetry no longer lands there. Applies order +
+    limit server-side. We over-fetch by 3x because the fok_judgments matching
+    filter can only be applied client-side (LEFT JOIN style).
     """
     cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
     try:
         resp = (
-            client.table("events")
+            client.table("events_canonical")
             .select("*")
-            .eq("event_type", "memory_recall")
-            .gte("created_at", cutoff.isoformat())
-            .order("created_at", desc=False)
+            .eq("action", "memory_recall")
+            .gte("ts", cutoff.isoformat())
+            .order("ts", desc=False)
             .limit(max(limit * 3, limit))
             .execute()
         )
@@ -360,7 +371,7 @@ def fetch_events(client, limit: int) -> list[dict]:
             judgment_event_ids = set()
 
         for e in events:
-            event_id = e.get("id")
+            event_id = e.get("event_id")
             if event_id not in judgment_event_ids:
                 unfudged.append(e)
             if len(unfudged) >= limit:
@@ -436,7 +447,7 @@ def main():
     dry_run_writes = []
 
     for event in events:
-        event_id = event.get("id")
+        event_id = event.get("event_id")
         payload = event.get("payload") or {}
         query = payload.get("query", "")
         returned_ids = payload.get("returned_ids", [])

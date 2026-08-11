@@ -514,19 +514,33 @@ async def _touch_memories(client, ids: list[str]) -> None:
 
 
 async def _emit_recall_event(client, payload: dict) -> None:
-    """Fire-and-forget: emit memory_recall event for FOK batch processing (#250)."""
+    """Fire-and-forget: emit memory_recall event to events_canonical (#1493 AC1).
+
+    Was a direct write to the `events` perception queue (#250) — recall
+    events were 83% of that table's rows, forcing the reactive-core
+    orchestrator's claim_next FSM to skip past them on every poll. Rerouted
+    onto the append-only events_canonical substrate (C17, #477); `events`
+    is the orchestrator's queue now, not a telemetry sink. `emit_event` is
+    a blocking Supabase call, so it runs off the event loop via
+    asyncio.to_thread — mirrors write_scrubber._log_block_event_async's
+    corrected pattern for wrapping a sync writer inside an async fire-and-
+    forget task.
+    """
     try:
-        client.table("events").insert(
-            {
-                "event_type": "memory_recall",
-                "severity": "info",
-                "repo": "Osasuwu/jarvis",
-                "source": "mcp_memory",
-                "title": f"Memory recall: {payload.get('query', '')[:60]}",
-                "payload": payload,
-            }
-        ).execute()
-    except Exception as exc:
+        from events_canonical import emit_event
+    except Exception:  # noqa: BLE001 — substrate optional during rollout
+        emit_event = None
+    if emit_event is None:
+        return
+    try:
+        await asyncio.to_thread(
+            emit_event,
+            client,
+            actor="mcp_memory:recall",
+            action="memory_recall",
+            payload=payload,
+        )
+    except Exception as exc:  # noqa: BLE001 — defense in depth
         log_swallowed("memory._emit_recall_event", exc)
 
 
