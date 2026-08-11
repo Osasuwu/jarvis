@@ -322,6 +322,27 @@ class TestClassifyFailureSignature:
         )
         assert classify_failure_signature(log) == "verdict-inflight-race"
 
+    def test_plugin_install_failure_signature_classified(self):
+        # Observed verbatim on PR #1518 (#1331): the code-review Action's
+        # marketplace pin resolved to a SHA no longer present upstream.
+        log = (
+            "✘ Failed to install plugin \"code-review@jarvis-fork-plugins\": "
+            "Failed to clone repository for git-subdir source: "
+            "Cloning into '/home/runner/.claude/plugins/cache/temp_subdir.clone'...\n"
+            "fatal: Remote branch 0eacb0b80ec5d39ed4ef119097a98aa623b73ed7 not found in upstream origin"
+        )
+        assert classify_failure_signature(log) == "plugin-install-failure"
+
+    def test_review_never_posted_signature_classified(self):
+        # code-review.yml's #1228 fail-closed message, verbatim from PR #1518.
+        log = (
+            "::error::No /code-review verdict comment exists and 1 code-review "
+            "run(s) over this PR's commits ended in failure. Every review attempt "
+            "died before it could post — this PR has never been reviewed. "
+            "Failing closed (#1228); fix the failing run and re-review."
+        )
+        assert classify_failure_signature(log) == "review-never-posted"
+
 
 # -- In-flight run id extraction (#1514 class B) -----------------------------
 
