@@ -16,6 +16,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from lib import recall_dedup as rd
 from supabase_stubs import FakeClient, StubClient, TableStub
 
@@ -24,6 +26,21 @@ _HOOK_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "memory
 _spec = importlib.util.spec_from_file_location("memory_recall_hook", _HOOK_PATH)
 mrh = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(mrh)
+
+# `mrh` module load inserts mcp-memory/ onto sys.path (for its `recall` import),
+# which makes `events_canonical` importable here too — same module object the
+# hook's `_emit_recall_event_canonical` uses, so its module-level retry buffer
+# (mirrors tests/memory/test_emit_recall_event_canonical.py's isolation) must be
+# cleared around tests or a leftover buffered row from one test's simulated
+# failure gets drained (and inserted) at the start of the next test.
+import events_canonical as events_canonical_mod  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _isolate_events_canonical_buffer() -> None:
+    events_canonical_mod._buffer_clear_for_test()
+    yield
+    events_canonical_mod._buffer_clear_for_test()
 
 
 # ---------------------------------------------------------------------------

@@ -474,16 +474,23 @@ def format_memory(m: dict) -> str:
 def _emit_recall_event_canonical(
     client, *, prompt: str, project: str | None, hits: list, included_ids: list
 ) -> None:
-    """Raw-insert a memory_recall telemetry row into events_canonical (#1493 AC2).
+    """Emit a memory_recall telemetry row into events_canonical (#1493 AC2).
 
     Was a raw insert into the `events` perception queue (#439 D2-bis) — recall
     events were 83% of that table's rows, forcing the reactive-core
     orchestrator's claim_next FSM to skip past them on every poll. Rerouted
-    onto the append-only events_canonical substrate (C17, #477); `events` is
-    the orchestrator's queue now, not a telemetry sink. Fire-and-forget:
-    failures are swallowed here, matching the rest of this hook's fail-soft
-    style (e.g. check_known_unknown_gate, the touch_memories RPC below).
+    onto the append-only events_canonical substrate (C17, #477) via the
+    shared `emit_event` writer (mirrors `memory._emit_recall_event`'s use of
+    the same helper) — gets trace-context propagation and the degraded-
+    buffer retry for free instead of hand-rolling the insert. Fire-and-
+    forget: failures are swallowed here, matching the rest of this hook's
+    fail-soft style (e.g. check_known_unknown_gate, the touch_memories RPC
+    below); `emit_event` itself already never raises.
     """
+    try:
+        from events_canonical import emit_event
+    except Exception:  # noqa: BLE001 — substrate optional during rollout
+        return
     try:
         included_set = set(included_ids)
         included_hits = [h for h in hits if h.memory.get("id") in included_set]
@@ -500,14 +507,13 @@ def _emit_recall_event_canonical(
             "project": project,
             "source": "memory-recall-hook",
         }
-        client.table("events_canonical").insert(
-            {
-                "actor": "memory-recall-hook",
-                "action": "memory_recall",
-                "payload": event_payload,
-                "trace_id": str(uuid.uuid4()),
-            }
-        ).execute()
+        emit_event(
+            client,
+            actor="memory-recall-hook",
+            action="memory_recall",
+            payload=event_payload,
+            trace_id=str(uuid.uuid4()),
+        )
     except Exception:
         pass
 
