@@ -1,6 +1,6 @@
 ---
 name: wayfinder
-description: Chart and report the frontier across a multi-milestone slice of open work — which issues are ready to start, which are blocked, which need triage — without inventing new state machinery. Use for "what's next across M-whatever", "what's blocked on what", "chart the map", "wayfinder", or when a plan is too large or too foggy for a single /grill session and needs multi-session tracking.
+description: Chart the frontier across a multi-milestone slice of open work — which issues are ready, blocked, or need triage — without inventing new state machinery. Use for "what's next across M-whatever", "what's blocked on what", "chart the map", "wayfinder", or a plan too large/foggy for a single /grill session.
 ---
 
 # Wayfinder

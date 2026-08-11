@@ -707,6 +707,44 @@ def test_run_forwards_task_spawn_and_resolver_to_tick():
     assert resolved["n"] == 1  # injected resolver forwarded, not the default
 
 
+def test_run_forwards_task_outcome_record_to_tick():
+    # PR #1539 review finding 2 regression: run() accepting task_outcome_record
+    # is not enough on its own — tick() must also declare and forward it to
+    # poll_completions(), or the call raises TypeError at the tick() boundary
+    # the first time run() actually reaches a completed task. Drive two ticks
+    # (spawn, then close) the same way test_run_retains_the_tracking_map_
+    # across_ticks does, and assert the callback actually fires on close.
+    log: list = []
+    q = FakeEventQueue([])
+    q.wake_signals = [True, True]
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    proc = _TickProc(rc=None)  # alive during tick 1...
+    recorded: list = []
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            proc._rc = 0  # ...exits before tick 2
+        return ticks["n"] <= 2
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=tq,
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_clock=lambda: 0.0,
+        task_outcome_record=recorded.append,
+    )
+
+    assert ("t1", "done", None) in tq.transitions
+    assert len(recorded) == 1
+    assert recorded[0]["task_id"] == "t1"
+
+
 def test_run_forwards_task_thresholds_to_tick():
     # The claimed/running staleness thresholds must reach reclaim_stale_tasks;
     # a partial forward would silently apply the module defaults instead.
@@ -943,6 +981,37 @@ def test_tick_reports_completion_counts_and_drops_closed_entries():
     assert set(procs) == {"live"}
     assert ("ok", "done", None) in tq.transitions
     assert ("bad", "failed", "exit 3") in tq.transitions
+
+
+def test_tick_forwards_task_outcome_record_to_poll_completions():
+    # PR #1539 review finding 2 regression: tick()'s signature must actually
+    # declare task_outcome_record and thread it into poll_completions() — an
+    # earlier version referenced the name in its body without declaring the
+    # parameter, so run() calling tick(task_outcome_record=...) raised
+    # TypeError at the tick() boundary despite poll_completions()-level unit
+    # tests (test_agents_task_dispatch.py::TestPollCompletionsOutcomeRecord)
+    # passing in isolation.
+    log: list = []
+    tq = _RecordingTaskQueue(log)
+    procs = {"ok": TrackedProc(proc=_TickProc(rc=0), started_at=0.0, goal="do ok")}
+    recorded: list = []
+
+    result = wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 0.0,
+        task_outcome_record=recorded.append,
+    )
+
+    assert result.tasks_done == 1
+    assert len(recorded) == 1
+    assert recorded[0]["task_id"] == "ok"
 
 
 def test_tick_shields_live_rows_from_the_orphan_reaper():
@@ -1619,6 +1688,10 @@ class _CloseRecordingClient:
 
     def close(self) -> None:
         self.closed += 1
+
+    def get_issue(self, issue_number: int) -> dict | None:
+        """Stub for default_task_dedup's fetch_issue wiring (#1085 S2-3)."""
+        return None
 
 
 def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
