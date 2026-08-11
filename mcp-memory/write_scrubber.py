@@ -315,8 +315,8 @@ async def _log_block_event_async(client, patterns: dict[str, int], *, write_path
     ``create_task`` alone only defers *when* it starts — it would still run the
     50–200 ms round-trip on the loop thread and stall every other coroutine.
     ``asyncio.to_thread`` hands it to the default executor so the loop stays
-    free. (The codebase's older fire-and-forget helpers — ``_emit_recall_event``
-    — block the loop directly; this path is the corrected pattern.)"""
+    free — the same pattern ``_emit_recall_event`` uses for its
+    ``events_canonical`` write (#1493 AC1)."""
     await asyncio.to_thread(log_block_event, client, patterns, write_path=write_path)
 
 

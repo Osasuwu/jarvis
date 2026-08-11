@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -470,6 +471,47 @@ def format_memory(m: dict) -> str:
     return f"{header}\n{body}"
 
 
+def _emit_recall_event_canonical(
+    client, *, prompt: str, project: str | None, hits: list, included_ids: list
+) -> None:
+    """Raw-insert a memory_recall telemetry row into events_canonical (#1493 AC2).
+
+    Was a raw insert into the `events` perception queue (#439 D2-bis) — recall
+    events were 83% of that table's rows, forcing the reactive-core
+    orchestrator's claim_next FSM to skip past them on every poll. Rerouted
+    onto the append-only events_canonical substrate (C17, #477); `events` is
+    the orchestrator's queue now, not a telemetry sink. Fire-and-forget:
+    failures are swallowed here, matching the rest of this hook's fail-soft
+    style (e.g. check_known_unknown_gate, the touch_memories RPC below).
+    """
+    try:
+        included_set = set(included_ids)
+        included_hits = [h for h in hits if h.memory.get("id") in included_set]
+        returned_similarities = [
+            h.semantic_score if h.semantic_score > 0 else None for h in included_hits
+        ]
+        top_sim = included_hits[0].semantic_score if included_hits else 0.0
+        event_payload = {
+            "query": prompt,
+            "returned_ids": included_ids,
+            "returned_similarities": returned_similarities,
+            "returned_count": len(included_ids),
+            "top_sim": top_sim,
+            "project": project,
+            "source": "memory-recall-hook",
+        }
+        client.table("events_canonical").insert(
+            {
+                "actor": "memory-recall-hook",
+                "action": "memory_recall",
+                "payload": event_payload,
+                "trace_id": str(uuid.uuid4()),
+            }
+        ).execute()
+    except Exception:
+        pass
+
+
 def main():
     # Force UTF-8 decode: on Windows, sys.stdin default codec is cp1251 which
     # mangles Cyrillic prompts from Claude Code (always UTF-8).
@@ -668,40 +710,14 @@ def main():
     except Exception:
         pass
 
-    # Emit memory_recall event for FOK batch processor (#439 D2-bis).
+    # Emit memory_recall event for FOK batch processor (#439 D2-bis, #1493 AC2).
     # Mirrors the server-side `_emit_recall_event` shape exactly so the FOK
     # judge sees identical features regardless of recall source: cosine
     # `similarity` (NOT `_final_score`, which is RRF-rescaled and on a
-    # different scale), top_sim from the same field, and `repo` set to the
-    # canonical full repo slug used elsewhere in the events table.
-    try:
-        included_set = set(included_ids)
-        included_hits = [h for h in hits if h.memory.get("id") in included_set]
-        returned_similarities = [
-            h.semantic_score if h.semantic_score > 0 else None for h in included_hits
-        ]
-        top_sim = included_hits[0].semantic_score if included_hits else 0.0
-        event_payload = {
-            "query": prompt,
-            "returned_ids": included_ids,
-            "returned_similarities": returned_similarities,
-            "returned_count": len(included_ids),
-            "top_sim": top_sim,
-            "project": project,
-            "source": "memory-recall-hook",
-        }
-        client.table("events").insert(
-            {
-                "event_type": "memory_recall",
-                "severity": "info",
-                "repo": "Osasuwu/jarvis",
-                "source": "memory-recall-hook",
-                "title": f"Memory recall: {prompt[:60]}",
-                "payload": event_payload,
-            }
-        ).execute()
-    except Exception:
-        pass
+    # different scale) and top_sim from the same field.
+    _emit_recall_event_canonical(
+        client, prompt=prompt, project=project, hits=hits, included_ids=included_ids
+    )
 
     emit("".join(parts))
 

@@ -771,86 +771,78 @@ class TestCheckKnownUnknownGate:
 
 
 class TestMemoryRecallEventEmit:
-    """Test that hook emits memory_recall events for FOK batch processing."""
+    """Test that _emit_recall_event_canonical raw-inserts into events_canonical
+    (#1493 AC2) — was a write to the `events` perception queue (#439 D2-bis).
+    Unlike the pre-#1493 tests here, these call the real hook function
+    (``mrh._emit_recall_event_canonical``), not a self-referential mock.
+    """
+
+    def _hits(self):
+        included_ids = ["mem-001", "mem-002"]
+        hits = [
+            mrh.RecallHit(
+                memory={"id": "mem-001"},
+                semantic_score=0.85,
+                keyword_score=0.0,
+                rrf_score=0.5,
+                temporal_score=0.5,
+                final_score=0.5,
+                source="semantic",
+            ),
+            mrh.RecallHit(
+                memory={"id": "mem-002"},
+                semantic_score=0.70,
+                keyword_score=0.0,
+                rrf_score=0.4,
+                temporal_score=0.4,
+                final_score=0.4,
+                source="semantic",
+            ),
+        ]
+        return included_ids, hits
 
     def test_emit_recall_event_on_hit(self):
-        """The hook must emit a memory_recall event to events table on successful recall."""
-        from unittest.mock import MagicMock, Mock
+        """Raw insert lands in events_canonical, never in events."""
+        client = FakeClient()
+        included_ids, hits = self._hits()
 
-        # Mock Supabase client
-        mock_client = MagicMock()
-        mock_table = MagicMock()
-        mock_client.table.return_value = mock_table
+        mrh._emit_recall_event_canonical(
+            client, prompt="test query", project="jarvis", hits=hits, included_ids=included_ids
+        )
 
-        # Simulate successful insert
-        mock_table.insert.return_value.execute.return_value = None
-
-        # Build a minimal recalled result to trigger event emission.
-        # `similarity` is cosine — matches the server-side _emit_recall_event
-        # shape so the FOK judge gets the same features regardless of source.
-        # `_final_score` is RRF-rescaled and intentionally NOT in the payload.
-        included_ids = ["mem-001", "mem-002"]
-        rows = [
-            {"id": "mem-001", "similarity": 0.85, "_final_score": 0.42},
-            {"id": "mem-002", "similarity": 0.70, "_final_score": 0.31},
+        tables_written = {c["table"] for c in client.table_calls}
+        assert "events" not in tables_written, "must not write to the legacy events queue"
+        inserts = [
+            c
+            for c in client.table_calls
+            if c["table"] == "events_canonical" and c["op"] == "insert"
         ]
-
-        included_rows = [r for r in rows if r["id"] in set(included_ids)]
-        event_payload = {
-            "query": "test query",
-            "returned_ids": included_ids,
-            "returned_similarities": [
-                float(r["similarity"]) if isinstance(r.get("similarity"), (int, float)) else None
-                for r in included_rows
-            ],
-            "returned_count": len(included_ids),
-            "top_sim": float(included_rows[0]["similarity"]),
-            "project": "jarvis",
-            "source": "memory-recall-hook",
-        }
-        mock_client.table("events").insert(
-            {
-                "event_type": "memory_recall",
-                "severity": "info",
-                "repo": "Osasuwu/jarvis",
-                "source": "memory-recall-hook",
-                "title": f"Memory recall: test query",
-                "payload": event_payload,
-            }
-        ).execute()
-
-        # Verify events table was accessed
-        assert mock_client.table.called
-        # Verify insert was called with memory_recall event
-        calls = [c for c in mock_client.table.call_args_list if c.args == ("events",)]
-        assert calls, "events table should have been accessed"
+        assert len(inserts) == 1
+        row = inserts[0]["row"]
+        assert row["actor"] == "memory-recall-hook"
+        assert row["action"] == "memory_recall"
+        assert isinstance(row["trace_id"], str) and row["trace_id"]
+        payload = row["payload"]
+        assert payload["query"] == "test query"
+        assert payload["returned_ids"] == included_ids
+        assert payload["returned_similarities"] == [0.85, 0.70]
+        assert payload["top_sim"] == 0.85
+        assert payload["project"] == "jarvis"
 
     def test_emit_recall_event_failure_does_not_raise(self):
         """Hook must never raise on Supabase failures; failures are fire-and-forget."""
-        from unittest.mock import MagicMock
 
-        # Mock Supabase client that raises on insert
-        mock_client = MagicMock()
-        mock_client.table.return_value.insert.return_value.execute.side_effect = (
-            RuntimeError("connection lost")
+        def _raise(call):
+            raise RuntimeError("connection lost")
+
+        client = FakeClient()
+        client.table_handlers["events_canonical"] = _raise
+        included_ids, hits = self._hits()
+
+        # Must not raise.
+        mrh._emit_recall_event_canonical(
+            client, prompt="test query", project="jarvis", hits=hits, included_ids=included_ids
         )
-
-        # Wrap in try/except like the hook does
-        try:
-            mock_client.table("events").insert(
-                {
-                    "event_type": "memory_recall",
-                    "severity": "info",
-                    "repo": "Osasuwu/jarvis",
-                    "source": "memory-recall-hook",
-                    "title": "Memory recall",
-                    "payload": {"query": "test"},
-                }
-            ).execute()
-        except Exception:
-            pass  # Hook catches and swallows exceptions
-
-        # If we get here, the hook's fail-soft contract is maintained
 
 
 # ---------------------------------------------------------------------------

@@ -2811,7 +2811,11 @@ drop index if exists public.memories_embedding_idx;
 
 create table if not exists fok_judgments (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  recall_event_id uuid NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+  -- Bare uuid, no FK (#1493 AC5 / decision fc3882b0): recall_event_id now
+  -- points at events_canonical.event_id by convention, not a DB-enforced
+  -- reference — events_canonical has no ON DELETE semantics to inherit and
+  -- the two tables don't need referential coupling for this join.
+  recall_event_id uuid NOT NULL,
   query           text NOT NULL,
   project         text,
   verdict         text NOT NULL CHECK (verdict IN ('sufficient','partial','insufficient','unknown','skipped')),

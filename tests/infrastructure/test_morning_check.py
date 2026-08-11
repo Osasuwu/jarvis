@@ -68,6 +68,10 @@ class _SelectQuery:
         self._filters.append(("eq", col, val))
         return self
 
+    def in_(self, col: str, vals: list[Any]) -> "_SelectQuery":
+        self._filters.append(("in_", col, vals))
+        return self
+
     def order(self, col: str, *, desc: bool = False) -> "_SelectQuery":
         self._order = (col, desc)
         return self
@@ -80,6 +84,8 @@ class _SelectQuery:
                 rows = [r for r in rows if r.get(col) >= val]
             elif op == "eq":
                 rows = [r for r in rows if r.get(col) == val]
+            elif op == "in_":
+                rows = [r for r in rows if r.get(col) in val]
 
         # Apply ordering
         if self._order:
@@ -118,6 +124,7 @@ class _StubClient:
         self.tables: dict[str, list[dict[str, Any]]] = {
             "task_queue": [],
             "audit_log": [],
+            "events": [],
         }
 
     def table(self, name: str) -> _Table:
@@ -125,6 +132,9 @@ class _StubClient:
 
     def seed_audit_log(self, rows: list[dict[str, Any]]) -> None:
         self.tables["audit_log"].extend(rows)
+
+    def seed_events(self, rows: list[dict[str, Any]]) -> None:
+        self.tables["events"].extend(rows)
 
 
 @pytest.fixture(autouse=True)
@@ -570,6 +580,75 @@ def test_upsert_failure_does_not_crash() -> None:
         # Should not crash, should still exit 1 (alarm)
         exit_code = main(argv=["--enqueue-on-alarm"])
         assert exit_code == 1
+
+
+# ---------------------------------------------------------------------------
+# events cutover leak tripwire (#1493 AC7) -- interim check that
+# memory_recall/fok_run rows have stopped landing in `events` after the AC5
+# migration cutover. Independent of audit_log, mirrors the wake_driver check.
+# ---------------------------------------------------------------------------
+
+
+def test_events_cutover_leak_alarm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A memory_recall/fok_run row landing in `events` after cutover -> alarm."""
+    from scripts.observability.morning_check import main
+
+    stub = _StubClient()
+    stub.seed_audit_log([_audit_row(agent_id="task-dispatcher", outcome="success")])
+    stub.seed_events([{"event_type": "memory_recall", "created_at": "2026-08-12T00:00:00+00:00"}])
+
+    with patch("scripts.observability.morning_check.get_client", return_value=stub):
+        exit_code = main(argv=["--enqueue-on-alarm"])
+        assert exit_code == 1
+
+        upserts = [c for c in stub.calls if c[0] == "upsert"]
+        leak_upserts = [c for c in upserts if "#1493 cutover" in c[2]["payload"]["goal"]]
+        assert len(leak_upserts) == 1
+        assert "1 memory_recall/fok_run row(s)" in leak_upserts[0][2]["payload"]["goal"]
+
+
+def test_events_cutover_no_leak_when_rows_before_cutover() -> None:
+    """Rows dated before the AC5 cutover don't trigger the tripwire (they're
+    the pre-migration history the backfill already accounted for -- any that
+    linger would mean the migration's own DELETE didn't run, a different
+    failure than a live producer regression)."""
+    from scripts.observability.morning_check import main
+
+    stub = _StubClient()
+    stub.seed_audit_log([_audit_row(agent_id="task-dispatcher", outcome="success")])
+    stub.seed_events([{"event_type": "memory_recall", "created_at": "2026-08-01T00:00:00+00:00"}])
+
+    with patch("scripts.observability.morning_check.get_client", return_value=stub):
+        exit_code = main(argv=["--enqueue-on-alarm"])
+        assert exit_code == 0
+
+        upserts = [c for c in stub.calls if c[0] == "upsert"]
+        assert not [c for c in upserts if "#1493 cutover" in c[2]["payload"]["goal"]]
+
+
+def test_events_cutover_leak_checked_even_with_no_audit_rows() -> None:
+    """The cutover check runs even when audit_log is empty -- it queries
+    `events` directly, independent of dispatcher activity."""
+    from scripts.observability.morning_check import main
+
+    stub = _StubClient()
+    # Empty audit_log
+    stub.seed_events([{"event_type": "fok_run", "created_at": "2026-08-12T00:00:00+00:00"}])
+
+    with patch("scripts.observability.morning_check.get_client", return_value=stub):
+        exit_code = main(argv=["--enqueue-on-alarm"])
+        assert exit_code == 1
+
+        upserts = [c for c in stub.calls if c[0] == "upsert"]
+        categories_seen = {
+            "no_audit_rows"
+            if "No audit_log rows" in c[2]["payload"]["goal"]
+            else "events_cutover"
+            if "#1493 cutover" in c[2]["payload"]["goal"]
+            else "other"
+            for c in upserts
+        }
+        assert categories_seen == {"no_audit_rows", "events_cutover"}
 
 
 def test_approved_scope_hash_matches_empty_list_hash() -> None:
