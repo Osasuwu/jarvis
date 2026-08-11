@@ -1620,6 +1620,10 @@ class _CloseRecordingClient:
     def close(self) -> None:
         self.closed += 1
 
+    def get_issue(self, issue_number: int) -> dict | None:
+        """Stub for default_task_dedup's fetch_issue wiring (#1085 S2-3)."""
+        return None
+
 
 def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
     """Patch out main()'s heavy wiring; return the evidence client it builds.

@@ -645,11 +645,22 @@ class DedupConfig:
 
     ``record_outcome`` (optional) is called best-effort with a small payload
     dict on each ``skipped_duplicate`` — a raise is logged and swallowed.
+
+    ``fetch_issue`` (optional, #1085 S2-3) fetches a single issue fresh at
+    spawn time — returns ``None`` if the issue is gone/inaccessible, raises on
+    a genuine fetch failure. Used only for rows whose ``idempotency_key``
+    starts with ``"delegate:"`` (i.e. ``/dispatch``-originated): the mechanical
+    re-run of ``check_issue`` against a fresh fetch, since ``/dispatch``'s own
+    check at enqueue time is advisory, not enforcement. ``None`` here (the
+    default) disables the re-check entirely — orchestrator-emitted and
+    ``/rework`` rows were never subject to ``check_issue``'s readiness
+    conditions and must not start being refused by omission.
     """
 
     fetch_in_flight: Callable[[], tuple[list[dict[str, Any]], list[str]]]
     list_active_rows: Callable[[], list[dict[str, Any]]]
     record_outcome: Callable[[dict[str, Any]], None] | None = None
+    fetch_issue: Callable[[int], dict[str, Any] | None] | None = None
 
 
 def _record_skip_outcome(payload: dict[str, Any]) -> None:
@@ -695,7 +706,8 @@ def default_task_dedup(
     ``fetch_in_flight`` maps the client's ``list_open_pulls`` / ``list_branch_names``
     into the ``(open_prs, open_branches)`` shape the gate predicate takes;
     ``list_active_rows`` defaults to :func:`task_queue.list_active`; ``record_outcome``
-    is the best-effort ``task_outcomes`` writer above. Wired from
+    is the best-effort ``task_outcomes`` writer above; ``fetch_issue`` is
+    ``github.get_issue`` directly (#1085 S2-3). Wired from
     :func:`wake_driver.main`; unit tests inject fakes into :class:`DedupConfig` directly.
     """
     active = list_active if list_active is not None else task_queue.list_active
@@ -707,6 +719,7 @@ def default_task_dedup(
         fetch_in_flight=fetch_in_flight,
         list_active_rows=active,
         record_outcome=_record_skip_outcome,
+        fetch_issue=github.get_issue,
     )
 
 
@@ -1467,6 +1480,62 @@ def drain_tasks(
                             task_id,
                         )
                     continue
+
+                # #1085 S2-3 — /dispatch's own check_issue at enqueue time is
+                # advisory, not enforcement. This is the mechanical re-run against
+                # a fresh fetch — unconditional for "delegate:"-prefixed rows
+                # (i.e. /dispatch-originated) regardless of what the advisory gate
+                # did or didn't catch. Orchestrator-emitted and /rework rows never
+                # went through check_issue's readiness conditions and must not
+                # start being refused by omission here.
+                idem_key = str(row.get("idempotency_key", "") or "")
+                if dedup.fetch_issue is not None and idem_key.startswith("delegate:"):
+                    try:
+                        fresh_issue = dedup.fetch_issue(issue_number)
+                    except Exception:  # noqa: BLE001 — unverifiable is never terminal
+                        try:
+                            requeued = port.requeue_running(task_id)
+                        except Exception:  # noqa: BLE001 — requeue is best-effort
+                            requeued = False
+                        logger.exception(
+                            "[task_dispatch] readiness fetch_issue failed; stopping drain — task %s %s",
+                            task_id,
+                            "requeued to pending" if requeued else "left running for the reaper",
+                        )
+                        return DrainResult(
+                            spawned=spawned,
+                            failed=failed,
+                            skipped_duplicate=skipped_duplicate,
+                            procs=tuple(procs),
+                            spawned_meta=spawned_meta,
+                        )
+
+                    if fresh_issue is None:
+                        try:
+                            port.transition(
+                                task_id,
+                                "parked",
+                                reason=f"issue #{issue_number} not found on fresh fetch",
+                            )
+                        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                            logger.exception(
+                                "[task_dispatch] could not park task %s on missing issue; "
+                                "row left running for the reaper",
+                                task_id,
+                            )
+                        continue
+
+                    readiness = _load_gate_module().check_issue(fresh_issue)
+                    if not readiness.allow:
+                        try:
+                            port.transition(task_id, "parked", reason=readiness.message)
+                        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                            logger.exception(
+                                "[task_dispatch] could not park task %s on readiness refusal; "
+                                "row left running for the reaper",
+                                task_id,
+                            )
+                        continue
 
         # Capture spawn time BEFORE launching (MAJOR, PR #1011). The terminal
         # evidence check counts PR/commit activity with timestamp > spawned_at;
