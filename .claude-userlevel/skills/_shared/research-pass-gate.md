@@ -39,7 +39,11 @@ Check in order; first match passes the gate.
 memory_get(name="working_state_<project>", project="<project>")
 ```
 
-Accept if the record contains a `research_artifacts` field listing at least one UUID.
+Within your own `### [entry]` block (do not search other blocks in the merge-doc), accept a `research_artifacts` UUID only if:
+- **Topic match** — the UUID's `tags` array contains a `topic:<slug>` entry that exactly matches the current decision's topic slug (e.g., `topic:agent-loop-architecture`)
+- **Freshness** — the UUID's `created_at` is within 30 days of today (older artifacts are stale)
+
+Both conditions must hold. A UUID without a matching `topic:<slug>` tag (pre-fix research artifacts or mismatched topic) is rejected.
 
 #### b. Memory recall
 
