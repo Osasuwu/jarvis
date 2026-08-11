@@ -18,13 +18,16 @@ What it locks in:
 - Every self-log row carries the ``session_id`` + ``project`` join key (#1275),
   without which the log is a denominator nothing can be joined against.
 
-The former CONTEXT.md push (compressed Invariants + Glossary category index,
-AC6/AC7) was retired by #1417 — the Invariants now ride `@import` from
-`docs/context/invariants.md`, delivered outside this assembler entirely (never
-enters the drop-priority ladder), and the Glossary category index was retired
-outright by #1418 in favor of a pull pointer.
-Coverage for that delivery path lives in
-tests/ci/test_context_extraction_guard.py.
+Issue #1097 resolution (#1417): the former CONTEXT.md push (compressed
+Invariants + Glossary category index, AC6/AC7) was retired entirely — rather
+than raise the 8KB byte cap, the truncated push was removed. The Invariants
+now ride `@import` from `docs/context/invariants.md`, delivered outside this
+assembler entirely (never enters the drop-priority ladder), and the Glossary
+category index was retired outright by #1418 in favor of a pull pointer.
+This eliminates the silent CONTEXT.md truncation that dropped content in 47%
+of sessions. Coverage for that delivery path lives in
+tests/ci/test_context_extraction_guard.py (via TestRetiredAssemblerPath, which ensures
+the removed push function is gone and all @import targets exist).
 """
 
 from __future__ import annotations
