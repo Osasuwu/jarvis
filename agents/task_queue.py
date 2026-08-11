@@ -28,6 +28,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+from postgrest.exceptions import APIError
+
 if TYPE_CHECKING:
     from supabase import Client
 
@@ -57,6 +59,7 @@ def enqueue(
     idempotency_key: str,
     scope_files: list[str] | None = None,
     escalated_reason: str | None = None,
+    issue_number: int | None = None,
     client: Client | None = None,
 ) -> dict[str, Any] | None:
     """Insert a task into the queue.
@@ -70,7 +73,15 @@ def enqueue(
     route, #744) so the owner sees *why* a task was escalated without a
     separate transition. The column already exists on ``task_queue``.
 
-    Returns the inserted row, or ``None`` if the key already existed.
+    ``issue_number`` (#1085 S1) is the per-issue CAS: ``idx_task_queue_
+    issue_number_active`` is a partial unique index over non-terminal
+    (pending/claimed/running) rows, so a second enqueue targeting the same
+    issue while an earlier one is still in flight collides. Omit it for
+    rows with no genuine issue target (PR-target/no-target orchestrator
+    events) — NULLs never collide with each other or with anything else.
+
+    Returns the inserted row, or ``None`` if the idempotency key or the
+    issue-number CAS collided.
     """
     cli = client or get_client()
     row: dict[str, Any] = {
@@ -85,15 +96,26 @@ def enqueue(
         row["scope_files"] = scope_files
     if escalated_reason is not None:
         row["escalated_reason"] = escalated_reason
+    if issue_number is not None:
+        row["issue_number"] = issue_number
 
     # #1455 AC5: upsert with ignore_duplicates is the only PostgREST call
     # shape whose duplicate-key outcome is empty data — a bare insert raises
-    # APIError 23505, breaking the documented silent-None contract.
-    result = (
-        cli.table("task_queue")
-        .upsert(row, on_conflict="idempotency_key", ignore_duplicates=True)
-        .execute()
-    )
+    # APIError 23505, breaking the documented silent-None contract. That
+    # resolves the idempotency_key constraint only: the on_conflict target is
+    # idempotency_key, so a 23505 that still reaches us here (#1085 S1-3) can
+    # only be the separate idx_task_queue_issue_number_active partial unique
+    # index — no other unique constraint sits behind this upsert.
+    try:
+        result = (
+            cli.table("task_queue")
+            .upsert(row, on_conflict="idempotency_key", ignore_duplicates=True)
+            .execute()
+        )
+    except APIError as e:
+        if e.code == "23505":
+            return None
+        raise
     data = result.data or []
     return data[0] if data else None
 
@@ -372,8 +394,9 @@ def list_active(
     """List live (``claimed`` or ``running``) rows for sibling dedup (#931).
 
     The dispatch-dedup check reads these to detect a *sibling* task_queue row
-    already working the same issue. Only ``id``, ``goal`` and ``status`` are
-    selected — the dedup predicate extracts the issue number from ``goal``.
+    already working the same issue. ``id``, ``goal``, ``status`` and
+    ``issue_number`` are selected — the dedup predicate prefers the column
+    (#1085 S1-5) and falls back to parsing ``goal`` only for legacy/null rows.
     Two ``eq`` queries instead of ``in_`` keeps the call compatible with the
     minimal client stubs used across the test suite.
     """
@@ -381,7 +404,12 @@ def list_active(
     rows: list[dict[str, Any]] = []
     for status in ("claimed", "running"):
         rows.extend(
-            (cli.table("task_queue").select("id, goal, status").eq("status", status).execute()).data
+            (
+                cli.table("task_queue")
+                .select("id, goal, status, issue_number")
+                .eq("status", status)
+                .execute()
+            ).data
             or []
         )
     return rows

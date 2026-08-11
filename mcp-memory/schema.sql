@@ -2722,6 +2722,13 @@ create table if not exists task_queue (
   -- double-enqueue.
   idempotency_key text not null unique,
 
+  -- Genuine GitHub issue target (#1085 S1-1). NULL for PR-target/no-target
+  -- rows (review_negative, ci_failure) and legacy rows predating this
+  -- column — those fall back to goal-regex extraction at the read sites.
+  -- Keep in lockstep with
+  -- supabase/migrations/20260811163000_add_task_queue_issue_number.sql.
+  issue_number int,
+
   -- Timestamps
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -2731,6 +2738,14 @@ create table if not exists task_queue (
 create index if not exists idx_task_queue_pending_scan
   on task_queue(priority desc, created_at asc)
   where status = 'pending';
+
+-- Per-issue CAS (#1085 S1-1): a unique index on issue_number scoped to
+-- non-terminal rows means two rows targeting the same issue cannot both be
+-- pending/claimed/running at once. Nullable-column unique index allows
+-- unlimited NULLs, so PR-target/legacy rows never collide with each other.
+create unique index if not exists idx_task_queue_issue_number_active
+  on task_queue(issue_number)
+  where status in ('pending', 'claimed', 'running');
 
 -- Dedicated updated_at trigger. The memories-shared update_updated_at()
 -- references last_accessed_at/fts/project_key -- columns task_queue does

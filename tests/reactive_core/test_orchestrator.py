@@ -7,6 +7,7 @@ every assertion here pins a fixed (event_type, severity) input to its route.
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -324,6 +325,54 @@ def test_decision_is_frozen():
     with pytest.raises(Exception):
         d.route = Route.ESCALATE  # type: ignore[misc]
     assert isinstance(d, Decision)
+
+
+# ===========================================================================
+# #1085 S1-4: Decision.issue_number threaded to dispatch()'s enqueue() calls
+# ===========================================================================
+
+
+def test_review_negative_decision_issue_number_is_none():
+    """No current event type carries a genuine issue-target payload — every
+    route today leaves issue_number None (#1085 S1-4)."""
+    d = handle_event(_ev("review_negative", "medium", {"pr": 7}))
+    assert d.issue_number is None
+
+
+def test_ci_failure_decision_issue_number_is_none():
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5}))
+    assert d.issue_number is None
+
+
+def test_dispatch_emit_task_threads_issue_number_to_enqueued_row():
+    """A Decision carrying issue_number reaches the task_queue row via
+    dispatch()'s enqueue() call — proves the plumbing, not just the default."""
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}))
+    d = replace(d, issue_number=1085)
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.enqueued is True
+    assert res.row["issue_number"] == 1085
+
+
+def test_dispatch_emit_task_omits_issue_number_when_none():
+    """issue_number=None must not land on the row (enqueue()'s conditional —
+    matches the NULLs-never-collide CAS semantics, #1085 S1-1/S1-3)."""
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}))
+    assert d.issue_number is None
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.enqueued is True
+    assert "issue_number" not in res.row
+
+
+def test_dispatch_escalate_threads_issue_number_to_enqueued_row():
+    cli = _FakeClient()
+    d = handle_event(_ev("security_alert", "critical", {"detail": "leaked key"}))
+    d = replace(d, issue_number=1085)
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.row is not None
+    assert res.row["issue_number"] == 1085
 
 
 # ===========================================================================

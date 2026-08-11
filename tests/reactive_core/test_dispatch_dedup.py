@@ -34,7 +34,17 @@ def test_closing_keyword_in_pr_body_hits():
 
 
 def test_all_closing_keyword_variants_hit():
-    for kw in ("Closes", "closed", "close", "Fixes", "fix", "fixed", "Resolves", "resolve", "resolved"):
+    for kw in (
+        "Closes",
+        "closed",
+        "close",
+        "Fixes",
+        "fix",
+        "fixed",
+        "Resolves",
+        "resolve",
+        "resolved",
+    ):
         result = check_in_flight(42, [_pr(body=f"{kw} #42")], [])
         assert result.verdict == "live_pr", kw
 
@@ -489,6 +499,67 @@ def test_drain_record_outcome_failure_does_not_break_the_skip():
     res = _drain(q, cfg)
     assert res.skipped_duplicate == 1
     assert res.spawned == 1  # t2 still spawned — the drain continued
+
+
+# ── column-first issue_number with regex fallback (#1085 S1-5) ──────────────
+
+
+def test_drain_dedup_prefers_issue_number_column_over_goal_text():
+    # Goal text names #999 but the row's real issue_number column is #931 —
+    # the column wins, so the #931 in-flight PR still triggers the skip.
+    row = {**_task("t1", "Implement #999 x"), "issue_number": 931}
+    q = _Queue([row])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([_pr(number=777, body="Closes #931")], []),
+        list_active_rows=lambda: [],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
+
+
+def test_drain_dedup_falls_back_to_goal_text_when_column_null():
+    # No issue_number column on the row (legacy/pre-#1085 row) — falls back
+    # to parsing the goal text, exactly the pre-#1085 behavior.
+    q = _Queue([_task("t1", "Implement #931 x")])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([_pr(number=777, body="Closes #931")], []),
+        list_active_rows=lambda: [],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
+
+
+def test_drain_sibling_check_prefers_issue_number_column():
+    # The sibling row's goal text is unrelated, but its issue_number column
+    # matches — the column-first predicate still catches the collision.
+    row = {**_task("t1", "Implement #999 x"), "issue_number": 931}
+    q = _Queue([row])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([], []),
+        list_active_rows=lambda: [
+            {"id": "other", "goal": "unrelated goal text", "status": "running", "issue_number": 931}
+        ],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
+
+
+def test_drain_sibling_check_falls_back_to_goal_text_when_column_null():
+    # Neither row carries an issue_number column — sibling matching falls
+    # back to parsing goal text for both, exactly the pre-#1085 behavior.
+    q = _Queue([_task("t1", "Implement #931 dispatch dedup")])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([], []),
+        list_active_rows=lambda: [
+            {"id": "other", "goal": "Fix #931 from another angle", "status": "running"}
+        ],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
 
 
 # ── HttpxGitHubClient.list_open_pulls / list_branch_names (production fetch) ──

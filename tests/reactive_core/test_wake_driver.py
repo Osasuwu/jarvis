@@ -1047,6 +1047,39 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
     assert procs["t1"].spawned_at.tzinfo is not None
 
 
+def test_tick_folds_issue_number_column_into_the_tracking_map():
+    # #1085 S1-5: the claimed row's real issue_number column must fold onto
+    # TrackedProc too — poll_completions reads it for column-first PR evidence.
+    proc = _TickProc(rc=None)
+    tq = _RecordingTaskQueue(
+        [],
+        pending=[
+            {
+                "id": "t1",
+                "goal": "g",
+                "assignee": "sandcastle",
+                "idempotency_key": "key-1",
+                "issue_number": 1085,
+            }
+        ],
+    )
+    procs: dict = {}
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 42.0,
+    )
+
+    assert procs["t1"].issue_number == 1085
+
+
 def test_tick_batch_shares_one_started_at_stamp():
     # #957 MAJOR (#1011): every proc drained in ONE tick shares the single
     # pre-drain stamp — the clock is sampled once, before the drain, NOT

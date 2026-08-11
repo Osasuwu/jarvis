@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+from postgrest.exceptions import APIError as _RealAPIError
 
 from agents.task_queue import (
     _TERMINAL_STATES,
@@ -106,8 +107,16 @@ class _StubUpdate:
         return _StubResponse(data=matched)
 
 
-class _StubAPIError(Exception):
-    """Stands in for postgrest.APIError (23505 unique violation)."""
+class _StubAPIError(_RealAPIError):
+    """Real postgrest.exceptions.APIError (23505 unique violation).
+
+    enqueue()'s except clause catches the real APIError type (#1085 S1-3), so
+    the stub must raise that type too — a bespoke Exception subclass would
+    silently fall through the except and fail the test with the wrong error.
+    """
+
+    def __init__(self, message: str, *, code: str = "23505") -> None:
+        super().__init__({"code": code, "message": message, "details": None, "hint": None})
 
 
 class _StubInsert:
@@ -135,7 +144,25 @@ class _StubInsert:
                 # ignore_duplicates=True) resolves a duplicate to empty data.
                 if self._on_conflict == "idempotency_key" and self._ignore_duplicates:
                     return _StubResponse(data=[])
-                raise _StubAPIError("23505: duplicate key value violates unique constraint")
+                raise _StubAPIError(
+                    "23505: duplicate key value violates unique constraint "
+                    '"task_queue_idempotency_key_key"'
+                )
+        # #1085 S1-3: idx_task_queue_issue_number_active is a SEPARATE partial
+        # unique index over non-terminal rows — the idempotency_key upsert
+        # above never resolves this one, so a genuine collision here must
+        # still raise. Mirrors the real index's WHERE clause (status-based),
+        # not a re-implementation of enqueue()'s own logic.
+        payload_issue_number = self._payload.get("issue_number")
+        if payload_issue_number is not None:
+            for existing in self._rows:
+                if existing.get("issue_number") == payload_issue_number and existing.get(
+                    "status"
+                ) in ("pending", "claimed", "running"):
+                    raise _StubAPIError(
+                        "23505: duplicate key value violates unique constraint "
+                        '"idx_task_queue_issue_number_active"'
+                    )
         stored = {
             **self._payload,
             "id": f"tq-{len(self._rows) + 1}",
@@ -340,6 +367,77 @@ class TestEnqueue:
         )
         assert row is not None
         assert "escalated_reason" not in row
+
+    def test_issue_number_persisted_on_insert(self, client: _StubClient) -> None:
+        """#1085 S1-2: enqueue() accepts an optional issue_number kwarg."""
+        row = enqueue(
+            goal="issue-scoped task",
+            idempotency_key="key-issue-1",
+            issue_number=1085,
+            client=client,
+        )
+        assert row is not None
+        assert row["issue_number"] == 1085
+
+    def test_issue_number_omitted_when_none(self, client: _StubClient) -> None:
+        """#1085 S1-2: existing callers (no issue_number) are unaffected."""
+        row = enqueue(
+            goal="no issue target",
+            idempotency_key="key-noissue",
+            client=client,
+        )
+        assert row is not None
+        assert "issue_number" not in row
+
+    def test_issue_number_collision_same_key_returns_none(self, client: _StubClient) -> None:
+        """#1085 S1-3: same idempotency_key collision still returns None
+        (the pre-existing #1455 AC5 path), even when issue_number is set."""
+        client.seed(
+            "task_queue",
+            [_pending(idempotency_key="dup-key", issue_number=1085)],
+        )
+        row = enqueue(
+            goal="duplicate",
+            idempotency_key="dup-key",
+            issue_number=1085,
+            client=client,
+        )
+        assert row is None
+
+    def test_issue_number_collision_different_key_returns_none(self, client: _StubClient) -> None:
+        """#1085 S1-3: a DIFFERENT idempotency_key targeting the same
+        issue_number, while an earlier non-terminal row holds it, collides
+        on idx_task_queue_issue_number_active and must also return None —
+        not raise. This is the per-issue CAS the branch-push claim used to
+        provide."""
+        client.seed(
+            "task_queue",
+            [_pending(idempotency_key="key-a", issue_number=1085, status="pending")],
+        )
+        row = enqueue(
+            goal="same issue, different key",
+            idempotency_key="key-b",
+            issue_number=1085,
+            client=client,
+        )
+        assert row is None
+
+    def test_issue_number_collision_terminal_row_does_not_block(self, client: _StubClient) -> None:
+        """#1085 S1-3: the CAS is scoped to non-terminal rows — a done/failed/
+        parked/skipped_duplicate row with the same issue_number must not
+        block a fresh enqueue for that issue."""
+        client.seed(
+            "task_queue",
+            [_pending(idempotency_key="key-a", issue_number=1085, status="done")],
+        )
+        row = enqueue(
+            goal="same issue, prior row terminal",
+            idempotency_key="key-b",
+            issue_number=1085,
+            client=client,
+        )
+        assert row is not None
+        assert row["issue_number"] == 1085
 
 
 # ===========================================================================
@@ -810,6 +908,16 @@ class TestListActive:
         client.seed("task_queue", [_running(id="r", goal="Implement #931", idempotency_key="k")])
         rows = list_active(client=client)
         assert rows[0]["goal"] == "Implement #931"
+
+    def test_rows_carry_issue_number(self, client: _StubClient) -> None:
+        """#1085 S1-5: the column-first dedup predicate reads issue_number off
+        these rows, so list_active must select and return it."""
+        client.seed(
+            "task_queue",
+            [_running(id="r", goal="unrelated text", issue_number=931, idempotency_key="k")],
+        )
+        rows = list_active(client=client)
+        assert rows[0]["issue_number"] == 931
 
     def test_empty_queue(self, client: _StubClient) -> None:
         assert list_active(client=client) == []
