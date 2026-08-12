@@ -6,6 +6,8 @@ every assertion here pins a fixed (event_type, severity) input to its route.
 
 from __future__ import annotations
 
+import logging
+from dataclasses import replace
 from datetime import datetime
 
 import pytest
@@ -43,14 +45,28 @@ class _FakeResult:
 
 
 class _FakeInsert:
-    def __init__(self, table: _FakeTable, payload: dict) -> None:
+    def __init__(
+        self,
+        table: _FakeTable,
+        payload: dict,
+        *,
+        on_conflict: str | None = None,
+        ignore_duplicates: bool = False,
+    ) -> None:
         self._table = table
         self._payload = payload
+        self._on_conflict = on_conflict
+        self._ignore_duplicates = ignore_duplicates
 
     def execute(self) -> _FakeResult:
         key = self._payload.get("idempotency_key")
         if any(r.get("idempotency_key") == key for r in self._table.rows):
-            return _FakeResult([])  # unique-constraint collision → no row
+            # Faithful PostgREST: bare insert on a duplicate raises; only
+            # upsert(on_conflict="idempotency_key", ignore_duplicates=True)
+            # resolves the collision to empty data (#1455 AC5).
+            if self._on_conflict == "idempotency_key" and self._ignore_duplicates:
+                return _FakeResult([])
+            raise RuntimeError("23505: duplicate key value violates unique constraint")
         stored = {**self._payload, "id": f"tq-{len(self._table.rows) + 1}"}
         self._table.rows.append(stored)
         return _FakeResult([stored])
@@ -62,6 +78,18 @@ class _FakeTable:
 
     def insert(self, payload: dict) -> _FakeInsert:
         return _FakeInsert(self, payload)
+
+    def upsert(
+        self,
+        payload: dict,
+        *,
+        on_conflict: str | None = None,
+        ignore_duplicates: bool = False,
+        **kwargs: object,
+    ) -> _FakeInsert:
+        return _FakeInsert(
+            self, payload, on_conflict=on_conflict, ignore_duplicates=ignore_duplicates
+        )
 
 
 class _FakeClient:
@@ -230,6 +258,13 @@ def test_unknown_event_type_failsafe_escalates():
     assert handle_event(_ev("totally_unknown", "high")).route is Route.ESCALATE
 
 
+def test_quota_pressure_high_failsafe_escalates():
+    """#1139: telegram-notify-hook (the drain) is retired — quota_pressure's
+    only remaining Telegram path is this fail-safe ESCALATE (unenumerated
+    event_type, high severity), routed through the notifier in dispatch()."""
+    assert handle_event(_ev("quota_pressure", "high")).route is Route.ESCALATE
+
+
 def test_known_type_unenumerated_severity_failsafe_escalates():
     # ci_failure only routes to emit_task at `high`; any other severity is an
     # unknown (event_type, severity) pair → fail-safe escalate.
@@ -303,6 +338,54 @@ def test_decision_is_frozen():
 
 
 # ===========================================================================
+# #1085 S1-4: Decision.issue_number threaded to dispatch()'s enqueue() calls
+# ===========================================================================
+
+
+def test_review_negative_decision_issue_number_is_none():
+    """No current event type carries a genuine issue-target payload — every
+    route today leaves issue_number None (#1085 S1-4)."""
+    d = handle_event(_ev("review_negative", "medium", {"pr": 7}))
+    assert d.issue_number is None
+
+
+def test_ci_failure_decision_issue_number_is_none():
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5}))
+    assert d.issue_number is None
+
+
+def test_dispatch_emit_task_threads_issue_number_to_enqueued_row():
+    """A Decision carrying issue_number reaches the task_queue row via
+    dispatch()'s enqueue() call — proves the plumbing, not just the default."""
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}))
+    d = replace(d, issue_number=1085)
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.enqueued is True
+    assert res.row["issue_number"] == 1085
+
+
+def test_dispatch_emit_task_omits_issue_number_when_none():
+    """issue_number=None must not land on the row (enqueue()'s conditional —
+    matches the NULLs-never-collide CAS semantics, #1085 S1-1/S1-3)."""
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}))
+    assert d.issue_number is None
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.enqueued is True
+    assert "issue_number" not in res.row
+
+
+def test_dispatch_escalate_threads_issue_number_to_enqueued_row():
+    cli = _FakeClient()
+    d = handle_event(_ev("security_alert", "critical", {"detail": "leaked key"}))
+    d = replace(d, issue_number=1085)
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.row is not None
+    assert res.row["issue_number"] == 1085
+
+
+# ===========================================================================
 # AC2 side-effect: dispatch(EMIT_TASK) writes a sandcastle row, dedups
 # ===========================================================================
 
@@ -347,6 +430,50 @@ def test_dispatch_emit_task_new_event_reruns():
     )
     assert first.enqueued is True and second.enqueued is True
     assert len(cli.table("task_queue").rows) == 2
+
+
+# ===========================================================================
+# #1455 AC1: DispatchResult carries blocked_by_task_id (Path B producer)
+# ===========================================================================
+
+
+def test_dispatch_emit_task_sets_blocked_by_task_id():
+    """A successful fresh EMIT_TASK enqueue exposes the task id so the drain
+    loop can park the event blocked on it (Path B producer, #1455 AC1)."""
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}))
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.enqueued is True
+    assert res.blocked_by_task_id == str(res.row["id"])
+
+
+def test_dispatch_emit_task_collision_blocked_by_task_id_is_none():
+    """Idempotency collision → no fresh task → nothing to block on (AC1/AC6)."""
+    cli = _FakeClient()
+    e = _ev("ci_failure", "high", {"pr": 5, "sha": "abc"})
+    dispatch(handle_event(e), now=_FRIDAY, client=cli)
+    second = dispatch(handle_event(dict(e)), now=_FRIDAY, client=cli)
+    assert second.enqueued is False
+    assert second.blocked_by_task_id is None
+
+
+def test_dispatch_escalate_blocked_by_task_id_is_none():
+    """ESCALATE keeps notify-then-processed semantics: owner rows never reach
+    a terminal state in production, so parking on them would park forever
+    (EMIT_TASK-only scope, decision 3997893d)."""
+    cli = _FakeClient()
+    d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.row is not None  # owner row written…
+    assert res.blocked_by_task_id is None  # …but the event is not blocked on it
+
+
+def test_dispatch_handle_inline_blocked_by_task_id_is_none():
+    cli = _FakeClient()
+    d = handle_event(_ev("memory_recall", "info"))
+    assert d.route is Route.HANDLE_INLINE
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.blocked_by_task_id is None
 
 
 # ===========================================================================
@@ -530,3 +657,37 @@ def test_build_production_orchestrator_default_clock_and_notifier_do_not_raise()
     result = orch(_ev("pr_merged"))
     assert isinstance(result, DispatchResult)
     assert result.route is Route.HANDLE_INLINE
+
+
+def test_build_production_orchestrator_logs_warning_on_enqueue_collision(
+    caplog: pytest.LogCaptureFixture,
+):
+    """#1455 AC6: a colliding EMIT_TASK enqueue during drain means the event's
+    work is already queued elsewhere — the event is NOT parked (drain will
+    mark_processed on blocked_by_task_id=None), and the wrapper logs a warning
+    carrying the event id + idempotency key for visibility."""
+    cli = _FakeClient()
+    orch = build_production_orchestrator(client=cli, clock=lambda: _FRIDAY)
+    e = {**_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}), "id": "ev-42"}
+    first = orch(e)
+    assert first.enqueued is True
+    with caplog.at_level(logging.WARNING, logger="agents.orchestrator"):
+        second = orch(dict(e))
+    assert second.enqueued is False
+    assert second.blocked_by_task_id is None
+    collision_logs = [r for r in caplog.records if "collision" in r.getMessage()]
+    assert collision_logs, "expected a warning on the enqueue-collision branch"
+    msg = collision_logs[0].getMessage()
+    assert "ev-42" in msg
+    assert first.row["idempotency_key"] in msg
+
+
+def test_build_production_orchestrator_no_warning_on_fresh_enqueue(
+    caplog: pytest.LogCaptureFixture,
+):
+    cli = _FakeClient()
+    orch = build_production_orchestrator(client=cli, clock=lambda: _FRIDAY)
+    with caplog.at_level(logging.WARNING, logger="agents.orchestrator"):
+        result = orch({**_ev("ci_failure", "high", {"pr": 5}), "id": "ev-1"})
+    assert result.enqueued is True
+    assert not [r for r in caplog.records if "collision" in r.getMessage()]

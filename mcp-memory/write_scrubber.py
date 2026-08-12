@@ -315,8 +315,8 @@ async def _log_block_event_async(client, patterns: dict[str, int], *, write_path
     ``create_task`` alone only defers *when* it starts — it would still run the
     50–200 ms round-trip on the loop thread and stall every other coroutine.
     ``asyncio.to_thread`` hands it to the default executor so the loop stays
-    free. (The codebase's older fire-and-forget helpers — ``_emit_recall_event``
-    — block the loop directly; this path is the corrected pattern.)"""
+    free — the same pattern ``_emit_recall_event`` uses for its
+    ``events_canonical`` write (#1493 AC1)."""
     await asyncio.to_thread(log_block_event, client, patterns, write_path=write_path)
 
 
@@ -384,13 +384,16 @@ def log_disabled_event(client, reason: str) -> None:
     per cold start (AC1, #1000).
 
     Written through the ``scrubber_disabled_event_upsert`` RPC, not a plain
-    ``.table("events").upsert(...)`` — ``events.dedup_key`` is a PARTIAL
-    unique index (``where dedup_key is not null``), and Postgres only infers a
-    partial index as the ON CONFLICT arbiter when its predicate is restated in
-    the conflict target. The original plain-upsert version raised on every
-    call and was silently swallowed below, so no disabled-gate event ever
-    landed (code-review round-2 finding on #1000's PR). Mirrors
-    ``log_block_event``'s RPC shape exactly.
+    ``.table("events").upsert(...)`` — a plain upsert generates a bare
+    ``on conflict (dedup_key)``, which cannot match ``events.dedup_key``'s
+    then-PARTIAL unique index (``where dedup_key is not null``); the original
+    plain-upsert version raised on every call and was silently swallowed
+    below, so no disabled-gate event ever landed (code-review round-2 finding
+    on #1000's PR). ``events.dedup_key`` is now a FULL unique constraint
+    (``events_dedup_key_key``, #1491), and the RPC's own conflict target was
+    briefly out of sync with that shape too — restating the old partial
+    predicate 42P10'd against the new full constraint until #1498 dropped it.
+    Mirrors ``log_block_event``'s RPC shape exactly.
 
     Mirrors ``log_block_event``'s "logging must never block the rejection"
     pattern too: any DB error here must not turn today's fail-*open* disabled

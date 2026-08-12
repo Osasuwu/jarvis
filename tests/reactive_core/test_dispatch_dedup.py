@@ -34,7 +34,17 @@ def test_closing_keyword_in_pr_body_hits():
 
 
 def test_all_closing_keyword_variants_hit():
-    for kw in ("Closes", "closed", "close", "Fixes", "fix", "fixed", "Resolves", "resolve", "resolved"):
+    for kw in (
+        "Closes",
+        "closed",
+        "close",
+        "Fixes",
+        "fix",
+        "fixed",
+        "Resolves",
+        "resolve",
+        "resolved",
+    ):
         result = check_in_flight(42, [_pr(body=f"{kw} #42")], [])
         assert result.verdict == "live_pr", kw
 
@@ -491,6 +501,67 @@ def test_drain_record_outcome_failure_does_not_break_the_skip():
     assert res.spawned == 1  # t2 still spawned — the drain continued
 
 
+# ── column-first issue_number with regex fallback (#1085 S1-5) ──────────────
+
+
+def test_drain_dedup_prefers_issue_number_column_over_goal_text():
+    # Goal text names #999 but the row's real issue_number column is #931 —
+    # the column wins, so the #931 in-flight PR still triggers the skip.
+    row = {**_task("t1", "Implement #999 x"), "issue_number": 931}
+    q = _Queue([row])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([_pr(number=777, body="Closes #931")], []),
+        list_active_rows=lambda: [],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
+
+
+def test_drain_dedup_falls_back_to_goal_text_when_column_null():
+    # No issue_number column on the row (legacy/pre-#1085 row) — falls back
+    # to parsing the goal text, exactly the pre-#1085 behavior.
+    q = _Queue([_task("t1", "Implement #931 x")])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([_pr(number=777, body="Closes #931")], []),
+        list_active_rows=lambda: [],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
+
+
+def test_drain_sibling_check_prefers_issue_number_column():
+    # The sibling row's goal text is unrelated, but its issue_number column
+    # matches — the column-first predicate still catches the collision.
+    row = {**_task("t1", "Implement #999 x"), "issue_number": 931}
+    q = _Queue([row])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([], []),
+        list_active_rows=lambda: [
+            {"id": "other", "goal": "unrelated goal text", "status": "running", "issue_number": 931}
+        ],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
+
+
+def test_drain_sibling_check_falls_back_to_goal_text_when_column_null():
+    # Neither row carries an issue_number column — sibling matching falls
+    # back to parsing goal text for both, exactly the pre-#1085 behavior.
+    q = _Queue([_task("t1", "Implement #931 dispatch dedup")])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([], []),
+        list_active_rows=lambda: [
+            {"id": "other", "goal": "Fix #931 from another angle", "status": "running"}
+        ],
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert res.skipped_duplicate == 1
+
+
 # ── HttpxGitHubClient.list_open_pulls / list_branch_names (production fetch) ──
 #
 # These back the drain-time evidence fetch (cycle 5). They mirror the pooled-
@@ -575,3 +646,113 @@ def test_default_task_dedup_wires_github_and_active_rows():
     assert branches == ["feat/931-x"]
     assert cfg.list_active_rows() == [{"id": "r1", "goal": "Implement #931"}]
     assert callable(cfg.record_outcome)
+
+
+def test_default_task_dedup_wires_fetch_issue_from_github_get_issue():
+    gh = mock.MagicMock()
+    gh.get_issue.return_value = {"number": 931, "body": READY_BODY, "labels": []}
+    cfg = default_task_dedup(gh, list_active=lambda: [])
+    assert cfg.fetch_issue is gh.get_issue
+
+
+# ── drain_tasks readiness re-check for delegate:-prefixed rows (#1085 S2-3) ──
+
+
+def _delegate_task(task_id: str, issue_number: int, attempt: int = 1) -> dict:
+    return {
+        "id": task_id,
+        "goal": f"/task-implement #{issue_number}",
+        "assignee": "sandcastle",
+        "status": "pending",
+        "idempotency_key": f"delegate:{issue_number}:r{attempt}",
+    }
+
+
+def _issue(number: int = 931, body: str = READY_BODY, labels: tuple[str, ...] = ("sandcastle",)) -> dict:
+    return {"number": number, "body": body, "labels": [{"name": n} for n in labels]}
+
+
+def _drain_with_fetch_issue(q: _Queue, fetch_issue, **extra):
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([], []),
+        list_active_rows=lambda: [],
+        fetch_issue=fetch_issue,
+        **extra,
+    )
+    return _drain(q, cfg)
+
+
+def test_drain_readiness_recheck_passes_on_ready_issue_and_spawns():
+    q = _Queue([_delegate_task("t1", 931)])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n))
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+
+
+def test_drain_readiness_recheck_parks_on_refuse():
+    q = _Queue([_delegate_task("t1", 931)])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n, body="", labels=()))
+    assert res.spawned == 0
+    parked = [(t, r) for t, s, r in q.transitions if s == "parked"]
+    assert parked and parked[0][0] == "t1"
+    assert "REFUSE" in parked[0][1]
+    assert "sandcastle" in parked[0][1]
+
+
+def test_drain_readiness_recheck_parks_on_missing_issue():
+    q = _Queue([_delegate_task("t1", 931)])
+    res = _drain_with_fetch_issue(q, lambda n: None)
+    assert res.spawned == 0
+    parked = [(t, r) for t, s, r in q.transitions if s == "parked"]
+    assert parked and parked[0][0] == "t1"
+    assert "#931" in parked[0][1]
+    assert "not found" in parked[0][1]
+
+
+def test_drain_readiness_recheck_fetch_failure_requeues_and_stops():
+    def boom(_n: int):
+        raise RuntimeError("gh api down")
+
+    q = _Queue([_delegate_task("t1", 931), _delegate_task("t2", 932)])
+    res = _drain_with_fetch_issue(q, boom)
+    assert q.requeued == ["t1"]
+    assert res.spawned == 0
+    assert q.pending and q.pending[0]["id"] == "t2"
+
+
+def test_drain_readiness_recheck_skipped_when_fetch_issue_not_wired():
+    # dedup present but fetch_issue omitted (default None) — pre-#1085-S2-3
+    # behavior: no readiness re-check at all, even for a delegate:-prefixed row.
+    q = _Queue([_delegate_task("t1", 931)])
+    cfg = DedupConfig(fetch_in_flight=lambda: ([], []), list_active_rows=lambda: [])
+    res = _drain(q, cfg)
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+
+
+def test_drain_readiness_recheck_skipped_for_non_delegate_prefixed_rows():
+    # Orchestrator-emitted rows (no "delegate:" idempotency-key prefix) never
+    # went through check_issue's readiness conditions at enqueue time and must
+    # not start being refused here by omission.
+    row = {**_task("t1", "Implement #931 x"), "idempotency_key": "review_negative:931:r1"}
+    q = _Queue([row])
+    calls = {"n": 0}
+
+    def fetch_issue(n: int):
+        calls["n"] += 1
+        return _issue(n, body="", labels=())  # would REFUSE if it ran
+
+    res = _drain_with_fetch_issue(q, fetch_issue)
+    assert res.spawned == 1
+    assert calls["n"] == 0
+
+
+def test_drain_readiness_recheck_parked_row_not_terminal_failed():
+    # A refused row is parked, not failed/skipped_duplicate — distinct FSM
+    # terminal so it reads as owner-attention rather than a drain error.
+    q = _Queue([_delegate_task("t1", 931)])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n, body="", labels=()))
+    assert res.failed == 0
+    assert res.skipped_duplicate == 0
+    statuses = [s for _, s, _ in q.transitions]
+    assert statuses == ["running", "parked"]

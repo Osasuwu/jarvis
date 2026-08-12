@@ -290,7 +290,7 @@ def test_try_insert_known_unknown_above_similarity_threshold():
 def test_write_verdict_to_event():
     """Canonical write: write_verdict_to_event writes to fok_judgments (no legacy mirror)."""
     mock_client = MagicMock()
-    # Stub the events.payload fetch so write_verdict_to_event finds a row
+    # Stub the events_canonical.payload fetch so write_verdict_to_event finds a row
     mock_client.table.return_value.select.return_value.eq.return_value.execute.return_value = Mock(
         data=[{"payload": {"query": "test", "project": "Osasuwu/jarvis"}}]
     )
@@ -306,6 +306,11 @@ def test_write_verdict_to_event():
     assert record["verdict"] == "partial"
     assert record["confidence"] == 0.7
     assert record["rationale"] == "Some info present."
+
+    # Payload re-read must come from events_canonical, never the legacy events queue (#1493 AC3)
+    table_names = [c.args[0] for c in mock_client.table.call_args_list if c.args]
+    assert "events_canonical" in table_names
+    assert "events" not in table_names
 
 
 def test_write_verdict_to_event_dual_writes_to_fok_judgments():
@@ -353,7 +358,7 @@ def test_write_verdict_to_event_dual_writes_to_fok_judgments():
 
 
 def test_write_event_summary():
-    """Test writing fok_run summary event."""
+    """Test writing fok_run summary event to events_canonical (#1493 AC3)."""
     mock_client = MagicMock()
     mock_table = MagicMock()
     mock_client.table.return_value = mock_table
@@ -365,13 +370,15 @@ def test_write_event_summary():
 
     fok_batch.write_event(mock_client, summary, "test-project")
 
-    # Verify insert was called
-    mock_client.table.assert_called_with("events")
+    # Verify insert went to events_canonical, never the legacy events queue
+    mock_client.table.assert_called_with("events_canonical")
     mock_table.insert.assert_called_once()
     insert_call = mock_table.insert.call_args
     assert insert_call is not None
-    payload = insert_call[0][0]
-    assert payload.get("event_type") == "fok_run"
+    row = insert_call[0][0]
+    assert row.get("actor") == "fok-batch"
+    assert row.get("action") == "fok_run"
+    assert isinstance(row.get("trace_id"), str) and row["trace_id"]
 
 
 def test_fetch_events_filters_unfudged():
@@ -381,17 +388,42 @@ def test_fetch_events_filters_unfudged():
     # matching fok_judgments rows. The test mocks the filtered result.
     mock_response = Mock()
     mock_response.data = [
-        {"id": "evt-001", "payload": {"query": "test"}},  # No fok_judgments row
+        {"event_id": "evt-001", "payload": {"query": "test"}},  # No fok_judgments row
         # evt-002 would have a fok_judgments row, so filtered out by LEFT JOIN
-        {"id": "evt-003", "payload": {"query": "test"}},  # No fok_judgments row
+        {"event_id": "evt-003", "payload": {"query": "test"}},  # No fok_judgments row
     ]
     mock_client.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value = mock_response
 
     events = fok_batch.fetch_events(mock_client, 10)
 
     assert len(events) == 2
-    assert events[0]["id"] == "evt-001"
-    assert events[1]["id"] == "evt-003"
+    assert events[0]["event_id"] == "evt-001"
+    assert events[1]["event_id"] == "evt-003"
+
+
+def test_fetch_events_reads_events_canonical_not_events():
+    """AC3: fetch_events must query events_canonical (action=memory_recall, ts window), never events."""
+    mock_client = MagicMock()
+    mock_response = Mock()
+    mock_response.data = []
+    mock_client.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value = mock_response
+
+    fok_batch.fetch_events(mock_client, 10)
+
+    table_names = [c.args[0] for c in mock_client.table.call_args_list if c.args]
+    assert "events_canonical" in table_names
+    assert "events" not in table_names
+
+    eq_calls = [
+        c.args for c in mock_client.table.return_value.select.return_value.eq.call_args_list
+    ]
+    assert ("action", "memory_recall") in eq_calls
+
+    gte_calls = [
+        c.args[0]
+        for c in mock_client.table.return_value.select.return_value.eq.return_value.gte.call_args_list
+    ]
+    assert "ts" in gte_calls
 
 
 def test_try_insert_zero_confidence_is_not_treated_as_missing():
@@ -465,13 +497,12 @@ def test_try_insert_dedupes_on_exact_query_and_bumps_hit_count():
 
 
 def test_write_event_includes_project():
-    """Regression guard: `project` arg must propagate into the emitted event."""
+    """Regression guard: `project` arg must propagate into the emitted event's payload."""
     client = MagicMock()
     fok_batch.write_event(client, {"processed": 3}, "Osasuwu/jarvis")
     insert_call = client.table.return_value.insert.call_args
     assert insert_call is not None
     row = insert_call.args[0]
-    assert row["repo"] == "Osasuwu/jarvis"
     assert row["payload"]["project"] == "Osasuwu/jarvis"
 
 

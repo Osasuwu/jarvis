@@ -1,8 +1,9 @@
 """Parked-event re-queue poller — Path B (#745).
 
-When the orchestrator parks an event because it is blocked on a sandcastle
-task, the poller periodically checks whether the blocking task has reached
-a terminal state and re-queues the event accordingly.
+When the event drain parks an event blocked on a freshly-enqueued task
+(``wake_driver.drain_pending`` → ``park_blocked_on_task``, the #1455
+producer), the poller periodically checks whether the blocking task has
+reached a terminal state and re-queues the event accordingly.
 
 - Task ``done`` → event is re-queued to ``pending``. The wake_driver runs the
   poll step (Step 2b) *before* the event drain (Step 3) in the same tick, so
@@ -15,8 +16,8 @@ a terminal state and re-queues the event accordingly.
   forever. Requeueing hands it back to the orchestrator to re-route, with a
   distinct reason so the cause is recoverable.
 - Task still ``running`` (or no such task) → event stays ``parked``.
-- No ``blocked_by_task_id`` in event payload → skipped (parked for a
-  different reason).
+- ``blocked_by_task_id`` column NULL → skipped (parked for a different
+  reason, e.g. the #1385 poison-pill path — those stay parked for a human).
 
 Usage::
 
@@ -27,7 +28,6 @@ Usage::
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Protocol
 
@@ -43,18 +43,22 @@ class PollerPort(Protocol):
     Implemented by an in-memory fake in tests, and by
     ``wake_driver.PsycopgEventQueue`` in production (#1393) — ``main()``
     passes ``poller_port=queue`` unconditionally at both the ``--once`` and
-    long-running call sites. The consumer side of Path B is live; nothing in
-    production yet *writes* ``blocked_by_task_id`` into a parked event's
-    payload, so the poller runs every tick and finds nothing until a producer
-    exists — tracked in #1455.
+    long-running call sites. Both ends of Path B are live: the producer
+    (#1455) is ``wake_driver.drain_pending``, which parks an EMIT_TASK event
+    via ``park_blocked_on_task`` (state + ``blocked_by_task_id`` column in one
+    UPDATE) when the orchestrator's DispatchResult carries a fresh task id.
+    Path B is pure ledger bookkeeping — the event is visibly parked while its
+    blocking task runs, then requeued and closed via an enqueue collision;
+    reacting to the task's *outcome* is Path C (#953).
     """
 
     def find_parked_events(self) -> list[dict[str, Any]]:
-        """Return every ``parked`` event whose payload contains ``blocked_by_task_id``.
+        """Return every ``parked`` event whose ``blocked_by_task_id`` column is set.
 
         Returns a list of event dicts. Each dict must have at least ``id``
-        and ``payload`` keys. Events parked for other reasons (no
-        ``blocked_by_task_id``) are filtered out by the port implementation.
+        and ``blocked_by_task_id`` keys. Events parked with the column NULL
+        (poison-pill parks, #1385) are filtered out by the port implementation
+        — they stay parked until a human intervenes.
         """
 
     def get_task_statuses(self, task_ids: list[str]) -> dict[str, str]:
@@ -207,23 +211,14 @@ def _process_parked_event(port: PollerPort, event: dict[str, Any], statuses: dic
 
 
 def _blocking_task_id(event: dict[str, Any]) -> str | None:
-    """Extract ``blocked_by_task_id`` from an event's ``payload``.
+    """Extract the ``blocked_by_task_id`` column from an event row (#1455 AC4).
 
-    Handles payload as a dict or a JSON string (PostgREST may return
-    jsonb as a pre-parsed dict or as a string depending on the query path).
-    Returns ``None`` when the field is missing, empty, or unparseable.
+    The dedicated column — never a payload marker — is the Path B carrier:
+    payload stays immutable so the requeued event's idempotency key is
+    unchanged and the replayed drain closes via an enqueue collision.
+    Returns ``None`` when the column is absent, NULL, or empty.
     """
-    payload = event.get("payload")
-    if payload is None:
-        return None
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except (ValueError, TypeError):
-            return None
-    if not isinstance(payload, dict):
-        return None
-    tid = payload.get("blocked_by_task_id")
+    tid = event.get("blocked_by_task_id")
     # Guard on None/empty-string explicitly, not truthiness: a valid task id of
     # integer ``0`` (or any falsy-but-present value) must survive — ``if tid``
     # would drop it and silently strand the parked event.

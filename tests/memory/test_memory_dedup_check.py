@@ -20,7 +20,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -128,8 +128,13 @@ class TestMainExemption:
 # ---------------------------------------------------------------------------
 
 
-def _fake_client(*, existing_row: bool, rpc_rows: list[dict]):
-    """Build a MagicMock supabase client for the two query chains main() uses:
+def _fake_client(*, existing_row: bool = False, existing_row_error: bool = False, rpc_rows: list[dict]):
+    """Build a MagicMock supabase client for the two query chains main() uses.
+
+    Args:
+      existing_row: True if row exists (upsert case)
+      existing_row_error: True if row_exists query should raise an exception (fallback case)
+      rpc_rows: rows returned by match_memories RPC
 
     - client.table("memories").select("id").eq("name",...).is_("deleted_at","null")
       .eq("project",...).limit(1).execute()   (row_exists check, project truthy branch)
@@ -140,9 +145,15 @@ def _fake_client(*, existing_row: bool, rpc_rows: list[dict]):
     row_exists_chain = (
         client.table.return_value.select.return_value.eq.return_value.is_.return_value
     )
-    row_exists_chain.eq.return_value.limit.return_value.execute.return_value.data = (
-        [{"id": "existing-id"}] if existing_row else []
-    )
+
+    if existing_row_error:
+        # Simulate query failure (exception)
+        row_exists_chain.eq.return_value.limit.return_value.execute.side_effect = Exception("Query timeout")
+    else:
+        # Simulate successful query result
+        row_exists_chain.eq.return_value.limit.return_value.execute.return_value.data = (
+            [{"id": "existing-id"}] if existing_row else []
+        )
 
     client.rpc.return_value.execute.return_value.data = rpc_rows
     return client
@@ -212,5 +223,282 @@ class TestMainSessionSnapshotExclusion:
         )
         # allow() -> exit 0, no deny JSON — the snapshot candidate was filtered
         # out before the same-name check, so no candidates remain to block on.
+        assert code == 0
+        assert out == ""
+
+
+# ---------------------------------------------------------------------------
+# Levenshtein distance — pure predicate
+# ---------------------------------------------------------------------------
+
+
+class TestLevenshteinDistance:
+    def test_identical_strings(self):
+        assert hook.levenshtein_distance("test", "test") == 0
+
+    def test_empty_string(self):
+        assert hook.levenshtein_distance("test", "") == 4
+        assert hook.levenshtein_distance("", "test") == 4
+
+    def test_single_character_diff(self):
+        # Date variants: 2026-08-11 vs 2026-08-12
+        assert hook.levenshtein_distance("status_2026-08-11", "status_2026-08-12") == 1
+
+    def test_multiple_diffs(self):
+        assert hook.levenshtein_distance("abc", "def") == 3
+        assert hook.levenshtein_distance("kitten", "sitting") == 3
+
+
+# ---------------------------------------------------------------------------
+# is_likely_reupdate — fallback for row_exists failures
+# ---------------------------------------------------------------------------
+
+
+class TestIsLikelyReupdate:
+    def test_daily_cron_snapshot_reruns(self):
+        """AC1: Extremely high similarity + name variant (date shift) = reupdate."""
+        # Daily snapshots score ~0.98, names differ only by date
+        assert (
+            hook.is_likely_reupdate("status_2026-08-11", "status_2026-08-12", 0.98) is True
+        )
+
+    def test_version_variant_reruns(self):
+        """AC1: Version-keyed reruns with high similarity = reupdate."""
+        assert hook.is_likely_reupdate("memory_v1", "memory_v2", 0.96) is True
+
+    def test_case_insensitive_matching(self):
+        """Reupdate detection compares names case-insensitively."""
+        assert hook.is_likely_reupdate("Status_Snap", "status_snap", 0.98) is True
+
+    def test_below_reupdate_threshold_blocks(self):
+        """Similarity below 0.95 = cross-name duplicate check, not reupdate."""
+        assert hook.is_likely_reupdate("status_2026-08-11", "status_2026-08-12", 0.94) is False
+
+    def test_high_similarity_but_distant_names_blocks(self):
+        """High similarity but names too different = genuine cross-name collision."""
+        # Names differ by much more than 5 chars
+        assert (
+            hook.is_likely_reupdate("long_memory_description_v1", "short_mem_v2", 0.96) is False
+        )
+
+    def test_boundary_edit_distance_5_allows(self):
+        """Edit distance exactly 5 is at boundary — allows."""
+        # "mem_12345" vs "mem_67890" = 5 chars diff (exactly at boundary)
+        assert hook.levenshtein_distance("mem_12345", "mem_67890") == 5
+        assert hook.is_likely_reupdate("mem_12345", "mem_67890", 0.95) is True
+
+    def test_boundary_edit_distance_6_blocks(self):
+        """Edit distance 6 exceeds threshold — blocks."""
+        # "mem_123456" vs "mem_789012" = 6 chars diff (exceeds boundary)
+        assert hook.levenshtein_distance("mem_123456", "mem_789012") == 6
+        assert hook.is_likely_reupdate("mem_123456", "mem_789012", 0.96) is False
+
+
+# ---------------------------------------------------------------------------
+# main() — #1098 regressions: reupdate detection
+# ---------------------------------------------------------------------------
+
+
+class TestMainReupdateDetection:
+    def test_daily_cron_reupdate_allowed_on_query_failure(self, monkeypatch):
+        """AC1: Daily-cron memory re-storing with date-variant name + 0.98 similarity
+        is allowed as idempotent re-store when row_exists query fails (timeout/error,
+        row_check is None). This is one of the two fallback-eligible cases."""
+        fake_client = _fake_client(
+            existing_row_error=True,  # row_exists check fails (timeout/error) → None
+            rpc_rows=[
+                {
+                    "name": "status_snapshot_2026-08-11",
+                    "project": "jarvis",
+                    "type": "reference",
+                    "description": "Status snapshot from 2026-08-11",
+                    "similarity": 0.98,  # Near-identical reruns
+                    "tags": [],
+                }
+            ],
+        )
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "status_snapshot_2026-08-12",  # Different name, same content
+                    "type": "reference",
+                    "project": "jarvis",
+                    "description": "Status snapshot from 2026-08-12",
+                    "content": "Status snapshot from yesterday (near-identical)",
+                },
+            },
+            monkeypatch,
+            embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
+        )
+        # row_exists fails (None), is_likely_reupdate triggers (0.98 > 0.95 + names differ by 1 char)
+        # → allow() → exit 0, no deny JSON
+        assert code == 0
+        assert out == ""
+
+    def test_daily_cron_reupdate_allowed_when_row_genuinely_absent(self, monkeypatch):
+        """#1098 core case: row_exists() succeeds (no query error) and correctly
+        returns False because a fresh date-suffixed name has no row yet — this is
+        the realistic daily-cron scenario, not a query failure. The reupdate
+        fallback must fire here too, or the fix doesn't cover the bug #1098 reports."""
+        fake_client = _fake_client(
+            existing_row=False,  # row_exists succeeds, no row found → False (not None)
+            rpc_rows=[
+                {
+                    "name": "status_snapshot_2026-08-11",
+                    "project": "jarvis",
+                    "type": "reference",
+                    "description": "Status snapshot from 2026-08-11",
+                    "similarity": 0.98,  # Near-identical reruns
+                    "tags": [],
+                }
+            ],
+        )
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "status_snapshot_2026-08-12",  # Different name, same content
+                    "type": "reference",
+                    "project": "jarvis",
+                    "description": "Status snapshot from 2026-08-12",
+                    "content": "Status snapshot from yesterday (near-identical)",
+                },
+            },
+            monkeypatch,
+            embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
+        )
+        # row_check is False (not None) — must still hit the reupdate fallback.
+        assert code == 0
+        assert out == ""
+
+    def test_query_failure_with_non_reupdate_blocks(self, monkeypatch):
+        """AC1 extended: Query failure alone does NOT cause allow — only when
+        combined with is_likely_reupdate. A dissimilar match should still block."""
+        fake_client = _fake_client(
+            existing_row_error=True,  # row_exists check fails → None
+            rpc_rows=[
+                {
+                    "name": "session_notes",
+                    "project": "jarvis",
+                    "type": "decision",
+                    "description": "Session decision notes",
+                    "similarity": 0.81,  # Above BLOCK_THRESHOLD (0.75) but below REUPDATE_SIMILARITY_THRESHOLD (0.95)
+                    "tags": [],
+                }
+            ],
+        )
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "session_decisions",
+                    "type": "decision",
+                    "project": "jarvis",
+                    "description": "Session decision summary",
+                    "content": "Different content",
+                },
+            },
+            monkeypatch,
+            embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
+        )
+        # row_exists fails (None), but similarity 0.81 < 0.95 (REUPDATE_SIMILARITY_THRESHOLD)
+        # → is_likely_reupdate returns False → block() is called
+        assert code == 2
+        assert "Possible duplicate memory" in out
+
+    def test_cross_name_collision_still_blocks(self, monkeypatch):
+        """AC2: Genuinely distinct memories with same-type but high similarity still
+        get blocked (not allowed by reupdate detection)."""
+        fake_client = _fake_client(
+            existing_row=False,
+            rpc_rows=[
+                {
+                    "name": "session_notes",
+                    "project": "jarvis",
+                    "type": "decision",
+                    "description": "Session decision notes",
+                    "similarity": 0.81,  # Above BLOCK_THRESHOLD (0.75)
+                    "tags": [],
+                }
+            ],
+        )
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "session_decisions",  # Different name, different content
+                    "type": "decision",
+                    "project": "jarvis",
+                    "description": "Session decision summary",
+                    "content": "Similar but genuinely distinct content",
+                },
+            },
+            monkeypatch,
+            embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
+        )
+        # 0.81 > 0.75 threshold, but not high enough for reupdate (0.95)
+        # + names differ by >5 chars → block
+        assert code == 2
+        assert "Possible duplicate memory" in out
+        assert "session_notes" in out
+
+    def test_boundary_threshold_0_75(self, monkeypatch):
+        """Verify BLOCK_THRESHOLD is 0.75 and passed to RPC call.
+
+        #1098 proposed raising this to 0.80, reasoning that ~0.79 similarity
+        was a false-positive on legitimate distinct-but-related concepts. The
+        original calibration note (commit cfd10b39) documents the opposite:
+        ~0.79 is the near-verbatim-duplicate case the gate is meant to catch,
+        and ~0.54 is the legitimate-sibling case. No fresh evidence overrides
+        that, so the threshold stays at 0.75."""
+        fake_client = _fake_client(
+            existing_row=False,
+            rpc_rows=[],  # Simulating that RPC finds nothing at 0.75 threshold
+        )
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "different_memory",
+                    "type": "reference",
+                    "project": "jarvis",
+                    "description": "Different memory",
+                    "content": "Distinct concept",
+                },
+            },
+            monkeypatch,
+            embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
+        )
+        # Verify threshold value
+        assert hook.BLOCK_THRESHOLD == 0.75
+
+        # Verify RPC was called with correct threshold
+        fake_client.rpc.assert_called_once()
+        rpc_call_args = fake_client.rpc.call_args
+        assert rpc_call_args[0][0] == "match_memories"
+        assert rpc_call_args[0][1]["similarity_threshold"] == 0.75
+
+        # RPC returned empty → no candidates remain → allow()
         assert code == 0
         assert out == ""

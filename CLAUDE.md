@@ -42,16 +42,13 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 - **Recall before action.** Per user-level CLAUDE.md §1 *Recall before deciding* — required, not optional. Repo addition: if brief-mode recall surfaces an on-topic memory, `memory_get` it before building defaults from your own head.
 - **Verify before assuming implemented.** Never say "this is already done" without `grep` for the actual symbol, reading the code path end-to-end, and where feasible a test that would fail if the feature were missing. Tool-width Z was missing for a month because everyone assumed otherwise — one bad foundation invalidated a month of downstream work.
-- **No state in static storage.** State (% done, ✅/❌ markers, "shipped in PR #X", sprint dates, "last audit YYYY-MM-DD") belongs in GitHub Issues/Projects/PRs/commit history — NOT in markdown files, NOT in memory. Static storage may hold: evergreen lessons, decisions+rationale, reference info (API shapes, config locations), target architecture, pointers ("see #633 for current status"). If a field would be wrong in 2 weeks → GH, not here.
-- **Sibling-grep on fixes.** When a reviewer flags a bug in one helper/pattern, grep for sibling patterns across the whole file AND related files before declaring the fix done. A second-round review with the same class of finding = the first fix was partial. 30 seconds of grep beats a full CI cycle of rework.
-- **Skills are a contract, not a trigger.** `/implement`, `/grill`, `/end`, `/delegate` are owed when the action matches the contract — not only when the principal types the magic word. After PR merge: explicit `/implement` for next slice or `/end`, not silent continuation. Repo not having local skill files is not an exemption — skills are global, canonical at `.claude-userlevel/skills/` and mirrored to `~/.claude/skills/`.
-- **Deliberate simplifications carry a `ceiling:` marker.** When you knowingly ship a shortcut with a known limit — global lock, O(n²) scan over a list assumed small, naive heuristic, hardcoded single-device path — leave an inline `ceiling:` comment naming *both* the limit and the upgrade path (`# ceiling: O(n²) over labels, fine <200; switch to a set-diff if a repo crosses that`). Not for ordinary "could be prettier" code — only for a corner cut against a limit you can name. This is the cheap end of «tech debt must be visible»: `grep -rn 'ceiling:'` is the debt list, so a shortcut no longer needs an issue to stay visible. Unnamed limit ⇒ you don't understand the shortcut well enough to ship it.
-- **Non-trivial logic leaves one runnable check.** Any change with real logic in it ships with at least one thing that fails if the logic breaks — the smallest such thing, not a suite: one test in the existing file, or an assert-based self-check. Trivial one-liners, renames and doc edits need nothing. This is the floor under drive-by fixes where full TDD is overkill; it does **not** relax the TDD requirement inside `/implement` and `/rework`, which stays as-is. A fix you can't leave a check behind for is itself a finding — flag it.
+- **Skills are a contract, not a trigger.** `/implement`, `/grill`, `/end`, `/dispatch` are owed when the action matches the contract — not only when the principal types the magic word. After PR merge: explicit `/implement` for next slice or `/end`, not silent continuation. Repo not having local skill files is not an exemption — skills are global, canonical at `.claude-userlevel/skills/` and mirrored to `~/.claude/skills/`.
+
+Four write-scoped rules moved to `.claude/rules/` (path-gated, load only when a matching file is read — see #1274): no state in static storage → [`no-state-in-static-storage.md`](.claude/rules/no-state-in-static-storage.md); sibling-grep on fixes → [`sibling-grep-on-fixes.md`](.claude/rules/sibling-grep-on-fixes.md); `ceiling:` marker → [`ceiling-marker-required.md`](.claude/rules/ceiling-marker-required.md); one runnable check per non-trivial change → [`non-trivial-logic-runnable-check.md`](.claude/rules/non-trivial-logic-runnable-check.md).
 
 ## Project-specific rules
 
-- **Native-first priority, not a ban.** Before writing a custom script/service (any language), check skills/MCP/hooks/subagents first; if native covers it cleanly, use native. Custom code is permitted on merit — when the native solution is awkward or incomplete. (Relaxed 2026-05-20 from the prior near-prohibition; decision `d9be0390`.) Existing justified custom code: `mcp-memory/server.py`, `src/risk_radar.py`.
-- **Check native capabilities first**: Telegram → Channels; scheduling → `/loop` or scheduled tasks; background → desktop agents.
+Two more write-scoped rules moved to `.claude/rules/` (same rationale as above): native-first priority → [`native-first-priority.md`](.claude/rules/native-first-priority.md); check native capabilities first → [`check-native-capabilities-first.md`](.claude/rules/check-native-capabilities-first.md).
 
 ## Related projects
 
@@ -78,7 +75,7 @@ Use skills — don't reinvent with raw tools.
 | Trigger | Skill |
 |---|---|
 | "реализуй #42" — implement single issue inline | `/implement` (TDD-mode auto-engages via the grill trigger checkbox + working_state UUIDs) |
-| "делегируй #X #Y" — dispatch multiple issues to parallel subagents | `/delegate` (TDD-mode auto-engages via the grill trigger checkbox + working_state UUIDs) |
+| "делегируй #X #Y" — enqueue multiple issues onto `task_queue` for headless pickup | `/dispatch` (renamed from `/delegate`, #1085 S2; never spawns in-session — enqueues thin rows, run later by `/task-implement` via `drain_tasks`) |
 | "проверь результаты" / scheduled post-delegation | `/verify` |
 | "что я делаю не так", "проанализируй сессии", "паттерны общения", weekly behavioral audit | `/reflect` (cross-session comms audit; old outcome-verification scope migrated to `/verify` + `/self-improve` per #510) |
 | "исследуй", "research", "сравни" | `/research` |
@@ -106,28 +103,28 @@ Use skills — don't reinvent with raw tools.
 | "be brief", "caveman", token compression | `/caveman` |
 
 Rules:
-- GitHub issue work → /implement or /delegate, no exceptions. Raw Agent loses PR structure and verification.
-- Multiple tasks → /delegate, but **Jarvis decides** what's subagent-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
-- **Grill trigger checkbox is mandatory** — every `/implement` and `/delegate` invocation runs it at start. Both skills restate it verbatim in their own dispatch contracts, which is where it fires; the canonical text and output routing live in `~/.claude/reference/engineering-principles.md`.
-- **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/delegate`)** is the canonical chain for new features. TDD-mode engages inside `/implement` and `/delegate` per the grill trigger checkbox — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
+- GitHub issue work → /implement or /dispatch, no exceptions. Raw Agent loses PR structure and verification.
+- Multiple tasks → /dispatch, but **Jarvis decides** what's queue-suitable vs inline (context-heavy / cross-cutting / safety-critical stay inline). User trusts this call.
+- **Grill trigger checkbox is mandatory** — every `/implement` invocation runs it at start; `/dispatch` runs its own advisory readiness gate (`check_issue`) instead, since routing decisions for enqueued work are re-derived headlessly by `/task-implement` with no operator present to grill. Canonical checkbox text and output routing live in `~/.claude/reference/engineering-principles.md`.
+- **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/dispatch`)** is the canonical chain for new features. TDD-mode engages inside `/implement` (and inside `/task-implement` for enqueued work) per the grill trigger checkbox / issue-body decision citation — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 - **`/status` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `статус`, `status`, or `статус <repo>` (the word as a standalone command, optionally naming a tracked repo) route to `/status`. A sentence that merely contains the word — "какой статус у PR #123", "статус деплоя в логах", "status code 500", a quoted error string — is a normal request answered in-context, never a trigger for a repo-state investigation.
 
-### Responsibility split — interactive · `/delegate` · reactive-core orchestrator
+### Responsibility split — interactive · `/dispatch` · reactive-core orchestrator
 
-Three places work can land. Pick by **who's present** and **how the work was triggered**, not by what the work is.
+Three places work can land. Pick by **who admits the work and how**, not by execution mechanism — since #1085 Slice 2, `/dispatch` and the orchestrator both execute through the same `task_queue` + `drain_tasks` + `/task-implement` pipeline; the split below is about *admission*, not about which code path eventually runs the issue.
 
-- **Interactive `/implement`** — operator present, one judgment-heavy issue, full SOUL loaded; the grill trigger checkbox is the in-skill AFK-readiness backstop.
-- **`/delegate`** — operator present and chose to fan out; AFK-eligible issues → parallel sandcastle subagents, admitted by CONTEXT.md → *Pre-dispatch gate*. Operator-driven dispatch, **not** the orchestrator.
-- **Reactive-core orchestrator (M44)** — no operator; events cold-boot it and it triages **one** event into one of three dispositions, then hands off (CONTEXT.md → *orchestrator*, *Loop closure*).
+- **Interactive `/implement`** — operator present, one judgment-heavy issue, full SOUL loaded, executes **in-session**; the grill trigger checkbox is the in-skill AFK-readiness backstop.
+- **`/dispatch`** (renamed from `/delegate`) — operator present and chose to fan out; AFK-eligible issues pass an advisory `check_issue` gate and are **enqueued** as thin `task_queue` rows (`goal="/task-implement #N"`), then executed **headlessly** later by `drain_tasks` → `/task-implement`. Admission is operator-driven (a human decided *these* issues, *now*); execution is queue-routed, same as the orchestrator's. `/dispatch` never spawns a subagent itself.
+- **Reactive-core orchestrator (M44)** — no operator; events cold-boot it and it triages **one** event into one of three dispositions, then hands off (CONTEXT.md → *orchestrator*, *Loop closure*). Admission is event-triggered, not human-judged.
 
-Boundary: **orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as manually-triaged ones — `/to-tickets`'s checklist applies regardless of who emits the task, and an AFK-unsafe row goes to the principal (no auto-spawn), same landing zone as a `/delegate` refusal. The orchestrator routes, it is not the principal (CONTEXT.md → *Invariants → Skills, infra & eval*).
+Boundary: **orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as `/dispatch`-enqueued ones — `/to-tickets`'s checklist applies regardless of who emits the task, both pass through the same `check_issue` mechanical re-check at spawn time (`drain_tasks`, #1085 S2-3), and an AFK-unsafe row goes to the principal (no auto-spawn), same landing zone as a `/dispatch` refusal. The orchestrator routes, it is not the principal (CONTEXT.md → *Invariants → Skills, infra & eval*).
 
 ## Autonomous work
 
 User often leaves Jarvis to work alone. Core loop comes from §Engineering posture above + SOUL §Judgment calibration + SOUL §Goal & outcome awareness. "Aligned plans = standing orders" — when a multi-step plan was discussed and signed off, the alignment IS the approval; don't re-confirm at each checkpoint.
 
-Project-specific addition — **transform tasks into verifiable goals**: "Fix bug" → write failing test → make it pass. "Add validation" → tests for invalid inputs → make them pass. "Refactor X" → tests pass before and after.
+Project-specific addition — transform tasks into verifiable goals — moved to `.claude/rules/` (write-scoped, path-gated; see #1274): [`transform-tasks-into-verifiable-goals.md`](.claude/rules/transform-tasks-into-verifiable-goals.md).
 
 ## Development process
 
@@ -136,7 +133,7 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
   - **Consolidation / batch PR** → the body carries a `Closes #N` line for **every** absorbed issue (absorbed = its entire scope ships here), not just the umbrella or the branch you happened to be on. Closing keywords in the PR body or in any commit message on the branch close the issue they name; plain prose without a real keyword does not — but a keyword+number pair spelled out literally anywhere, even inside an explanation of why it wasn't used, does. Mechanism, cross-repo and already-merged caveats, superseded-sibling carryover: [`docs/reference/pr-issue-linkage.md`](docs/reference/pr-issue-linkage.md).
   - Hotfix (`priority:critical`) / refactor (`refactor:` title prefix) / `[no-issue]` marker → the three bypasses of the linked-issue requirement, enumerated in user-level CLAUDE.md gate 3 `require-linked-issue`. Commit-msg still needs `[no-issue]` when there's no parent issue (`.pre-commit-config.yaml` regex, #329).
   - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
-  - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
+  - Decisions-to-memory rule moved to `.claude/rules/` (write-scoped, path-gated; see #1274): [`decisions-to-memory-not-markdown.md`](.claude/rules/decisions-to-memory-not-markdown.md).
 - Check the Claude code-review comment before merging — it posts as an **issue-comment**, not a PR review, so check all reviewer surfaces. Copilot is no longer used (plan lapsed, decision 2026-05-22).
 
 ### Architecture sweep at milestone close
@@ -162,9 +159,7 @@ Trivial, reversible, scope-obvious change (<30 min, own repo): **fix inline**. D
 
 The `Fix > track` rule does **not** override the rest of the development process — fixes still go through PR review, with the `[no-issue]` commit-msg marker above.
 
-### Path-filtered CI guards require a meta-test (#326)
-
-Enforced mechanically by [`tests/ci/test_guard_test_convention.py`](tests/ci/test_guard_test_convention.py) — it fails the PR, so you don't need this rule in your head. It cannot check the **logic** half (the decision rule blocks/allows what it claims); that's on you. Naming, scope and the #289/#310/#311 precedent: [`docs/reference/ci-guard-meta-tests.md`](docs/reference/ci-guard-meta-tests.md).
+Path-filtered CI guards require a meta-test (#326) — moved to `.claude/rules/` (write-scoped to CI/guard files, path-gated; see #1274): [`path-filtered-ci-guards-meta-test.md`](.claude/rules/path-filtered-ci-guards-meta-test.md).
 
 ### Milestone vs pillar hygiene
 

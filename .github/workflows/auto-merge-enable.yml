@@ -58,7 +58,11 @@ on:
     # forever after it stopped being carve-out. Re-arming on push is safe: the
     # idempotency check below no-ops when auto-merge is already enabled, and the
     # owner's holds (draft, status:owner-queue) are unaffected.
-    types: [opened, ready_for_review, reopened, synchronize]
+    #
+    # edited: required by the risk carve-out below. A PR's Risk Assessment
+    # section can be escalated (or the whole body added late) via a body-only
+    # edit with no new commit — synchronize wouldn't fire for that.
+    types: [opened, ready_for_review, reopened, synchronize, edited]
 
 # The merge is performed with the App token below, not GITHUB_TOKEN, so this
 # job's *default* token needs no write scope. NOTE: this block scopes ONLY the
@@ -202,31 +206,102 @@ jobs:
             exit 0
           fi
 
+          # ---- risk carve-out: PR self-declares HIGH/CRITICAL risk -------------
+          # The /implement skill's §7.5 merge policy says HIGH/CRITICAL-risk PRs
+          # (or safety-critical zones) wait for principal explicit approval before
+          # merge. Until now that was prose in the PR's own "## Risk Assessment"
+          # section (SKILL.md template) with no mechanical backing — PR #1510
+          # self-declared HIGH ("drain_pending control-flow change") and still
+          # auto-merged the moment CI went green (#1512). Read the body fresh
+          # (not the possibly-stale event payload) and, if the Risk Assessment
+          # section names HIGH or CRITICAL, apply status:owner-queue instead of
+          # arming auto-merge — that label already fails the required
+          # owner-queue-guard check, so this reuses an existing gate rather than
+          # inventing a new one. Owner clears the label once satisfied.
+          RISK_LABEL="status:owner-queue"
+          # Same degraded-output hazard as the am/state fetch above (gh can
+          # exit 0 with empty stdout on transient auth/API failure): a naive
+          # `-q '.body // ""'` can't tell "genuinely empty PR body" apart from
+          # "gh returned nothing", and if the body is misread as empty the
+          # grep below never matches — silently falling through to arm
+          # auto-merge on a PR that actually declares HIGH/CRITICAL risk (the
+          # exact hole this PR exists to close, reopened via a new path;
+          # #1513 review). Fetch the whole JSON object as one line (tojson
+          # collapses embedded newlines) and check ITS emptiness — a real
+          # response is never an empty string even when body itself is "" —
+          # before parsing body back out of it.
+          RAW_BODY_JSON=$(gh pr view "$PR" --repo "$REPO" --json body -q 'tojson')
+          if [ -z "$RAW_BODY_JSON" ]; then
+            echo "::error::gh pr view returned empty output for #$PR while fetching the PR body — possible auth or API failure; refusing to evaluate the risk carve-out on degraded output."
+            exit 1
+          fi
+          BODY=$(printf '%s' "$RAW_BODY_JSON" | jq -r '.body // ""')
+          risk_section=$(printf '%s\n' "$BODY" | awk '/^## Risk Assessment/{f=1; next} /^## /{f=0} f')
+          if printf '%s\n' "$risk_section" | grep -qE '^[[:space:]]*-[[:space:]]*\*\*(HIGH|CRITICAL)\*\*:[[:space:]]*[^<[:space:]]'; then
+            already_labelled=$(
+              gh pr view "$PR" --repo "$REPO" --json labels \
+                --jq "[.labels[].name] | index(\"$RISK_LABEL\") != null"
+            )
+            if [ "$already_labelled" != "true" ]; then
+              gh pr edit "$PR" --repo "$REPO" --add-label "$RISK_LABEL" >/dev/null
+              gh pr comment "$PR" --repo "$REPO" --body \
+                "🛑 **Auto-merge withheld.** This PR's Risk Assessment section declares HIGH or CRITICAL risk. Per /implement §7.5, HIGH/CRITICAL-risk PRs wait for principal explicit approval before merge — applying \`$RISK_LABEL\` so \`owner-queue-guard\` blocks the required-check gate until you clear it."
+            fi
+            if [ "$am" = "set" ]; then
+              gh pr merge "$PR" --repo "$REPO" --disable-auto
+              echo "::notice::PR #$PR self-declared HIGH/CRITICAL risk after auto-merge was armed — auto-merge DISABLED and $RISK_LABEL applied."
+            else
+              echo "::notice::PR #$PR self-declares HIGH/CRITICAL risk in its Risk Assessment section — auto-merge withheld, $RISK_LABEL applied."
+            fi
+            exit 0
+          fi
+          # ---- end risk carve-out -----------------------------------------------
+
           # ---- carve-out: PRs /code-review cannot actually review (#1234) ------
           # claude-code-action validates its OWN calling workflow file against the
           # default branch and bails with "Skipping action due to workflow
-          # validation" when the content differs, leaving execution_file empty. The
-          # `Verify review verdict` ladder then falls through its no-comment branch
-          # to "plugin legitimately skipped — treating as pass", so the REQUIRED
-          # `review` context goes green having reviewed nothing (verified live on
-          # PR #1231, run 29992799097 — green in 1m7s, zero review comments).
+          # validation" when the content differs, leaving execution_file empty —
+          # no verdict is ever posted for this head.
           #
-          # Until #1234 the App's missing workflows permission was the accidental
-          # last line of defense for this class: auto-merge simply could not be
-          # armed. Granting the permission removes that defense, so withhold here
-          # explicitly instead.
+          # HISTORY: until the comment-absence gates landed, the `Verify review
+          # verdict` ladder read that absence as a legitimate skip and the
+          # REQUIRED `review` context went green having reviewed nothing
+          # (verified live on PR #1231, run 29992799097 — green in 1m7s, zero
+          # review comments). This block was added as the stopgap sole defense
+          # for that hole (#1234/#1236). That hole is now closed: the ladder
+          # fails CLOSED on this class — the positive-evidence gate (#1434:
+          # has_code=true, no verdict, nothing failed or in flight ⇒ exit 1)
+          # atop the lineage/state probes (#1228) — observed live on PR #1499
+          # (runs 31378173152 / 31378378047, 2026-08-10): `review` goes RED, so
+          # auto-merge cannot fire on this class through the required check.
           #
-          # STOPGAP — remove this whole block once #1236 lands. The real fix is in
-          # the required `Verify review verdict` gate, which must stop treating a
-          # workflow-validation skip as a legitimate skip-pass. Until then the only
-          # place that knows the review was vacuous is here.
+          # KEPT DELIBERATELY — not removable scaffolding. Two jobs the red
+          # check cannot do (#1236 resolved as "retain", not "remove"):
+          #   1. Defense-in-depth against a self-edit weakening the gate: the
+          #      fail-closed ladder lives INSIDE code-review.yml — the very
+          #      file this class edits — and a pull_request run executes the
+          #      PR's OWN copy of it. A PR that guts the ladder (agent
+          #      "fixing" a red gate, botched refactor) and updates the guard
+          #      tests in lockstep goes green with nothing reviewed. This
+          #      block runs from a workflow such a PR does not touch, so it
+          #      still withholds — and DISARMS a PR armed before a
+          #      code-review.yml change on main made it retroactively
+          #      carve-out.
+          #   2. Signaling a bare red review does not provide: the label
+          #      (which merge-train's candidate selector reads to keep
+          #      withheld branches fresh under strict:true — without it a
+          #      withheld PR stalls behind main forever) and the explanatory
+          #      comment naming the class and the owed manual path
+          #      (DOCTRINE.md review-blind carve-out).
           #
           # The predicate is a two-dot CONTENT comparison — the blob SHA at this
           # PR's head vs the blob SHA on the default branch — NOT a merge-base diff
           # or a changed-files list. The action's validation is content-based, so it
           # also fires on a branch that merely went STALE on code-review.yml after a
           # change landed on the default branch: a strictly wider class than "this
-          # PR edits the file".
+          # PR edits the file". The stale sub-class self-heals: merge-train
+          # updates the branch, the synchronize re-run finds the blobs
+          # identical, clears the label and arms.
           CR_PATH=".github/workflows/code-review.yml"
           CARVE_OUT_LABEL="automerge-withheld:review-blind"
           blob_at() {
@@ -265,16 +340,16 @@ jobs:
             if [ "$already_labelled" != "true" ]; then
               gh pr edit "$PR" --repo "$REPO" --add-label "$CARVE_OUT_LABEL" >/dev/null
               gh pr comment "$PR" --repo "$REPO" --body \
-                "🛑 **Auto-merge withheld.** This PR's \`$CR_PATH\` differs from \`$BASE_REF\`, so \`claude-code-action\` skips on workflow validation and the required \`review\` check goes green **without reviewing anything**. Merging on that signal would ship an un-reviewed PR, so auto-merge is not being armed — **manual review and manual merge are required here**. The branch is still kept fresh by merge-train. (Carve-out from #1234; removable once #1236 fixes the \`Verify review verdict\` gate.)"
+                "🛑 **Auto-merge withheld.** This PR's \`$CR_PATH\` differs from \`$BASE_REF\`, so \`claude-code-action\` skips on workflow validation and **cannot review it** (#1234 class). The required \`review\` check fails closed on the missing verdict (#1434/#1228) — this withhold is defense-in-depth on top of that red, and marks the red as *review-blindness*, not a broken review run. If this PR **edits** \`$CR_PATH\`: manual review + merge per the DOCTRINE review-blind carve-out. If the branch is merely **stale** on that file: no action needed — merge-train refreshes the branch, review then runs for real, and auto-merge re-arms automatically."
             fi
             if [ "$am" = "set" ]; then
               # A PR armed BEFORE a code-review.yml change landed on the default
               # branch becomes retroactively carve-out. Declining to arm is not
               # enough — disarm it.
               gh pr merge "$PR" --repo "$REPO" --disable-auto
-              echo "::notice::PR #$PR became carve-out after auto-merge was armed — auto-merge DISABLED; manual review + merge required (#1234)."
+              echo "::notice::PR #$PR became carve-out after auto-merge was armed — auto-merge DISABLED (#1234). Manual review + merge if it edits $CR_PATH; a merely-stale branch self-heals via merge-train."
             else
-              echo "::notice::PR #$PR is a #1234 carve-out ($CR_PATH differs from $BASE_REF) — auto-merge withheld; manual review + merge required."
+              echo "::notice::PR #$PR is a #1234 carve-out ($CR_PATH differs from $BASE_REF) — auto-merge withheld. Manual review + merge if it edits the file; a merely-stale branch self-heals via merge-train."
             fi
             exit 0
           fi

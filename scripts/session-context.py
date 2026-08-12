@@ -233,13 +233,74 @@ def _load_snapshot_from_local(session_id: str):
         return None
 
 
+# ---------------------------------------------------------------------------
+# Budget-aware assembly constants (#1271, #1353)
+# Define these before functions that use them as default parameters.
+# ---------------------------------------------------------------------------
+
+ASSEMBLY_BUDGET_CHARS = 9500
+
+# Recovery section size ceiling (#1353). The recovery section has priority 0
+# (highest, dropped last) and can independently exceed the ASSEMBLY_BUDGET_CHARS
+# if not capped. This ceiling is applied at format time, mirroring the working_state
+# size cap (#1341) implemented in the /end skill. Conservative bound leaves headroom
+# for at least one other high-priority section (always_load, working_state).
+RECOVERY_SECTION_MAX_CHARS = 4000
+
+
+def _cap_recovery_payload(payload: str, max_chars: int = RECOVERY_SECTION_MAX_CHARS) -> str:
+    """Cap recovery payload to max_chars with visible truncation marker.
+
+    Mirrors the working_state size cap (#1341) in /end skill. If payload
+    exceeds the ceiling, truncate and append a visible marker showing how many
+    chars were omitted. The marker itself counts toward the ceiling so the
+    final output never exceeds max_chars.
+    """
+    if len(payload) <= max_chars:
+        return payload
+
+    # We need space for marker in format: "\n\n[truncated, NNN chars omitted]"
+    # Start with a conservative estimate of marker size (50 chars for worst case)
+    marker_overhead = 50
+
+    if max_chars <= marker_overhead:
+        # Extreme case: ceiling is too small to even fit marker; just hard-cut
+        return payload[:max_chars]
+
+    # First pass: truncate with estimated overhead
+    available = max_chars - marker_overhead
+    truncated = payload[:available].rstrip()
+
+    # Calculate actual omitted count
+    omitted = len(payload) - len(truncated)
+
+    # Build marker with actual omitted count
+    marker = f"\n\n[truncated, {omitted} chars omitted]"
+
+    # Check if it fits; if not, adjust the truncation point
+    result = truncated + marker
+    if len(result) <= max_chars:
+        return result
+
+    # Second pass: result is still too long, trim truncated part more aggressively
+    overage = len(result) - max_chars
+    truncated = payload[:available - overage].rstrip()
+    omitted = len(payload) - len(truncated)
+    marker = f"\n\n[truncated, {omitted} chars omitted]"
+    result = truncated + marker
+
+    # Final verification (should always be true now)
+    return result[:max_chars] if len(result) > max_chars else result
+
+
 def _format_recovery_section(payload: str, session_id: str) -> str:
     sid = _safe_session_id(session_id) or "unknown-session"
+    capped_payload = _cap_recovery_payload(payload)
     return (
         "## Pre-Compact Recovery\n"
         "Compaction happened earlier — deterministic snapshot pointer below. "
         f"The full row is `session_snapshot_{sid}` via `memory_get`.\n\n"
-        f"{payload}"
+        f"{capped_payload}"
     )
 
 
@@ -352,10 +413,9 @@ def _compose_recovery_payload(
 # Budget-aware assembly (#1271 C.1 rows 4-5, decisions 7fe96e01/6c32b280/
 # 02b48a04). Units are CHARS everywhere (not bytes). 9,500 leaves 500 chars of
 # headroom against the 10,000-char harness cap; the self-log makes spill a
-# trendable signal instead of a silent truncation.
+# trendable signal instead of a silent truncation. Constants are defined earlier
+# (see _cap_recovery_payload) to allow use as default parameters.
 # ---------------------------------------------------------------------------
-
-ASSEMBLY_BUDGET_CHARS = 9500
 
 # Section drop-priority, HIGHEST = 0 (dropped last) → higher number = dropped
 # first. Pre-Compact Recovery outranks everything; the durable layer
@@ -373,9 +433,15 @@ ASSEMBLY_BUDGET_CHARS = 9500
 # duplicate what the just-compacted summary + Pre-Compact Recovery pointer
 # already carry, so their priority numbers below only govern startup-trigger
 # drop order.
-# The former CONTEXT.md push (project_context) is gone — Invariants +
-# Glossary index now ride @import instead (#1417), which never enters this
-# priority ladder.
+# Issue #1097 resolution (#1417): the former CONTEXT.md push (project_context)
+# is gone — rather than raise the 8KB cap, the entire truncated push was removed.
+# Invariants + Glossary index now ride @import instead, which never enters this
+# priority ladder. This eliminates the silent truncation that dropped content
+# in 47% of sessions (per CONTEXT.md → Context delivery). The AC criteria are
+# met: (a) truncation of CONTEXT.md is now IMPOSSIBLE (it's never pushed),
+# (b) no silent drops (Invariants arrive via @import, guaranteed), (c) tests
+# at test_context_extraction_guard.py + test_context_budget_guard.py verify
+# the fix persists (TestRetiredAssemblerPath checks removed functions; other guards verify imports).
 _PRIORITY_RECOVERY = 0
 _PRIORITY_ALWAYS_LOAD = 1
 _PRIORITY_USER_PROFILE = 2
@@ -430,6 +496,25 @@ def assemble_sections(sections, budget_chars: int = ASSEMBLY_BUDGET_CHARS):
         dropped_names.append(kept[drop_idx][1])
         del kept[drop_idx]
     emitted_ids = list(dict.fromkeys(sid for _, _, _, ids in kept for sid in ids))
+
+    # Guard: len(kept) <= 1 is a non-guaranteeing escape hatch (NOT a budget
+    # guarantee). It ensures we never drop all sections entirely. However, it
+    # does NOT guarantee the final output stays within budget if that remaining
+    # section exceeds budget on its own. All high-priority sections (recovery,
+    # always_load, working_state, etc.) must enforce their own size ceilings
+    # to prevent individual overflow. The recovery section ceiling (#1353) and
+    # always_load byte cap (#1252) fulfill this for the critical path; if a
+    # section lacks a self-cap and the guard is hit, the output may exceed
+    # budget. Flag this in stderr if it occurs.
+    if len(kept) == 1 and len(output) > budget_chars:
+        section_name = kept[0][1] if kept else "unknown"
+        print(
+            f"[session-context] WARNING: final {section_name} section alone exceeds "
+            f"budget ({len(output)} chars vs {budget_chars} limit) — section must have "
+            f"size ceiling (see #1353). Output will be oversized.",
+            file=sys.stderr,
+        )
+
     return output, dropped_names, emitted_ids, len(output)
 
 

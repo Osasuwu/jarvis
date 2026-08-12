@@ -30,9 +30,9 @@ What FOK gives:
 
 | Component | Status | File / Object |
 |---|---|---|
-| Recall event emit (fire-and-forget) | shipped | `_emit_recall_event` in `mcp-memory/handlers/memory.py`; payload: `{query, returned_ids, returned_similarities, returned_count, top_sim, threshold, project, type_filter, show_history}` |
-| Events table | shipped | `events` (`mcp-memory/schema.sql`), `event_type='memory_recall'` |
-| Batch judge | shipped | `scripts/fok-batch.py` — Haiku judges last-24h unfudged events, writes verdict back to `events.payload` |
+| Recall event emit (fire-and-forget) | shipped | `_emit_recall_event` in `mcp-memory/handlers/memory.py`; payload: `{query, returned_ids, returned_similarities, returned_count, top_sim, threshold, project, type_filter, show_history}`. **Status (#1493):** rerouted to raw-insert into `events_canonical` (C17 substrate) via `asyncio.to_thread`; no longer writes `events` |
+| Events table | shipped | `events` (`mcp-memory/schema.sql`), `event_type='memory_recall'`. **Status (#1493):** `memory_recall`/`fok_run` producers (this emit + the UserPromptSubmit hook) moved to `events_canonical`; `events` retained for other event types pending #1524 |
+| Batch judge | shipped | `scripts/fok-batch.py` — Haiku judges last-24h unfudged events, writes verdict back to `events.payload`. **Status (#1493):** reads/writes `events_canonical` instead of `events`; `fok_judgments` linkage unaffected |
 | Known-unknowns table | shipped | `known_unknowns` (#249) |
 | Known-unknowns from FOK | shipped (batch) | `try_insert_known_unknown` in `fok-batch.py` — `verdict=insufficient AND confidence<0.7 AND top_sim<0.6` triggers insert |
 | Known-unknowns from recall | shipped (sync) | `_hybrid_recall` itself upserts `known_unknowns` at `top_sim < GAP_THRESHOLD=0.45` (memory.py:374) **and again** at `top_sim < 0.45` hardcoded (memory.py:397) — duplicate path. **Status (#444):** both inline upserts removed in Phase 5.3-γ; gap detection now lives in the batch FOK judge (per D5 plan below) |
@@ -43,7 +43,7 @@ What FOK gives:
 | Judge model is `claude-3-5-haiku-20241022` | Project standard moved to Haiku 4.5 (`claude-haiku-4-5-20251001`); 3.5 Haiku is on retirement track |
 | No scheduled cadence | Script exists but no scheduled-task entry. Ran ad-hoc; events accumulate unjudged |
 | Verdict stored in `events.payload` JSONB | Hard to FK to outcomes for calibration; awkward `WHERE payload->>'fok_verdict'` queries; no model/version columns |
-| UserPromptSubmit hook calls match RPCs directly | `scripts/memory-recall-hook.py` bypasses `_handle_recall`, so its (high-volume) recalls are NOT in `events` and therefore NOT judged |
+| UserPromptSubmit hook calls match RPCs directly | `scripts/memory-recall-hook.py` bypasses `_handle_recall`, so its (high-volume) recalls are NOT in `events` and therefore NOT judged. **Status (#1493):** hook now does its own raw insert into `events_canonical`, so its recalls ARE captured (in the new substrate) and eligible for FOK judging |
 | No calibration of the judge | Verdicts written, never compared to whether the downstream task actually succeeded |
 | Two redundant inline gap-detect paths | `_hybrid_recall` upserts `known_unknowns` twice in the same function call on the same condition. **Status (#444):** removed in Phase 5.3-γ |
 

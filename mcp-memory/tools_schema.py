@@ -214,6 +214,19 @@ def tool_definitions() -> list[Tool]:
                             "(Phase 4), or a URL/tool-name when external."
                         ),
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["full", "merge_section"],
+                        "default": "full",
+                        "description": (
+                            "Write mode. Default 'full': replace entire content. "
+                            "'merge_section': splice only the matching section (by markdown header, e.g. '## [entry] some-name') "
+                            "into the stored document server-side, preserving all sibling sections. "
+                            "If target section absent, append as new section. "
+                            "If existing content is unparseable as markdown sections, fails loudly. "
+                            "Prevents client-side read-modify-write races."
+                        ),
+                    },
                 },
                 "required": ["type", "name", "content", "source_provenance"],
             },

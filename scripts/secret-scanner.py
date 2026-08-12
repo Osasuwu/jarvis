@@ -155,9 +155,14 @@ def extract_file_write_text(tool_input: dict) -> str:
     return "\n".join(parts)
 
 
-# Regex to match heredoc bodies: <<'EOF'...EOF or <<EOF...EOF (multiline)
+# Regex to match heredoc bodies: <<'EOF'...EOF or <<EOF...EOF (multiline).
+# The closing delimiter line ends the match at a `)` (subshell close), a
+# following newline (more commands after the heredoc — the common case), or
+# absolute end-of-string. Without the `\n` lookahead, a heredoc followed by
+# anything but `)`/end-of-string failed to strip at all, leaving its full
+# body exposed to BASH_DANGER_PATTERNS (#1454).
 _HEREDOC_RE = re.compile(
-    r"<<-?\s*'?(\w+)'?\s*\n.*?\n\s*\1\s*(?:\)|$)",
+    r"<<-?\s*'?(\w+)'?\s*\n.*?\n\s*\1\s*(?:\)|(?=\n)|$)",
     re.DOTALL,
 )
 
