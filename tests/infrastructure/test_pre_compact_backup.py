@@ -73,6 +73,100 @@ def _assistant_text(ts: str, text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# _extract_prohibiting_rules
+# ---------------------------------------------------------------------------
+class TestExtractProhibitingRules:
+    """Tests for _extract_prohibiting_rules (#1204 — compaction resilience)."""
+
+    def test_extracts_do_not_rules(self, tmp_path):
+        claude_file = tmp_path / "CLAUDE.md"
+        claude_file.write_text(
+            """# Test CLAUDE.md
+
+Some documentation.
+
+- **Do not merge PRs.** Let the owner handle merges.
+- Do not touch protected files without confirmation.
+
+More text.
+""",
+            encoding="utf-8",
+        )
+        rules = pcb._extract_prohibiting_rules(str(tmp_path))
+        assert len(rules) > 0
+        assert any("Do not merge" in r for r in rules)
+        assert any("Do not touch" in r for r in rules)
+
+    def test_extracts_never_rules(self, tmp_path):
+        claude_file = tmp_path / "CLAUDE.md"
+        claude_file.write_text(
+            """Never install packages without user approval.
+Never skip pre-commit hooks.""",
+            encoding="utf-8",
+        )
+        rules = pcb._extract_prohibiting_rules(str(tmp_path))
+        assert any("Never install" in r for r in rules)
+
+    def test_skips_header_only_lines(self, tmp_path):
+        claude_file = tmp_path / "CLAUDE.md"
+        claude_file.write_text(
+            """# Prohibiting Rules
+## Do Not Do This Section
+
+Do not actually do this thing here.""",
+            encoding="utf-8",
+        )
+        rules = pcb._extract_prohibiting_rules(str(tmp_path))
+        # Headers should be skipped, only actual rules extracted
+        assert all(not r.startswith("#") for r in rules)
+
+    def test_missing_claude_md_returns_empty(self, tmp_path, monkeypatch):
+        # Mock Path.home() so user-level CLAUDE.md is also not found
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path / "fake_home")
+        rules = pcb._extract_prohibiting_rules(str(tmp_path))
+        assert rules == []
+
+    def test_malformed_claude_md_is_skipped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path / "fake_home")
+        claude_file = tmp_path / "CLAUDE.md"
+        # Write binary junk to cause read error
+        claude_file.write_bytes(b"\x80\x81\x82")
+        # Should not raise, just return empty
+        rules = pcb._extract_prohibiting_rules(str(tmp_path))
+        assert rules == []
+
+    def test_extracts_standing_order_rules(self, tmp_path):
+        claude_file = tmp_path / "CLAUDE.md"
+        claude_file.write_text(
+            """Aligned plans are standing orders once signed off.""",
+            encoding="utf-8",
+        )
+        rules = pcb._extract_prohibiting_rules(str(tmp_path))
+        assert any("standing order" in r.lower() for r in rules)
+
+    def test_none_cwd_returns_empty(self):
+        rules = pcb._extract_prohibiting_rules(None)
+        assert rules == []
+
+    def test_worktree_cwd_resolves_to_containing_repo(self, tmp_path, monkeypatch):
+        # `<repo>/.claude/worktrees/<name>` — cwd is deep in the worktree;
+        # component scan must find CLAUDE.md in a parent directory (#1177/#1204).
+        repo_root = tmp_path / "jarvis"
+        repo_root.mkdir()
+        repo_claude = repo_root / "CLAUDE.md"
+        repo_claude.write_text("Never deploy on Fridays without testing.", encoding="utf-8")
+
+        # cwd is deep inside the repo (simulating a worktree nested path)
+        deep_cwd = repo_root / ".claude" / "worktrees" / "grill-1255" / "some" / "nested" / "path"
+        deep_cwd.mkdir(parents=True)
+
+        # Should still find the CLAUDE.md at the repo root by scanning path components
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path / "fake_home")
+        rules = pcb._extract_prohibiting_rules(str(deep_cwd))
+        assert any("Never deploy" in r for r in rules)
+
+
+# ---------------------------------------------------------------------------
 # _detect_project
 # ---------------------------------------------------------------------------
 class TestDetectProject:
@@ -302,7 +396,9 @@ class TestExtractLastAssistantText:
 # _compose_markdown
 # ---------------------------------------------------------------------------
 class TestComposeMarkdown:
-    def test_structure(self):
+    def test_structure(self, tmp_path, monkeypatch):
+        # Stub _extract_prohibiting_rules to control output for this test
+        monkeypatch.setattr(pcb, "_extract_prohibiting_rules", lambda x: [])
         entries = [
             _user_entry("t1", "what's next?"),
             _assistant_tool("t2", "Bash", {"command": "git status"}),
@@ -323,6 +419,19 @@ class TestComposeMarkdown:
         assert "[~] ship it" in md
         assert "## Last assistant message" in md
         assert "Done." in md
+
+    def test_includes_prohibiting_rules_section(self, tmp_path, monkeypatch):
+        rules = [
+            "Do not merge PRs without approval.",
+            "Never bypass pre-commit hooks.",
+        ]
+        monkeypatch.setattr(pcb, "_extract_prohibiting_rules", lambda x: rules)
+        entries = [_user_entry("t1", "hello")]
+        md = pcb._compose_markdown("s-1", "manual", "/x/jarvis", entries, 1, 0)
+        assert "## Prohibiting Rules & Standing Orders" in md
+        assert "Do not merge PRs without approval." in md
+        assert "Never bypass pre-commit hooks." in md
+        assert "must be preserved and re-injected" in md
 
     def test_reports_dropped_head(self):
         md = pcb._compose_markdown("s", "auto", "/x", [], total_seen=15000, dropped_head=7000)
