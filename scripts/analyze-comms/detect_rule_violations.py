@@ -70,6 +70,11 @@ def extract_keywords(content: str, top_n: int = 8) -> list[str]:
 
     Single-document term frequency (no corpus for real TF-IDF) — the simple
     top-N frequency ranking the issue's AC explicitly allows.
+    # ceiling: single-doc frequency has no cross-rule specificity weighting;
+    # short/generic memory content yields low-discriminative keywords (see
+    # #513 PR smoke run — 860 false-positive candidates on one rule). Upgrade
+    # path: real corpus-wide TF-IDF once #514 has enough labeled rules to
+    # form a corpus.
     """
     words = [w.lower() for w in _KEYWORD_WORD_RE.findall(content)]
     counts = Counter(w for w in words if w not in _STOPWORDS)
@@ -100,6 +105,10 @@ def merge_into_patterns_json(target: Path, candidates: list[dict]) -> None:
 def scan_messages(
     messages_by_session: dict[str, list[dict]],
     rules: list[dict],
+    # ceiling: hardcoded absolute-match floor, not scaled to len(keywords) —
+    # a rule with 2 keywords needs both to match, one with 8 needs only 2/8.
+    # Upgrade path: scale to a min_matches/len(keywords) ratio once #514's
+    # labeled data shows where the current floor over/under-fires.
     min_matches: int = 2,
 ) -> list[dict]:
     candidates: list[dict] = []
@@ -154,7 +163,11 @@ def fetch_always_load_feedback_memories(
 
 
 def main(src_path: str, out_path: str) -> None:  # pragma: no cover — covered by smoke
-    client = _get_supabase_client()
+    try:
+        client = _get_supabase_client()
+    except RuntimeError as e:
+        print(f"[detect_rule_violations] skipping — {e}", file=sys.stderr)
+        return
     rules = load_rules_from_memories(fetch_always_load_feedback_memories(client))
 
     messages_by_session: dict[str, list[dict]] = defaultdict(list)

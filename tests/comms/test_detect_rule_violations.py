@@ -125,6 +125,38 @@ def test_merge_into_patterns_json_creates_file_if_absent(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# main — graceful degradation when Supabase creds are unset (review finding,
+# #513 PR: SKILL.md documents "skip that one detector ... continue", but the
+# uncaught RuntimeError aborted the && chain before detect_hallucinations.py
+# ever ran)
+# ---------------------------------------------------------------------------
+
+
+def test_get_supabase_client_raises_when_creds_unset(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+
+    try:
+        _mod._get_supabase_client()
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_main_skips_gracefully_without_crashing_when_creds_unset(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    src = tmp_path / "comms_extract.jsonl"
+    src.write_text("", encoding="utf-8")
+    out = tmp_path / "MAINPC_patterns.json"
+
+    _mod.main(str(src), str(out))  # must not raise
+
+    assert not out.exists()  # skipped before any write — nothing to merge
+    assert "skipping" in capsys.readouterr().err
+
+
 def test_load_rules_from_memories_derives_keywords_per_memory():
     memories = [
         {

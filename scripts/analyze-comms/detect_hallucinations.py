@@ -22,6 +22,11 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+# ceiling: fixed phrase list, not learned from labeled corrections — a
+# correction phrased outside these RU/EN patterns (or a false-positive match,
+# e.g. "I never said that" used sarcastically in agreement) is invisible to
+# this detector. Upgrade path: once #514 has labeled corrections, mine the
+# false-negative set to expand/tune the pattern list against real misses.
 CORRECTION_RE = re.compile(
     r"не\s+говорил|галлюцин|приписыва|это\s+сказал\s+я|я\s+говорил\s+не"
     r"|не\s+мои\s+слова|не\s+моя\s+идея|я\s+имел\s+в\s+виду\s+не"
@@ -30,6 +35,10 @@ CORRECTION_RE = re.compile(
     re.I,
 )
 
+# ceiling: fixed window, not scaled to conversation density — a correction
+# more than 3 messages after the flagged assistant turn (e.g. user re-reads
+# a transcript later in a long session) is missed. Upgrade path: once #514
+# has labeled data, tune this against the observed correction-to-source gap.
 _DEFAULT_LOOKBACK = 3
 
 
