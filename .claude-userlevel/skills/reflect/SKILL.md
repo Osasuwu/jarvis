@@ -81,7 +81,7 @@ ssh "$HOST" "if not exist \"$RSTAGE\" mkdir \"$RSTAGE\""
 ssh "$HOST" "cd /d \"%JARVIS_HOME%\\scripts\\analyze-comms\" && python extract_comms.py \"$RSTAGE\\comms_extract.jsonl\" && python compress_patterns.py \"$RSTAGE\\comms_extract.jsonl\" \"$RSTAGE\\${RDEV}_patterns.json\" && python detect_rule_violations.py \"$RSTAGE\\comms_extract.jsonl\" \"$RSTAGE\\${RDEV}_patterns.json\" && python detect_hallucinations.py \"$RSTAGE\\comms_extract.jsonl\" \"$RSTAGE\\${RDEV}_patterns.json\""
 ```
 
-`detect_rule_violations.py` needs `SUPABASE_URL`/`SUPABASE_KEY` set on the remote — if that fails there, drop it from the chained command for that host and continue with the rest (`detect_hallucinations.py` still runs).
+`detect_rule_violations.py` needs `SUPABASE_URL`/`SUPABASE_KEY` set on the remote — if unset, it self-skips (logs to stderr, exits 0) and the `&&` chain continues on its own; no manual edit to the chained command is needed.
 
 **Unix remotes**: same commands as Step A1 with `$HOME`/`$JARVIS_HOME` syntax. Detect by trying `ssh "$HOST" uname` — success ⇒ Unix.
 
