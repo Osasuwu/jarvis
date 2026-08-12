@@ -1,7 +1,9 @@
-"""Cross-device liveness read for reactive-core drivers (#1085 S2-6).
+"""Cross-device liveness read/write for reactive-core drivers (#1085 S2-6/S3-1).
 
-The WRITE side (``wake_driver`` stamping its own tick into ``driver_heartbeat``)
-ships in Slice 3 (S3-1). This module is the READ side, shipped in Slice 2 so
+The WRITE side (``wake_driver`` stamping its own tick into ``driver_heartbeat``
+via :meth:`HeartbeatPort.record_tick`) ships in Slice 3 (S3-1), through the
+``driver_heartbeat_tick`` RPC so the timestamp is server-side ``now()`` — a
+client clock would drift across devices. The READ side shipped in Slice 2 so
 `/dispatch` can warn "driver stale — rows enqueued but may not run" right
 after enqueue: a row with no writer yet is legitimately "stale" too, so the
 classifier treats a missing row the same as an old one.
@@ -52,9 +54,12 @@ class HeartbeatPort(Protocol):
     def read_heartbeat(self, driver_name: str) -> dict[str, Any] | None:
         """Return the raw ``driver_heartbeat`` row for ``driver_name``, or ``None``."""
 
+    def record_tick(self, driver_name: str) -> None:
+        """Upsert ``driver_name``'s ``last_tick`` to the server's current time."""
+
 
 class SupabaseHeartbeat:
-    """Real adapter — one-row lookup on ``driver_heartbeat``."""
+    """Real adapter — one-row lookup/upsert on ``driver_heartbeat``."""
 
     def __init__(self, client: Client | None = None) -> None:
         self._client = client
@@ -69,6 +74,10 @@ class SupabaseHeartbeat:
             .execute()
         ).data or []
         return rows[0] if rows else None
+
+    def record_tick(self, driver_name: str) -> None:
+        cli = self._client or get_client()
+        cli.rpc("driver_heartbeat_tick", {"p_driver_name": driver_name}).execute()
 
 
 def classify(
