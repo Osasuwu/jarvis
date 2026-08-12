@@ -72,8 +72,11 @@ BLOCK_THRESHOLD = 0.75  # different-name match at this similarity → block
 
 REUPDATE_SIMILARITY_THRESHOLD = 0.95  # extremely-high similarity → likely re-update
 # When a match scores >0.95 (e.g., a daily-cron memory at ~0.98), treat it as
-# an idempotent re-store rather than a cross-name duplicate. Used as fallback
-# if row_exists check fails due to timing/connection issues (#1098).
+# an idempotent re-store rather than a cross-name duplicate. Applies whenever
+# row_exists() didn't confirm an existing row under the new name — both when
+# the row genuinely doesn't exist yet (the common daily-cron case: a fresh
+# date-suffixed name) and when the query itself failed (timing/connection
+# issues) (#1098).
 
 VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
@@ -119,9 +122,10 @@ def is_likely_reupdate(existing_name: str, new_name: str, similarity: float) -> 
 
     Re-stores (idempotent updates like daily-cron snapshots) score extremely high
     (>0.95 similarity) and may have minor name variants (date-keyed or versioned).
-    This function detects such cases as a fallback when row_exists check fails
-    due to timing/connection issues, preventing false-blocks on legitimate
-    re-stores (#1098).
+    This function detects such cases as a fallback whenever row_exists() didn't
+    confirm an existing row under the new name — the common case being a fresh
+    date-suffixed name that genuinely has no row yet, not just a query failure —
+    preventing false-blocks on legitimate re-stores (#1098).
 
     ceiling: Narrow calibration to date-suffix-style recurring names (e.g.
     status_2026-08-11 vs status_2026-08-12). Risk: may also match genuinely-
@@ -148,8 +152,10 @@ def row_exists(client, name: str, project) -> bool | None:
 
     Returns:
       True: row found (upsert case)
-      False: row not found (new write, proceed to dedup check)
-      None: query failed (treat as fallback for reupdate detection)
+      False: row not found (new write — proceed to dedup check; the common
+        case for a fresh date-suffixed cron name, also eligible for the
+        reupdate fallback below)
+      None: query failed (also eligible for the reupdate fallback)
     """
     norm_project = None if project == "global" else project
     try:
@@ -252,8 +258,8 @@ def main():
     row_check = row_exists(client, new_name, new_project)
     if row_check is True:  # Row exists — upsert case, skip dedup
         allow()
-    # row_check is False (no row) → continue to dedup check
-    # row_check is None (query failed) → continue; may apply reupdate fallback below
+    # row_check is False (no row) or None (query failed) → continue to dedup
+    # check; both are eligible for the reupdate fallback below.
 
     query_embedding = embed(embed_text)
     if query_embedding is None:
@@ -291,10 +297,11 @@ def main():
     existing_desc = top.get("description") or ""
 
     # Very high similarity + name correlation = likely re-store (daily-cron, etc.).
-    # Allow as idempotent upsert even though names differ, but ONLY if row_exists
-    # check failed (query error, not "no row found"). This is the true fallback
-    # case for cron re-stores that bypass the unique-key check due to timing issues.
-    if row_check is None and is_likely_reupdate(existing_name, new_name, sim):
+    # Allow as idempotent upsert even though names differ, as long as row_exists
+    # didn't positively confirm an existing row under the new name (row_check is
+    # False — the common case, a fresh date-suffixed name with no row yet — or
+    # None — the query itself failed). row_check is True already exited above.
+    if row_check is not True and is_likely_reupdate(existing_name, new_name, sim):
         allow()
 
     # Cross-name collision with moderate-to-high similarity. Block with actionable guidance.

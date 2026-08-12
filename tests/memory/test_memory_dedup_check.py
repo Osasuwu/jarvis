@@ -302,8 +302,8 @@ class TestIsLikelyReupdate:
 class TestMainReupdateDetection:
     def test_daily_cron_reupdate_allowed_on_query_failure(self, monkeypatch):
         """AC1: Daily-cron memory re-storing with date-variant name + 0.98 similarity
-        is allowed as idempotent re-store ONLY when row_exists query fails (not when
-        row simply doesn't exist). This is the true fallback case for timing issues."""
+        is allowed as idempotent re-store when row_exists query fails (timeout/error,
+        row_check is None). This is one of the two fallback-eligible cases."""
         fake_client = _fake_client(
             existing_row_error=True,  # row_exists check fails (timeout/error) → None
             rpc_rows=[
@@ -337,6 +337,46 @@ class TestMainReupdateDetection:
         )
         # row_exists fails (None), is_likely_reupdate triggers (0.98 > 0.95 + names differ by 1 char)
         # → allow() → exit 0, no deny JSON
+        assert code == 0
+        assert out == ""
+
+    def test_daily_cron_reupdate_allowed_when_row_genuinely_absent(self, monkeypatch):
+        """#1098 core case: row_exists() succeeds (no query error) and correctly
+        returns False because a fresh date-suffixed name has no row yet — this is
+        the realistic daily-cron scenario, not a query failure. The reupdate
+        fallback must fire here too, or the fix doesn't cover the bug #1098 reports."""
+        fake_client = _fake_client(
+            existing_row=False,  # row_exists succeeds, no row found → False (not None)
+            rpc_rows=[
+                {
+                    "name": "status_snapshot_2026-08-11",
+                    "project": "jarvis",
+                    "type": "reference",
+                    "description": "Status snapshot from 2026-08-11",
+                    "similarity": 0.98,  # Near-identical reruns
+                    "tags": [],
+                }
+            ],
+        )
+        monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+        code, out = _run_main(
+            {
+                "tool_name": "mcp__memory__memory_store",
+                "tool_input": {
+                    "name": "status_snapshot_2026-08-12",  # Different name, same content
+                    "type": "reference",
+                    "project": "jarvis",
+                    "description": "Status snapshot from 2026-08-12",
+                    "content": "Status snapshot from yesterday (near-identical)",
+                },
+            },
+            monkeypatch,
+            embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
+        )
+        # row_check is False (not None) — must still hit the reupdate fallback.
         assert code == 0
         assert out == ""
 
