@@ -301,31 +301,34 @@ def _make_env_with_lockfile(tmp_path, probe_modules=("modA", "modB")):
 
 
 def test_check_prefers_lockfile_hash_over_manifest_when_lockfile_exists(tmp_path, monkeypatch):
-    """Lockfile parity AC#2: check() uses lockfile hash if present (#1313)."""
+    """Lockfile parity AC#2: check() uses combined hash when lockfile present (#1313)."""
     env = _make_env_with_lockfile(tmp_path)
-    lockfile_hash = env_sync._manifest_hash(env.lockfile)
-    env.stamp_path.write_text(lockfile_hash, encoding="utf-8")
+    # When both manifest and lockfile exist, use combined hash
+    combined_hash = env_sync._combined_hash(env.manifest, env.lockfile)
+    env.stamp_path.write_text(combined_hash, encoding="utf-8")
     monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
 
     result = env_sync.check(env)
 
-    # Should be in sync because lockfile hash matches stamp
+    # Should be in sync because combined hash matches stamp
     assert result.in_sync is True
 
 
 def test_check_detects_lockfile_drift(tmp_path, monkeypatch):
-    """Lockfile parity AC#2: check() detects when lockfile changes (#1313)."""
+    """Lockfile parity AC#2: check() detects when manifest drifts from lockfile (#1313)."""
     env = _make_env_with_lockfile(tmp_path)
-    env.stamp_path.write_text(env_sync._manifest_hash(env.lockfile), encoding="utf-8")
+    # Save combined hash of initial state
+    combined_hash = env_sync._combined_hash(env.manifest, env.lockfile)
+    env.stamp_path.write_text(combined_hash, encoding="utf-8")
     # Simulate Dependabot widening manifest range
     env.manifest.write_text("modA>=1,<3\nmodB>=1,<2\n", encoding="utf-8")
-    # Lockfile not yet regenerated — drift detected
+    # Lockfile not yet regenerated — drift detected (combined hash changed)
     monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
 
     result = env_sync.check(env)
 
-    # Lockfile hash hasn't changed, so no drift yet
-    assert result.in_sync is True
+    # Manifest changed but lockfile didn't, so combined hash changed → drift detected
+    assert result.in_sync is False
 
 
 def test_check_detects_new_lockfile_as_drift(tmp_path, monkeypatch):

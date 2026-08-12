@@ -106,6 +106,20 @@ def _manifest_hash(manifest: Path) -> str:
     return hashlib.sha256(manifest.read_bytes()).hexdigest()
 
 
+def _combined_hash(manifest: Path, lockfile: Path) -> str:
+    """Hash both manifest and lockfile together for drift detection (#1313).
+
+    When both files exist, changes to either the manifest (dependency ranges)
+    or lockfile (resolved versions) are detected as drift. This ensures that
+    if Dependabot updates the manifest, the missing lockfile regeneration is
+    caught as drift (manifest hash != lockfile hash hash combination).
+    """
+    manifest_bytes = manifest.read_bytes()
+    lockfile_bytes = lockfile.read_bytes()
+    combined = manifest_bytes + lockfile_bytes
+    return hashlib.sha256(combined).hexdigest()
+
+
 def _get_hash_source(env: ManagedEnv) -> Path:
     """Return the file to hash for drift detection (#1313).
 
@@ -145,8 +159,12 @@ def _probe_import(python_exe: Path, module: str, timeout: int = 15) -> bool:
 
 
 def check(env: ManagedEnv) -> CheckResult:
-    hash_source = _get_hash_source(env)
-    new_hash = _manifest_hash(hash_source)
+    # When both manifest and lockfile exist, hash both to detect drift in either
+    if env.lockfile and env.lockfile.exists() and env.manifest.exists():
+        new_hash = _combined_hash(env.manifest, env.lockfile)
+    else:
+        hash_source = _get_hash_source(env)
+        new_hash = _manifest_hash(hash_source)
     old_hash = _read_stamp(env.stamp_path)
     if old_hash != new_hash:
         return CheckResult(False, "hash_mismatch", old_hash, new_hash)
@@ -292,8 +310,12 @@ def heal(env: ManagedEnv, timeout: int = DEFAULT_HEAL_TIMEOUT) -> HealResult:
             if rc != 0:
                 return HealResult(False, f"{install_method}_failed", old_hash, log_path=log_path)
 
-            hash_source = _get_hash_source(env)
-            new_hash = _manifest_hash(hash_source)
+            # Compute new hash using same logic as check()
+            if env.lockfile and env.lockfile.exists() and env.manifest.exists():
+                new_hash = _combined_hash(env.manifest, env.lockfile)
+            else:
+                hash_source = _get_hash_source(env)
+                new_hash = _manifest_hash(hash_source)
             for module in env.probe_modules:
                 if not _probe_import(env.venv_python, module):
                     return HealResult(False, f"probe_failed:{module}", old_hash, new_hash, log_path)

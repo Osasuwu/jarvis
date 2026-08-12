@@ -13,6 +13,27 @@ on:
     branches: [main]
 
 jobs:
+  lockfile-check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Check root uv.lock is in sync with pyproject.toml
+        run: uv lock --check
+
+      - name: Check mcp-memory uv.lock is in sync with requirements
+        run: uv lock --project mcp-memory --check
+
   pytest:
     runs-on: ubuntu-latest
     permissions:
@@ -32,7 +53,7 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run pytest
-        run: pytest tests/ -v
+        run: uv run pytest tests/ -v
 
   # DB-gated integration tests (issue #975). Without a real Postgres the
   # advancer's FOR UPDATE SKIP LOCKED / ON CONFLICT dedup / interval arithmetic
@@ -97,7 +118,7 @@ jobs:
       - name: Run DB-gated advancer tests
         env:
           REQUIRE_DB: "1"
-        run: pytest tests/reactive_core/test_global_task_advancer.py -v -rs
+        run: uv run pytest tests/reactive_core/test_global_task_advancer.py -v -rs
 
   # DB-gated find_consolidation_clusters tests (#1187). The rewritten RPC
   # (supabase/migrations/20260715130000_rewrite_find_consolidation_clusters.sql)
@@ -154,7 +175,7 @@ jobs:
       - name: Run DB-gated consolidation-cluster tests
         env:
           REQUIRE_DB: "1"
-        run: pytest tests/memory/test_find_consolidation_clusters_db.py -v -rs
+        run: uv run pytest tests/memory/test_find_consolidation_clusters_db.py -v -rs
 
   # DB-gated task_queue.enqueue() issue_number CAS tests (#1085 S1-3). The
   # partial unique index on issue_number (scoped to non-terminal rows) is
@@ -210,4 +231,4 @@ jobs:
       - name: Run DB-gated task_queue issue_number tests
         env:
           REQUIRE_DB: "1"
-        run: pytest tests/reactive_core/test_task_queue_issue_number_db.py -v -rs
+        run: uv run pytest tests/reactive_core/test_task_queue_issue_number_db.py -v -rs

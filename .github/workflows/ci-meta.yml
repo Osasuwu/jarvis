@@ -33,4 +33,4 @@ jobs:
         run: uv sync --all-extras
 
       - name: Run meta-tests
-        run: pytest tests/ci/ -v
+        run: uv run pytest tests/ci/ -v
