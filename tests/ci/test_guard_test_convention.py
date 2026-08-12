@@ -1,6 +1,6 @@
 """Carrier-2 gate for the path-filtered-guard convention (#326, mechanized by #1418).
 
-The rule, from `CLAUDE.md`: any workflow under `.github/workflows/` with a `paths:`
+The rule, from `.claude/rules/path-filtered-ci-guards-meta-test.md`: any workflow under `.github/workflows/` with a `paths:`
 filter **that blocks PRs** must ship a co-located meta-test under `tests/ci/`, and
 that meta-test must name every path pattern the filter uses.
 

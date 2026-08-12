@@ -37,7 +37,7 @@ def _make_linkage_test_client(
     Simulates:
     - episodes.insert() returns decision with given timestamp
     - fok_judgments query returns provided judgments
-    - events query returns payloads keyed by event_id
+    - events_canonical query returns payloads keyed by event_id
     """
     if decision_timestamp is None:
         decision_timestamp = datetime.now(timezone.utc).isoformat()
@@ -65,7 +65,7 @@ def _make_linkage_test_client(
         )
         return chain
 
-    # Setup events.select() chain — captures event_id from .eq() for payload lookup
+    # Setup events_canonical.select() chain — captures event_id from .eq() for payload lookup
     def _events_select_side_effect(*_args, **_kwargs):
         chain = MagicMock()
         chain.single.return_value = chain
@@ -78,7 +78,7 @@ def _make_linkage_test_client(
         chain.eq.side_effect = _eq_side_effect
 
         def _execute_side_effect():
-            event_id = _captured.get("id")
+            event_id = _captured.get("event_id")
             if event_id is not None and event_payloads:
                 payload = event_payloads.get(str(event_id))
                 if payload is not None:
@@ -109,7 +109,7 @@ def _make_linkage_test_client(
             )
             client._fok_mock = m
             return m
-        elif name == "events":
+        elif name == "events_canonical":
             m = MagicMock()
             m.select.side_effect = _events_select_side_effect
             return m
@@ -270,6 +270,44 @@ class TestFokOutcomeLinkage:
         fok_mock.update.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_linkage_reads_events_canonical_not_events(self, monkeypatch):
+        """#1493 AC4: recall event lookup must query events_canonical, never events."""
+        from server import _handle_record_decision
+
+        fok_judgments = [
+            {"id": _UID_FOK_1, "recall_event_id": _UID_EVENT_1, "project": None},
+        ]
+        event_payloads = {
+            _UID_EVENT_1: {"returned_ids": [_UID_MEM_A]},
+        }
+
+        client = _make_linkage_test_client(
+            fok_judgments_to_return=fok_judgments,
+            event_payloads=event_payloads,
+        )
+        monkeypatch.setattr("server._get_client", lambda: client)
+
+        await _handle_record_decision(
+            {
+                "decision": "canonical table check",
+                "rationale": "verify events_canonical is targeted",
+                "reversibility": "reversible",
+                "memories_used": [_UID_MEM_A],
+                "outcomes_referenced": ["out-1"],
+            }
+        )
+
+        await asyncio.sleep(0)
+
+        table_names = [c.args[0] for c in client.table.call_args_list if c.args]
+        assert "events_canonical" in table_names
+        assert "events" not in table_names
+
+        # Verify update landed (proves the events_canonical lookup actually worked)
+        fok_mock = client._fok_mock
+        fok_mock.update.assert_called_once_with({"outcome_id": "out-1"})
+
+    @pytest.mark.asyncio
     async def test_linkage_skips_when_event_data_missing(self, monkeypatch):
         """No update when the recall event has no payload or doesn't exist."""
         from server import _handle_record_decision
@@ -371,19 +409,19 @@ class TestDecisionSwallowedExceptions:
         ]
         client = _make_linkage_test_client(fok_judgments_to_return=fok_judgments)
 
-        # Force the events.select("payload").eq("id", ...).single().execute()
+        # Force the events_canonical.select("payload").eq("event_id", ...).single().execute()
         # chain to raise, regardless of .eq()/.single() call order.
         events_mock = MagicMock()
         broken_chain = MagicMock()
         broken_chain.eq.return_value = broken_chain
         broken_chain.single.return_value = broken_chain
-        broken_chain.execute.side_effect = RuntimeError("events table unreachable")
+        broken_chain.execute.side_effect = RuntimeError("events_canonical table unreachable")
         events_mock.select.return_value = broken_chain
 
         base_table_side_effect = client.table.side_effect
 
         def _table_with_broken_events(name):
-            if name == "events":
+            if name == "events_canonical":
                 return events_mock
             return base_table_side_effect(name)
 

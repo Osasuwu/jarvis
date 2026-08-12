@@ -4,6 +4,12 @@ Invokes the Deriver pipeline to extract ``user`` and ``feedback`` memory
 candidates from the accumulated session transcript, then inserts them
 with ``requires_review=true`` for later owner review via ``/learn``.
 
+Runs two independent extraction passes per session-end event:
+``derive_from_session`` (the original default pass) and
+``derive_owner_self_pass`` (#1556 — non-reactive owner-self-reflection,
+tagged ``scope:owner-self``). Each pass is wrapped in its own
+try/except so a failure in one never prevents the other from running.
+
 Must run **after** ``deriver-accumulator.py`` in the Stop hook chain, so
 the buffer is populated before the Deriver reads it.
 
@@ -89,7 +95,7 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != "utf-8":
         pass
 
 try:
-    from deriver.pipeline import derive_from_session, project_hash
+    from deriver.pipeline import derive_from_session, derive_owner_self_pass, project_hash
 except Exception as _import_err:
     print(f"[deriver-sessionend] import skipped: {_import_err}", file=sys.stderr)
     sys.exit(0)
@@ -130,24 +136,32 @@ def main() -> int:
         return 0
 
     phash = project_hash(cwd)
-    try:
-        inserted = derive_from_session(
-            session_id,
-            project_hash=phash,
-        )
-        count = len(inserted)
-        if count:
-            ids = ",".join(str(u)[:8] for u in inserted)
-            print(
-                f"[deriver-sessionend] session={session_id[:8]} candidates={count} ids={ids}",
-                file=sys.stderr,
+
+    for label, pass_fn in (
+        ("default", derive_from_session),
+        ("owner-self", derive_owner_self_pass),
+    ):
+        try:
+            inserted = pass_fn(
+                session_id,
+                project_hash=phash,
             )
-        else:
-            print(f"[deriver-sessionend] session={session_id[:8]} no candidates", file=sys.stderr)
-    except Exception as e:
-        msg = f"{type(e).__name__}: {str(e)[:200]}"
-        print(f"[deriver-sessionend] error: {msg}", file=sys.stderr)
-        return 0
+            count = len(inserted)
+            if count:
+                ids = ",".join(str(u)[:8] for u in inserted)
+                print(
+                    f"[deriver-sessionend] pass={label} session={session_id[:8]} "
+                    f"candidates={count} ids={ids}",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"[deriver-sessionend] pass={label} session={session_id[:8]} no candidates",
+                    file=sys.stderr,
+                )
+        except Exception as e:
+            msg = f"{type(e).__name__}: {str(e)[:200]}"
+            print(f"[deriver-sessionend] pass={label} error: {msg}", file=sys.stderr)
 
     return 0
 

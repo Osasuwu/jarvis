@@ -66,6 +66,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from dotenv import load_dotenv
 
 from agents.config import load_config
+from agents.driver_heartbeat import DRIVER_NAME, HeartbeatPort, SupabaseHeartbeat
 from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
@@ -92,6 +93,9 @@ from agents.task_dispatch import (
     poll_completions,
     reclaim_stale_tasks,
     sweep_task_worktrees,
+    # #1085 S2 review finding 2: production outcome_record wiring for
+    # poll_completions (writes task_outcomes since /task-implement has no MCP).
+    _record_completion_outcome,
 )
 
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
@@ -220,13 +224,13 @@ EVENTS_CHANNEL = "events"
 TASK_QUEUE_CHANNEL = "task_queue"
 
 # Cap on one poller sweep's parked-event fetch (#1475 review, MEDIUM — the M2
-# finding PR #964 deferred until the production adapter shipped). Nothing in
-# production writes ``blocked_by_task_id`` yet (#1455), so this is a ceiling
-# on a currently-empty query, not a tuned value — revisit once #1455 ships a
-# producer and real volume is observable.
+# finding PR #964 deferred until the production adapter shipped). The #1455
+# producer (drain_pending → park_blocked_on_task) now writes these rows, so
+# the query is live — but volume is bounded by EMIT_TASK routing throughput,
+# far below this cap.
 # ceiling: unbounded parked-event backlog beyond this count is left for the
-# next sweep rather than fetched in one pass; raise once #1455's producer
-# ships and real backlog sizes are observable.
+# next sweep rather than fetched in one pass; raise if observed backlog ever
+# approaches it.
 PARKED_EVENTS_LIMIT = 200
 
 # Orchestrator stub returns whatever it likes; the driver only cares that it
@@ -250,10 +254,19 @@ class EventQueuePort(Protocol):
     def park(self, event_id: str, *, reason: str = "") -> bool:
         """Commit a ``claimed`` event to ``parked`` (#1385 AC-C poison-pill).
 
-        A parked event carries no ``blocked_by_task_id`` in its payload, so
-        :mod:`agents.poller` (Path B, #745) never re-queues it — a
-        crash-parked event stays parked until a human intervenes. Wiring a
-        live requeue path for this case is out of scope (#1393).
+        Leaves the ``blocked_by_task_id`` column NULL, so :mod:`agents.poller`
+        (Path B, #745) never re-queues it — a crash-parked event stays parked
+        until a human intervenes. Blocked-on-task parks go through
+        :meth:`park_blocked_on_task` instead (#1455).
+        """
+
+    def park_blocked_on_task(self, event_id: str, task_id: str, *, reason: str = "") -> bool:
+        """Commit a ``claimed`` event to ``parked`` blocked on ``task_id``
+        (#1455 Path B producer).
+
+        Atomically sets ``state='parked'`` AND ``blocked_by_task_id`` so the
+        #1393 poller finds the row. Distinct from :meth:`park`: poison-pill
+        parks keep the column NULL and stay parked forever (#1385 boundary).
         """
 
     def reclaim_stale(self, *, older_than_seconds: float) -> int:
@@ -347,18 +360,33 @@ def drain_pending(
     each isolated call then behaves as if poison-pill tracking didn't exist
     (a first failure always re-raises), which is what every pre-#1385 caller
     (and test) expects.
+
+    Path B producer (#1455): when the orchestrator's result carries a
+    ``blocked_by_task_id`` (an EMIT_TASK dispatch that enqueued a fresh task),
+    the event is parked blocked on that task via ``park_blocked_on_task``
+    instead of being marked processed — :mod:`agents.poller` requeues it once
+    the task reaches a terminal state, and the replayed drain closes it via an
+    enqueue collision (idempotency key unchanged because payload is immutable).
     """
     attempts = failed_events if failed_events is not None else {}
     processed = 0
     while (event := port.claim_next()) is not None:
         event_id = str(event["id"])
         try:
-            orchestrator(event)
+            result = orchestrator(event)
         except Exception as exc:
             attempts[event_id] = attempts.get(event_id, 0) + 1
             if attempts[event_id] < 2:
                 raise
             port.park(event_id, reason=f"poison-pill: {type(exc).__name__}: {exc}")
+            continue
+        # #1455 AC2 (Path B producer): a DispatchResult carrying a fresh task
+        # id parks the event blocked on that task instead of closing it —
+        # getattr keeps the Orchestrator contract Callable[[dict], Any] for
+        # plain callables that return anything else.
+        blocked = getattr(result, "blocked_by_task_id", None)
+        if blocked is not None:
+            port.park_blocked_on_task(event_id, str(blocked), reason=f"blocked on task {blocked}")
             continue
         port.mark_processed(event_id)
         processed += 1
@@ -381,6 +409,8 @@ def tick(
     orchestrator: Orchestrator,
     *,
     stale_after_seconds: float,
+    heartbeat_port: HeartbeatPort | None = None,
+    heartbeat_driver_name: str = DRIVER_NAME,
     poller_port: PollerPort | None = None,
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
@@ -395,6 +425,7 @@ def tick(
     task_event_emit: EventEmit | None = None,
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
+    task_outcome_record: Callable[[dict[str, Any]], None] | None = None,
     task_dedup: DedupConfig | None = None,
     task_worktree_retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     task_worktree_retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
@@ -403,6 +434,7 @@ def tick(
 ) -> TickResult:
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B, #1390 AC6)::
 
+        record_tick()                                         # Step H, #1085 S3-1
         poll_completions() + kill_runaways()                  # Step 0, #921
         → reclaim_stale(events)                               # Step 1, event watchdog
         → reclaim_stale_tasks()                               # Step 2, task watchdog
@@ -455,7 +487,24 @@ def tick(
     the task watchdog (Step 2) so a row Step 2 just reaped to ``failed``
     this same tick is already sweep-eligible, and before the event drain
     (Step 3) so a stuck removal never delays the primary wake path.
+
+    Step H (#1085 S3-1) stamps this driver's own liveness — server-side
+    ``now()`` via :meth:`HeartbeatPort.record_tick` — before anything else in
+    the tick, so a reader (``/dispatch``'s stale-heartbeat check) never sees a
+    tick that started but never finished as fresh. Isolated like the task
+    steps: heartbeat storage is independent of both the event queue and the
+    task queue, and a Supabase outage here must not skip the event drain,
+    the primary wake path. Runs even when ``task_port`` is ``None`` — driver
+    liveness is unconditional, not gated on task-queue availability.
     """
+    # Step H — heartbeat write (#1085 S3-1). First thing in the tick, isolated:
+    # a failure here must never block the event drain below.
+    if heartbeat_port is not None:
+        try:
+            heartbeat_port.record_tick(heartbeat_driver_name)
+        except Exception:  # noqa: BLE001 — heartbeat outage must not block event drain
+            logger.exception("[wake_driver] heartbeat write failed; retried next tick")
+
     # Step 0 — completion poll + runaway kill (#921 AC2/AC3/AC6). Two
     # independent halves: a completion-poll blowup must not stop the runaway
     # killer from bounding live processes, so each gets its own isolation.
@@ -470,6 +519,7 @@ def tick(
                 event_emit=task_event_emit,
                 evidence_client=task_evidence_client,
                 stdout_reader=task_stdout_reader,
+                outcome_record=task_outcome_record,
             )
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
@@ -572,6 +622,7 @@ def tick(
                         goal=meta.get("goal", ""),
                         idempotency_key=meta.get("idempotency_key", ""),
                         spawned_at=meta.get("spawned_at"),
+                        issue_number=meta.get("issue_number"),
                     )
         except Exception:  # noqa: BLE001 — task-store outage must not crash the tick
             logger.exception(
@@ -601,6 +652,7 @@ def run(
     *,
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
     should_continue: Callable[[], bool] | None = None,
+    heartbeat_port: HeartbeatPort | None = None,
     poller_port: PollerPort | None = None,
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
@@ -614,6 +666,7 @@ def run(
     task_event_emit: EventEmit | None = None,
     task_evidence_client: GitHubClient | None = None,
     task_stdout_reader: Callable[[str], str | None] | None = None,
+    task_outcome_record: Callable[[dict[str, Any]], None] | None = None,
     task_dedup: DedupConfig | None = None,
     task_worktree_retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     task_worktree_retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
@@ -680,6 +733,7 @@ def run(
                 port,
                 orchestrator,
                 stale_after_seconds=stale_after_seconds,
+                heartbeat_port=heartbeat_port,
                 poller_port=poller_port,
                 task_port=task_port,
                 task_spawn=task_spawn,
@@ -694,6 +748,7 @@ def run(
                 task_event_emit=task_event_emit,
                 task_evidence_client=task_evidence_client,
                 task_stdout_reader=task_stdout_reader,
+                task_outcome_record=task_outcome_record,
                 task_dedup=task_dedup,
                 task_worktree_retention_seconds=task_worktree_retention_seconds,
                 task_worktree_retention_cap=task_worktree_retention_cap,
@@ -831,6 +886,16 @@ class PsycopgEventQueue:
 
         return self._with_reconnect(op)
 
+    def park_blocked_on_task(self, event_id: str, task_id: str, *, reason: str = "") -> bool:
+        def op() -> bool:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT park_blocked_on_task(%s, %s, %s)", (event_id, task_id, reason))
+                ok = bool(cur.fetchone()[0])
+            self._conn.commit()
+            return ok
+
+        return self._with_reconnect(op)
+
     def reclaim_stale(self, *, older_than_seconds: float) -> int:
         def op() -> int:
             with self._conn.cursor() as cur:
@@ -875,7 +940,7 @@ class PsycopgEventQueue:
         def op() -> list[dict[str, Any]]:
             with self._conn.cursor() as cur:
                 cur.execute(
-                    "SELECT * FROM events WHERE state = 'parked' AND payload ? 'blocked_by_task_id' "
+                    "SELECT * FROM events WHERE state = 'parked' AND blocked_by_task_id IS NOT NULL "
                     "LIMIT %s",
                     (PARKED_EVENTS_LIMIT,),
                 )
@@ -996,6 +1061,37 @@ def _default_event_emit(*, repo: str, client: Any | None = None) -> EventEmit:
     return emit
 
 
+def _run_notify_test(env: dict[str, str]) -> int:
+    """``--notify-test`` (#1547 AC8): resolve NOTIFY_TRANSPORT, send one probe.
+
+    Install-time smoke check — resolves through the same registry
+    (:func:`agents.notify.resolve_notifier`) production wiring adopts in
+    #1548, but never touches the live psycopg/Supabase/orchestrator wiring
+    built later in ``main()``. Exit code is the resolved notifier's own
+    return value: an explicit ``none`` opt-out always reports success (0);
+    a misconfigured transport lands on the loud-misconfig path, whose
+    notifier always reports failure (1) — see ``_none_notifier`` vs
+    ``_disabled_notifier`` in ``agents/notify.py``.
+    """
+    from agents.notify import resolve_notifier
+    from agents.orchestrator import Decision, Route
+
+    transport, notifier = resolve_notifier(env)
+    decision = Decision(
+        route=Route.ESCALATE,
+        event_type="notify_test",
+        severity="info",
+        target="wake_driver --notify-test",
+        idempotency_key="notify-test",
+        priority=0,
+        escalated_reason="manual --notify-test smoke check",
+    )
+    ok = notifier(decision)
+    status = "OK" if ok else "FAILED"
+    print(f"notify-test: {status} — transport={transport}")
+    return 0 if ok else 1
+
+
 def main() -> int:
     _configure_logging()
     load_dotenv()
@@ -1039,7 +1135,31 @@ def main() -> int:
             "Permanent flag, not temporary rollout scaffolding."
         ),
     )
+    parser.add_argument(
+        "--notify-test",
+        action="store_true",
+        help=(
+            "#1547: resolve NOTIFY_TRANSPORT and send one test message "
+            "through it; exit non-zero on failure. Install-time smoke "
+            "check — does not build or touch the live orchestrator wiring."
+        ),
+    )
+    parser.add_argument(
+        "--driver-name",
+        default=DRIVER_NAME,
+        help=(
+            "Heartbeat identity to stamp this tick under (default: "
+            f"'{DRIVER_NAME}', the resident driver's own name). A local-drain "
+            "fallback (#1085 S3-2) passes a distinct value here so its own "
+            "one-shot ticks don't masquerade as resident-driver liveness — "
+            "otherwise local_drain_until_terminal's heartbeat re-check reads "
+            "back the tick it just caused and exits after one iteration."
+        ),
+    )
     args = parser.parse_args()
+
+    if args.notify_test:
+        return _run_notify_test(os.environ)
 
     if args.dry_run:
         # Deliberately does not build SupabaseTaskQueue / the evidence client /
@@ -1110,6 +1230,8 @@ def main() -> int:
                 queue,
                 orchestrator,
                 stale_after_seconds=args.watchdog_seconds,
+                heartbeat_port=SupabaseHeartbeat(client=event_client),
+                heartbeat_driver_name=args.driver_name,
                 task_port=task_port,
                 poller_port=queue,
             )
@@ -1142,10 +1264,12 @@ def main() -> int:
             queue,
             orchestrator,
             stale_after_seconds=args.watchdog_seconds,
+            heartbeat_port=SupabaseHeartbeat(client=event_client),
             task_port=task_port,
             task_event_emit=event_emit,
             task_evidence_client=evidence_client,
             task_stdout_reader=default_stdout_reader,
+            task_outcome_record=_record_completion_outcome,
             # #931 dispatch-dedup: reuse the one evidence client for the
             # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
             task_dedup=default_task_dedup(evidence_client),

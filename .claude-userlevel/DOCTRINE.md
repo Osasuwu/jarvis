@@ -23,7 +23,7 @@ Selection order — pick the first that fits:
 1. **Checkable at the tool-call boundary** → PreToolUse deny hook.
 2. **Checkable on the produced artifact** → test / CI gate.
 3. **Not mechanically checkable, always needed, stable** → a file loaded via `@import` (this file or CLAUDE.md).
-4. **Not checkable, but scoped to a code area** → `.claude/rules/` + `paths:` filter.
+4. **Not checkable, but scoped to a code area** → `.claude/rules/` + `paths:` filter. Delivery is 100% when a read matches the glob, 0% otherwise — it is pull-on-read, not push; verified empirically by #1274.
 5. **Not checkable, situational** → retrieval (`memory_recall`), never a baseline.
 6. **`always_load` only** for content that is dynamic, device-scoped, or time-bounded with no natural file home (e.g. an active incident, a device-specific gotcha) — almost nothing else qualifies. If a memory has settled into something stable and general, it belongs in a file, not the tag.
 

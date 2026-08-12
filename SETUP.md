@@ -12,9 +12,21 @@ The script is idempotent — safe to re-run anytime.
 
 ## What the script does
 
-1. **Python venv** — creates `.venv/`, installs `mcp-memory/requirements.txt`
+1. **Python venv** — creates `.venv/`, installs from locked dependencies (`uv.lock`)
 2. **`.env`** — copies from `.env.example` (secrets filled in manually)
 3. **Validation** — checks Python packages, env vars, config files, CLI tools
+
+## Lockfile regeneration (#1313)
+
+CI installs from `uv.lock` to guarantee reproducible dependency resolution. When Dependabot bumps ranges in `pyproject.toml` or `mcp-memory/requirements.txt`, regenerate the lockfiles:
+
+```bash
+pip install uv
+uv lock --project .
+uv lock --project mcp-memory
+```
+
+Commit the regenerated `uv.lock` files with the Dependabot bump. This ensures CI and local environments resolve to byte-identical packages.
 
 ## Manual steps after script
 

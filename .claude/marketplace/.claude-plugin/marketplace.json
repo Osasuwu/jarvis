@@ -16,7 +16,7 @@
         "source": "git-subdir",
         "url": "https://github.com/Osasuwu/claude-plugins-official.git",
         "path": "plugins/code-review",
-        "ref": "main"
+        "ref": "jarvis-pin-code-review-1"
       },
       "homepage": "https://github.com/Osasuwu/claude-plugins-official/tree/main/plugins/code-review"
     },

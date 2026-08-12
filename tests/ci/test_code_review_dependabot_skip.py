@@ -4,7 +4,7 @@ Reimplements the `review` job's run/skip predicate in Python and asserts it
 skips Dependabot PRs across every pull_request event type, plus a config
 dimension that pins the YAML to the *author*-based guard.
 
-Why this test exists (CLAUDE.md §326): code-review.yml is NOT path-filtered,
+Why this test exists (.claude/rules/path-filtered-ci-guards-meta-test.md, #326): code-review.yml is NOT path-filtered,
 so #326's *config* mandate doesn't strictly apply. But this is the exact
 silent-drift class #326 targets. The original guard keyed off `github.actor`,
 which is the *pusher* on `synchronize` events — when merge-train.yml updated a

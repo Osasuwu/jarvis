@@ -190,11 +190,12 @@ async def _link_fok_judgments_to_outcomes(
                         continue
 
                     try:
-                        # Get the recall event to check returned_ids
+                        # Get the recall event to check returned_ids (#1493 AC4:
+                        # switched from `events` — memory_recall no longer lands there)
                         event_data = (
-                            client.table("events")
+                            client.table("events_canonical")
                             .select("payload")
-                            .eq("id", recall_event_id)
+                            .eq("event_id", recall_event_id)
                             .single()
                             .execute()
                         )

@@ -28,7 +28,8 @@
     },
     "obsidian": {
       "command": "npx",
-      "args": ["-y", "@bitbonsai/mcpvault@latest", "${OBSIDIAN_VAULT_PATH}"]
+      "args": ["-y", "@bitbonsai/mcpvault@latest", "${OBSIDIAN_VAULT_PATH}"],
+      "x-jarvis-requires-env": "OBSIDIAN_VAULT_PATH"
     },
     "uml": {
       "command": "python",

@@ -102,6 +102,13 @@ class Decision:
     assignee: str | None = None
     escalated_reason: str | None = None
     noop: bool = False
+    # #1085 S1-4: the issue this decision's task_queue row is scoped to, for
+    # the per-issue CAS (idx_task_queue_issue_number_active). No current event
+    # type carries a genuine issue-target payload, so every route today
+    # leaves this None — it exists so a future issue-targeted event type
+    # (e.g. a github.issue_* event) has somewhere to put the number without
+    # a signature change to Decision or dispatch().
+    issue_number: int | None = None
 
 
 def priority_for(severity: str) -> int:
@@ -300,6 +307,14 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         )
 
     # 2. Enumerated deterministic routes (AC1).
+    if (event_type, severity) == ("mcp_write_scrubber_disabled", "high"):
+        return _escalate(
+            event_type,
+            severity,
+            target,
+            key,
+            reason="write scrubber gate disabled — owner review required",
+        )
     if (event_type, severity) == ("ci_failure", "high"):
         return _emit(
             event_type,
@@ -510,6 +525,12 @@ class DispatchResult:
     notice: EscalationNotice | None  # set only for ESCALATE
     notified: bool  # a Telegram ping was actually sent
     noop: bool  # pure-pipeline event — acknowledged, no work
+    # Path B producer (#1455 AC1): the task id the source event should park
+    # blocked on. Set ONLY by a successful fresh EMIT_TASK enqueue — None on
+    # collision, ESCALATE (owner rows never reach terminal state in
+    # production — parking on them would park forever, decision 3997893d),
+    # and HANDLE_INLINE.
+    blocked_by_task_id: str | None = None
 
 
 def dispatch(
@@ -539,6 +560,7 @@ def dispatch(
             priority=decision.priority,
             assignee=decision.assignee,
             idempotency_key=decision.idempotency_key,
+            issue_number=decision.issue_number,
             client=client,
         )
         return DispatchResult(
@@ -548,6 +570,7 @@ def dispatch(
             notice=None,
             notified=False,
             noop=False,
+            blocked_by_task_id=str(row["id"]) if row is not None else None,
         )
 
     if decision.route is Route.ESCALATE:
@@ -557,6 +580,7 @@ def dispatch(
             assignee=decision.assignee,
             idempotency_key=decision.idempotency_key,
             escalated_reason=decision.escalated_reason,
+            issue_number=decision.issue_number,
             client=client,
         )
         notice = escalation_notice(decision.severity, now)
@@ -623,7 +647,18 @@ def build_production_orchestrator(
 
     def _orchestrator(event: Mapping[str, Any]) -> DispatchResult:
         decision = handle_event(event)
-        return dispatch(decision, now=resolved_clock(), client=client, notifier=notifier)
+        result = dispatch(decision, now=resolved_clock(), client=client, notifier=notifier)
+        if decision.route is Route.EMIT_TASK and not result.enqueued:
+            # #1455 AC6: the event's work is already queued under this key
+            # (Path B replay closure or a plain re-delivery) — drain will
+            # mark_processed, not park. Warn so a silent dedup stays visible.
+            logger.warning(
+                "enqueue collision: event %s dedups on idempotency_key %s — "
+                "marking processed, not parking",
+                event.get("id"),
+                decision.idempotency_key,
+            )
+        return result
 
     return _orchestrator
 
