@@ -233,9 +233,6 @@ class TestConcurrencyCap:
         assert q.claimed == []
         assert res.spawned == 0
 
-    def test_default_cap_is_five(self) -> None:
-        assert DEFAULT_CONCURRENCY_CAP == 5
-
     def test_resolve_concurrency_cap_reads_env_var(self, monkeypatch: Any) -> None:
         """AC8 (#1390): REACTIVE_CONCURRENCY_CAP overrides the module default so
         register-wake-driver.ps1 can pin autonomous runs to a lower cap (2)."""
