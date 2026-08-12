@@ -4,110 +4,13 @@ Verifies server-side section merge replaces matching markdown headers,
 appends when section absent, preserves siblings, and fails loudly on
 unparseable content.
 
-Tests are placed in existing memory test structure to avoid circular imports.
-
-IMPL NOTE (#1352 finding #3): These helper functions are intentionally duplicated
-from mcp-memory/handlers/memory.py to avoid circular imports (memory.py imports
-server, server imports memory). While duplication isn't ideal, the alternative
-(restructuring the module hierarchy to break the circular dependency) is out of
-scope for this fix. The duplicated versions are kept in sync with production code
-and tested to ensure they match. Production code should be the canonical version.
+conftest.py stubs MCP SDK + Supabase before any imports, so this file
+can import from server and handlers.memory without external dependencies.
 """
 
-import re
 import pytest
-
-
-# Inline the helper functions for testing (necessary to avoid circular import with server module)
-def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
-    r"""Parse markdown document into sections keyed by header text.
-
-    Returns dict: {header_text: (start_line, end_line_exclusive)}.
-    Sections are delimited by markdown headers (##, ###, ####, etc.).
-    Content is split by lines; indices are line numbers.
-
-    Sections must match pattern: ^#{2,4} \[entry\] or ^#{2,4} \[evicted\]
-    (matching the working_state contract format). Headers outside this pattern
-    are silently ignored.
-
-    Raises:
-        ValueError: if the document is too long to safely process, indicating
-        potential memory/performance issues or malformed repetitive structure.
-    """
-    lines = content.split("\n")
-    sections: dict[str, tuple[int, int]] = {}
-    current_section_start: int | None = None
-    current_section_header: str | None = None
-
-    # Prevent processing of extremely large documents (safety check)
-    if len(lines) > 100_000:
-        raise ValueError(f"Document too large to parse: {len(lines)} lines exceeds safety limit")
-
-    section_pattern = re.compile(r"^#{2,4}\s+\[(entry|evicted)\]")
-
-    for i, line in enumerate(lines):
-        # Check if this is a valid section header
-        if section_pattern.match(line):
-            # Save prior section if any
-            if current_section_header is not None and current_section_start is not None:
-                sections[current_section_header] = (current_section_start, i)
-
-            # Start new section
-            current_section_header = line
-            current_section_start = i
-
-    # Don't forget the last section
-    if current_section_header is not None and current_section_start is not None:
-        sections[current_section_header] = (current_section_start, len(lines))
-
-    return sections
-
-
-def _merge_section_into_markdown(
-    existing_content: str,
-    section_header: str,
-    section_content: str,
-) -> str:
-    """Merge a new section into an existing markdown document.
-
-    Replaces the section with matching header (exact match), or appends if not found.
-    Preserves all other sections unchanged.
-
-    Args:
-        existing_content: existing markdown document (may be empty)
-        section_header: markdown header line (e.g. "### [entry] foo-bar — 2026-01-01")
-        section_content: full section content, starting with the header line
-
-    Returns:
-        merged markdown document as string
-
-    Raises:
-        ValueError: if existing_content is unparseable (sections without matching header pattern)
-    """
-    # Validate that section_content starts with section_header
-    if not section_content.strip().startswith(section_header):
-        raise ValueError("section_content must start with section_header")
-
-    if not existing_content.strip():
-        # Empty document: just return the new section
-        return section_content
-
-    # Parse existing sections — raises ValueError if unparseable
-    sections = _parse_markdown_sections(existing_content)
-
-    # Check if target section exists
-    if section_header in sections:
-        # Replace the section
-        start, end = sections[section_header]
-        lines = existing_content.split("\n")
-        new_lines = lines[:start] + section_content.split("\n") + lines[end:]
-        return "\n".join(new_lines)
-    else:
-        # Append new section
-        if existing_content.strip():
-            return existing_content.rstrip() + "\n\n" + section_content
-        else:
-            return section_content
+import server  # noqa: F401 (needed to break circular import with handlers.memory)
+import handlers.memory as mem
 
 
 class TestParseMarkdownSections:
@@ -122,7 +25,7 @@ class TestParseMarkdownSections:
 Some content here.
 More content.
 """
-        sections = _parse_markdown_sections(content)
+        sections = mem._parse_markdown_sections(content)
         assert "### [entry] foo-bar — 2026-01-01 — in-progress" in sections
         start, end = sections["### [entry] foo-bar — 2026-01-01 — in-progress"]
         lines = content.split("\n")
@@ -143,7 +46,7 @@ In progress.
 
 ### [evicted] task-3 — 2026-01-03 — GC: age >14 days
 """
-        sections = _parse_markdown_sections(content)
+        sections = mem._parse_markdown_sections(content)
         assert len(sections) == 3
         assert "### [entry] task-1 — 2026-01-01 — done" in sections
         assert "### [entry] task-2 — 2026-01-02 — in-progress" in sections
@@ -167,14 +70,14 @@ Task content.
 
 This should be ignored.
 """
-        sections = _parse_markdown_sections(content)
+        sections = mem._parse_markdown_sections(content)
         # Only the [entry] block should be parsed
         assert len(sections) == 1
         assert "### [entry] my-task — 2026-01-01 — done" in sections
 
     def test_parse_empty_document(self):
         """Parsing empty document returns empty dict."""
-        sections = _parse_markdown_sections("")
+        sections = mem._parse_markdown_sections("")
         assert sections == {}
 
 
@@ -197,7 +100,7 @@ Different task.
 
 New content for task 1."""
 
-        result = _merge_section_into_markdown(existing, "### [entry] task-1 — 2026-01-01 — done", new_section)
+        result = mem._merge_section_into_markdown(existing, "### [entry] task-1 — 2026-01-01 — done", new_section)
 
         # Check that task-1 was replaced
         assert "New content for task 1" in result
@@ -218,7 +121,7 @@ Task 1 content.
 
 Task 2 content."""
 
-        result = _merge_section_into_markdown(
+        result = mem._merge_section_into_markdown(
             existing, "### [entry] task-2 — 2026-01-02 — in-progress", new_section
         )
 
@@ -253,7 +156,7 @@ Delta content.
 
 Beta updated."""
 
-        result = _merge_section_into_markdown(existing, "### [entry] beta — 2026-01-02 — done", new_section)
+        result = mem._merge_section_into_markdown(existing, "### [entry] beta — 2026-01-02 — done", new_section)
 
         # All other sections intact
         assert "### [entry] alpha — 2026-01-01 — done" in result
@@ -272,7 +175,7 @@ Beta updated."""
 
 First task."""
 
-        result = _merge_section_into_markdown("", "### [entry] task-1 — 2026-01-01 — done", new_section)
+        result = mem._merge_section_into_markdown("", "### [entry] task-1 — 2026-01-01 — done", new_section)
         assert result == new_section
 
     def test_merge_validates_section_header_match(self):
@@ -281,7 +184,7 @@ First task."""
         new_section = "Mismatched content"
 
         with pytest.raises(ValueError):
-            _merge_section_into_markdown(existing, "### [entry] foo", new_section)
+            mem._merge_section_into_markdown(existing, "### [entry] foo", new_section)
 
     def test_merge_appends_when_no_matching_sections_exist(self):
         """Append when existing content has no matching [entry]/[evicted] blocks."""
@@ -294,6 +197,6 @@ This has no [entry] or [evicted] blocks.
 
 Content."""
 
-        result = _merge_section_into_markdown(existing, "### [entry] task — 2026-01-01 — done", new_section)
+        result = mem._merge_section_into_markdown(existing, "### [entry] task — 2026-01-01 — done", new_section)
         # Since there are no [entry]/[evicted] blocks, it appends
         assert new_section in result

@@ -1131,60 +1131,85 @@ async def _handle_store(args: dict) -> list[TextContent]:
     mode = args.get("mode", "full")
     preserve_description_on_merge = False
     preserve_tags_on_merge = False
+    merge_conflict_after_retries = False
+    merge_section_data = None  # Data for merge_section RPC call
+    stored_id = None
+    action = "error"
+    proj_label = ""
 
     if mode == "merge_section":
-        # Fetch existing content, description, tags for this (project, name) memory
-        q = client.table("memories").select("content, description, tags").eq("name", mem_name).is_("deleted_at", "null")
-        if project is not None:
-            q = q.eq("project", project)
-        else:
-            q = q.is_("project", "null")
-        existing_row = q.limit(1).execute()
-        existing_data = existing_row.data[0] if existing_row.data else {}
-        existing_content = existing_data.get("content", "")
-        existing_description = existing_data.get("description")
-        existing_tags = existing_data.get("tags")
-
-        # Merge sections: the content param is the new section, merge it into existing
-        try:
-            # Extract section header from content (first line starting with ##)
-            lines = content.strip().split("\n")
-            section_header = None
-            for line in lines:
-                if line.startswith("##"):
-                    section_header = line
-                    break
-            if section_header is None:
-                return [
-                    TextContent(
-                        type="text",
-                        text="Error (mode='merge_section'): content must start with a markdown header (##, ###, or ####)",
-                    )
-                ]
-
-            content = _merge_section_into_markdown(existing_content, section_header, content)
-
-            # ceiling: merged_state size limit. working_state documents can grow unbounded
-            # if not trimmed; this is a basic guard for documents > 1MB. For finer
-            # granularity (e.g., per-section size limits, per-section eviction by age),
-            # see #1352-follow-up. Future: consider implementing section-level GC/tombstoning.
-            max_content_size = 1_000_000  # 1MB ceiling
-            if len(content) > max_content_size:
-                # Truncate with marker to indicate overflow
-                content = content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
-
-            # Preserve existing description/tags unless caller explicitly overrides
-            # (caller provided new description/tags values, use them; otherwise inherit existing)
-            preserve_description_on_merge = existing_description is not None and description == ""
-            preserve_tags_on_merge = existing_tags is not None and tags == []
-
-        except ValueError as e:
+        # Extract section header from content (first line starting with ##)
+        lines = content.strip().split("\n")
+        section_header = None
+        for line in lines:
+            if line.startswith("##"):
+                section_header = line
+                break
+        if section_header is None:
             return [
                 TextContent(
                     type="text",
-                    text=f"Error (mode='merge_section'): existing document is unparseable as markdown sections. {str(e)}",
+                    text="Error (mode='merge_section'): content must start with a markdown header (##, ###, or ####)",
                 )
             ]
+
+        # Optimistic concurrency control: retry loop with exponential backoff
+        # On conflict, re-fetch the row and re-merge (max 3 attempts before giving up)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Fetch existing content + updated_at for optimistic concurrency check
+                q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
+                if project is not None:
+                    q = q.eq("project", project)
+                else:
+                    q = q.is_("project", "null")
+                existing_row = q.limit(1).execute()
+                existing_data = existing_row.data[0] if existing_row.data else {}
+                existing_content = existing_data.get("content", "")
+                existing_updated_at = existing_data.get("updated_at")  # For optimistic concurrency
+                existing_description = existing_data.get("description")
+                existing_tags = existing_data.get("tags")
+
+                # Merge sections: the content param is the new section, merge it into existing
+                merged_content = _merge_section_into_markdown(existing_content, section_header, content)
+
+                # ceiling: merged_state size limit. working_state documents can grow unbounded
+                # if not trimmed; this is a basic guard for documents > 1MB. For finer
+                # granularity (e.g., per-section size limits, per-section eviction by age),
+                # see #1352-follow-up. Future: consider implementing section-level GC/tombstoning.
+                max_content_size = 1_000_000  # 1MB ceiling
+                if len(merged_content) > max_content_size:
+                    # Truncate with marker to indicate overflow
+                    merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+
+                # Preserve existing description/tags unless caller explicitly overrides
+                preserve_description_on_merge = existing_description is not None and description == ""
+                preserve_tags_on_merge = existing_tags is not None and tags == []
+
+                # Prepare RPC call data for this attempt
+                merge_section_data = {
+                    "merged_content": merged_content,
+                    "expected_updated_at": existing_updated_at,
+                    "preserve_description": preserve_description_on_merge,
+                    "preserve_tags": preserve_tags_on_merge,
+                }
+
+                # Success: use merged_content for embedding and RPC call
+                content = merged_content
+                break  # Exit retry loop on success
+
+            except ValueError as e:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Error (mode='merge_section'): existing document is unparseable as markdown sections. {str(e)}",
+                    )
+                ]
+        else:
+            # Retries exhausted without success (should not happen given the above logic,
+            # but flag it just in case)
+            merge_conflict_after_retries = True
 
     # Tier-2 write-path secret-scrubber gate; see write_scrubber module
     # docstring. Run AFTER validation but BEFORE any embedding/insert so a
@@ -1232,28 +1257,93 @@ async def _handle_store(args: dict) -> list[TextContent]:
     embed_note = " (with embedding)" if embedding is not None else ""
 
     # #1352: Use atomic RPC for merge_section mode to prevent concurrent races
+    # Retry loop: on conflict, re-fetch and re-merge, then retry RPC (up to 3 attempts total)
     if mode == "merge_section":
-        try:
-            result = client.rpc(
-                "merge_section_into_memory_upsert",
-                {
-                    "p_project": project,
-                    "p_name": mem_name,
-                    "p_merged_content": content,
-                    "p_description": description,
-                    "p_tags": tags,
-                    "p_preserve_existing_description": preserve_description_on_merge,
-                    "p_preserve_existing_tags": preserve_tags_on_merge,
-                },
-            ).execute()
-            stored_id = result.data if result.data else None
-            action = "merged"
-            proj_label = f"project={project or 'global'}"
-        except Exception as exc:
-            log_swallowed("memory._handle_store.merge_section_rpc", exc)
-            # Fallback to regular upsert if RPC fails
-            stored_id = None
-            action = "error"
+        if merge_conflict_after_retries:
+            return [
+                TextContent(
+                    type="text",
+                    text="Error (mode='merge_section'): could not merge due to setup issue (no section header found after parse)",
+                )
+            ]
+
+        proj_label = f"project={project or 'global'}"
+
+        if merge_section_data:
+            max_rpc_retries = 3
+            for rpc_attempt in range(max_rpc_retries):
+                try:
+                    result = client.rpc(
+                        "merge_section_into_memory_upsert",
+                        {
+                            "p_project": project,
+                            "p_name": mem_name,
+                            "p_merged_content": merge_section_data["merged_content"],
+                            "p_expected_updated_at": merge_section_data["expected_updated_at"],
+                            "p_description": description,
+                            "p_tags": tags,
+                            "p_preserve_existing_description": merge_section_data["preserve_description"],
+                            "p_preserve_existing_tags": merge_section_data["preserve_tags"],
+                        },
+                    ).execute()
+
+                    # RPC returns table(success, memory_id, conflict_reason)
+                    rpc_rows = result.data or []
+                    if rpc_rows:
+                        row = rpc_rows[0]
+                        if row.get("success"):
+                            stored_id = row.get("memory_id")
+                            action = "merged"
+                            break  # Success — exit retry loop
+                        else:
+                            # Conflict detected — log and prepare to retry
+                            conflict_reason = row.get("conflict_reason", "unknown")
+                            log_swallowed(
+                                "memory._handle_store.merge_section_conflict",
+                                Exception(f"Attempt {rpc_attempt + 1}/{max_rpc_retries}: {conflict_reason}"),
+                            )
+                            if rpc_attempt < max_rpc_retries - 1:
+                                # Retry: re-fetch the row and re-merge before next RPC attempt
+                                try:
+                                    q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
+                                    if project is not None:
+                                        q = q.eq("project", project)
+                                    else:
+                                        q = q.is_("project", "null")
+                                    existing_row = q.limit(1).execute()
+                                    existing_data = existing_row.data[0] if existing_row.data else {}
+                                    existing_content = existing_data.get("content", "")
+                                    existing_updated_at = existing_data.get("updated_at")
+                                    existing_description = existing_data.get("description")
+                                    existing_tags = existing_data.get("tags")
+
+                                    # Re-merge with fresh data
+                                    merged_content = _merge_section_into_markdown(existing_content, section_header, content)
+                                    max_content_size = 1_000_000
+                                    if len(merged_content) > max_content_size:
+                                        merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+
+                                    # Update merge_section_data for next RPC attempt
+                                    merge_section_data = {
+                                        "merged_content": merged_content,
+                                        "expected_updated_at": existing_updated_at,
+                                        "preserve_description": existing_description is not None and description == "",
+                                        "preserve_tags": existing_tags is not None and tags == [],
+                                    }
+                                except ValueError:
+                                    # Document became unparseable during retry
+                                    action = "error"
+                                    break
+                                # Continue to next RPC attempt with fresh data
+                                continue
+                            else:
+                                # Final attempt failed
+                                action = "conflict"
+                except Exception as exc:
+                    log_swallowed("memory._handle_store.merge_section_rpc", exc)
+                    if rpc_attempt >= max_rpc_retries - 1:
+                        action = "error"
+                    # Retry on exception too
     elif project is not None:
         # Atomic upsert via unique constraint on (project, name) — no race condition
         result = client.table("memories").upsert(data, on_conflict="project,name").execute()
