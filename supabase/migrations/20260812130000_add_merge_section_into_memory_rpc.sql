@@ -35,6 +35,20 @@ declare
   v_final_tags text[];
   v_lock_id bigint;
 begin
+  -- RLS parity check (#1352 review round 3, finding #1): the "Anon
+  -- sandcastle insert/update" policies on `memories` gate anon-role writes
+  -- to source_provenance LIKE 'sandcastle:%'. This function is `security
+  -- definer`, which bypasses RLS entirely, so the anon grant below would
+  -- otherwise let a sandcastle container (anon key) write any provenance
+  -- it likes via this RPC. Re-derive the same restriction here from the
+  -- caller's actual JWT role — auth.role() reflects the invoker, not the
+  -- function owner, even under security definer. service_role/authenticated
+  -- callers (main Jarvis session, skill:end) are unaffected.
+  if auth.role() = 'anon' and p_source_provenance not like 'sandcastle:%' then
+    return query select false, null::uuid, 'forbidden: anon callers must use sandcastle:%-prefixed source_provenance'::text;
+    return;
+  end if;
+
   -- Use transaction-scoped advisory lock for insert-race safety
   -- (when no existing row exists, multiple concurrent inserts could race)
   -- Hash the project and name into a lockid; use first 31 bits to fit into int

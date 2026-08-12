@@ -1147,7 +1147,6 @@ async def _handle_store(args: dict) -> list[TextContent]:
     mode = args.get("mode", "full")
     preserve_description_on_merge = False
     preserve_tags_on_merge = False
-    merge_conflict_after_retries = False
     merge_section_data = None  # Data for merge_section RPC call
     stored_id = None
     action = "error"
@@ -1169,63 +1168,71 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 )
             ]
 
-        # Optimistic concurrency control: retry loop with exponential backoff
-        # On conflict, re-fetch the row and re-merge (max 3 attempts before giving up)
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # Fetch existing content + updated_at for optimistic concurrency check
-                q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
-                if project is not None:
-                    q = q.eq("project", project)
-                else:
-                    q = q.is_("project", "null")
-                existing_row = q.limit(1).execute()
-                existing_data = existing_row.data[0] if existing_row.data else {}
-                existing_content = existing_data.get("content", "")
-                existing_updated_at = existing_data.get("updated_at")  # For optimistic concurrency
-                existing_description = existing_data.get("description")
-                existing_tags = existing_data.get("tags")
+        # Fetch existing content + updated_at for optimistic concurrency check.
+        # #1352 review round 3 finding #3: this used to be a
+        # `for attempt in range(3)` "retry loop with exponential backoff"
+        # that never actually retried — every path (`break` on success,
+        # `return` on ValueError) exited on the first iteration, leaving the
+        # `for...else` clause and `merge_conflict_after_retries` dead code.
+        # Real retry-on-conflict already lives in the RPC loop below (it
+        # re-fetches + re-merges after an RPC rejection); this is a single
+        # first read, so a plain try/except is the honest shape. Also
+        # widened to catch transient fetch/network errors (matching the RPC
+        # call's `except Exception` below) instead of letting them crash
+        # the request.
+        try:
+            q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
+            if project is not None:
+                q = q.eq("project", project)
+            else:
+                q = q.is_("project", "null")
+            existing_row = q.limit(1).execute()
+            existing_data = existing_row.data[0] if existing_row.data else {}
+            existing_content = existing_data.get("content", "")
+            existing_updated_at = existing_data.get("updated_at")  # For optimistic concurrency
+            existing_description = existing_data.get("description")
+            existing_tags = existing_data.get("tags")
 
-                # Merge sections: merge the new section into existing content
-                merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
+            # Merge sections: merge the new section into existing content
+            merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
 
-                # ceiling: merged_state size limit. working_state documents can grow unbounded
-                # if not trimmed; this is a basic guard for documents > 1MB. For finer
-                # granularity (e.g., per-section size limits, per-section eviction by age),
-                # see #1352-follow-up. Future: consider implementing section-level GC/tombstoning.
-                max_content_size = 1_000_000  # 1MB ceiling
-                if len(merged_content) > max_content_size:
-                    # Truncate with marker to indicate overflow
-                    merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+            # ceiling: merged_state size limit. working_state documents can grow unbounded
+            # if not trimmed; this is a basic guard for documents > 1MB. For finer
+            # granularity (e.g., per-section size limits, per-section eviction by age),
+            # see #1352-follow-up. Future: consider implementing section-level GC/tombstoning.
+            max_content_size = 1_000_000  # 1MB ceiling
+            if len(merged_content) > max_content_size:
+                # Truncate with marker to indicate overflow
+                merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
 
-                # Preserve existing description/tags unless caller explicitly overrides
-                preserve_description_on_merge = existing_description is not None and description == ""
-                preserve_tags_on_merge = existing_tags is not None and tags == []
+            # Preserve existing description/tags unless caller explicitly overrides
+            preserve_description_on_merge = existing_description is not None and description == ""
+            preserve_tags_on_merge = existing_tags is not None and tags == []
 
-                # Prepare RPC call data for this attempt
-                merge_section_data = {
-                    "merged_content": merged_content,
-                    "expected_updated_at": existing_updated_at,
-                    "preserve_description": preserve_description_on_merge,
-                    "preserve_tags": preserve_tags_on_merge,
-                }
+            merge_section_data = {
+                "merged_content": merged_content,
+                "expected_updated_at": existing_updated_at,
+                "preserve_description": preserve_description_on_merge,
+                "preserve_tags": preserve_tags_on_merge,
+            }
 
-                # Success: use merged_content for embedding and RPC call
-                content = merged_content
-                break  # Exit retry loop on success
+            content = merged_content
 
-            except ValueError as e:
-                return [
-                    TextContent(
-                        type="text",
-                        text=f"Error (mode='merge_section'): existing document is unparseable as markdown sections. {str(e)}",
-                    )
-                ]
-        else:
-            # Retries exhausted without success (should not happen given the above logic,
-            # but flag it just in case)
-            merge_conflict_after_retries = True
+        except ValueError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error (mode='merge_section'): existing document is unparseable as markdown sections. {str(e)}",
+                )
+            ]
+        except Exception as exc:
+            log_swallowed("memory._handle_store.merge_section_initial_fetch", exc)
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error (mode='merge_section'): could not fetch existing document ({exc}). No memory was stored — retry the call.",
+                )
+            ]
 
     # Tier-2 write-path secret-scrubber gate; see write_scrubber module
     # docstring. Run AFTER validation but BEFORE any embedding/insert so a
@@ -1275,14 +1282,6 @@ async def _handle_store(args: dict) -> list[TextContent]:
     # #1352: Use atomic RPC for merge_section mode to prevent concurrent races
     # Retry loop: on conflict, re-fetch and re-merge, then retry RPC (up to 3 attempts total)
     if mode == "merge_section":
-        if merge_conflict_after_retries:
-            return [
-                TextContent(
-                    type="text",
-                    text="Error (mode='merge_section'): could not merge due to setup issue (no section header found after parse)",
-                )
-            ]
-
         proj_label = f"project={project or 'global'}"
 
         if merge_section_data:
@@ -1366,8 +1365,24 @@ async def _handle_store(args: dict) -> list[TextContent]:
                                         "preserve_description": existing_description is not None and description == "",
                                         "preserve_tags": existing_tags is not None and tags == [],
                                     }
-                                except ValueError:
+
+                                    # #1352 review round 3 finding #2: recompute the
+                                    # embedding against the freshly re-merged content.
+                                    # embed_fields/embedding were computed once before
+                                    # this retry loop from the FIRST attempt's content —
+                                    # left stale, a conflicting write would persist a row
+                                    # whose embedding doesn't match its actual text, and
+                                    # the post-store auto-link similarity search below
+                                    # would run against the wrong vector too.
+                                    content = merged_content
+                                    embed_text = _canonical_embed_text(mem_name, description, tags, content)
+                                    embed_fields = await server._compute_write_embeddings(embed_text)
+                                    data.update(embed_fields)
+                                    embedding = data.get(_model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"])
+                                    embed_note = " (with embedding)" if embedding is not None else ""
+                                except ValueError as e:
                                     # Document became unparseable during retry
+                                    log_swallowed("memory._handle_store.merge_section_retry_unparseable", e)
                                     action = "error"
                                     break
                                 # Continue to next RPC attempt with fresh data

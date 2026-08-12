@@ -798,6 +798,123 @@ class TestHandleStoreMergeSectionFailureModes:
         assert params["p_type"] == "decision"
         assert params["p_source_provenance"] == "session:test-provenance"
 
+    @pytest.mark.asyncio
+    async def test_merge_recomputes_embedding_after_conflict_retry(self, monkeypatch):
+        """#1352 review round 3 finding #2: embed_fields/embedding were computed
+        once, before the RPC retry loop, from the FIRST attempt's content. A
+        conflicting first attempt re-fetches and re-merges fresh content for
+        the retry, but without recomputing the embedding too, the retried
+        write would persist a row whose embedding vector doesn't match its
+        actual (re-merged) text. Pins that the second RPC attempt carries a
+        freshly computed embedding, not the stale first one.
+        """
+        embed_calls = []
+
+        async def _tracking_embed(text):
+            embed_calls.append(text)
+            return {"embedding": [float(len(embed_calls))] * 512}
+
+        monkeypatch.setattr(server_module, "_compute_write_embeddings", _tracking_embed)
+
+        conflict = MagicMock(data=[{"success": False, "memory_id": None, "conflict_reason": "updated_at mismatch"}])
+        success = MagicMock(data=[{"success": True, "memory_id": "merged-4", "conflict_reason": None}])
+        responses = iter([conflict, success])
+        # Defensive: a populated embedding also fires the auto-link fire-and-
+        # forget RPC call, which shares this same mock — fall back to `success`
+        # for any call beyond the two the merge_section retry loop itself makes
+        # rather than raising StopIteration (see test_merge_forwards_computed_
+        # embedding_to_rpc above for the same caveat).
+        self.client.rpc.return_value.execute.side_effect = lambda: next(responses, success)
+
+        await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_embedding_retry",
+                "content": "## [entry] retry — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        assert len(embed_calls) == 2
+
+        merge_calls = [
+            c for c in self.client.rpc.call_args_list if c.args and c.args[0] == "merge_section_into_memory_upsert"
+        ]
+        assert len(merge_calls) == 2
+        second_params = merge_calls[1].args[1] if len(merge_calls[1].args) > 1 else merge_calls[1].kwargs.get("params")
+        assert second_params["p_embedding"] == [2.0] * 512
+
+    @pytest.mark.asyncio
+    async def test_initial_fetch_exception_returns_graceful_error_not_raise(self):
+        """#1352 review round 3 finding #3: the initial existing-row fetch used
+        to be wrapped in a dead-code retry loop whose only real exception
+        handling was `except ValueError`, unlike the RPC call further down
+        which already degrades on the wider `except Exception`. A transient
+        Supabase/network error here must not crash the request either.
+        """
+        self.tbl.select.return_value.limit.return_value.execute.side_effect = RuntimeError("network blip")
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_initial_fetch_error",
+                "content": "## [entry] boom — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        assert len(result) == 1
+        assert "could not fetch existing document" in result[0].text
+        assert self.client.rpc.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_retry_remerge_valueerror_calls_log_swallowed(self, monkeypatch):
+        """#1352 review round 3 finding #4: the retry-path re-merge's
+        `except ValueError` set action="error" and broke out of the loop but
+        never reported the swallowed exception anywhere, unlike every other
+        degrade-on-exception path in this module (`log_swallowed` convention,
+        #1082). Pins that the retry-unparseable path is now observable.
+        """
+        swallowed = []
+        monkeypatch.setattr(mem, "log_swallowed", lambda tag, exc: swallowed.append((tag, exc)))
+
+        real_merge = mem._merge_section_into_markdown
+        call_count = {"n": 0}
+
+        def _merge_then_raise(existing_content, section_header, new_section_content):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                return real_merge(existing_content, section_header, new_section_content)
+            raise ValueError("document became unparseable")
+
+        monkeypatch.setattr(mem, "_merge_section_into_markdown", _merge_then_raise)
+
+        self.client.rpc.return_value.execute.return_value = MagicMock(
+            data=[{"success": False, "memory_id": None, "conflict_reason": "updated_at mismatch"}]
+        )
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_retry_unparseable",
+                "content": "## [entry] retry-error — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        body = json.loads(result[0].text)
+        assert body["stored"] is False
+        assert body["action"] == "error"
+        assert any(
+            tag == "memory._handle_store.merge_section_retry_unparseable" for tag, _ in swallowed
+        )
+
 
 # ---------------------------------------------------------------------------
 # #242: dual-embedding machinery — column/RPC mapping + dual-write
