@@ -31,6 +31,7 @@ declare
   v_current_updated_at timestamptz;
   v_existing_description text;
   v_existing_tags text[];
+  v_existing_source_provenance text;
   v_final_description text;
   v_final_tags text[];
   v_lock_id bigint;
@@ -44,6 +45,16 @@ begin
   -- caller's actual JWT role — auth.role() reflects the invoker, not the
   -- function owner, even under security definer. service_role/authenticated
   -- callers (main Jarvis session, skill:end) are unaffected.
+  --
+  -- This covers the INSERT path's WITH CHECK equivalent (the row being
+  -- created must be sandcastle-owned). The UPDATE path's USING equivalent
+  -- (the row being modified must ALREADY be sandcastle-owned) is enforced
+  -- separately below, once the existing row's own source_provenance is
+  -- known (#1352 review round 4, finding #1 — this parameter-only check
+  -- let an anon caller overwrite a non-sandcastle row by passing a
+  -- sandcastle:%-prefixed p_source_provenance while targeting someone
+  -- else's row; the UPDATE statement never persists p_source_provenance,
+  -- so checking only the incoming parameter never actually gated it).
   if auth.role() = 'anon' and p_source_provenance not like 'sandcastle:%' then
     return query select false, null::uuid, 'forbidden: anon callers must use sandcastle:%-prefixed source_provenance'::text;
     return;
@@ -56,12 +67,24 @@ begin
   perform pg_advisory_xact_lock(v_lock_id);
 
   -- Fetch existing row to check for concurrent modification
-  select id, updated_at, description, tags
-    into v_id, v_current_updated_at, v_existing_description, v_existing_tags
+  select id, updated_at, description, tags, source_provenance
+    into v_id, v_current_updated_at, v_existing_description, v_existing_tags, v_existing_source_provenance
     from memories
    where name = p_name
      and (project = p_project or (p_project is null and project is null))
      and deleted_at is null;
+
+  -- RLS parity check, UPDATE-path half (#1352 review round 4, finding #1):
+  -- the real "Anon sandcastle update" policy's USING clause requires the
+  -- row being modified to already be sandcastle-owned, independent of
+  -- what provenance the caller claims for the write. An anon caller who
+  -- knows a (project, name) pair belonging to a non-sandcastle row (e.g.
+  -- a main-session working_state checkpoint) must not be able to
+  -- overwrite it just by passing a sandcastle:%-prefixed p_source_provenance.
+  if v_id is not null and auth.role() = 'anon' and v_existing_source_provenance not like 'sandcastle:%' then
+    return query select false, null::uuid, 'forbidden: anon callers may not modify a non-sandcastle-owned row'::text;
+    return;
+  end if;
 
   -- Optimistic concurrency check: compare expected updated_at with current
   if v_id is not null then
