@@ -5,13 +5,20 @@ appends when section absent, preserves siblings, and fails loudly on
 unparseable content.
 
 Tests are placed in existing memory test structure to avoid circular imports.
+
+IMPL NOTE (#1352 finding #3): These helper functions are intentionally duplicated
+from mcp-memory/handlers/memory.py to avoid circular imports (memory.py imports
+server, server imports memory). While duplication isn't ideal, the alternative
+(restructuring the module hierarchy to break the circular dependency) is out of
+scope for this fix. The duplicated versions are kept in sync with production code
+and tested to ensure they match. Production code should be the canonical version.
 """
 
 import re
 import pytest
 
 
-# Inline the helper functions for testing (to avoid circular import)
+# Inline the helper functions for testing (necessary to avoid circular import with server module)
 def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
     r"""Parse markdown document into sections keyed by header text.
 
@@ -21,12 +28,20 @@ def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
 
     Sections must match pattern: ^#{2,4} \[entry\] or ^#{2,4} \[evicted\]
     (matching the working_state contract format). Headers outside this pattern
-    are rejected — prevents arbitrary markdown from being incorrectly parsed.
+    are silently ignored.
+
+    Raises:
+        ValueError: if the document is too long to safely process, indicating
+        potential memory/performance issues or malformed repetitive structure.
     """
     lines = content.split("\n")
     sections: dict[str, tuple[int, int]] = {}
     current_section_start: int | None = None
     current_section_header: str | None = None
+
+    # Prevent processing of extremely large documents (safety check)
+    if len(lines) > 100_000:
+        raise ValueError(f"Document too large to parse: {len(lines)} lines exceeds safety limit")
 
     section_pattern = re.compile(r"^#{2,4}\s+\[(entry|evicted)\]")
 
@@ -40,7 +55,6 @@ def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
             # Start new section
             current_section_header = line
             current_section_start = i
-        # No need to check for other headers — we only care about [entry]/[evicted] blocks
 
     # Don't forget the last section
     if current_section_header is not None and current_section_start is not None:

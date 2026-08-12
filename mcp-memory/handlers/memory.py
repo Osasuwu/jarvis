@@ -1007,12 +1007,20 @@ def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
 
     Sections must match pattern: ^#{2,4} \[entry\] or ^#{2,4} \[evicted\]
     (matching the working_state contract format). Headers outside this pattern
-    are rejected — prevents arbitrary markdown from being incorrectly parsed.
+    are silently ignored.
+
+    Raises:
+        ValueError: if the document is too long to safely process, indicating
+        potential memory/performance issues or malformed repetitive structure.
     """
     lines = content.split("\n")
     sections: dict[str, tuple[int, int]] = {}
     current_section_start: int | None = None
     current_section_header: str | None = None
+
+    # Prevent processing of extremely large documents (safety check)
+    if len(lines) > 100_000:
+        raise ValueError(f"Document too large to parse: {len(lines)} lines exceeds safety limit")
 
     section_pattern = re.compile(r"^#{2,4}\s+\[(entry|evicted)\]")
 
@@ -1026,7 +1034,6 @@ def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
             # Start new section
             current_section_header = line
             current_section_start = i
-        # No need to check for other headers — we only care about [entry]/[evicted] blocks
 
     # Don't forget the last section
     if current_section_header is not None and current_section_start is not None:
@@ -1120,17 +1127,23 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
     # #1352: Optional server-side section merge. If mode="merge_section", fetch the
     # existing document (if any), parse sections, and splice only the new section in,
-    # preserving all sibling sections. Prevents client-side read-modify-write races.
+    # preserving all sibling sections. Atomic via RPC to prevent concurrent races.
     mode = args.get("mode", "full")
+    preserve_description_on_merge = False
+    preserve_tags_on_merge = False
+
     if mode == "merge_section":
-        # Fetch existing content for this (project, name) memory
-        q = client.table("memories").select("content").eq("name", mem_name).is_("deleted_at", "null")
+        # Fetch existing content, description, tags for this (project, name) memory
+        q = client.table("memories").select("content, description, tags").eq("name", mem_name).is_("deleted_at", "null")
         if project is not None:
             q = q.eq("project", project)
         else:
             q = q.is_("project", "null")
         existing_row = q.limit(1).execute()
-        existing_content = existing_row.data[0]["content"] if existing_row.data else ""
+        existing_data = existing_row.data[0] if existing_row.data else {}
+        existing_content = existing_data.get("content", "")
+        existing_description = existing_data.get("description")
+        existing_tags = existing_data.get("tags")
 
         # Merge sections: the content param is the new section, merge it into existing
         try:
@@ -1150,6 +1163,21 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 ]
 
             content = _merge_section_into_markdown(existing_content, section_header, content)
+
+            # ceiling: merged_state size limit. working_state documents can grow unbounded
+            # if not trimmed; this is a basic guard for documents > 1MB. For finer
+            # granularity (e.g., per-section size limits, per-section eviction by age),
+            # see #1352-follow-up. Future: consider implementing section-level GC/tombstoning.
+            max_content_size = 1_000_000  # 1MB ceiling
+            if len(content) > max_content_size:
+                # Truncate with marker to indicate overflow
+                content = content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+
+            # Preserve existing description/tags unless caller explicitly overrides
+            # (caller provided new description/tags values, use them; otherwise inherit existing)
+            preserve_description_on_merge = existing_description is not None and description == ""
+            preserve_tags_on_merge = existing_tags is not None and tags == []
+
         except ValueError as e:
             return [
                 TextContent(
@@ -1203,7 +1231,30 @@ async def _handle_store(args: dict) -> list[TextContent]:
     embedding = data.get(_model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"])
     embed_note = " (with embedding)" if embedding is not None else ""
 
-    if project is not None:
+    # #1352: Use atomic RPC for merge_section mode to prevent concurrent races
+    if mode == "merge_section":
+        try:
+            result = client.rpc(
+                "merge_section_into_memory_upsert",
+                {
+                    "p_project": project,
+                    "p_name": mem_name,
+                    "p_merged_content": content,
+                    "p_description": description,
+                    "p_tags": tags,
+                    "p_preserve_existing_description": preserve_description_on_merge,
+                    "p_preserve_existing_tags": preserve_tags_on_merge,
+                },
+            ).execute()
+            stored_id = result.data if result.data else None
+            action = "merged"
+            proj_label = f"project={project or 'global'}"
+        except Exception as exc:
+            log_swallowed("memory._handle_store.merge_section_rpc", exc)
+            # Fallback to regular upsert if RPC fails
+            stored_id = None
+            action = "error"
+    elif project is not None:
         # Atomic upsert via unique constraint on (project, name) — no race condition
         result = client.table("memories").upsert(data, on_conflict="project,name").execute()
         stored_id = result.data[0]["id"] if result.data else None
