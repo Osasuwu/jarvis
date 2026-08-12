@@ -328,7 +328,7 @@ def test_apprise_notifier_exception_message_sanitizes_non_http_scheme():
     fake_app = MagicMock()
     fake_app.add.return_value = True
     fake_app.notify.side_effect = RuntimeError(
-        "failed to deliver via tgram://bottok-secret-value/12345"
+        "failed to deliver via tgram://bottok-secret-value/12345"  # gitleaks:allow — fake fixture, not a real credential
     )
     fake_apprise_lib = MagicMock()
     fake_apprise_lib.Apprise.return_value = fake_app
