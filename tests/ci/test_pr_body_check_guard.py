@@ -9,7 +9,7 @@ escape hatches behave as the workflow promises:
   - refactor:/refactor(scope): title    → allowed (auto-bypass per #428)
   - none of the above                   → blocked
 
-Convention from CLAUDE.md §326 (path-filtered guards need meta-tests).
+Convention from .claude/rules/path-filtered-ci-guards-meta-test.md (#326, path-filtered guards need meta-tests).
 PR Body Check isn't path-filtered, but the escape logic is non-trivial
 enough that a sibling test is worth keeping in lockstep with the YAML.
 """
