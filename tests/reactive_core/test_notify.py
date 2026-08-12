@@ -320,3 +320,26 @@ def test_apprise_notifier_exception_message_is_sanitized():
 
     logged_args = " ".join(str(a) for call in fake_logger.warning.call_args_list for a in call.args)
     assert "tok-secret-value" not in logged_args
+
+
+def test_apprise_notifier_exception_message_sanitizes_non_http_scheme():
+    """#1547 review: apprise URLs use non-http schemes (tgram://, discord://, ...)
+    which the sanitizer must catch, not just https://."""
+    fake_app = MagicMock()
+    fake_app.add.return_value = True
+    fake_app.notify.side_effect = RuntimeError(
+        "failed to deliver via tgram://bottok-secret-value/12345"
+    )
+    fake_apprise_lib = MagicMock()
+    fake_apprise_lib.Apprise.return_value = fake_app
+
+    with patch("agents.notify._apprise_lib", fake_apprise_lib):
+        _name, notifier = resolve_notifier(
+            {"NOTIFY_TRANSPORT": "apprise", "NOTIFY_APPRISE_URL": "webhook://example/tok"}
+        )
+        with patch("agents.notify.logger") as fake_logger:
+            assert notifier(_decision()) is False
+
+    logged_args = " ".join(str(a) for call in fake_logger.warning.call_args_list for a in call.args)
+    assert "tok-secret-value" not in logged_args
+    assert "<redacted-url>" in logged_args

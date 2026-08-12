@@ -62,8 +62,11 @@ TELEGRAM_API = "https://api.telegram.org"
 NotifierFn = Callable[["Decision"], bool]
 
 # URL-shaped substrings may embed tokens/webhook secrets (Telegram bot token,
-# Apprise service URL) — never let one reach log output (#1547 AC9).
-_URL_RE = re.compile(r"https?://\S+")
+# Apprise service URL) — never let one reach log output (#1547 AC9). Apprise
+# URLs use non-http schemes (tgram://, discord://, slack://, matrix://, ...;
+# see .gitleaks.toml's jarvis-apprise-service-webhook-url rule), so this must
+# match any URI scheme, not just http(s).
+_URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+")
 
 
 def _sanitize(text: str) -> str:
