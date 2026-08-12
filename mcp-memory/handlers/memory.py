@@ -1005,8 +1005,10 @@ def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
     Sections are delimited by markdown headers (##, ###, ####, etc.).
     Content is split by lines; indices are line numbers.
 
-    Sections must match pattern: ^#{2,4} \[entry\] or ^#{2,4} \[evicted\]
-    (matching the working_state contract format). Headers outside this pattern
+    Sections must match pattern: ^#{2,4} \[<marker>\] — any bracketed marker
+    (e.g. [entry], [evicted], or a caller-defined one), matching the generic
+    "## [marker] some-name" contract documented in tools_schema.py, not just
+    the jarvis working_state convention. Headers without a bracketed marker
     are silently ignored.
 
     Raises:
@@ -1022,7 +1024,7 @@ def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
     if len(lines) > 100_000:
         raise ValueError(f"Document too large to parse: {len(lines)} lines exceeds safety limit")
 
-    section_pattern = re.compile(r"^#{2,4}\s+\[(entry|evicted)\]")
+    section_pattern = re.compile(r"^#{2,4}\s+\[[^\]\n]+\]")
 
     for i, line in enumerate(lines):
         # Check if this is a valid section header
@@ -1071,8 +1073,21 @@ def _merge_section_into_markdown(
         # Empty document: just return the new section
         return section_content
 
-    # Parse existing sections — raises ValueError if unparseable
+    # Parse existing sections (raises ValueError if the document is oversized)
     sections = _parse_markdown_sections(existing_content)
+
+    # Non-empty content with zero recognized "## [marker] ..." headers means
+    # the document isn't using the section-splicing convention at all — e.g.
+    # a foreign-format doc from another caller. Silently appending under it
+    # would be a guess, not a merge; fail loudly instead (per the contract
+    # documented in tools_schema.py) so the caller notices and switches to
+    # mode="full" rather than accumulating unsplic-able content forever.
+    if not sections:
+        raise ValueError(
+            "existing content is not parseable as markdown sections — no "
+            "'## [marker] ...'-style headers found. Refusing to silently "
+            "append; use mode='full' to overwrite this document instead."
+        )
 
     # Check if target section exists
     if section_header in sections:
@@ -1285,6 +1300,18 @@ async def _handle_store(args: dict) -> list[TextContent]:
                             "p_tags": tags,
                             "p_preserve_existing_description": merge_section_data["preserve_description"],
                             "p_preserve_existing_tags": merge_section_data["preserve_tags"],
+                            # #242/#1352: forward whichever embedding columns
+                            # embed_fields populated (PRIMARY always, SECONDARY
+                            # only if configured) — mirrors the standard write
+                            # path's data.update(embed_fields) above so
+                            # merge_section rows get embeddings too, instead of
+                            # silently staying NULL until a lazy backfill.
+                            "p_embedding": embed_fields.get("embedding"),
+                            "p_embedding_model": embed_fields.get("embedding_model"),
+                            "p_embedding_version": embed_fields.get("embedding_version"),
+                            "p_embedding_v2": embed_fields.get("embedding_v2"),
+                            "p_embedding_model_v2": embed_fields.get("embedding_model_v2"),
+                            "p_embedding_version_v2": embed_fields.get("embedding_version_v2"),
                         },
                     ).execute()
 

@@ -186,20 +186,60 @@ First task."""
         with pytest.raises(ValueError):
             mem._merge_section_into_markdown(existing, "### [entry] foo", new_section)
 
-    def test_merge_appends_when_no_matching_sections_exist(self):
-        """Append when existing content has no matching [entry]/[evicted] blocks."""
+    def test_merge_raises_when_existing_content_unparseable(self):
+        """Fails loudly (per the tools_schema.py contract) when existing content
+        has zero recognized '## [marker] ...' headers — a foreign-format doc,
+        not a legitimate empty section list. Silently appending under it would
+        guess at structure the merge can't verify.
+        """
         existing = """# Main
 ## Subsection
 
-This has no [entry] or [evicted] blocks.
+This has no bracketed-marker headers at all.
 """
         new_section = """### [entry] task — 2026-01-01 — done
 
 Content."""
 
-        result = mem._merge_section_into_markdown(existing, "### [entry] task — 2026-01-01 — done", new_section)
-        # Since there are no [entry]/[evicted] blocks, it appends
+        with pytest.raises(ValueError, match="not parseable as markdown sections"):
+            mem._merge_section_into_markdown(existing, "### [entry] task — 2026-01-01 — done", new_section)
+
+    def test_merge_appends_new_marker_section_alongside_existing_ones(self):
+        """A doc that DOES use the '[marker]' convention, just not for the
+        target header yet, is a legitimate append — not unparseable.
+        """
+        existing = """# Working state
+
+### [entry] other-task — 2026-01-01 — done
+
+Other content.
+"""
+        new_section = """### [entry] task — 2026-01-02 — done
+
+Content."""
+
+        result = mem._merge_section_into_markdown(existing, "### [entry] task — 2026-01-02 — done", new_section)
         assert new_section in result
+        assert "### [entry] other-task — 2026-01-01 — done" in result
+
+    def test_merge_generic_bracket_marker_not_hardcoded_to_entry_evicted(self):
+        """The [marker] convention is generic (tools_schema.py: 'e.g. [entry]'),
+        not hardcoded to literally 'entry'/'evicted' — a caller-defined marker
+        must parse and merge too.
+        """
+        existing = """# Doc
+
+### [custom] alpha — note
+
+Alpha body.
+"""
+        new_section = """### [custom] beta — note
+
+Beta body."""
+
+        result = mem._merge_section_into_markdown(existing, "### [custom] beta — note", new_section)
+        assert "### [custom] alpha — note" in result
+        assert "Beta body" in result
 
 
 class TestMergeSectionRetryLogic:

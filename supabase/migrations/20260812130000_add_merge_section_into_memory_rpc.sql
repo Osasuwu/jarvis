@@ -10,7 +10,18 @@ create or replace function merge_section_into_memory_upsert(
   p_description text default '',
   p_tags text[] default '{}',
   p_preserve_existing_description boolean default true,
-  p_preserve_existing_tags boolean default true
+  p_preserve_existing_tags boolean default true,
+  -- #242 dual-embedding machinery: PRIMARY (voyage-3-lite, 512-dim) always
+  -- present when embedding succeeded; SECONDARY (voyage-3, 1024-dim) only
+  -- when EMBEDDING_MODEL_SECONDARY is configured. NULL means "no new
+  -- embedding computed this call" — coalesce()'d against the existing row
+  -- on UPDATE so a NULL never clobbers a previously-computed vector.
+  p_embedding vector(512) default null,
+  p_embedding_model text default null,
+  p_embedding_version text default null,
+  p_embedding_v2 vector(1024) default null,
+  p_embedding_model_v2 text default null,
+  p_embedding_version_v2 text default null
 )
 returns table (success boolean, memory_id uuid, conflict_reason text) as $$
 declare
@@ -64,11 +75,25 @@ begin
        set content = p_merged_content,
            description = v_final_description,
            tags = v_final_tags,
-           updated_at = now()
+           updated_at = now(),
+           embedding = coalesce(p_embedding, embedding),
+           embedding_model = coalesce(p_embedding_model, embedding_model),
+           embedding_version = coalesce(p_embedding_version, embedding_version),
+           embedding_v2 = coalesce(p_embedding_v2, embedding_v2),
+           embedding_model_v2 = coalesce(p_embedding_model_v2, embedding_model_v2),
+           embedding_version_v2 = coalesce(p_embedding_version_v2, embedding_version_v2)
      where id = v_id;
   else
-    insert into memories (project, name, content, description, tags, source_provenance)
-    values (p_project, p_name, p_merged_content, v_final_description, v_final_tags, 'rpc:merge_section')
+    insert into memories (
+      project, name, content, description, tags, source_provenance,
+      embedding, embedding_model, embedding_version,
+      embedding_v2, embedding_model_v2, embedding_version_v2
+    )
+    values (
+      p_project, p_name, p_merged_content, v_final_description, v_final_tags, 'rpc:merge_section',
+      p_embedding, p_embedding_model, p_embedding_version,
+      p_embedding_v2, p_embedding_model_v2, p_embedding_version_v2
+    )
     returning memories.id into v_id;
   end if;
 

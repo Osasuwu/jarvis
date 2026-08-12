@@ -637,7 +637,14 @@ class TestHandleStoreMergeSectionFailureModes:
         monkeypatch.setattr(server_module, "_compute_write_embeddings", _no_embed)
 
         tbl = MagicMock()
-        select_chain = tbl.select.return_value.eq.return_value.is_.return_value
+        select_chain = MagicMock()
+        tbl.select.return_value = select_chain
+        # _handle_store's merge_section fetch chains .eq()/.is_() a variable
+        # number of times depending on whether `project` is set (an extra
+        # trailing .eq("project", ...) when it is) — make both self-chaining
+        # so .limit().execute() lands on the same configured mock regardless.
+        select_chain.eq.return_value = select_chain
+        select_chain.is_.return_value = select_chain
         select_chain.limit.return_value.execute.return_value = MagicMock(data=[])
         self.client.table.return_value = tbl
         self.tbl = tbl
@@ -709,6 +716,54 @@ class TestHandleStoreMergeSectionFailureModes:
         assert body["action"] == "merged"
         assert body["memory_id"] == "merged-1"
         assert self.client.rpc.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_merge_forwards_computed_embedding_to_rpc(self, monkeypatch):
+        """#1352 review fix: merge_section must forward embed_fields to the RPC,
+        same as the standard write path's data.update(embed_fields) — otherwise
+        rows written via merge_section never get an embedding until a lazy
+        backfill runs.
+        """
+
+        async def _real_embed(_text):
+            return {
+                "embedding": [0.1] * 512,
+                "embedding_model": "voyage-3-lite",
+                "embedding_version": "v2",
+            }
+
+        monkeypatch.setattr(server_module, "_compute_write_embeddings", _real_embed)
+
+        self.client.rpc.return_value.execute.return_value = MagicMock(
+            data=[{"success": True, "memory_id": "merged-2", "conflict_reason": None}]
+        )
+
+        await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_embedding_forward",
+                "content": "## [entry] qux — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        # A populated embedding also triggers the fire-and-forget auto-link
+        # rpc call (semantic similarity search), so don't assume this is the
+        # only rpc() call — pick out the merge_section_into_memory_upsert one.
+        merge_calls = [
+            c for c in self.client.rpc.call_args_list if c.args and c.args[0] == "merge_section_into_memory_upsert"
+        ]
+        assert len(merge_calls) == 1
+        rpc_call = merge_calls[0]
+        params = rpc_call.args[1] if len(rpc_call.args) > 1 else rpc_call.kwargs.get("params")
+        assert params["p_embedding"] == [0.1] * 512
+        assert params["p_embedding_model"] == "voyage-3-lite"
+        assert params["p_embedding_version"] == "v2"
+        assert params["p_embedding_v2"] is None
+        assert params["p_embedding_model_v2"] is None
+        assert params["p_embedding_version_v2"] is None
 
 
 # ---------------------------------------------------------------------------
