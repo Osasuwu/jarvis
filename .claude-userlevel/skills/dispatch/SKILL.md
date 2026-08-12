@@ -176,11 +176,27 @@ from agents.driver_heartbeat import check_heartbeat, WARN_MESSAGE
 status = check_heartbeat()
 if status.is_stale:
     # surface WARN_MESSAGE ("driver stale — rows enqueued but may not run")
-    # in the batch report (step 6) — advisory only, no label mutation, no retry.
+    # in the batch report (step 6). Then run the local-drain fallback below —
+    # operator is present right now, so don't just warn and leave it.
     ...
 ```
 
-`status.is_stale` is `True` for both `"stale"` (an old tick) and `"missing"` (no row yet — pre-Slice-3, or `wake_driver` has never ticked). Either way this is advisory: the row is already durably enqueued regardless of driver liveness, so this step never blocks, retries, or mutates the issue — it only changes what step 6 reports to the principal.
+`status.is_stale` is `True` for both `"stale"` (an old tick) and `"missing"` (no row yet — pre-Slice-3, or `wake_driver` has never ticked). The row is already durably enqueued regardless of driver liveness, so a stale heartbeat never blocks or retries the enqueue itself — but per the #1085 Slice 3 design, a stale heartbeat with an operator present is exactly the case the local-drain fallback exists for: don't leave freshly-enqueued rows sitting behind a driver that may not be ticking.
+
+**On `status.is_stale`**, call `agents.task_dispatch.local_drain_until_terminal` with the task ids enqueued this batch (from each `enqueue()` row's `task_id` in step 3):
+
+```python
+from agents.task_dispatch import local_drain_until_terminal
+
+final_statuses = local_drain_until_terminal(enqueued_task_ids)
+# Blocking, operator-present is expected here — see the function's docstring
+# for the ceiling: marker on the heartbeat-check-then-spawn race window (no
+# distributed lock) and the DEFAULT_LOCAL_DRAIN_MAX_ITERATIONS cap.
+```
+
+This repeats a `wake_driver --once` tick, re-checking the heartbeat before each spawn, until every enqueued row in this batch reaches a terminal `task_queue` state (`done`/`failed`/`parked`/`skipped_duplicate`) or the heartbeat goes fresh again (resident driver recovered — stop, let it take over) or the iteration cap is hit. Report the final per-row statuses in step 6 alongside `WARN_MESSAGE`; a row still non-terminal after the loop is reported as such, not silently dropped.
+
+This local drain also keeps the batch's rows out of the 6h reaper's false-fail path — operator-device spawns launched this way never fold into the resident driver's own completion map, so without an explicit drain-to-terminal here they'd otherwise look abandoned to the reaper. See #1085 Slice 3 design note in the issue body.
 
 ### 4. Record decision
 
@@ -217,5 +233,5 @@ terminal-for-this-skill diagnostic event).
 ## Recovery playbook
 
 See `docs/security/recovery-playbook.md`. Queue-specific:
-- Enqueued row stuck `pending` past heartbeat staleness → step 3b already surfaced `WARN_MESSAGE` at enqueue time if the driver was stale then; if it wasn't stale then but is now, run `agents.driver_heartbeat.check_heartbeat()` directly to confirm, then trigger a local `wake_driver --once` loop (Slice 3) or escalate — `/task-implement`'s escalation path applies once a worker is actually spawned and stuck, not while the row is still `pending`.
+- Enqueued row stuck `pending` past heartbeat staleness → step 3b already ran `local_drain_until_terminal` at enqueue time if the driver was stale then; if it wasn't stale then but is now, run `agents.driver_heartbeat.check_heartbeat()` directly to confirm, then call `agents.task_dispatch.local_drain_until_terminal([<task_id>])` directly the same way step 3b does, or escalate — `/task-implement`'s escalation path applies once a worker is actually spawned and stuck, not while the row is still `pending`.
 - Row `parked` by a readiness refusal at spawn time → fix the cited gap on the issue, re-dispatch at `delegate:<N>:r<k+1>` (never reuse the same key).

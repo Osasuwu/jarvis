@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from agents import driver_heartbeat
 from agents import task_dispatch as td
 from agents import wake_driver
 from agents.task_dispatch import TaskQueuePort, TrackedProc
@@ -665,6 +666,83 @@ def test_tick_task_drain_failure_does_not_crash_tick():
     assert result.processed == 1
     assert result.tasks_spawned == 0
     assert result.tasks_failed == 0
+
+
+# --- #1085 S3-1: heartbeat write at tick start -------------------------------
+
+
+class _RecordingHeartbeat:
+    """Minimal HeartbeatPort that logs record_tick calls, in order."""
+
+    def __init__(self, log: list | None = None) -> None:
+        self._log = log if log is not None else []
+        self.tick_calls: list[str] = []
+
+    def read_heartbeat(self, driver_name: str) -> dict | None:
+        return None
+
+    def record_tick(self, driver_name: str) -> None:
+        self._log.append("heartbeat_tick")
+        self.tick_calls.append(driver_name)
+
+
+class _RaisingHeartbeat:
+    """HeartbeatPort whose record_tick raises — models a Supabase outage that
+    must not starve the event drain, the primary wake path."""
+
+    def read_heartbeat(self, driver_name: str) -> dict | None:
+        return None
+
+    def record_tick(self, driver_name: str) -> None:
+        raise RuntimeError("supabase unreachable")
+
+
+def test_tick_records_heartbeat_at_start():
+    hb = _RecordingHeartbeat()
+    q = FakeEventQueue([_ev("a")])
+    wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        heartbeat_port=hb,
+    )
+    assert hb.tick_calls == [driver_heartbeat.DRIVER_NAME]
+
+
+def test_tick_heartbeat_failure_does_not_block_event_drain():
+    q = FakeEventQueue([_ev("a")])
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        heartbeat_port=_RaisingHeartbeat(),
+    )
+    assert result.processed == 1
+
+
+def test_tick_without_heartbeat_port_skips_heartbeat_write():
+    # Backward-compat: omitting heartbeat_port is a silent no-op, not an error.
+    q = FakeEventQueue([_ev("a")])
+    result = wake_driver.tick(q, wake_driver.default_orchestrator, stale_after_seconds=300)
+    assert result.processed == 1
+
+
+def test_tick_writes_heartbeat_before_other_steps():
+    log: list = []
+    hb = _RecordingHeartbeat(log)
+    eq = _LoggingEventQueue(log, [_ev("e1", state="claimed")])
+    eq.events[0]["claimed_at"] = 0.0
+    eq.clock = 999.0  # the claimed event is stale → reclaimed → drained this tick
+
+    wake_driver.tick(
+        eq,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        heartbeat_port=hb,
+    )
+
+    assert log[0] == "heartbeat_tick"
+    assert log.index("heartbeat_tick") < log.index("event_reclaim")
 
 
 # --- review #3: run() forwards every task param to tick() -------------------
@@ -1823,6 +1901,106 @@ def test_main_once_wires_build_production_orchestrator_into_tick(monkeypatch):
 
     assert wake_driver.main() == 0
     assert captured["orchestrator"] is sentinel
+
+
+# --- #1085 S3-1: main() wires SupabaseHeartbeat into tick/run ---------------
+
+
+def test_main_once_wires_supabase_heartbeat_into_tick(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(wake_driver, "SupabaseHeartbeat", lambda **k: sentinel)
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_port"] = kwargs.get("heartbeat_port")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--once"])
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_port"] is sentinel
+
+
+def test_main_once_driver_name_flag_threads_into_tick(monkeypatch):
+    # #1085 S3 review fix: --driver-name must reach tick's heartbeat_driver_name
+    # kwarg, not just parse — this is how local_drain_until_terminal's own
+    # ``wake_driver --once`` ticks avoid colliding with the resident driver's
+    # heartbeat row (see LOCAL_DRAIN_DRIVER_NAME in agents/task_dispatch.py).
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_driver_name"] = kwargs.get("heartbeat_driver_name")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "sys.argv", ["wake_driver", "--once", "--driver-name", "wake_driver_local_drain"]
+    )
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_driver_name"] == "wake_driver_local_drain"
+
+
+def test_main_once_driver_name_defaults_to_resident_name(monkeypatch):
+    # No --driver-name passed → tick gets the resident's own DRIVER_NAME, not
+    # None or an empty string, preserving prior behavior for the long-running
+    # driver's own smoke-test invocations of --once.
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_driver_name"] = kwargs.get("heartbeat_driver_name")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--once"])
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_driver_name"] == driver_heartbeat.DRIVER_NAME
+
+
+def test_main_wires_supabase_heartbeat_into_run(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(wake_driver, "SupabaseHeartbeat", lambda **k: sentinel)
+    captured: dict[str, object] = {}
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["heartbeat_port"] = kwargs.get("heartbeat_port")
+
+    _wire_main(monkeypatch, run_impl=_capture_run)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_port"] is sentinel
 
 
 # --- AC-E (#1385): staged rollout — --dry-run / --no-task-drain -------------
