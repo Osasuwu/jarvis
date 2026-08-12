@@ -244,6 +244,16 @@ def test_dispatcher_escalation_is_not_a_telemetry_route():
     assert handle_event(_ev("dispatcher_escalation", "info")).route is Route.ESCALATE
 
 
+def test_mcp_write_scrubber_disabled_high_escalates():
+    """mcp_write_scrubber_disabled at severity=high must escalate to the owner
+    with a named reason — the write-scrubber gate being down is a security
+    concern that requires human review, not an agent action (#1000)."""
+    d = handle_event(_ev("mcp_write_scrubber_disabled", "high"))
+    assert d.route is Route.ESCALATE
+    assert d.escalated_reason is not None
+    assert "scrubber" in d.escalated_reason
+
+
 def test_unknown_event_type_failsafe_escalates():
     assert handle_event(_ev("totally_unknown", "high")).route is Route.ESCALATE
 
