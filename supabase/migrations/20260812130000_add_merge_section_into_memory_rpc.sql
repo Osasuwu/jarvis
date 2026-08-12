@@ -1,0 +1,162 @@
+-- Add atomic server-side merge_section function for memory_store (#1352)
+-- Implements optimistic concurrency control via compare-and-swap on updated_at
+-- Uses pg_advisory_xact_lock (transaction-scoped) for insert-race safety
+
+create or replace function merge_section_into_memory_upsert(
+  p_project text,
+  p_name text,
+  p_merged_content text,
+  p_expected_updated_at timestamptz,
+  p_type text default null,
+  p_source_provenance text default 'rpc:merge_section',
+  p_description text default '',
+  p_tags text[] default '{}',
+  p_preserve_existing_description boolean default true,
+  p_preserve_existing_tags boolean default true,
+  -- #242 dual-embedding machinery: PRIMARY (voyage-3-lite, 512-dim) always
+  -- present when embedding succeeded; SECONDARY (voyage-3, 1024-dim) only
+  -- when EMBEDDING_MODEL_SECONDARY is configured. NULL means "no new
+  -- embedding computed this call" — coalesce()'d against the existing row
+  -- on UPDATE so a NULL never clobbers a previously-computed vector.
+  p_embedding vector(512) default null,
+  p_embedding_model text default null,
+  p_embedding_version text default null,
+  p_embedding_v2 vector(1024) default null,
+  p_embedding_model_v2 text default null,
+  p_embedding_version_v2 text default null
+)
+returns table (success boolean, memory_id uuid, conflict_reason text) as $$
+declare
+  v_id uuid;
+  v_current_updated_at timestamptz;
+  v_existing_description text;
+  v_existing_tags text[];
+  v_existing_source_provenance text;
+  v_final_description text;
+  v_final_tags text[];
+  v_lock_id bigint;
+begin
+  -- RLS parity check (#1352 review round 3, finding #1): the "Anon
+  -- sandcastle insert/update" policies on `memories` gate anon-role writes
+  -- to source_provenance LIKE 'sandcastle:%'. This function is `security
+  -- definer`, which bypasses RLS entirely, so the anon grant below would
+  -- otherwise let a sandcastle container (anon key) write any provenance
+  -- it likes via this RPC. Re-derive the same restriction here from the
+  -- caller's actual JWT role — auth.role() reflects the invoker, not the
+  -- function owner, even under security definer. service_role/authenticated
+  -- callers (main Jarvis session, skill:end) are unaffected.
+  --
+  -- This covers the INSERT path's WITH CHECK equivalent (the row being
+  -- created must be sandcastle-owned). The UPDATE path's USING equivalent
+  -- (the row being modified must ALREADY be sandcastle-owned) is enforced
+  -- separately below, once the existing row's own source_provenance is
+  -- known (#1352 review round 4, finding #1 — this parameter-only check
+  -- let an anon caller overwrite a non-sandcastle row by passing a
+  -- sandcastle:%-prefixed p_source_provenance while targeting someone
+  -- else's row; the UPDATE statement never persists p_source_provenance,
+  -- so checking only the incoming parameter never actually gated it).
+  --
+  -- NULL check is explicit for the same reason as the UPDATE-path guard
+  -- below (#1352 review round 5, finding #1): `NOT LIKE` evaluates to
+  -- NULL, not TRUE, when the operand is NULL, and plpgsql's `IF <NULL>`
+  -- is false — a caller passing p_source_provenance := NULL explicitly
+  -- (the default is non-null, but nothing prevents an explicit NULL
+  -- override) would otherwise skip this guard entirely.
+  if auth.role() = 'anon'
+     and (p_source_provenance is null or p_source_provenance not like 'sandcastle:%') then
+    return query select false, null::uuid, 'forbidden: anon callers must use sandcastle:%-prefixed source_provenance'::text;
+    return;
+  end if;
+
+  -- Use transaction-scoped advisory lock for insert-race safety
+  -- (when no existing row exists, multiple concurrent inserts could race)
+  -- Hash the project and name into a lockid; use first 31 bits to fit into int
+  v_lock_id := (hashtext(coalesce(p_project, '') || '::' || p_name)::bigint & x'7FFFFFFF'::bigint)::int;
+  perform pg_advisory_xact_lock(v_lock_id);
+
+  -- Fetch existing row to check for concurrent modification
+  select id, updated_at, description, tags, source_provenance
+    into v_id, v_current_updated_at, v_existing_description, v_existing_tags, v_existing_source_provenance
+    from memories
+   where name = p_name
+     and (project = p_project or (p_project is null and project is null))
+     and deleted_at is null;
+
+  -- RLS parity check, UPDATE-path half (#1352 review round 4, finding #1):
+  -- the real "Anon sandcastle update" policy's USING clause requires the
+  -- row being modified to already be sandcastle-owned, independent of
+  -- what provenance the caller claims for the write. An anon caller who
+  -- knows a (project, name) pair belonging to a non-sandcastle row (e.g.
+  -- a main-session working_state checkpoint) must not be able to
+  -- overwrite it just by passing a sandcastle:%-prefixed p_source_provenance.
+  --
+  -- NULL check is explicit (#1352 review round 5, finding #1): `x NOT LIKE
+  -- 'sandcastle:%'` evaluates to NULL, not TRUE, when x IS NULL, and
+  -- plpgsql's `IF <NULL>` is treated as false — so a bare `NOT LIKE` check
+  -- silently skips the guard for any row with source_provenance IS NULL.
+  -- Per supabase/migrations/20260508120000_sandcastle_anon_rls_provenance_gate.sql,
+  -- NULL is an expected state on pre-existing rows, so this isn't a
+  -- contrived case: real RLS USING clauses fail closed on NULL, and this
+  -- hand-rolled equivalent must too.
+  if v_id is not null and auth.role() = 'anon'
+     and (v_existing_source_provenance is null or v_existing_source_provenance not like 'sandcastle:%') then
+    return query select false, null::uuid, 'forbidden: anon callers may not modify a non-sandcastle-owned row'::text;
+    return;
+  end if;
+
+  -- Optimistic concurrency check: compare expected updated_at with current
+  if v_id is not null then
+    if v_current_updated_at is distinct from p_expected_updated_at then
+      -- Concurrent modification detected — another session changed the row
+      return query select false, null::uuid, 'merge_conflict: concurrent modification'::text;
+      return;
+    end if;
+  end if;
+
+  -- Decide on final description and tags
+  v_final_description := case
+    when v_id is not null and p_preserve_existing_description and v_existing_description is not null
+    then v_existing_description
+    else p_description
+  end;
+
+  v_final_tags := case
+    when v_id is not null and p_preserve_existing_tags and v_existing_tags is not null
+    then v_existing_tags
+    else p_tags
+  end;
+
+  -- Upsert: update if exists, insert if not
+  if v_id is not null then
+    update memories
+       set content = p_merged_content,
+           description = v_final_description,
+           tags = v_final_tags,
+           updated_at = now(),
+           embedding = coalesce(p_embedding, embedding),
+           embedding_model = coalesce(p_embedding_model, embedding_model),
+           embedding_version = coalesce(p_embedding_version, embedding_version),
+           embedding_v2 = coalesce(p_embedding_v2, embedding_v2),
+           embedding_model_v2 = coalesce(p_embedding_model_v2, embedding_model_v2),
+           embedding_version_v2 = coalesce(p_embedding_version_v2, embedding_version_v2)
+     where id = v_id;
+  else
+    insert into memories (
+      project, name, type, content, description, tags, source_provenance,
+      embedding, embedding_model, embedding_version,
+      embedding_v2, embedding_model_v2, embedding_version_v2
+    )
+    values (
+      p_project, p_name, p_type, p_merged_content, v_final_description, v_final_tags, p_source_provenance,
+      p_embedding, p_embedding_model, p_embedding_version,
+      p_embedding_v2, p_embedding_model_v2, p_embedding_version_v2
+    )
+    returning memories.id into v_id;
+  end if;
+
+  return query select true, v_id, null::text;
+end;
+$$ language plpgsql security definer;
+
+-- Grant RPC access
+grant execute on function merge_section_into_memory_upsert to anon, authenticated;
