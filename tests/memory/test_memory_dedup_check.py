@@ -20,7 +20,7 @@ import json
 import sys
 import types
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -128,8 +128,13 @@ class TestMainExemption:
 # ---------------------------------------------------------------------------
 
 
-def _fake_client(*, existing_row: bool, rpc_rows: list[dict]):
-    """Build a MagicMock supabase client for the two query chains main() uses:
+def _fake_client(*, existing_row: bool = False, existing_row_error: bool = False, rpc_rows: list[dict]):
+    """Build a MagicMock supabase client for the two query chains main() uses.
+
+    Args:
+      existing_row: True if row exists (upsert case)
+      existing_row_error: True if row_exists query should raise an exception (fallback case)
+      rpc_rows: rows returned by match_memories RPC
 
     - client.table("memories").select("id").eq("name",...).is_("deleted_at","null")
       .eq("project",...).limit(1).execute()   (row_exists check, project truthy branch)
@@ -140,9 +145,15 @@ def _fake_client(*, existing_row: bool, rpc_rows: list[dict]):
     row_exists_chain = (
         client.table.return_value.select.return_value.eq.return_value.is_.return_value
     )
-    row_exists_chain.eq.return_value.limit.return_value.execute.return_value.data = (
-        [{"id": "existing-id"}] if existing_row else []
-    )
+
+    if existing_row_error:
+        # Simulate query failure (exception)
+        row_exists_chain.eq.return_value.limit.return_value.execute.side_effect = Exception("Query timeout")
+    else:
+        # Simulate successful query result
+        row_exists_chain.eq.return_value.limit.return_value.execute.return_value.data = (
+            [{"id": "existing-id"}] if existing_row else []
+        )
 
     client.rpc.return_value.execute.return_value.data = rpc_rows
     return client
@@ -272,13 +283,15 @@ class TestIsLikelyReupdate:
 
     def test_boundary_edit_distance_5_allows(self):
         """Edit distance exactly 5 is at boundary — allows."""
-        # "status_snap_1" vs "status_snap_6" = 1 char diff (within 5)
-        assert hook.is_likely_reupdate("status_snap_1", "status_snap_6", 0.95) is True
+        # "mem_12345" vs "mem_67890" = 5 chars diff (exactly at boundary)
+        assert hook.levenshtein_distance("mem_12345", "mem_67890") == 5
+        assert hook.is_likely_reupdate("mem_12345", "mem_67890", 0.95) is True
 
     def test_boundary_edit_distance_6_blocks(self):
         """Edit distance 6 exceeds threshold — blocks."""
-        # Add 6 chars of difference
-        assert hook.is_likely_reupdate("a", "bbbbbbb", 0.96) is False
+        # "mem_123456" vs "mem_789012" = 6 chars diff (exceeds boundary)
+        assert hook.levenshtein_distance("mem_123456", "mem_789012") == 6
+        assert hook.is_likely_reupdate("mem_123456", "mem_789012", 0.96) is False
 
 
 # ---------------------------------------------------------------------------
@@ -287,11 +300,12 @@ class TestIsLikelyReupdate:
 
 
 class TestMainReupdateDetection:
-    def test_daily_cron_reupdate_allowed(self, monkeypatch):
+    def test_daily_cron_reupdate_allowed_on_query_failure(self, monkeypatch):
         """AC1: Daily-cron memory re-storing with date-variant name + 0.98 similarity
-        is allowed as idempotent re-store, not blocked as cross-name duplicate."""
+        is allowed as idempotent re-store ONLY when row_exists query fails (not when
+        row simply doesn't exist). This is the true fallback case for timing issues."""
         fake_client = _fake_client(
-            existing_row=False,  # row_exists check fails (timeout/error)
+            existing_row_error=True,  # row_exists check fails (timeout/error) → None
             rpc_rows=[
                 {
                     "name": "status_snapshot_2026-08-11",
@@ -321,7 +335,7 @@ class TestMainReupdateDetection:
             monkeypatch,
             embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
         )
-        # Reupdate detection triggers (0.98 > 0.95 + names differ by 1 char)
+        # row_exists fails (None), is_likely_reupdate triggers (0.98 > 0.95 + names differ by 1 char)
         # → allow() → exit 0, no deny JSON
         assert code == 0
         assert out == ""
@@ -337,7 +351,7 @@ class TestMainReupdateDetection:
                     "project": "jarvis",
                     "type": "decision",
                     "description": "Session decision notes",
-                    "similarity": 0.81,  # Above BLOCK_THRESHOLD (0.80)
+                    "similarity": 0.81,  # Above BLOCK_THRESHOLD (0.75)
                     "tags": [],
                 }
             ],
@@ -360,20 +374,19 @@ class TestMainReupdateDetection:
             monkeypatch,
             embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
         )
-        # 0.81 > 0.80 threshold, but not high enough for reupdate (0.95)
+        # 0.81 > 0.75 threshold, but not high enough for reupdate (0.95)
         # + names differ by >5 chars → block
         assert code == 2
         assert "Possible duplicate memory" in out
         assert "session_notes" in out
 
-    def test_boundary_threshold_0_80(self, monkeypatch):
-        """AC2: Threshold raised to 0.80 from 0.75. Similarity 0.79 would have been
-        blocked at 0.75 but passes at 0.80 (calibration note: ~0.79 is near-verbatim).
-        The RPC server filters at similarity_threshold=0.80, so 0.79 results don't
-        get returned."""
+    def test_boundary_threshold_0_75(self, monkeypatch):
+        """Verify BLOCK_THRESHOLD is 0.75 and passed to RPC call.
+        Similarity 0.79 is caught at 0.75 threshold (near-verbatim duplicates).
+        Similarity 0.54 passes (related-but-distinct siblings)."""
         fake_client = _fake_client(
             existing_row=False,
-            rpc_rows=[],  # RPC with threshold 0.80 returns no results for 0.79 match
+            rpc_rows=[],  # Simulating that RPC finds nothing at 0.75 threshold
         )
         monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
         monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
@@ -393,7 +406,15 @@ class TestMainReupdateDetection:
             monkeypatch,
             embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
         )
-        # 0.79 < 0.80 threshold → RPC called with threshold 0.80 returns empty
-        # → no candidates remain → allow()
+        # Verify threshold value
+        assert hook.BLOCK_THRESHOLD == 0.75
+
+        # Verify RPC was called with correct threshold
+        fake_client.rpc.assert_called_once()
+        rpc_call_args = fake_client.rpc.call_args
+        assert rpc_call_args[0][0] == "match_memories"
+        assert rpc_call_args[0][1]["similarity_threshold"] == 0.75
+
+        # RPC returned empty → no candidates remain → allow()
         assert code == 0
         assert out == ""

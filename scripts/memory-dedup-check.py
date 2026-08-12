@@ -57,12 +57,12 @@ from recall import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BLOCK_THRESHOLD = 0.80  # different-name match at this similarity → block
-# Raised from 0.75 to 0.80 to align with calibration note: voyage-3-lite/512
-# returns ~0.79 for near-verbatim concept paraphrases and ~0.54 for related-
-# but-distinct. At 0.75, legitimate near-verbatim concepts would false-block.
-# 0.80 avoids false-blocking on the calibration boundary while still catching
-# accidental cross-name duplicates (#1098).
+BLOCK_THRESHOLD = 0.75  # different-name match at this similarity → block
+# Calibration note (2026-04-17): voyage-3-lite/512 returns ~0.79 for near-
+# verbatim concept paraphrases (duplicates) and ~0.54 for related-but-distinct
+# (siblings). 0.75 is set between these to catch the 0.79 dup case without
+# false-firing on the 0.54 sibling case. The reupdate fallback (#1098) handles
+# the separate problem of daily-cron re-stores (~0.98 similarity).
 
 REUPDATE_SIMILARITY_THRESHOLD = 0.95  # extremely-high similarity → likely re-update
 # When a match scores >0.95 (e.g., a daily-cron memory at ~0.98), treat it as
@@ -116,6 +116,12 @@ def is_likely_reupdate(existing_name: str, new_name: str, similarity: float) -> 
     This function detects such cases as a fallback when row_exists check fails
     due to timing/connection issues, preventing false-blocks on legitimate
     re-stores (#1098).
+
+    ceiling: Narrow calibration to date-suffix-style recurring names (e.g.
+    status_2026-08-11 vs status_2026-08-12). Risk: may also match genuinely-
+    distinct short-named similar memories. Upgrade: widen calibration once more
+    real cron-recurrence examples are observed, or require an explicit recurrence
+    marker in memory metadata instead of inferring from name similarity.
     """
     if similarity < REUPDATE_SIMILARITY_THRESHOLD:
         return False
@@ -127,14 +133,17 @@ def is_likely_reupdate(existing_name: str, new_name: str, similarity: float) -> 
     return distance <= 5  # e.g., "status_2026-08-11" vs "status_2026-08-12"
 
 
-def row_exists(client, name: str, project) -> bool:
-    """True if a live (project, name) row already exists.
+def row_exists(client, name: str, project) -> bool | None:
+    """True if a live (project, name) row already exists; None if query failed.
 
     A memory_store against an existing (project, name) is an upsert of a
     known row, not a candidate for cross-name duplicate detection — the
-    unique constraint already owns that identity (#1184). Fail-open: any
-    error here just means the dedup guard runs as before, never that a
-    real duplicate silently skips the check.
+    unique constraint already owns that identity (#1184).
+
+    Returns:
+      True: row found (upsert case)
+      False: row not found (new write, proceed to dedup check)
+      None: query failed (treat as fallback for reupdate detection)
     """
     norm_project = None if project == "global" else project
     try:
@@ -143,7 +152,8 @@ def row_exists(client, name: str, project) -> bool:
         result = q.limit(1).execute()
         return bool(result.data)
     except Exception:
-        return False
+        # Signal query failure (not "no row found") by returning None
+        return None
 
 
 def allow():
@@ -233,8 +243,11 @@ def main():
     # (project, name) already exists → this is an upsert of a known row, not
     # a new write to check for duplicates. Skip before spending an embedding
     # call. (#1184)
-    if row_exists(client, new_name, new_project):
+    row_check = row_exists(client, new_name, new_project)
+    if row_check is True:  # Row exists — upsert case, skip dedup
         allow()
+    # row_check is False (no row) → continue to dedup check
+    # row_check is None (query failed) → continue; may apply reupdate fallback below
 
     query_embedding = embed(embed_text)
     if query_embedding is None:
@@ -272,9 +285,10 @@ def main():
     existing_desc = top.get("description") or ""
 
     # Very high similarity + name correlation = likely re-store (daily-cron, etc.).
-    # Allow as idempotent upsert even though names differ, to avoid false-blocks
-    # when row_exists check fails due to timing/connection issues (#1098).
-    if is_likely_reupdate(existing_name, new_name, sim):
+    # Allow as idempotent upsert even though names differ, but ONLY if row_exists
+    # check failed (query error, not "no row found"). This is the true fallback
+    # case for cron re-stores that bypass the unique-key check due to timing issues.
+    if row_check is None and is_likely_reupdate(existing_name, new_name, sim):
         allow()
 
     # Cross-name collision with moderate-to-high similarity. Block with actionable guidance.
