@@ -275,7 +275,7 @@ Revisit if `jarvis` ever ships a public docs site.
 3. **Absolute URLs to `https://github.com/Osasuwu/jarvis/blob/main/...`** — survives external scrape.
 4. ≤ 8 bullets in non-Optional sections combined. Ruthless prioritization.
 5. PR body explains the spec briefly + links this research doc.
-6. **No CI guard yet.** The doc is small enough that drift is low-frequency. If we add one later (issue: "fail CI if `llms.txt` links 404"), it should follow the path-filtered-CI-guards-need-meta-test rule (CLAUDE.md #326).
+6. **No CI guard yet.** The doc is small enough that drift is low-frequency. If we add one later (issue: "fail CI if `llms.txt` links 404"), it should follow the path-filtered-CI-guards-need-meta-test rule (`.claude/rules/path-filtered-ci-guards-meta-test.md`, #326).
 7. **No generator.** Hand-maintained markdown. The moment we automate this, we're paying maintenance to remove maintenance.
 
 ### Anti-patterns to avoid

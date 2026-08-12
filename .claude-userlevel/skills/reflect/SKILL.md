@@ -159,8 +159,13 @@ Read `merged_patterns.json` (<50KB for 3 devices). Spawn a `general-purpose` Age
 >     **Rule**: [the rule]
 >     **Why**: [evidence + confidence level]
 >     **How to apply**: [trigger + action]
-> - **Rule violation candidates** (from `rule_violations`, #513): one `[ ]` checkbox per candidate — rule name, session/message pointer, matched snippet, confidence. These are regex/keyword matches against existing `always_load` feedback memories, for owner labeling (#514) — not a verified violation. Group by `rule_name`.
-> - **Hallucination candidates** (from `hallucinations`, #513): one `[ ]` checkbox per candidate — session/message pointers, the assistant claim snippet, the user's correction snippet. Same caveat: candidate, not verified.
+> - **Rule violation candidates** (from `rule_violations`, #513): one structured checkbox line per candidate, in this EXACT format (parsed mechanically by `collect_labels.py`, #514 — do not paraphrase it):
+>   ``- [ ] `<session_id>#<message_idx>` — rule: `<rule_name>`, confidence: <confidence> — <matched_text>``
+>   These are regex/keyword matches against existing `always_load` feedback memories, for owner labeling (#514) — not a verified violation. Group by `rule_name`.
+> - **Hallucination candidates** (from `hallucinations`, #513): one structured checkbox line per candidate, in this EXACT format (same parser):
+>   ``- [ ] `<session_id>#<assistant_message_idx>` — hallucination — assistant: "<assistant_text>" — correction: "<correction_text>"``
+>   Same caveat: candidate, not verified.
+> - For both: the owner will replace the leading `[ ]` with `[+]` (valid), `[-]` (false positive), or `[?]` (missed — a real violation the detector didn't flag). Leave every checkbox as `[ ]` when writing the report — labeling happens after, in the owner's copy.
 > - No word limit. Include low-confidence patterns with appropriate label.
 >
 > Write the report directly to `<MERGE>/report_{DATE}.md` with the Write tool. Do NOT echo full quotes back to the main agent — return only path + section list + word count.
