@@ -216,6 +216,29 @@ def test_dispatcher_escalation_is_not_a_telemetry_route():
     assert handle_event(_ev("dispatcher_escalation", "info")).route is Route.ESCALATE
 
 
+def test_mcp_write_scrubber_disabled_high_escalates_to_owner():
+    """mcp_write_scrubber_disabled has an explicit ESCALATE route (#1000).
+
+    The event fires at severity 'high' each day the Tier-2 MCP write-path
+    scrubber gate is disabled. It must route to ESCALATE (not the generic
+    fail-safe) so the reason string names the scrubber — not the unhelpful
+    "no deterministic route" message the fail-safe would emit.
+    """
+    d = handle_event(_ev("mcp_write_scrubber_disabled", "high"))
+    assert d.route is Route.ESCALATE
+    assert d.assignee == "owner"
+    assert d.escalated_reason is not None
+    assert "scrubber" in d.escalated_reason
+
+
+@pytest.mark.parametrize("severity", ["critical", "medium", "low", "info"])
+def test_mcp_write_scrubber_disabled_any_severity_escalates(severity):
+    """The route is on event_type alone — any severity escalates to owner."""
+    d = handle_event(_ev("mcp_write_scrubber_disabled", severity))
+    assert d.route is Route.ESCALATE
+    assert d.assignee == "owner"
+
+
 def test_unknown_event_type_failsafe_escalates():
     assert handle_event(_ev("totally_unknown", "high")).route is Route.ESCALATE
 

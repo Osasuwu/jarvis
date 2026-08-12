@@ -276,7 +276,13 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
 
     1. ``security_alert`` → ``ESCALATE`` at any severity — a safety floor the
        route table cannot override (never inline).
-    2. Enumerated ``(event_type, severity)`` pairs → their specific route.
+    2. Enumerated routes (event_type-only or ``(event_type, severity)`` pairs):
+       - ``mcp_write_scrubber_disabled`` → ``ESCALATE`` at any severity (Tier-2
+         gate down; no automated fix possible, owner must investigate).
+       - ``(ci_failure, high)`` → ``EMIT_TASK`` (sandcastle CI fix).
+       - ``(review_negative, medium)`` → ``EMIT_TASK`` (rework loop).
+       - ``(global_task_due, low)`` → ``EMIT_TASK`` (global task dispatch).
+       - ``task_done`` / ``task_failed`` → conditional re-drive or escalate.
     3. Pure-pipeline events (``pr_approved`` / ``pr_merged`` / ``ci_success``)
        → inline no-op (the wake_driver marks the event processed).
     4. Telemetry/observability events (``_TELEMETRY_EVENT_TYPES`` + any
@@ -300,6 +306,24 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         )
 
     # 2. Enumerated deterministic routes (AC1).
+    # mcp_write_scrubber_disabled fires at "high" whenever the Tier-2 secret-
+    # scrubber gate is disabled (module absent or broken import). Always
+    # escalate to owner — no automated fix is possible for an import failure,
+    # and secrets may reach the events table unfiltered while the gate is down.
+    # Explicit route avoids the generic "no deterministic route" fail-safe
+    # reason, which masks the real cause in owner-queue notifications (#1000).
+    if event_type == "mcp_write_scrubber_disabled":
+        return _escalate(
+            event_type,
+            severity,
+            target,
+            key,
+            reason=(
+                f"MCP write-path Tier-2 scrubber gate is disabled "
+                f"(severity={severity!r}) — check mcp-memory/write_scrubber.py "
+                f"import; secrets may not be filtered from MCP writes"
+            ),
+        )
     if (event_type, severity) == ("ci_failure", "high"):
         return _emit(
             event_type,
