@@ -207,6 +207,27 @@ def test_resolve_notifier_unrecognized_value_is_loud_misconfig(monkeypatch, capl
     assert any(rec.levelname == "ERROR" and "sdfsdf" in rec.message for rec in caplog.records)
 
 
+def test_resolve_notifier_url_shaped_transport_sanitizes_before_persisting(monkeypatch, caplog):
+    """#1553 review: NOTIFY_TRANSPORT itself can be URL-shaped (a copy-pasted
+    apprise/webhook value in the wrong env var) — the raw value must never
+    reach the log or the Supabase task_queue row, only the sanitized form."""
+    enqueue_calls = []
+    monkeypatch.setattr(
+        "agents.notify.task_queue.enqueue",
+        lambda **kwargs: enqueue_calls.append(kwargs) or {"id": "row-1"},
+    )
+    raw = "widget-transport://opaque-secret-looking-value/path"
+    with caplog.at_level("ERROR", logger="agents.notify"):
+        name, notifier = resolve_notifier({"NOTIFY_TRANSPORT": raw})
+    assert name == "none"
+    assert notifier(_decision()) is False
+    assert len(enqueue_calls) == 1
+    reason = enqueue_calls[0]["escalated_reason"]
+    assert raw not in reason
+    assert "<redacted-url>" in reason
+    assert not any(raw in rec.message for rec in caplog.records)
+
+
 def test_resolve_notifier_unset_with_no_telegram_creds_is_loud_misconfig(monkeypatch, caplog):
     enqueue_calls = []
     monkeypatch.setattr(

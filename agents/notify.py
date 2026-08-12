@@ -255,10 +255,10 @@ def resolve_notifier(env: Mapping[str, str]) -> tuple[str, NotifierFn]:
                 raise TypeError(f"{fn_name!r} is not callable")
         except Exception as exc:
             return _misconfig(
-                f"dotted-path transport {raw!r} failed to import: "
+                f"dotted-path transport {_sanitize(raw)!r} failed to import: "
                 f"{type(exc).__name__}: {_sanitize(str(exc))}"
             )
         _log_resolved(raw)
         return raw, fn
 
-    return _misconfig(f"unrecognized NOTIFY_TRANSPORT value {raw!r}")
+    return _misconfig(f"unrecognized NOTIFY_TRANSPORT value {_sanitize(raw)!r}")
