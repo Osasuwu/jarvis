@@ -2003,13 +2003,30 @@ def local_drain_until_terminal(
     (step 3b) found the resident ``wake_driver`` stale: it repeats a
     ``wake_driver --once`` tick (``run_once``) — concurrency-capped by
     construction, since each tick's ``drain_tasks`` call enforces
-    ``DEFAULT_CONCURRENCY_CAP`` on its own — until every id in ``task_ids``
-    reaches a :data:`agents.task_queue.TERMINAL_STATES` status, polling
-    ``get_statuses`` between ticks. Operator-present, blocking call by design.
+    ``DEFAULT_CONCURRENCY_CAP`` on its own — polling ``get_statuses`` between
+    ticks, until every id in ``task_ids`` reaches a
+    :data:`agents.task_queue.TERMINAL_STATES` status, the heartbeat goes fresh
+    again (resident driver recovered), or ``max_iterations`` is exhausted.
+    Operator-present, blocking call by design.
 
     ``heartbeat_check`` re-runs immediately before every spawn: if the driver
     has since become fresh (resident driver recovered, or another local drain
     already covered these rows), the loop stops without spawning again.
+
+    ceiling: each ``run_once()`` is a memory-isolated ``wake_driver --once``
+    subprocess with no ``task_procs`` (agents/wake_driver.py's ``--once`` path
+    deliberately omits it, #921) — so this loop can spawn rows to ``running``
+    but has no way to observe their process exit and close them to
+    ``done``/``failed`` itself; that only happens via the much-slower orphan
+    reaper backstop (``reclaim_stale_tasks``), well past this loop's
+    ``max_iterations`` window. In practice freshly-spawned rows will usually
+    exhaust the cap and return non-terminal here (confirmed via code review on
+    PR #1544). Not a correctness issue — no row is double-processed or lost,
+    the caller just can't rely on this call to observe completion promptly.
+    Upgrade path (real fix, not done here — architectural, entangled with
+    #1546's same subprocess-per-tick root cause): replace the subprocess
+    ``run_once`` with an in-process ``drain_tasks``/``poll_completions`` pair
+    sharing one ``task_procs`` dict across the whole call. Tracked: #1551.
 
     ceiling: heartbeat_check -> run_once is check-then-act, not atomic — no
     distributed lock. A resident driver tick can start in the gap between the
