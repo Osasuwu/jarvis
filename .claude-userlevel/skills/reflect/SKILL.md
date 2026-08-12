@@ -44,15 +44,18 @@ STAGE="$HOME/.cache/jarvis-comms-analysis/${DATE}_${DEVICE}"
 mkdir -p "$STAGE"
 
 SCRIPTS="$JARVIS_HOME/scripts/analyze-comms"
-python "$SCRIPTS/extract_comms.py"     "$STAGE/comms_extract.jsonl"
-python "$SCRIPTS/analyze_comms.py"     "$STAGE/comms_extract.jsonl"
-python "$SCRIPTS/compress_patterns.py" "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
+python "$SCRIPTS/extract_comms.py"          "$STAGE/comms_extract.jsonl"
+python "$SCRIPTS/analyze_comms.py"          "$STAGE/comms_extract.jsonl"
+python "$SCRIPTS/compress_patterns.py"      "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
+python "$SCRIPTS/detect_rule_violations.py" "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
+python "$SCRIPTS/detect_hallucinations.py"  "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
 ```
 
 Print script output inline — aggregate stats only, no quotes.
 If `interactive sessions: 0` → skip this device, continue with remotes.
 If the staging dir already exists from a same-day run, append `_2`, `_3`, etc.
 Caveat: sanity-check `$JARVIS_HOME` points at a real repo checkout before using it (a leaked test env var once pointed it at a pytest temp dir).
+`detect_rule_violations.py` needs `SUPABASE_URL`/`SUPABASE_KEY` in the environment — if unset, skip that one detector (log it, don't fail the whole extraction) and continue; `detect_hallucinations.py` has no such dependency. Both must run after `compress_patterns.py`, which overwrites `${DEVICE}_patterns.json` — they merge into it under their own keys (`rule_violations`, `hallucinations`).
 
 ### Step A2 — Discover remote jarvis devices
 
@@ -75,8 +78,10 @@ RDEV=$(ssh "$HOST" hostname | tr -d '\r')
 RSTAGE="%USERPROFILE%\\.cache\\jarvis-comms-analysis\\${DATE}_${RDEV}"
 
 ssh "$HOST" "if not exist \"$RSTAGE\" mkdir \"$RSTAGE\""
-ssh "$HOST" "cd /d \"%JARVIS_HOME%\\scripts\\analyze-comms\" && python extract_comms.py \"$RSTAGE\\comms_extract.jsonl\" && python compress_patterns.py \"$RSTAGE\\comms_extract.jsonl\" \"$RSTAGE\\${RDEV}_patterns.json\""
+ssh "$HOST" "cd /d \"%JARVIS_HOME%\\scripts\\analyze-comms\" && python extract_comms.py \"$RSTAGE\\comms_extract.jsonl\" && python compress_patterns.py \"$RSTAGE\\comms_extract.jsonl\" \"$RSTAGE\\${RDEV}_patterns.json\" && python detect_rule_violations.py \"$RSTAGE\\comms_extract.jsonl\" \"$RSTAGE\\${RDEV}_patterns.json\" && python detect_hallucinations.py \"$RSTAGE\\comms_extract.jsonl\" \"$RSTAGE\\${RDEV}_patterns.json\""
 ```
+
+`detect_rule_violations.py` needs `SUPABASE_URL`/`SUPABASE_KEY` set on the remote — if unset, it self-skips (logs to stderr, exits 0) and the `&&` chain continues on its own; no manual edit to the chained command is needed.
 
 **Unix remotes**: same commands as Step A1 with `$HOME`/`$JARVIS_HOME` syntax. Detect by trying `ssh "$HOST" uname` — success ⇒ Unix.
 
@@ -154,6 +159,8 @@ Read `merged_patterns.json` (<50KB for 3 devices). Spawn a `general-purpose` Age
 >     **Rule**: [the rule]
 >     **Why**: [evidence + confidence level]
 >     **How to apply**: [trigger + action]
+> - **Rule violation candidates** (from `rule_violations`, #513): one `[ ]` checkbox per candidate — rule name, session/message pointer, matched snippet, confidence. These are regex/keyword matches against existing `always_load` feedback memories, for owner labeling (#514) — not a verified violation. Group by `rule_name`.
+> - **Hallucination candidates** (from `hallucinations`, #513): one `[ ]` checkbox per candidate — session/message pointers, the assistant claim snippet, the user's correction snippet. Same caveat: candidate, not verified.
 > - No word limit. Include low-confidence patterns with appropriate label.
 >
 > Write the report directly to `<MERGE>/report_{DATE}.md` with the Write tool. Do NOT echo full quotes back to the main agent — return only path + section list + word count.
@@ -167,6 +174,7 @@ If subagent refuses (safety policy) → do the analysis inline by reading merged
 Read `$MERGE/report_{DATE}.md` directly. Show inline:
 - All corrective patterns: name + (discounted) confidence + 1-line why
 - Full text of ALL candidate feedback rules
+- Rule violation candidates and hallucination candidates (#513) — the checkbox lists, for owner labeling per #514
 - Path to full report file
 - Devices skipped during the sweep, if any
 
