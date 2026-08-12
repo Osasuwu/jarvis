@@ -3,6 +3,9 @@ paths:
   - "**/*.py"
   - "**/*.ts"
   - "**/*.js"
+  - "**/*.yml"
+  - "**/*.yaml"
+  - ".github/workflows/**"
   - "scripts/**"
   - "src/**"
 ---
