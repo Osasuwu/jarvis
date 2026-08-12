@@ -2162,6 +2162,90 @@ def test_main_without_no_task_drain_still_builds_supabase_task_queue(monkeypatch
     assert client.closed == 1
 
 
+# --- AC8 (#1547): --notify-test install-time smoke check --------------------
+
+
+def _wire_main_notify_test(monkeypatch, *, resolve_notifier):
+    """Wire main() for --notify-test: block every heavy/live-side-effect builder.
+
+    Mirrors _wire_main_dry_run — --notify-test resolves through the registry
+    and calls the resolved notifier once, but must never build the psycopg
+    event queue, SupabaseTaskQueue, the GitHub evidence client, the Supabase
+    event client, or the production orchestrator.
+    """
+
+    def _forbidden(name):
+        def _raise(*a, **k):
+            raise AssertionError(f"{name} must not be called under --notify-test")
+
+        return _raise
+
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--notify-test"])
+    monkeypatch.setattr(wake_driver, "_configure_logging", lambda: None)
+    monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("agents.notify.resolve_notifier", resolve_notifier)
+    monkeypatch.setattr(wake_driver, "_build_psycopg_queue", _forbidden("_build_psycopg_queue"))
+    monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", _forbidden("SupabaseTaskQueue"))
+    monkeypatch.setattr(
+        "agents.github_client.default_github_client", _forbidden("default_github_client")
+    )
+    monkeypatch.setattr("agents.supabase_client.get_client", _forbidden("get_client"))
+    monkeypatch.setattr(
+        "agents.orchestrator.build_production_orchestrator",
+        _forbidden("build_production_orchestrator"),
+    )
+    monkeypatch.setattr(wake_driver, "run", _forbidden("run"))
+    monkeypatch.setattr(wake_driver, "tick", _forbidden("tick"))
+
+
+def test_notify_test_flag_resolves_transport_and_returns_zero_on_success(monkeypatch, capsys):
+    calls = []
+
+    def _fake_notifier(decision):
+        calls.append(decision)
+        return True
+
+    def _fake_resolve_notifier(env):
+        return "none", _fake_notifier
+
+    _wire_main_notify_test(monkeypatch, resolve_notifier=_fake_resolve_notifier)
+
+    assert wake_driver.main() == 0
+    assert len(calls) == 1
+    assert calls[0].event_type == "notify_test"
+
+    captured = capsys.readouterr()
+    assert "transport=none" in captured.out
+
+
+def test_notify_test_flag_returns_one_when_notifier_reports_failure(monkeypatch, capsys):
+    def _fake_resolve_notifier(env):
+        return "apprise", lambda decision: False
+
+    _wire_main_notify_test(monkeypatch, resolve_notifier=_fake_resolve_notifier)
+
+    assert wake_driver.main() == 1
+
+    captured = capsys.readouterr()
+    assert "transport=apprise" in captured.out
+
+
+def test_notify_test_flag_resolves_via_process_environ(monkeypatch, capsys):
+    # No explicit env threaded through argparse — resolve_notifier must see
+    # the real process environment (main()'s job is to pass os.environ in).
+    seen_env = {}
+
+    def _fake_resolve_notifier(env):
+        seen_env.update(env)
+        return "none", lambda decision: True
+
+    monkeypatch.setenv("NOTIFY_TRANSPORT", "none")
+    _wire_main_notify_test(monkeypatch, resolve_notifier=_fake_resolve_notifier)
+
+    assert wake_driver.main() == 0
+    assert seen_env.get("NOTIFY_TRANSPORT") == "none"
+
+
 # --- boot-time reliability: file logging + startup retry --------------------
 #
 # Incident: the AtLogOn Scheduled Task failed at boot 2026-08-06, exhausted
