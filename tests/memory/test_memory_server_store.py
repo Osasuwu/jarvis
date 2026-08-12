@@ -765,6 +765,39 @@ class TestHandleStoreMergeSectionFailureModes:
         assert params["p_embedding_model_v2"] is None
         assert params["p_embedding_version_v2"] is None
 
+    @pytest.mark.asyncio
+    async def test_merge_forwards_type_and_source_provenance_to_rpc(self):
+        """#1352 review round 2: merge_section must forward the caller's type
+        and source_provenance to the RPC, not rely on a hardcoded literal —
+        `type` is NOT NULL with no default on the memories table, so a new
+        row created via merge_section on a never-before-seen name fails
+        without it, and a hardcoded source_provenance silently discards the
+        validated value the handler requires from every caller.
+        """
+        self.client.rpc.return_value.execute.return_value = MagicMock(
+            data=[{"success": True, "memory_id": "merged-3", "conflict_reason": None}]
+        )
+
+        await _handle_store(
+            {
+                "type": "decision",
+                "name": "test_merge_type_forward",
+                "content": "## [entry] quux — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test-provenance",
+                "mode": "merge_section",
+            }
+        )
+
+        merge_calls = [
+            c for c in self.client.rpc.call_args_list if c.args and c.args[0] == "merge_section_into_memory_upsert"
+        ]
+        assert len(merge_calls) == 1
+        rpc_call = merge_calls[0]
+        params = rpc_call.args[1] if len(rpc_call.args) > 1 else rpc_call.kwargs.get("params")
+        assert params["p_type"] == "decision"
+        assert params["p_source_provenance"] == "session:test-provenance"
+
 
 # ---------------------------------------------------------------------------
 # #242: dual-embedding machinery — column/RPC mapping + dual-write

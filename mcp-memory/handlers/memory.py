@@ -1296,6 +1296,14 @@ async def _handle_store(args: dict) -> list[TextContent]:
                             "p_name": mem_name,
                             "p_merged_content": merge_section_data["merged_content"],
                             "p_expected_updated_at": merge_section_data["expected_updated_at"],
+                            # #1352 review round 2: the RPC's INSERT branch needs
+                            # both of these threaded through — type is NOT NULL
+                            # with no default, and source_provenance is validated
+                            # required by this same handler above (Phase 2c) but
+                            # was previously dropped in favor of a hardcoded RPC
+                            # literal, silently discarding the caller's value.
+                            "p_type": mem_type,
+                            "p_source_provenance": source_provenance,
                             "p_description": description,
                             "p_tags": tags,
                             "p_preserve_existing_description": merge_section_data["preserve_description"],

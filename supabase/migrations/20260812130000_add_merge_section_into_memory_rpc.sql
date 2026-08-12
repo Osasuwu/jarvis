@@ -7,6 +7,8 @@ create or replace function merge_section_into_memory_upsert(
   p_name text,
   p_merged_content text,
   p_expected_updated_at timestamptz,
+  p_type text default null,
+  p_source_provenance text default 'rpc:merge_section',
   p_description text default '',
   p_tags text[] default '{}',
   p_preserve_existing_description boolean default true,
@@ -85,12 +87,12 @@ begin
      where id = v_id;
   else
     insert into memories (
-      project, name, content, description, tags, source_provenance,
+      project, name, type, content, description, tags, source_provenance,
       embedding, embedding_model, embedding_version,
       embedding_v2, embedding_model_v2, embedding_version_v2
     )
     values (
-      p_project, p_name, p_merged_content, v_final_description, v_final_tags, 'rpc:merge_section',
+      p_project, p_name, p_type, p_merged_content, v_final_description, v_final_tags, p_source_provenance,
       p_embedding, p_embedding_model, p_embedding_version,
       p_embedding_v2, p_embedding_model_v2, p_embedding_version_v2
     )
