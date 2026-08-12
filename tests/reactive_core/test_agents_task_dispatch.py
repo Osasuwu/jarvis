@@ -19,6 +19,7 @@ import subprocess
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from agents.driver_heartbeat import HeartbeatStatus
 from agents.task_dispatch import (
     DEFAULT_ASSIGNEE,
     DEFAULT_CONCURRENCY_CAP,
@@ -27,10 +28,14 @@ from agents.task_dispatch import (
     TaskQueuePort,
     TrackedProc,
     _resolve_concurrency_cap,
+    default_get_task_statuses,
+    default_local_drain_heartbeat_check,
+    default_local_drain_once,
     default_spawn,
     drain_tasks,
     kill_process_tree,
     kill_runaways,
+    local_drain_until_terminal,
     poll_completions,
     reclaim_stale_tasks,
     sweep_task_worktrees,
@@ -260,7 +265,10 @@ class TestAssigneeRouting:
         )
         spawns: list[str] = []
         drain_tasks(
-            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
         )
         assert q.claimed == ["sand"]
         assert spawns == ["do sand"]
@@ -310,7 +318,10 @@ class TestAtomicClaim:
         q = FakeTaskQueue(pending=[], running_count=0)
         spawns: list[str] = []
         res = drain_tasks(
-            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
         )
         assert spawns == []
         assert res.spawned == 0
@@ -346,7 +357,9 @@ class TestBinaryPreflight:
         def resolve_missing() -> str:
             raise FileNotFoundError("claude binary not found")
 
-        res = drain_tasks(q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_missing)
+        res = drain_tasks(
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_missing
+        )
 
         assert q.claimed == []  # zero claims — no row touched
         assert spawns == []
@@ -363,7 +376,9 @@ class TestBinaryPreflight:
         def resolve_denied() -> str:
             raise PermissionError("claude is not executable")
 
-        res = drain_tasks(q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_denied)
+        res = drain_tasks(
+            q, lambda g, task_id=None: spawns.append(g), resolve_binary=resolve_denied
+        )
 
         assert res.skipped_no_binary is True
         assert q.claimed == []
@@ -894,7 +909,10 @@ class TestSpawnedProcPairs:
         # driver can poll — counted as spawned, but no pair.
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         res = drain_tasks(
-            q, lambda g, task_id=None: None, resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q,
+            lambda g, task_id=None: None,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
         )
         assert res.procs == ()
         assert res.spawned == 1
@@ -980,11 +998,7 @@ class TestPollCompletionsOutcomeRecord:
 
     def test_done_task_invokes_outcome_record(self) -> None:
         q = FakeTaskQueue()
-        procs = {
-            "t0": TrackedProc(
-                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
-            )
-        }
+        procs = {"t0": TrackedProc(_FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42)}
         recorded: list[dict[str, Any]] = []
         poll_completions(q, procs, outcome_record=recorded.append)
         assert len(recorded) == 1
@@ -1181,7 +1195,9 @@ class TestKillRunaways:
         # no events (the dispatch loop runs eventless until wake_driver wires it).
         q = FakeTaskQueue()
         procs = {"t0": TrackedProc(_FakeProc(rc=None), started_at=0.0)}
-        n = kill_runaways(q, procs, max_runtime_seconds=100, now=lambda: 200.0, kill=lambda _p: None)
+        n = kill_runaways(
+            q, procs, max_runtime_seconds=100, now=lambda: 200.0, kill=lambda _p: None
+        )
         assert n == 1
         assert procs == {}
 
@@ -1283,7 +1299,10 @@ class TestInjectablePortArchitecture:
         q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
         spawns: list[str] = []
         drain_tasks(
-            q, lambda g, task_id=None: spawns.append(g), resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
         )
         assert spawns == ["do t0"]
 
@@ -1332,7 +1351,9 @@ class TestDefaultSpawnWorktree:
 
         captured: dict[str, Any] = {}
 
-        def fake_executor_spawn(goal: str, *, task_id: str | None = None, cwd: str | None = None) -> Any:
+        def fake_executor_spawn(
+            goal: str, *, task_id: str | None = None, cwd: str | None = None
+        ) -> Any:
             captured["task_id"] = task_id
             captured["cwd"] = cwd
             return "spawned"
@@ -1476,9 +1497,7 @@ class TestFinalizeTaskWorktreeOnTerminal:
 
 
 class TestCreateTaskWorktreeBranchDirective:
-    def test_no_directive_creates_own_task_branch(
-        self, tmp_path: Any, monkeypatch: Any
-    ) -> None:
+    def test_no_directive_creates_own_task_branch(self, tmp_path: Any, monkeypatch: Any) -> None:
         import agents.task_dispatch as td
 
         repo = tmp_path / "repo"
@@ -1670,9 +1689,7 @@ class TestSweepTaskWorktrees:
         assert result.ttl_pruned == 0
         assert result.cap_evicted == 0
 
-    def test_ttl_prunes_retained_failure_past_window(
-        self, tmp_path: Any, monkeypatch: Any
-    ) -> None:
+    def test_ttl_prunes_retained_failure_past_window(self, tmp_path: Any, monkeypatch: Any) -> None:
         import agents.task_dispatch as td
 
         repo = tmp_path / "repo"
@@ -1685,9 +1702,7 @@ class TestSweepTaskWorktrees:
         _write_failed_marker(worktree_path, 1000.0)
 
         queue = FakeTaskQueue(statuses={"f2": "failed"})
-        result = sweep_task_worktrees(
-            queue, retention_seconds=100, now=lambda: 1000.0 + 10_000
-        )
+        result = sweep_task_worktrees(queue, retention_seconds=100, now=lambda: 1000.0 + 10_000)
 
         assert not os.path.exists(worktree_path)
         assert result.ttl_pruned == 1
@@ -1716,9 +1731,7 @@ class TestSweepTaskWorktrees:
         td._finalize_task_worktree("f-c", success=False)
         _write_failed_marker(path_c, 300.0)
 
-        queue = FakeTaskQueue(
-            statuses={"f-a": "failed", "f-b": "failed", "f-c": "failed"}
-        )
+        queue = FakeTaskQueue(statuses={"f-a": "failed", "f-b": "failed", "f-c": "failed"})
         # Huge retention_seconds keeps the TTL from firing regardless of `now`;
         # the cap is the only thing under test here.
         result = sweep_task_worktrees(
@@ -1795,3 +1808,176 @@ class TestSweepTaskWorktrees:
         assert not os.path.exists(good_path)
         assert os.path.isdir(bad_path)  # removal "failed" — retried next tick
         assert result.pruned == 1
+
+
+# ---------------------------------------------------------------------------
+# #1085 S3-2 — local-drain fallback
+# ---------------------------------------------------------------------------
+
+
+class TestLocalDrainUntilTerminal:
+    """local_drain_until_terminal — heartbeat-gated wake_driver --once loop."""
+
+    def test_stops_when_rows_reach_terminal_state(self) -> None:
+        status_sequence = [
+            {"t1": "pending", "t2": "running"},
+            {"t1": "done", "t2": "failed"},
+        ]
+        get_statuses_calls: list[list[str]] = []
+
+        def fake_get_statuses(task_ids: list[str]) -> dict[str, str]:
+            get_statuses_calls.append(list(task_ids))
+            return status_sequence[len(get_statuses_calls) - 1]
+
+        run_once_calls = 0
+
+        def fake_run_once() -> None:
+            nonlocal run_once_calls
+            run_once_calls += 1
+
+        result = local_drain_until_terminal(
+            ["t1", "t2"],
+            heartbeat_check=lambda: HeartbeatStatus(state="stale"),
+            run_once=fake_run_once,
+            get_statuses=fake_get_statuses,
+            sleep=lambda _seconds: None,
+        )
+
+        assert result == {"t1": "done", "t2": "failed"}
+        assert run_once_calls == 1
+        assert get_statuses_calls == [["t1", "t2"], ["t1", "t2"]]
+
+    def test_rechecks_heartbeat_before_each_spawn(self) -> None:
+        heartbeat_calls = 0
+
+        def fake_heartbeat_check() -> HeartbeatStatus:
+            nonlocal heartbeat_calls
+            heartbeat_calls += 1
+            return HeartbeatStatus(state="stale")
+
+        run_once_calls = 0
+        statuses_by_call = [
+            {"t1": "pending"},
+            {"t1": "pending"},
+            {"t1": "done"},
+        ]
+
+        def fake_run_once() -> None:
+            nonlocal run_once_calls
+            run_once_calls += 1
+
+        def fake_get_statuses(task_ids: list[str]) -> dict[str, str]:
+            return statuses_by_call[min(run_once_calls, len(statuses_by_call) - 1)]
+
+        result = local_drain_until_terminal(
+            ["t1"],
+            heartbeat_check=fake_heartbeat_check,
+            run_once=fake_run_once,
+            get_statuses=fake_get_statuses,
+            sleep=lambda _seconds: None,
+        )
+
+        assert result == {"t1": "done"}
+        assert run_once_calls == 2
+        # Heartbeat re-checked immediately before each of the 2 spawns.
+        assert heartbeat_calls == 2
+
+    def test_stops_early_when_heartbeat_becomes_fresh(self) -> None:
+        heartbeat_states = iter(["stale", "fresh"])
+        run_once_calls = 0
+
+        def fake_run_once() -> None:
+            nonlocal run_once_calls
+            run_once_calls += 1
+
+        result = local_drain_until_terminal(
+            ["t1"],
+            heartbeat_check=lambda: HeartbeatStatus(state=next(heartbeat_states)),
+            run_once=fake_run_once,
+            get_statuses=lambda _ids: {"t1": "pending"},
+            sleep=lambda _seconds: None,
+        )
+
+        # Resident driver recovered (heartbeat fresh again) — stop without a
+        # second local spawn, even though "t1" never reached a terminal state.
+        assert result == {"t1": "pending"}
+        assert run_once_calls == 1
+
+    def test_empty_task_ids_is_noop(self) -> None:
+        calls = {"heartbeat": 0, "run_once": 0, "get_statuses": 0}
+
+        def fake_heartbeat_check() -> HeartbeatStatus:
+            calls["heartbeat"] += 1
+            return HeartbeatStatus(state="stale")
+
+        def fake_run_once() -> None:
+            calls["run_once"] += 1
+
+        def fake_get_statuses(_ids: list[str]) -> dict[str, str]:
+            calls["get_statuses"] += 1
+            return {}
+
+        result = local_drain_until_terminal(
+            [],
+            heartbeat_check=fake_heartbeat_check,
+            run_once=fake_run_once,
+            get_statuses=fake_get_statuses,
+            sleep=lambda _seconds: None,
+        )
+
+        assert result == {}
+        assert calls == {"heartbeat": 0, "run_once": 0, "get_statuses": 0}
+
+
+class TestLocalDrainProductionAdapters:
+    """default_* adapters for local_drain_until_terminal (#1085 S3-2)."""
+
+    def test_default_local_drain_once_shells_out_to_wake_driver_once(
+        self, monkeypatch: Any
+    ) -> None:
+        import sys
+
+        import agents.task_dispatch as td
+
+        captured: dict[str, Any] = {}
+
+        def fake_run(argv: list[str], **kwargs: Any) -> Any:
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            return subprocess.CompletedProcess(argv, 0)
+
+        monkeypatch.setattr(td.subprocess, "run", fake_run)
+
+        default_local_drain_once()
+
+        assert captured["argv"] == [sys.executable, "-m", "agents.wake_driver", "--once"]
+        # No cap-override flag/env — DEFAULT_CONCURRENCY_CAP (read inside the
+        # child process's own drain_tasks call) is the only concurrency limit.
+        assert "--concurrency" not in captured["argv"]
+        assert "env" not in captured["kwargs"]
+
+    def test_default_get_task_statuses_delegates_to_task_queue(self, monkeypatch: Any) -> None:
+        import agents.task_dispatch as td
+
+        captured: dict[str, Any] = {}
+
+        def fake_get_statuses(task_ids: list[str], *, client: Any = None) -> dict[str, str]:
+            captured["task_ids"] = task_ids
+            return {tid: "done" for tid in task_ids}
+
+        monkeypatch.setattr(td.task_queue, "get_statuses", fake_get_statuses)
+
+        result = default_get_task_statuses(["t1", "t2"])
+
+        assert result == {"t1": "done", "t2": "done"}
+        assert captured["task_ids"] == ["t1", "t2"]
+
+    def test_default_local_drain_heartbeat_check_delegates_to_driver_heartbeat(
+        self, monkeypatch: Any
+    ) -> None:
+        import agents.driver_heartbeat as dh
+
+        expected = HeartbeatStatus(state="stale")
+        monkeypatch.setattr(dh, "check_heartbeat", lambda: expected)
+
+        assert default_local_drain_heartbeat_check() is expected
