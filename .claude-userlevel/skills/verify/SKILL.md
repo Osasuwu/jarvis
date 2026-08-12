@@ -49,6 +49,29 @@ gh issue view <issue_url> --json state,stateReason --jq '{state, stateReason}'
 - Outcomes older than 7 days with no URL → mark as **unknown**
 - Otherwise → skip
 
+## Step 2b — Post-merge diligence audit (subagent-dispatched PRs only)
+
+Applies only to outcomes just verified `success` in Step 2 whose `pattern_tags` include `"subagent"` (dispatched via `/dispatch` → `task_queue` → headless spawn — #1085 Slice 2). Inline `/implement` work was written and reviewed live by the operator already; auditing it here would be redundant. Migrated from the pre-Slice-2 `/delegate` §6 synchronous review — that review point no longer exists once dispatch is async and merge happens headlessly, so this is now the first and only diligence pass for subagent output.
+
+```bash
+gh pr view <pr_url> --json baseRefName,headRefName --jq '.baseRefName + " " + .headRefName'
+git fetch origin
+git diff origin/<base>...origin/<head> --stat
+git diff origin/<base>...origin/<head>
+```
+
+Four checks, run in order — do NOT short-circuit:
+
+- **Value-change audit**: grep the diff for numeric literals, default parameter values, seed arrays, tuple constants, timeouts, thresholds. For each value that changed, confirm the change is explicitly mandated by the issue body. Silent replacements are scope drift. (Lesson #648: subagent silently replaced IK seeds `[0,-30,30,0,-60,0]` with `ready_position` — same shape, different semantics.)
+- **Interaction audit**: for every non-trivial edit, trace data flow outward — what callers depend on the pre-existing behavior, what fallbacks or post-processors run after the changed code. Ask "does this still compose correctly?", not just "does the code do what it says?" (Lesson #649 v2: a 6-DOF IK fix was locally correct but the pre-existing J6-pin fallback silently clobbered the result, undoing it.)
+- **Divergence audit**: if the diff departs from the AC's literal signature, values, or interpretation and the PR body has no `## Deliberate divergences` section, treat as silent design drift. (Lesson #634: subagent reshaped `decide(...)` from 4 args to 3 and picked a stricter rule than the AC suggested, undeclared.)
+- **Drive-by audit**: for any "remove X" / "delete the line about Y" instruction in the issue, confirm the diff deletes rather than replaces. (Lesson #662: subagent replaced a stale bullet with new text that duplicated the next existing line.)
+
+If any check finds a problem:
+- Downgrade the outcome's `outcome_status` to `partial` in Step 3 (the PR is already merged — the finding can't retroactively unmerge, only the code can be fixed forward).
+- `lessons` records the specific finding.
+- Live drift in `main` → fix inline if trivial/reversible (CLAUDE.md "Fix > track"), else `/file-issue`.
+
 ## Step 3 — Update verified outcomes
 
 For each outcome that changed status:

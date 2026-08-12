@@ -127,7 +127,8 @@ class _FakeStore:
     """Single in-memory task store backing BOTH sides of the chain.
 
     - The **enqueue** side goes through ``task_queue.enqueue(..., client=self)``,
-      which drives the supabase-client surface: ``.table(name).insert(row).execute()``.
+      which drives the supabase-client surface:
+      ``.table(name).upsert(row, on_conflict=..., ignore_duplicates=True).execute()``.
     - The **drain** side is ``drain_tasks``/watchdogs calling the ``TaskQueuePort``
       methods (``claim_next`` / ``count_running`` / ``transition`` / ...).
 
@@ -147,7 +148,12 @@ class _FakeStore:
         assert name == "task_queue", f"unexpected table {name!r}"
         return self
 
-    def insert(self, payload: dict[str, Any]) -> _FakeStore:
+    def upsert(
+        self, payload: dict[str, Any], *, on_conflict: str = "", ignore_duplicates: bool = False
+    ) -> _FakeStore:
+        # #1455 AC5: enqueue's real call shape — upsert with ignore_duplicates
+        # resolves a duplicate key to empty data (a bare insert would raise).
+        assert on_conflict == "idempotency_key" and ignore_duplicates
         self._pending_insert = payload
         return self
 

@@ -16,6 +16,17 @@
     the principal explicitly so the detection chain doesn't default to
     `live`.
 
+    Single-instance guard (#1502): The task launcher wraps the Python
+    invocation with a named system mutex (Global\jarvis-wake-driver-singleton).
+    Only one instance can hold the mutex at a time. If Stop-ScheduledTask
+    is called and the old process survives as an orphan, the mutex is
+    automatically released by Windows when the orphan exits. On restart,
+    the new instance immediately acquires the mutex, preventing stale
+    generations from accumulating. If another instance is already running
+    (e.g. a delayed restart), the new instance times out (100ms) and exits
+    cleanly; Task Scheduler's restart loop will retry per RestartCount/
+    RestartInterval.
+
     Device guard: only registers on Workshop PC (config/device.json
     "name" == "VividFormsPC4Workshop") unless -Force is passed --
     wake_driver's single-driver invariant (agents/pid_sidecar.py) assumes
@@ -92,6 +103,51 @@ function Get-PowerShellExe {
     return (Get-Command powershell -ErrorAction Stop).Source
 }
 
+function New-SingleInstanceMutexGuard {
+    <#
+    .SYNOPSIS
+        Build a PowerShell script block that ensures only one instance of
+        wake_driver runs at a time via a named system mutex (#1502).
+
+    .DESCRIPTION
+        Returns a script block (as a string) that acquires a named mutex at
+        startup, keeping it held for the lifetime of the process. If another
+        instance tries to start before the first one exits, the mutex
+        acquisition times out (wait 100ms) and the new instance exits cleanly.
+
+        On process exit (normal or crash), Windows automatically releases the
+        mutex, so stale generations do not accumulate even if the old process
+        survives a Stop-ScheduledTask.
+
+        Mutex name is deterministic (scoped to repo + wake_driver) so all
+        instances target the same mutex; a global prefix avoids collisions
+        with other software on the same Windows machine.
+    #>
+
+    $mutexName = "Global\jarvis-wake-driver-singleton"
+    $timeoutMs = 100
+
+    # The guard script tries to acquire a named mutex; if it succeeds,
+    # the process holds it and continues. If it times out (another
+    # instance has it), the process exits cleanly.
+    $guardScript = @"
+`$ErrorActionPreference = 'Stop'
+`$mutexName = '$mutexName'
+`$timeoutMs = $timeoutMs
+
+try {
+    `$mutex = [System.Threading.Mutex]::new(`$false, `$mutexName)
+    if (-not `$mutex.WaitOne(`$timeoutMs)) {
+        [Environment]::Exit(0)
+    }
+} catch [System.UnauthorizedAccessException] {
+    [Environment]::Exit(0)
+}
+"@
+
+    return $guardScript
+}
+
 function Format-WakeDriverActionArgs {
     param(
         [Parameter(Mandatory)][string]$PythonExe,
@@ -106,7 +162,13 @@ function Format-WakeDriverActionArgs {
     # REACTIVE_CONCURRENCY_CAP=2 (#1390 AC8) pins the autonomous driver's
     # sandcastle concurrency lower than the interactive-session default (5) --
     # this is an unattended box, so a smaller blast radius per tick is safer.
-    $innerCommand = "`$env:JARVIS_PRINCIPAL = 'autonomous'; `$env:REACTIVE_CONCURRENCY_CAP = '2'; & '$escapedPythonExe' -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
+    $pythonCommand = "& '$escapedPythonExe' -m agents.wake_driver --watchdog-seconds $WatchdogSeconds"
+
+    # Wrap with the single-instance mutex guard (#1502): only one instance
+    # can hold the mutex at a time. If another instance tries to start, the
+    # guard times out and exits cleanly, preventing stale generations.
+    $guardScript = New-SingleInstanceMutexGuard
+    $innerCommand = "$guardScript; `$env:JARVIS_PRINCIPAL = 'autonomous'; `$env:REACTIVE_CONCURRENCY_CAP = '2'; $pythonCommand"
 
     return @(
         '-NoProfile',

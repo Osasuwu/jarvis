@@ -19,10 +19,13 @@
 
     Event sink: writes a `quota_pressure` row to the legacy `events` table
     (mcp-memory/schema.sql), NOT `events_canonical`. The `events` table is what
-    the #327 escalation hook (scripts/telegram-notify-hook.py) reads -- it is the
-    only consumer that turns a pressure trip into an owner notification. The C17
-    `events_canonical` substrate (#476) has no application writers wired yet
-    (#477 cutover incomplete), so a row there would reach no consumer.
+    the reactive-core orchestrator (agents/orchestrator.py, wake_driver) reads --
+    `quota_pressure` has no enumerated route, so at severity=high it falls
+    through to the fail-safe ESCALATE route, which pings the owner via
+    `agents/notify.py`'s `telegram_notifier` (the standalone #327
+    telegram-notify-hook drain was retired, #1139). The C17 `events_canonical`
+    substrate (#476) has no application writers wired yet (#477 cutover
+    incomplete), so a row there would reach no consumer.
 
     Realizes decision 46830b4e (80%/70% hysteresis), which SUPERSEDES the initial
     90% single-gate decision d5b3fdd3 -- do not re-introduce a 90% threshold.
@@ -263,7 +266,8 @@ function Write-GhVariable {
 function Write-PressureEvent {
     # Writes a quota_pressure row to the legacy `events` table (NOT
     # events_canonical -- see synopsis). The body matches the `events` schema
-    # (mcp-memory/schema.sql) and the columns the #327 telegram hook reads.
+    # (mcp-memory/schema.sql) and the columns the orchestrator's fail-safe
+    # ESCALATE route reads (the #327 telegram-notify-hook drain was retired, #1139).
     [CmdletBinding()]
     param(
         [string]$SupabaseUrl,
@@ -438,7 +442,7 @@ function Invoke-QuotaProbe {
         # 1. gh variable ($newState is a plain [bool] -- no .Value member, C2)
         $ghOk = Write-GhVariable -VarName $PressureVar -Value $newState
 
-        # 2. events row (legacy `events` table -- the telegram hook's source)
+        # 2. events row (legacy `events` table -- the orchestrator's ESCALATE-route source)
         $envVars = Read-DotEnvFile -Path $DotEnvPath
         $sbUrl = $envVars['SUPABASE_URL']
         $sbKey = $envVars['SUPABASE_KEY']

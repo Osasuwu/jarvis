@@ -52,6 +52,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from supabase import Client
 
+    from agents.driver_heartbeat import HeartbeatStatus
+
 from agents import task_queue
 from agents.github_client import (
     GitHubClient,
@@ -104,6 +106,25 @@ DEFAULT_WORKTREE_RETENTION_TTL_SECONDS = 24 * 60 * 60
 # (by ``_WORKTREE_FAILED_AT_MARKER``) first — a backstop against disk growth
 # when failures outpace the TTL, independent of it (#1390 AC6).
 DEFAULT_WORKTREE_RETENTION_CAP = 20
+
+# #1085 S3-2 local-drain fallback: seconds between polling task_queue for
+# terminal state between ``wake_driver --once`` ticks.
+DEFAULT_LOCAL_DRAIN_POLL_SECONDS = 2.0
+
+# ceiling: flat retry cap (150 x poll_seconds ~= 5 minutes), not derived from
+# the reaper's own timeouts (DEFAULT_RUNNING_REAP_SECONDS is hours). "operator
+# present, blocking OK" (#1085 design) still wants a bound so a genuinely
+# stuck row can't hang the operator's /dispatch session forever; raise this at
+# the call site if a real drain run needs longer.
+DEFAULT_LOCAL_DRAIN_MAX_ITERATIONS = 150
+
+# #1085 S3 review fix: local-drain's own subprocess ticks must stamp a heartbeat
+# identity distinct from the resident driver's "wake_driver" (driver_heartbeat.DRIVER_NAME).
+# default_local_drain_heartbeat_check() reads the resident's row to decide "has it
+# recovered, should I stop looping?" — if the local-drain subprocess wrote to that
+# same row, the very next re-check would read back its own fresh timestamp and
+# conclude the resident had recovered, exiting after exactly one iteration.
+LOCAL_DRAIN_DRIVER_NAME = "wake_driver_local_drain"
 
 # Spawn a task's goal, fire-and-forget. Raises on a hard launch failure (AC7b).
 # Called as ``spawn(goal, task_id=<id>)`` — the executor needs the id to write
@@ -276,6 +297,7 @@ def _compute_pr_evidence(
     *,
     client: GitHubClient | None,
     stdout_reader: Callable[[str], str | None] | None = None,
+    issue_number: int | None = None,
 ) -> tuple[bool | None, bool | None]:
     """Compute PR evidence AND closing-ref status for one completed task.
 
@@ -287,6 +309,12 @@ def _compute_pr_evidence(
     The closing-ref channel is separate from the evidence tri-state per
     grill decision ``ec66db74`` — the two questions have independent
     None/False/True semantics.
+
+    ``issue_number`` (#1085 S1-5), when given, is the task_queue row's real
+    ``issue_number`` column value — preferred over parsing it out of ``goal``.
+    ``None`` (the default) falls back to the goal-text regex, exactly the
+    pre-#1085 behavior — every caller not yet threading the column keeps
+    working unchanged.
     """
     if client is None or spawned_at is None:
         return (None, None)
@@ -304,8 +332,10 @@ def _compute_pr_evidence(
     # #1136 AC5: advisory-only — surface a fresh-shape PR that links but does not
     # *close* its named issue. Runs at this evidence boundary regardless of the
     # freshness verdict; never blocks and never edits the PR.
-    _warn_if_pr_lacks_closing_ref(task_id, goal, client=client)
-    closing_ref = _compute_closing_ref_fresh_shape(task_id, goal, client=client)
+    _warn_if_pr_lacks_closing_ref(task_id, goal, client=client, issue_number=issue_number)
+    closing_ref = _compute_closing_ref_fresh_shape(
+        task_id, goal, client=client, issue_number=issue_number
+    )
     if evidence is False and stdout_reader is not None:
         # AC3 — the head-branch lookup found nothing; fall back to whatever PR
         # the agent claimed in its stdout, then verify it actually exists.
@@ -324,19 +354,61 @@ def _compute_pr_evidence(
     return (evidence, closing_ref)
 
 
+def _resolve_pr_url(
+    task_id: str,
+    goal: str,
+    *,
+    client: GitHubClient | None,
+) -> str | None:
+    """Best-effort PR URL for a just-completed task (#1085 S2 review finding 2).
+
+    ``_compute_pr_evidence`` and the ``check_pr_evidence_*`` functions it calls
+    only ever surface a ``bool | None`` tri-state — the PR object they fetch to
+    compute it is discarded, so callers that need the actual URL (here: the
+    completion outcome-writer) must resolve it separately. This is a SEPARATE,
+    deliberate second fetch of the PR, mirroring ``_warn_if_pr_lacks_closing_ref``'s
+    established pattern in this module rather than reaching into evidence
+    internals. Returns ``None`` on any resolution failure — never raises,
+    since the caller treats this as advisory.
+    """
+    if client is None:
+        return None
+    shape, pr_number = parse_goal_shape(goal)
+    try:
+        if shape == "rework" and pr_number is not None:
+            pr = client.get_pull_by_number(pr_number)
+        elif shape == "fresh":
+            branch_match = re.search(r"\(branch=([^)]+)\)", goal)
+            branch = branch_match.group(1).strip() if branch_match else f"task/{task_id}"
+            pr = client.get_pull_by_head_branch(branch)
+        else:
+            return None
+    except Exception:  # noqa: BLE001 — advisory lookup, never raises to the caller
+        logger.exception("[task_dispatch] PR URL resolution failed for task %s", task_id)
+        return None
+    if not pr:
+        return None
+    return pr.get("html_url")
+
+
 def _compute_closing_ref_fresh_shape(
     task_id: str,
     goal: str,
     *,
     client: GitHubClient | None = None,
+    issue_number: int | None = None,
 ) -> bool | None:
     """Compute closing-ref status for a fresh-shape task (#1169).
 
     Calls ``check_pr_closing_ref_fresh_shape`` through the gate module.
     Returns ``True`` if the PR carries a closing ref, ``False`` if it
     doesn't, ``None`` if it can't be computed.
+
+    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
+    S1-5) — see :func:`_compute_pr_evidence`.
     """
-    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        issue_number = _goal_issue_number(goal)
     if issue_number is None:
         return None
     if client is None:
@@ -359,6 +431,7 @@ def _warn_if_pr_lacks_closing_ref(
     goal: str,
     *,
     client: GitHubClient,
+    issue_number: int | None = None,
 ) -> None:
     """Log an advisory WARNING if a fresh-shape task's PR does not close its issue (#1136 AC5).
 
@@ -376,8 +449,12 @@ def _warn_if_pr_lacks_closing_ref(
     A missing issue reference, an absent PR (``None``), or a genuine ``Closes #N``
     (``True``) are all silent. The AC7 follow-up (#1169) turns this signal into a
     disposition; here it is observation only.
+
+    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
+    S1-5) — see :func:`_compute_pr_evidence`.
     """
-    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        issue_number = _goal_issue_number(goal)
     if issue_number is None:
         return
     try:
@@ -412,6 +489,7 @@ def _ensure_pr_closing_ref(
     goal: str,
     *,
     client: GitHubClient | None = None,
+    issue_number: int | None = None,
 ) -> bool | None:
     """Ensure a fresh-shape task's PR body carries a closing ref (#1169 item 1).
 
@@ -425,11 +503,15 @@ def _ensure_pr_closing_ref(
     - ``True`` — PR has (or now has) a closing ref
     - ``False`` — no PR to fix, or goal has no issue reference
     - ``None`` — unparseable or client unavailable
+
+    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
+    S1-5) — see :func:`_compute_pr_evidence`.
     """
     shape, _ = parse_goal_shape(goal)
     if shape != "fresh":
         return False
-    issue_number = _goal_issue_number(goal)
+    if issue_number is None:
+        issue_number = _goal_issue_number(goal)
     if issue_number is None:
         return False
     if client is None:
@@ -559,6 +641,20 @@ def _goal_issue_number(goal: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _row_issue_number(row: dict[str, Any], goal: str) -> int | None:
+    """Issue number for a task_queue row: real column first, regex fallback (#1085 S1-5).
+
+    ``row["issue_number"]`` is populated for every row enqueued after the
+    #1085 S1-1/S1-2 migration; legacy/null rows (enqueued before the column
+    existed, or via a path that never set it) fall back to
+    :func:`_goal_issue_number` parsing ``goal`` — the pre-#1085 behavior.
+    """
+    value = row.get("issue_number")
+    if value is not None:
+        return int(value)
+    return _goal_issue_number(goal)
+
+
 def _load_gate_module() -> Any:
     """Load ``scripts/delegate_predispatch_gate.py`` for its shared predicate (#931).
 
@@ -600,16 +696,29 @@ class DedupConfig:
     evidence we could not read.
 
     ``list_active_rows`` returns live (``claimed``/``running``) task_queue rows
-    (``id``/``goal``/``status``) for the sibling check; queried fresh per task
-    so a row spawned earlier in this same drain is seen by later tasks.
+    (``id``/``goal``/``status``/``issue_number``) for the sibling check; queried
+    fresh per task so a row spawned earlier in this same drain is seen by later
+    tasks. The sibling predicate prefers each row's ``issue_number`` column
+    (#1085 S1-5), falling back to parsing ``goal`` for legacy/null rows.
 
     ``record_outcome`` (optional) is called best-effort with a small payload
     dict on each ``skipped_duplicate`` — a raise is logged and swallowed.
+
+    ``fetch_issue`` (optional, #1085 S2-3) fetches a single issue fresh at
+    spawn time — returns ``None`` if the issue is gone/inaccessible, raises on
+    a genuine fetch failure. Used only for rows whose ``idempotency_key``
+    starts with ``"delegate:"`` (i.e. ``/dispatch``-originated): the mechanical
+    re-run of ``check_issue`` against a fresh fetch, since ``/dispatch``'s own
+    check at enqueue time is advisory, not enforcement. ``None`` here (the
+    default) disables the re-check entirely — orchestrator-emitted and
+    ``/rework`` rows were never subject to ``check_issue``'s readiness
+    conditions and must not start being refused by omission.
     """
 
     fetch_in_flight: Callable[[], tuple[list[dict[str, Any]], list[str]]]
     list_active_rows: Callable[[], list[dict[str, Any]]]
     record_outcome: Callable[[dict[str, Any]], None] | None = None
+    fetch_issue: Callable[[int], dict[str, Any] | None] | None = None
 
 
 def _record_skip_outcome(payload: dict[str, Any]) -> None:
@@ -645,6 +754,46 @@ def _record_skip_outcome(payload: dict[str, Any]) -> None:
     ).execute()
 
 
+def _record_completion_outcome(payload: dict[str, Any]) -> None:
+    """Best-effort ``task_outcomes`` write for a completed subagent task (#1085
+    S2 review finding 2).
+
+    ``/task-implement`` runs headless with no MCP tools (HARD RULE 3, its
+    SKILL.md) — it cannot call ``outcome_record`` itself. Without this write, a
+    subagent-dispatched task never gets a ``task_outcomes`` row at all, so
+    ``/verify`` Step 1's ``outcome_list(outcome_status="pending")`` never sees
+    it and Step 2b's divergence/drive-by audit checks never run. This writes
+    the row from the orchestrator side instead, at the terminal boundary where
+    ``poll_completions`` already knows the task succeeded (exit 0).
+    ``pattern_tags`` MUST include ``"subagent"`` — that's the exact filter
+    Step 2b keys on. Sandcastle-anon insert, mirroring
+    :func:`_record_skip_outcome`'s pattern.
+    """
+    from agents.supabase_client import get_client
+
+    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
+    issue_number = payload.get("issue_number")
+    get_client().table("task_outcomes").insert(
+        {
+            "task_type": "autonomous",
+            "task_description": f"task-implement: {payload.get('goal')}",
+            "outcome_status": "pending",
+            "outcome_summary": (
+                f"Task {payload.get('task_id')} completed (exit 0); awaiting /verify audit."
+            ),
+            "project": "jarvis",
+            "issue_url": (
+                f"https://github.com/{repo}/issues/{issue_number}"
+                if issue_number is not None
+                else None
+            ),
+            "pr_url": payload.get("pr_url"),
+            "pattern_tags": ["subagent", "headless", "task-implement"],
+            "source_provenance": "sandcastle:task_dispatch-completion",
+        }
+    ).execute()
+
+
 def default_task_dedup(
     github: GitHubClient,
     *,
@@ -655,7 +804,8 @@ def default_task_dedup(
     ``fetch_in_flight`` maps the client's ``list_open_pulls`` / ``list_branch_names``
     into the ``(open_prs, open_branches)`` shape the gate predicate takes;
     ``list_active_rows`` defaults to :func:`task_queue.list_active`; ``record_outcome``
-    is the best-effort ``task_outcomes`` writer above. Wired from
+    is the best-effort ``task_outcomes`` writer above; ``fetch_issue`` is
+    ``github.get_issue`` directly (#1085 S2-3). Wired from
     :func:`wake_driver.main`; unit tests inject fakes into :class:`DedupConfig` directly.
     """
     active = list_active if list_active is not None else task_queue.list_active
@@ -667,6 +817,7 @@ def default_task_dedup(
         fetch_in_flight=fetch_in_flight,
         list_active_rows=active,
         record_outcome=_record_skip_outcome,
+        fetch_issue=github.get_issue,
     )
 
 
@@ -754,6 +905,11 @@ class TrackedProc:
     against it — a naive datetime would raise on the aware/naive compare). They
     default empty/``None`` so an adopted-after-restart proc with no recovered
     metadata yields ``pr_evidence=null`` → escalate (documented #921 limitation).
+
+    ``issue_number`` (#1085 S1-5) carries the claimed row's real ``issue_number``
+    column value (when set) so the terminal-boundary PR-evidence computation can
+    use it column-first, falling back to parsing ``goal`` for legacy/null rows —
+    same default-``None`` rationale as the fields above.
     """
 
     proc: Any
@@ -761,6 +917,7 @@ class TrackedProc:
     goal: str = ""
     idempotency_key: str = ""
     spawned_at: datetime | None = None
+    issue_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -786,6 +943,7 @@ def poll_completions(
     event_emit: EventEmit | None = None,
     evidence_client: GitHubClient | None = None,
     stdout_reader: Callable[[str], str | None] | None = None,
+    outcome_record: Callable[[dict[str, Any]], None] | None = None,
 ) -> CompletionResult:
     """Close ``running`` rows whose process has exited (#921 AC2, Model P).
 
@@ -837,7 +995,9 @@ def poll_completions(
         # #1169 item 1: for a done fresh-shape task, ensure the PR body carries
         # a closing ref. The supervisor auto-fixes if the agent omitted it.
         if rc == 0 and evidence_client is not None:
-            _ensure_pr_closing_ref(task_id, goal, client=evidence_client)
+            _ensure_pr_closing_ref(
+                task_id, goal, client=evidence_client, issue_number=tracked.issue_number
+            )
 
         # #1169 item 3: unpack the closing-ref status alongside the PR evidence.
         pr_evidence, closing_ref = _compute_pr_evidence(
@@ -846,6 +1006,7 @@ def poll_completions(
             tracked.spawned_at,
             client=evidence_client,
             stdout_reader=stdout_reader,
+            issue_number=tracked.issue_number,
         )
 
         # Event emission and the FSM transition are DECOUPLED (MAJOR, PR #1011).
@@ -890,6 +1051,27 @@ def poll_completions(
                 logger.exception(
                     "[task_dispatch] event emit for task %s failed; "
                     "proceeding with transition (event self-heals on re-observation)",
+                    task_id,
+                )
+
+        # #1085 S2 review finding 2: write the task_outcomes row for a completed
+        # subagent task here, since /task-implement runs with no MCP tools and
+        # cannot call outcome_record itself (see _record_completion_outcome).
+        # Decoupled from the transition below for the same reason event_emit is —
+        # an outcome-write failure must never block the FSM transition.
+        if rc == 0 and outcome_record is not None:
+            try:
+                outcome_record(
+                    {
+                        "task_id": task_id,
+                        "goal": goal,
+                        "issue_number": tracked.issue_number,
+                        "pr_url": _resolve_pr_url(task_id, goal, client=evidence_client),
+                    }
+                )
+            except Exception:  # noqa: BLE001 — outcome write must not block transition
+                logger.exception(
+                    "[task_dispatch] completion outcome record for task %s failed",
                     task_id,
                 )
 
@@ -1333,7 +1515,7 @@ def drain_tasks(
         # targets a live PR by design and must not be eaten by the live-PR rule.
         if dedup is not None:
             shape, _ = parse_goal_shape(row["goal"])
-            issue_number = _goal_issue_number(str(row["goal"])) if shape == "fresh" else None
+            issue_number = _row_issue_number(row, str(row["goal"])) if shape == "fresh" else None
             if issue_number is not None:
                 try:
                     if in_flight_evidence is None:
@@ -1366,7 +1548,7 @@ def drain_tasks(
                         r
                         for r in active_rows
                         if str(r.get("id")) != task_id
-                        and _goal_issue_number(str(r.get("goal") or "")) == issue_number
+                        and _row_issue_number(r, str(r.get("goal") or "")) == issue_number
                     ),
                     None,
                 )
@@ -1418,6 +1600,62 @@ def drain_tasks(
                             task_id,
                         )
                     continue
+
+                # #1085 S2-3 — /dispatch's own check_issue at enqueue time is
+                # advisory, not enforcement. This is the mechanical re-run against
+                # a fresh fetch — unconditional for "delegate:"-prefixed rows
+                # (i.e. /dispatch-originated) regardless of what the advisory gate
+                # did or didn't catch. Orchestrator-emitted and /rework rows never
+                # went through check_issue's readiness conditions and must not
+                # start being refused by omission here.
+                idem_key = str(row.get("idempotency_key", "") or "")
+                if dedup.fetch_issue is not None and idem_key.startswith("delegate:"):
+                    try:
+                        fresh_issue = dedup.fetch_issue(issue_number)
+                    except Exception:  # noqa: BLE001 — unverifiable is never terminal
+                        try:
+                            requeued = port.requeue_running(task_id)
+                        except Exception:  # noqa: BLE001 — requeue is best-effort
+                            requeued = False
+                        logger.exception(
+                            "[task_dispatch] readiness fetch_issue failed; stopping drain — task %s %s",
+                            task_id,
+                            "requeued to pending" if requeued else "left running for the reaper",
+                        )
+                        return DrainResult(
+                            spawned=spawned,
+                            failed=failed,
+                            skipped_duplicate=skipped_duplicate,
+                            procs=tuple(procs),
+                            spawned_meta=spawned_meta,
+                        )
+
+                    if fresh_issue is None:
+                        try:
+                            port.transition(
+                                task_id,
+                                "parked",
+                                reason=f"issue #{issue_number} not found on fresh fetch",
+                            )
+                        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                            logger.exception(
+                                "[task_dispatch] could not park task %s on missing issue; "
+                                "row left running for the reaper",
+                                task_id,
+                            )
+                        continue
+
+                    readiness = _load_gate_module().check_issue(fresh_issue)
+                    if not readiness.allow:
+                        try:
+                            port.transition(task_id, "parked", reason=readiness.message)
+                        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                            logger.exception(
+                                "[task_dispatch] could not park task %s on readiness refusal; "
+                                "row left running for the reaper",
+                                task_id,
+                            )
+                        continue
 
         # Capture spawn time BEFORE launching (MAJOR, PR #1011). The terminal
         # evidence check counts PR/commit activity with timestamp > spawned_at;
@@ -1484,6 +1722,7 @@ def drain_tasks(
                 "goal": row["goal"],
                 "idempotency_key": str(row.get("idempotency_key", "") or ""),
                 "spawned_at": spawn_started_at,
+                "issue_number": row.get("issue_number"),
             }
             # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
             if sidecar is not None:
@@ -1703,6 +1942,114 @@ def sweep_task_worktrees(
         ttl_pruned=ttl_pruned,
         cap_evicted=cap_evicted,
     )
+
+
+def default_local_drain_heartbeat_check() -> HeartbeatStatus:
+    """Production ``heartbeat_check`` adapter — live Supabase read (#1085 S3-2).
+
+    Lazy import mirrors :func:`default_spawn`: the tested loop logic in
+    :func:`local_drain_until_terminal` never pulls Supabase, only this
+    production default does.
+    """
+    from agents.driver_heartbeat import check_heartbeat
+
+    return check_heartbeat()
+
+
+def default_get_task_statuses(task_ids: list[str]) -> dict[str, str]:
+    """Production ``get_statuses`` adapter — batch task_queue lookup (#1085 S3-2)."""
+    return task_queue.get_statuses(task_ids)
+
+
+def default_local_drain_once() -> None:
+    """Production ``run_once`` adapter — one ``wake_driver --once`` subprocess tick.
+
+    A fresh process per tick, same as the resident driver's own ticks — no cap
+    override flag or env var is passed here, so ``DEFAULT_CONCURRENCY_CAP``
+    (read inside the child process) is the only concurrency limit in play.
+
+    Passes ``--driver-name`` set to :data:`LOCAL_DRAIN_DRIVER_NAME`, distinct
+    from the resident driver's ``DRIVER_NAME`` — see that constant's comment
+    for why a shared name would make :func:`local_drain_until_terminal` exit
+    after its first iteration regardless of remaining pending rows.
+    """
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agents.wake_driver",
+            "--once",
+            "--driver-name",
+            LOCAL_DRAIN_DRIVER_NAME,
+        ],
+        cwd=_REPO_ROOT,
+        check=False,
+    )
+
+
+def local_drain_until_terminal(
+    task_ids: Collection[str],
+    *,
+    heartbeat_check: Callable[[], HeartbeatStatus] = default_local_drain_heartbeat_check,
+    run_once: Callable[[], None] = default_local_drain_once,
+    get_statuses: Callable[[list[str]], dict[str, str]] = default_get_task_statuses,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_seconds: float = DEFAULT_LOCAL_DRAIN_POLL_SECONDS,
+    max_iterations: int = DEFAULT_LOCAL_DRAIN_MAX_ITERATIONS,
+) -> dict[str, str]:
+    """Local-drain fallback for a stale resident driver (#1085 S3-2).
+
+    ``/dispatch`` calls this after enqueueing a batch when the heartbeat check
+    (step 3b) found the resident ``wake_driver`` stale: it repeats a
+    ``wake_driver --once`` tick (``run_once``) — concurrency-capped by
+    construction, since each tick's ``drain_tasks`` call enforces
+    ``DEFAULT_CONCURRENCY_CAP`` on its own — polling ``get_statuses`` between
+    ticks, until every id in ``task_ids`` reaches a
+    :data:`agents.task_queue.TERMINAL_STATES` status, the heartbeat goes fresh
+    again (resident driver recovered), or ``max_iterations`` is exhausted.
+    Operator-present, blocking call by design.
+
+    ``heartbeat_check`` re-runs immediately before every spawn: if the driver
+    has since become fresh (resident driver recovered, or another local drain
+    already covered these rows), the loop stops without spawning again.
+
+    ceiling: each ``run_once()`` is a memory-isolated ``wake_driver --once``
+    subprocess with no ``task_procs`` (agents/wake_driver.py's ``--once`` path
+    deliberately omits it, #921) — so this loop can spawn rows to ``running``
+    but has no way to observe their process exit and close them to
+    ``done``/``failed`` itself; that only happens via the much-slower orphan
+    reaper backstop (``reclaim_stale_tasks``), well past this loop's
+    ``max_iterations`` window. In practice freshly-spawned rows will usually
+    exhaust the cap and return non-terminal here (confirmed via code review on
+    PR #1544). Not a correctness issue — no row is double-processed or lost,
+    the caller just can't rely on this call to observe completion promptly.
+    Upgrade path (real fix, not done here — architectural, entangled with
+    #1546's same subprocess-per-tick root cause): replace the subprocess
+    ``run_once`` with an in-process ``drain_tasks``/``poll_completions`` pair
+    sharing one ``task_procs`` dict across the whole call. Tracked: #1551.
+
+    ceiling: heartbeat_check -> run_once is check-then-act, not atomic — no
+    distributed lock. A resident driver tick can start in the gap between the
+    check and the spawn, causing a duplicate local drain attempt on the same
+    rows. Not a correctness issue — task_queue's pending->claimed transition
+    is a conditional UPDATE, atomic per row (agents/task_queue.py::claim_next)
+    — just wasted local compute. Upgrade path if this starts costing real
+    cycles: a short-lived advisory lock row in driver_heartbeat itself.
+    """
+    ids = list(task_ids)
+    if not ids:
+        return {}
+
+    statuses = get_statuses(ids)
+    for _ in range(max_iterations):
+        if all(statuses.get(tid) in task_queue.TERMINAL_STATES for tid in ids):
+            return statuses
+        if not heartbeat_check().is_stale:
+            return statuses
+        run_once()
+        statuses = get_statuses(ids)
+        sleep(poll_seconds)
+    return statuses
 
 
 class SupabaseTaskQueue:

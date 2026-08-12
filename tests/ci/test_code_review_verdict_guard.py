@@ -2074,10 +2074,11 @@ class TestPR1435Timeline:
         )
 
     def test_gate_passes_once_a_real_verdict_lands(self):
-        # The self-healing path: code-review-retry re-dispatches the failed run
-        # as a workflow_dispatch (which bypasses the autobase skip and performs
-        # a genuine review), a verdict comment lands, and the next evaluation
-        # carries it forward on the last-non-bot anchor (#1134).
+        # The self-healing path: code-review-retry reruns the failed run in
+        # place (#1325); the autobase step's own github.run_attempt == 1 gate
+        # (#1523) disarms the skip on that rerun and performs a genuine
+        # review, a verdict comment lands, and the next evaluation carries it
+        # forward on the last-non-bot anchor (#1134).
         assert (
             verdict_autobase(
                 [("## Code Review -- PR #1435\n\nNo issues found.", "2026-08-07T13:50:00Z")],

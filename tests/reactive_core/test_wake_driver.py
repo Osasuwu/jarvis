@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from agents import driver_heartbeat
 from agents import task_dispatch as td
 from agents import wake_driver
 from agents.task_dispatch import TaskQueuePort, TrackedProc
@@ -53,6 +54,7 @@ class FakeEventQueue:
         self.wake_signals: list[bool] = []
         self.processed_calls: list[str] = []
         self.parked_calls: list[tuple[str, str]] = []
+        self.park_blocked_calls: list[tuple[str, str]] = []
 
     # -- EventQueuePort surface --------------------------------------------
 
@@ -94,6 +96,16 @@ class FakeEventQueue:
                 e["state"] = "parked"
                 e["action_taken"] = reason
                 self.parked_calls.append((event_id, reason))
+                return True
+        return False
+
+    def park_blocked_on_task(self, event_id: str, task_id: str, *, reason: str = "") -> bool:
+        for e in self.events:
+            if e["id"] == event_id and e["state"] == "claimed":
+                e["state"] = "parked"
+                e["action_taken"] = reason
+                e["blocked_by_task_id"] = task_id
+                self.park_blocked_calls.append((event_id, task_id))
                 return True
         return False
 
@@ -656,6 +668,83 @@ def test_tick_task_drain_failure_does_not_crash_tick():
     assert result.tasks_failed == 0
 
 
+# --- #1085 S3-1: heartbeat write at tick start -------------------------------
+
+
+class _RecordingHeartbeat:
+    """Minimal HeartbeatPort that logs record_tick calls, in order."""
+
+    def __init__(self, log: list | None = None) -> None:
+        self._log = log if log is not None else []
+        self.tick_calls: list[str] = []
+
+    def read_heartbeat(self, driver_name: str) -> dict | None:
+        return None
+
+    def record_tick(self, driver_name: str) -> None:
+        self._log.append("heartbeat_tick")
+        self.tick_calls.append(driver_name)
+
+
+class _RaisingHeartbeat:
+    """HeartbeatPort whose record_tick raises — models a Supabase outage that
+    must not starve the event drain, the primary wake path."""
+
+    def read_heartbeat(self, driver_name: str) -> dict | None:
+        return None
+
+    def record_tick(self, driver_name: str) -> None:
+        raise RuntimeError("supabase unreachable")
+
+
+def test_tick_records_heartbeat_at_start():
+    hb = _RecordingHeartbeat()
+    q = FakeEventQueue([_ev("a")])
+    wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        heartbeat_port=hb,
+    )
+    assert hb.tick_calls == [driver_heartbeat.DRIVER_NAME]
+
+
+def test_tick_heartbeat_failure_does_not_block_event_drain():
+    q = FakeEventQueue([_ev("a")])
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        heartbeat_port=_RaisingHeartbeat(),
+    )
+    assert result.processed == 1
+
+
+def test_tick_without_heartbeat_port_skips_heartbeat_write():
+    # Backward-compat: omitting heartbeat_port is a silent no-op, not an error.
+    q = FakeEventQueue([_ev("a")])
+    result = wake_driver.tick(q, wake_driver.default_orchestrator, stale_after_seconds=300)
+    assert result.processed == 1
+
+
+def test_tick_writes_heartbeat_before_other_steps():
+    log: list = []
+    hb = _RecordingHeartbeat(log)
+    eq = _LoggingEventQueue(log, [_ev("e1", state="claimed")])
+    eq.events[0]["claimed_at"] = 0.0
+    eq.clock = 999.0  # the claimed event is stale → reclaimed → drained this tick
+
+    wake_driver.tick(
+        eq,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        heartbeat_port=hb,
+    )
+
+    assert log[0] == "heartbeat_tick"
+    assert log.index("heartbeat_tick") < log.index("event_reclaim")
+
+
 # --- review #3: run() forwards every task param to tick() -------------------
 
 
@@ -694,6 +783,44 @@ def test_run_forwards_task_spawn_and_resolver_to_tick():
 
     assert spawned == ["do-the-thing"]  # injected spawn forwarded, not the default
     assert resolved["n"] == 1  # injected resolver forwarded, not the default
+
+
+def test_run_forwards_task_outcome_record_to_tick():
+    # PR #1539 review finding 2 regression: run() accepting task_outcome_record
+    # is not enough on its own — tick() must also declare and forward it to
+    # poll_completions(), or the call raises TypeError at the tick() boundary
+    # the first time run() actually reaches a completed task. Drive two ticks
+    # (spawn, then close) the same way test_run_retains_the_tracking_map_
+    # across_ticks does, and assert the callback actually fires on close.
+    log: list = []
+    q = FakeEventQueue([])
+    q.wake_signals = [True, True]
+    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    proc = _TickProc(rc=None)  # alive during tick 1...
+    recorded: list = []
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        if ticks["n"] == 2:
+            proc._rc = 0  # ...exits before tick 2
+        return ticks["n"] <= 2
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=tq,
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_clock=lambda: 0.0,
+        task_outcome_record=recorded.append,
+    )
+
+    assert ("t1", "done", None) in tq.transitions
+    assert len(recorded) == 1
+    assert recorded[0]["task_id"] == "t1"
 
 
 def test_run_forwards_task_thresholds_to_tick():
@@ -934,6 +1061,37 @@ def test_tick_reports_completion_counts_and_drops_closed_entries():
     assert ("bad", "failed", "exit 3") in tq.transitions
 
 
+def test_tick_forwards_task_outcome_record_to_poll_completions():
+    # PR #1539 review finding 2 regression: tick()'s signature must actually
+    # declare task_outcome_record and thread it into poll_completions() — an
+    # earlier version referenced the name in its body without declaring the
+    # parameter, so run() calling tick(task_outcome_record=...) raised
+    # TypeError at the tick() boundary despite poll_completions()-level unit
+    # tests (test_agents_task_dispatch.py::TestPollCompletionsOutcomeRecord)
+    # passing in isolation.
+    log: list = []
+    tq = _RecordingTaskQueue(log)
+    procs = {"ok": TrackedProc(proc=_TickProc(rc=0), started_at=0.0, goal="do ok")}
+    recorded: list = []
+
+    result = wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 0.0,
+        task_outcome_record=recorded.append,
+    )
+
+    assert result.tasks_done == 1
+    assert len(recorded) == 1
+    assert recorded[0]["task_id"] == "ok"
+
+
 def test_tick_shields_live_rows_from_the_orphan_reaper():
     # #921 AC5: a stale running row WITH a live tracked process is not reaped;
     # the stale row with no tracked process is an orphan → failed.
@@ -1034,6 +1192,39 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
     # spawned_at MUST be tz-aware — the rework-shape evidence check compares it
     # against a tz-aware PR timestamp, and a naive value would raise.
     assert procs["t1"].spawned_at.tzinfo is not None
+
+
+def test_tick_folds_issue_number_column_into_the_tracking_map():
+    # #1085 S1-5: the claimed row's real issue_number column must fold onto
+    # TrackedProc too — poll_completions reads it for column-first PR evidence.
+    proc = _TickProc(rc=None)
+    tq = _RecordingTaskQueue(
+        [],
+        pending=[
+            {
+                "id": "t1",
+                "goal": "g",
+                "assignee": "sandcastle",
+                "idempotency_key": "key-1",
+                "issue_number": 1085,
+            }
+        ],
+    )
+    procs: dict = {}
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 42.0,
+    )
+
+    assert procs["t1"].issue_number == 1085
 
 
 def test_tick_batch_shares_one_started_at_stamp():
@@ -1422,6 +1613,148 @@ def test_psycopg_event_queue_reconnect_uses_dedicated_backoff_and_never_exits(mo
     )
 
 
+# --- #1455 AC2: drain parks events whose result blocks on a task ------------
+
+
+class _BlockedResult:
+    """Duck-typed stand-in for orchestrator.DispatchResult — only the
+    attribute drain_pending reads."""
+
+    def __init__(self, blocked_by_task_id: str | None):
+        self.blocked_by_task_id = blocked_by_task_id
+
+
+def test_drain_pending_parks_event_when_result_carries_task_id():
+    """AC2: a non-None blocked_by_task_id on the orchestrator's return value
+    parks the event blocked on that task instead of marking it processed."""
+    q = FakeEventQueue([_ev("a")])
+
+    wake_driver.drain_pending(q, lambda e: _BlockedResult("task-7"))
+
+    assert q.state_of("a") == "parked"
+    assert q.park_blocked_calls == [("a", "task-7")]
+    assert q.processed_calls == []
+
+
+def test_drain_pending_parked_event_not_counted_as_processed():
+    """AC2: the drain's processed count excludes parked-blocked events but
+    the loop continues to the next pending event."""
+    q = FakeEventQueue([_ev("a"), _ev("b")])
+    results = iter([_BlockedResult("task-7"), _BlockedResult(None)])
+
+    processed = wake_driver.drain_pending(q, lambda e: next(results))
+
+    assert processed == 1
+    assert q.state_of("a") == "parked"
+    assert q.state_of("b") == "processed"
+
+
+def test_drain_pending_result_without_attribute_keeps_processed_path():
+    """AC2: plain callables returning anything without blocked_by_task_id
+    (None, strings, whatever) keep today's mark_processed behavior — the
+    Orchestrator contract stays Callable[[dict], Any]."""
+    q = FakeEventQueue([_ev("a"), _ev("b")])
+    results = iter(["not-a-dispatch-result", None])
+
+    processed = wake_driver.drain_pending(q, lambda e: next(results))
+
+    assert processed == 2
+    assert q.park_blocked_calls == []
+    assert all(e["state"] == "processed" for e in q.events)
+
+
+# --- #1455 AC3: park_blocked_on_task — port method + dedicated RPC ----------
+
+
+class _CursorRecordingConn:
+    """psycopg.Connection stand-in whose cursor() records (sql, params) and
+    returns a scripted fetchone row — enough to verify an RPC call shape
+    without a live DB."""
+
+    def __init__(self, fetchone_row=(True,), fetchall_rows=()):
+        self.executed: list[tuple[str, tuple]] = []
+        self.commits = 0
+        self._fetchone_row = fetchone_row
+        self._fetchall_rows = list(fetchall_rows)
+
+    def execute(self, sql, *args):
+        # Constructor-issued LISTEN calls land here; not under test.
+        return self
+
+    def commit(self):
+        self.commits += 1
+
+    def cursor(self):
+        conn = self
+
+        class _Cur:
+            description = []  # empty column list is fine while fetchall is empty
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def execute(self, sql, params=None):
+                conn.executed.append((sql, params))
+
+            def fetchone(self):
+                return conn._fetchone_row
+
+            def fetchall(self):
+                return conn._fetchall_rows
+
+        return _Cur()
+
+
+def test_event_queue_port_declares_park_blocked_on_task():
+    """AC3: the port protocol carries park_blocked_on_task — fakes and
+    adapters must implement it alongside park()."""
+    assert hasattr(wake_driver.EventQueuePort, "park_blocked_on_task")
+
+
+def test_psycopg_park_blocked_on_task_calls_dedicated_rpc():
+    """AC3: PsycopgEventQueue.park_blocked_on_task calls the new RPC with
+    (event_id, task_id, reason) and commits — NOT the #1385 park_event RPC,
+    which must stay untouched for poison-pill parks."""
+    conn = _CursorRecordingConn(fetchone_row=(True,))
+    queue = wake_driver.PsycopgEventQueue(conn)
+
+    ok = queue.park_blocked_on_task("ev-1", "task-9", reason="blocked on task task-9")
+
+    assert ok is True
+    sql, params = conn.executed[-1]
+    assert "park_blocked_on_task" in sql
+    assert "park_event" not in sql
+    assert params == ("ev-1", "task-9", "blocked on task task-9")
+    assert conn.commits >= 1
+
+
+def test_psycopg_park_blocked_on_task_false_when_no_claimed_row():
+    """AC3: the RPC's FOUND=false (event not in claimed state) surfaces as
+    False, mirroring park()/mark_processed semantics."""
+    conn = _CursorRecordingConn(fetchone_row=(False,))
+    queue = wake_driver.PsycopgEventQueue(conn)
+
+    assert queue.park_blocked_on_task("ev-1", "task-9") is False
+
+
+def test_psycopg_find_parked_events_filters_on_column_not_payload():
+    """#1455 AC4: the poller sweep filters on the dedicated column — poison-pill
+    parks (#1385, column NULL) are structurally excluded, and the legacy
+    payload-marker probe is gone (payload stays immutable, per a4f6c602)."""
+    conn = _CursorRecordingConn(fetchall_rows=[])
+    queue = wake_driver.PsycopgEventQueue(conn)
+
+    assert queue.find_parked_events() == []
+    sql, params = conn.executed[-1]
+    assert "blocked_by_task_id IS NOT NULL" in sql
+    assert "state = 'parked'" in sql
+    assert "payload" not in sql
+    assert params == (wake_driver.PARKED_EVENTS_LIMIT,)
+
+
 # --- main() resource management (#953 PR #1011 round 3) ---------------------
 
 
@@ -1433,6 +1766,10 @@ class _CloseRecordingClient:
 
     def close(self) -> None:
         self.closed += 1
+
+    def get_issue(self, issue_number: int) -> dict | None:
+        """Stub for default_task_dedup's fetch_issue wiring (#1085 S2-3)."""
+        return None
 
 
 def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
@@ -1564,6 +1901,106 @@ def test_main_once_wires_build_production_orchestrator_into_tick(monkeypatch):
 
     assert wake_driver.main() == 0
     assert captured["orchestrator"] is sentinel
+
+
+# --- #1085 S3-1: main() wires SupabaseHeartbeat into tick/run ---------------
+
+
+def test_main_once_wires_supabase_heartbeat_into_tick(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(wake_driver, "SupabaseHeartbeat", lambda **k: sentinel)
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_port"] = kwargs.get("heartbeat_port")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--once"])
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_port"] is sentinel
+
+
+def test_main_once_driver_name_flag_threads_into_tick(monkeypatch):
+    # #1085 S3 review fix: --driver-name must reach tick's heartbeat_driver_name
+    # kwarg, not just parse — this is how local_drain_until_terminal's own
+    # ``wake_driver --once`` ticks avoid colliding with the resident driver's
+    # heartbeat row (see LOCAL_DRAIN_DRIVER_NAME in agents/task_dispatch.py).
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_driver_name"] = kwargs.get("heartbeat_driver_name")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "sys.argv", ["wake_driver", "--once", "--driver-name", "wake_driver_local_drain"]
+    )
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_driver_name"] == "wake_driver_local_drain"
+
+
+def test_main_once_driver_name_defaults_to_resident_name(monkeypatch):
+    # No --driver-name passed → tick gets the resident's own DRIVER_NAME, not
+    # None or an empty string, preserving prior behavior for the long-running
+    # driver's own smoke-test invocations of --once.
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_driver_name"] = kwargs.get("heartbeat_driver_name")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--once"])
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_driver_name"] == driver_heartbeat.DRIVER_NAME
+
+
+def test_main_wires_supabase_heartbeat_into_run(monkeypatch):
+    sentinel = object()
+    monkeypatch.setattr(wake_driver, "SupabaseHeartbeat", lambda **k: sentinel)
+    captured: dict[str, object] = {}
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["heartbeat_port"] = kwargs.get("heartbeat_port")
+
+    _wire_main(monkeypatch, run_impl=_capture_run)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_port"] is sentinel
 
 
 # --- AC-E (#1385): staged rollout — --dry-run / --no-task-drain -------------
@@ -1723,6 +2160,90 @@ def test_main_without_no_task_drain_still_builds_supabase_task_queue(monkeypatch
     assert wake_driver.main() == 0
     assert captured["task_port"] is sentinel_task_port
     assert client.closed == 1
+
+
+# --- AC8 (#1547): --notify-test install-time smoke check --------------------
+
+
+def _wire_main_notify_test(monkeypatch, *, resolve_notifier):
+    """Wire main() for --notify-test: block every heavy/live-side-effect builder.
+
+    Mirrors _wire_main_dry_run — --notify-test resolves through the registry
+    and calls the resolved notifier once, but must never build the psycopg
+    event queue, SupabaseTaskQueue, the GitHub evidence client, the Supabase
+    event client, or the production orchestrator.
+    """
+
+    def _forbidden(name):
+        def _raise(*a, **k):
+            raise AssertionError(f"{name} must not be called under --notify-test")
+
+        return _raise
+
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--notify-test"])
+    monkeypatch.setattr(wake_driver, "_configure_logging", lambda: None)
+    monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
+    monkeypatch.setattr("agents.notify.resolve_notifier", resolve_notifier)
+    monkeypatch.setattr(wake_driver, "_build_psycopg_queue", _forbidden("_build_psycopg_queue"))
+    monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", _forbidden("SupabaseTaskQueue"))
+    monkeypatch.setattr(
+        "agents.github_client.default_github_client", _forbidden("default_github_client")
+    )
+    monkeypatch.setattr("agents.supabase_client.get_client", _forbidden("get_client"))
+    monkeypatch.setattr(
+        "agents.orchestrator.build_production_orchestrator",
+        _forbidden("build_production_orchestrator"),
+    )
+    monkeypatch.setattr(wake_driver, "run", _forbidden("run"))
+    monkeypatch.setattr(wake_driver, "tick", _forbidden("tick"))
+
+
+def test_notify_test_flag_resolves_transport_and_returns_zero_on_success(monkeypatch, capsys):
+    calls = []
+
+    def _fake_notifier(decision):
+        calls.append(decision)
+        return True
+
+    def _fake_resolve_notifier(env):
+        return "none", _fake_notifier
+
+    _wire_main_notify_test(monkeypatch, resolve_notifier=_fake_resolve_notifier)
+
+    assert wake_driver.main() == 0
+    assert len(calls) == 1
+    assert calls[0].event_type == "notify_test"
+
+    captured = capsys.readouterr()
+    assert "transport=none" in captured.out
+
+
+def test_notify_test_flag_returns_one_when_notifier_reports_failure(monkeypatch, capsys):
+    def _fake_resolve_notifier(env):
+        return "apprise", lambda decision: False
+
+    _wire_main_notify_test(monkeypatch, resolve_notifier=_fake_resolve_notifier)
+
+    assert wake_driver.main() == 1
+
+    captured = capsys.readouterr()
+    assert "transport=apprise" in captured.out
+
+
+def test_notify_test_flag_resolves_via_process_environ(monkeypatch, capsys):
+    # No explicit env threaded through argparse — resolve_notifier must see
+    # the real process environment (main()'s job is to pass os.environ in).
+    seen_env = {}
+
+    def _fake_resolve_notifier(env):
+        seen_env.update(env)
+        return "none", lambda decision: True
+
+    monkeypatch.setenv("NOTIFY_TRANSPORT", "none")
+    _wire_main_notify_test(monkeypatch, resolve_notifier=_fake_resolve_notifier)
+
+    assert wake_driver.main() == 0
+    assert seen_env.get("NOTIFY_TRANSPORT") == "none"
 
 
 # --- boot-time reliability: file logging + startup retry --------------------

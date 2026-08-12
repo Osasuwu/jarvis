@@ -128,9 +128,10 @@ groups:
         # every user's ~/.claude/. Update when adding/removing a core skill.
         include:
           # Shared reference material consumed by other skills (e.g. _shared/tdd/
-          # is read by /implement and /delegate in TDD-mode). Not a skill itself.
+          # is read by /implement, /task-implement, and /dispatch in TDD-mode).
+          # Not a skill itself.
           - "_shared"
-          - "delegate"
+          - "dispatch"
           - "end"
           - "file-issue"
           - "goals"
@@ -144,6 +145,7 @@ groups:
           - "setup-tasks"
           - "status"
           - "status-record"
+          - "task-implement"
           - "verify"
           # AI Hero skills (Matt Pocock — github.com/mattpocock/skills, MIT).
           # See .claude-userlevel/skills/AIHERO_CREDIT.md for attribution + adaptations.

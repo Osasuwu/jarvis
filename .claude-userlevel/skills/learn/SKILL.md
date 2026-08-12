@@ -8,33 +8,46 @@ effort: high
 # /learn — memory review queue drain
 
 Drains `memory_review_list` in f2 order (merges → candidates → classifier).
-This slice exercises only the **classifier** branch; merges and candidates
-are counted but rendered as no-op.
+Both the **classifier** and **candidate** branches are drained and rendered
+for owner action (#1556 AC5) — this is where Deriver output lands, including
+`scope:owner-self` rows (source_provenance `deriver:<session_id>` never
+matches `classifier:%`, so `memory_review_list` always routes it to the
+`candidate` queue, never `classifier`). Merge proposals are still counted
+but rendered as no-op — no merge-proposal producer exists yet.
 
 ## Quick start
 
 ```
-/learn                     # drain pending classifier queue (cap 20)
+/learn                     # drain pending candidate + classifier queues (cap 20 combined)
 /learn --status            # peek at pending counts, no mutations
 ```
 
 ## How it works
 
-1. **Fetch** — call `memory_review_list(queue='classifier')` to get up to
-   20 pending classifier-provenance rows from `memories`.
+1. **Fetch** — call `memory_review_list(queue='candidate')` then
+   `memory_review_list(queue='classifier')` (candidates first, f2 order).
+   Concatenate the two result lists and take the first 20 rows — that
+   combined list of ≤20 is what gets processed this run (see Safety
+   rules → Hard cap). Rows past the 20th, in either queue, stay pending
+   for the next run.
 
 2. **Render** — for each row, call the renderer module to produce a
    display block. Classifier UPDATE rows show a before/after diff of the
-   target memory (context fetched by name). ADD / DELETE / NOOP show a
-   compact card.
+   target memory (context fetched by name). Classifier ADD / DELETE / NOOP
+   and all candidate rows (including Deriver `scope:owner-self` feedback)
+   show a compact card — `render_proposal` already branches on
+   `source_provenance` to pick the right label, no extra wiring needed.
 
 3. **Present + act** — show each row to the owner, prompt for action:
 
-   - `approve` — calls `memory_review_decide(action='approve')`,
-     removes the row from the review queue.
-   - `reject` — calls `memory_review_decide(action='reject_classifier')`
-     with the owner's free-text reject reason.
-   - `skip` — leave row pending, move to next.
+   - **Classifier rows**: `approve` → `memory_review_decide(action='approve')`;
+     `reject` → `memory_review_decide(action='reject_classifier', reject_reason=...)`.
+   - **Candidate rows** (Deriver output, `scope:owner-self` included):
+     `accept` → `memory_review_decide(action='accept')`; `reject` →
+     `memory_review_decide(action='reject', reject_reason=...)`. These are
+     the queue-agnostic actions in `memory_review_decide` — no
+     classifier-specific machinery applies to candidates.
+   - `skip` (either queue) — leave row pending, move to next.
 
 4. **Finalize** — in order:
 
@@ -54,8 +67,9 @@ are counted but rendered as no-op.
       {
         accepted: N,
         rejected: N,
-        merged: 0,          # reserved for future slices
+        merged: 0,          # reserved for future slices (no producer yet)
         classifier_drained: N,
+        candidates_drained: N,
         top_reject_reasons: ["..."],
         pending_remaining: N,
         duration_s: N
@@ -72,16 +86,16 @@ Prints per-queue pending counts from `memory_review_list` without
 mutating any row:
 
 - Pending classifier items
-- Pending candidates (future)
-- Pending merge proposals (future)
+- Pending candidates (drained since #1556 — includes Deriver `scope:owner-self` rows)
+- Pending merge proposals (future — no producer yet)
 
 No interactions, no writes, no `outcome_record`.
 
 ## Safety rules
 
-- **Hard cap**: process at most 20 rows per `/learn` run (the
-  `limit_count` parameter of `memory_review_list`). Remaining rows stay
-  pending for the next run.
+- **Hard cap**: process at most 20 rows per `/learn` run, combined across
+  the candidate and classifier queues (candidates first — see Fetch
+  step). Remaining rows, in either queue, stay pending for the next run.
 - **Fail-stop**: if `memory_review_decide` errors mid-run, stop
   immediately and report the error. Already-processed rows are committed;
   the remaining rows stay pending.

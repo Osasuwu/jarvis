@@ -960,6 +960,46 @@ class TestClosingRefAdvisory:
             "rework-shape must not reach the fresh-path advisory"
         )
 
+    def test_advisory_uses_issue_number_column_when_goal_names_none(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """#1085 S1-5: goal text names no issue, but the claimed row's real
+        issue_number column does — the advisory still fires off the column."""
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = self._fresh_pr("Refs #1136 — partial work.")
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            _compute_pr_evidence(
+                "abc123",
+                "refactor the usage probe module",  # names no issue in text
+                spawned_at,
+                client=client,
+                issue_number=1136,
+            )
+        assert any(self._WARN_TOKEN in r.message for r in caplog.records), (
+            "expected the advisory to use the issue_number column when goal text has none"
+        )
+
+    def test_advisory_column_disagreeing_with_goal_text_wins(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """#1085 S1-5: goal text names a different issue than the column —
+        the column (the real claimed-row value) wins."""
+        spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = self._fresh_pr("Closes #1136")
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            _compute_pr_evidence(
+                "abc123",
+                "implement the guard for #999",  # disagreeing goal text
+                spawned_at,
+                client=client,
+                issue_number=1136,
+            )
+        assert not any(self._WARN_TOKEN in r.message for r in caplog.records), (
+            "a Closes #1136 body must not trigger the advisory when the column says 1136"
+        )
+
 
 # =============================================================================
 # AC6: Orchestrator Routing Table — task_done / task_failed Combinations
@@ -1575,6 +1615,46 @@ class TestEventEmission:
         assert emitted[0]["payload"]["pr_evidence"] is None
         # No branch lookup happened — the None short-circuit precedes the query.
         client.get_pull_by_head_branch.assert_not_called()
+
+    def test_tracked_proc_issue_number_column_drives_closing_ref_advisory(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """#1085 S1-5: a claimed row's real issue_number column, carried on
+        TrackedProc, drives the closing-ref advisory — not the goal text's
+        (disagreeing) parsed issue number. The PR body closes the column's
+        issue (1136); if the goal-text #999 were used instead, the advisory
+        would wrongly fire (the body never closes #999)."""
+        emitted: list[dict[str, Any]] = []
+        procs = {
+            "t123": TrackedProc(
+                proc=_FakeProc(0),
+                started_at=0.0,
+                goal="implement feature X (relates to #999)",
+                idempotency_key="t123",
+                spawned_at=datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC),
+                issue_number=1136,
+            )
+        }
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = {
+            "number": 42,
+            "created_at": "2026-06-21T10:30:00Z",
+            "body": "Closes #1136",
+        }
+
+        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+            result = poll_completions(
+                _RecordingPort([]),
+                procs,
+                event_emit=_recording_emit([], emitted),
+                evidence_client=client,
+            )
+
+        assert result.done == 1
+        assert not any("pr_closing_ref_missing" in r.message for r in caplog.records), (
+            "a body closing TrackedProc.issue_number (1136) must not trigger the advisory, "
+            "even though the goal text names a different issue (#999)"
+        )
 
 
 # =============================================================================

@@ -110,7 +110,7 @@ Non-overlapping by design (#711 relaxed the earlier Ollama-VRAM constraint).
 |---|---|---|
 | `Quota-Probe` | Daily (repeating) | Every 30 min |
 
-Polls `claude -p "/usage"`, broadcasts `CLAUDE_QUOTA_PRESSURE` repo variable with hysteresis (trip ≥80%, release <70%), writes `quota_pressure` events for telegram escalation (#327).
+Polls `claude -p "/usage"`, broadcasts `CLAUDE_QUOTA_PRESSURE` repo variable with hysteresis (trip ≥80%, release <70%), writes `quota_pressure` events; the reactive-core orchestrator has no enumerated route for them, so they fail-safe-ESCALATE to the owner via Telegram (the standalone #327 drain hook was retired, #1139).
 
 **Prerequisite:** `.sandcastle/.env` carries `SUPABASE_URL` + `SUPABASE_KEY` (read via `-DotEnvPath`, default `.sandcastle/.env`).
 
