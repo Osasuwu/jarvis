@@ -3,7 +3,7 @@
 Pull-only. Not `@import`ed by anything — read it when adding, renaming, or repointing a
 blocking workflow under `.github/workflows/` that carries a `paths:` filter. Moved out of
 `CLAUDE.md` by [#1418](https://github.com/Osasuwu/jarvis/issues/1418); the one-line convention
-stays there, the reasoning lives here.
+lives in [`.claude/rules/path-filtered-ci-guards-meta-test.md`](../../.claude/rules/path-filtered-ci-guards-meta-test.md), the reasoning lives here.
 
 ## The convention
 

@@ -2,6 +2,7 @@
 paths:
   - ".github/workflows/**"
   - "tests/ci/**"
+  - "tests/install/**"
   - "scripts/**"
 ---
 
