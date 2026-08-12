@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 # --
 from deriver.pipeline import (
     derive_from_session,
+    derive_owner_self_pass,
     _build_row,
     _validate_candidate,
     _parse_json_response,
@@ -802,3 +803,160 @@ def test_pipeline_shape_enforces_scrub_before_insert(tmp_path: Path):
     # The raw OpenAI key format (sk- + 20+ alnum) should be scrubbed.
     assert "sk-AbCdEfGhIjKlMnOpQrStUvWxYz123456" not in row["content"]
     assert "<<REDACTED:api_key_openai>>" in row["content"]
+
+
+# ---------------------------------------------------------------------------
+# Owner-self-reflection pass (#1556)
+# ---------------------------------------------------------------------------
+
+
+def test_derive_owner_self_pass_forces_scope_tag_and_feedback_type(tmp_path: Path):
+    """Extracted rows carry scope:owner-self and type=feedback regardless of
+    what the LLM returns — forced in code, not trusted from LLM output."""
+    buffer_dir = tmp_path / ".deriver-buffer"
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _user_turn("I keep cherry-picking wins and ignoring the failures."),
+            _asst_turn("Noted."),
+        ],
+    )
+
+    # LLM deliberately returns the wrong type/tags — the pass must override.
+    candidates = [
+        {
+            "type": "user",
+            "name": "cherry-picking-pattern",
+            "description": "Owner cherry-picks wins",
+            "content": "Owner tends to highlight successes and downplay failures during review.",
+            "tags": ["unrelated-tag"],
+        },
+    ]
+    llm_fn = _make_llm(candidates)
+    insert_fn, captured = _make_fake_insert()
+
+    result = derive_owner_self_pass(
+        SESSION_ID,
+        project_hash=PROJECT_HASH,
+        llm_fn=llm_fn,
+        insert_fn=insert_fn,
+        buffer_root=buffer_dir,
+    )
+
+    assert len(result) == 1
+    row = captured[0]
+    assert row["type"] == "feedback"
+    assert "scope:owner-self" in row["tags"]
+    assert row["requires_review"] is True
+    assert row["source_provenance"] == f"deriver:{SESSION_ID}"
+
+
+def test_derive_owner_self_pass_surfaces_robot_day_2026_07_26_shaped_content(tmp_path: Path):
+    """Synthetic multi-turn regression fixture (robot-day-2026-07-26-shaped,
+    ``smoke_synthetic.py`` pattern — see ``deriver/smoke_owner_self.py`` for
+    the live-model counterpart).
+
+    The transcript below is built around the four target classes from the
+    real (unrecoverable) 2026-07-26 session: cherry-picking wins, a
+    rehearsal that did not go as planned, an owner competence assessment,
+    and a broad "nothing went to plan" retrospective. None of this is a
+    reaction to something Jarvis just did, so it is exactly the content
+    ``comm_patterns``' reactive, pair-structured rubric has no slot for —
+    confirmed below by checking none of its ``VALID_LABELS`` fit.
+    """
+    from comm_patterns.classifier import VALID_LABELS
+
+    assert VALID_LABELS == {
+        "correction_wrong_direction",
+        "correction_incomplete",
+        "affirmation",
+        "affirmation_with_redirect",
+        "preference_directive",
+        "meta_protocol",
+    }, "comm_patterns' rubric changed shape — re-check it still has no owner-self slot"
+
+    buffer_dir = tmp_path / ".deriver-buffer"
+    _write_buffer(
+        buffer_dir,
+        PROJECT_HASH,
+        SESSION_ID,
+        [
+            _user_turn(
+                "Looking back at today, I keep cherry-picking the wins for "
+                "the status update and glossing over what failed."
+            ),
+            _asst_turn("Want that reflected in the report?"),
+            _user_turn(
+                "No, just flagging it. The rehearsal run this morning did "
+                "not go anywhere near as planned either — I skipped half "
+                "the checklist because I was rushing."
+            ),
+            _asst_turn("Understood."),
+            _user_turn(
+                "Honestly I don't think I'm that good at estimating how "
+                "long this kind of setup takes."
+            ),
+            _asst_turn("Ack."),
+            _user_turn("Basically nothing went to plan today."),
+        ],
+    )
+
+    candidates = [
+        {
+            "name": "cherry-picks-wins-downplays-failures",
+            "description": "Owner cherry-picks wins in status updates",
+            "content": (
+                "Owner tends to highlight successes and downplay failures "
+                "when summarising a day's work."
+            ),
+            "tags": ["cherry-picking"],
+        },
+        {
+            "name": "rehearsal-run-skipped-checklist",
+            "description": "Rehearsal did not go as planned",
+            "content": (
+                "A rehearsal run skipped half the checklist due to rushing, "
+                "diverging from the planned procedure."
+            ),
+            "tags": ["rehearsal-failure"],
+        },
+        {
+            "name": "self-assessed-weak-time-estimation",
+            "description": "Owner competence self-assessment",
+            "content": "Owner assesses their own time-estimation skill as weak for this task class.",
+            "tags": ["competence"],
+        },
+        {
+            "name": "nothing-went-to-plan-today",
+            "description": "Broad retrospective: day did not go to plan",
+            "content": "Owner's overall retrospective on the day is that nothing went to plan.",
+            "tags": ["retrospective"],
+        },
+    ]
+    llm_fn = _make_llm(candidates)
+    insert_fn, captured = _make_fake_insert()
+
+    result = derive_owner_self_pass(
+        SESSION_ID,
+        project_hash=PROJECT_HASH,
+        llm_fn=llm_fn,
+        insert_fn=insert_fn,
+        buffer_root=buffer_dir,
+    )
+
+    assert len(result) == 4
+    assert len(captured) == 4
+    for row in captured:
+        assert row["type"] == "feedback"
+        assert "scope:owner-self" in row["tags"]
+        assert row["requires_review"] is True
+
+    surfaced_themes = {tag for row in captured for tag in row["tags"]}
+    assert surfaced_themes >= {
+        "cherry-picking",
+        "rehearsal-failure",
+        "competence",
+        "retrospective",
+    }
