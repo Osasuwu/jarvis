@@ -241,17 +241,24 @@ def _tree_kill(pid: int) -> None:
             pass
 
 
-def _run_uv_sync(env_dir: Path, log_path: Path, timeout: int) -> int:
-    """Run `uv sync` in the given project directory (#1313).
+def _run_uv_sync(env_dir: Path, venv_python: Path, log_path: Path, timeout: int) -> int:
+    """Run `uv sync` in the given project directory, targeting the tracked venv (#1313, #1538).
 
-    Returns subprocess return code.
+    `uv sync --project <dir>` has no flag to redirect its target venv — left
+    alone it manages `<dir>/.venv`, not the shared venv the rest of the
+    codebase (and the post-heal probe below) actually uses. The only override
+    is the UV_PROJECT_ENVIRONMENT env var (astral-sh/uv#20060 confirms there's
+    still no equivalent CLI flag), pointed at venv_python's venv root.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    sync_env = dict(os.environ)
+    sync_env["UV_PROJECT_ENVIRONMENT"] = str(venv_python.parent.parent)
     with open(log_path, "ab") as logf:
         logf.write(f"\n--- env-sync heal (uv sync) {time.time()} ---\n".encode("utf-8"))
         proc = subprocess.Popen(
             ["uv", "sync", "--project", str(env_dir)],
             cwd=str(env_dir),
+            env=sync_env,
             stdout=logf,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
@@ -301,7 +308,7 @@ def heal(env: ManagedEnv, timeout: int = DEFAULT_HEAL_TIMEOUT) -> HealResult:
             use_uv = env.lockfile and env.lockfile.exists()
             if use_uv:
                 env_project_dir = env.lockfile.parent
-                rc = _run_uv_sync(env_project_dir, log_path, timeout)
+                rc = _run_uv_sync(env_project_dir, env.venv_python, log_path, timeout)
                 install_method = "uv_sync"
             else:
                 rc = _run_pip_install(env.venv_python, env.manifest, log_path, timeout)
