@@ -138,6 +138,17 @@ def scan_messages(
 
 def _get_supabase_client():  # pragma: no cover — covered by smoke
     """Lazy import so unit tests don't pay supabase startup cost."""
+    _root = Path(__file__).resolve().parent.parent.parent
+    try:
+        from dotenv import load_dotenv
+
+        for _env in [_root / ".env", _root.parent / ".env"]:
+            if _env.exists():
+                load_dotenv(_env, override=True)
+                break
+    except Exception:
+        pass
+
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     if not url or not key:
