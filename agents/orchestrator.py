@@ -307,6 +307,14 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         )
 
     # 2. Enumerated deterministic routes (AC1).
+    if (event_type, severity) == ("mcp_write_scrubber_disabled", "high"):
+        return _escalate(
+            event_type,
+            severity,
+            target,
+            key,
+            reason="write scrubber gate disabled — owner review required",
+        )
     if (event_type, severity) == ("ci_failure", "high"):
         return _emit(
             event_type,
