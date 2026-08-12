@@ -23,6 +23,7 @@ from agents.driver_heartbeat import HeartbeatStatus
 from agents.task_dispatch import (
     DEFAULT_ASSIGNEE,
     DEFAULT_CONCURRENCY_CAP,
+    LOCAL_DRAIN_DRIVER_NAME,
     DrainResult,
     SupabaseTaskQueue,
     TaskQueuePort,
@@ -1950,11 +1951,31 @@ class TestLocalDrainProductionAdapters:
 
         default_local_drain_once()
 
-        assert captured["argv"] == [sys.executable, "-m", "agents.wake_driver", "--once"]
+        assert captured["argv"] == [
+            sys.executable,
+            "-m",
+            "agents.wake_driver",
+            "--once",
+            "--driver-name",
+            td.LOCAL_DRAIN_DRIVER_NAME,
+        ]
         # No cap-override flag/env — DEFAULT_CONCURRENCY_CAP (read inside the
         # child process's own drain_tasks call) is the only concurrency limit.
         assert "--concurrency" not in captured["argv"]
         assert "env" not in captured["kwargs"]
+
+    def test_local_drain_driver_name_distinct_from_resident(self) -> None:
+        """Regression guard for the review-flagged self-collision bug.
+
+        If ``default_local_drain_once``'s subprocess ever stamps its ticks
+        under the resident driver's own heartbeat identity again,
+        ``local_drain_until_terminal``'s heartbeat re-check would read back
+        its own just-written tick and conclude the resident had recovered —
+        exiting after exactly one iteration regardless of pending rows.
+        """
+        from agents.driver_heartbeat import DRIVER_NAME
+
+        assert LOCAL_DRAIN_DRIVER_NAME != DRIVER_NAME
 
     def test_default_get_task_statuses_delegates_to_task_queue(self, monkeypatch: Any) -> None:
         import agents.task_dispatch as td

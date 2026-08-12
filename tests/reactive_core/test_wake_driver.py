@@ -1932,6 +1932,63 @@ def test_main_once_wires_supabase_heartbeat_into_tick(monkeypatch):
     assert captured["heartbeat_port"] is sentinel
 
 
+def test_main_once_driver_name_flag_threads_into_tick(monkeypatch):
+    # #1085 S3 review fix: --driver-name must reach tick's heartbeat_driver_name
+    # kwarg, not just parse — this is how local_drain_until_terminal's own
+    # ``wake_driver --once`` ticks avoid colliding with the resident driver's
+    # heartbeat row (see LOCAL_DRAIN_DRIVER_NAME in agents/task_dispatch.py).
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_driver_name"] = kwargs.get("heartbeat_driver_name")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr(
+        "sys.argv", ["wake_driver", "--once", "--driver-name", "wake_driver_local_drain"]
+    )
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_driver_name"] == "wake_driver_local_drain"
+
+
+def test_main_once_driver_name_defaults_to_resident_name(monkeypatch):
+    # No --driver-name passed → tick gets the resident's own DRIVER_NAME, not
+    # None or an empty string, preserving prior behavior for the long-running
+    # driver's own smoke-test invocations of --once.
+    captured: dict[str, object] = {}
+    tick_result = types.SimpleNamespace(
+        reclaimed=0,
+        processed=0,
+        requeued=0,
+        tasks_reclaimed=0,
+        tasks_reaped=0,
+        tasks_spawned=0,
+        tasks_failed=0,
+    )
+
+    def _capture_tick(queue, orchestrator, **kwargs):
+        captured["heartbeat_driver_name"] = kwargs.get("heartbeat_driver_name")
+        return tick_result
+
+    _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--once"])
+    monkeypatch.setattr(wake_driver, "tick", _capture_tick)
+
+    assert wake_driver.main() == 0
+    assert captured["heartbeat_driver_name"] == driver_heartbeat.DRIVER_NAME
+
+
 def test_main_wires_supabase_heartbeat_into_run(monkeypatch):
     sentinel = object()
     monkeypatch.setattr(wake_driver, "SupabaseHeartbeat", lambda **k: sentinel)

@@ -118,6 +118,14 @@ DEFAULT_LOCAL_DRAIN_POLL_SECONDS = 2.0
 # the call site if a real drain run needs longer.
 DEFAULT_LOCAL_DRAIN_MAX_ITERATIONS = 150
 
+# #1085 S3 review fix: local-drain's own subprocess ticks must stamp a heartbeat
+# identity distinct from the resident driver's "wake_driver" (driver_heartbeat.DRIVER_NAME).
+# default_local_drain_heartbeat_check() reads the resident's row to decide "has it
+# recovered, should I stop looping?" — if the local-drain subprocess wrote to that
+# same row, the very next re-check would read back its own fresh timestamp and
+# conclude the resident had recovered, exiting after exactly one iteration.
+LOCAL_DRAIN_DRIVER_NAME = "wake_driver_local_drain"
+
 # Spawn a task's goal, fire-and-forget. Raises on a hard launch failure (AC7b).
 # Called as ``spawn(goal, task_id=<id>)`` — the executor needs the id to write
 # the per-task stdout JSON the #953 AC3 evidence channel reads, so the contract
@@ -1959,9 +1967,21 @@ def default_local_drain_once() -> None:
     A fresh process per tick, same as the resident driver's own ticks — no cap
     override flag or env var is passed here, so ``DEFAULT_CONCURRENCY_CAP``
     (read inside the child process) is the only concurrency limit in play.
+
+    Passes ``--driver-name`` set to :data:`LOCAL_DRAIN_DRIVER_NAME`, distinct
+    from the resident driver's ``DRIVER_NAME`` — see that constant's comment
+    for why a shared name would make :func:`local_drain_until_terminal` exit
+    after its first iteration regardless of remaining pending rows.
     """
     subprocess.run(
-        [sys.executable, "-m", "agents.wake_driver", "--once"],
+        [
+            sys.executable,
+            "-m",
+            "agents.wake_driver",
+            "--once",
+            "--driver-name",
+            LOCAL_DRAIN_DRIVER_NAME,
+        ],
         cwd=_REPO_ROOT,
         check=False,
     )

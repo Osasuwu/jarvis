@@ -410,6 +410,7 @@ def tick(
     *,
     stale_after_seconds: float,
     heartbeat_port: HeartbeatPort | None = None,
+    heartbeat_driver_name: str = DRIVER_NAME,
     poller_port: PollerPort | None = None,
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
@@ -500,7 +501,7 @@ def tick(
     # a failure here must never block the event drain below.
     if heartbeat_port is not None:
         try:
-            heartbeat_port.record_tick(DRIVER_NAME)
+            heartbeat_port.record_tick(heartbeat_driver_name)
         except Exception:  # noqa: BLE001 — heartbeat outage must not block event drain
             logger.exception("[wake_driver] heartbeat write failed; retried next tick")
 
@@ -1103,6 +1104,18 @@ def main() -> int:
             "Permanent flag, not temporary rollout scaffolding."
         ),
     )
+    parser.add_argument(
+        "--driver-name",
+        default=DRIVER_NAME,
+        help=(
+            "Heartbeat identity to stamp this tick under (default: "
+            f"'{DRIVER_NAME}', the resident driver's own name). A local-drain "
+            "fallback (#1085 S3-2) passes a distinct value here so its own "
+            "one-shot ticks don't masquerade as resident-driver liveness — "
+            "otherwise local_drain_until_terminal's heartbeat re-check reads "
+            "back the tick it just caused and exits after one iteration."
+        ),
+    )
     args = parser.parse_args()
 
     if args.dry_run:
@@ -1175,6 +1188,7 @@ def main() -> int:
                 orchestrator,
                 stale_after_seconds=args.watchdog_seconds,
                 heartbeat_port=SupabaseHeartbeat(client=event_client),
+                heartbeat_driver_name=args.driver_name,
                 task_port=task_port,
                 poller_port=queue,
             )
