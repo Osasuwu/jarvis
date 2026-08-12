@@ -74,6 +74,31 @@ def _sanitize(text: str) -> str:
     return _URL_RE.sub("<redacted-url>", text)
 
 
+# The raw NOTIFY_TRANSPORT value itself needs a stricter guard than _sanitize:
+# it is meant to hold one of a handful of short selector shapes ("telegram",
+# "apprise", a "pkg.mod:fn" dotted path), never a secret — but a misconfigured
+# operator can paste a token in by mistake, and tokens come in more shapes
+# than "URL" (e.g. a Telegram bot token is `<digits>:<opaque>`, no scheme).
+# Blacklisting each secret shape as it's discovered is a losing chase
+# (#1547 review rounds 2 and 3 both found a shape _sanitize's URL regex
+# missed) — allowlist the two shapes NOTIFY_TRANSPORT can legitimately take
+# instead, and redact by shape (never by content) anything else.
+_DOTTED_PATH_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
+_BARE_WORD_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+
+
+def _describe_transport_value(raw: str) -> str:
+    """Render NOTIFY_TRANSPORT for a misconfig reason without risking a secret.
+
+    Only the shapes a valid selector can legitimately take — a bare word or a
+    ``pkg.mod:fn`` dotted path — are echoed verbatim; anything else is
+    described by shape (length only), never by content.
+    """
+    if _DOTTED_PATH_RE.match(raw) or _BARE_WORD_RE.match(raw):
+        return repr(_sanitize(raw))
+    return f"<redacted, {len(raw)} chars, not a recognized transport-value shape>"
+
+
 def _format_message(decision: "Decision") -> str:
     lines = [
         f"[{decision.severity.upper()}] {decision.event_type}",
@@ -255,10 +280,10 @@ def resolve_notifier(env: Mapping[str, str]) -> tuple[str, NotifierFn]:
                 raise TypeError(f"{fn_name!r} is not callable")
         except Exception as exc:
             return _misconfig(
-                f"dotted-path transport {_sanitize(raw)!r} failed to import: "
+                f"dotted-path transport {_describe_transport_value(raw)} failed to import: "
                 f"{type(exc).__name__}: {_sanitize(str(exc))}"
             )
         _log_resolved(raw)
         return raw, fn
 
-    return _misconfig(f"unrecognized NOTIFY_TRANSPORT value {_sanitize(raw)!r}")
+    return _misconfig(f"unrecognized NOTIFY_TRANSPORT value {_describe_transport_value(raw)}")

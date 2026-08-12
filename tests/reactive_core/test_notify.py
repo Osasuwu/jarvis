@@ -207,16 +207,30 @@ def test_resolve_notifier_unrecognized_value_is_loud_misconfig(monkeypatch, capl
     assert any(rec.levelname == "ERROR" and "sdfsdf" in rec.message for rec in caplog.records)
 
 
-def test_resolve_notifier_url_shaped_transport_sanitizes_before_persisting(monkeypatch, caplog):
-    """#1553 review: NOTIFY_TRANSPORT itself can be URL-shaped (a copy-pasted
-    apprise/webhook value in the wrong env var) — the raw value must never
-    reach the log or the Supabase task_queue row, only the sanitized form."""
+@pytest.mark.parametrize(
+    "raw",
+    [
+        # URL-shaped — a copy-pasted apprise/webhook value in the wrong env var.
+        "widget-transport://opaque-secret-looking-value/path",
+        # Colon-but-not-a-dotted-path — e.g. a Telegram bot token
+        # (`<digits>:<opaque>`) mistakenly set on NOTIFY_TRANSPORT instead of
+        # TELEGRAM_BOT_TOKEN (#1553 review round 3: _sanitize()'s URL-only
+        # regex missed this shape).
+        "123456789:not-a-real-token just a config typo",
+    ],
+)
+def test_resolve_notifier_secret_shaped_transport_never_persisted_verbatim(
+    raw, monkeypatch, caplog
+):
+    """#1553 review: whatever shape a pasted secret takes, NOTIFY_TRANSPORT's
+    raw value must never reach the log or the Supabase task_queue row —
+    only values shaped like a real transport selector are echoed verbatim,
+    everything else is redacted by shape (never by content)."""
     enqueue_calls = []
     monkeypatch.setattr(
         "agents.notify.task_queue.enqueue",
         lambda **kwargs: enqueue_calls.append(kwargs) or {"id": "row-1"},
     )
-    raw = "widget-transport://opaque-secret-looking-value/path"
     with caplog.at_level("ERROR", logger="agents.notify"):
         name, notifier = resolve_notifier({"NOTIFY_TRANSPORT": raw})
     assert name == "none"
@@ -224,8 +238,18 @@ def test_resolve_notifier_url_shaped_transport_sanitizes_before_persisting(monke
     assert len(enqueue_calls) == 1
     reason = enqueue_calls[0]["escalated_reason"]
     assert raw not in reason
-    assert "<redacted-url>" in reason
+    assert "not a recognized transport-value shape" in reason
     assert not any(raw in rec.message for rec in caplog.records)
+
+
+def test_resolve_notifier_dotted_path_value_is_echoed_verbatim(monkeypatch):
+    """A genuine dotted-path selector (module:function shape) is not a
+    secret — it must still be echoed verbatim in the misconfig reason so
+    the operator can see what they typed, even when import fails."""
+    monkeypatch.setattr("agents.notify.task_queue.enqueue", lambda **kwargs: {"id": "row-1"})
+    name, notifier = resolve_notifier({"NOTIFY_TRANSPORT": "no_such_pkg_xyz:fn"})
+    assert name == "none"
+    assert notifier(_decision()) is False
 
 
 def test_resolve_notifier_unset_with_no_telegram_creds_is_loud_misconfig(monkeypatch, caplog):
