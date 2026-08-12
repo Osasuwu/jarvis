@@ -351,7 +351,7 @@ class TestMainReupdateDetection:
                     "project": "jarvis",
                     "type": "decision",
                     "description": "Session decision notes",
-                    "similarity": 0.81,  # Above BLOCK_THRESHOLD but below REUPDATE_SIMILARITY_THRESHOLD (0.95)
+                    "similarity": 0.81,  # Above BLOCK_THRESHOLD (0.75) but below REUPDATE_SIMILARITY_THRESHOLD (0.95)
                     "tags": [],
                 }
             ],
@@ -390,7 +390,7 @@ class TestMainReupdateDetection:
                     "project": "jarvis",
                     "type": "decision",
                     "description": "Session decision notes",
-                    "similarity": 0.81,  # Above BLOCK_THRESHOLD (0.80)
+                    "similarity": 0.81,  # Above BLOCK_THRESHOLD (0.75)
                     "tags": [],
                 }
             ],
@@ -413,19 +413,24 @@ class TestMainReupdateDetection:
             monkeypatch,
             embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
         )
-        # 0.81 > 0.80 threshold, but not high enough for reupdate (0.95)
+        # 0.81 > 0.75 threshold, but not high enough for reupdate (0.95)
         # + names differ by >5 chars → block
         assert code == 2
         assert "Possible duplicate memory" in out
         assert "session_notes" in out
 
-    def test_boundary_threshold_0_80(self, monkeypatch):
-        """Verify BLOCK_THRESHOLD is 0.80 and passed to RPC call.
-        Similarity 0.79 should pass (above the dup threshold we're fixing).
-        Similarity 0.81 is caught at 0.80 threshold."""
+    def test_boundary_threshold_0_75(self, monkeypatch):
+        """Verify BLOCK_THRESHOLD is 0.75 and passed to RPC call.
+
+        #1098 proposed raising this to 0.80, reasoning that ~0.79 similarity
+        was a false-positive on legitimate distinct-but-related concepts. The
+        original calibration note (commit cfd10b39) documents the opposite:
+        ~0.79 is the near-verbatim-duplicate case the gate is meant to catch,
+        and ~0.54 is the legitimate-sibling case. No fresh evidence overrides
+        that, so the threshold stays at 0.75."""
         fake_client = _fake_client(
             existing_row=False,
-            rpc_rows=[],  # Simulating that RPC finds nothing at 0.80 threshold
+            rpc_rows=[],  # Simulating that RPC finds nothing at 0.75 threshold
         )
         monkeypatch.setattr(hook, "create_client", lambda *a, **k: fake_client)
         monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
@@ -446,13 +451,13 @@ class TestMainReupdateDetection:
             embed_fn=lambda *a, **k: [0.1, 0.2, 0.3],
         )
         # Verify threshold value
-        assert hook.BLOCK_THRESHOLD == 0.80
+        assert hook.BLOCK_THRESHOLD == 0.75
 
         # Verify RPC was called with correct threshold
         fake_client.rpc.assert_called_once()
         rpc_call_args = fake_client.rpc.call_args
         assert rpc_call_args[0][0] == "match_memories"
-        assert rpc_call_args[0][1]["similarity_threshold"] == 0.80
+        assert rpc_call_args[0][1]["similarity_threshold"] == 0.75
 
         # RPC returned empty → no candidates remain → allow()
         assert code == 0
