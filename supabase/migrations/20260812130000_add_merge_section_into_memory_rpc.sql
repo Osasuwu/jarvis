@@ -55,7 +55,15 @@ begin
   -- sandcastle:%-prefixed p_source_provenance while targeting someone
   -- else's row; the UPDATE statement never persists p_source_provenance,
   -- so checking only the incoming parameter never actually gated it).
-  if auth.role() = 'anon' and p_source_provenance not like 'sandcastle:%' then
+  --
+  -- NULL check is explicit for the same reason as the UPDATE-path guard
+  -- below (#1352 review round 5, finding #1): `NOT LIKE` evaluates to
+  -- NULL, not TRUE, when the operand is NULL, and plpgsql's `IF <NULL>`
+  -- is false — a caller passing p_source_provenance := NULL explicitly
+  -- (the default is non-null, but nothing prevents an explicit NULL
+  -- override) would otherwise skip this guard entirely.
+  if auth.role() = 'anon'
+     and (p_source_provenance is null or p_source_provenance not like 'sandcastle:%') then
     return query select false, null::uuid, 'forbidden: anon callers must use sandcastle:%-prefixed source_provenance'::text;
     return;
   end if;
@@ -81,7 +89,17 @@ begin
   -- knows a (project, name) pair belonging to a non-sandcastle row (e.g.
   -- a main-session working_state checkpoint) must not be able to
   -- overwrite it just by passing a sandcastle:%-prefixed p_source_provenance.
-  if v_id is not null and auth.role() = 'anon' and v_existing_source_provenance not like 'sandcastle:%' then
+  --
+  -- NULL check is explicit (#1352 review round 5, finding #1): `x NOT LIKE
+  -- 'sandcastle:%'` evaluates to NULL, not TRUE, when x IS NULL, and
+  -- plpgsql's `IF <NULL>` is treated as false — so a bare `NOT LIKE` check
+  -- silently skips the guard for any row with source_provenance IS NULL.
+  -- Per supabase/migrations/20260508120000_sandcastle_anon_rls_provenance_gate.sql,
+  -- NULL is an expected state on pre-existing rows, so this isn't a
+  -- contrived case: real RLS USING clauses fail closed on NULL, and this
+  -- hand-rolled equivalent must too.
+  if v_id is not null and auth.role() = 'anon'
+     and (v_existing_source_provenance is null or v_existing_source_provenance not like 'sandcastle:%') then
     return query select false, null::uuid, 'forbidden: anon callers may not modify a non-sandcastle-owned row'::text;
     return;
   end if;
