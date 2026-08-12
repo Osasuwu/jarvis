@@ -288,14 +288,18 @@ def _last_git_branch(entries: list[dict]) -> str:
 def _extract_prohibiting_rules(cwd: str | None) -> list[str]:
     """Extract prohibiting rules and standing orders from CLAUDE.md files.
 
-    Scans the project-level and user-level CLAUDE.md files (if they exist in or
-    above cwd) for lines containing explicit constraints, prohibitions, or
-    standing orders. These rules are extracted verbatim to survive LLM
-    summarization during compaction.
+    Scans for CLAUDE.md files in cwd and all parent directories up to the repo
+    root (identified by scanning path components), plus the user-level CLAUDE.md.
+    Extracts lines containing explicit constraints, prohibitions, or standing
+    orders. These rules are extracted verbatim to survive LLM summarization
+    during compaction.
 
     Returns a list of rule lines found, empty list if no CLAUDE.md files found.
     Rule extraction is best-effort — malformed or missing files are silently
     skipped. This ensures the hook never blocks compaction.
+
+    Mirrors _detect_project()'s component-scanning approach to handle worktrees
+    and subdirectories correctly (#1177/#1204).
     """
     rules: list[str] = []
     if not cwd:
@@ -303,13 +307,32 @@ def _extract_prohibiting_rules(cwd: str | None) -> list[str]:
 
     try:
         cwd_path = Path(cwd)
-        # ceiling: scan only up to 3 levels (repo root + user home); O(1) in practice
-        candidate_paths = [
-            cwd_path / "CLAUDE.md",  # repo-level
-            Path.home() / ".claude" / "CLAUDE.md",  # user-level
-        ]
+        # Scan path components upward (like _detect_project does) to find CLAUDE.md
+        # in cwd or any parent directory. This ensures worktree/subdirectory cwds
+        # resolve to the containing repo's CLAUDE.md.
+        candidate_paths: list[Path] = []
+        try:
+            parts = cwd_path.parts
+            # Walk from the full path up to the root, checking each level for CLAUDE.md
+            for i in range(len(parts), 0, -1):
+                candidate_paths.append(Path(*parts[:i]) / "CLAUDE.md")
+        except Exception:
+            pass
 
+        # Always check user-level CLAUDE.md
+        candidate_paths.append(Path.home() / ".claude" / "CLAUDE.md")
+
+        # Dedup and try each candidate (dedup preserves search order: cwd-first)
+        seen = set()
         for claude_file in candidate_paths:
+            try:
+                resolved = claude_file.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+            except (OSError, ValueError):
+                continue
+
             if not claude_file.exists():
                 continue
             try:

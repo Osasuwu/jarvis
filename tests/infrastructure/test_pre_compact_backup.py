@@ -73,7 +73,7 @@ def _assistant_text(ts: str, text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# _detect_project
+# _extract_prohibiting_rules
 # ---------------------------------------------------------------------------
 class TestExtractProhibitingRules:
     """Tests for _extract_prohibiting_rules (#1204 — compaction resilience)."""
@@ -148,7 +148,27 @@ Do not actually do this thing here.""",
         rules = pcb._extract_prohibiting_rules(None)
         assert rules == []
 
+    def test_worktree_cwd_resolves_to_containing_repo(self, tmp_path, monkeypatch):
+        # `<repo>/.claude/worktrees/<name>` — cwd is deep in the worktree;
+        # component scan must find CLAUDE.md in a parent directory (#1177/#1204).
+        repo_root = tmp_path / "jarvis"
+        repo_root.mkdir()
+        repo_claude = repo_root / "CLAUDE.md"
+        repo_claude.write_text("Never deploy on Fridays without testing.", encoding="utf-8")
 
+        # cwd is deep inside the repo (simulating a worktree nested path)
+        deep_cwd = repo_root / ".claude" / "worktrees" / "grill-1255" / "some" / "nested" / "path"
+        deep_cwd.mkdir(parents=True)
+
+        # Should still find the CLAUDE.md at the repo root by scanning path components
+        monkeypatch.setattr(pcb.Path, "home", lambda: tmp_path / "fake_home")
+        rules = pcb._extract_prohibiting_rules(str(deep_cwd))
+        assert any("Never deploy" in r for r in rules)
+
+
+# ---------------------------------------------------------------------------
+# _detect_project
+# ---------------------------------------------------------------------------
 class TestDetectProject:
     def test_known_project(self):
         # Forward-slash form works on both Windows and POSIX; raw backslash
