@@ -1345,6 +1345,29 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     if rpc_attempt >= max_rpc_retries - 1:
                         action = "error"
                     # Retry on exception too
+
+        # #658 contract: stored=True must be the unambiguous success signal.
+        # Conflict-exhaustion or an unhandled RPC exception means nothing was
+        # written — fail closed here instead of falling through to the shared
+        # response block below, which would otherwise emit stored=True with a
+        # null memory_id.
+        if action in ("conflict", "error"):
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "stored": False,
+                            "action": action,
+                            "memory_id": None,
+                            "message": (
+                                "Error (mode='merge_section'): write did not persist "
+                                f"(action={action}). No memory was stored — retry the call."
+                            ),
+                        }
+                    ),
+                )
+            ]
     elif project is not None:
         # Atomic upsert via unique constraint on (project, name) — no race condition
         result = client.table("memories").upsert(data, on_conflict="project,name").execute()
