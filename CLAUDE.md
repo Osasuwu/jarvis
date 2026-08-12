@@ -42,16 +42,13 @@ Non-negotiable for every decision in this repo. Not in memory — these are how 
 
 - **Recall before action.** Per user-level CLAUDE.md §1 *Recall before deciding* — required, not optional. Repo addition: if brief-mode recall surfaces an on-topic memory, `memory_get` it before building defaults from your own head.
 - **Verify before assuming implemented.** Never say "this is already done" without `grep` for the actual symbol, reading the code path end-to-end, and where feasible a test that would fail if the feature were missing. Tool-width Z was missing for a month because everyone assumed otherwise — one bad foundation invalidated a month of downstream work.
-- **No state in static storage.** State (% done, ✅/❌ markers, "shipped in PR #X", sprint dates, "last audit YYYY-MM-DD") belongs in GitHub Issues/Projects/PRs/commit history — NOT in markdown files, NOT in memory. Static storage may hold: evergreen lessons, decisions+rationale, reference info (API shapes, config locations), target architecture, pointers ("see #633 for current status"). If a field would be wrong in 2 weeks → GH, not here.
-- **Sibling-grep on fixes.** When a reviewer flags a bug in one helper/pattern, grep for sibling patterns across the whole file AND related files before declaring the fix done. A second-round review with the same class of finding = the first fix was partial. 30 seconds of grep beats a full CI cycle of rework.
 - **Skills are a contract, not a trigger.** `/implement`, `/grill`, `/end`, `/dispatch` are owed when the action matches the contract — not only when the principal types the magic word. After PR merge: explicit `/implement` for next slice or `/end`, not silent continuation. Repo not having local skill files is not an exemption — skills are global, canonical at `.claude-userlevel/skills/` and mirrored to `~/.claude/skills/`.
-- **Deliberate simplifications carry a `ceiling:` marker.** When you knowingly ship a shortcut with a known limit — global lock, O(n²) scan over a list assumed small, naive heuristic, hardcoded single-device path — leave an inline `ceiling:` comment naming *both* the limit and the upgrade path (`# ceiling: O(n²) over labels, fine <200; switch to a set-diff if a repo crosses that`). Not for ordinary "could be prettier" code — only for a corner cut against a limit you can name. This is the cheap end of «tech debt must be visible»: `grep -rn 'ceiling:'` is the debt list, so a shortcut no longer needs an issue to stay visible. Unnamed limit ⇒ you don't understand the shortcut well enough to ship it.
-- **Non-trivial logic leaves one runnable check.** Any change with real logic in it ships with at least one thing that fails if the logic breaks — the smallest such thing, not a suite: one test in the existing file, or an assert-based self-check. Trivial one-liners, renames and doc edits need nothing. This is the floor under drive-by fixes where full TDD is overkill; it does **not** relax the TDD requirement inside `/implement` and `/rework`, which stays as-is. A fix you can't leave a check behind for is itself a finding — flag it.
+
+Four write-scoped rules moved to `.claude/rules/` (path-gated, load only when a matching file is read — see #1274): no state in static storage → [`no-state-in-static-storage.md`](.claude/rules/no-state-in-static-storage.md); sibling-grep on fixes → [`sibling-grep-on-fixes.md`](.claude/rules/sibling-grep-on-fixes.md); `ceiling:` marker → [`ceiling-marker-required.md`](.claude/rules/ceiling-marker-required.md); one runnable check per non-trivial change → [`non-trivial-logic-runnable-check.md`](.claude/rules/non-trivial-logic-runnable-check.md).
 
 ## Project-specific rules
 
-- **Native-first priority, not a ban.** Before writing a custom script/service (any language), check skills/MCP/hooks/subagents first; if native covers it cleanly, use native. Custom code is permitted on merit — when the native solution is awkward or incomplete. (Relaxed 2026-05-20 from the prior near-prohibition; decision `d9be0390`.) Existing justified custom code: `mcp-memory/server.py`, `src/risk_radar.py`.
-- **Check native capabilities first**: Telegram → Channels; scheduling → `/loop` or scheduled tasks; background → desktop agents.
+Two more write-scoped rules moved to `.claude/rules/` (same rationale as above): native-first priority → [`native-first-priority.md`](.claude/rules/native-first-priority.md); check native capabilities first → [`check-native-capabilities-first.md`](.claude/rules/check-native-capabilities-first.md).
 
 ## Related projects
 
@@ -127,7 +124,7 @@ Boundary: **orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle sem
 
 User often leaves Jarvis to work alone. Core loop comes from §Engineering posture above + SOUL §Judgment calibration + SOUL §Goal & outcome awareness. "Aligned plans = standing orders" — when a multi-step plan was discussed and signed off, the alignment IS the approval; don't re-confirm at each checkpoint.
 
-Project-specific addition — **transform tasks into verifiable goals**: "Fix bug" → write failing test → make it pass. "Add validation" → tests for invalid inputs → make them pass. "Refactor X" → tests pass before and after.
+Project-specific addition — transform tasks into verifiable goals — moved to `.claude/rules/` (write-scoped, path-gated; see #1274): [`transform-tasks-into-verifiable-goals.md`](.claude/rules/transform-tasks-into-verifiable-goals.md).
 
 ## Development process
 
@@ -136,7 +133,7 @@ Project-specific addition — **transform tasks into verifiable goals**: "Fix bu
   - **Consolidation / batch PR** → the body carries a `Closes #N` line for **every** absorbed issue (absorbed = its entire scope ships here), not just the umbrella or the branch you happened to be on. Closing keywords in the PR body or in any commit message on the branch close the issue they name; plain prose without a real keyword does not — but a keyword+number pair spelled out literally anywhere, even inside an explanation of why it wasn't used, does. Mechanism, cross-repo and already-merged caveats, superseded-sibling carryover: [`docs/reference/pr-issue-linkage.md`](docs/reference/pr-issue-linkage.md).
   - Hotfix (`priority:critical`) / refactor (`refactor:` title prefix) / `[no-issue]` marker → the three bypasses of the linked-issue requirement, enumerated in user-level CLAUDE.md gate 3 `require-linked-issue`. Commit-msg still needs `[no-issue]` when there's no parent issue (`.pre-commit-config.yaml` regex, #329).
   - Design RFC / proposal / debate → **GitHub Discussions, not an issue and not a PR.** Approval = thread resolution by the task initiator (user if user-started; orchestrator/PM if agent-started). Stable post-decision artifacts may land in `docs/design/` via direct commit; no PR ceremony.
-  - Final decisions go to memory (`record_decision` / `memory_store`) — that is the queryable source of truth, not a markdown file.
+  - Decisions-to-memory rule moved to `.claude/rules/` (write-scoped, path-gated; see #1274): [`decisions-to-memory-not-markdown.md`](.claude/rules/decisions-to-memory-not-markdown.md).
 - Check the Claude code-review comment before merging — it posts as an **issue-comment**, not a PR review, so check all reviewer surfaces. Copilot is no longer used (plan lapsed, decision 2026-05-22).
 
 ### Architecture sweep at milestone close
@@ -162,9 +159,7 @@ Trivial, reversible, scope-obvious change (<30 min, own repo): **fix inline**. D
 
 The `Fix > track` rule does **not** override the rest of the development process — fixes still go through PR review, with the `[no-issue]` commit-msg marker above.
 
-### Path-filtered CI guards require a meta-test (#326)
-
-Enforced mechanically by [`tests/ci/test_guard_test_convention.py`](tests/ci/test_guard_test_convention.py) — it fails the PR, so you don't need this rule in your head. It cannot check the **logic** half (the decision rule blocks/allows what it claims); that's on you. Naming, scope and the #289/#310/#311 precedent: [`docs/reference/ci-guard-meta-tests.md`](docs/reference/ci-guard-meta-tests.md).
+Path-filtered CI guards require a meta-test (#326) — moved to `.claude/rules/` (write-scoped to CI/guard files, path-gated; see #1274): [`path-filtered-ci-guards-meta-test.md`](.claude/rules/path-filtered-ci-guards-meta-test.md).
 
 ### Milestone vs pillar hygiene
 

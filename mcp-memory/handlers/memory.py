@@ -998,12 +998,119 @@ async def _expand_with_links(
         return []
 
 
+def _parse_markdown_sections(content: str) -> dict[str, tuple[int, int]]:
+    r"""Parse markdown document into sections keyed by header text.
+
+    Returns dict: {header_text: (start_line, end_line_exclusive)}.
+    Sections are delimited by markdown headers (##, ###, ####, etc.).
+    Content is split by lines; indices are line numbers.
+
+    Sections must match pattern: ^#{2,4} \[<marker>\] — any bracketed marker
+    (e.g. [entry], [evicted], or a caller-defined one), matching the generic
+    "## [marker] some-name" contract documented in tools_schema.py, not just
+    the jarvis working_state convention. Headers without a bracketed marker
+    are silently ignored.
+
+    Raises:
+        ValueError: if the document is too long to safely process, indicating
+        potential memory/performance issues or malformed repetitive structure.
+    """
+    lines = content.split("\n")
+    sections: dict[str, tuple[int, int]] = {}
+    current_section_start: int | None = None
+    current_section_header: str | None = None
+
+    # Prevent processing of extremely large documents (safety check)
+    if len(lines) > 100_000:
+        raise ValueError(f"Document too large to parse: {len(lines)} lines exceeds safety limit")
+
+    section_pattern = re.compile(r"^#{2,4}\s+\[[^\]\n]+\]")
+
+    for i, line in enumerate(lines):
+        # Check if this is a valid section header
+        if section_pattern.match(line):
+            # Save prior section if any
+            if current_section_header is not None and current_section_start is not None:
+                sections[current_section_header] = (current_section_start, i)
+
+            # Start new section
+            current_section_header = line
+            current_section_start = i
+
+    # Don't forget the last section
+    if current_section_header is not None and current_section_start is not None:
+        sections[current_section_header] = (current_section_start, len(lines))
+
+    return sections
+
+
+def _merge_section_into_markdown(
+    existing_content: str,
+    section_header: str,
+    section_content: str,
+) -> str:
+    """Merge a new section into an existing markdown document.
+
+    Replaces the section with matching header (exact match), or appends if not found.
+    Preserves all other sections unchanged.
+
+    Args:
+        existing_content: existing markdown document (may be empty)
+        section_header: markdown header line (e.g. "### [entry] foo-bar — 2026-01-01")
+        section_content: full section content, starting with the header line
+
+    Returns:
+        merged markdown document as string
+
+    Raises:
+        ValueError: if existing_content is unparseable (sections without matching header pattern)
+    """
+    # Validate that section_content starts with section_header
+    if not section_content.strip().startswith(section_header):
+        raise ValueError("section_content must start with section_header")
+
+    if not existing_content.strip():
+        # Empty document: just return the new section
+        return section_content
+
+    # Parse existing sections (raises ValueError if the document is oversized)
+    sections = _parse_markdown_sections(existing_content)
+
+    # Non-empty content with zero recognized "## [marker] ..." headers means
+    # the document isn't using the section-splicing convention at all — e.g.
+    # a foreign-format doc from another caller. Silently appending under it
+    # would be a guess, not a merge; fail loudly instead (per the contract
+    # documented in tools_schema.py) so the caller notices and switches to
+    # mode="full" rather than accumulating unsplic-able content forever.
+    if not sections:
+        raise ValueError(
+            "existing content is not parseable as markdown sections — no "
+            "'## [marker] ...'-style headers found. Refusing to silently "
+            "append; use mode='full' to overwrite this document instead."
+        )
+
+    # Check if target section exists
+    if section_header in sections:
+        # Replace the section
+        start, end = sections[section_header]
+        lines = existing_content.split("\n")
+        new_lines = lines[:start] + section_content.split("\n") + lines[end:]
+        return "\n".join(new_lines)
+    else:
+        # Append new section
+        if existing_content.strip():
+            return existing_content.rstrip() + "\n\n" + section_content
+        else:
+            return section_content
+
+
 async def _handle_store(args: dict) -> list[TextContent]:
     client = server._get_client()
 
     mem_type = args["type"]
     mem_name = args["name"]
     content = args["content"]
+    new_section_content = content  # Keep original new section for merge_section retries
     description = args.get("description", "")
     project = args.get("project")
     if project == "global":
@@ -1033,6 +1140,99 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 ),
             )
         ]
+
+    # #1352: Optional server-side section merge. If mode="merge_section", fetch the
+    # existing document (if any), parse sections, and splice only the new section in,
+    # preserving all sibling sections. Atomic via RPC to prevent concurrent races.
+    mode = args.get("mode", "full")
+    preserve_description_on_merge = False
+    preserve_tags_on_merge = False
+    merge_section_data = None  # Data for merge_section RPC call
+    stored_id = None
+    action = "error"
+    proj_label = ""
+
+    if mode == "merge_section":
+        # Extract section header from new_section_content (first line starting with ##)
+        lines = new_section_content.strip().split("\n")
+        section_header = None
+        for line in lines:
+            if line.startswith("##"):
+                section_header = line
+                break
+        if section_header is None:
+            return [
+                TextContent(
+                    type="text",
+                    text="Error (mode='merge_section'): content must start with a markdown header (##, ###, or ####)",
+                )
+            ]
+
+        # Fetch existing content + updated_at for optimistic concurrency check.
+        # #1352 review round 3 finding #3: this used to be a
+        # `for attempt in range(3)` "retry loop with exponential backoff"
+        # that never actually retried — every path (`break` on success,
+        # `return` on ValueError) exited on the first iteration, leaving the
+        # `for...else` clause and `merge_conflict_after_retries` dead code.
+        # Real retry-on-conflict already lives in the RPC loop below (it
+        # re-fetches + re-merges after an RPC rejection); this is a single
+        # first read, so a plain try/except is the honest shape. Also
+        # widened to catch transient fetch/network errors (matching the RPC
+        # call's `except Exception` below) instead of letting them crash
+        # the request.
+        try:
+            q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
+            if project is not None:
+                q = q.eq("project", project)
+            else:
+                q = q.is_("project", "null")
+            existing_row = q.limit(1).execute()
+            existing_data = existing_row.data[0] if existing_row.data else {}
+            existing_content = existing_data.get("content", "")
+            existing_updated_at = existing_data.get("updated_at")  # For optimistic concurrency
+            existing_description = existing_data.get("description")
+            existing_tags = existing_data.get("tags")
+
+            # Merge sections: merge the new section into existing content
+            merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
+
+            # ceiling: merged_state size limit. working_state documents can grow unbounded
+            # if not trimmed; this is a basic guard for documents > 1MB. For finer
+            # granularity (e.g., per-section size limits, per-section eviction by age),
+            # see #1352-follow-up. Future: consider implementing section-level GC/tombstoning.
+            max_content_size = 1_000_000  # 1MB ceiling
+            if len(merged_content) > max_content_size:
+                # Truncate with marker to indicate overflow
+                merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+
+            # Preserve existing description/tags unless caller explicitly overrides
+            preserve_description_on_merge = existing_description is not None and description == ""
+            preserve_tags_on_merge = existing_tags is not None and tags == []
+
+            merge_section_data = {
+                "merged_content": merged_content,
+                "expected_updated_at": existing_updated_at,
+                "preserve_description": preserve_description_on_merge,
+                "preserve_tags": preserve_tags_on_merge,
+            }
+
+            content = merged_content
+
+        except ValueError as e:
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error (mode='merge_section'): existing document is unparseable as markdown sections. {str(e)}",
+                )
+            ]
+        except Exception as exc:
+            log_swallowed("memory._handle_store.merge_section_initial_fetch", exc)
+            return [
+                TextContent(
+                    type="text",
+                    text=f"Error (mode='merge_section'): could not fetch existing document ({exc}). No memory was stored — retry the call.",
+                )
+            ]
 
     # Tier-2 write-path secret-scrubber gate; see write_scrubber module
     # docstring. Run AFTER validation but BEFORE any embedding/insert so a
@@ -1079,7 +1279,146 @@ async def _handle_store(args: dict) -> list[TextContent]:
     embedding = data.get(_model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"])
     embed_note = " (with embedding)" if embedding is not None else ""
 
-    if project is not None:
+    # #1352: Use atomic RPC for merge_section mode to prevent concurrent races
+    # Retry loop: on conflict, re-fetch and re-merge, then retry RPC (up to 3 attempts total)
+    if mode == "merge_section":
+        proj_label = f"project={project or 'global'}"
+
+        if merge_section_data:
+            max_rpc_retries = 3
+            for rpc_attempt in range(max_rpc_retries):
+                try:
+                    result = client.rpc(
+                        "merge_section_into_memory_upsert",
+                        {
+                            "p_project": project,
+                            "p_name": mem_name,
+                            "p_merged_content": merge_section_data["merged_content"],
+                            "p_expected_updated_at": merge_section_data["expected_updated_at"],
+                            # #1352 review round 2: the RPC's INSERT branch needs
+                            # both of these threaded through — type is NOT NULL
+                            # with no default, and source_provenance is validated
+                            # required by this same handler above (Phase 2c) but
+                            # was previously dropped in favor of a hardcoded RPC
+                            # literal, silently discarding the caller's value.
+                            "p_type": mem_type,
+                            "p_source_provenance": source_provenance,
+                            "p_description": description,
+                            "p_tags": tags,
+                            "p_preserve_existing_description": merge_section_data["preserve_description"],
+                            "p_preserve_existing_tags": merge_section_data["preserve_tags"],
+                            # #242/#1352: forward whichever embedding columns
+                            # embed_fields populated (PRIMARY always, SECONDARY
+                            # only if configured) — mirrors the standard write
+                            # path's data.update(embed_fields) above so
+                            # merge_section rows get embeddings too, instead of
+                            # silently staying NULL until a lazy backfill.
+                            "p_embedding": embed_fields.get("embedding"),
+                            "p_embedding_model": embed_fields.get("embedding_model"),
+                            "p_embedding_version": embed_fields.get("embedding_version"),
+                            "p_embedding_v2": embed_fields.get("embedding_v2"),
+                            "p_embedding_model_v2": embed_fields.get("embedding_model_v2"),
+                            "p_embedding_version_v2": embed_fields.get("embedding_version_v2"),
+                        },
+                    ).execute()
+
+                    # RPC returns table(success, memory_id, conflict_reason)
+                    rpc_rows = result.data or []
+                    if rpc_rows:
+                        row = rpc_rows[0]
+                        if row.get("success"):
+                            stored_id = row.get("memory_id")
+                            action = "merged"
+                            break  # Success — exit retry loop
+                        else:
+                            # Conflict detected — log and prepare to retry
+                            conflict_reason = row.get("conflict_reason", "unknown")
+                            log_swallowed(
+                                "memory._handle_store.merge_section_conflict",
+                                Exception(f"Attempt {rpc_attempt + 1}/{max_rpc_retries}: {conflict_reason}"),
+                            )
+                            if rpc_attempt < max_rpc_retries - 1:
+                                # Retry: re-fetch the row and re-merge before next RPC attempt
+                                try:
+                                    q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
+                                    if project is not None:
+                                        q = q.eq("project", project)
+                                    else:
+                                        q = q.is_("project", "null")
+                                    existing_row = q.limit(1).execute()
+                                    existing_data = existing_row.data[0] if existing_row.data else {}
+                                    existing_content = existing_data.get("content", "")
+                                    existing_updated_at = existing_data.get("updated_at")
+                                    existing_description = existing_data.get("description")
+                                    existing_tags = existing_data.get("tags")
+
+                                    # Re-merge with fresh data using original new section (not previous merged result)
+                                    merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
+                                    max_content_size = 1_000_000
+                                    if len(merged_content) > max_content_size:
+                                        merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+
+                                    # Update merge_section_data for next RPC attempt
+                                    merge_section_data = {
+                                        "merged_content": merged_content,
+                                        "expected_updated_at": existing_updated_at,
+                                        "preserve_description": existing_description is not None and description == "",
+                                        "preserve_tags": existing_tags is not None and tags == [],
+                                    }
+
+                                    # #1352 review round 3 finding #2: recompute the
+                                    # embedding against the freshly re-merged content.
+                                    # embed_fields/embedding were computed once before
+                                    # this retry loop from the FIRST attempt's content —
+                                    # left stale, a conflicting write would persist a row
+                                    # whose embedding doesn't match its actual text, and
+                                    # the post-store auto-link similarity search below
+                                    # would run against the wrong vector too.
+                                    content = merged_content
+                                    embed_text = _canonical_embed_text(mem_name, description, tags, content)
+                                    embed_fields = await server._compute_write_embeddings(embed_text)
+                                    data.update(embed_fields)
+                                    embedding = data.get(_model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"])
+                                    embed_note = " (with embedding)" if embedding is not None else ""
+                                except ValueError as e:
+                                    # Document became unparseable during retry
+                                    log_swallowed("memory._handle_store.merge_section_retry_unparseable", e)
+                                    action = "error"
+                                    break
+                                # Continue to next RPC attempt with fresh data
+                                continue
+                            else:
+                                # Final attempt failed
+                                action = "conflict"
+                except Exception as exc:
+                    log_swallowed("memory._handle_store.merge_section_rpc", exc)
+                    if rpc_attempt >= max_rpc_retries - 1:
+                        action = "error"
+                    # Retry on exception too
+
+        # #658 contract: stored=True must be the unambiguous success signal.
+        # Conflict-exhaustion or an unhandled RPC exception means nothing was
+        # written — fail closed here instead of falling through to the shared
+        # response block below, which would otherwise emit stored=True with a
+        # null memory_id.
+        if action in ("conflict", "error"):
+            return [
+                TextContent(
+                    type="text",
+                    text=json.dumps(
+                        {
+                            "stored": False,
+                            "action": action,
+                            "memory_id": None,
+                            "message": (
+                                "Error (mode='merge_section'): write did not persist "
+                                f"(action={action}). No memory was stored — retry the call."
+                            ),
+                        }
+                    ),
+                )
+            ]
+    elif project is not None:
         # Atomic upsert via unique constraint on (project, name) — no race condition
         result = client.table("memories").upsert(data, on_conflict="project,name").execute()
         stored_id = result.data[0]["id"] if result.data else None
