@@ -52,6 +52,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from supabase import Client
 
+    from agents.driver_heartbeat import HeartbeatStatus
+
 from agents import task_queue
 from agents.github_client import (
     GitHubClient,
@@ -104,6 +106,25 @@ DEFAULT_WORKTREE_RETENTION_TTL_SECONDS = 24 * 60 * 60
 # (by ``_WORKTREE_FAILED_AT_MARKER``) first — a backstop against disk growth
 # when failures outpace the TTL, independent of it (#1390 AC6).
 DEFAULT_WORKTREE_RETENTION_CAP = 20
+
+# #1085 S3-2 local-drain fallback: seconds between polling task_queue for
+# terminal state between ``wake_driver --once`` ticks.
+DEFAULT_LOCAL_DRAIN_POLL_SECONDS = 2.0
+
+# ceiling: flat retry cap (150 x poll_seconds ~= 5 minutes), not derived from
+# the reaper's own timeouts (DEFAULT_RUNNING_REAP_SECONDS is hours). "operator
+# present, blocking OK" (#1085 design) still wants a bound so a genuinely
+# stuck row can't hang the operator's /dispatch session forever; raise this at
+# the call site if a real drain run needs longer.
+DEFAULT_LOCAL_DRAIN_MAX_ITERATIONS = 150
+
+# #1085 S3 review fix: local-drain's own subprocess ticks must stamp a heartbeat
+# identity distinct from the resident driver's "wake_driver" (driver_heartbeat.DRIVER_NAME).
+# default_local_drain_heartbeat_check() reads the resident's row to decide "has it
+# recovered, should I stop looping?" — if the local-drain subprocess wrote to that
+# same row, the very next re-check would read back its own fresh timestamp and
+# conclude the resident had recovered, exiting after exactly one iteration.
+LOCAL_DRAIN_DRIVER_NAME = "wake_driver_local_drain"
 
 # Spawn a task's goal, fire-and-forget. Raises on a hard launch failure (AC7b).
 # Called as ``spawn(goal, task_id=<id>)`` — the executor needs the id to write
@@ -1921,6 +1942,114 @@ def sweep_task_worktrees(
         ttl_pruned=ttl_pruned,
         cap_evicted=cap_evicted,
     )
+
+
+def default_local_drain_heartbeat_check() -> HeartbeatStatus:
+    """Production ``heartbeat_check`` adapter — live Supabase read (#1085 S3-2).
+
+    Lazy import mirrors :func:`default_spawn`: the tested loop logic in
+    :func:`local_drain_until_terminal` never pulls Supabase, only this
+    production default does.
+    """
+    from agents.driver_heartbeat import check_heartbeat
+
+    return check_heartbeat()
+
+
+def default_get_task_statuses(task_ids: list[str]) -> dict[str, str]:
+    """Production ``get_statuses`` adapter — batch task_queue lookup (#1085 S3-2)."""
+    return task_queue.get_statuses(task_ids)
+
+
+def default_local_drain_once() -> None:
+    """Production ``run_once`` adapter — one ``wake_driver --once`` subprocess tick.
+
+    A fresh process per tick, same as the resident driver's own ticks — no cap
+    override flag or env var is passed here, so ``DEFAULT_CONCURRENCY_CAP``
+    (read inside the child process) is the only concurrency limit in play.
+
+    Passes ``--driver-name`` set to :data:`LOCAL_DRAIN_DRIVER_NAME`, distinct
+    from the resident driver's ``DRIVER_NAME`` — see that constant's comment
+    for why a shared name would make :func:`local_drain_until_terminal` exit
+    after its first iteration regardless of remaining pending rows.
+    """
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "agents.wake_driver",
+            "--once",
+            "--driver-name",
+            LOCAL_DRAIN_DRIVER_NAME,
+        ],
+        cwd=_REPO_ROOT,
+        check=False,
+    )
+
+
+def local_drain_until_terminal(
+    task_ids: Collection[str],
+    *,
+    heartbeat_check: Callable[[], HeartbeatStatus] = default_local_drain_heartbeat_check,
+    run_once: Callable[[], None] = default_local_drain_once,
+    get_statuses: Callable[[list[str]], dict[str, str]] = default_get_task_statuses,
+    sleep: Callable[[float], None] = time.sleep,
+    poll_seconds: float = DEFAULT_LOCAL_DRAIN_POLL_SECONDS,
+    max_iterations: int = DEFAULT_LOCAL_DRAIN_MAX_ITERATIONS,
+) -> dict[str, str]:
+    """Local-drain fallback for a stale resident driver (#1085 S3-2).
+
+    ``/dispatch`` calls this after enqueueing a batch when the heartbeat check
+    (step 3b) found the resident ``wake_driver`` stale: it repeats a
+    ``wake_driver --once`` tick (``run_once``) — concurrency-capped by
+    construction, since each tick's ``drain_tasks`` call enforces
+    ``DEFAULT_CONCURRENCY_CAP`` on its own — polling ``get_statuses`` between
+    ticks, until every id in ``task_ids`` reaches a
+    :data:`agents.task_queue.TERMINAL_STATES` status, the heartbeat goes fresh
+    again (resident driver recovered), or ``max_iterations`` is exhausted.
+    Operator-present, blocking call by design.
+
+    ``heartbeat_check`` re-runs immediately before every spawn: if the driver
+    has since become fresh (resident driver recovered, or another local drain
+    already covered these rows), the loop stops without spawning again.
+
+    ceiling: each ``run_once()`` is a memory-isolated ``wake_driver --once``
+    subprocess with no ``task_procs`` (agents/wake_driver.py's ``--once`` path
+    deliberately omits it, #921) — so this loop can spawn rows to ``running``
+    but has no way to observe their process exit and close them to
+    ``done``/``failed`` itself; that only happens via the much-slower orphan
+    reaper backstop (``reclaim_stale_tasks``), well past this loop's
+    ``max_iterations`` window. In practice freshly-spawned rows will usually
+    exhaust the cap and return non-terminal here (confirmed via code review on
+    PR #1544). Not a correctness issue — no row is double-processed or lost,
+    the caller just can't rely on this call to observe completion promptly.
+    Upgrade path (real fix, not done here — architectural, entangled with
+    #1546's same subprocess-per-tick root cause): replace the subprocess
+    ``run_once`` with an in-process ``drain_tasks``/``poll_completions`` pair
+    sharing one ``task_procs`` dict across the whole call. Tracked: #1551.
+
+    ceiling: heartbeat_check -> run_once is check-then-act, not atomic — no
+    distributed lock. A resident driver tick can start in the gap between the
+    check and the spawn, causing a duplicate local drain attempt on the same
+    rows. Not a correctness issue — task_queue's pending->claimed transition
+    is a conditional UPDATE, atomic per row (agents/task_queue.py::claim_next)
+    — just wasted local compute. Upgrade path if this starts costing real
+    cycles: a short-lived advisory lock row in driver_heartbeat itself.
+    """
+    ids = list(task_ids)
+    if not ids:
+        return {}
+
+    statuses = get_statuses(ids)
+    for _ in range(max_iterations):
+        if all(statuses.get(tid) in task_queue.TERMINAL_STATES for tid in ids):
+            return statuses
+        if not heartbeat_check().is_stale:
+            return statuses
+        run_once()
+        statuses = get_statuses(ids)
+        sleep(poll_seconds)
+    return statuses
 
 
 class SupabaseTaskQueue:
