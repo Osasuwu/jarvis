@@ -4,7 +4,7 @@ Reimplements the merge-train's PR-selection rule in Python and asserts it
 picks/excludes the PRs the workflow promises, plus a config dimension that
 keeps the YAML and this test in lockstep.
 
-Why this test exists (CLAUDE.md §326): merge-train.yml is NOT path-filtered,
+Why this test exists (.claude/rules/path-filtered-ci-guards-meta-test.md, #326): merge-train.yml is NOT path-filtered,
 so #326's *config* mandate doesn't strictly apply. But the selection rule is
 exactly the silent-drift class #326 targets — a wrong filter would quietly
 update the wrong PRs (or none) with no red signal. The *logic* dimension is
