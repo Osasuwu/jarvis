@@ -200,3 +200,54 @@ Content."""
         result = mem._merge_section_into_markdown(existing, "### [entry] task — 2026-01-01 — done", new_section)
         # Since there are no [entry]/[evicted] blocks, it appends
         assert new_section in result
+
+
+class TestMergeSectionRetryLogic:
+    """Test that merge_section retry uses original new section, not previous merged result.
+
+    This tests the critical bug fix for #1352 finding #1: when an RPC conflict
+    is detected and Python retries, it must re-merge using the *original new
+    section* passed by the caller, not the previous merged result.
+
+    The test uses direct helper function calls to verify the merge logic, ensuring
+    that if we were to (incorrectly) pass a previous merged result as the new
+    section, we'd get duplication or errors.
+    """
+
+    def test_merge_retry_detects_bug_with_previous_merged_result(self):
+        """Verify that using previous merged result as new section causes ValueError.
+
+        This test documents the bug that existed before the fix: if code incorrectly
+        passed the previous merged result as the new section on retry, it would fail.
+
+        The fix ensures we always use the original new section (stored separately)
+        for each merge attempt, including retries.
+        """
+        # Original existing content
+        existing_v1 = "## [entry] task-1 — 2026-01-01\n\nTask 1 content\n"
+
+        # New section to merge (this never changes across retries)
+        new_section = "## [entry] task-2 — 2026-01-01\n\nTask 2 content\n"
+
+        # First merge: existing_v1 + new_section
+        first_merged = mem._merge_section_into_markdown(existing_v1, "## [entry] task-2 — 2026-01-01", new_section)
+        assert "## [entry] task-1" in first_merged
+        assert "## [entry] task-2" in first_merged
+
+        # Simulate concurrent update: existing content now has a new task
+        existing_v2 = "## [entry] task-1 — 2026-01-01\n\nTask 1 content\n\n## [entry] task-3 — 2026-01-01\n\nTask 3 content\n"
+
+        # CORRECT behavior on retry: merge new_section into existing_v2
+        correct_retry_merge = mem._merge_section_into_markdown(existing_v2, "## [entry] task-2 — 2026-01-01", new_section)
+        assert "## [entry] task-1" in correct_retry_merge
+        assert "## [entry] task-2" in correct_retry_merge
+        assert "## [entry] task-3" in correct_retry_merge
+        # Verify no duplicates
+        assert correct_retry_merge.count("## [entry] task-1") == 1
+        assert correct_retry_merge.count("## [entry] task-2") == 1
+        assert correct_retry_merge.count("## [entry] task-3") == 1
+
+        # BUG: if code passed first_merged (previous result) as new section on retry:
+        # The section validation fails because first_merged doesn't start with task-2's header
+        with pytest.raises(ValueError, match="section_content must start with section_header"):
+            mem._merge_section_into_markdown(existing_v2, "## [entry] task-2 — 2026-01-01", first_merged)

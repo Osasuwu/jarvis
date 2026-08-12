@@ -1095,6 +1095,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
     mem_type = args["type"]
     mem_name = args["name"]
     content = args["content"]
+    new_section_content = content  # Keep original new section for merge_section retries
     description = args.get("description", "")
     project = args.get("project")
     if project == "global":
@@ -1138,8 +1139,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
     proj_label = ""
 
     if mode == "merge_section":
-        # Extract section header from content (first line starting with ##)
-        lines = content.strip().split("\n")
+        # Extract section header from new_section_content (first line starting with ##)
+        lines = new_section_content.strip().split("\n")
         section_header = None
         for line in lines:
             if line.startswith("##"):
@@ -1171,8 +1172,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
                 existing_description = existing_data.get("description")
                 existing_tags = existing_data.get("tags")
 
-                # Merge sections: the content param is the new section, merge it into existing
-                merged_content = _merge_section_into_markdown(existing_content, section_header, content)
+                # Merge sections: merge the new section into existing content
+                merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
 
                 # ceiling: merged_state size limit. working_state documents can grow unbounded
                 # if not trimmed; this is a basic guard for documents > 1MB. For finer
@@ -1317,8 +1318,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
                                     existing_description = existing_data.get("description")
                                     existing_tags = existing_data.get("tags")
 
-                                    # Re-merge with fresh data
-                                    merged_content = _merge_section_into_markdown(existing_content, section_header, content)
+                                    # Re-merge with fresh data using original new section (not previous merged result)
+                                    merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
                                     max_content_size = 1_000_000
                                     if len(merged_content) > max_content_size:
                                         merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
