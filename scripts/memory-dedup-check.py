@@ -57,12 +57,12 @@ from recall import (  # noqa: E402
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-BLOCK_THRESHOLD = 0.75  # different-name match at this similarity → block
+BLOCK_THRESHOLD = 0.80  # different-name match at this similarity → block
 # Calibration note (2026-04-17): voyage-3-lite/512 returns ~0.79 for near-
 # verbatim concept paraphrases (duplicates) and ~0.54 for related-but-distinct
-# (siblings). 0.75 is set between these to catch the 0.79 dup case without
-# false-firing on the 0.54 sibling case. The reupdate fallback (#1098) handles
-# the separate problem of daily-cron re-stores (~0.98 similarity).
+# (siblings). 0.80 is set just above the 0.79 dup case to avoid false-blocking
+# near-verbatim paraphrases (#1098). The reupdate fallback handles the separate
+# problem of daily-cron re-stores (~0.98 similarity).
 
 REUPDATE_SIMILARITY_THRESHOLD = 0.95  # extremely-high similarity → likely re-update
 # When a match scores >0.95 (e.g., a daily-cron memory at ~0.98), treat it as
