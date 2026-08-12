@@ -58,6 +58,7 @@ class TierResult:
       input_tokens:    Prompt tokens consumed (best-effort).
       output_tokens:   Completion tokens produced (best-effort).
     """
+
     text: str | None
     tier_completed: str = "deferred"
     model: str = ""
@@ -96,7 +97,9 @@ def derive_with_escalation(
     tier1_model = os.environ.get(ENV_TIER1_MODEL, "").strip()
 
     # ---- Tier 0: Workshop+Ollama (primary) ----
-    raw = call_ollama(prompt, system_prompt=system_prompt, format_json=format_json, return_usage=True)
+    raw = call_ollama(
+        prompt, system_prompt=system_prompt, format_json=format_json, return_usage=True
+    )
     if raw is not None and isinstance(raw, dict) and raw.get("text"):
         return TierResult(
             text=raw["text"],
