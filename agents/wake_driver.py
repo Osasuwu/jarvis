@@ -66,6 +66,7 @@ from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from dotenv import load_dotenv
 
 from agents.config import load_config
+from agents.driver_heartbeat import DRIVER_NAME, HeartbeatPort, SupabaseHeartbeat
 from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
@@ -408,6 +409,8 @@ def tick(
     orchestrator: Orchestrator,
     *,
     stale_after_seconds: float,
+    heartbeat_port: HeartbeatPort | None = None,
+    heartbeat_driver_name: str = DRIVER_NAME,
     poller_port: PollerPort | None = None,
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
@@ -431,6 +434,7 @@ def tick(
 ) -> TickResult:
     """One unit of work — ordered steps (#909 AC1, #921 AC3, #745 Path B, #1390 AC6)::
 
+        record_tick()                                         # Step H, #1085 S3-1
         poll_completions() + kill_runaways()                  # Step 0, #921
         → reclaim_stale(events)                               # Step 1, event watchdog
         → reclaim_stale_tasks()                               # Step 2, task watchdog
@@ -483,7 +487,24 @@ def tick(
     the task watchdog (Step 2) so a row Step 2 just reaped to ``failed``
     this same tick is already sweep-eligible, and before the event drain
     (Step 3) so a stuck removal never delays the primary wake path.
+
+    Step H (#1085 S3-1) stamps this driver's own liveness — server-side
+    ``now()`` via :meth:`HeartbeatPort.record_tick` — before anything else in
+    the tick, so a reader (``/dispatch``'s stale-heartbeat check) never sees a
+    tick that started but never finished as fresh. Isolated like the task
+    steps: heartbeat storage is independent of both the event queue and the
+    task queue, and a Supabase outage here must not skip the event drain,
+    the primary wake path. Runs even when ``task_port`` is ``None`` — driver
+    liveness is unconditional, not gated on task-queue availability.
     """
+    # Step H — heartbeat write (#1085 S3-1). First thing in the tick, isolated:
+    # a failure here must never block the event drain below.
+    if heartbeat_port is not None:
+        try:
+            heartbeat_port.record_tick(heartbeat_driver_name)
+        except Exception:  # noqa: BLE001 — heartbeat outage must not block event drain
+            logger.exception("[wake_driver] heartbeat write failed; retried next tick")
+
     # Step 0 — completion poll + runaway kill (#921 AC2/AC3/AC6). Two
     # independent halves: a completion-poll blowup must not stop the runaway
     # killer from bounding live processes, so each gets its own isolation.
@@ -631,6 +652,7 @@ def run(
     *,
     stale_after_seconds: float = DEFAULT_STALE_AFTER_SECONDS,
     should_continue: Callable[[], bool] | None = None,
+    heartbeat_port: HeartbeatPort | None = None,
     poller_port: PollerPort | None = None,
     task_port: TaskQueuePort | None = None,
     task_spawn: Spawn = default_spawn,
@@ -711,6 +733,7 @@ def run(
                 port,
                 orchestrator,
                 stale_after_seconds=stale_after_seconds,
+                heartbeat_port=heartbeat_port,
                 poller_port=poller_port,
                 task_port=task_port,
                 task_spawn=task_spawn,
@@ -1081,6 +1104,18 @@ def main() -> int:
             "Permanent flag, not temporary rollout scaffolding."
         ),
     )
+    parser.add_argument(
+        "--driver-name",
+        default=DRIVER_NAME,
+        help=(
+            "Heartbeat identity to stamp this tick under (default: "
+            f"'{DRIVER_NAME}', the resident driver's own name). A local-drain "
+            "fallback (#1085 S3-2) passes a distinct value here so its own "
+            "one-shot ticks don't masquerade as resident-driver liveness — "
+            "otherwise local_drain_until_terminal's heartbeat re-check reads "
+            "back the tick it just caused and exits after one iteration."
+        ),
+    )
     args = parser.parse_args()
 
     if args.dry_run:
@@ -1152,6 +1187,8 @@ def main() -> int:
                 queue,
                 orchestrator,
                 stale_after_seconds=args.watchdog_seconds,
+                heartbeat_port=SupabaseHeartbeat(client=event_client),
+                heartbeat_driver_name=args.driver_name,
                 task_port=task_port,
                 poller_port=queue,
             )
@@ -1184,6 +1221,7 @@ def main() -> int:
             queue,
             orchestrator,
             stale_after_seconds=args.watchdog_seconds,
+            heartbeat_port=SupabaseHeartbeat(client=event_client),
             task_port=task_port,
             task_event_emit=event_emit,
             task_evidence_client=evidence_client,

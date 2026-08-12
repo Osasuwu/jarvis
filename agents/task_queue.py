@@ -47,6 +47,10 @@ _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
 # row) for the task's issue after the running transition — terminal, no retry.
 _TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "parked", "skipped_duplicate"})
 
+# Public alias — #1085 S3-2's local-drain loop polls against this from
+# agents/task_dispatch.py without reaching into the private FSM constant.
+TERMINAL_STATES = _TERMINAL_STATES
+
 
 # -- Public API ------------------------------------------------------------
 

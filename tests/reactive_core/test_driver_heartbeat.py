@@ -29,9 +29,13 @@ class FakeHeartbeat:
 
     def __init__(self, rows: dict[str, dict] | None = None) -> None:
         self.rows = rows or {}
+        self.tick_calls: list[str] = []
 
     def read_heartbeat(self, driver_name: str) -> dict | None:
         return self.rows.get(driver_name)
+
+    def record_tick(self, driver_name: str) -> None:
+        self.tick_calls.append(driver_name)
 
 
 def test_classify_missing_row_is_missing() -> None:
@@ -129,3 +133,26 @@ def test_heartbeat_status_is_frozen_dataclass() -> None:
     status = HeartbeatStatus(state="fresh")
     with pytest.raises(AttributeError):
         status.state = "stale"  # type: ignore[misc]
+
+
+def test_fake_heartbeat_record_tick_tracks_calls() -> None:
+    port = FakeHeartbeat()
+    port.record_tick(DRIVER_NAME)
+    assert port.tick_calls == [DRIVER_NAME]
+
+
+def test_supabase_heartbeat_record_tick_calls_rpc() -> None:
+    from unittest.mock import MagicMock
+
+    from agents.driver_heartbeat import SupabaseHeartbeat
+
+    client = MagicMock()
+    rpc_builder = MagicMock()
+    rpc_builder.execute.return_value = MagicMock(data=None)
+    client.rpc.return_value = rpc_builder
+
+    heartbeat = SupabaseHeartbeat(client=client)
+    heartbeat.record_tick(DRIVER_NAME)
+
+    client.rpc.assert_called_once_with("driver_heartbeat_tick", {"p_driver_name": DRIVER_NAME})
+    rpc_builder.execute.assert_called_once()
