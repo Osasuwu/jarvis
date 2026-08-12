@@ -26,10 +26,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install test deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install pytest pytest-asyncio pyyaml
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Install test deps from lockfile
+        run: uv sync --all-extras
 
       - name: Run meta-tests
-        run: pytest tests/ci/ -v
+        run: uv run pytest tests/ci/ -v

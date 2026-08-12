@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=83.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis-mcp-memory"
+version = "0.4.1"
+description = "Jarvis memory server — persistent memory via Supabase MCP"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=2.0.0,<3",
+  "supabase>=2.31.0,<3",
+  "voyageai>=0.5.0,<1",
+  "httpx>=0.28.1,<1",
+  "python-dotenv>=1.2.2,<2",
+  "nest-asyncio>=1.6.0,<2",
+  "python-json-logger>=4.1.0,<5",
+  "telethon>=1.44.0,<2",
+]
