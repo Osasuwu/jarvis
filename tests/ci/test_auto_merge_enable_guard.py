@@ -4,7 +4,7 @@ Reimplements the auto-merge-enable's per-PR enable decision in Python and
 asserts it enables/skips the PRs the workflow promises, plus a config dimension
 that keeps the YAML and this test in lockstep.
 
-Why this test exists (CLAUDE.md §326 + #948 Bug A): auto-merge-enable.yml is the
+Why this test exists (.claude/rules/path-filtered-ci-guards-meta-test.md, #326 + #948 Bug A): auto-merge-enable.yml is the
 fix for #948 Bug A — a PR auto-merged with the default GITHUB_TOKEN is attributed
 to github-actions[bot], and GitHub's recursion-prevention then SUPPRESSES native
 linked-issue auto-close (the merged PR leaves its `Closes #N` issue open). The fix

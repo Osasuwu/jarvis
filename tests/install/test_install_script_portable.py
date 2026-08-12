@@ -5,7 +5,7 @@ Verifies that install scripts do not contain:
 - Absolute paths starting with C:\Users\<username>
 - Device-specific absolute paths
 
-This is a meta-test in the spirit of CI meta-tests (see CLAUDE.md #326).
+This is a meta-test in the spirit of CI meta-tests (see .claude/rules/path-filtered-ci-guards-meta-test.md, #326).
 It prevents silent failures when scripts are run on other machines.
 
 Note (#743): the scheduler-service *installer* was retired with
