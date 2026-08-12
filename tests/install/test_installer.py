@@ -452,8 +452,10 @@ class TestSkipEnvCLI:
             "    value: test_value\n".format(target_root)
         )
 
-        # Mock _set_env to track calls
-        with mock.patch.object(installer, "_set_env") as mock_set_env:
+        # Mock _set_env and the worktree guard (the guard fires before --skip-env
+        # takes effect when tests run from a linked worktree checkout).
+        with mock.patch.object(installer, "_set_env") as mock_set_env, \
+             mock.patch.object(installer, "_is_git_worktree_checkout", return_value=False):
             rc = installer.main([
                 "--manifest", str(manifest_path),
                 "--apply",
@@ -481,8 +483,9 @@ class TestSkipEnvCLI:
             "    value: test_value\n".format(target_root)
         )
 
-        # Mock _set_env to track calls
-        with mock.patch.object(installer, "_set_env") as mock_set_env:
+        # Mock the worktree guard so tests pass from a linked worktree checkout.
+        with mock.patch.object(installer, "_set_env") as mock_set_env, \
+             mock.patch.object(installer, "_is_git_worktree_checkout", return_value=False):
             rc = installer.main([
                 "--manifest", str(manifest_path),
                 "--apply",
