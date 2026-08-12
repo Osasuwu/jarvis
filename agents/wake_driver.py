@@ -1061,6 +1061,37 @@ def _default_event_emit(*, repo: str, client: Any | None = None) -> EventEmit:
     return emit
 
 
+def _run_notify_test(env: dict[str, str]) -> int:
+    """``--notify-test`` (#1547 AC8): resolve NOTIFY_TRANSPORT, send one probe.
+
+    Install-time smoke check — resolves through the same registry
+    (:func:`agents.notify.resolve_notifier`) production wiring adopts in
+    #1548, but never touches the live psycopg/Supabase/orchestrator wiring
+    built later in ``main()``. Exit code is the resolved notifier's own
+    return value: an explicit ``none`` opt-out always reports success (0);
+    a misconfigured transport lands on the loud-misconfig path, whose
+    notifier always reports failure (1) — see ``_none_notifier`` vs
+    ``_disabled_notifier`` in ``agents/notify.py``.
+    """
+    from agents.notify import resolve_notifier
+    from agents.orchestrator import Decision, Route
+
+    transport, notifier = resolve_notifier(env)
+    decision = Decision(
+        route=Route.ESCALATE,
+        event_type="notify_test",
+        severity="info",
+        target="wake_driver --notify-test",
+        idempotency_key="notify-test",
+        priority=0,
+        escalated_reason="manual --notify-test smoke check",
+    )
+    ok = notifier(decision)
+    status = "OK" if ok else "FAILED"
+    print(f"notify-test: {status} — transport={transport}")
+    return 0 if ok else 1
+
+
 def main() -> int:
     _configure_logging()
     load_dotenv()
@@ -1105,6 +1136,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--notify-test",
+        action="store_true",
+        help=(
+            "#1547: resolve NOTIFY_TRANSPORT and send one test message "
+            "through it; exit non-zero on failure. Install-time smoke "
+            "check — does not build or touch the live orchestrator wiring."
+        ),
+    )
+    parser.add_argument(
         "--driver-name",
         default=DRIVER_NAME,
         help=(
@@ -1117,6 +1157,9 @@ def main() -> int:
         ),
     )
     args = parser.parse_args()
+
+    if args.notify_test:
+        return _run_notify_test(os.environ)
 
     if args.dry_run:
         # Deliberately does not build SupabaseTaskQueue / the evidence client /
