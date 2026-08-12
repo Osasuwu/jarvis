@@ -285,6 +285,91 @@ def _last_git_branch(entries: list[dict]) -> str:
     return ""
 
 
+def _extract_prohibiting_rules(cwd: str | None) -> list[str]:
+    """Extract prohibiting rules and standing orders from CLAUDE.md files.
+
+    Scans for CLAUDE.md files in cwd and all parent directories up to the repo
+    root (identified by scanning path components), plus the user-level CLAUDE.md.
+    Extracts lines containing explicit constraints, prohibitions, or standing
+    orders. These rules are extracted verbatim to survive LLM summarization
+    during compaction.
+
+    Returns a list of rule lines found, empty list if no CLAUDE.md files found.
+    Rule extraction is best-effort — malformed or missing files are silently
+    skipped. This ensures the hook never blocks compaction.
+
+    Mirrors _detect_project()'s component-scanning approach to handle worktrees
+    and subdirectories correctly (#1177/#1204).
+    """
+    rules: list[str] = []
+    if not cwd:
+        return rules
+
+    try:
+        cwd_path = Path(cwd)
+        # Scan path components upward (like _detect_project does) to find CLAUDE.md
+        # in cwd or any parent directory. This ensures worktree/subdirectory cwds
+        # resolve to the containing repo's CLAUDE.md.
+        candidate_paths: list[Path] = []
+        try:
+            parts = cwd_path.parts
+            # Walk from the full path up to the root, checking each level for CLAUDE.md
+            for i in range(len(parts), 0, -1):
+                candidate_paths.append(Path(*parts[:i]) / "CLAUDE.md")
+        except Exception:
+            pass
+
+        # Always check user-level CLAUDE.md
+        candidate_paths.append(Path.home() / ".claude" / "CLAUDE.md")
+
+        # Dedup and try each candidate (dedup preserves search order: cwd-first)
+        seen = set()
+        for claude_file in candidate_paths:
+            try:
+                resolved = claude_file.resolve()
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+            except (OSError, ValueError):
+                continue
+
+            if not claude_file.exists():
+                continue
+            try:
+                text = claude_file.read_text(encoding="utf-8")
+                lines = text.splitlines()
+                for line in lines:
+                    stripped = line.strip()
+                    # Extract lines with explicit "do not", "never", "prohibit", "forbidden", etc.
+                    # Also capture lines with "standing order" or "aligned plan"
+                    if any(
+                        keyword in stripped.lower()
+                        for keyword in [
+                            "do not ",
+                            "don't ",
+                            "never ",
+                            "prohibit",
+                            "forbidden",
+                            "must not",
+                            "standing order",
+                            "aligned plan",
+                            "autonomy: no",
+                            "autonomous: no",
+                        ]
+                    ):
+                        # Skip comment-only lines or headers
+                        if not stripped.startswith("#") and len(stripped) > 10:
+                            rules.append(stripped)
+            except Exception:
+                # File read error — best-effort, continue
+                continue
+    except Exception:
+        # Path resolution error — best-effort, return empty
+        pass
+
+    return rules
+
+
 def _compose_markdown(
     session_id: str,
     trigger: str,
@@ -295,12 +380,16 @@ def _compose_markdown(
 ) -> str:
     """Compose the snapshot body. Enforces SIZE_BUDGET via hard truncation
     with a visible marker — never silently drops content without notice.
+
+    Includes a "Prohibiting Rules" section to preserve standing orders and
+    constraints through compaction (#1204 — custom instructions resilience).
     """
     users = _extract_user_messages(entries)
     actions = _extract_actions(entries)
     todos = _extract_last_todos(entries)
     last_text = _extract_last_assistant_text(entries)
     git_branch = _last_git_branch(entries)
+    rules = _extract_prohibiting_rules(cwd)
     captured = datetime.now(timezone.utc).isoformat()
 
     lines: list[str] = []
@@ -318,6 +407,18 @@ def _compose_markdown(
     )
     lines.append(entries_line)
     lines.append("")
+
+    if rules:
+        lines.append("## Prohibiting Rules & Standing Orders")
+        lines.append("")
+        lines.append(
+            "The following rules must be preserved and re-injected after compaction. "
+            "These are not summarizable; preserve them verbatim."
+        )
+        lines.append("")
+        for rule in rules:
+            lines.append(f"- {rule}")
+        lines.append("")
 
     if users:
         lines.append(f"## User messages ({len(users)})")
