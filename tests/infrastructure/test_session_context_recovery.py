@@ -702,3 +702,132 @@ def test_pending_review_count_graceful_on_rpc_error_no_project():
     """RPC failure with no active project → returns 0."""
     client = _FakeRpcClientError()
     assert sc._query_pending_review_count(client, None) == 0
+
+
+# ---------------------------------------------------------------------------
+# Recovery section size ceiling (#1353)
+# ---------------------------------------------------------------------------
+def test_cap_recovery_payload_normal():
+    """Short payload should not be truncated."""
+    payload = "Short recovery data"
+    result = sc._cap_recovery_payload(payload)
+    assert result == payload
+
+
+def test_cap_recovery_payload_truncated():
+    """Oversized payload should be truncated with visible marker."""
+    large_payload = "x" * (sc.RECOVERY_SECTION_MAX_CHARS + 500)
+    result = sc._cap_recovery_payload(large_payload)
+
+    # Check truncation marker is present
+    assert "[truncated," in result
+    assert "chars omitted]" in result
+
+    # Check result stays within budget
+    assert len(result) <= sc.RECOVERY_SECTION_MAX_CHARS
+
+    # Check we actually truncated (not just copied)
+    assert len(result) < len(large_payload)
+
+
+def test_format_recovery_section_respects_cap():
+    """Formatted recovery section should stay within RECOVERY_SECTION_MAX_CHARS."""
+    large_payload = "y" * (sc.RECOVERY_SECTION_MAX_CHARS + 1000)
+    session_id = "test-session-123"
+
+    result = sc._format_recovery_section(large_payload, session_id)
+
+    # The payload part should be capped and show truncation
+    assert "[truncated," in result
+
+
+def test_recovery_payload_cap_limit_respected():
+    """Payload should never exceed RECOVERY_SECTION_MAX_CHARS."""
+    import re
+
+    test_cases = [
+        100,
+        sc.RECOVERY_SECTION_MAX_CHARS - 10,
+        sc.RECOVERY_SECTION_MAX_CHARS,
+        sc.RECOVERY_SECTION_MAX_CHARS + 1,
+        sc.RECOVERY_SECTION_MAX_CHARS + 10000,
+    ]
+
+    for size in test_cases:
+        payload = "a" * size
+        result = sc._cap_recovery_payload(payload)
+        assert len(result) <= sc.RECOVERY_SECTION_MAX_CHARS, (
+            f"Payload of size {size} resulted in {len(result)} chars, "
+            f"exceeds cap of {sc.RECOVERY_SECTION_MAX_CHARS}"
+        )
+
+
+def test_oversized_recovery_alone_assembly():
+    """Assembly with only oversized recovery should stay within budget."""
+    large_payload = "z" * (sc.ASSEMBLY_BUDGET_CHARS + 1000)
+    session_id = "test-session-456"
+    recovery_rendered = sc._format_recovery_section(large_payload, session_id)
+
+    # Build a single-section assembly
+    sections = [
+        (sc._PRIORITY_RECOVERY, "recovery", recovery_rendered, []),
+    ]
+
+    output, dropped_names, emitted_ids, emitted_chars = sc.assemble_sections(sections)
+
+    # Output should stay within budget
+    assert emitted_chars <= sc.ASSEMBLY_BUDGET_CHARS, (
+        f"Assembly emitted {emitted_chars} chars, exceeds budget "
+        f"of {sc.ASSEMBLY_BUDGET_CHARS}"
+    )
+
+
+def test_truncation_marker_in_payload():
+    """Truncated payload should show char count."""
+    import re
+
+    large = "x" * 6000
+    result = sc._cap_recovery_payload(large)
+
+    # Should contain explicit marker with count
+    assert "[truncated," in result
+    assert "chars omitted]" in result
+
+    # Extract the number from the marker
+    match = re.search(r"\[truncated, (\d+) chars omitted\]", result)
+    assert match is not None
+    omitted_count = int(match.group(1))
+
+    # Verify math
+    assert omitted_count > 0
+    assert omitted_count < len(large)
+
+
+def test_assembly_budget_not_exceeded_with_truncation():
+    """Real-world test: compact resume with large snapshot should stay within budget."""
+    oversized_snapshot = "## Session Snapshot — test-abc123\n" + "x" * (
+        sc.RECOVERY_SECTION_MAX_CHARS + 500
+    )
+    recovery_rendered = sc._format_recovery_section(oversized_snapshot, "test-abc123")
+
+    sections = [
+        (sc._PRIORITY_RECOVERY, "recovery", recovery_rendered, []),
+        (
+            sc._PRIORITY_ALWAYS_LOAD,
+            "always_load",
+            "## Always-Load Rules\n- Rule 1: keep things simple\n- Rule 2: test first",
+            [],
+        ),
+    ]
+
+    output, dropped_names, emitted_ids, emitted_chars = sc.assemble_sections(sections)
+
+    # Main assertion: output must stay within budget
+    assert emitted_chars <= sc.ASSEMBLY_BUDGET_CHARS, (
+        f"Assembly with capped recovery section emitted {emitted_chars} chars, "
+        f"exceeds budget of {sc.ASSEMBLY_BUDGET_CHARS}. "
+        f"Dropped sections: {dropped_names}"
+    )
+
+    # Verify truncation is visible in output
+    assert "[truncated," in output
