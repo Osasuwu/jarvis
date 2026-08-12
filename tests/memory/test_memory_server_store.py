@@ -615,6 +615,102 @@ class TestHandleStoreStructuredResponse:
         assert body["classifier_pending"] is True
 
 
+class TestHandleStoreMergeSectionFailureModes:
+    """#1352 review fix: merge_section RPC failures must fail closed.
+
+    The RPC retry loop in _handle_store's mode="merge_section" branch sets
+    action="conflict" (all retries exhausted) or action="error" (unhandled
+    RPC exception) but previously fell through to the shared response block,
+    which unconditionally returned stored=True with a null memory_id — a
+    violation of the #658 contract that stored=True is the unambiguous
+    success signal. These tests pin the fail-closed behavior.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _patch_client(self, monkeypatch):
+        self.client = MagicMock()
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+        async def _no_embed(_text):
+            return {}
+
+        monkeypatch.setattr(server_module, "_compute_write_embeddings", _no_embed)
+
+        tbl = MagicMock()
+        select_chain = tbl.select.return_value.eq.return_value.is_.return_value
+        select_chain.limit.return_value.execute.return_value = MagicMock(data=[])
+        self.client.table.return_value = tbl
+        self.tbl = tbl
+
+    @pytest.mark.asyncio
+    async def test_conflict_after_retries_exhausted_returns_stored_false(self):
+        self.client.rpc.return_value.execute.return_value = MagicMock(
+            data=[{"success": False, "memory_id": None, "conflict_reason": "updated_at mismatch"}]
+        )
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_conflict",
+                "content": "## [entry] foo — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        assert len(result) == 1
+        body = json.loads(result[0].text)
+        assert body["stored"] is False
+        assert body["action"] == "conflict"
+        assert body["memory_id"] is None
+        assert self.client.rpc.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_rpc_exception_on_every_attempt_returns_stored_false(self):
+        self.client.rpc.side_effect = RuntimeError("connection reset")
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_rpc_error",
+                "content": "## [entry] bar — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        assert len(result) == 1
+        body = json.loads(result[0].text)
+        assert body["stored"] is False
+        assert body["action"] == "error"
+        assert body["memory_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_success_on_first_attempt_still_returns_stored_true(self):
+        self.client.rpc.return_value.execute.return_value = MagicMock(
+            data=[{"success": True, "memory_id": "merged-1", "conflict_reason": None}]
+        )
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_success",
+                "content": "## [entry] baz — 2026-01-01\n\nbody",
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        body = json.loads(result[0].text)
+        assert body["stored"] is True
+        assert body["action"] == "merged"
+        assert body["memory_id"] == "merged-1"
+        assert self.client.rpc.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # #242: dual-embedding machinery — column/RPC mapping + dual-write
 # ---------------------------------------------------------------------------
