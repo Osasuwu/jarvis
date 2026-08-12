@@ -133,15 +133,26 @@ Skip if the session didn't advance any goal (e.g., pure discussion, research wit
 
 Save `working_state_<current session's project>` (type=project, e.g. `working_state_jarvis`, `working_state_redrobot`) to Supabase. Always. Use **read-modify-write** semantics to prevent parallel sessions from overwriting each other's checkpoints.
 
-### RMW (read-modify-write) pattern
+### Server-side section merge (replaces client-side RMW)
 
-**Before writing**, read the current document:
+**Use memory_store with mode="merge_section"** — the server now handles read-modify-write atomically:
+
 ```python
-state = memory_get(name=f"working_state_{project}", project=project)
-current_content = state.content if state else ""
+memory_store(
+    type="project",
+    name=f"working_state_{project}",
+    content="""### [entry] <branch-or-task-slug> — <YYYY-MM-DD> — <status>
+- What was done this session
+- Open items, context for next session
+- **Suggested next skills** (e.g. `/status → /implement #532 → /verify`)
+""",
+    project=project,
+    mode="merge_section",
+    source_provenance="skill:end"
+)
 ```
 
-If not found (first write for this project), proceed with empty string.
+The server-side merge splices only your section into the existing document, preserving all sibling blocks — no client-side read-modify-write needed. If your section header doesn't exist, it's appended as new. Failure to parse the existing document (corrupt sections) fails loudly with an error.
 
 ### Merge-doc format
 
@@ -218,7 +229,7 @@ if not updated_state or "<your-slug>" not in updated_state.content:
 
 This catches silent data loss (e.g., due to quota exceeded, permission error, or race condition) and makes it visible rather than discovering it in the next session.
 
-<!-- ceiling: read-modify-write contract is prose, dominant failure mode is LLM skipping the instruction (not timing race). Long-term substrate: mode="merge_section" in memory_store API (#1351) would enforce this at write-time, not via prose. -->
+<!-- ceiling: RESOLVED by #1352. Server-side mode="merge_section" now enforces atomic section merge at write-time; no client-side RMW needed. -->
 
 This is the handoff to the next session. If open items exist in Step 8 output, they MUST be in this memory too — output is ephemeral, memory persists.
 

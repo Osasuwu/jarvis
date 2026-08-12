@@ -39,6 +39,12 @@ UPDATE_DELETE_MIGRATION_PATH = (
     / "migrations"
     / "20260508130000_sandcastle_anon_rls_update_delete_gate.sql"
 )
+RPC_MIGRATION_PATH = (
+    REPO_ROOT
+    / "supabase"
+    / "migrations"
+    / "20260812130000_add_merge_section_into_memory_rpc.sql"
+)
 SCHEMA_PATH = REPO_ROOT / "mcp-memory" / "schema.sql"
 
 # Per-table provenance column. memories + task_outcomes use source_provenance;
@@ -422,3 +428,160 @@ class TestUpdateDeletePolicyLogic:
         col = PROVENANCE_COLUMN[table]
         assert not _anon_delete_allowed(table, {col: None})
         assert not _anon_delete_allowed(table, {})
+
+
+# -- #1352 review round 6: merge_section_into_memory_upsert RPC guards ------
+#
+# The RPC is `security definer` (bypasses RLS) and hand-rolls, in PL/pgSQL,
+# the same anon/sandcastle provenance predicate the two policies above
+# already enforce declaratively — once for the INSERT path (parameter check)
+# and once for the UPDATE path (existing-row check). Getting this right took
+# 3 review rounds within the PR that introduced it (round 3: added the INSERT
+# guard; round 4: found it never gated UPDATEs; round 5: found it failed open
+# on NULL source_provenance). This section pins both guards the same way the
+# real RLS policies are pinned above, so a future edit to the RPC that
+# reintroduces either bug fails here instead of needing another review round.
+
+
+def _rpc_migration_sql() -> str:
+    assert RPC_MIGRATION_PATH.exists(), f"Missing migration: {RPC_MIGRATION_PATH}"
+    return RPC_MIGRATION_PATH.read_text(encoding="utf-8")
+
+
+class TestRpcMigrationShape:
+    def test_migration_file_exists(self):
+        assert RPC_MIGRATION_PATH.exists()
+
+    def test_insert_path_guard_present_and_null_safe(self):
+        """The INSERT-path guard (top of function, gates p_source_provenance)
+        must explicitly check for NULL before the LIKE-negation — a bare
+        `NOT LIKE` silently passes on NULL in plpgsql (round 5 regression)."""
+        sql = _rpc_migration_sql()
+        pattern = (
+            r"auth\.role\(\)\s*=\s*'anon'\s*"
+            r"and\s*\(\s*p_source_provenance\s+is\s+null\s+or\s+"
+            r"p_source_provenance\s+not\s+like\s+'sandcastle:%'\s*\)"
+        )
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            "RPC INSERT-path guard missing or not NULL-safe — expected "
+            "`auth.role() = 'anon' and (p_source_provenance is null or "
+            "p_source_provenance not like 'sandcastle:%')`"
+        )
+
+    def test_update_path_guard_present_and_null_safe(self):
+        """The UPDATE-path guard (after fetching the existing row) must gate
+        on the EXISTING row's source_provenance, not the incoming parameter
+        (round 4 regression), and must be NULL-safe the same way (round 5)."""
+        sql = _rpc_migration_sql()
+        pattern = (
+            r"v_id\s+is\s+not\s+null\s+and\s+auth\.role\(\)\s*=\s*'anon'\s*"
+            r"and\s*\(\s*v_existing_source_provenance\s+is\s+null\s+or\s+"
+            r"v_existing_source_provenance\s+not\s+like\s+'sandcastle:%'\s*\)"
+        )
+        assert re.search(pattern, sql, re.IGNORECASE), (
+            "RPC UPDATE-path guard missing or not NULL-safe — expected "
+            "`v_id is not null and auth.role() = 'anon' and "
+            "(v_existing_source_provenance is null or "
+            "v_existing_source_provenance not like 'sandcastle:%')`"
+        )
+
+    def test_security_definer(self):
+        """The guards only matter because the function bypasses RLS — pin
+        that assumption so a future edit dropping `security definer` (which
+        would make the hand-rolled guards redundant, not wrong) is visible."""
+        sql = _rpc_migration_sql()
+        assert re.search(r"security\s+definer", sql, re.IGNORECASE)
+
+
+def _rpc_insert_allowed(role: str, p_source_provenance) -> bool:
+    """Pure-Python reimplementation of the RPC's INSERT-path guard (gates
+    the row about to be created via the p_source_provenance parameter).
+
+    Mirrors `merge_section_into_memory_upsert`'s top-of-function check in
+    `20260812130000_add_merge_section_into_memory_rpc.sql`. Non-anon roles
+    (service_role, authenticated) are never gated by this RPC — they bypass
+    RLS legitimately, same as the real policies above.
+    """
+    if role != "anon":
+        return True
+    if p_source_provenance is None:
+        return False
+    return p_source_provenance.startswith("sandcastle:")
+
+
+def _rpc_update_allowed(role: str, v_id, v_existing_source_provenance) -> bool:
+    """Pure-Python reimplementation of the RPC's UPDATE-path guard (gates
+    modification of an already-existing row, independent of what provenance
+    the caller claims for the write — mirrors the real UPDATE policy's
+    USING clause).
+
+    `v_id is None` means no existing row (this call falls through to
+    INSERT instead), so the UPDATE-path guard does not apply.
+    """
+    if v_id is None:
+        return True
+    if role != "anon":
+        return True
+    if v_existing_source_provenance is None:
+        return False
+    return v_existing_source_provenance.startswith("sandcastle:")
+
+
+class TestRpcPolicyLogic:
+    def test_insert_sandcastle_prefix_accepted(self):
+        assert _rpc_insert_allowed("anon", "sandcastle:agent")
+        assert _rpc_insert_allowed("anon", "sandcastle:agent:run-42")
+
+    def test_insert_other_prefix_rejected(self):
+        for bad in [
+            "session:abc",
+            "skill:implement",
+            "user:explicit",
+            "rpc:merge_section",  # the RPC's own default — anon must still be gated
+            "Sandcastle:agent",  # case-sensitive
+            "sandcastles:agent",  # extra 's'
+            "",
+        ]:
+            assert not _rpc_insert_allowed("anon", bad), (
+                f"anon INSERT via RPC should reject provenance {bad!r}"
+            )
+
+    def test_insert_null_provenance_rejected(self):
+        """Round 5 regression: an explicit NULL override must not bypass the
+        guard via plpgsql's NULL-is-falsy `IF` semantics."""
+        assert not _rpc_insert_allowed("anon", None)
+
+    def test_insert_non_anon_roles_bypass(self):
+        for role in ["service_role", "authenticated"]:
+            assert _rpc_insert_allowed(role, None)
+            assert _rpc_insert_allowed(role, "user:explicit")
+
+    def test_update_sandcastle_row_accepted(self):
+        assert _rpc_update_allowed("anon", "some-uuid", "sandcastle:agent:run-1")
+
+    def test_update_non_sandcastle_row_rejected(self):
+        """Round 4 regression: an anon caller must not be able to overwrite a
+        non-sandcastle-owned row just by claiming a sandcastle: provenance
+        parameter — the guard checks the EXISTING row, not the parameter."""
+        for hostlike in ["session:abc", "skill:implement", "user:explicit"]:
+            assert not _rpc_update_allowed("anon", "some-uuid", hostlike), (
+                f"anon UPDATE via RPC should reject existing row owned by {hostlike!r}"
+            )
+
+    def test_update_null_existing_provenance_rejected(self):
+        """Round 5 regression: pre-existing rows with source_provenance IS
+        NULL (an expected legacy state per the slice-3 migration) must not
+        bypass the guard."""
+        assert not _rpc_update_allowed("anon", "some-uuid", None)
+
+    def test_update_no_existing_row_bypasses_update_guard(self):
+        """v_id is None means this call falls through to INSERT — the
+        UPDATE-path guard doesn't apply, but the INSERT-path guard still
+        gates it (tested separately above)."""
+        assert _rpc_update_allowed("anon", None, None)
+        assert _rpc_update_allowed("anon", None, "user:explicit")
+
+    def test_update_non_anon_roles_bypass(self):
+        for role in ["service_role", "authenticated"]:
+            assert _rpc_update_allowed(role, "some-uuid", None)
+            assert _rpc_update_allowed(role, "some-uuid", "user:explicit")
