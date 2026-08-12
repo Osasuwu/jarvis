@@ -124,3 +124,7 @@ User-scope MCP servers (registered by the installer from `.claude-userlevel/.mcp
 Do **not** use it for: refactoring, writing scripts from scratch, debugging business logic, code review, or general programming concepts — that's reasoning, not docs lookup.
 
 Rule of thumb: about to state a library's API surface or config from memory → pull context7 first and cite what it returns.
+
+## Pull-only references — check before guessing terminology
+
+Some repos keep a Glossary or reference index deliberately **pull-only** (not always-loaded, to keep it out of every session's token budget) — the repo's own `CLAUDE.md`/`CONTEXT.md` names where it lives. Before asserting the meaning of an unfamiliar repo-specific term, flag, or mechanism name, `Read` or `Grep` that repo's pull-only index first — a guess from training data or a prior repo's conventions is the same failure mode the context7 rule above exists to prevent for libraries, just aimed at a repo's own vocabulary instead of a library's API. This rule is generic on purpose: it says "check the current repo's own pointer," not any specific repo's file, so it holds across every repo this file loads into (per the one-directional layering invariant — user-level cites the pattern, never a specific repo's `CONTEXT.md`).
