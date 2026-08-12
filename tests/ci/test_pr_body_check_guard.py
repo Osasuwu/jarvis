@@ -5,7 +5,7 @@ escape hatches behave as the workflow promises:
 
   - Closes #NNN in body                → allowed (linked)
   - priority:critical label             → allowed (hotfix bypass)
-  - [no-issue] marker in body           → allowed (fix-inline per #428/#459)
+  - [no-issue] in body or title         → allowed (fix-inline per #428/#459)
   - refactor:/refactor(scope): title    → allowed (auto-bypass per #428)
   - none of the above                   → blocked
 
@@ -30,7 +30,7 @@ def evaluate(body: str, labels: list[str], title: str = "") -> tuple[bool, str]:
     if "priority:critical" in labels:
         return True, "hotfix"
 
-    if re.search(r"\[no-issue\]", body, re.IGNORECASE):
+    if re.search(r"\[no-issue\]", body, re.IGNORECASE) or re.search(r"\[no-issue\]", title, re.IGNORECASE):
         return True, "no-issue"
 
     if re.match(r"^refactor(\([^)]*\))?:", title, re.IGNORECASE):
@@ -161,6 +161,13 @@ def test_no_issue_marker_case_insensitive():
 
 def test_no_issue_marker_with_unrelated_label():
     allowed, reason = evaluate("[no-issue] inline doc fix", ["documentation"])
+    assert allowed
+    assert reason == "no-issue"
+
+
+def test_no_issue_marker_in_title_allows():
+    """Commit-msg convention places [no-issue] in the title, not the body."""
+    allowed, reason = evaluate("", [], title="fix(tests): isolate env [no-issue]")
     assert allowed
     assert reason == "no-issue"
 
