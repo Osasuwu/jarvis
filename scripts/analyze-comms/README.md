@@ -9,6 +9,8 @@ History: these scripts were originally bundled inside the `/reflect` skill at `~
 - `extract_comms.py SRC_DIR? OUT_JSONL` — walks `~/.claude/projects/*/*.jsonl` (or `SRC_DIR`) and emits compact JSONL with `{sess, proj, ts, role, len, text}` per real user/assistant turn. Filters out tool I/O, system reminders, hook injections.
 - `analyze_comms.py EXTRACT_JSONL` — aggregate stats (no quotes). Safe to print inline.
 - `compress_patterns.py EXTRACT_JSONL OUT_PATTERNS_JSON` — per-device pattern compression. Output `<DEVICE>_patterns.json` (~20KB) preserves anchor quotes truncated to 100 chars. Treat as sensitive personal data.
+- `detect_rule_violations.py EXTRACT_JSONL OUT_PATTERNS_JSON` — regex/keyword starter detector (#513). Reads `feedback`-type, `always_load`-tagged memories from Supabase (`SUPABASE_URL`/`SUPABASE_KEY` required), derives a keyword set per rule, and flags assistant messages matching a rule above threshold. Merges into `OUT_PATTERNS_JSON` under `"rule_violations"` — must run **after** `compress_patterns.py`, which overwrites the same file. Candidates are for owner labeling (#514), not a precision claim.
+- `detect_hallucinations.py EXTRACT_JSONL OUT_PATTERNS_JSON` — correction-phrase detector (#513). Flags a preceding assistant message as a hallucination-attribution candidate when a later user message contains a RU/EN correction phrase within a short lookback window. No Supabase dependency — the phrase list is hardcoded. Merges into `OUT_PATTERNS_JSON` under `"hallucinations"` — same after-`compress_patterns.py` ordering requirement.
 - `analyze_cross_device.py PATTERNS_JSON [PATTERNS_JSON ...] OUT_MERGED_JSON` — merges N device patterns files into a single ranked report with confidence weights.
 - `build_bundle.py` — deprecated stub, kept to surface a clear error if older docs reference it.
 
@@ -20,10 +22,14 @@ DATE=$(date +%Y-%m-%d)
 STAGE="$HOME/.cache/jarvis-comms-analysis/${DATE}_${DEVICE}"
 mkdir -p "$STAGE"
 
-python "$JARVIS_HOME/scripts/analyze-comms/extract_comms.py"     "$STAGE/comms_extract.jsonl"
-python "$JARVIS_HOME/scripts/analyze-comms/analyze_comms.py"     "$STAGE/comms_extract.jsonl"
-python "$JARVIS_HOME/scripts/analyze-comms/compress_patterns.py" "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
+python "$JARVIS_HOME/scripts/analyze-comms/extract_comms.py"          "$STAGE/comms_extract.jsonl"
+python "$JARVIS_HOME/scripts/analyze-comms/analyze_comms.py"          "$STAGE/comms_extract.jsonl"
+python "$JARVIS_HOME/scripts/analyze-comms/compress_patterns.py"      "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
+python "$JARVIS_HOME/scripts/analyze-comms/detect_rule_violations.py" "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
+python "$JARVIS_HOME/scripts/analyze-comms/detect_hallucinations.py"  "$STAGE/comms_extract.jsonl" "$STAGE/${DEVICE}_patterns.json"
 ```
+
+`detect_rule_violations.py` requires `SUPABASE_URL`/`SUPABASE_KEY` in the environment (reads `feedback`-type, `always_load`-tagged memories). Both detectors must run **after** `compress_patterns.py` — it overwrites `${DEVICE}_patterns.json`; the detectors merge into it.
 
 Then transfer `${DEVICE}_patterns.json` to the Phase B host (manually — Drive web UI, USB, Obsidian sync). No auto-upload; see [SKILL.md](../../.claude-userlevel/skills/reflect/SKILL.md) "Why no auto-upload".
 
