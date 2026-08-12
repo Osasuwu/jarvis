@@ -36,6 +36,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 MCP_MEMORY_REQUIREMENTS_PATH = REPO_ROOT / "mcp-memory" / "requirements.txt"
+MCP_MEMORY_PYPROJECT_PATH = REPO_ROOT / "mcp-memory" / "pyproject.toml"  # (#1313, #1538)
 
 # Any of these characters means the spec carries a version constraint at all
 # (as opposed to a bare self-referencing extra like "jarvis-agent[memory]").
@@ -45,9 +46,9 @@ _VERSION_OPERATOR_RE = re.compile(r"[<>=!~]")
 _UPPER_BOUNDED_RE = re.compile(r"<|==|~=")
 
 
-def _pyproject_dependency_specs() -> dict[str, str]:
+def _pyproject_dependency_specs(path: Path = PYPROJECT_PATH) -> dict[str, str]:
     """Map ``"<section> -> spec string"`` for every declared runtime dependency."""
-    data = tomllib.loads(PYPROJECT_PATH.read_text(encoding="utf-8"))
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
     project = data["project"]
     specs: dict[str, str] = {}
     for spec in project.get("dependencies", []):
@@ -102,10 +103,26 @@ class TestDependencyBoundsGuard:
             "(#1296):\n" + "\n".join(f"  {o}" for o in offenses)
         )
 
+    def test_mcp_memory_pyproject_runtime_dependencies_have_upper_bounds(self):
+        """mcp-memory/pyproject.toml (#1313, #1538) is a second runtime-resolution
+        surface alongside requirements.txt — uv sync resolves from it directly, so
+        an unbounded range here reintroduces the exact #1296 outage mode uv sync
+        was meant to avoid.
+        """
+        specs = _pyproject_dependency_specs(MCP_MEMORY_PYPROJECT_PATH)
+        assert specs, "expected at least one dependency spec in mcp-memory/pyproject.toml"
+        offenses = _unbounded(specs)
+        assert not offenses, (
+            f"Found {len(offenses)} unbounded dependency range(s) in "
+            "mcp-memory/pyproject.toml (#1296 — every runtime range must carry an "
+            "explicit upper bound):\n" + "\n".join(f"  {o}" for o in offenses)
+        )
+
     def test_guarded_files_are_canonical(self):
         """Lock the scanned-file set so a new manifest can't quietly join the repo
-        unbounded (e.g. a future `mcp-memory/pyproject.toml` or a second
-        requirements.txt) without this guard being extended to cover it.
+        unbounded (e.g. a second requirements.txt) without this guard being
+        extended to cover it.
         """
         assert PYPROJECT_PATH.is_file()
         assert MCP_MEMORY_REQUIREMENTS_PATH.is_file()
+        assert MCP_MEMORY_PYPROJECT_PATH.is_file()
