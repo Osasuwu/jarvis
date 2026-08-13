@@ -58,20 +58,20 @@
       {
         "matcher": "auto",
         "hooks": [
-          { "type": "command", "command": "python scripts/hook-resolver.py pre-compact-backup.py" }
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
         ]
       },
       {
         "matcher": "manual",
         "hooks": [
-          { "type": "command", "command": "python scripts/hook-resolver.py pre-compact-backup.py" }
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
         ]
       }
     ],
     "SessionEnd": [
       {
         "hooks": [
-          { "type": "command", "command": "python scripts/hook-resolver.py pre-compact-backup.py" }
+          { "type": "command", "command": "python scripts/pre-compact-backup.py" }
         ]
       }
     ],
@@ -81,11 +81,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py device-info.py"
+            "command": "python scripts/device-info.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py session-context.py"
+            "command": "python scripts/session-context.py"
           }
         ]
       },
@@ -94,11 +94,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py device-info.py"
+            "command": "python scripts/device-info.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py session-context.py"
+            "command": "python scripts/session-context.py"
           }
         ]
       }
@@ -108,15 +108,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py comm-patterns-extract.py"
+            "command": "python scripts/comm-patterns-extract.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py deriver-accumulator.py"
+            "command": "python scripts/deriver-accumulator.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py deriver-sessionend.py"
+            "command": "python scripts/deriver-sessionend.py"
           }
         ]
       }
@@ -127,7 +127,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py secret-scanner.py"
+            "command": "python scripts/secret-scanner.py"
           }
         ]
       },
@@ -136,11 +136,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py secret-scanner.py"
+            "command": "python scripts/secret-scanner.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py pretooluse-recall-hook.py"
+            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       },
@@ -149,15 +149,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py secret-scanner.py"
+            "command": "python scripts/secret-scanner.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py memory-dedup-check.py"
+            "command": "python scripts/memory-dedup-check.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py pretooluse-recall-hook.py"
+            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       },
@@ -166,15 +166,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py secret-scanner.py"
+            "command": "python scripts/secret-scanner.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py protected-files.py"
+            "command": "python scripts/protected-files.py"
           },
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py pretooluse-recall-hook.py"
+            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       },
@@ -183,7 +183,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py pretooluse-recall-hook.py"
+            "command": "python scripts/pretooluse-recall-hook.py"
           }
         ]
       },
@@ -192,7 +192,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py record-decision-gate.py"
+            "command": "python scripts/record-decision-gate.py"
           }
         ]
       }
@@ -202,7 +202,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python scripts/hook-resolver.py memory-recall-hook.py"
+            "command": "python scripts/memory-recall-hook.py"
           }
         ]
       }
@@ -215,6 +215,6 @@
   },
   "statusLine": {
     "type": "command",
-    "command": "python scripts/hook-resolver.py statusline.py"
+    "command": "python scripts/statusline.py"
   }
 }
