@@ -145,6 +145,28 @@ def detect_state(target_root: Path, current_sha: str) -> tuple[str, str | None]:
 # commands like `python scripts/foo.py && cat config/SOUL.md`.
 _POSIX_PATH_PATTERN = re.compile(r"(?<!\S)(scripts|config)/")
 
+# Same token-boundary rule as _POSIX_PATH_PATTERN, scoped to `scripts/<name>`
+# specifically so the settings.json rewrite (below) can swap the whole token
+# for a hook-resolver.py invocation of just `<name>`.
+_HOOK_SCRIPT_PATTERN = re.compile(r"(?<!\S)scripts/(\S+)")
+
+# Hooks that enforce something (secrets, protected files, decision logging,
+# memory dedup) must fail CLOSED on resolution failure — silently skipping
+# enforcement defeats the hook. Everything else (session bootstrap, recall,
+# accumulators, statusline) fails OPEN via --soft so a resolution hiccup
+# degrades a feature instead of blocking the session (#1565).
+_SOFT_FAIL_HOOK_SCRIPTS = {
+    "device-info.py",
+    "session-context.py",
+    "comm-patterns-extract.py",
+    "deriver-accumulator.py",
+    "deriver-sessionend.py",
+    "pretooluse-recall-hook.py",
+    "memory-recall-hook.py",
+    "pre-compact-backup.py",
+    "statusline.py",
+}
+
 
 # A pre-migration `.mcp.json` sitting in any parent dir of JARVIS_HOME (e.g.
 # `D:\Github\.mcp.json`) shadows the correctly-templated user-level file:
@@ -259,26 +281,44 @@ def _fix_env_encoding(path: Path, issues: str) -> None:
         raise
 
 
+def _hook_resolver_invocation(script_name: str, repo_root_posix: str) -> str:
+    """Build the `scripts/hook-resolver.py [--soft] <script_name>` token that
+    replaces a bare `scripts/<script_name>` in a settings.json hook command.
+    """
+    flag = "--soft " if script_name in _SOFT_FAIL_HOOK_SCRIPTS else ""
+    return f"{repo_root_posix}/scripts/hook-resolver.py {flag}{script_name}"
+
+
 def _transform_json_paths(node: Any, repo_root_posix: str, use_project_dir_var: bool = False) -> Any:
     """Rewrite relative `scripts/...` and `config/...` references to
     absolute paths inside the jarvis repo. JSON-aware walk preserves
     structure while only touching string leaves.
 
-    `use_project_dir_var=True` emits `$CLAUDE_PROJECT_DIR/scripts/...` instead
-    of an install-time-baked absolute path. Claude Code sets that env var per
-    session for command-hook subprocesses, tracking the invoking session's own
-    root — including a worktree's root, not the main checkout (#1186; verified
-    against github.com/anthropics/claude-code#36360). Baking an absolute path
-    instead pins every hook to whatever checkout was live at install time,
-    which is wrong for any other worktree session. Reserved for settings.json
-    (command-type hooks); other JSON consumers (e.g. .mcp.json's MCP server
-    `args`, which are spawned without shell expansion) keep the baked-absolute
-    form since an unexpanded literal `$CLAUDE_PROJECT_DIR/...` path segment
-    would not resolve.
+    `use_project_dir_var=True` (settings.json only) routes hook commands
+    through `scripts/hook-resolver.py` instead of a bare path. settings.json
+    is a user-level file whose hooks fire in EVERY Claude Code session, not
+    just jarvis ones — `$CLAUDE_PROJECT_DIR` there is the INVOKING session's
+    own root (#1186; verified against github.com/anthropics/claude-code#36360),
+    which for a non-jarvis session has no `scripts/` dir with jarvis's hook
+    files at all (#1565). hook-resolver.py's own invocation path is baked
+    absolute (never `$CLAUDE_PROJECT_DIR`-templated) so it's always reachable;
+    it resolves the actual jarvis checkout to run from at hook-run time
+    (worktree-aware for jarvis sessions, falling back to the canonical
+    install for everyone else). Other JSON consumers (e.g. .mcp.json's MCP
+    server `args`, spawned without shell expansion) keep the baked-absolute
+    form for the target script directly — no resolver involved there.
+
+    ceiling: settings.json today only ever contains single-token
+    `python scripts/<hook>.py` commands (no `config/` references, no
+    multi-command strings) — _HOOK_SCRIPT_PATTERN handles exactly that shape.
+    A future hook command combining multiple `scripts/` tokens or referencing
+    `config/` needs this revisited.
     """
     if isinstance(node, str):
         if use_project_dir_var:
-            return _POSIX_PATH_PATTERN.sub(lambda m: f"$CLAUDE_PROJECT_DIR/{m.group(1)}/", node)
+            return _HOOK_SCRIPT_PATTERN.sub(
+                lambda m: _hook_resolver_invocation(m.group(1), repo_root_posix), node
+            )
         return _POSIX_PATH_PATTERN.sub(lambda m: f"{repo_root_posix}/{m.group(1)}/", node)
     if isinstance(node, list):
         return [_transform_json_paths(x, repo_root_posix, use_project_dir_var) for x in node]
