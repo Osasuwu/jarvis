@@ -838,7 +838,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1,<10" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23,<2" },
     { name = "python-dotenv", specifier = ">=1.0.1,<2" },
-    { name = "pyyaml", marker = "extra == 'memory'", specifier = ">=6.0,<7" },
+    { name = "pyyaml", marker = "extra == 'memory'", specifier = ">=6.0.3,<7" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.1,<1" },
     { name = "supabase", marker = "extra == 'agents'", specifier = ">=2.0.0,<3" },
     { name = "supabase", marker = "extra == 'memory'", specifier = ">=2.0.0,<3" },
