@@ -259,16 +259,31 @@ def _fix_env_encoding(path: Path, issues: str) -> None:
         raise
 
 
-def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
+def _transform_json_paths(node: Any, repo_root_posix: str, use_project_dir_var: bool = False) -> Any:
     """Rewrite relative `scripts/...` and `config/...` references to
     absolute paths inside the jarvis repo. JSON-aware walk preserves
-    structure while only touching string leaves."""
+    structure while only touching string leaves.
+
+    `use_project_dir_var=True` emits `$CLAUDE_PROJECT_DIR/scripts/...` instead
+    of an install-time-baked absolute path. Claude Code sets that env var per
+    session for command-hook subprocesses, tracking the invoking session's own
+    root — including a worktree's root, not the main checkout (#1186; verified
+    against github.com/anthropics/claude-code#36360). Baking an absolute path
+    instead pins every hook to whatever checkout was live at install time,
+    which is wrong for any other worktree session. Reserved for settings.json
+    (command-type hooks); other JSON consumers (e.g. .mcp.json's MCP server
+    `args`, which are spawned without shell expansion) keep the baked-absolute
+    form since an unexpanded literal `$CLAUDE_PROJECT_DIR/...` path segment
+    would not resolve.
+    """
     if isinstance(node, str):
+        if use_project_dir_var:
+            return _POSIX_PATH_PATTERN.sub(lambda m: f"$CLAUDE_PROJECT_DIR/{m.group(1)}/", node)
         return _POSIX_PATH_PATTERN.sub(lambda m: f"{repo_root_posix}/{m.group(1)}/", node)
     if isinstance(node, list):
-        return [_transform_json_paths(x, repo_root_posix) for x in node]
+        return [_transform_json_paths(x, repo_root_posix, use_project_dir_var) for x in node]
     if isinstance(node, dict):
-        return {k: _transform_json_paths(v, repo_root_posix) for k, v in node.items()}
+        return {k: _transform_json_paths(v, repo_root_posix, use_project_dir_var) for k, v in node.items()}
     return node
 
 
@@ -615,19 +630,24 @@ def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> s
     )
 
 
-def _template_bytes(raw: bytes, ext: str, repo_root: Path, claude_home: Path) -> bytes:
+def _template_bytes(raw: bytes, ext: str, repo_root: Path, claude_home: Path, filename: str = "") -> bytes:
     """Templating core shared by `template_content` and git-history reads.
 
     For .json content: parse, rewrite relative `scripts/`/`config/` paths to
-    absolute, pretty-print. For other content: plain placeholder replace.
-    Non-text / non-json content falls back to a raw copy (no transformation).
+    absolute (or, for settings.json, to `$CLAUDE_PROJECT_DIR/...` — see
+    `_transform_json_paths`), pretty-print. For other content: plain
+    placeholder replace. Non-text / non-json content falls back to a raw copy
+    (no transformation).
     """
     if ext == ".json":
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return raw
-        transformed = _transform_json_paths(data, repo_root.as_posix())
+        # ceiling: gated by exact filename, not "is this a command-hook JSON
+        # file" in general — settings.json is the only one today. A future
+        # second command-type hook config file needs adding here explicitly.
+        transformed = _transform_json_paths(data, repo_root.as_posix(), use_project_dir_var=filename == "settings.json")
         rendered = json.dumps(transformed, indent=2, ensure_ascii=False) + "\n"
         return _substitute_placeholders(rendered, repo_root, claude_home).encode("utf-8")
     try:
@@ -639,7 +659,7 @@ def _template_bytes(raw: bytes, ext: str, repo_root: Path, claude_home: Path) ->
 
 def template_content(source: Path, repo_root: Path, claude_home: Path) -> bytes:
     """Read source, apply templating, return bytes to write at dest."""
-    return _template_bytes(source.read_bytes(), source.suffix.lower(), repo_root, claude_home)
+    return _template_bytes(source.read_bytes(), source.suffix.lower(), repo_root, claude_home, filename=source.name)
 
 
 def _git_show_at(repo_root: Path, sha: str, rel_path: str) -> bytes | None:
@@ -1025,7 +1045,7 @@ def _merge_json_file(
             if base_bytes is not None:
                 if template:
                     base_bytes = _template_bytes(
-                        base_bytes, src.suffix.lower(), repo_root, claude_home
+                        base_bytes, src.suffix.lower(), repo_root, claude_home, filename=src.name
                     )
                 try:
                     base_data = json.loads(base_bytes.decode("utf-8"))
