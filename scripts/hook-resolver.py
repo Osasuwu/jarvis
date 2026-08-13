@@ -22,6 +22,8 @@ from pathlib import Path
 
 
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
+# Directories under the repo root that host worktree checkouts
+_WORKTREE_PARENTS = {".claude", ".reactive", ".sandcastle"}
 
 
 def detect_project_root(path: str | None) -> Path | None:
@@ -32,7 +34,10 @@ def detect_project_root(path: str | None) -> Path | None:
     session-context.py, etc.).
 
     Rightmost match wins so a nested checkout resolves to the inner repo.
-    Works from any path (cwd, file path, environment variable, etc.).
+    Extends the root into the worktree directory when cwd is inside
+    <repo>/<worktree-parent>/worktrees/<name> (the worktree has its own
+    scripts/ checkout).  Works from any path (cwd, file path, environment
+    variable, etc.).
     """
     if not path:
         return None
@@ -41,34 +46,33 @@ def detect_project_root(path: str | None) -> Path | None:
     except Exception:
         return None
 
-    for part in reversed(parts):
-        if part.lower() in KNOWN_PROJECTS:
-            # Reconstruct the path up to this part
-            try:
-                # On Windows: parts = ('C:\\', 'Users', ..., 'jarvis', ...)
-                # We want the path ending at 'jarvis'
-                idx = len(parts) - 1 - list(reversed(parts)).index(part)
-                return Path(*parts[:idx + 1])
-            except Exception:
-                pass
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() in KNOWN_PROJECTS:
+            root = Path(*parts[: i + 1])
+            rest = parts[i + 1 :]
+            # Extend root into the worktree directory so each worktree session
+            # resolves scripts from its own checkout, not the main repo copy.
+            if len(rest) >= 3 and rest[0] in _WORKTREE_PARENTS and rest[1] == "worktrees":
+                root = root.joinpath(*rest[:3])
+            return root
     return None
 
 
 def main():
     if len(sys.argv) < 2:
         print("Usage: python hook-resolver.py <script-name> [args...]", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)
 
     script_name = sys.argv[1]
     script_args = sys.argv[2:]
 
     # Try to detect project root from multiple sources (in priority order):
-    # 1. Hook system environment variable (if it sets one)
+    # 1. CLAUDE_PROJECT_DIR — Claude Code's documented env var for the project root
     # 2. Current working directory
     # 3. This script's own location (as fallback)
     project_root = None
     for candidate in [
-        os.environ.get("CLAUDE_HOOK_CWD"),
+        os.environ.get("CLAUDE_PROJECT_DIR"),
         os.getcwd(),
         str(Path(__file__).resolve().parent.parent),
     ]:
@@ -79,17 +83,18 @@ def main():
                 break
 
     if not project_root:
-        print(f"ERROR: Could not detect project root from any source", file=sys.stderr)
-        sys.exit(1)
+        print("ERROR: Could not detect project root from any source", file=sys.stderr)
+        # Exit 2 (blocking) so security-critical hooks like secret-scanner.py
+        # fail closed rather than silently skipping enforcement.
+        sys.exit(2)
 
     # Resolve script path
     script_path = project_root / "scripts" / script_name
     if not script_path.exists():
         print(f"ERROR: Script not found: {script_path}", file=sys.stderr)
-        sys.exit(1)
+        sys.exit(2)
 
-    # Invoke the script
-    # Use subprocess.call to pass through exit codes
+    # Invoke the script; pass through its exit code directly.
     sys.exit(subprocess.call([sys.executable, str(script_path), *script_args]))
 
 
