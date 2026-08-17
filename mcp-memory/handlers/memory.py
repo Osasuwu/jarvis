@@ -676,6 +676,42 @@ def _record_link_decision_path(client, stored_id: str, path: str) -> None:
         log_swallowed("memory._record_link_decision_path", exc)
 
 
+def _record_merge_section_failure(
+    client, mem_name: str, project: str | None, action: str, failure_detail: str | None
+) -> None:
+    """Dual-write a merge_section conflict/error to events_canonical (#1582).
+
+    The two incidents that motivated #1582 left no durable trace of what
+    actually failed — only the generic response message, discarded once
+    the caller moved on. This makes the failure queryable after the fact
+    regardless of whether `--debug=mcp` was on. Mirrors
+    `_record_link_decision_path`'s dual-write shape (import guard,
+    defense-in-depth try/except — emit_event already buffers on its own
+    failures and never raises).
+    """
+    try:
+        from events_canonical import emit_event
+    except Exception:  # noqa: BLE001 — substrate optional during rollout
+        emit_event = None
+    if emit_event is None:
+        return
+    try:
+        emit_event(
+            client,
+            actor="mcp_memory:merge_section",
+            action="merge_section_write_failed",
+            payload={
+                "name": mem_name,
+                "project": project,
+                "action": action,
+                "detail": failure_detail,
+            },
+            outcome="failure",
+        )
+    except Exception as exc:  # noqa: BLE001 — defense in depth
+        log_swallowed("memory._record_merge_section_failure", exc)
+
+
 async def _create_auto_links(
     client,
     stored_id: str,
@@ -1193,6 +1229,10 @@ async def _handle_store(args: dict) -> list[TextContent]:
     merge_section_data = None  # Data for merge_section RPC call
     stored_id = None
     action = "error"
+    # #1582: detail behind a merge_section conflict/error, threaded through
+    # to the final response so a write failure is diagnosable — previously
+    # discarded, leaving only a generic "write did not persist" message.
+    failure_detail = None
     proj_label = ""
 
     if mode == "merge_section":
@@ -1377,14 +1417,21 @@ async def _handle_store(args: dict) -> list[TextContent]:
                                     # Document became unparseable during retry
                                     log_swallowed("memory._handle_store.merge_section_retry_unparseable", e)
                                     action = "error"
+                                    failure_detail = f"{type(e).__name__}: {e}"
                                     break
                                 # Continue to next RPC attempt with fresh data
                                 continue
                             else:
                                 # Final attempt failed
                                 action = "conflict"
+                                failure_detail = conflict_reason
                 except Exception as exc:
                     log_swallowed("memory._handle_store.merge_section_rpc", exc)
+                    # #1582: capture while `exc` is still in scope — Python
+                    # deletes the except-clause variable on block exit, so
+                    # any later use (the exhausted-retries branch below)
+                    # would silently lose the detail without this.
+                    failure_detail = f"{type(exc).__name__}: {exc}"
                     # #1580: a Postgres RPC commits as part of executing the
                     # function, before the HTTP response is returned — if the
                     # response is lost in transit after commit (timeout,
@@ -1434,6 +1481,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     except ValueError as e:
                         log_swallowed("memory._handle_store.merge_section_retry_unparseable", e)
                         action = "error"
+                        failure_detail = f"{type(e).__name__}: {e}"
                         break
 
         # #658 contract: stored=True must be the unambiguous success signal.
@@ -1442,6 +1490,8 @@ async def _handle_store(args: dict) -> list[TextContent]:
         # response block below, which would otherwise emit stored=True with a
         # null memory_id.
         if action in ("conflict", "error"):
+            detail_suffix = f" Detail: {failure_detail}" if failure_detail else ""
+            _record_merge_section_failure(client, mem_name, project, action, failure_detail)
             return [
                 TextContent(
                     type="text",
@@ -1453,6 +1503,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
                             "message": (
                                 "Error (mode='merge_section'): write did not persist "
                                 f"(action={action}). No memory was stored — retry the call."
+                                f"{detail_suffix}"
                             ),
                         }
                     ),
