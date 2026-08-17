@@ -260,7 +260,9 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
             return [TextContent(type="text", text="Error: confidence must be in [0.0, 1.0]")]
 
     actor = args.get("actor") or "skill:unknown"
-    project = args.get("project")
+    project = (args.get("project") or "").strip()
+    if not project:
+        return [TextContent(type="text", text="Error: project is required")]
 
     client = server._get_client()
 
@@ -310,8 +312,7 @@ async def _handle_record_decision(args: dict) -> list[TextContent]:
         payload["memories_used_unresolved"] = unresolved_memories
     if confidence is not None:
         payload["confidence"] = confidence
-    if project:
-        payload["project"] = project
+    payload["project"] = project
     if bool(args.get("intentionally_empty")):
         payload["intentionally_empty"] = True
     # #1269: stamped by the PreToolUse gate (updatedInput) — payload field,

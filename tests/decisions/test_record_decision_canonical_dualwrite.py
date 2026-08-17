@@ -67,10 +67,13 @@ class _FakeTable:
     can inspect what was written to each table.
     """
 
-    def __init__(self, name: str, *,
-                 inserted_episode_id: str = "ep-123",
-                 canonical_raises: Exception | None = None,
-                 ) -> None:
+    def __init__(
+        self,
+        name: str,
+        *,
+        inserted_episode_id: str = "ep-123",
+        canonical_raises: Exception | None = None,
+    ) -> None:
         self._name = name
         self._insert_payloads: list[dict] = []
         self._canonical_raises = canonical_raises
@@ -80,11 +83,7 @@ class _FakeTable:
         self._insert_payloads.append(payload)
         if self._name == "events_canonical" and self._canonical_raises is not None:
             raise self._canonical_raises
-        return MagicMock(
-            execute=lambda: MagicMock(
-                data=[{"id": self._inserted_episode_id}]
-            )
-        )
+        return MagicMock(execute=lambda: MagicMock(data=[{"id": self._inserted_episode_id}]))
 
     def select(self, *args, **kwargs) -> _FakeSelectBuilder:
         return _FakeSelectBuilder()
@@ -98,10 +97,12 @@ class _FakeClient:
     return the same instance — insert payloads are accumulated.
     """
 
-    def __init__(self, *,
-                 inserted_episode_id: str = "ep-123",
-                 canonical_raises: Exception | None = None,
-                 ) -> None:
+    def __init__(
+        self,
+        *,
+        inserted_episode_id: str = "ep-123",
+        canonical_raises: Exception | None = None,
+    ) -> None:
         self._tables: dict[str, _FakeTable] = {}
         self._inserted_episode_id = inserted_episode_id
         self._canonical_raises = canonical_raises
@@ -141,6 +142,7 @@ class TestDualWriteHappyPath:
                 "decision": "Pick X",
                 "rationale": "Because of Y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         assert "Decision recorded" in result[0].text
@@ -148,7 +150,9 @@ class TestDualWriteHappyPath:
         episode_inserts = _calls_to_table(client, "episodes")
         canonical_inserts = _calls_to_table(client, "events_canonical")
         assert len(episode_inserts) == 1, f"expected 1 episodes insert, got {len(episode_inserts)}"
-        assert len(canonical_inserts) == 1, f"expected 1 events_canonical insert, got {len(canonical_inserts)}"
+        assert len(canonical_inserts) == 1, (
+            f"expected 1 events_canonical insert, got {len(canonical_inserts)}"
+        )
 
         # Episodes path preserved (legacy contract).
         ep = episode_inserts[0]
@@ -172,6 +176,7 @@ class TestDualWriteHappyPath:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         canonical = _calls_to_table(client, "events_canonical")[0]
@@ -197,6 +202,7 @@ class TestOTelKeysFromLLMMetadata:
                     "provider": "anthropic",
                     "operation": "chat",
                 },
+                "project": "jarvis",
             }
         )
         canonical = _calls_to_table(client, "events_canonical")[0]
@@ -221,6 +227,7 @@ class TestOTelKeysFromLLMMetadata:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         canonical = _calls_to_table(client, "events_canonical")[0]
@@ -241,9 +248,7 @@ class TestOTelKeysFromLLMMetadata:
 class TestCanonicalFailureDoesNotBreakEpisodeWrite:
     @pytest.mark.asyncio
     async def test_substrate_failure_returns_success(self, monkeypatch):
-        client = _FakeClient(
-            canonical_raises=RuntimeError("connection dropped")
-        )
+        client = _FakeClient(canonical_raises=RuntimeError("connection dropped"))
         monkeypatch.setattr("server._get_client", lambda: client)
 
         result = await _handle_record_decision(
@@ -251,6 +256,7 @@ class TestCanonicalFailureDoesNotBreakEpisodeWrite:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         # Episode write succeeded — caller sees success.

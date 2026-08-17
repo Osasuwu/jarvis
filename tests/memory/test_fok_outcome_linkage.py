@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import server  # noqa: F401 — must import before handlers.decision to avoid a
+
 # partial-init circular import (server -> handlers.outcome -> handlers.decision)
 import handlers.decision as dec
 
@@ -46,10 +47,12 @@ def _make_linkage_test_client(
 
     # Episode insert returns decision_made episode with timestamp
     client.table.return_value.insert.return_value.execute.return_value = MagicMock(
-        data=[{
-            "id": "ep-decision-1",
-            "created_at": decision_timestamp,
-        }]
+        data=[
+            {
+                "id": "ep-decision-1",
+                "created_at": decision_timestamp,
+            }
+        ]
     )
 
     # Setup fok_judgments.select() chain
@@ -60,9 +63,7 @@ def _make_linkage_test_client(
         chain.is_.return_value = chain
 
         # Return provided judgments
-        chain.execute.return_value = MagicMock(
-            data=fok_judgments_to_return or []
-        )
+        chain.execute.return_value = MagicMock(data=fok_judgments_to_return or [])
         return chain
 
     # Setup events_canonical.select() chain — captures event_id from .eq() for payload lookup
@@ -95,10 +96,12 @@ def _make_linkage_test_client(
         if name == "episodes":
             m = MagicMock()
             m.insert.return_value.execute.return_value = MagicMock(
-                data=[{
-                    "id": "ep-decision-1",
-                    "created_at": decision_timestamp,
-                }]
+                data=[
+                    {
+                        "id": "ep-decision-1",
+                        "created_at": decision_timestamp,
+                    }
+                ]
             )
             return m
         elif name == "fok_judgments":
@@ -137,6 +140,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -161,6 +165,7 @@ class TestFokOutcomeLinkage:
                 "rationale": "because",
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
+                "project": "jarvis",
                 # No outcomes_referenced
             }
         )
@@ -186,6 +191,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 # No memories_used
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -220,6 +226,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -260,6 +267,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -294,6 +302,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -328,6 +337,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -363,6 +373,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -437,6 +448,7 @@ class TestDecisionSwallowedExceptions:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
         await asyncio.sleep(0)
@@ -473,6 +485,7 @@ class TestDecisionSwallowedExceptions:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
         await asyncio.sleep(0)
@@ -498,13 +511,12 @@ class TestDecisionSwallowedExceptions:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
         await asyncio.sleep(0)
 
-        assert any(
-            site == "decision._link_fok_judgments_to_outcomes" for site, _ in calls
-        )
+        assert any(site == "decision._link_fok_judgments_to_outcomes" for site, _ in calls)
 
 
 def test_fok_calibration_summary_in_schema():
@@ -522,7 +534,9 @@ def test_fok_calibration_summary_in_schema():
 def test_fok_judgments_outcome_id_column():
     """Regression guard: fok_judgments.outcome_id FK must exist in schema."""
     schema = (Path(__file__).resolve().parents[2] / "mcp-memory" / "schema.sql").read_text()
-    lines = [line for line in schema.splitlines() if "create table if not exists fok_judgments" in line]
+    lines = [
+        line for line in schema.splitlines() if "create table if not exists fok_judgments" in line
+    ]
     if not lines:
         # Check migrations
         migrations_dir = Path(__file__).resolve().parents[2] / "supabase" / "migrations"
