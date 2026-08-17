@@ -416,15 +416,20 @@ def _emit_allow(
     """Emit a single combined ``hookSpecificOutput`` for an allowed call.
 
     ``updatedInput`` carries the ``session_id`` stamp (#1269, forensic
-    grouping metadata only) and the ``cwd`` stamp (#1423, the actual
-    recovery-key component alongside ``project``+``since``) as independent
+    grouping metadata only), the ``cwd`` stamp (#1423, the actual
+    recovery-key component alongside ``project``+``since``), and the
+    ``project`` auto-stamp (#1587 — ``project`` is now a hard-required
+    server-side field; leaving it to be remembered manually reproduces the
+    exact failure mode #1269/#1423 were built to fix) as independent
     optional fields, plus ``additionalContext`` (mid-turn recall, #332) on
     the SAME payload — this is the one-process replacement for the two
     sibling hooks that used to race on this matcher (#1421). ``cwd`` has no
     sanitization failure mode (it falls back to ``os.getcwd()`` upstream),
     so it is stamped independently of whether ``session_id`` validated.
-    Silent exit when nothing applies, matching the old per-hook silent-exit
-    contract.
+    ``project`` is only auto-stamped when the caller left it blank — an
+    explicit non-blank ``project`` (e.g. a deliberate cross-project call)
+    is never overridden. Silent exit when nothing applies, matching the
+    old per-hook silent-exit contract.
     """
     inner: dict = {"hookEventName": "PreToolUse"}
     updated: dict | None = None
@@ -435,6 +440,12 @@ def _emit_allow(
         if updated is None:
             updated = dict(tool_input)
         updated["cwd"] = cwd
+    if not (tool_input.get("project") or "").strip():
+        detected = detect_project(cwd)
+        if detected:
+            if updated is None:
+                updated = dict(tool_input)
+            updated["project"] = detected
     if updated is not None:
         inner["updatedInput"] = updated
     if context:
