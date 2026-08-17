@@ -695,6 +695,48 @@ class TestHandleStoreMergeSectionFailureModes:
         assert body["memory_id"] is None
 
     @pytest.mark.asyncio
+    async def test_rpc_exception_verified_as_already_persisted_returns_stored_true(self):
+        """#1580: a Postgres RPC commits as part of executing the function,
+        before the HTTP response reaches the client — if that response is
+        lost in transit after commit (timeout, dropped connection), the
+        client sees an exception even though the write already landed. Pins
+        the fix: on exception, verify via a read before reporting failure,
+        and treat a matching read as success instead of a false stored=False.
+
+        Contrast with test_rpc_exception_on_every_attempt_returns_stored_false
+        above, whose always-empty table mock means the verify read never
+        matches — that test pins the still-correct "truly never persisted"
+        path, this one pins the new "persisted despite the exception" path.
+        """
+        content = "## [entry] foo — 2026-01-01\n\nbody"
+        responses = iter(
+            [
+                MagicMock(data=[]),  # initial fetch: no existing doc
+                MagicMock(data=[{"id": "verified-1", "content": content}]),  # post-exception verify read
+            ]
+        )
+        self.tbl.select.return_value.limit.return_value.execute.side_effect = lambda: next(responses)
+        self.client.rpc.side_effect = RuntimeError("connection reset")
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_exception_but_persisted",
+                "content": content,
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        body = json.loads(result[0].text)
+        assert body["stored"] is True
+        assert body["action"] == "merged"
+        assert body["memory_id"] == "verified-1"
+        # Confirmed via read on the first exception — no need to exhaust retries.
+        assert self.client.rpc.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_success_on_first_attempt_still_returns_stored_true(self):
         self.client.rpc.return_value.execute.return_value = MagicMock(
             data=[{"success": True, "memory_id": "merged-1", "conflict_reason": None}]

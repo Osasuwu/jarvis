@@ -1104,6 +1104,49 @@ def _merge_section_into_markdown(
             return section_content
 
 
+def _fetch_and_remerge_section(
+    client,
+    mem_name: str,
+    project: str | None,
+    section_header: str,
+    new_section_content: str,
+    description: str,
+    tags: list,
+    max_content_size: int = 1_000_000,
+) -> dict:
+    """Read the current stored document and re-merge the section into it.
+
+    Shared by the initial merge_section fetch, the conflict-retry re-fetch,
+    and the exception-branch recovery re-fetch (#1580) — all three need the
+    identical read-merge-truncate-preserve steps against fresh server state.
+
+    Raises:
+        ValueError: if existing content is unparseable as markdown sections.
+    """
+    q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
+    if project is not None:
+        q = q.eq("project", project)
+    else:
+        q = q.is_("project", "null")
+    existing_row = q.limit(1).execute()
+    existing_data = existing_row.data[0] if existing_row.data else {}
+    existing_content = existing_data.get("content", "")
+    existing_updated_at = existing_data.get("updated_at")
+    existing_description = existing_data.get("description")
+    existing_tags = existing_data.get("tags")
+
+    merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
+    if len(merged_content) > max_content_size:
+        merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+
+    return {
+        "merged_content": merged_content,
+        "expected_updated_at": existing_updated_at,
+        "preserve_description": existing_description is not None and description == "",
+        "preserve_tags": existing_tags is not None and tags == [],
+    }
+
+
 async def _handle_store(args: dict) -> list[TextContent]:
     client = server._get_client()
 
@@ -1181,42 +1224,14 @@ async def _handle_store(args: dict) -> list[TextContent]:
         # call's `except Exception` below) instead of letting them crash
         # the request.
         try:
-            q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
-            if project is not None:
-                q = q.eq("project", project)
-            else:
-                q = q.is_("project", "null")
-            existing_row = q.limit(1).execute()
-            existing_data = existing_row.data[0] if existing_row.data else {}
-            existing_content = existing_data.get("content", "")
-            existing_updated_at = existing_data.get("updated_at")  # For optimistic concurrency
-            existing_description = existing_data.get("description")
-            existing_tags = existing_data.get("tags")
-
-            # Merge sections: merge the new section into existing content
-            merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
-
             # ceiling: merged_state size limit. working_state documents can grow unbounded
             # if not trimmed; this is a basic guard for documents > 1MB. For finer
             # granularity (e.g., per-section size limits, per-section eviction by age),
             # see #1352-follow-up. Future: consider implementing section-level GC/tombstoning.
-            max_content_size = 1_000_000  # 1MB ceiling
-            if len(merged_content) > max_content_size:
-                # Truncate with marker to indicate overflow
-                merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
-
-            # Preserve existing description/tags unless caller explicitly overrides
-            preserve_description_on_merge = existing_description is not None and description == ""
-            preserve_tags_on_merge = existing_tags is not None and tags == []
-
-            merge_section_data = {
-                "merged_content": merged_content,
-                "expected_updated_at": existing_updated_at,
-                "preserve_description": preserve_description_on_merge,
-                "preserve_tags": preserve_tags_on_merge,
-            }
-
-            content = merged_content
+            merge_section_data = _fetch_and_remerge_section(
+                client, mem_name, project, section_header, new_section_content, description, tags
+            )
+            content = merge_section_data["merged_content"]
 
         except ValueError as e:
             return [
@@ -1340,31 +1355,9 @@ async def _handle_store(args: dict) -> list[TextContent]:
                             if rpc_attempt < max_rpc_retries - 1:
                                 # Retry: re-fetch the row and re-merge before next RPC attempt
                                 try:
-                                    q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
-                                    if project is not None:
-                                        q = q.eq("project", project)
-                                    else:
-                                        q = q.is_("project", "null")
-                                    existing_row = q.limit(1).execute()
-                                    existing_data = existing_row.data[0] if existing_row.data else {}
-                                    existing_content = existing_data.get("content", "")
-                                    existing_updated_at = existing_data.get("updated_at")
-                                    existing_description = existing_data.get("description")
-                                    existing_tags = existing_data.get("tags")
-
-                                    # Re-merge with fresh data using original new section (not previous merged result)
-                                    merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
-                                    max_content_size = 1_000_000
-                                    if len(merged_content) > max_content_size:
-                                        merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
-
-                                    # Update merge_section_data for next RPC attempt
-                                    merge_section_data = {
-                                        "merged_content": merged_content,
-                                        "expected_updated_at": existing_updated_at,
-                                        "preserve_description": existing_description is not None and description == "",
-                                        "preserve_tags": existing_tags is not None and tags == [],
-                                    }
+                                    merge_section_data = _fetch_and_remerge_section(
+                                        client, mem_name, project, section_header, new_section_content, description, tags
+                                    )
 
                                     # #1352 review round 3 finding #2: recompute the
                                     # embedding against the freshly re-merged content.
@@ -1374,7 +1367,7 @@ async def _handle_store(args: dict) -> list[TextContent]:
                                     # whose embedding doesn't match its actual text, and
                                     # the post-store auto-link similarity search below
                                     # would run against the wrong vector too.
-                                    content = merged_content
+                                    content = merge_section_data["merged_content"]
                                     embed_text = _canonical_embed_text(mem_name, description, tags, content)
                                     embed_fields = await server._compute_write_embeddings(embed_text)
                                     data.update(embed_fields)
@@ -1392,9 +1385,56 @@ async def _handle_store(args: dict) -> list[TextContent]:
                                 action = "conflict"
                 except Exception as exc:
                     log_swallowed("memory._handle_store.merge_section_rpc", exc)
+                    # #1580: a Postgres RPC commits as part of executing the
+                    # function, before the HTTP response is returned — if the
+                    # response is lost in transit after commit (timeout,
+                    # dropped connection), the client sees this exception even
+                    # though the write already persisted. Verify via a read
+                    # before assuming failure, instead of guessing.
+                    try:
+                        verify_q = (
+                            client.table("memories")
+                            .select("id, content")
+                            .eq("name", mem_name)
+                            .is_("deleted_at", "null")
+                        )
+                        verify_q = verify_q.eq("project", project) if project is not None else verify_q.is_("project", "null")
+                        verify_row = verify_q.limit(1).execute()
+                        verify_data = verify_row.data[0] if verify_row.data else {}
+                    except Exception as verify_exc:
+                        log_swallowed("memory._handle_store.merge_section_rpc_verify", verify_exc)
+                        verify_data = {}
+
+                    if verify_data.get("content") == merge_section_data["merged_content"]:
+                        # Confirmed committed via read — not assumed from a
+                        # lost/errored response. Treat as success.
+                        stored_id = verify_data.get("id")
+                        action = "merged"
+                        break
+
                     if rpc_attempt >= max_rpc_retries - 1:
                         action = "error"
-                    # Retry on exception too
+                        break
+
+                    # Not yet confirmed and attempts remain: re-fetch + re-merge
+                    # against fresh state (mirrors the conflict branch) before
+                    # the next attempt, in case this exception did commit and a
+                    # stale expected_updated_at would otherwise cause a
+                    # spurious conflict next time.
+                    try:
+                        merge_section_data = _fetch_and_remerge_section(
+                            client, mem_name, project, section_header, new_section_content, description, tags
+                        )
+                        content = merge_section_data["merged_content"]
+                        embed_text = _canonical_embed_text(mem_name, description, tags, content)
+                        embed_fields = await server._compute_write_embeddings(embed_text)
+                        data.update(embed_fields)
+                        embedding = data.get(_model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"])
+                        embed_note = " (with embedding)" if embedding is not None else ""
+                    except ValueError as e:
+                        log_swallowed("memory._handle_store.merge_section_retry_unparseable", e)
+                        action = "error"
+                        break
 
         # #658 contract: stored=True must be the unambiguous success signal.
         # Conflict-exhaustion or an unhandled RPC exception means nothing was

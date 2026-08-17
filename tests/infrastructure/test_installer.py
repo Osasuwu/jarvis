@@ -223,13 +223,24 @@ def test_detect_state_outdated_when_sha_differs(tmp_path: Path) -> None:
 
 
 def test_template_content_json_rewrites_relative_paths(fake_repo: Path) -> None:
+    """settings.json hook commands resolve via hook-resolver.py, not a bare
+    $CLAUDE_PROJECT_DIR/scripts/... path (#1565).
+
+    A baked-absolute path pins every hook to whichever checkout was live at
+    install time, breaking any other worktree session (#1186). But settings.json
+    is user-level and fires in EVERY session — $CLAUDE_PROJECT_DIR-templating
+    that path instead breaks every non-jarvis session, since $CLAUDE_PROJECT_DIR
+    there is that project's own root, with no jarvis scripts/ dir at all
+    (#1565). hook-resolver.py (invoked via a baked absolute path) resolves the
+    right jarvis checkout at hook-run time instead.
+    """
     target = fake_repo / ".claude" / "settings.json"
     claude_home = Path("/tmp/not-used")
     rendered = installer.template_content(target, fake_repo, claude_home).decode("utf-8")
     data = json.loads(rendered)
     command = data["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-    expected_prefix = fake_repo.as_posix() + "/scripts/"
-    assert expected_prefix in command, f"got: {command}"
+    assert "$CLAUDE_PROJECT_DIR" not in command, f"got: {command}"
+    assert f"{fake_repo.as_posix()}/scripts/hook-resolver.py" in command, f"got: {command}"
     assert not command.startswith("python scripts/"), "relative path not rewritten"
 
 
@@ -1156,10 +1167,17 @@ def test_real_userlevel_templates_rewrite_scripts_paths(fake_repo: Path) -> None
     )
 
     repo_posix = repo_root.as_posix()
-    # Every `scripts/` reference in the rendered output is absolute-rooted.
+    # settings.json (command-type hooks): rewritten to invoke hook-resolver.py
+    # via a baked absolute path, not $CLAUDE_PROJECT_DIR — a bare
+    # $CLAUDE_PROJECT_DIR-templated hook command breaks every non-jarvis
+    # session, since $CLAUDE_PROJECT_DIR there is that project's own root
+    # with no jarvis scripts/ dir (#1565). hook-resolver.py resolves the
+    # right jarvis checkout at hook-run time instead.
     assert "python scripts/" not in settings_rendered
-    assert f"{repo_posix}/scripts/" in settings_rendered
-    # mcp: args use relative paths that should rewrite too.
+    assert "$CLAUDE_PROJECT_DIR" not in settings_rendered
+    assert f"{repo_posix}/scripts/hook-resolver.py" in settings_rendered
+    # mcp: args are spawned without shell expansion, so they keep the baked
+    # absolute-path form — an unexpanded $CLAUDE_PROJECT_DIR literal wouldn't resolve.
     assert f"{repo_posix}/scripts/run-memory-server.py" in mcp_rendered
 
 
