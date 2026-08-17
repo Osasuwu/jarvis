@@ -29,6 +29,7 @@ from server import (
 from classifier import ClassifierDecision
 import server as server_module
 import handlers.memory as mem
+import events_canonical
 
 
 # ---------------------------------------------------------------------------
@@ -650,9 +651,13 @@ class TestHandleStoreMergeSectionFailureModes:
         self.tbl = tbl
 
     @pytest.mark.asyncio
-    async def test_conflict_after_retries_exhausted_returns_stored_false(self):
+    async def test_conflict_after_retries_exhausted_returns_stored_false(self, monkeypatch):
         self.client.rpc.return_value.execute.return_value = MagicMock(
             data=[{"success": False, "memory_id": None, "conflict_reason": "updated_at mismatch"}]
+        )
+        emitted = []
+        monkeypatch.setattr(
+            events_canonical, "emit_event", lambda client, **kwargs: emitted.append(kwargs) or {}
         )
 
         result = await _handle_store(
@@ -672,10 +677,23 @@ class TestHandleStoreMergeSectionFailureModes:
         assert body["action"] == "conflict"
         assert body["memory_id"] is None
         assert self.client.rpc.call_count == 3
+        # #1582 AC2: the actual conflict_reason must be surfaced, not just
+        # a generic "write did not persist" message.
+        assert "updated_at mismatch" in body["message"]
+        # #1582 AC4: the same detail must land in events_canonical, durably
+        # queryable regardless of --debug=mcp.
+        assert len(emitted) == 1
+        assert emitted[0]["action"] == "merge_section_write_failed"
+        assert emitted[0]["payload"]["detail"] == "updated_at mismatch"
+        assert emitted[0]["payload"]["action"] == "conflict"
 
     @pytest.mark.asyncio
-    async def test_rpc_exception_on_every_attempt_returns_stored_false(self):
+    async def test_rpc_exception_on_every_attempt_returns_stored_false(self, monkeypatch):
         self.client.rpc.side_effect = RuntimeError("connection reset")
+        emitted = []
+        monkeypatch.setattr(
+            events_canonical, "emit_event", lambda client, **kwargs: emitted.append(kwargs) or {}
+        )
 
         result = await _handle_store(
             {
@@ -693,6 +711,16 @@ class TestHandleStoreMergeSectionFailureModes:
         assert body["stored"] is False
         assert body["action"] == "error"
         assert body["memory_id"] is None
+        # #1582 AC3: the caught exception's type + message must be surfaced,
+        # not just a generic "write did not persist" message.
+        assert "RuntimeError" in body["message"]
+        assert "connection reset" in body["message"]
+        # #1582 AC4: the same detail must land in events_canonical.
+        assert len(emitted) == 1
+        assert emitted[0]["action"] == "merge_section_write_failed"
+        assert "RuntimeError" in emitted[0]["payload"]["detail"]
+        assert "connection reset" in emitted[0]["payload"]["detail"]
+        assert emitted[0]["payload"]["action"] == "error"
 
     @pytest.mark.asyncio
     async def test_rpc_exception_verified_as_already_persisted_returns_stored_true(self):
@@ -923,6 +951,10 @@ class TestHandleStoreMergeSectionFailureModes:
         """
         swallowed = []
         monkeypatch.setattr(mem, "log_swallowed", lambda tag, exc: swallowed.append((tag, exc)))
+        emitted = []
+        monkeypatch.setattr(
+            events_canonical, "emit_event", lambda client, **kwargs: emitted.append(kwargs) or {}
+        )
 
         real_merge = mem._merge_section_into_markdown
         call_count = {"n": 0}
@@ -956,6 +988,13 @@ class TestHandleStoreMergeSectionFailureModes:
         assert any(
             tag == "memory._handle_store.merge_section_retry_unparseable" for tag, _ in swallowed
         )
+        # #1582 AC3/AC4 sibling coverage: this ValueError-during-retry path
+        # is a third "action=error" exit alongside the two covered above —
+        # it must surface the same detail in the message and the event.
+        assert "document became unparseable" in body["message"]
+        assert len(emitted) == 1
+        assert emitted[0]["action"] == "merge_section_write_failed"
+        assert "document became unparseable" in emitted[0]["payload"]["detail"]
 
 
 # ---------------------------------------------------------------------------
