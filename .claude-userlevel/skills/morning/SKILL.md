@@ -2,6 +2,7 @@
 name: morning
 model: haiku
 description: "Owner-facing daily digest read — plan with S/M/L estimates + cut-line, repo hygiene, goals/decisions evidence — via morning_digest MCP tool, rendered deterministically (0 LLM tokens by default). Anchored routing: only `утро`/`morning`/`доброе утро` fire it."
+disable-model-invocation: true
 ---
 
 # Morning
