@@ -22,10 +22,12 @@ import tomllib
 import types
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from agents import driver_heartbeat
+from agents import task_boot_adoption
 from agents import task_worktree as tw
 from agents import wake_driver
 from agents.task_dispatch import TaskQueuePort, TrackedProc
@@ -1391,6 +1393,146 @@ def test_tick_without_task_procs_reaps_all_stale_running_as_orphans():
     assert result.tasks_reaped == 2
     assert result.tasks_done == 0
     assert result.tasks_failed_exit == 0
+
+
+# --- #1608: boot adoption extracted to agents.task_boot_adoption -----------
+
+
+class _FakeSidecar:
+    """Stand-in for pid_sidecar.Sidecar — scripted adopt_live_processes()."""
+
+    def __init__(self, adopted: list[tuple[str, Any]] | None = None) -> None:
+        self._adopted = adopted or []
+
+    def adopt_live_processes(self) -> list[tuple[str, Any]]:
+        return self._adopted
+
+
+class _RaisingSidecar:
+    def adopt_live_processes(self) -> list[tuple[str, Any]]:
+        raise RuntimeError("sidecar directory unreadable")
+
+
+def test_maybe_adopt_at_boot_populates_the_procs_map():
+    proc = _TickProc(rc=None)
+    procs: dict = {}
+
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=procs,
+        should_continue=None,
+        task_clock=lambda: 42.0,
+        sidecar_factory=lambda: _FakeSidecar([("t1", proc)]),
+    )
+
+    assert procs == {"t1": TrackedProc(proc=proc, started_at=42.0)}
+    assert result is not None
+
+
+def test_maybe_adopt_at_boot_is_non_fatal_on_sidecar_failure():
+    procs: dict = {}
+
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=procs,
+        should_continue=None,
+        task_clock=lambda: 0.0,
+        sidecar_factory=_RaisingSidecar,
+    )
+
+    assert result is None
+    assert procs == {}
+
+
+def test_maybe_adopt_at_boot_noop_without_task_port():
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        return _FakeSidecar()
+
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=None,
+        procs={},
+        should_continue=None,
+        task_clock=lambda: 0.0,
+        sidecar_factory=factory,
+    )
+
+    assert result is None
+    assert calls["n"] == 0
+
+
+def test_maybe_adopt_at_boot_noop_without_procs_map():
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=None,
+        should_continue=None,
+        task_clock=lambda: 0.0,
+        sidecar_factory=_FakeSidecar,
+    )
+
+    assert result is None
+
+
+def test_maybe_adopt_at_boot_noop_when_should_continue_is_bounded():
+    # A test-bounded loop (should_continue explicitly injected) is never
+    # boot — this is what made the pre-extraction run() untestable end-to-end
+    # with should_continue=None (unbounded loop); the gate stays should_continue
+    # is None exactly, same as the original inline block.
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        return _FakeSidecar([("t1", _TickProc(rc=None))])
+
+    procs: dict = {}
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=procs,
+        should_continue=lambda: True,
+        task_clock=lambda: 0.0,
+        sidecar_factory=factory,
+    )
+
+    assert result is None
+    assert calls["n"] == 0
+    assert procs == {}
+
+
+def test_run_calls_maybe_adopt_at_boot_with_the_live_procs_map(monkeypatch):
+    # AC3 wiring: run() must call the extracted function (not re-implement
+    # the gate inline) and pass it the sidecar it returns for this tick's
+    # tick() calls. maybe_adopt_at_boot() runs before the while-loop, so a
+    # raise from it propagates straight out of run() — this lets the test
+    # observe the call without needing should_continue=None's unbounded loop.
+    calls: list[dict] = []
+
+    class _Boom(Exception):
+        pass
+
+    def fake_maybe_adopt_at_boot(**kwargs):
+        calls.append(kwargs)
+        raise _Boom
+
+    monkeypatch.setattr(wake_driver, "maybe_adopt_at_boot", fake_maybe_adopt_at_boot)
+    tq = _RecordingTaskQueue([])
+
+    with pytest.raises(_Boom):
+        wake_driver.run(
+            FakeEventQueue([]),
+            wake_driver.default_orchestrator,
+            should_continue=None,
+            task_port=tq,
+            task_resolve_binary=lambda: "claude",
+            task_read_usage=_healthy_usage,
+            task_clock=lambda: 7.0,
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["task_port"] is tq
+    assert calls[0]["procs"] == {}
+    assert calls[0]["should_continue"] is None
 
 
 def test_run_retains_the_tracking_map_across_ticks():
