@@ -826,7 +826,7 @@ memory = [
 
 [package.metadata]
 requires-dist = [
-    { name = "apprise", marker = "extra == 'agents'", specifier = ">=1.9,<2" },
+    { name = "apprise", marker = "extra == 'agents'", specifier = ">=1.12.0,<2" },
     { name = "httpx", marker = "extra == 'agents'", specifier = ">=0.27,<1" },
     { name = "httpx", marker = "extra == 'memory'", specifier = ">=0.27,<1" },
     { name = "jarvis-agent", extras = ["agents"], marker = "extra == 'full'" },
