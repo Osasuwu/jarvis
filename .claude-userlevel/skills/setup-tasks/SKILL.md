@@ -11,9 +11,11 @@ Bootstrap Jarvis's scheduled tasks on a device. Idempotent.
 
 ## Routine host policy (2026-05-26)
 
-**Workshop PC is the sole routine host.** All `create_scheduled_task` MCP routines and Workshop-only Task Scheduler entries register **only** when `config/device.json` reports `name == "VividFormsPC4Workshop"`. On any other device the skill refuses with a message pointing here.
+**One device is the sole routine host.** All `create_scheduled_task` MCP routines and Workshop-only Task Scheduler entries register **only** on the device where `config/device.json` has `"routine_host": true`. On any other device the skill refuses with a message pointing here.
 
-Rationale: removes per-device cron-dedup complexity, eliminates double-dispatch risk (two devices firing the same job seconds apart), centralises observability (one log surface), and aligns routines with the 24/7 sandcastle/orchestrator infra already living on Workshop. SPOF tradeoff accepted — Workshop offline = routines pause until restart; status-record gap on next SessionStart is the canary.
+To designate a device as the routine host: open `config/device.json` and add `"routine_host": true`. The setup script (`scripts/setup-device.py`) generates the file with `"routine_host": false`; edit it once to activate the host.
+
+Rationale: removes per-device cron-dedup complexity, eliminates double-dispatch risk (two devices firing the same job seconds apart), centralises observability (one log surface), and aligns routines with the 24/7 sandcastle/orchestrator infra already living on the host device. SPOF tradeoff accepted — host offline = routines pause until restart; status-record gap on next SessionStart is the canary.
 
 Decision: `1b7ff8d1-bbca-4207-a7e4-4c1edddef67e`.
 
@@ -34,9 +36,10 @@ Decision: `1b7ff8d1-bbca-4207-a7e4-4c1edddef67e`.
 
 ## Implementation
 
-1. Read `config/device.json`. If `name != "VividFormsPC4Workshop"` → print:
+1. Read `config/device.json`. If `routine_host` is not `true` → print:
    ```
-   refused: routines are Workshop-only as of 2026-05-26.
+   refused: routines are host-only (config/device.json routine_host != true).
+   To designate this device as the routine host, set "routine_host": true in config/device.json.
    To clean up legacy entries on this device, run:
      /setup-tasks --cleanup
    ```
