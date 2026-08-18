@@ -176,7 +176,9 @@ async def _upsert_known_unknown(
             }
         ).execute()
     except Exception as exc:
-        log_swallowed("memory._upsert_known_unknown", exc)  # best-effort, never block recall on failure
+        log_swallowed(
+            "memory._upsert_known_unknown", exc
+        )  # best-effort, never block recall on failure
 
 
 async def _resolve_known_unknowns(client, memory_embedding: list[float], memory_id: str) -> None:
@@ -203,7 +205,9 @@ async def _resolve_known_unknowns(client, memory_embedding: list[float], memory_
                     }
                 ).eq("id", row["id"]).execute()
     except Exception as exc:
-        log_swallowed("memory._resolve_known_unknowns", exc)  # best-effort, never block store on failure
+        log_swallowed(
+            "memory._resolve_known_unknowns", exc
+        )  # best-effort, never block store on failure
 
 
 async def _handle_recall(args: dict) -> list[TextContent]:
@@ -1159,7 +1163,12 @@ def _fetch_and_remerge_section(
     Raises:
         ValueError: if existing content is unparseable as markdown sections.
     """
-    q = client.table("memories").select("content, updated_at, description, tags").eq("name", mem_name).is_("deleted_at", "null")
+    q = (
+        client.table("memories")
+        .select("content, updated_at, description, tags")
+        .eq("name", mem_name)
+        .is_("deleted_at", "null")
+    )
     if project is not None:
         q = q.eq("project", project)
     else:
@@ -1171,9 +1180,14 @@ def _fetch_and_remerge_section(
     existing_description = existing_data.get("description")
     existing_tags = existing_data.get("tags")
 
-    merged_content = _merge_section_into_markdown(existing_content, section_header, new_section_content)
+    merged_content = _merge_section_into_markdown(
+        existing_content, section_header, new_section_content
+    )
     if len(merged_content) > max_content_size:
-        merged_content = merged_content[:max_content_size] + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+        merged_content = (
+            merged_content[:max_content_size]
+            + f"\n\n<!-- truncated at {max_content_size} bytes -->"
+        )
 
     return {
         "merged_content": merged_content,
@@ -1192,6 +1206,17 @@ async def _handle_store(args: dict) -> list[TextContent]:
     new_section_content = content  # Keep original new section for merge_section retries
     description = args.get("description", "")
     project = args.get("project")
+    if project is None:
+        return [
+            TextContent(
+                type="text",
+                text=(
+                    "Error: project is required. Pass an explicit project scope "
+                    "(e.g. 'jarvis', 'redrobot') or the literal string 'global' "
+                    "for intentional cross-project scope."
+                ),
+            )
+        ]
     if project == "global":
         project = None  # "global" and null are synonymous — normalize to NULL in DB
     tags = args.get("tags", [])
@@ -1360,7 +1385,9 @@ async def _handle_store(args: dict) -> list[TextContent]:
                             "p_source_provenance": source_provenance,
                             "p_description": description,
                             "p_tags": tags,
-                            "p_preserve_existing_description": merge_section_data["preserve_description"],
+                            "p_preserve_existing_description": merge_section_data[
+                                "preserve_description"
+                            ],
                             "p_preserve_existing_tags": merge_section_data["preserve_tags"],
                             # #242/#1352: forward whichever embedding columns
                             # embed_fields populated (PRIMARY always, SECONDARY
@@ -1390,13 +1417,21 @@ async def _handle_store(args: dict) -> list[TextContent]:
                             conflict_reason = row.get("conflict_reason", "unknown")
                             log_swallowed(
                                 "memory._handle_store.merge_section_conflict",
-                                Exception(f"Attempt {rpc_attempt + 1}/{max_rpc_retries}: {conflict_reason}"),
+                                Exception(
+                                    f"Attempt {rpc_attempt + 1}/{max_rpc_retries}: {conflict_reason}"
+                                ),
                             )
                             if rpc_attempt < max_rpc_retries - 1:
                                 # Retry: re-fetch the row and re-merge before next RPC attempt
                                 try:
                                     merge_section_data = _fetch_and_remerge_section(
-                                        client, mem_name, project, section_header, new_section_content, description, tags
+                                        client,
+                                        mem_name,
+                                        project,
+                                        section_header,
+                                        new_section_content,
+                                        description,
+                                        tags,
                                     )
 
                                     # #1352 review round 3 finding #2: recompute the
@@ -1408,14 +1443,26 @@ async def _handle_store(args: dict) -> list[TextContent]:
                                     # the post-store auto-link similarity search below
                                     # would run against the wrong vector too.
                                     content = merge_section_data["merged_content"]
-                                    embed_text = _canonical_embed_text(mem_name, description, tags, content)
-                                    embed_fields = await server._compute_write_embeddings(embed_text)
+                                    embed_text = _canonical_embed_text(
+                                        mem_name, description, tags, content
+                                    )
+                                    embed_fields = await server._compute_write_embeddings(
+                                        embed_text
+                                    )
                                     data.update(embed_fields)
-                                    embedding = data.get(_model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"])
-                                    embed_note = " (with embedding)" if embedding is not None else ""
+                                    embedding = data.get(
+                                        _model_slot(server.EMBEDDING_MODEL_PRIMARY)[
+                                            "embedding_column"
+                                        ]
+                                    )
+                                    embed_note = (
+                                        " (with embedding)" if embedding is not None else ""
+                                    )
                                 except ValueError as e:
                                     # Document became unparseable during retry
-                                    log_swallowed("memory._handle_store.merge_section_retry_unparseable", e)
+                                    log_swallowed(
+                                        "memory._handle_store.merge_section_retry_unparseable", e
+                                    )
                                     action = "error"
                                     failure_detail = f"{type(e).__name__}: {e}"
                                     break
@@ -1445,7 +1492,11 @@ async def _handle_store(args: dict) -> list[TextContent]:
                             .eq("name", mem_name)
                             .is_("deleted_at", "null")
                         )
-                        verify_q = verify_q.eq("project", project) if project is not None else verify_q.is_("project", "null")
+                        verify_q = (
+                            verify_q.eq("project", project)
+                            if project is not None
+                            else verify_q.is_("project", "null")
+                        )
                         verify_row = verify_q.limit(1).execute()
                         verify_data = verify_row.data[0] if verify_row.data else {}
                     except Exception as verify_exc:
@@ -1470,13 +1521,21 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     # spurious conflict next time.
                     try:
                         merge_section_data = _fetch_and_remerge_section(
-                            client, mem_name, project, section_header, new_section_content, description, tags
+                            client,
+                            mem_name,
+                            project,
+                            section_header,
+                            new_section_content,
+                            description,
+                            tags,
                         )
                         content = merge_section_data["merged_content"]
                         embed_text = _canonical_embed_text(mem_name, description, tags, content)
                         embed_fields = await server._compute_write_embeddings(embed_text)
                         data.update(embed_fields)
-                        embedding = data.get(_model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"])
+                        embedding = data.get(
+                            _model_slot(server.EMBEDDING_MODEL_PRIMARY)["embedding_column"]
+                        )
                         embed_note = " (with embedding)" if embedding is not None else ""
                     except ValueError as e:
                         log_swallowed("memory._handle_store.merge_section_retry_unparseable", e)
@@ -1598,7 +1657,9 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     if r.get("similarity", 0) >= CLASSIFIER_TRIGGER_SIM
                 ]
                 if candidates_for_classifier:
-                    link_decision_path = "classifier" if classify_write is not None else "legacy_heuristic"
+                    link_decision_path = (
+                        "classifier" if classify_write is not None else "legacy_heuristic"
+                    )
                 _pin_task(
                     asyncio.create_task(
                         _create_auto_links(
