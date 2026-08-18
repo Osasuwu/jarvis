@@ -20,11 +20,13 @@ The invariants ride a bare `@import` instead of the hook, so they expand at laun
 
 @docs/context/invariants.md
 
-Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, repo-baseline, merge-gate vocabulary, workflow, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
+Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, repo-baseline, merge-gate vocabulary, workflow, AFK spawn substrate, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
 
 ## Project
 
 **Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active scope = open GitHub milestones (capability-shipping units, see *Milestone vs pillar hygiene* below); `docs/PROJECT_PLAN.md` is a pointer index.
+
+Code is distributed — never hosted as a service — through the separate public template repo `Osasuwu/jarvis-oss`; **every operator hosts their own instance**, including their own memory backend. This repo is one instance of that schema, not the schema itself. So subsystems are built OSS-ready from the start rather than adapted later: provider names, model names, repo lists, queue labels and backend endpoints belong in operator config, never as literals on a code path, and **no path shipped to `jarvis-oss` may reference this instance's memory backend** — nobody else has access to it. YAGNI does not license hardcoding here: the counting unit is *readers who could depend on the code*, not implementations the principal happens to run. Decision `855188a3-c71f-4e86-a412-9a07b76f19df`.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory + SOUL.md identity.
 
