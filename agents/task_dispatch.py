@@ -54,7 +54,7 @@ if TYPE_CHECKING:
 
     from agents.driver_heartbeat import HeartbeatStatus
 
-from agents import task_queue
+from agents import task_outcomes, task_queue
 from agents.github_client import (
     GitHubClient,
     check_pr_closing_ref_fresh_shape,
@@ -352,43 +352,6 @@ def _compute_pr_evidence(
             if pr:
                 return (True, closing_ref)
     return (evidence, closing_ref)
-
-
-def _resolve_pr_url(
-    task_id: str,
-    goal: str,
-    *,
-    client: GitHubClient | None,
-) -> str | None:
-    """Best-effort PR URL for a just-completed task (#1085 S2 review finding 2).
-
-    ``_compute_pr_evidence`` and the ``check_pr_evidence_*`` functions it calls
-    only ever surface a ``bool | None`` tri-state — the PR object they fetch to
-    compute it is discarded, so callers that need the actual URL (here: the
-    completion outcome-writer) must resolve it separately. This is a SEPARATE,
-    deliberate second fetch of the PR, mirroring ``_warn_if_pr_lacks_closing_ref``'s
-    established pattern in this module rather than reaching into evidence
-    internals. Returns ``None`` on any resolution failure — never raises,
-    since the caller treats this as advisory.
-    """
-    if client is None:
-        return None
-    shape, pr_number = parse_goal_shape(goal)
-    try:
-        if shape == "rework" and pr_number is not None:
-            pr = client.get_pull_by_number(pr_number)
-        elif shape == "fresh":
-            branch_match = re.search(r"\(branch=([^)]+)\)", goal)
-            branch = branch_match.group(1).strip() if branch_match else f"task/{task_id}"
-            pr = client.get_pull_by_head_branch(branch)
-        else:
-            return None
-    except Exception:  # noqa: BLE001 — advisory lookup, never raises to the caller
-        logger.exception("[task_dispatch] PR URL resolution failed for task %s", task_id)
-        return None
-    if not pr:
-        return None
-    return pr.get("html_url")
 
 
 def _compute_closing_ref_fresh_shape(
@@ -721,79 +684,6 @@ class DedupConfig:
     fetch_issue: Callable[[int], dict[str, Any] | None] | None = None
 
 
-def _record_skip_outcome(payload: dict[str, Any]) -> None:
-    """Best-effort ``task_outcomes`` write for a skipped-duplicate (#931).
-
-    Sandcastle-anon insert, so ``source_provenance`` carries the required
-    ``sandcastle:`` prefix (mcp-memory/schema.sql RLS, #542). Any failure is the
-    caller's to swallow — this never raises on the happy path but the caller
-    still guards it. ``GITHUB_REPO`` builds the issue URL for the ``issue_url``
-    link column.
-    """
-    from agents.supabase_client import get_client
-
-    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
-    issue_number = payload.get("issue_number")
-    get_client().table("task_outcomes").insert(
-        {
-            "task_type": "autonomous",
-            "task_description": f"dispatch-dedup skip: {payload.get('goal')}",
-            "outcome_status": "unknown",
-            "outcome_summary": (
-                f"Skipped duplicate dispatch for #{issue_number}: {payload.get('pointer')}"
-            ),
-            "project": "jarvis",
-            "issue_url": (
-                f"https://github.com/{repo}/issues/{issue_number}"
-                if issue_number is not None
-                else None
-            ),
-            "pattern_tags": ["dispatch-dedup", "skip", "autonomous"],
-            "source_provenance": "sandcastle:task_dispatch-dedup",
-        }
-    ).execute()
-
-
-def _record_completion_outcome(payload: dict[str, Any]) -> None:
-    """Best-effort ``task_outcomes`` write for a completed subagent task (#1085
-    S2 review finding 2).
-
-    ``/task-implement`` runs headless with no MCP tools (HARD RULE 3, its
-    SKILL.md) — it cannot call ``outcome_record`` itself. Without this write, a
-    subagent-dispatched task never gets a ``task_outcomes`` row at all, so
-    ``/verify`` Step 1's ``outcome_list(outcome_status="pending")`` never sees
-    it and Step 2b's divergence/drive-by audit checks never run. This writes
-    the row from the orchestrator side instead, at the terminal boundary where
-    ``poll_completions`` already knows the task succeeded (exit 0).
-    ``pattern_tags`` MUST include ``"subagent"`` — that's the exact filter
-    Step 2b keys on. Sandcastle-anon insert, mirroring
-    :func:`_record_skip_outcome`'s pattern.
-    """
-    from agents.supabase_client import get_client
-
-    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
-    issue_number = payload.get("issue_number")
-    get_client().table("task_outcomes").insert(
-        {
-            "task_type": "autonomous",
-            "task_description": f"task-implement: {payload.get('goal')}",
-            "outcome_status": "pending",
-            "outcome_summary": (
-                f"Task {payload.get('task_id')} completed (exit 0); awaiting /verify audit."
-            ),
-            "project": "jarvis",
-            "issue_url": (
-                f"https://github.com/{repo}/issues/{issue_number}"
-                if issue_number is not None
-                else None
-            ),
-            "pr_url": payload.get("pr_url"),
-            "pattern_tags": ["subagent", "headless", "task-implement"],
-            "source_provenance": "sandcastle:task_dispatch-completion",
-        }
-    ).execute()
-
-
 def default_task_dedup(
     github: GitHubClient,
     *,
@@ -816,7 +706,7 @@ def default_task_dedup(
     return DedupConfig(
         fetch_in_flight=fetch_in_flight,
         list_active_rows=active,
-        record_outcome=_record_skip_outcome,
+        record_outcome=task_outcomes.record_skip_outcome,
         fetch_issue=github.get_issue,
     )
 
@@ -1056,7 +946,7 @@ def poll_completions(
 
         # #1085 S2 review finding 2: write the task_outcomes row for a completed
         # subagent task here, since /task-implement runs with no MCP tools and
-        # cannot call outcome_record itself (see _record_completion_outcome).
+        # cannot call outcome_record itself (see task_outcomes.record_completion_outcome).
         # Decoupled from the transition below for the same reason event_emit is —
         # an outcome-write failure must never block the FSM transition.
         if rc == 0 and outcome_record is not None:
@@ -1066,7 +956,9 @@ def poll_completions(
                         "task_id": task_id,
                         "goal": goal,
                         "issue_number": tracked.issue_number,
-                        "pr_url": _resolve_pr_url(task_id, goal, client=evidence_client),
+                        "pr_url": task_outcomes.resolve_pr_url(
+                            task_id, goal, client=evidence_client
+                        ),
                     }
                 )
             except Exception:  # noqa: BLE001 — outcome write must not block transition
