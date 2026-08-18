@@ -108,6 +108,7 @@ def test_gather_timeout_returns_one_line_error():
             assert len(result.content) == 1
             assert "timed out" in result.content[0].text
             assert "Traceback" not in result.content[0].text
+            assert result.isError is True
 
     asyncio.run(_test())
 
@@ -122,6 +123,7 @@ def test_exception_returns_one_line_error_no_traceback():
             assert len(result.content) == 1
             assert "Error in morning_digest" in result.content[0].text
             assert "Traceback" not in result.content[0].text
+            assert result.isError is True
 
     asyncio.run(_test())
 
@@ -132,5 +134,6 @@ def test_unknown_tool_returns_one_line_message():
         result = await morning_server.call_tool(None, params)
         assert len(result.content) == 1
         assert "Unknown tool" in result.content[0].text
+        assert result.isError is True
 
     asyncio.run(_test())

@@ -155,7 +155,7 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
                         text="morning gather timed out after 30s",
                     )
                 ]
-                return CallToolResult(content=result)
+                return CallToolResult(content=result, isError=True)
 
             digest = analyze(gather_result)
 
@@ -163,11 +163,15 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
             return CallToolResult(content=[TextContent(type="text", text=result_text)])
 
         else:
-            return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {name}")])
+            return CallToolResult(
+                content=[TextContent(type="text", text=f"Unknown tool: {name}")], isError=True
+            )
 
     except Exception as exc:
         traceback.print_exc()  # Log full traceback server-side
-        return CallToolResult(content=[TextContent(type="text", text=f"Error in {name}: {exc}")])
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Error in {name}: {exc}")], isError=True
+        )
 
 
 # `Server(...)` constructed here (not near the top) because the 2.x
