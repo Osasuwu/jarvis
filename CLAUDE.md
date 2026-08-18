@@ -95,6 +95,7 @@ Use skills — don't reinvent with raw tools.
 | "review memories", "drain queue", "проверь кандидаты", weekly memory-review, volume-event fire, /learn --status | `/learn` (M42 always-gate review surface; drains classifier + Deriver/Dreamer queues, hard cap 20, idempotent, no defer/accept_all) |
 | "last sprint report", "what did we ship", "milestone closeout", pre-sweep brief | `/last-work-report` (skeleton — #606) |
 | `статус` / `status` / `статус <repo>` — **anchored, only these exact triggers** | `/status` (CONTEXT.md → *Status synthesis*) |
+| `утро` / `morning` / `доброе утро` — **anchored, only these exact triggers** | `/morning` (daily digest: plan + S/M/L estimates + cut-line, #1588) |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
 | "what's next across M-whatever", "chart the map", "what's blocked on what", multi-milestone frontier scan | `/wayfinder` |
@@ -109,6 +110,7 @@ Rules:
 - **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/dispatch`)** is the canonical chain for new features. TDD-mode engages inside `/implement` (and inside `/task-implement` for enqueued work) per the grill trigger checkbox / issue-body decision citation — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 - **`/status` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `статус`, `status`, or `статус <repo>` (the word as a standalone command, optionally naming a tracked repo) route to `/status`. A sentence that merely contains the word — "какой статус у PR #123", "статус деплоя в логах", "status code 500", a quoted error string — is a normal request answered in-context, never a trigger for a repo-state investigation.
+- **`/morning` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `утро`, `morning`, or `доброе утро` route to `/morning`. A sentence that merely contains one of these words — "good morning" as a passing greeting, "meeting moved to this morning" — is a normal request answered in-context, never a trigger for a daily-digest investigation. `/morning`'s trigger set (`утро`/`morning`/`доброе утро`) and `/status`'s (`статус`/`status`/`статус <repo>`) are disjoint by construction — neither intercepts the other's triggers.
 
 ### Responsibility split — interactive · `/dispatch` · reactive-core orchestrator
 
