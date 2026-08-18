@@ -54,6 +54,7 @@ def decide(
     am: str,
     state: str = "OPEN",
     code_review_diverged: bool = False,
+    actor: str = "user",
 ) -> str:
     """Mirror the workflow's enable decision.
 
@@ -65,10 +66,12 @@ def decide(
     "this PR's branch is merely stale on it". Both trip claude-code-action's
     workflow validation identically.
     """
-    # `if:` guard — drafts and forks never reach the steps.
+    # `if:` guard — drafts, forks, and Dependabot never reach the steps.
     if draft:
         return "NOOP"
     if head_repo != base_repo:
+        return "NOOP"
+    if actor == "dependabot[bot]":
         return "NOOP"
     # Empty-output guard — fail loud rather than misread as "already enabled".
     if am == "" or state == "":
@@ -200,6 +203,25 @@ def test_fork_precedes_empty_output_fail():
     # Replaces a draft+fork case that duplicated the draft-only path (#1006 review,
     # NIT) — this one actually reaches the fork branch with am="".
     assert decide(draft=False, head_repo="fork/r", base_repo="o/r", am="") == "NOOP"
+
+
+def test_dependabot_pr_is_noop():
+    # GitHub restricts repo-secret access for Dependabot-triggered pull_request
+    # events (same as forks), so APP_ID/APP_PRIVATE_KEY are empty and the Assert
+    # step hard-fails. The job-level `if:` guard skips Dependabot entirely.
+    assert (
+        decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", actor="dependabot[bot]")
+        == "NOOP"
+    )
+
+
+def test_dependabot_precedes_empty_output_fail():
+    # Dependabot guard is in the `if:` condition (steps never run), so degraded
+    # output must yield NOOP, not FAIL — same logic as the fork analog above.
+    assert (
+        decide(draft=False, head_repo="o/r", base_repo="o/r", am="", actor="dependabot[bot]")
+        == "NOOP"
+    )
 
 
 # ---- risk carve-out dimension (#1512) ---------------------------------------
@@ -401,6 +423,15 @@ def test_workflow_guards_drafts_and_forks():
     )
     assert "github.event.pull_request.head.repo.full_name == github.repository" in text, (
         "fork guard dropped — fork PRs (no secrets) would hard-fail the token step."
+    )
+
+
+def test_workflow_skips_dependabot_prs():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    assert "github.actor != 'dependabot[bot]'" in text, (
+        "Dependabot guard dropped — Dependabot-triggered pull_request events cannot "
+        "access repo secrets (APP_ID/APP_PRIVATE_KEY), so the Assert step hard-fails "
+        "on every Dependabot PR. The job-level `if:` must skip them."
     )
 
 

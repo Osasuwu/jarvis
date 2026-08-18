@@ -89,9 +89,18 @@ jobs:
     # forked-PR events, so the App token can't be minted; auto-merge on a fork
     # PR isn't meaningful anyway. Without this guard the Assert step below would
     # hard-fail every fork PR.
+    # Skip Dependabot PRs — GitHub restricts repo-secret access for
+    # Dependabot-triggered pull_request events (same restriction as forks despite
+    # Dependabot pushing to the main repo, not a fork). APP_ID/APP_PRIVATE_KEY
+    # are empty, so the Assert step hard-fails. Dependabot PRs have no
+    # Closes #N linked issues, so the bot-attributed-merge suppression is not
+    # a concern; but without the App token this workflow can't arm them.
+    # Merge manually after CI passes, or add APP_ID/APP_PRIVATE_KEY as
+    # Dependabot secrets if automated merge is desired.
     if: >-
       github.event.pull_request.draft == false &&
-      github.event.pull_request.head.repo.full_name == github.repository
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Assert App credentials present
