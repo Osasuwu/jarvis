@@ -145,6 +145,28 @@ def detect_state(target_root: Path, current_sha: str) -> tuple[str, str | None]:
 # commands like `python scripts/foo.py && cat config/SOUL.md`.
 _POSIX_PATH_PATTERN = re.compile(r"(?<!\S)(scripts|config)/")
 
+# Same token-boundary rule as _POSIX_PATH_PATTERN, scoped to `scripts/<name>`
+# specifically so the settings.json rewrite (below) can swap the whole token
+# for a hook-resolver.py invocation of just `<name>`.
+_HOOK_SCRIPT_PATTERN = re.compile(r"(?<!\S)scripts/(\S+)")
+
+# Hooks that enforce something (secrets, protected files, decision logging,
+# memory dedup) must fail CLOSED on resolution failure — silently skipping
+# enforcement defeats the hook. Everything else (session bootstrap, recall,
+# accumulators, statusline) fails OPEN via --soft so a resolution hiccup
+# degrades a feature instead of blocking the session (#1565).
+_SOFT_FAIL_HOOK_SCRIPTS = {
+    "device-info.py",
+    "session-context.py",
+    "comm-patterns-extract.py",
+    "deriver-accumulator.py",
+    "deriver-sessionend.py",
+    "pretooluse-recall-hook.py",
+    "memory-recall-hook.py",
+    "pre-compact-backup.py",
+    "statusline.py",
+}
+
 
 # A pre-migration `.mcp.json` sitting in any parent dir of JARVIS_HOME (e.g.
 # `D:\Github\.mcp.json`) shadows the correctly-templated user-level file:
@@ -259,16 +281,49 @@ def _fix_env_encoding(path: Path, issues: str) -> None:
         raise
 
 
-def _transform_json_paths(node: Any, repo_root_posix: str) -> Any:
+def _hook_resolver_invocation(script_name: str, repo_root_posix: str) -> str:
+    """Build the `scripts/hook-resolver.py [--soft] <script_name>` token that
+    replaces a bare `scripts/<script_name>` in a settings.json hook command.
+    """
+    flag = "--soft " if script_name in _SOFT_FAIL_HOOK_SCRIPTS else ""
+    return f"{repo_root_posix}/scripts/hook-resolver.py {flag}{script_name}"
+
+
+def _transform_json_paths(node: Any, repo_root_posix: str, use_project_dir_var: bool = False) -> Any:
     """Rewrite relative `scripts/...` and `config/...` references to
     absolute paths inside the jarvis repo. JSON-aware walk preserves
-    structure while only touching string leaves."""
+    structure while only touching string leaves.
+
+    `use_project_dir_var=True` (settings.json only) routes hook commands
+    through `scripts/hook-resolver.py` instead of a bare path. settings.json
+    is a user-level file whose hooks fire in EVERY Claude Code session, not
+    just jarvis ones — `$CLAUDE_PROJECT_DIR` there is the INVOKING session's
+    own root (#1186; verified against github.com/anthropics/claude-code#36360),
+    which for a non-jarvis session has no `scripts/` dir with jarvis's hook
+    files at all (#1565). hook-resolver.py's own invocation path is baked
+    absolute (never `$CLAUDE_PROJECT_DIR`-templated) so it's always reachable;
+    it resolves the actual jarvis checkout to run from at hook-run time
+    (worktree-aware for jarvis sessions, falling back to the canonical
+    install for everyone else). Other JSON consumers (e.g. .mcp.json's MCP
+    server `args`, spawned without shell expansion) keep the baked-absolute
+    form for the target script directly — no resolver involved there.
+
+    ceiling: settings.json today only ever contains single-token
+    `python scripts/<hook>.py` commands (no `config/` references, no
+    multi-command strings) — _HOOK_SCRIPT_PATTERN handles exactly that shape.
+    A future hook command combining multiple `scripts/` tokens or referencing
+    `config/` needs this revisited.
+    """
     if isinstance(node, str):
+        if use_project_dir_var:
+            return _HOOK_SCRIPT_PATTERN.sub(
+                lambda m: _hook_resolver_invocation(m.group(1), repo_root_posix), node
+            )
         return _POSIX_PATH_PATTERN.sub(lambda m: f"{repo_root_posix}/{m.group(1)}/", node)
     if isinstance(node, list):
-        return [_transform_json_paths(x, repo_root_posix) for x in node]
+        return [_transform_json_paths(x, repo_root_posix, use_project_dir_var) for x in node]
     if isinstance(node, dict):
-        return {k: _transform_json_paths(v, repo_root_posix) for k, v in node.items()}
+        return {k: _transform_json_paths(v, repo_root_posix, use_project_dir_var) for k, v in node.items()}
     return node
 
 
@@ -615,19 +670,24 @@ def _substitute_placeholders(text: str, repo_root: Path, claude_home: Path) -> s
     )
 
 
-def _template_bytes(raw: bytes, ext: str, repo_root: Path, claude_home: Path) -> bytes:
+def _template_bytes(raw: bytes, ext: str, repo_root: Path, claude_home: Path, filename: str = "") -> bytes:
     """Templating core shared by `template_content` and git-history reads.
 
     For .json content: parse, rewrite relative `scripts/`/`config/` paths to
-    absolute, pretty-print. For other content: plain placeholder replace.
-    Non-text / non-json content falls back to a raw copy (no transformation).
+    absolute (or, for settings.json, to `$CLAUDE_PROJECT_DIR/...` — see
+    `_transform_json_paths`), pretty-print. For other content: plain
+    placeholder replace. Non-text / non-json content falls back to a raw copy
+    (no transformation).
     """
     if ext == ".json":
         try:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return raw
-        transformed = _transform_json_paths(data, repo_root.as_posix())
+        # ceiling: gated by exact filename, not "is this a command-hook JSON
+        # file" in general — settings.json is the only one today. A future
+        # second command-type hook config file needs adding here explicitly.
+        transformed = _transform_json_paths(data, repo_root.as_posix(), use_project_dir_var=filename == "settings.json")
         rendered = json.dumps(transformed, indent=2, ensure_ascii=False) + "\n"
         return _substitute_placeholders(rendered, repo_root, claude_home).encode("utf-8")
     try:
@@ -639,7 +699,7 @@ def _template_bytes(raw: bytes, ext: str, repo_root: Path, claude_home: Path) ->
 
 def template_content(source: Path, repo_root: Path, claude_home: Path) -> bytes:
     """Read source, apply templating, return bytes to write at dest."""
-    return _template_bytes(source.read_bytes(), source.suffix.lower(), repo_root, claude_home)
+    return _template_bytes(source.read_bytes(), source.suffix.lower(), repo_root, claude_home, filename=source.name)
 
 
 def _git_show_at(repo_root: Path, sha: str, rel_path: str) -> bytes | None:
@@ -1025,7 +1085,7 @@ def _merge_json_file(
             if base_bytes is not None:
                 if template:
                     base_bytes = _template_bytes(
-                        base_bytes, src.suffix.lower(), repo_root, claude_home
+                        base_bytes, src.suffix.lower(), repo_root, claude_home, filename=src.name
                     )
                 try:
                     base_data = json.loads(base_bytes.decode("utf-8"))
