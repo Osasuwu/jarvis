@@ -104,6 +104,9 @@ from agents.task_worktree import (
     sweep_task_worktrees,
 )
 
+# Extracted to agents/task_boot_adoption.py (#1608, milestone #66).
+from agents.task_boot_adoption import maybe_adopt_at_boot
+
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
 # no import cycle to defer around. The Path B poll step runs every tick when a
 # poller_port is wired, so a per-call import bought nothing but obscurity.
@@ -719,18 +722,12 @@ def run(
     procs = task_procs if task_procs is not None else ({} if task_port is not None else None)
     failed_events: dict[str, int] = {}
 
-    # AC3 (#952) — boot adoption: re-adopt live processes from the sidecar directory.
-    # Only in resident mode (task_port supplied, procs map exists).
-    if task_port is not None and procs is not None and should_continue is None:
-        try:
-            sidecar = Sidecar()
-            for task_id, proc in sidecar.adopt_live_processes():
-                procs[task_id] = TrackedProc(proc=proc, started_at=task_clock())
-        except Exception:  # noqa: BLE001 — boot adoption failure is non-fatal
-            logger.exception("[wake_driver] boot adoption failed; will treat all rows as orphans")
-            sidecar = None
-    else:
-        sidecar = None
+    sidecar = maybe_adopt_at_boot(
+        task_port=task_port,
+        procs=procs,
+        should_continue=should_continue,
+        task_clock=task_clock,
+    )
 
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
