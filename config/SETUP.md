@@ -4,6 +4,8 @@
 
 ## Prerequisites
 
+> **Cost of entry:** Claude Code requires a paid Claude.ai plan (Pro, Max, or Team) or Anthropic API billing. There is no free tier that covers Claude Code. Budget this before starting.
+
 - Python 3.11+
 - [Claude Code](https://claude.ai/code) installed and authenticated (`claude --version`)
 - [GitHub CLI](https://cli.github.com) installed and authenticated (`gh auth status`)
@@ -15,11 +17,22 @@
 
 ---
 
-## 1. Clone and create virtual environment
+## 1. Clone, configure repos, and create virtual environment
 
 ```bash
 git clone https://github.com/Osasuwu/jarvis.git
 cd jarvis
+```
+
+**Edit `config/repos.conf` before running `/status` or `/triage`** — it ships with the original author's repos. Replace those lines with your own (`owner/repo` format, one per line) so skill output refers to your projects, not someone else's.
+
+```bash
+# Windows
+notepad config\repos.conf
+
+# Linux / macOS
+nano config/repos.conf
+```
 
 ```powershell
 cd jarvis
@@ -78,6 +91,24 @@ No Windows environment variables needed — `python-dotenv` handles it.
 > **Where to get Supabase credentials:**
 > Supabase dashboard → your project → Settings → API → Project URL + anon public key
 
+### Semantic search — Voyage AI or Ollama (choose one)
+
+Memory recall degrades to keyword-only without a vector embedding provider. Two options:
+
+**Option A — Voyage AI** (cloud, free tier available):
+```env
+VOYAGE_API_KEY=pa-...
+```
+Get a key at [voyageai.com](https://www.voyageai.com). Free tier covers typical personal use.
+
+**Option B — Ollama** (local, GPU recommended, no external API needed):
+```env
+OLLAMA_EMBED_URL=http://localhost:11434
+OLLAMA_EMBED_MODEL=mxbai-embed-large
+EMBEDDING_MODEL_PRIMARY=mxbai-embed-large
+```
+Pull the model: `ollama pull mxbai-embed-large`. Requires [Ollama](https://ollama.com) running locally. The `mxbai-embed-large` model uses 1024-dim vectors stored in the `embedding_v2` Supabase column (created by the schema in step 4 below). Do not mix providers in the same database instance — vectors are model-specific.
+
 ## 4. Set up Supabase schema
 
 Run `mcp-memory/schema.sql` in the Supabase SQL Editor:
@@ -98,9 +129,32 @@ Expected: server starts and waits (no error). Press Ctrl+C to stop.
 
 If you see `SUPABASE_URL and SUPABASE_KEY must be set` — check your `.env`.
 
-## 6. Configure Claude Code global settings
+## 6. Seed user-level Claude Code config
 
-`~/.claude/settings.json` is device-local and not synced. Create it manually:
+Run the installer to copy skills, hooks, and MCP config from `.claude-userlevel/` into `~/.claude/`:
+
+```powershell
+# Windows
+.\install.ps1 -Apply
+
+# Linux / macOS
+bash install.sh --apply
+```
+
+**What this overwrites vs. preserves in an existing `~/.claude/`:**
+
+| Path | Behaviour |
+|---|---|
+| `~/.claude/skills/` | **Replaced** — skill files are synced from `.claude-userlevel/skills/` |
+| `~/.claude/CLAUDE.md`, `SOUL.md`, `DOCTRINE.md` | **Replaced** — sourced from `.claude-userlevel/` |
+| `~/.claude/settings.json` | **Merged** — keys from `.claude-userlevel/settings.json` added, your existing keys preserved |
+| `~/.claude/.mcp.json` | **Replaced** — MCP server list is synced from `.claude-userlevel/.mcp.json` |
+| `~/.claude/projects/` | **Not touched** — your project memories stay |
+| Everything else in `~/.claude/` | **Not touched** |
+
+The installer backs up the existing `~/.claude/` to a timestamped directory before applying. If you already use Claude Code for other projects, the install is safe — only the files listed above change.
+
+`~/.claude/settings.json` is device-local and not synced. The installer seeds it; you can also create it manually:
 
 ```json
 {
