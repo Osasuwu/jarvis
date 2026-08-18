@@ -79,11 +79,9 @@ from agents.task_dispatch import (
     TaskQueuePort,
     TrackedProc,
     default_read_usage,
-    DedupConfig,
     default_resolve_binary,
     default_spawn,
     default_stdout_reader,
-    default_task_dedup,
     drain_tasks,
     kill_runaways,
     poll_completions,
@@ -92,6 +90,9 @@ from agents.task_dispatch import (
 
 # Extracted to agents/process_kill.py (#1609, milestone #66).
 from agents.process_kill import kill_process_tree
+
+# Extracted to agents/task_dedup.py (#1610, milestone #66).
+from agents.task_dedup import DedupConfig, default_task_dedup
 
 # #1085 S2 review finding 2: production outcome_record wiring for
 # poll_completions (writes task_outcomes since /task-implement has no MCP).
