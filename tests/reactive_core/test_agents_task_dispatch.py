@@ -33,7 +33,6 @@ from agents.task_dispatch import (
     default_local_drain_once,
     default_spawn,
     drain_tasks,
-    kill_process_tree,
     kill_runaways,
     local_drain_until_terminal,
     poll_completions,
@@ -1222,62 +1221,9 @@ class TestKillRunaways:
         assert calls["n"] == 2  # both attempted — isolation, not abort
 
 
-class TestKillProcessTree:
-    def test_windows_uses_taskkill_tree_force(self, monkeypatch: Any) -> None:
-        # Bare Popen.kill() is terminate() on Windows — children survive. The
-        # tree-kill must go through taskkill /T /F.
-        import agents.task_dispatch as td
-
-        runs: list[list[str]] = []
-        monkeypatch.setattr(td.subprocess, "run", lambda argv, **kw: runs.append(list(argv)))
-        proc = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="win32")
-        assert runs == [["taskkill", "/PID", "1234", "/T", "/F"]]
-        assert proc.killed is False  # win32 path never calls Popen.kill()
-
-    def test_posix_uses_proc_kill(self) -> None:
-        proc = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="linux")
-        assert proc.killed is True
-
-    def test_reaps_handle_with_wait(self, monkeypatch: Any) -> None:
-        # review #957-3: the post-kill wait must actually run (it reaps the
-        # handle so poll() reflects the death immediately), win32 and POSIX
-        # alike — a fake without wait() was silently masking this call.
-        import agents.task_dispatch as td
-
-        monkeypatch.setattr(td.subprocess, "run", lambda argv, **kw: None)
-        win = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(win, platform="win32")
-        posix = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(posix, platform="linux")
-        assert win.waited is True
-        assert posix.waited is True
-
-    def test_hung_wait_is_swallowed(self) -> None:
-        # A child that won't reap within the timeout must not hang the driver
-        # tick: TimeoutExpired is swallowed, the next tick's poll re-checks.
-        class _HangingProc(_FakeProc):
-            def wait(self, timeout: float | None = None) -> int | None:
-                raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout or 10)
-
-        proc = _HangingProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="linux")
-        assert proc.killed is True  # the kill happened despite the hung wait
-
-    def test_missing_taskkill_falls_back_to_proc_kill(self, monkeypatch: Any) -> None:
-        # review #957-7 (MINOR): taskkill absent from PATH (stripped env,
-        # minimal container) must not leave the runaway alive — fall back to
-        # plain Popen.kill(), which at least takes down the direct child.
-        import agents.task_dispatch as td
-
-        def raising_run(argv: list[str], **kw: Any) -> None:
-            raise FileNotFoundError("taskkill not found")
-
-        monkeypatch.setattr(td.subprocess, "run", raising_run)
-        proc = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="win32")
-        assert proc.killed is True
+# kill_process_tree itself moved to tests/reactive_core/test_agents_process_kill.py
+# (#1609, milestone #66 — extracted to agents/process_kill.py, de-duplicated
+# against agents/pid_sidecar.py's kill logic).
 
 
 # ---------------------------------------------------------------------------
