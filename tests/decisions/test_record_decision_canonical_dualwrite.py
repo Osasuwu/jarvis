@@ -141,6 +141,7 @@ class TestDualWriteHappyPath:
                 "decision": "Pick X",
                 "rationale": "Because of Y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         assert "Decision recorded" in result[0].text
@@ -172,6 +173,7 @@ class TestDualWriteHappyPath:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         canonical = _calls_to_table(client, "events_canonical")[0]
@@ -197,6 +199,7 @@ class TestOTelKeysFromLLMMetadata:
                     "provider": "anthropic",
                     "operation": "chat",
                 },
+                "project": "jarvis",
             }
         )
         canonical = _calls_to_table(client, "events_canonical")[0]
@@ -221,6 +224,7 @@ class TestOTelKeysFromLLMMetadata:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         canonical = _calls_to_table(client, "events_canonical")[0]
@@ -251,6 +255,7 @@ class TestCanonicalFailureDoesNotBreakEpisodeWrite:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         # Episode write succeeded — caller sees success.

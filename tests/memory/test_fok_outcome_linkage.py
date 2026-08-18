@@ -137,6 +137,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -161,6 +162,7 @@ class TestFokOutcomeLinkage:
                 "rationale": "because",
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
+                "project": "jarvis",
                 # No outcomes_referenced
             }
         )
@@ -186,6 +188,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 # No memories_used
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -220,6 +223,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -260,6 +264,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -294,6 +299,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -328,6 +334,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -363,6 +370,7 @@ class TestFokOutcomeLinkage:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
 
@@ -437,6 +445,7 @@ class TestDecisionSwallowedExceptions:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
         await asyncio.sleep(0)
@@ -473,6 +482,7 @@ class TestDecisionSwallowedExceptions:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
         await asyncio.sleep(0)
@@ -498,6 +508,7 @@ class TestDecisionSwallowedExceptions:
                 "reversibility": "reversible",
                 "memories_used": [_UID_MEM_A],
                 "outcomes_referenced": ["out-1"],
+                "project": "jarvis",
             }
         )
         await asyncio.sleep(0)

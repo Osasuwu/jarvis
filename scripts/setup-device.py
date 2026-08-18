@@ -220,7 +220,7 @@ def setup_env():
 
     # Optional vars -- just report status
     for var, label in [
-        ("VOYAGE_API_KEY", "Voyage AI (semantic search -- optional, keyword fallback works)"),
+        ("VOYAGE_API_KEY", "Voyage AI (semantic search -- optional; alternatively use local Ollama, see SETUP.md §3)"),
         ("GITHUB_TOKEN", "GitHub token (for MCP GitHub server)"),
         ("FIRECRAWL_API_KEY", "Firecrawl (web research -- optional)"),
     ]:
@@ -360,6 +360,7 @@ def setup_device_config():
         "username": username,
         "repos_path": str(ROOT.parent),
         "home": str(Path.home()),
+        "routine_host": False,
     }
 
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -368,6 +369,7 @@ def setup_device_config():
 
     ok(f"Generated config/device.json -- device: {hostname}")
     print(f"  {DIM}This file is gitignored (device-specific){RESET}")
+    print(f"  {DIM}Set routine_host: true to designate this device as the scheduled-task host.{RESET}")
 
 
 SIBLING_REPOS = [

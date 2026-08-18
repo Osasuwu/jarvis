@@ -22,11 +22,13 @@ import tomllib
 import types
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from agents import driver_heartbeat
-from agents import task_dispatch as td
+from agents import task_boot_adoption
+from agents import task_worktree as tw
 from agents import wake_driver
 from agents.task_dispatch import TaskQueuePort, TrackedProc
 
@@ -903,8 +905,8 @@ def test_tick_sweeps_task_worktrees_when_task_port_present(tmp_path, monkeypatch
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
-    monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
-    td._create_task_worktree("orphan")  # no queue row below -> absent -> pruned
+    monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
+    tw.create_task_worktree("orphan")  # no queue row below -> absent -> pruned
 
     q = FakeEventQueue([])
     tq = _RecordingTaskQueue([])  # statuses={} -> get_status("orphan") is None
@@ -967,7 +969,7 @@ def test_run_forwards_task_worktree_params_to_tick(monkeypatch):
         seen["retention_seconds"] = retention_seconds
         seen["retention_cap"] = retention_cap
         seen["now"] = now
-        return td.WorktreeSweepResult(pruned=0, retained=0, ttl_pruned=0, cap_evicted=0)
+        return tw.WorktreeSweepResult(pruned=0, retained=0, ttl_pruned=0, cap_evicted=0)
 
     monkeypatch.setattr(wake_driver, "sweep_task_worktrees", _fake_sweep)
 
@@ -1393,6 +1395,146 @@ def test_tick_without_task_procs_reaps_all_stale_running_as_orphans():
     assert result.tasks_failed_exit == 0
 
 
+# --- #1608: boot adoption extracted to agents.task_boot_adoption -----------
+
+
+class _FakeSidecar:
+    """Stand-in for pid_sidecar.Sidecar — scripted adopt_live_processes()."""
+
+    def __init__(self, adopted: list[tuple[str, Any]] | None = None) -> None:
+        self._adopted = adopted or []
+
+    def adopt_live_processes(self) -> list[tuple[str, Any]]:
+        return self._adopted
+
+
+class _RaisingSidecar:
+    def adopt_live_processes(self) -> list[tuple[str, Any]]:
+        raise RuntimeError("sidecar directory unreadable")
+
+
+def test_maybe_adopt_at_boot_populates_the_procs_map():
+    proc = _TickProc(rc=None)
+    procs: dict = {}
+
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=procs,
+        should_continue=None,
+        task_clock=lambda: 42.0,
+        sidecar_factory=lambda: _FakeSidecar([("t1", proc)]),
+    )
+
+    assert procs == {"t1": TrackedProc(proc=proc, started_at=42.0)}
+    assert result is not None
+
+
+def test_maybe_adopt_at_boot_is_non_fatal_on_sidecar_failure():
+    procs: dict = {}
+
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=procs,
+        should_continue=None,
+        task_clock=lambda: 0.0,
+        sidecar_factory=_RaisingSidecar,
+    )
+
+    assert result is None
+    assert procs == {}
+
+
+def test_maybe_adopt_at_boot_noop_without_task_port():
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        return _FakeSidecar()
+
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=None,
+        procs={},
+        should_continue=None,
+        task_clock=lambda: 0.0,
+        sidecar_factory=factory,
+    )
+
+    assert result is None
+    assert calls["n"] == 0
+
+
+def test_maybe_adopt_at_boot_noop_without_procs_map():
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=None,
+        should_continue=None,
+        task_clock=lambda: 0.0,
+        sidecar_factory=_FakeSidecar,
+    )
+
+    assert result is None
+
+
+def test_maybe_adopt_at_boot_noop_when_should_continue_is_bounded():
+    # A test-bounded loop (should_continue explicitly injected) is never
+    # boot — this is what made the pre-extraction run() untestable end-to-end
+    # with should_continue=None (unbounded loop); the gate stays should_continue
+    # is None exactly, same as the original inline block.
+    calls = {"n": 0}
+
+    def factory():
+        calls["n"] += 1
+        return _FakeSidecar([("t1", _TickProc(rc=None))])
+
+    procs: dict = {}
+    result = task_boot_adoption.maybe_adopt_at_boot(
+        task_port=_RecordingTaskQueue([]),
+        procs=procs,
+        should_continue=lambda: True,
+        task_clock=lambda: 0.0,
+        sidecar_factory=factory,
+    )
+
+    assert result is None
+    assert calls["n"] == 0
+    assert procs == {}
+
+
+def test_run_calls_maybe_adopt_at_boot_with_the_live_procs_map(monkeypatch):
+    # AC3 wiring: run() must call the extracted function (not re-implement
+    # the gate inline) and pass it the sidecar it returns for this tick's
+    # tick() calls. maybe_adopt_at_boot() runs before the while-loop, so a
+    # raise from it propagates straight out of run() — this lets the test
+    # observe the call without needing should_continue=None's unbounded loop.
+    calls: list[dict] = []
+
+    class _Boom(Exception):
+        pass
+
+    def fake_maybe_adopt_at_boot(**kwargs):
+        calls.append(kwargs)
+        raise _Boom
+
+    monkeypatch.setattr(wake_driver, "maybe_adopt_at_boot", fake_maybe_adopt_at_boot)
+    tq = _RecordingTaskQueue([])
+
+    with pytest.raises(_Boom):
+        wake_driver.run(
+            FakeEventQueue([]),
+            wake_driver.default_orchestrator,
+            should_continue=None,
+            task_port=tq,
+            task_resolve_binary=lambda: "claude",
+            task_read_usage=_healthy_usage,
+            task_clock=lambda: 7.0,
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["task_port"] is tq
+    assert calls[0]["procs"] == {}
+    assert calls[0]["should_continue"] is None
+
+
 def test_run_retains_the_tracking_map_across_ticks():
     # AC2 end-to-end: tick 1 spawns t1 into the injected map; the process
     # exits between ticks; tick 2 polls the SAME map and closes running→done.
@@ -1784,7 +1926,7 @@ def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
     monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda **k: object())
     monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", lambda *a, **k: object())
-    monkeypatch.setattr(wake_driver, "_default_event_emit", lambda **k: (lambda *a, **kk: None))
+    monkeypatch.setattr(wake_driver, "_default_event_emit", lambda **k: lambda *a, **kk: None)
     monkeypatch.setattr("agents.github_client.default_github_client", lambda: client)
     monkeypatch.setattr("agents.supabase_client.get_client", lambda: object())
     monkeypatch.setattr(wake_driver, "run", run_impl)

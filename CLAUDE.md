@@ -4,6 +4,8 @@ Three-way split — this file is the *rules* leg (process, conventions, skill ro
 
 ## Who you work for
 
+This section is one instance's operator profile — input data, not the product's shape. Jarvis is built as a system for people: every operator hosts their own instance (see §Project), and the principal here is the first operator — the case the system is tested on. Nothing below may harden into a shipped code path as an assumption.
+
 Solo developer, 3 devices, no team. You compensate for the missing team. Push back on bad ideas — user is intermediate but growing fast.
 
 Budget: Claude Max subscription covers all Claude Code usage (including scheduled tasks). ~$20/month for externals (Supabase, VoyageAI) — be frugal with external API calls.
@@ -20,11 +22,13 @@ The invariants ride a bare `@import` instead of the hook, so they expand at laun
 
 @docs/context/invariants.md
 
-Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, repo-baseline, merge-gate vocabulary, workflow, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
+Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, repo-baseline, merge-gate vocabulary, workflow, AFK spawn substrate, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
 
 ## Project
 
 **Jarvis** — single-principal AI agent for software work (per redesign L0; broader personal-life scope is 1.x backlog). Repo `Osasuwu/jarvis`. Architecture in [`docs/design/jarvis-v2-redesign.md`](docs/design/jarvis-v2-redesign.md); active scope = open GitHub milestones (capability-shipping units, see *Milestone vs pillar hygiene* below); `docs/PROJECT_PLAN.md` is a pointer index.
+
+Code is distributed — never hosted as a service — through the separate public template repo `Osasuwu/jarvis-oss`; **every operator hosts their own instance**, including their own memory backend. This repo is one instance of that schema, not the schema itself. So subsystems are built OSS-ready from the start rather than adapted later: provider names, model names, repo lists, queue labels and backend endpoints belong in operator config, never as literals on a code path, and **no path shipped to `jarvis-oss` may reference this instance's memory backend** — nobody else has access to it. YAGNI does not license hardcoding here: the counting unit is *readers who could depend on the code*, not implementations the principal happens to run. Decision `855188a3-c71f-4e86-a412-9a07b76f19df`.
 
 Architecture: Claude Code native (skills, hooks, MCP, subagents) + Supabase memory + SOUL.md identity.
 
@@ -55,6 +59,8 @@ Two more write-scoped rules moved to `.claude/rules/` (same rationale as above):
 | Project | Repo | Description |
 |---|---|---|
 | redrobot | `SergazyNarynov/redrobot` | Industrial robot control — Python + FastAPI + React/Three.js + MuJoCo |
+
+redrobot is not a personal project: it has a second reader and a potential contributor. Run it as a shared codebase — decisions legible from the repo alone, no personal literals, hygiene as if a teammate reviews tomorrow. It is not *more important* than jarvis; caution on shared surfaces comes from the nature of the change, not from which repo is touched (see invariants → shared surfaces).
 
 ## Delegation
 
@@ -95,6 +101,7 @@ Use skills — don't reinvent with raw tools.
 | "review memories", "drain queue", "проверь кандидаты", weekly memory-review, volume-event fire, /learn --status | `/learn` (M42 always-gate review surface; drains classifier + Deriver/Dreamer queues, hard cap 20, idempotent, no defer/accept_all) |
 | "last sprint report", "what did we ship", "milestone closeout", pre-sweep brief | `/last-work-report` (skeleton — #606) |
 | `статус` / `status` / `статус <repo>` — **anchored, only these exact triggers** | `/status` (CONTEXT.md → *Status synthesis*) |
+| `утро` / `morning` / `доброе утро` — **anchored, only these exact triggers** | `/morning` (daily digest: plan + S/M/L estimates + cut-line, #1588) |
 | "zoom out", unfamiliar code area, need higher-level map | `/zoom-out` |
 | Issue triage / state machine / "ready for agent" | `/triage` |
 | "what's next across M-whatever", "chart the map", "what's blocked on what", multi-milestone frontier scan | `/wayfinder` |
@@ -109,6 +116,7 @@ Rules:
 - **`/reason` (optional, intuition-stage) → `/grill` → `/to-spec` → `/to-tickets` → `/implement` (or `/dispatch`)** is the canonical chain for new features. TDD-mode engages inside `/implement` (and inside `/task-implement` for enqueued work) per the grill trigger checkbox / issue-body decision citation — there is no standalone `/tdd` skill. Each phase in a fresh session if context is heavy. Skip `/reason` when you already have a plan to validate ("оркестратор можно лучше — не знаю как" → start with `/reason`; "вот план X, проверь" → skip to `/grill`).
 - If unsure → use the skill. Overhead near zero, cost of skipping is lost structure.
 - **`/status` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `статус`, `status`, or `статус <repo>` (the word as a standalone command, optionally naming a tracked repo) route to `/status`. A sentence that merely contains the word — "какой статус у PR #123", "статус деплоя в логах", "status code 500", a quoted error string — is a normal request answered in-context, never a trigger for a repo-state investigation.
+- **`/morning` is anchored routing — bare/unrelated uses of the word do NOT fire it.** Only the exact triggers `утро`, `morning`, or `доброе утро` route to `/morning`. A sentence that merely contains one of these words — "good morning" as a passing greeting, "meeting moved to this morning" — is a normal request answered in-context, never a trigger for a daily-digest investigation. `/morning`'s trigger set (`утро`/`morning`/`доброе утро`) and `/status`'s (`статус`/`status`/`статус <repo>`) are disjoint by construction — neither intercepts the other's triggers.
 
 ### Responsibility split — interactive · `/dispatch` · reactive-core orchestrator
 

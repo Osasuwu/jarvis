@@ -298,7 +298,7 @@ When writing `agents/perception_<source>.py`, hit every one:
 End-to-end smoke iterations of #390. Each row is one autonomous run:
 issue → perception tick → task_queue → dispatcher → claude -p → PR.
 
-All three runs were dispatched on workshop PC (`VividFormsPC4Workshop`) on
+All three runs were dispatched on workshop PC (routine-host machine) on
 2026-04-25. The dispatcher path was the same; the body of each issue
 differed deliberately to exercise three task shapes (doc append / test
 add / docstring edit).
