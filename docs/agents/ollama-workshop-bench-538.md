@@ -1,7 +1,7 @@
 # Workshop PC Ollama benchmark — sandcastle slice #538
 
 **Date:** 2026-05-13
-**Device:** VividFormsPC4Workshop (Workshop PC)
+**Device:** workshop-machine (routine-host PC)
 **Hardware:** NVIDIA GeForce RTX 5080, **16 GB VRAM**, 64 GB system RAM, 24 logical CPUs
 **Driver:** 32.0.15.9186
 **Ollama:** local server on `:11434`

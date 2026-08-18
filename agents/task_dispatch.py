@@ -54,16 +54,13 @@ if TYPE_CHECKING:
 
     from agents.driver_heartbeat import HeartbeatStatus
 
-from agents import task_queue
+from agents import pr_evidence, task_dedup, task_outcomes, task_queue, task_worktree
 from agents.github_client import (
     GitHubClient,
-    check_pr_closing_ref_fresh_shape,
-    check_pr_evidence_fresh_shape,
-    check_pr_evidence_rework_shape,
-    parse_executor_stdout,
     parse_goal_shape,
 )
 from agents.pid_sidecar import Sidecar, poll_exit
+from agents.process_kill import kill_process_tree
 
 logger = logging.getLogger(__name__)
 
@@ -95,17 +92,6 @@ DEFAULT_CLAIMED_STALE_SECONDS = 300
 # Deliberately generous (≫ normal task runtime); live tracked rows under the
 # threshold are never time-reaped (AC5).
 DEFAULT_RUNNING_REAP_SECONDS = 6 * 60 * 60
-
-# A retained-failure worktree (#1390 AC6) is kept this long, measured from its
-# ``_WORKTREE_FAILED_AT_MARKER`` timestamp, before the sweep TTL-prunes it —
-# generous enough to cover a same-day post-mortem without accumulating stale
-# trees indefinitely.
-DEFAULT_WORKTREE_RETENTION_TTL_SECONDS = 24 * 60 * 60
-
-# Beyond this many retained-failure worktrees, the sweep evicts the oldest
-# (by ``_WORKTREE_FAILED_AT_MARKER``) first — a backstop against disk growth
-# when failures outpace the TTL, independent of it (#1390 AC6).
-DEFAULT_WORKTREE_RETENTION_CAP = 20
 
 # #1085 S3-2 local-drain fallback: seconds between polling task_queue for
 # terminal state between ``wake_driver --once`` ticks.
@@ -245,7 +231,7 @@ def _augment_closes_mandate(goal: str, task_id: str) -> str:
     shape, _ = parse_goal_shape(goal)
     if shape != "fresh":
         return goal
-    issue_number = _goal_issue_number(goal)
+    issue_number = pr_evidence.goal_issue_number(goal)
     if issue_number is None:
         return goal
     return (
@@ -288,283 +274,6 @@ def default_stdout_reader(task_id: str) -> str | None:
             return fh.read()
     except OSError:
         return None
-
-
-def _compute_pr_evidence(
-    task_id: str,
-    goal: str,
-    spawned_at: datetime | None,
-    *,
-    client: GitHubClient | None,
-    stdout_reader: Callable[[str], str | None] | None = None,
-    issue_number: int | None = None,
-) -> tuple[bool | None, bool | None]:
-    """Compute PR evidence AND closing-ref status for one completed task.
-
-    Returns ``(pr_evidence, closing_ref)`` — the first element is the PR
-    existence tri-state (legacy flow), the second is whether the PR body
-    carries a closing ref for the task's issue (#1169). For rework-shape
-    goals and goals with no issue reference, ``closing_ref`` is ``None``.
-
-    The closing-ref channel is separate from the evidence tri-state per
-    grill decision ``ec66db74`` — the two questions have independent
-    None/False/True semantics.
-
-    ``issue_number`` (#1085 S1-5), when given, is the task_queue row's real
-    ``issue_number`` column value — preferred over parsing it out of ``goal``.
-    ``None`` (the default) falls back to the goal-text regex, exactly the
-    pre-#1085 behavior — every caller not yet threading the column keeps
-    working unchanged.
-    """
-    if client is None or spawned_at is None:
-        return (None, None)
-    shape, pr_number = parse_goal_shape(goal)
-    if shape == "empty":
-        return (None, None)
-    if shape == "rework":
-        assert pr_number is not None  # noqa: S101
-        evidence = check_pr_evidence_rework_shape(
-            task_id, goal, pr_number, spawned_at, client=client
-        )
-        return (evidence, None)
-
-    evidence = check_pr_evidence_fresh_shape(task_id, goal, spawned_at, client=client)
-    # #1136 AC5: advisory-only — surface a fresh-shape PR that links but does not
-    # *close* its named issue. Runs at this evidence boundary regardless of the
-    # freshness verdict; never blocks and never edits the PR.
-    _warn_if_pr_lacks_closing_ref(task_id, goal, client=client, issue_number=issue_number)
-    closing_ref = _compute_closing_ref_fresh_shape(
-        task_id, goal, client=client, issue_number=issue_number
-    )
-    if evidence is False and stdout_reader is not None:
-        # AC3 — the head-branch lookup found nothing; fall back to whatever PR
-        # the agent claimed in its stdout, then verify it actually exists.
-        try:
-            text = stdout_reader(task_id)
-        except Exception:  # noqa: BLE001 — secondary channel is best-effort
-            text = None
-        claimed = parse_executor_stdout(text) if text else None
-        if claimed and claimed.get("number"):
-            try:
-                pr = client.get_pull_by_number(int(claimed["number"]))
-            except Exception:  # noqa: BLE001 — a claimed-PR lookup error is non-fatal
-                pr = None
-            if pr:
-                return (True, closing_ref)
-    return (evidence, closing_ref)
-
-
-def _resolve_pr_url(
-    task_id: str,
-    goal: str,
-    *,
-    client: GitHubClient | None,
-) -> str | None:
-    """Best-effort PR URL for a just-completed task (#1085 S2 review finding 2).
-
-    ``_compute_pr_evidence`` and the ``check_pr_evidence_*`` functions it calls
-    only ever surface a ``bool | None`` tri-state — the PR object they fetch to
-    compute it is discarded, so callers that need the actual URL (here: the
-    completion outcome-writer) must resolve it separately. This is a SEPARATE,
-    deliberate second fetch of the PR, mirroring ``_warn_if_pr_lacks_closing_ref``'s
-    established pattern in this module rather than reaching into evidence
-    internals. Returns ``None`` on any resolution failure — never raises,
-    since the caller treats this as advisory.
-    """
-    if client is None:
-        return None
-    shape, pr_number = parse_goal_shape(goal)
-    try:
-        if shape == "rework" and pr_number is not None:
-            pr = client.get_pull_by_number(pr_number)
-        elif shape == "fresh":
-            branch_match = re.search(r"\(branch=([^)]+)\)", goal)
-            branch = branch_match.group(1).strip() if branch_match else f"task/{task_id}"
-            pr = client.get_pull_by_head_branch(branch)
-        else:
-            return None
-    except Exception:  # noqa: BLE001 — advisory lookup, never raises to the caller
-        logger.exception("[task_dispatch] PR URL resolution failed for task %s", task_id)
-        return None
-    if not pr:
-        return None
-    return pr.get("html_url")
-
-
-def _compute_closing_ref_fresh_shape(
-    task_id: str,
-    goal: str,
-    *,
-    client: GitHubClient | None = None,
-    issue_number: int | None = None,
-) -> bool | None:
-    """Compute closing-ref status for a fresh-shape task (#1169).
-
-    Calls ``check_pr_closing_ref_fresh_shape`` through the gate module.
-    Returns ``True`` if the PR carries a closing ref, ``False`` if it
-    doesn't, ``None`` if it can't be computed.
-
-    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
-    S1-5) — see :func:`_compute_pr_evidence`.
-    """
-    if issue_number is None:
-        issue_number = _goal_issue_number(goal)
-    if issue_number is None:
-        return None
-    if client is None:
-        return None
-    try:
-        gate = _load_gate_module()
-    except Exception:  # noqa: BLE001
-        return None
-    return check_pr_closing_ref_fresh_shape(
-        task_id,
-        goal,
-        issue_number,
-        client=client,
-        closing_ref_matcher=gate._closing_ref_re,
-    )
-
-
-def _warn_if_pr_lacks_closing_ref(
-    task_id: str,
-    goal: str,
-    *,
-    client: GitHubClient,
-    issue_number: int | None = None,
-) -> None:
-    """Log an advisory WARNING if a fresh-shape task's PR does not close its issue (#1136 AC5).
-
-    Advisory-only: this neither blocks the pipeline nor edits the PR. It is a
-    SEPARATE, deliberate second fetch of the PR (via
-    :func:`check_pr_closing_ref_fresh_shape`) — the freshness evidence and the
-    closing-ref question are orthogonal (grill decision ``ec66db74``), so they
-    are not folded into one call. The closing-ref matcher is the /delegate gate's
-    ``_closing_ref_re`` (recognizing ``closes/fixes/resolves`` only, NOT
-    ``Refs``), reused by injection so this module keeps its single path-load in
-    :func:`_load_gate_module` rather than importing gate internals directly.
-
-    Fires only when the goal names an issue AND a PR exists on the branch whose
-    body carries no closing ref for that issue (``check_...`` returns ``False``).
-    A missing issue reference, an absent PR (``None``), or a genuine ``Closes #N``
-    (``True``) are all silent. The AC7 follow-up (#1169) turns this signal into a
-    disposition; here it is observation only.
-
-    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
-    S1-5) — see :func:`_compute_pr_evidence`.
-    """
-    if issue_number is None:
-        issue_number = _goal_issue_number(goal)
-    if issue_number is None:
-        return
-    try:
-        gate = _load_gate_module()
-    except Exception:  # noqa: BLE001 — advisory must never break the evidence path
-        logger.debug("closing-ref advisory: gate module unavailable; skipping")
-        return
-    closes = check_pr_closing_ref_fresh_shape(
-        task_id,
-        goal,
-        issue_number,
-        client=client,
-        closing_ref_matcher=gate._closing_ref_re,
-    )
-    if closes is False:
-        logger.warning(
-            "pr_closing_ref_missing: task=%s issue=#%s — the PR links but carries "
-            "no `Closes #%s` keyword; this merge will NOT auto-close the issue "
-            "(native auto-close is suppressed for bot/App merges). Use `Closes #%s` "
-            "for a full close; `Refs #%s` is correct only for partial work. "
-            "Advisory only — see #1169 for enforcement.",
-            task_id,
-            issue_number,
-            issue_number,
-            issue_number,
-            issue_number,
-        )
-
-
-def _ensure_pr_closing_ref(
-    task_id: str,
-    goal: str,
-    *,
-    client: GitHubClient | None = None,
-    issue_number: int | None = None,
-) -> bool | None:
-    """Ensure a fresh-shape task's PR body carries a closing ref (#1169 item 1).
-
-    Structural enforcement: if the PR exists on the task's branch but its body
-    lacks a ``Closes/Fixes/Resolves #<N>`` for the referenced issue, the
-    supervisor auto-edits the PR body to add it. This makes the requirement
-    structural (not advisory) — even if the spawned agent fails to include the
-    closing keyword, the merge gate still fires.
-
-    Returns the same tri-state as :func:`check_pr_closing_ref_fresh_shape`:
-    - ``True`` — PR has (or now has) a closing ref
-    - ``False`` — no PR to fix, or goal has no issue reference
-    - ``None`` — unparseable or client unavailable
-
-    ``issue_number``, when given, is preferred over parsing ``goal`` (#1085
-    S1-5) — see :func:`_compute_pr_evidence`.
-    """
-    shape, _ = parse_goal_shape(goal)
-    if shape != "fresh":
-        return False
-    if issue_number is None:
-        issue_number = _goal_issue_number(goal)
-    if issue_number is None:
-        return False
-    if client is None:
-        return None
-
-    try:
-        gate = _load_gate_module()
-    except Exception:  # noqa: BLE001 — enforcement must not crash the poll
-        logger.debug("ensure-closing-ref: gate module unavailable; skipping")
-        return None
-
-    current = check_pr_closing_ref_fresh_shape(
-        task_id,
-        goal,
-        issue_number,
-        client=client,
-        closing_ref_matcher=gate._closing_ref_re,
-    )
-    if current is True:
-        return True
-
-    if current is False:
-        branch_match = re.search(r"\(branch=([^)]+)\)", goal)
-        branch = branch_match.group(1).strip() if branch_match else f"task/{task_id}"
-        pr = client.get_pull_by_head_branch(branch)
-        if pr is None:
-            return None
-        pr_number = pr.get("number")
-        existing_body = pr.get("body") or ""
-        closing_line = f"\nCloses #{issue_number}\n"
-        if not existing_body.endswith("\n"):
-            closing_line = "\n" + closing_line
-        new_body = existing_body + closing_line
-        try:
-            result = client.update_pull(pr_number, body=new_body)
-            if result is not None:
-                logger.info(
-                    "[task_dispatch] auto-fixed missing closing ref: "
-                    "PR #%s for issue #%s (task %s)",
-                    pr_number,
-                    issue_number,
-                    task_id,
-                )
-                return True
-        except Exception:  # noqa: BLE001 — enforcement failure must not crash the poll
-            logger.exception(
-                "[task_dispatch] auto-fix of PR #%s closing ref failed for task %s",
-                pr_number,
-                task_id,
-            )
-        return None
-
-    return None
 
 
 def _severity_for(
@@ -629,198 +338,6 @@ class TaskQueuePort(Protocol):
         """
 
 
-# First "#N" reference in a goal string — the issue a fresh-shape task targets.
-# Right-anchored like the gate's closing-keyword regex so "#93" never reads as
-# "#931" (the (?!\d) lookahead).
-_GOAL_ISSUE_RE = re.compile(r"#(\d+)(?!\d)")
-
-
-def _goal_issue_number(goal: str) -> int | None:
-    """Issue number a goal references, or ``None`` when it references none."""
-    m = _GOAL_ISSUE_RE.search(goal)
-    return int(m.group(1)) if m else None
-
-
-def _row_issue_number(row: dict[str, Any], goal: str) -> int | None:
-    """Issue number for a task_queue row: real column first, regex fallback (#1085 S1-5).
-
-    ``row["issue_number"]`` is populated for every row enqueued after the
-    #1085 S1-1/S1-2 migration; legacy/null rows (enqueued before the column
-    existed, or via a path that never set it) fall back to
-    :func:`_goal_issue_number` parsing ``goal`` — the pre-#1085 behavior.
-    """
-    value = row.get("issue_number")
-    if value is not None:
-        return int(value)
-    return _goal_issue_number(goal)
-
-
-def _load_gate_module() -> Any:
-    """Load ``scripts/delegate_predispatch_gate.py`` for its shared predicate (#931).
-
-    The gate module lives outside the ``agents`` package (it is the /delegate
-    CLI reference implementation), so import it by path, anchored to the repo
-    root the same way :data:`_EXECUTOR_LOG_DIR` is. Cached in ``sys.modules``
-    under its plain name — the tests import it the same way, so the two share
-    one module object.
-    """
-    mod = sys.modules.get("delegate_predispatch_gate")
-    if mod is not None:
-        return mod
-    import importlib.util
-
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        "scripts",
-        "delegate_predispatch_gate.py",
-    )
-    spec = importlib.util.spec_from_file_location("delegate_predispatch_gate", path)
-    if spec is None or spec.loader is None:  # pragma: no cover — repo layout broken
-        raise ImportError(f"cannot load dispatch gate module from {path}")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["delegate_predispatch_gate"] = mod
-    spec.loader.exec_module(mod)
-    return mod
-
-
-@dataclass(frozen=True)
-class DedupConfig:
-    """Pre-spawn dispatch-dedup wiring for :func:`drain_tasks` (#931).
-
-    ``fetch_in_flight`` returns ``(open_prs, open_branches)`` in the shapes the
-    gate's ``check_in_flight`` predicate takes — PR dicts with ``number`` /
-    ``body`` / ``headRefName``, branch names as plain strings. It is called
-    lazily, at most once per drain (the first fresh-shape task with an issue
-    reference triggers it), and a raise means *unverifiable*: the in-flight row
-    is requeued to ``pending`` and the drain stops — never a terminal state on
-    evidence we could not read.
-
-    ``list_active_rows`` returns live (``claimed``/``running``) task_queue rows
-    (``id``/``goal``/``status``/``issue_number``) for the sibling check; queried
-    fresh per task so a row spawned earlier in this same drain is seen by later
-    tasks. The sibling predicate prefers each row's ``issue_number`` column
-    (#1085 S1-5), falling back to parsing ``goal`` for legacy/null rows.
-
-    ``record_outcome`` (optional) is called best-effort with a small payload
-    dict on each ``skipped_duplicate`` — a raise is logged and swallowed.
-
-    ``fetch_issue`` (optional, #1085 S2-3) fetches a single issue fresh at
-    spawn time — returns ``None`` if the issue is gone/inaccessible, raises on
-    a genuine fetch failure. Used only for rows whose ``idempotency_key``
-    starts with ``"delegate:"`` (i.e. ``/dispatch``-originated): the mechanical
-    re-run of ``check_issue`` against a fresh fetch, since ``/dispatch``'s own
-    check at enqueue time is advisory, not enforcement. ``None`` here (the
-    default) disables the re-check entirely — orchestrator-emitted and
-    ``/rework`` rows were never subject to ``check_issue``'s readiness
-    conditions and must not start being refused by omission.
-    """
-
-    fetch_in_flight: Callable[[], tuple[list[dict[str, Any]], list[str]]]
-    list_active_rows: Callable[[], list[dict[str, Any]]]
-    record_outcome: Callable[[dict[str, Any]], None] | None = None
-    fetch_issue: Callable[[int], dict[str, Any] | None] | None = None
-
-
-def _record_skip_outcome(payload: dict[str, Any]) -> None:
-    """Best-effort ``task_outcomes`` write for a skipped-duplicate (#931).
-
-    Sandcastle-anon insert, so ``source_provenance`` carries the required
-    ``sandcastle:`` prefix (mcp-memory/schema.sql RLS, #542). Any failure is the
-    caller's to swallow — this never raises on the happy path but the caller
-    still guards it. ``GITHUB_REPO`` builds the issue URL for the ``issue_url``
-    link column.
-    """
-    from agents.supabase_client import get_client
-
-    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
-    issue_number = payload.get("issue_number")
-    get_client().table("task_outcomes").insert(
-        {
-            "task_type": "autonomous",
-            "task_description": f"dispatch-dedup skip: {payload.get('goal')}",
-            "outcome_status": "unknown",
-            "outcome_summary": (
-                f"Skipped duplicate dispatch for #{issue_number}: {payload.get('pointer')}"
-            ),
-            "project": "jarvis",
-            "issue_url": (
-                f"https://github.com/{repo}/issues/{issue_number}"
-                if issue_number is not None
-                else None
-            ),
-            "pattern_tags": ["dispatch-dedup", "skip", "autonomous"],
-            "source_provenance": "sandcastle:task_dispatch-dedup",
-        }
-    ).execute()
-
-
-def _record_completion_outcome(payload: dict[str, Any]) -> None:
-    """Best-effort ``task_outcomes`` write for a completed subagent task (#1085
-    S2 review finding 2).
-
-    ``/task-implement`` runs headless with no MCP tools (HARD RULE 3, its
-    SKILL.md) — it cannot call ``outcome_record`` itself. Without this write, a
-    subagent-dispatched task never gets a ``task_outcomes`` row at all, so
-    ``/verify`` Step 1's ``outcome_list(outcome_status="pending")`` never sees
-    it and Step 2b's divergence/drive-by audit checks never run. This writes
-    the row from the orchestrator side instead, at the terminal boundary where
-    ``poll_completions`` already knows the task succeeded (exit 0).
-    ``pattern_tags`` MUST include ``"subagent"`` — that's the exact filter
-    Step 2b keys on. Sandcastle-anon insert, mirroring
-    :func:`_record_skip_outcome`'s pattern.
-    """
-    from agents.supabase_client import get_client
-
-    repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
-    issue_number = payload.get("issue_number")
-    get_client().table("task_outcomes").insert(
-        {
-            "task_type": "autonomous",
-            "task_description": f"task-implement: {payload.get('goal')}",
-            "outcome_status": "pending",
-            "outcome_summary": (
-                f"Task {payload.get('task_id')} completed (exit 0); awaiting /verify audit."
-            ),
-            "project": "jarvis",
-            "issue_url": (
-                f"https://github.com/{repo}/issues/{issue_number}"
-                if issue_number is not None
-                else None
-            ),
-            "pr_url": payload.get("pr_url"),
-            "pattern_tags": ["subagent", "headless", "task-implement"],
-            "source_provenance": "sandcastle:task_dispatch-completion",
-        }
-    ).execute()
-
-
-def default_task_dedup(
-    github: GitHubClient,
-    *,
-    list_active: Callable[[], list[dict[str, Any]]] | None = None,
-) -> DedupConfig:
-    """Build the production :class:`DedupConfig` from a live GitHub client (#931).
-
-    ``fetch_in_flight`` maps the client's ``list_open_pulls`` / ``list_branch_names``
-    into the ``(open_prs, open_branches)`` shape the gate predicate takes;
-    ``list_active_rows`` defaults to :func:`task_queue.list_active`; ``record_outcome``
-    is the best-effort ``task_outcomes`` writer above; ``fetch_issue`` is
-    ``github.get_issue`` directly (#1085 S2-3). Wired from
-    :func:`wake_driver.main`; unit tests inject fakes into :class:`DedupConfig` directly.
-    """
-    active = list_active if list_active is not None else task_queue.list_active
-
-    def fetch_in_flight() -> tuple[list[dict[str, Any]], list[str]]:
-        return github.list_open_pulls(), github.list_branch_names()
-
-    return DedupConfig(
-        fetch_in_flight=fetch_in_flight,
-        list_active_rows=active,
-        record_outcome=_record_skip_outcome,
-        fetch_issue=github.get_issue,
-    )
-
-
 @dataclass(frozen=True)
 class DrainResult:
     """What one :func:`drain_tasks` did."""
@@ -860,22 +377,6 @@ class ReclaimResult:
 
     reclaimed_claimed: int = 0
     reaped_running: int = 0
-
-
-@dataclass(frozen=True)
-class WorktreeSweepResult:
-    """What one :func:`sweep_task_worktrees` did (#1390 AC6)."""
-
-    # Worktrees removed immediately: task row absent, or terminal-non-failure
-    # (``done``, ``parked``, ``skipped_duplicate``).
-    pruned: int = 0
-    # Retained-failure worktrees still on disk after TTL + cap eviction.
-    retained: int = 0
-    # Retained-failure worktrees removed for exceeding the TTL.
-    ttl_pruned: int = 0
-    # Retained-failure worktrees removed for exceeding the count cap
-    # (oldest-first), independent of TTL.
-    cap_evicted: int = 0
 
 
 @dataclass(frozen=True)
@@ -995,12 +496,15 @@ def poll_completions(
         # #1169 item 1: for a done fresh-shape task, ensure the PR body carries
         # a closing ref. The supervisor auto-fixes if the agent omitted it.
         if rc == 0 and evidence_client is not None:
-            _ensure_pr_closing_ref(
+            pr_evidence.ensure_pr_closing_ref(
                 task_id, goal, client=evidence_client, issue_number=tracked.issue_number
             )
 
         # #1169 item 3: unpack the closing-ref status alongside the PR evidence.
-        pr_evidence, closing_ref = _compute_pr_evidence(
+        # Named ``pr_exists`` (not ``pr_evidence``) — this function scope also
+        # calls the ``pr_evidence`` module above; assigning that name locally
+        # here would make every earlier reference to it an UnboundLocalError.
+        pr_exists, closing_ref = pr_evidence.compute_pr_evidence(
             task_id,
             goal,
             tracked.spawned_at,
@@ -1020,12 +524,12 @@ def poll_completions(
                 if rc == 0:
                     event_emit(
                         "task_done",
-                        _severity_for("task_done", pr_evidence, closing_ref=closing_ref),
+                        _severity_for("task_done", pr_exists, closing_ref=closing_ref),
                         {
                             "task_id": task_id,
                             "lineage_key": lineage_key,
                             "attempt": attempt,
-                            "pr_evidence": pr_evidence,
+                            "pr_evidence": pr_exists,
                             "goal": goal,
                             "closing_ref": closing_ref,
                         },
@@ -1034,14 +538,14 @@ def poll_completions(
                 else:
                     event_emit(
                         "task_failed",
-                        _severity_for("task_failed", pr_evidence),
+                        _severity_for("task_failed", pr_exists),
                         {
                             "task_id": task_id,
                             "lineage_key": lineage_key,
                             "attempt": attempt,
                             "exit_code": rc,
                             "exit_confirmed": True,
-                            "pr_evidence": pr_evidence,
+                            "pr_evidence": pr_exists,
                             "failure_reason": f"exit {rc}",
                             "goal": goal,
                         },
@@ -1056,7 +560,7 @@ def poll_completions(
 
         # #1085 S2 review finding 2: write the task_outcomes row for a completed
         # subagent task here, since /task-implement runs with no MCP tools and
-        # cannot call outcome_record itself (see _record_completion_outcome).
+        # cannot call outcome_record itself (see task_outcomes.record_completion_outcome).
         # Decoupled from the transition below for the same reason event_emit is —
         # an outcome-write failure must never block the FSM transition.
         if rc == 0 and outcome_record is not None:
@@ -1066,7 +570,9 @@ def poll_completions(
                         "task_id": task_id,
                         "goal": goal,
                         "issue_number": tracked.issue_number,
-                        "pr_url": _resolve_pr_url(task_id, goal, client=evidence_client),
+                        "pr_url": task_outcomes.resolve_pr_url(
+                            task_id, goal, client=evidence_client
+                        ),
                     }
                 )
             except Exception:  # noqa: BLE001 — outcome write must not block transition
@@ -1101,7 +607,7 @@ def poll_completions(
             # AC5 (#1390) — remove the worktree on success; detach HEAD on
             # failure so the branch ref is free for `_redrive_goal`'s retry.
             try:
-                _finalize_task_worktree(task_id, success=(rc == 0))
+                task_worktree.finalize_task_worktree(task_id, success=(rc == 0))
             except Exception:  # noqa: BLE001 — worktree finalize is best-effort
                 logger.exception(
                     "[task_dispatch] worktree finalize failed for task %s",
@@ -1109,46 +615,6 @@ def poll_completions(
                 )
             procs.pop(task_id, None)
     return CompletionResult(done=done, failed_exit=failed_exit)
-
-
-def kill_process_tree(proc: Any, *, platform: str = sys.platform) -> None:
-    """Kill a spawned process AND its children (#921 AC6).
-
-    On Windows ``Popen.kill()`` is an alias for ``terminate()`` — it kills only
-    the direct process, and a ``claude -p`` child's own subprocesses (git, gh,
-    tools) survive as orphans. ``taskkill /PID <pid> /T /F`` walks the tree; if
-    taskkill itself can't launch (stripped PATH), degrade to ``proc.kill()`` —
-    direct child only, better than leaving the runaway alive.
-
-    POSIX gets plain ``proc.kill()`` — direct child only. ``os.killpg`` would
-    be WRONG here: :func:`executor.spawn` does not pass
-    ``start_new_session=True``, so the child shares the driver's process group
-    and ``killpg`` would kill the driver itself. A POSIX tree-kill needs the
-    spawn-side change first; production runs on Windows, so this is deferred.
-
-    Best-effort ``wait`` afterwards reaps the handle so ``poll()`` reflects the
-    death immediately; a hung wait is swallowed (the next tick's poll re-checks).
-    """
-    if platform == "win32":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True,
-                check=False,
-            )
-        except OSError:  # taskkill missing/unlaunchable — degrade to direct kill
-            logger.exception(
-                "[task_dispatch] taskkill unavailable for pid %s; "
-                "falling back to Popen.kill() (children may survive)",
-                proc.pid,
-            )
-            proc.kill()
-    else:
-        proc.kill()
-    try:
-        proc.wait(timeout=10)
-    except Exception:  # noqa: BLE001 — reap is best-effort; poll re-checks next tick
-        pass
 
 
 def kill_runaways(
@@ -1252,92 +718,6 @@ def kill_runaways(
     return killed
 
 
-def _create_task_worktree(task_id: str, goal: str = "") -> str:
-    """Create a per-task git worktree at ``.reactive/worktrees/<task_id>``
-    (#1390 AC3) — isolates concurrent spawned workers from each other and
-    from the main checkout's working tree.
-
-    By default the worktree is created on a fresh branch ``task/<task_id>``
-    (``git worktree add -b``). If ``goal`` carries an explicit
-    ``(branch=<name>)`` directive naming a *different* branch, the worktree
-    instead **attaches** to that existing branch (``git worktree add`` with
-    no ``-b``) rather than creating ``task/<task_id>``.
-
-    This distinction matters for a fresh-shape re-drive: :func:`orchestrator._redrive_goal`
-    pins the retry to ``(branch=task/<root_task_id>)`` specifically *because*
-    the re-driven task's own ``task/<task_id>`` branch is never meant to be
-    created — the retry needs to land back on the root attempt's branch,
-    which :func:`_finalize_task_worktree` leaves detached-but-intact after a
-    failure precisely so a later attach can succeed. Creating a new branch
-    unconditionally here would silently violate that pin (MEDIUM, PR #1450
-    review) and leave the retry's evidence check looking at a branch that was
-    never populated.
-
-    ``task_id`` is validated via ``_SAFE_TASK_ID_RE`` before interpolation into
-    a filesystem path — same path-traversal guard as
-    :func:`default_stdout_reader`.
-    """
-    if not _SAFE_TASK_ID_RE.match(task_id):
-        raise ValueError(f"unsafe task_id for worktree path: {task_id!r}")
-    worktree_path = os.path.join(_REPO_ROOT, ".reactive", "worktrees", task_id)
-    own_branch = f"task/{task_id}"
-    branch_match = re.search(r"\(branch=([^)]+)\)", goal)
-    target_branch = branch_match.group(1).strip() if branch_match else own_branch
-    if target_branch == own_branch:
-        cmd = ["git", "worktree", "add", "-b", own_branch, worktree_path]
-    else:
-        cmd = ["git", "worktree", "add", worktree_path, target_branch]
-    subprocess.run(cmd, cwd=_REPO_ROOT, check=True, capture_output=True, text=True)
-    return worktree_path
-
-
-# Marker file written into a retained-failure worktree at detach time, holding
-# the epoch timestamp of finalization. The AC6 sweep TTLs retained failures
-# against this file's content rather than git-internal mtimes — ``git
-# checkout --detach`` gives no reliable "when did this fail" signal on its
-# own (LOW, #1390 AC6 design).
-_WORKTREE_FAILED_AT_MARKER = ".reactive-failed-at"
-
-
-def _finalize_task_worktree(task_id: str, *, success: bool) -> None:
-    """Finalize the per-task worktree at the terminal boundary (#1390 AC5).
-
-    Success removes the worktree outright. Failure detaches HEAD first so the
-    branch ``task/<task_id>`` is free for ``_redrive_goal``'s retry to attach
-    in a fresh worktree, writes the ``_WORKTREE_FAILED_AT_MARKER`` timestamp
-    file, then leaves the tree on disk for post-mortem — the AC6 sweep
-    TTL/count-caps genuinely retained failures later, keyed on that marker.
-
-    No-op (not an error) when the worktree was never created — e.g. an
-    adopted-after-restart proc, or a task spawned before #1390 shipped.
-    """
-    if not _SAFE_TASK_ID_RE.match(task_id):
-        return
-    worktree_path = os.path.join(_REPO_ROOT, ".reactive", "worktrees", task_id)
-    if not os.path.isdir(worktree_path):
-        return
-    if success:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", worktree_path],
-            cwd=_REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    else:
-        subprocess.run(
-            ["git", "checkout", "--detach"],
-            cwd=worktree_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        with open(
-            os.path.join(worktree_path, _WORKTREE_FAILED_AT_MARKER), "w", encoding="utf-8"
-        ) as fh:
-            fh.write(str(time.time()))
-
-
 def default_spawn(goal: str, *, task_id: str | None = None) -> Any:
     """Production spawn adapter — fire-and-forget ``claude -p`` via the executor.
 
@@ -1373,8 +753,8 @@ def default_spawn(goal: str, *, task_id: str | None = None) -> Any:
     # concurrent workers never share a working tree. Pass spawn_goal (not the
     # raw goal) so a fresh-shape redrive's (branch=task/<root_task_id>) pin
     # (added by _redrive_goal, threaded through by _augment_branch_directive)
-    # is honored — see _create_task_worktree docstring.
-    cwd = _create_task_worktree(task_id, spawn_goal) if task_id else None
+    # is honored — see task_worktree.create_task_worktree docstring.
+    cwd = task_worktree.create_task_worktree(task_id, spawn_goal) if task_id else None
     return executor_spawn(spawn_goal, task_id=task_id, cwd=cwd)
 
 
@@ -1406,7 +786,7 @@ def drain_tasks(
     resolve_binary: ResolveBinary = default_resolve_binary,
     read_usage: ReadUsage = default_read_usage,
     sidecar: Sidecar | None = None,
-    dedup: DedupConfig | None = None,
+    dedup: task_dedup.DedupConfig | None = None,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -1515,7 +895,9 @@ def drain_tasks(
         # targets a live PR by design and must not be eaten by the live-PR rule.
         if dedup is not None:
             shape, _ = parse_goal_shape(row["goal"])
-            issue_number = _row_issue_number(row, str(row["goal"])) if shape == "fresh" else None
+            issue_number = (
+                task_dedup.row_issue_number(row, str(row["goal"])) if shape == "fresh" else None
+            )
             if issue_number is not None:
                 try:
                     if in_flight_evidence is None:
@@ -1540,7 +922,7 @@ def drain_tasks(
                     )
 
                 open_prs, open_branches = in_flight_evidence
-                in_flight = _load_gate_module().check_in_flight(
+                in_flight = pr_evidence.load_gate_module().check_in_flight(
                     issue_number, open_prs, open_branches
                 )
                 sibling = next(
@@ -1548,7 +930,7 @@ def drain_tasks(
                         r
                         for r in active_rows
                         if str(r.get("id")) != task_id
-                        and _row_issue_number(r, str(r.get("goal") or "")) == issue_number
+                        and task_dedup.row_issue_number(r, str(r.get("goal") or "")) == issue_number
                     ),
                     None,
                 )
@@ -1645,7 +1027,7 @@ def drain_tasks(
                             )
                         continue
 
-                    readiness = _load_gate_module().check_issue(fresh_issue)
+                    readiness = pr_evidence.load_gate_module().check_issue(fresh_issue)
                     if not readiness.allow:
                         try:
                             port.transition(task_id, "parked", reason=readiness.message)
@@ -1811,137 +1193,6 @@ def reclaim_stale_tasks(
             )
 
     return ReclaimResult(reclaimed_claimed=reclaimed, reaped_running=reaped)
-
-
-def _remove_worktree(worktree_path: str) -> bool:
-    """Best-effort ``git worktree remove --force`` — log-and-continue, never raise.
-
-    Windows handle-locks make an un-removable tree a normal outcome (the
-    existing ``.claude/worktrees/`` lane already drifts — 9 dirs on disk vs 5
-    registered), not an exotic one; the AC6 sweep must not let one stuck tree
-    abort the rest of the tick (#1390 AC6).
-    """
-    try:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", worktree_path],
-            cwd=_REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, OSError):
-        logger.exception(
-            "[task_dispatch] failed to remove worktree %s; retried next sweep",
-            worktree_path,
-        )
-        return False
-
-
-def _read_worktree_failed_at(worktree_path: str, *, default: float) -> float:
-    """Read the ``_WORKTREE_FAILED_AT_MARKER`` epoch timestamp, or ``default``
-    if the marker is missing/unreadable — e.g. a worktree that failed before
-    #1390 AC6 shipped the marker write. Defaulting to "now" rather than "very
-    old" means an unreadable marker errs toward retaining the tree, not
-    losing it to an eager TTL prune.
-    """
-    marker_path = os.path.join(worktree_path, _WORKTREE_FAILED_AT_MARKER)
-    try:
-        with open(marker_path, encoding="utf-8") as fh:
-            return float(fh.read().strip())
-    except (OSError, ValueError):
-        return default
-
-
-def sweep_task_worktrees(
-    port: TaskQueuePort,
-    *,
-    retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
-    retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
-    now: Callable[[], float] = time.time,
-) -> WorktreeSweepResult:
-    """Tick-start reaping sweep over ``.reactive/worktrees/*`` (#1390 AC6).
-
-    Keyed on the owning task's queue-row status, looked up via
-    :meth:`TaskQueuePort.get_status`:
-
-    - **Absent row, or terminal-non-failure** (``done``, ``parked``,
-      ``skipped_duplicate``) → removed immediately. Nothing needs the tree
-      any more.
-    - **``failed``** → retained for post-mortem, subject to TTL
-      (``retention_seconds``, measured from the tree's
-      ``_WORKTREE_FAILED_AT_MARKER``) and a count cap (``retention_cap``,
-      oldest-first eviction) so failures don't accumulate unbounded.
-    - **Any active state** (``pending``, ``claimed``, ``running``) → left
-      untouched. A live spawn's worktree is never touched by this sweep;
-      :func:`reclaim_stale_tasks` (run immediately before this in
-      ``wake_driver.tick``) is what turns an orphaned ``running`` row into
-      ``failed`` so it becomes eligible here.
-
-    Finishes with a best-effort ``git worktree prune`` so git's own
-    registration bookkeeping stays in sync with what's actually on disk.
-    Removal failures (Windows handle-locks are a normal, not exotic, outcome)
-    are logged and retried next tick rather than raised — one stuck tree must
-    not abort the sweep.
-    """
-    worktrees_root = os.path.join(_REPO_ROOT, ".reactive", "worktrees")
-    pruned = 0
-    retained_failures: list[tuple[str, float]] = []
-
-    if os.path.isdir(worktrees_root):
-        for name in sorted(os.listdir(worktrees_root)):
-            if not _SAFE_TASK_ID_RE.match(name):
-                continue
-            worktree_path = os.path.join(worktrees_root, name)
-            if not os.path.isdir(worktree_path):
-                continue
-
-            status = port.get_status(name)
-            if status == "failed":
-                failed_at = _read_worktree_failed_at(worktree_path, default=now())
-                retained_failures.append((worktree_path, failed_at))
-            elif status in (None, "done", "parked", "skipped_duplicate"):
-                if _remove_worktree(worktree_path):
-                    pruned += 1
-            # else: active (pending/claimed/running) — untouched this sweep.
-
-    # TTL-prune retained failures past their retention window.
-    ttl_pruned = 0
-    cutoff = now() - retention_seconds
-    survivors: list[tuple[str, float]] = []
-    for worktree_path, failed_at in retained_failures:
-        if failed_at < cutoff:
-            if _remove_worktree(worktree_path):
-                ttl_pruned += 1
-            continue
-        survivors.append((worktree_path, failed_at))
-
-    # Count-cap survivors, oldest-first, independent of TTL.
-    cap_evicted = 0
-    if len(survivors) > retention_cap:
-        survivors.sort(key=lambda item: item[1])
-        overflow = len(survivors) - retention_cap
-        for worktree_path, _failed_at in survivors[:overflow]:
-            if _remove_worktree(worktree_path):
-                cap_evicted += 1
-
-    try:
-        subprocess.run(
-            ["git", "worktree", "prune"],
-            cwd=_REPO_ROOT,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except (subprocess.CalledProcessError, OSError):
-        logger.exception("[task_dispatch] git worktree prune failed; retried next sweep")
-
-    return WorktreeSweepResult(
-        pruned=pruned,
-        retained=len(survivors) - cap_evicted,
-        ttl_pruned=ttl_pruned,
-        cap_evicted=cap_evicted,
-    )
 
 
 def default_local_drain_heartbeat_check() -> HeartbeatStatus:
