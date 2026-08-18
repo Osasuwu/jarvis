@@ -721,6 +721,7 @@ class TestDecisionGate:
                 "rationale": f"because {FAKE_OPENAI_KEY} is the key",
                 "reversibility": "reversible",
                 "actor": "session:test",
+                "project": "jarvis",
             }
         )
 
@@ -742,6 +743,7 @@ class TestDecisionGate:
                 "decision": f"adopt {FAKE_OPENAI_KEY} as the key",
                 "rationale": "clean rationale",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         body = json.loads(result[0].text)
@@ -761,6 +763,7 @@ class TestDecisionGate:
                 "rationale": "clean rationale",
                 "alternatives_considered": [f"option using {FAKE_OPENAI_KEY}"],
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
@@ -777,6 +780,7 @@ class TestDecisionGate:
                 "rationale": "clean rationale",
                 "reversibility": "reversible",
                 "outcomes_referenced": [f"outcome {FAKE_OPENAI_KEY}"],
+                "project": "jarvis",
             }
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
@@ -797,6 +801,7 @@ class TestDecisionGate:
                 "rationale": "clean rationale",
                 "reversibility": "reversible",
                 "actor": f"session:{FAKE_OPENAI_KEY}",
+                "project": "jarvis",
             }
         )
         assert json.loads(result[0].text)["error"] == "secret_pattern_detected"
@@ -814,6 +819,7 @@ class TestDecisionGate:
                 "decision": "clean decision",
                 "rationale": "clean rationale",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         # Reaches the normal path → episode id surfaced, no error.
