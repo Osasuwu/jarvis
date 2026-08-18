@@ -247,26 +247,28 @@ class TestKillOrphanProcess:
         pytest.importorskip("psutil")
         with patch("psutil.Process") as MockProcess:
             with patch("agents.pid_sidecar.delete_sidecar") as mock_delete:
-                mock_proc = MagicMock()
-                mock_proc.is_running.return_value = True
-                MockProcess.return_value = mock_proc
+                with patch("agents.pid_sidecar.kill_process_tree") as mock_kill_tree:
+                    mock_proc = MagicMock()
+                    mock_proc.is_running.return_value = True
+                    MockProcess.return_value = mock_proc
 
-                kill_orphan_process("task1", 1234)
-                mock_proc.kill.assert_called_once()
-                mock_delete.assert_called_once_with("task1")
+                    kill_orphan_process("task1", 1234)
+                    mock_kill_tree.assert_called_once_with(mock_proc, wait_timeout=1.0)
+                    mock_delete.assert_called_once_with("task1")
 
     def test_kill_orphan_dead_process(self):
         """kill_orphan_process handles process already dead."""
         pytest.importorskip("psutil")
         with patch("psutil.Process") as MockProcess:
             with patch("agents.pid_sidecar.delete_sidecar") as mock_delete:
-                mock_proc = MagicMock()
-                mock_proc.is_running.return_value = False
-                MockProcess.return_value = mock_proc
+                with patch("agents.pid_sidecar.kill_process_tree") as mock_kill_tree:
+                    mock_proc = MagicMock()
+                    mock_proc.is_running.return_value = False
+                    MockProcess.return_value = mock_proc
 
-                kill_orphan_process("task1", 1234)
-                mock_proc.kill.assert_not_called()
-                mock_delete.assert_called_once_with("task1")
+                    kill_orphan_process("task1", 1234)
+                    mock_kill_tree.assert_not_called()
+                    mock_delete.assert_called_once_with("task1")
 
 
 class TestBootScanSidecars:
@@ -364,15 +366,16 @@ class TestSidecarClass:
         pytest.importorskip("psutil")
         with patch("psutil.Process") as MockProcess:
             with patch("agents.pid_sidecar.delete_sidecar") as mock_delete:
-                mock_proc = MagicMock()
-                mock_proc.is_running.return_value = True
-                MockProcess.return_value = mock_proc
+                with patch("agents.pid_sidecar.kill_process_tree") as mock_kill_tree:
+                    mock_proc = MagicMock()
+                    mock_proc.is_running.return_value = True
+                    MockProcess.return_value = mock_proc
 
-                sidecar = Sidecar()
-                sidecar.kill_orphan("task1", 1234)
+                    sidecar = Sidecar()
+                    sidecar.kill_orphan("task1", 1234)
 
-                mock_proc.kill.assert_called_once()
-                mock_delete.assert_called_once_with("task1")
+                    mock_kill_tree.assert_called_once_with(mock_proc, wait_timeout=1.0)
+                    mock_delete.assert_called_once_with("task1")
 
 
 class TestModuleDocstring:
