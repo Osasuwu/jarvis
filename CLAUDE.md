@@ -4,6 +4,8 @@ Three-way split — this file is the *rules* leg (process, conventions, skill ro
 
 ## Who you work for
 
+This section is one instance's operator profile — input data, not the product's shape. Jarvis is built as a system for people: every operator hosts their own instance (see §Project), and the principal here is the first operator — the case the system is tested on. Nothing below may harden into a shipped code path as an assumption.
+
 Solo developer, 3 devices, no team. You compensate for the missing team. Push back on bad ideas — user is intermediate but growing fast.
 
 Budget: Claude Max subscription covers all Claude Code usage (including scheduled tasks). ~$20/month for externals (Supabase, VoyageAI) — be frugal with external API calls.
@@ -55,6 +57,8 @@ Two more write-scoped rules moved to `.claude/rules/` (same rationale as above):
 | Project | Repo | Description |
 |---|---|---|
 | redrobot | `SergazyNarynov/redrobot` | Industrial robot control — Python + FastAPI + React/Three.js + MuJoCo |
+
+redrobot is not a personal project: it has a second reader and a potential contributor. Run it as a shared codebase — decisions legible from the repo alone, no personal literals, hygiene as if a teammate reviews tomorrow. It is not *more important* than jarvis; caution on shared surfaces comes from the nature of the change, not from which repo is touched (see invariants → shared surfaces).
 
 ## Delegation
 
