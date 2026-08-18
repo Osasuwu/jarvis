@@ -71,8 +71,6 @@ from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
-    DEFAULT_WORKTREE_RETENTION_CAP,
-    DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     EventEmit,
     ReadUsage,
     ResolveBinary,
@@ -80,7 +78,6 @@ from agents.task_dispatch import (
     SupabaseTaskQueue,
     TaskQueuePort,
     TrackedProc,
-    WorktreeSweepResult,
     default_read_usage,
     DedupConfig,
     default_resolve_binary,
@@ -92,13 +89,20 @@ from agents.task_dispatch import (
     kill_runaways,
     poll_completions,
     reclaim_stale_tasks,
-    sweep_task_worktrees,
 )
 
 # #1085 S2 review finding 2: production outcome_record wiring for
 # poll_completions (writes task_outcomes since /task-implement has no MCP).
 # Extracted to agents/task_outcomes.py (#1605, milestone #66).
 from agents.task_outcomes import record_completion_outcome
+
+# Extracted to agents/task_worktree.py (#1607, milestone #66).
+from agents.task_worktree import (
+    DEFAULT_WORKTREE_RETENTION_CAP,
+    DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
+    WorktreeSweepResult,
+    sweep_task_worktrees,
+)
 
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
 # no import cycle to defer around. The Path B poll step runs every tick when a

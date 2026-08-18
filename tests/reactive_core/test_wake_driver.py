@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 from agents import driver_heartbeat
-from agents import task_dispatch as td
+from agents import task_worktree as tw
 from agents import wake_driver
 from agents.task_dispatch import TaskQueuePort, TrackedProc
 
@@ -903,8 +903,8 @@ def test_tick_sweeps_task_worktrees_when_task_port_present(tmp_path, monkeypatch
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
-    monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
-    td._create_task_worktree("orphan")  # no queue row below -> absent -> pruned
+    monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
+    tw.create_task_worktree("orphan")  # no queue row below -> absent -> pruned
 
     q = FakeEventQueue([])
     tq = _RecordingTaskQueue([])  # statuses={} -> get_status("orphan") is None
@@ -967,7 +967,7 @@ def test_run_forwards_task_worktree_params_to_tick(monkeypatch):
         seen["retention_seconds"] = retention_seconds
         seen["retention_cap"] = retention_cap
         seen["now"] = now
-        return td.WorktreeSweepResult(pruned=0, retained=0, ttl_pruned=0, cap_evicted=0)
+        return tw.WorktreeSweepResult(pruned=0, retained=0, ttl_pruned=0, cap_evicted=0)
 
     monkeypatch.setattr(wake_driver, "sweep_task_worktrees", _fake_sweep)
 
@@ -1784,7 +1784,7 @@ def _wire_main(monkeypatch, *, run_impl) -> _CloseRecordingClient:
     monkeypatch.setattr(wake_driver, "load_dotenv", lambda *a, **k: None)
     monkeypatch.setattr(wake_driver, "_build_psycopg_queue", lambda **k: object())
     monkeypatch.setattr(wake_driver, "SupabaseTaskQueue", lambda *a, **k: object())
-    monkeypatch.setattr(wake_driver, "_default_event_emit", lambda **k: (lambda *a, **kk: None))
+    monkeypatch.setattr(wake_driver, "_default_event_emit", lambda **k: lambda *a, **kk: None)
     monkeypatch.setattr("agents.github_client.default_github_client", lambda: client)
     monkeypatch.setattr("agents.supabase_client.get_client", lambda: object())
     monkeypatch.setattr(wake_driver, "run", run_impl)
