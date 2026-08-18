@@ -60,6 +60,7 @@ from agents.github_client import (
     parse_goal_shape,
 )
 from agents.pid_sidecar import Sidecar, poll_exit
+from agents.process_kill import kill_process_tree
 
 logger = logging.getLogger(__name__)
 
@@ -693,46 +694,6 @@ def poll_completions(
                 )
             procs.pop(task_id, None)
     return CompletionResult(done=done, failed_exit=failed_exit)
-
-
-def kill_process_tree(proc: Any, *, platform: str = sys.platform) -> None:
-    """Kill a spawned process AND its children (#921 AC6).
-
-    On Windows ``Popen.kill()`` is an alias for ``terminate()`` — it kills only
-    the direct process, and a ``claude -p`` child's own subprocesses (git, gh,
-    tools) survive as orphans. ``taskkill /PID <pid> /T /F`` walks the tree; if
-    taskkill itself can't launch (stripped PATH), degrade to ``proc.kill()`` —
-    direct child only, better than leaving the runaway alive.
-
-    POSIX gets plain ``proc.kill()`` — direct child only. ``os.killpg`` would
-    be WRONG here: :func:`executor.spawn` does not pass
-    ``start_new_session=True``, so the child shares the driver's process group
-    and ``killpg`` would kill the driver itself. A POSIX tree-kill needs the
-    spawn-side change first; production runs on Windows, so this is deferred.
-
-    Best-effort ``wait`` afterwards reaps the handle so ``poll()`` reflects the
-    death immediately; a hung wait is swallowed (the next tick's poll re-checks).
-    """
-    if platform == "win32":
-        try:
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                capture_output=True,
-                check=False,
-            )
-        except OSError:  # taskkill missing/unlaunchable — degrade to direct kill
-            logger.exception(
-                "[task_dispatch] taskkill unavailable for pid %s; "
-                "falling back to Popen.kill() (children may survive)",
-                proc.pid,
-            )
-            proc.kill()
-    else:
-        proc.kill()
-    try:
-        proc.wait(timeout=10)
-    except Exception:  # noqa: BLE001 — reap is best-effort; poll re-checks next tick
-        pass
 
 
 def kill_runaways(
