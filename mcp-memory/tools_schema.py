@@ -763,7 +763,7 @@ def tool_definitions() -> list[Tool]:
             ),
             input_schema={
                 "type": "object",
-                "required": ["decision", "rationale", "reversibility"],
+                "required": ["decision", "rationale", "reversibility", "project"],
                 "properties": {
                     "decision": {
                         "type": "string",
@@ -814,8 +814,13 @@ def tool_definitions() -> list[Tool]:
                         "description": "Source of the decision (e.g. 'skill:delegate', 'session:<id>'). Defaults to 'skill:unknown'.",
                     },
                     "project": {
-                        "type": ["string", "null"],
-                        "description": "Optional project scope for the decision payload.",
+                        "type": "string",
+                        "description": (
+                            "Required project scope for the decision payload "
+                            "(e.g. 'jarvis', 'redrobot') — the focus-signal "
+                            "module groups decision episodes by project, so an "
+                            "unscoped episode is unreachable (#1587)."
+                        ),
                     },
                     "session_id": {
                         "type": "string",

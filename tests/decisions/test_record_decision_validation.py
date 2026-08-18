@@ -70,3 +70,37 @@ class TestRecordDecisionValidation:
             )
             assert "confidence" in result[0].text.lower()
         assert not client.table.called
+
+    @pytest.mark.asyncio
+    async def test_missing_project_errors(self, monkeypatch):
+        """#1587 — project is mandatory: the focus-signal module groups
+        decision episodes by project, so an unscoped episode is dead weight.
+        Rejected before any table write, error names "project" explicitly."""
+        client = make_client()
+        monkeypatch.setattr("server._get_client", lambda: client)
+        result = await _handle_record_decision(
+            {
+                "decision": "pick X",
+                "rationale": "because",
+                "reversibility": "reversible",
+            }
+        )
+        assert "project is required" in result[0].text.lower()
+        assert not client.table.called
+
+    @pytest.mark.asyncio
+    async def test_blank_project_errors(self, monkeypatch):
+        """#1587 — whitespace-only project is treated the same as absent,
+        matching the existing decision/rationale ``.strip()`` contract."""
+        client = make_client()
+        monkeypatch.setattr("server._get_client", lambda: client)
+        result = await _handle_record_decision(
+            {
+                "decision": "pick X",
+                "rationale": "because",
+                "reversibility": "reversible",
+                "project": "   ",
+            }
+        )
+        assert "project is required" in result[0].text.lower()
+        assert not client.table.called
