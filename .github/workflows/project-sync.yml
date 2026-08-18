@@ -68,13 +68,14 @@ jobs:
           ISSUE_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
+          _retry() { local n=0; until [ "$n" -ge 3 ]; do "$@" && return 0; n=$((n+1)); sleep $((n*15)); done; return 1; }
 
           if [ -z "${CONTENT_NODE_ID}" ]; then
             echo "Missing issue node ID, skipping."
             exit 0
           fi
 
-          project_id=$(gh api graphql -f query='query($owner: String!, $number: Int!) { user(login: $owner) { projectV2(number: $number) { id } } }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" --jq '.data.user.projectV2.id')
+          project_id=$(_retry gh api graphql -f query='query($owner: String!, $number: Int!) { user(login: $owner) { projectV2(number: $number) { id } } }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" --jq '.data.user.projectV2.id')
 
           item_id=$(gh api graphql -f query='query($contentId: ID!) { node(id: $contentId) { ... on Issue { projectItems(first: 20) { nodes { id project { id } } } } } }' -f contentId="${CONTENT_NODE_ID}" --jq --arg pid "$project_id" '.data.node.projectItems.nodes[] | select(.project.id == $pid) | .id' | head -n1 || true)
 
@@ -190,6 +191,7 @@ jobs:
           CONTENT_NODE_ID: ${{ github.event.pull_request.node_id }}
         run: |
           set -euo pipefail
+          _retry() { local n=0; until [ "$n" -ge 3 ]; do "$@" && return 0; n=$((n+1)); sleep $((n*15)); done; return 1; }
 
           if [ -z "${ITEM_URL}" ] || [ -z "${CONTENT_NODE_ID}" ]; then
             echo "Missing PR URL or node ID, skipping."
@@ -199,7 +201,7 @@ jobs:
           # Keep this resilient if built-in auto-add is disabled.
           gh project item-add "${PROJECT_NUMBER}" --owner "${PROJECT_OWNER}" --url "${ITEM_URL}" >/dev/null 2>&1 || true
 
-          project_id=$(gh api graphql -f query='query($owner: String!, $number: Int!) { user(login: $owner) { projectV2(number: $number) { id } } }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" --jq '.data.user.projectV2.id')
+          project_id=$(_retry gh api graphql -f query='query($owner: String!, $number: Int!) { user(login: $owner) { projectV2(number: $number) { id } } }' -f owner="${PROJECT_OWNER}" -F number="${PROJECT_NUMBER}" --jq '.data.user.projectV2.id')
 
           item_id=$(gh api graphql -f query='query($contentId: ID!) { node(id: $contentId) { ... on PullRequest { projectItems(first: 20) { nodes { id project { id } } } } } }' -f contentId="${CONTENT_NODE_ID}" --jq --arg pid "$project_id" '.data.node.projectItems.nodes[] | select(.project.id == $pid) | .id' | head -n1 || true)
 
