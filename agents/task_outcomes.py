@@ -33,13 +33,14 @@ def resolve_pr_url(
 ) -> str | None:
     """Best-effort PR URL for a just-completed task (#1085 S2 review finding 2).
 
-    ``_compute_pr_evidence`` and the ``check_pr_evidence_*`` functions it calls
-    only ever surface a ``bool | None`` tri-state — the PR object they fetch to
-    compute it is discarded, so callers that need the actual URL (here: the
-    completion outcome-writer) must resolve it separately. This is a SEPARATE,
-    deliberate second fetch of the PR, mirroring ``_warn_if_pr_lacks_closing_ref``'s
-    established pattern in ``task_dispatch.py`` rather than reaching into
-    evidence internals. Returns ``None`` on any resolution failure — never
+    ``pr_evidence.compute_pr_evidence`` and the ``check_pr_evidence_*`` functions
+    it calls only ever surface a ``bool | None`` tri-state — the PR object they
+    fetch to compute it is discarded, so callers that need the actual URL
+    (here: the completion outcome-writer) must resolve it separately. This is a
+    SEPARATE, deliberate second fetch of the PR, mirroring
+    ``pr_evidence.warn_if_pr_lacks_closing_ref``'s established pattern rather
+    than reaching into evidence internals. Returns ``None`` on any resolution
+    failure — never
     raises, since the caller treats this as advisory.
     """
     if client is None:
