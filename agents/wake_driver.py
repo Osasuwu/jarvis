@@ -93,10 +93,12 @@ from agents.task_dispatch import (
     poll_completions,
     reclaim_stale_tasks,
     sweep_task_worktrees,
-    # #1085 S2 review finding 2: production outcome_record wiring for
-    # poll_completions (writes task_outcomes since /task-implement has no MCP).
-    _record_completion_outcome,
 )
+
+# #1085 S2 review finding 2: production outcome_record wiring for
+# poll_completions (writes task_outcomes since /task-implement has no MCP).
+# Extracted to agents/task_outcomes.py (#1605, milestone #66).
+from agents.task_outcomes import record_completion_outcome
 
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
 # no import cycle to defer around. The Path B poll step runs every tick when a
@@ -1269,7 +1271,7 @@ def main() -> int:
             task_event_emit=event_emit,
             task_evidence_client=evidence_client,
             task_stdout_reader=default_stdout_reader,
-            task_outcome_record=_record_completion_outcome,
+            task_outcome_record=record_completion_outcome,
             # #931 dispatch-dedup: reuse the one evidence client for the
             # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
             task_dedup=default_task_dedup(evidence_client),
