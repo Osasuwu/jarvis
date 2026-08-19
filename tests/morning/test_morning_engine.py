@@ -8,6 +8,7 @@ give different boundaries.
 
 from __future__ import annotations
 
+from scripts.detector_gap_log import GapRecord
 from scripts.digest_schema import PlanItem, VALID_ESTIMATES
 from scripts.morning_gather import MorningGatherResult
 from scripts.morning_engine import (
@@ -25,6 +26,7 @@ def _sources(**overrides) -> MorningGatherResult:
         decisions=[],
         goals=[],
         owner_tasks=[],
+        detector_gaps=[],
         provenance={"gh_milestones": {"ran": True, "ok": True, "input_rows": 1}},
         gathered_at="2026-08-17T12:00:00+00:00",
         errors=[],
@@ -85,3 +87,29 @@ def test_analyze_synthesizes_plan_items_with_all_required_fields():
         assert isinstance(item.refs, list)
         assert isinstance(item.cites, list)
     assert digest.plan.cut_line_after is not None
+
+
+def test_analyze_builds_detector_gaps_section_only_for_repeated_gaps():
+    sources = _sources(
+        detector_gaps=[
+            GapRecord(key="k1", description="gap seen twice", count=2),
+            GapRecord(key="k2", description="gap seen once", count=1),
+        ]
+    )
+
+    digest = analyze(sources)
+
+    section = digest.section("detector_gaps")
+    assert section is not None
+    assert len(section.items) == 1
+    assert "gap seen twice" in section.items[0]
+    assert "2" in section.items[0]
+
+
+def test_analyze_detector_gaps_section_empty_when_no_repeats():
+    digest = analyze(_sources(detector_gaps=[GapRecord(key="k1", description="one-off", count=1)]))
+
+    section = digest.section("detector_gaps")
+    assert section is not None
+    assert section.items == []
+    assert section.reason == "no repeated gaps"

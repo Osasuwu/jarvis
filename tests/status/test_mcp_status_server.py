@@ -126,6 +126,58 @@ def test_convert_gather_to_engine_format():
     assert "status_digest" in decisions[0].decision
 
 
+def test_convert_merges_all_repo_provenance_sources():
+    """#1576: repo-level provenance must merge every gather source, not just
+    the first — a stale/failed second source (gh_ci) was previously dropped
+    silently because the loop kept only the first stamp seen."""
+    gather_result = make_fixture_gather_result()
+    repo_prov = gather_result.repos[0]["provenance"]
+    # git_state ran ok (input_rows=-1 sentinel); gh_issues had 1 row; make
+    # gh_ci the failing/stale source that the old first-wins loop would drop.
+    repo_prov["gh_ci"] = {"ran": True, "ok": False, "input_rows": 0, "age": 999.0}
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    prov = delta.repos["Osasuwu/jarvis"].provenance
+    assert prov is not None
+    # ok must be False overall since gh_ci failed — pessimistic AND across sources
+    assert prov.ok is False
+    assert prov.ran is True
+    # age reflects the oldest/staleest source, not just the first
+    assert prov.age == 999.0
+    # input_rows sums only row-based sources (git_state's -1 sentinel excluded)
+    assert prov.input_rows == 1  # gh_issues=1, gh_prs=0, gh_ci=0, gh_milestones=0
+
+
+def test_convert_excludes_expected_failure_source_from_ok():
+    """#1576 follow-up: a source tagged expected_failure=True (e.g. gh_milestones
+    for a repo without milestone access, status_gather.py's asymmetric-source
+    pattern) must not drag the merged provenance to ok=False — only a genuine
+    unexpected failure should do that."""
+    gather_result = make_fixture_gather_result()
+    repo_entry = gather_result.repos[0]
+    repo_entry["degraded"] = True
+    repo_entry["degradation_reason"] = (
+        "gh_milestones: failed (expected for repos without milestone access)"
+    )
+    repo_entry["provenance"]["gh_milestones"] = {
+        "ran": True,
+        "ok": False,
+        "input_rows": -1,
+        "age": 0.4,
+        "expected_failure": True,
+    }
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    prov = delta.repos["Osasuwu/jarvis"].provenance
+    assert prov is not None
+    # All other sources succeeded; the expected gh_milestones gap is excluded
+    # from the ran/ok aggregation rather than flipping the repo unhealthy.
+    assert prov.ok is True
+    assert prov.ran is True
+
+
 def test_convert_drops_project_status_field():
     """#1065: the ProjectV2 board is no longer a data source — IssueInfo has no
     project_status field, and a stray project_status key on a gathered issue is
@@ -383,6 +435,7 @@ def test_no_cache_means_no_contradiction_hit():
 
 def test_gather_timeout_returns_one_line_error():
     """When gather() exceeds the timeout, return a one-line error (no traceback)."""
+
     async def _test():
         params = SimpleNamespace(name="status_digest", arguments={"jarvis_home": ""})
         with patch("asyncio.wait_for", side_effect=asyncio.TimeoutError()):
@@ -396,6 +449,7 @@ def test_gather_timeout_returns_one_line_error():
 
 def test_exception_returns_one_line_error_no_traceback():
     """Exception in gather returns one-line error; traceback is server-side only."""
+
     async def _test():
         params = SimpleNamespace(name="status_digest", arguments={"jarvis_home": ""})
         with patch.object(status_server, "gather", side_effect=ValueError("test error")):

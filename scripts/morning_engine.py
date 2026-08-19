@@ -4,15 +4,19 @@ Pure `analyze(sources) -> Digest`: assembles digest sections from gathered
 data and synthesizes a day plan, with cut_line_after computed by cumulative
 sum of S/M/L-converted estimates (never "first N").
 
-Render, MCP surface, and skill wiring are out of scope (#1588). The S/M/L
+Render (#1588) and the detector-gap-journal source (#1595) are wired in; the S/M/L
 budget-unit translation and the day budget below are the single explicit
 place either constant is defined — real calibration is deferred to #1578.
 """
 
 from __future__ import annotations
 
+from scripts.detector_gap_log import PromoteSuggestion
 from scripts.digest_schema import Digest, Plan, PlanItem, SCHEMA_VERSION, Section, SectionProvenance
 from scripts.morning_gather import MorningGatherResult, MorningSourceKind
+
+# below this repeat count, a gap is still noise, not a promote candidate
+_PROMOTE_THRESHOLD = 2
 
 # ceiling: nominal S/M/L->budget-unit mapping and day budget, not yet
 # calibrated against real workload; real tuning tracked in #1578. This is
@@ -67,6 +71,37 @@ def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
     )
 
 
+def _build_detector_gaps_section(sources: MorningGatherResult) -> Section:
+    gaps_prov = sources.provenance.get(MorningSourceKind.DETECTOR_GAPS, {})
+    promotable = [g for g in sources.detector_gaps if g.count >= _PROMOTE_THRESHOLD]
+
+    if not promotable:
+        return Section(
+            name="detector_gaps",
+            items=[],
+            reason="no repeated gaps",
+            provenance=SectionProvenance(
+                ran=gaps_prov.get("ran", False),
+                ok=gaps_prov.get("ok", False),
+                source="morning_gather",
+            ),
+        )
+
+    items = [
+        PromoteSuggestion(description=g.description, count=g.count).render() for g in promotable
+    ]
+    return Section(
+        name="detector_gaps",
+        items=items,
+        reason=None,
+        provenance=SectionProvenance(
+            ran=gaps_prov.get("ran", False),
+            ok=gaps_prov.get("ok", False),
+            source="morning_gather",
+        ),
+    )
+
+
 def _plan_item_from_row(
     row: dict, rank: int, default_estimate: str, ref_prefix: str, ref_key: str
 ) -> PlanItem:
@@ -103,7 +138,7 @@ def _synthesize_plan(sources: MorningGatherResult) -> Plan:
 
 def analyze(sources: MorningGatherResult) -> Digest:
     """Assemble a Digest from gathered morning sources."""
-    sections = [_build_repo_hygiene_section(sources)]
+    sections = [_build_repo_hygiene_section(sources), _build_detector_gaps_section(sources)]
     plan = _synthesize_plan(sources)
 
     return Digest(
