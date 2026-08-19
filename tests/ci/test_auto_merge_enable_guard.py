@@ -27,6 +27,7 @@ Enable rule mirrored here (see the `if:` guard + bash step in the YAML):
 from __future__ import annotations
 
 import re
+import string
 from pathlib import Path
 
 import pytest
@@ -213,7 +214,9 @@ def test_dependabot_pr_is_noop():
     # events (same as forks), so APP_ID/APP_PRIVATE_KEY are empty and the Assert
     # step hard-fails. The job-level `if:` guard skips Dependabot entirely.
     assert (
-        decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", pr_author="dependabot[bot]")
+        decide(
+            draft=False, head_repo="o/r", base_repo="o/r", am="null", pr_author="dependabot[bot]"
+        )
         == "NOOP"
     )
 
@@ -236,26 +239,77 @@ def test_dependabot_precedes_empty_output_fail():
 # the workflow's awk-section-extract + grep-regex + WITHHOLD/DISARM decision so
 # a regression in either the parsing or the decision produces a red here.
 
-RISK_SECTION_RE = re.compile(
-    r"^## Risk Assessment\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
+RISK_SECTION_RE = re.compile(r"^## Risk Assessment\n(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+RISK_VALUE_RE = re.compile(r"^[ \t]*-[ \t]*\*\*(?:HIGH|CRITICAL)\*\*:[ \t]*(.*)$", re.MULTILINE)
+
+# Negative fillers (#1655): an explicit "no risk at this level" answer is not a
+# declaration. PULL_REQUEST_TEMPLATE.md ships all four severity rows pre-filled,
+# so `- **HIGH**: none.` is the most literal way to answer it — and the old
+# `[^<\s]` check read every one of those as a HIGH-risk declaration, parking the
+# PR the carve-out was supposed to wave through (#1654 hit it). Only an EXACT
+# match here passes through: anything unrecognised ("none, but the migration is
+# irreversible") still counts as declared, so the failure direction stays
+# conservative. Mirrors RISK_NEGATIVE_FILLERS in the workflow — kept in lockstep
+# by test_workflow_negative_filler_list_matches_this_mirror below.
+NEGATIVE_FILLERS = frozenset(
+    {
+        "none",
+        "nil",
+        "no",
+        "nothing",
+        "not applicable",
+        "n/a",
+        "na",
+        "tbd",
+        "-",
+        "--",
+        "—",
+        "нет",
+        "отсутствует",
+    }
 )
-RISK_DECLARED_RE = re.compile(
-    r"^[ \t]*-[ \t]*\*\*(HIGH|CRITICAL)\*\*:[ \t]*[^<\s]", re.MULTILINE
-)
+
+_HTML_TAG_RE = re.compile(r"<[^>]*>")
+_EMPHASIS_RE = re.compile(r"[*_`~]")
+_WHITESPACE_RE = re.compile(r"\s+")
+_TRAILING_PUNCT_RE = re.compile(r"\s*[.!;,]+\s*$")
+# The workflow lowercases with `tr '[:upper:]' '[:lower:]'`, which is byte-wise
+# and leaves non-ASCII alone. str.lower() would fold Cyrillic too and quietly
+# make this mirror MORE permissive than the thing it mirrors.
+_ASCII_LOWER = str.maketrans(string.ascii_uppercase, string.ascii_lowercase)
+
+
+def normalise_risk_value(raw: str) -> str:
+    """Mirror the workflow's per-value sed/tr normalisation pipeline.
+
+    Drops HTML tags (the template's `<!-- hint -->` and the SKILL.md
+    `<placeholder>`), strips markdown emphasis, collapses whitespace, drops
+    trailing sentence punctuation, trims, and ASCII-lowercases.
+    """
+    text = _HTML_TAG_RE.sub("", raw)
+    text = _EMPHASIS_RE.sub("", text)
+    text = _WHITESPACE_RE.sub(" ", text)
+    text = _TRAILING_PUNCT_RE.sub("", text)
+    return text.strip().translate(_ASCII_LOWER)
 
 
 def risk_declared(body: str) -> bool:
-    """Mirror the workflow's awk section-extract + grep detection.
+    """Mirror the workflow's awk section-extract + per-value classification.
 
     Scoped to the '## Risk Assessment' section only (awk resets `f` on the next
-    '## ' heading) and requires real content after the marker — the grep
-    character class `[^<[:space:]]` rejects an unfilled SKILL.md template
-    placeholder line (`- **HIGH**: <describe...>`) and a bare declaration with
-    no following text.
+    '## ' heading). A HIGH/CRITICAL row declares risk iff its value survives
+    normalisation as something that is neither empty nor a negative filler — so
+    an unfilled `<placeholder>`, an empty row, and an explicit "none" all pass
+    through, while any other text parks the PR.
     """
     section_match = RISK_SECTION_RE.search(body)
     section = section_match.group(1) if section_match else ""
-    return bool(RISK_DECLARED_RE.search(section))
+    for raw_value in RISK_VALUE_RE.findall(section):
+        value = normalise_risk_value(raw_value)
+        if not value or value in NEGATIVE_FILLERS:
+            continue
+        return True
+    return False
 
 
 def decide_risk_carveout(*, declared: bool, am: str) -> str:
@@ -331,6 +385,69 @@ def test_risk_regex_scoped_to_risk_assessment_section_only():
         "- **LOW**: actual declared risk\n"
     )
     assert risk_declared(body) is False
+
+
+def test_risk_regex_ignores_explicit_none():
+    # #1655 regression pin: PULL_REQUEST_TEMPLATE.md ships all four severity
+    # rows pre-filled, so answering the HIGH/CRITICAL rows honestly is the most
+    # literal possible use of the template. The old `[^<\s]` check read every
+    # one of those answers as a declaration and parked the PR (#1654).
+    body = (
+        "## Risk Assessment\n"
+        "- **LOW**: version-string metadata only.\n"
+        "- **MEDIUM**: none.\n"
+        "- **HIGH**: none.\n"
+        "- **CRITICAL**: none.\n"
+    )
+    assert risk_declared(body) is False
+
+
+@pytest.mark.parametrize("filler", sorted(NEGATIVE_FILLERS))
+def test_every_negative_filler_passes_through(filler):
+    # The list is the contract — each entry must actually be recognised, not
+    # just sit in the constant.
+    body = f"## Risk Assessment\n- **HIGH**: {filler}\n"
+    assert risk_declared(body) is False
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "None.",
+        "NONE",
+        "N/A",
+        "n/a.",
+        "`none`",
+        "**none**",
+        "none   ",
+        "none <!-- logic changes, safety-adjacent -->",
+        "Not applicable.",
+    ],
+)
+def test_negative_filler_survives_formatting_noise(written):
+    # Normalisation (case, markdown emphasis, template hint comment, trailing
+    # punctuation, stray whitespace) happens before the filler comparison, so a
+    # human writing "None." is not a different answer from "none".
+    body = f"## Risk Assessment\n- **HIGH**: {written}\n"
+    assert risk_declared(body) is False
+
+
+def test_partial_negative_still_declares_risk():
+    # Only an EXACT filler passes. A hedged answer is a declaration — the
+    # failure direction stays conservative (park, don't auto-merge).
+    body = "## Risk Assessment\n- **HIGH**: none, but the migration is irreversible once applied.\n"
+    assert risk_declared(body) is True
+
+
+def test_filler_in_high_does_not_mask_a_real_critical():
+    # Every HIGH/CRITICAL row is classified independently — one honest "none"
+    # must not short-circuit the scan past a real declaration below it.
+    body = (
+        "## Risk Assessment\n"
+        "- **HIGH**: none.\n"
+        "- **CRITICAL**: drops the events_canonical table in a migration.\n"
+    )
+    assert risk_declared(body) is True
 
 
 # ---- config dimension (keep YAML and test in lockstep) ----------------------
@@ -551,8 +668,40 @@ def test_workflow_risk_carveout_parses_risk_assessment_section():
         "Assessment' section specifically, not grep the whole PR body."
     )
     assert "HIGH|CRITICAL" in text, (
-        "risk carve-out must trigger on both HIGH and CRITICAL, per "
-        "/implement §7.5's merge policy."
+        "risk carve-out must trigger on both HIGH and CRITICAL, per /implement §7.5's merge policy."
+    )
+
+
+def test_workflow_negative_filler_list_matches_this_mirror():
+    # #1655: the workflow's filler list and NEGATIVE_FILLERS above are one
+    # contract in two languages. Drift is invisible in CI (the workflow only
+    # runs on real PRs), so pin them equal here.
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    match = re.search(r"RISK_NEGATIVE_FILLERS='([^']*)'", text)
+    assert match, (
+        "risk carve-out must define its negative-filler set as a single "
+        "RISK_NEGATIVE_FILLERS='a|b|c' assignment so this test can pin it."
+    )
+    workflow_fillers = set(match.group(1).split("|"))
+    assert workflow_fillers == set(NEGATIVE_FILLERS), (
+        "workflow negative-filler list drifted from the test mirror: "
+        f"only in workflow={sorted(workflow_fillers - NEGATIVE_FILLERS)}, "
+        f"only in test={sorted(NEGATIVE_FILLERS - workflow_fillers)}"
+    )
+
+
+def test_workflow_risk_carveout_normalises_before_matching_fillers():
+    text = WORKFLOW_PATH.read_text(encoding="utf-8")
+    risk_block = text.split("---- risk carve-out", 1)[1].split("---- end risk carve-out", 1)[0]
+    assert "tr '[:upper:]' '[:lower:]'" in risk_block, (
+        "risk carve-out must case-fold a row's value before comparing it "
+        "against the negative-filler list — 'None.' is the same answer as "
+        "'none' (#1655)."
+    )
+    assert "grep -qvxE" in risk_block, (
+        "filler comparison must be a whole-line (-x) match: a substring "
+        "match would let 'none of this is safe' read as the filler 'none' "
+        "and silently un-park a genuinely risky PR (#1655)."
     )
 
 
@@ -581,9 +730,7 @@ def test_workflow_risk_carveout_guards_empty_body_fetch():
     # exists to close via a new path. `tojson` collapses the whole response
     # to one line so its OWN emptiness (not body's value) is what's checked —
     # a genuinely empty PR body still yields a non-empty JSON object string.
-    risk_block = text.split("---- risk carve-out", 1)[1].split(
-        "---- end risk carve-out", 1
-    )[0]
+    risk_block = text.split("---- risk carve-out", 1)[1].split("---- end risk carve-out", 1)[0]
     assert "RAW_BODY_JSON=" in risk_block and "-q 'tojson'" in risk_block, (
         "risk carve-out must fetch the PR body via a whole-object tojson "
         "capture so degraded (empty) gh output is distinguishable from a "
@@ -601,10 +748,8 @@ def test_workflow_risk_carveout_disarms_already_armed_pr():
     # Both carve-outs disarm an already-armed PR; scope the assertion to the
     # risk carve-out's own block so a future edit to the #1234 block alone
     # can't false-pass this test.
-    risk_block = text.split("---- risk carve-out", 1)[1].split(
-        "---- end risk carve-out", 1
-    )[0]
-    assert '--disable-auto' in risk_block, (
+    risk_block = text.split("---- risk carve-out", 1)[1].split("---- end risk carve-out", 1)[0]
+    assert "--disable-auto" in risk_block, (
         "risk carve-out must disarm auto-merge if the PR was armed BEFORE the "
         "HIGH/CRITICAL line landed via a body-only edit."
     )
@@ -612,9 +757,7 @@ def test_workflow_risk_carveout_disarms_already_armed_pr():
 
 def test_workflow_risk_carveout_is_idempotent():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    risk_block = text.split("---- risk carve-out", 1)[1].split(
-        "---- end risk carve-out", 1
-    )[0]
+    risk_block = text.split("---- risk carve-out", 1)[1].split("---- end risk carve-out", 1)[0]
     assert "already_labelled" in risk_block, (
         "risk carve-out must check for an existing status:owner-queue label "
         "before re-adding it/re-commenting — else every 'edited'-triggered "
