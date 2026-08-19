@@ -92,15 +92,31 @@ def _build_detector_gaps_section(sources: MorningGatherResult) -> Section:
     gaps_prov = sources.provenance.get(MorningSourceKind.DETECTOR_GAPS, {})
     promotable = [g for g in sources.detector_gaps if g.count >= _PROMOTE_THRESHOLD]
 
+    ran = gaps_prov.get("ran", False)
+    ok = gaps_prov.get("ok", False)
+    # No production GapStore adapter exists yet (#1595) — when the source
+    # never ran (no gap_store injected) that's a stable known limitation,
+    # not a failure. Only a source that ran and came back not-ok is FAILED.
+    absence_kind = None
+    absence_reason = None
+    if not ok:
+        if not ran:
+            absence_kind = AbsenceKind.NOT_CONNECTED
+            absence_reason = "no GapStore adapter wired (#1595)"
+        else:
+            absence_kind = AbsenceKind.FAILED
+
     if not promotable:
         return Section(
             name="detector_gaps",
             items=[],
             reason="no repeated gaps",
             provenance=SectionProvenance(
-                ran=gaps_prov.get("ran", False),
-                ok=gaps_prov.get("ok", False),
+                ran=ran,
+                ok=ok,
                 source="morning_gather",
+                absence_kind=absence_kind,
+                absence_reason=absence_reason,
             ),
         )
 
@@ -112,9 +128,11 @@ def _build_detector_gaps_section(sources: MorningGatherResult) -> Section:
         items=items,
         reason=None,
         provenance=SectionProvenance(
-            ran=gaps_prov.get("ran", False),
-            ok=gaps_prov.get("ok", False),
+            ran=ran,
+            ok=ok,
             source="morning_gather",
+            absence_kind=absence_kind,
+            absence_reason=absence_reason,
         ),
     )
 

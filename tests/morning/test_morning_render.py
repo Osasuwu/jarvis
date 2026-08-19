@@ -268,9 +268,7 @@ def _section_with_provenance(
 def test_failed_section_appears_as_degradation_in_lead_line():
     """A section that ran and returned ok=False raises degradation_level and
     appears in the '⚠ Деградация' part of the lead line."""
-    failed_section = _section_with_provenance(
-        "goals", ok=False, absence_kind=AbsenceKind.FAILED
-    )
+    failed_section = _section_with_provenance("goals", ok=False, absence_kind=AbsenceKind.FAILED)
     degradation = fold_provenance([failed_section])
     digest = _digest(sections=[failed_section], degradation=degradation)
 
@@ -303,9 +301,7 @@ def test_both_failure_and_not_connected_appear_in_lead_line_distinctly():
     """When a digest has both a failure and a known limitation, the lead line
     shows both — failures under '⚠ Деградация', limitations under 'ℹ Ограничения'."""
     failed = _section_with_provenance("goals", ok=False, absence_kind=AbsenceKind.FAILED)
-    limited = _section_with_provenance(
-        "learning", ok=False, absence_kind=AbsenceKind.NOT_CONNECTED
-    )
+    limited = _section_with_provenance("learning", ok=False, absence_kind=AbsenceKind.NOT_CONNECTED)
     sections = [failed, limited]
     degradation = fold_provenance(sections)
     digest = _digest(sections=sections, degradation=degradation)
