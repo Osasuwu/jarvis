@@ -246,7 +246,27 @@ jobs:
           fi
           BODY=$(printf '%s' "$RAW_BODY_JSON" | jq -r '.body // ""')
           risk_section=$(printf '%s\n' "$BODY" | awk '/^## Risk Assessment/{f=1; next} /^## /{f=0} f')
-          if printf '%s\n' "$risk_section" | grep -qE '^[[:space:]]*-[[:space:]]*\*\*(HIGH|CRITICAL)\*\*:[[:space:]]*[^<[:space:]]'; then
+          # An explicit "no risk at this level" answer is NOT a declaration
+          # (#1655). Both PR templates ship all four severity rows pre-filled,
+          # so `- **HIGH**: none.` is the most literal way to fill one in — and
+          # the old `[^<[:space:]]` check read every one of those as declared
+          # HIGH risk, parking the PR this gate exists to wave through (#1654
+          # hit it). Classify each HIGH/CRITICAL row's VALUE instead: normalise
+          # it (drop the `<!-- hint -->` / `<placeholder>` the templates ship,
+          # markdown emphasis, trailing punctuation, case) and pass it through
+          # only on an exact whole-line match against the filler list below.
+          # Anything unrecognised — including a hedge like "none, but the
+          # migration is irreversible" — still declares risk, so the failure
+          # direction stays conservative: park, don't auto-merge.
+          # Mirrored by tests/ci/test_auto_merge_enable_guard.py::NEGATIVE_FILLERS,
+          # pinned equal by test_workflow_negative_filler_list_matches_this_mirror.
+          RISK_NEGATIVE_FILLERS='none|nil|no|nothing|not applicable|n/a|na|tbd|-|--|—|нет|отсутствует'
+          if printf '%s\n' "$risk_section" \
+            | sed -nE 's/^[[:space:]]*-[[:space:]]*\*\*(HIGH|CRITICAL)\*\*:[[:space:]]*(.*)$/\2/p' \
+            | sed -E 's/<[^>]*>//g; s/[*_`~]//g; s/[[:space:]]+/ /g; s/[[:space:]]*[.!;,]+[[:space:]]*$//; s/^[[:space:]]+//; s/[[:space:]]+$//' \
+            | tr '[:upper:]' '[:lower:]' \
+            | grep -v '^$' \
+            | grep -qvxE "$RISK_NEGATIVE_FILLERS"; then
             already_labelled=$(
               gh pr view "$PR" --repo "$REPO" --json labels \
                 --jq "[.labels[].name] | index(\"$RISK_LABEL\") != null"
