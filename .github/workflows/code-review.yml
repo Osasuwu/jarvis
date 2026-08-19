@@ -45,6 +45,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # Timestamp anchor for the commit-free clean re-review override (#133,
+      # see "Verify review verdict" below). Captured as early as possible so
+      # RUN_START predates everything this run itself does — a comment the
+      # plugin posts DURING this run must never be masked as "stale".
+      - name: Record run start time
+        id: runstart
+        run: echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Resolve PR number
         id: pr
         env:
@@ -392,6 +400,10 @@ jobs:
           REPO: ${{ github.repository }}
           SKIP: ${{ steps.autobase.outputs.skip }}
           EXEC_FILE: ${{ steps.review.outputs.execution_file }}
+          # #133: this run's own start time, used by the commit-free clean
+          # re-review override below to tell "posted before this run" apart
+          # from "posted during this run".
+          RUN_START: ${{ steps.runstart.outputs.time }}
           # #1434: positive evidence that there was something to review. The diff
           # step measures the PR's FULL base...HEAD diff, so it stays meaningful
           # on an auto-rebase push whose own diff is empty (it read has_code=true
@@ -599,6 +611,70 @@ jobs:
             fi
 
             echo "::notice::No /code-review comment present, review did not run, LINEAGE_FAILED=$LINEAGE_FAILED, LINEAGE_INFLIGHT=$LINEAGE_INFLIGHT, HAS_CODE='${HAS_CODE:-unknown}', IS_DRAFT='${IS_DRAFT:-unknown}' — there was nothing to review, so the plugin legitimately skipped. Treating as pass."
+            exit 0
+          fi
+
+          # ---------------------------------------------------------------
+          # COMMIT-FREE CLEAN RE-REVIEW OVERRIDE (#133)
+          # ---------------------------------------------------------------
+          # A retry/re-dispatch over the SAME head_sha (no new commit) whose
+          # review completes cleanly (0 errors/denials, confirmed by the
+          # prior "Verify review ran cleanly" step — this step would not be
+          # running otherwise) but the plugin declines to re-post because
+          # nothing changed since the last review of this exact head is
+          # documented, normal plugin behaviour (#133) — NOT a silent
+          # failure. Without this override the stale prior comment (or its
+          # absence) is re-evaluated forever and a commit-free fix (e.g. an
+          # infra/config correction with no diff change) can never produce a
+          # fresh PASS.
+          #
+          # Scoped narrowly so the #1179/#1239 "first-time silent no-review"
+          # floor above is untouched:
+          #   - only reachable once total>0 has already been established
+          #     above (never overrides a genuinely first-ever review of a
+          #     new commit — the total==0 branch's own ran-but-silent check
+          #     still fails closed unconditionally);
+          #   - CLEAN_RERUN requires EXEC_FILE from THIS run (a run whose
+          #     review did not execute, e.g. autobase-skip, cannot claim
+          #     this path — it never re-examined anything);
+          #   - PRIOR_ATTEMPT requires a distinct prior workflow run over
+          #     this EXACT head_sha (never a new, never-before-seen commit —
+          #     new commits always get a first real review);
+          #   - STALE_TO_THIS_RUN requires the latest comment of ANY age to
+          #     predate this run's own start (RUN_START) — a comment posted
+          #     DURING this run (the plugin found something new to say) is
+          #     never masked; it flows through the normal ladder below
+          #     unchanged.
+          CLEAN_RERUN=false
+          if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+            CLEAN_RERUN=true
+          fi
+
+          PRIOR_ATTEMPT=false
+          if [ "$CLEAN_RERUN" = "true" ]; then
+            rerun_lineage_shas=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \
+              | jq -rs 'add | map(.sha)')
+            rerun_lineage_runs=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \
+              | jq -s --argjson shas "$rerun_lineage_shas" --arg cur "${GITHUB_RUN_ID:-}" '
+                  [ .[].workflow_runs[]
+                    | select((.id | tostring) != $cur)
+                    | select(.head_sha == "'"$HEAD_SHA"'") ]')
+            RERUN_COUNT=$(jq -r 'length' <<<"$rerun_lineage_runs")
+            if [ "$RERUN_COUNT" -gt 0 ]; then
+              PRIOR_ATTEMPT=true
+            fi
+          fi
+
+          LATEST_ANY_CREATED=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+            | jq -rs 'add
+                | map(select(.body | test("(^|\\n)#{1,6}[ \\t]*(Claude[ \\t]+)?Code[ \\t]+Review"; "i")))
+                | (.[-1].created_at // "")')
+
+          STALE_TO_THIS_RUN=$(jq -rn --arg latest "$LATEST_ANY_CREATED" --arg run_start "$RUN_START" \
+            '($latest == "") or ($latest < $run_start)')
+
+          if [ "$CLEAN_RERUN" = "true" ] && [ "$PRIOR_ATTEMPT" = "true" ] && [ "$STALE_TO_THIS_RUN" = "true" ]; then
+            echo "::notice::Commit-free clean re-review (#133): this run's execution log shows 0 errors/denials, a prior run already attempted head $HEAD_SHA, and no /code-review comment has landed since this run started ($RUN_START) — treating as 're-reviewed, nothing new to flag' and passing."
             exit 0
           fi
 
