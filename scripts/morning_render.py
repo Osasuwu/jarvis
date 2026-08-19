@@ -64,9 +64,14 @@ def _know_block(digest: dict) -> list[str]:
         (s for s in digest.get("sections", []) or [] if s.get("name") == "repo_hygiene"), None
     )
     repo_count = len(repo_hygiene.get("items", [])) if repo_hygiene else 0
+    escalations = next(
+        (s for s in digest.get("sections", []) or [] if s.get("name") == "escalations"), None
+    )
+    escalation_count = len(escalations.get("items", [])) if escalations else 0
 
     return [
         "Знать:",
+        f"  Эскалации: {escalation_count}",
         f"  Репозиториев: {repo_count}",
         f"  Пунктов плана: {len(items)} (в бюджет дня: {cut_line_after if cut_line_after is not None else 0})",
     ]
@@ -162,6 +167,23 @@ def _render_generic_section(section: dict) -> list[str]:
     return lines
 
 
+def _render_escalations_section(section: dict) -> list[str]:
+    items = section.get("items", []) or []
+    reason = section.get("reason")
+
+    if not items:
+        label = reason if reason else "нет"
+        return [f"Эскалации: {label}"]
+
+    lines = ["<details>", f"<summary>Эскалации ({len(items)})</summary>", ""]
+    for item in items:
+        goal = item.get("goal", "")
+        esc_reason = item.get("reason", "")
+        lines.append(f"- {goal}" + (f" ({esc_reason})" if esc_reason else ""))
+    lines.append("</details>")
+    return lines
+
+
 def _evidence_blocks(digest: dict) -> list[list[str]]:
     blocks = []
     for section in digest.get("sections", []) or []:
@@ -170,6 +192,8 @@ def _evidence_blocks(digest: dict) -> list[list[str]]:
             blocks.append(_render_repo_hygiene(section))
         elif name == "goals_and_milestones":
             blocks.append(_render_goals_milestones_section(section))
+        elif name == "escalations":
+            blocks.append(_render_escalations_section(section))
         else:
             blocks.append(_render_generic_section(section))
     return blocks

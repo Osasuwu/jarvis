@@ -22,9 +22,15 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from scripts.detector_gap_log import GapRecord, GapStore
+from scripts.escalation_dedup import (
+    CHANNEL_DIGEST,
+    CHANNEL_SESSION_START,
+    filter_for_channel,
+    today_utc,
+)
 from scripts.status_gather import (
     REPOS_CONF_RELPATH,
     SUPABASE_KEY_ENV,
@@ -41,6 +47,13 @@ from scripts.status_gather import (
     _gather_gh_milestones,
     gather_decisions,
 )
+
+# Injectable type aliases for escalation dedup (both are keyed by date string).
+# Read: (date_str) -> {channel: [ids]}; Write: (date_str, channel, ids) -> None.
+# Defaults use scripts.escalation_dedup.read_shown/write_shown with a live client;
+# tests inject in-memory replacements to avoid network calls.
+ReadDedupFn = Callable[[str], dict[str, list[str]]]
+WriteDedupFn = Callable[[str, str, list[str]], None]
 
 # ============================================================================
 # Canonical source identifiers
@@ -160,9 +173,19 @@ def gather_owner_tasks(
     key: str,
     query_fn: QuerySupabaseFn,
     now: float,
+    *,
+    date_str: str | None = None,
+    read_dedup_fn: "ReadDedupFn | None" = None,
+    write_dedup_fn: "WriteDedupFn | None" = None,
 ) -> tuple[list[dict], Provenance]:
     """Query Supabase `task_queue` for pending owner tasks (mirrors
-    session-context.py's _query_owner_tasks: assignee=owner, status=pending)."""
+    session-context.py's _query_owner_tasks: assignee=owner, status=pending).
+
+    Applies escalation dedup (#1591): filters out tasks already shown by the
+    session_start channel today, then marks the returned tasks as shown by the
+    digest channel. read_dedup_fn/write_dedup_fn default to no-ops when None
+    (production path uses the inject from gather()).
+    """
     start = time.time()
     params = {
         "assignee": "eq.owner",
@@ -175,7 +198,53 @@ def gather_owner_tasks(
 
     if rows is None:
         return [], Provenance(ran=True, ok=False, input_rows=0, age=elapsed)
+
+    # Dedup: skip tasks already shown by the session_start channel today.
+    if read_dedup_fn is not None:
+        today = date_str or today_utc()
+        shown = read_dedup_fn(today).get(CHANNEL_SESSION_START, [])
+        rows = filter_for_channel(rows, shown)
+
+    # Mark the tasks we are about to show as shown by the digest channel.
+    if write_dedup_fn is not None and rows:
+        today = date_str or today_utc()
+        ids = [str(t.get("id", "")) for t in rows if t.get("id")]
+        write_dedup_fn(today, CHANNEL_DIGEST, ids)
+
     return rows, Provenance(ran=True, ok=True, input_rows=len(rows), age=elapsed)
+
+
+# ============================================================================
+# Live dedup factory — creates default read/write fns from live Supabase client
+# ============================================================================
+
+
+def _make_live_dedup_fns(
+    url: str, key: str
+) -> tuple["ReadDedupFn", "WriteDedupFn"] | tuple[None, None]:
+    """Return (read_fn, write_fn) backed by a live Supabase client.
+
+    On client creation failure, returns (None, None) — callers already treat
+    a None read/write fn as "dedup unavailable, continue without it" (worst
+    case: an escalation shows in both channels once).
+    """
+    from scripts.escalation_dedup import read_shown, write_shown
+
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+    except Exception as exc:
+        print(f"[morning_gather] dedup client creation failed: {exc}", file=sys.stderr)
+        return None, None
+
+    def _read(date_str: str) -> dict[str, list[str]]:
+        return read_shown(client, date_str)
+
+    def _write(date_str: str, channel: str, ids: list[str]) -> None:
+        write_shown(client, date_str, channel, ids)
+
+    return _read, _write
 
 
 # ============================================================================
@@ -191,6 +260,8 @@ def gather(
     query_supabase_fn: QuerySupabaseFn | None = None,
     now_fn: NowFn | None = None,
     gap_store: GapStore | None = None,
+    read_dedup_fn: "ReadDedupFn | None" = None,
+    write_dedup_fn: "WriteDedupFn | None" = None,
 ) -> MorningGatherResult:
     """Gather state for the morning digest.
 
@@ -198,6 +269,10 @@ def gather(
     seam. Traverses every repo in repos.conf (including any marked inactive
     by a trailing token, since parse_repos_conf discards all but the first
     token per line).
+
+    read_dedup_fn/write_dedup_fn: injectable escalation dedup state (#1591).
+    Defaults to live Supabase dedup when creds are available; pass in-memory
+    implementations in tests to avoid network calls.
     """
     _read_conf = read_repos_conf_fn or _default_read_repos_conf
     _run_gh = run_gh_fn or _default_run_gh
@@ -293,8 +368,20 @@ def gather(
         if not goals_prov.ok:
             result.errors.append(f"{MorningSourceKind.GOALS}: query returned no data or failed")
 
+        # Build default live dedup fns when none injected — requires a full client
+        # (not just the RestFn) for UPDATE/INSERT support.
+        _read_dedup = read_dedup_fn
+        _write_dedup = write_dedup_fn
+        if _read_dedup is None or _write_dedup is None:
+            _read_dedup, _write_dedup = _make_live_dedup_fns(supabase_url, supabase_key)
+
         owner_tasks, tasks_prov = gather_owner_tasks(
-            supabase_url, supabase_key, _query_supabase, _now()
+            supabase_url,
+            supabase_key,
+            _query_supabase,
+            _now(),
+            read_dedup_fn=_read_dedup,
+            write_dedup_fn=_write_dedup,
         )
         result.owner_tasks = owner_tasks
         result.provenance[MorningSourceKind.OWNER_TASKS] = tasks_prov.to_dict()
