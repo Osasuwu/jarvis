@@ -139,6 +139,12 @@ def _validate_entry(item: object, idx: int) -> None:
         raise ValueError(
             f"{prefix}.catch_up: must be one of {_VALID_CATCH_UP}, got {catch_up!r}"
         )
+    if "every" in cadence:
+        every = cadence["every"]
+        if not isinstance(every, int) or isinstance(every, bool) or every < 1:
+            raise ValueError(
+                f"{prefix}.cadence.every: must be a positive integer, got {every!r}"
+            )
 
 
 # ============================================================================
