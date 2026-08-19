@@ -188,6 +188,9 @@ def check_issue(issue: dict) -> GateResult:
     return GateResult(failures=tuple(failures))
 
 
+# ceiling: refuses any repo != GITHUB_REPO/_DEFAULT_REPO wholesale rather than
+# resolving per-row; upgrade path is milestone 58 S3 (#1119, task_queue repo
+# column) + S4a (#1121, per-row spawn resolution).
 def check_repo(repo: str, default_repo: str | None = None) -> GateResult:
     """Refuse an issue whose repo isn't the caller's configured default (#1651).
 
