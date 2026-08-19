@@ -14,6 +14,10 @@ is called explicitly in analyze() so no per-section stamp is ever lost silently.
 Goals/milestones section and architecture-sweep reminders (#1590) are also
 assembled here, alongside the pre-existing repo_hygiene/detector_gaps/learning
 sections.
+
+Escalations section (#1591) surfaces owner-task escalations that survived the
+two-channel dedup-by-id filter; it renders first so the owner sees anything
+that already escalated before the rest of the digest.
 """
 
 from __future__ import annotations
@@ -61,6 +65,43 @@ def compute_cut_line_after(items: list[PlanItem], budget_units: int | None = Non
         running_total += cost
         cut_line_after = item.rank
     return cut_line_after
+
+
+def _build_escalations_section(sources: MorningGatherResult) -> Section:
+    tasks_prov = sources.provenance.get(MorningSourceKind.OWNER_TASKS, {})
+    ran = tasks_prov.get("ran", False)
+    ok = tasks_prov.get("ok", False)
+
+    if not ran:
+        return Section(
+            name="escalations",
+            items=[],
+            reason="источник не подключён",
+            provenance=SectionProvenance(ran=False, ok=False, source="morning_gather"),
+        )
+
+    if not ok:
+        return Section(
+            name="escalations",
+            items=[],
+            reason="запрос не вернул данных",
+            provenance=SectionProvenance(ran=True, ok=False, source="morning_gather"),
+        )
+
+    items = [
+        {
+            "id": str(t.get("id", "")),
+            "goal": str(t.get("goal", "")),
+            "reason": str(t.get("escalated_reason", "")),
+        }
+        for t in sources.owner_tasks
+    ]
+    return Section(
+        name="escalations",
+        items=items,
+        reason=None,
+        provenance=SectionProvenance(ran=True, ok=True, source="morning_gather"),
+    )
 
 
 def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
@@ -380,9 +421,13 @@ def analyze(sources: MorningGatherResult) -> Digest:
 
     Provenance (#1589): fold_provenance is called as an explicit operation so
     every per-section stamp survives into the top-level degradation summary.
+
+    Escalations (#1591) render first in the section list so the owner sees
+    anything that already escalated before the rest of the digest.
     """
     goals_ms_section = _build_goals_milestones_section(sources)
     sections = [
+        _build_escalations_section(sources),
         _build_repo_hygiene_section(sources),
         _build_detector_gaps_section(sources),
         _build_learning_section(),

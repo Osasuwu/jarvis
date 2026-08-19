@@ -1096,7 +1096,24 @@ def _fmt_goal(g):
 
 
 def _query_owner_tasks(client):
-    """Query pending owner-assigned task_queue rows, return formatted string or None."""
+    """Query pending owner-assigned task_queue rows, return formatted string or None.
+
+    Applies escalation dedup (#1591): filters out tasks already shown by the
+    morning digest today, then marks returned tasks as shown by session_start.
+    """
+    # Lazy import — add repo root so 'scripts' package is importable in both
+    # script-run context (sys.path[0]=scripts/) and test context (root already present).
+    if str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
+    from scripts.escalation_dedup import (
+        CHANNEL_DIGEST,
+        CHANNEL_SESSION_START,
+        filter_for_channel,
+        read_shown,
+        today_utc,
+        write_shown,
+    )
+
     try:
         result = (
             client.table("task_queue")
@@ -1109,8 +1126,22 @@ def _query_owner_tasks(client):
         )
         if not result.data:
             return None
-        tasks = [_fmt_owner_task(t) for t in result.data]
-        return f"## Owner-Assigned Tasks ({len(result.data)})\n" + "\n".join(tasks)
+
+        # Dedup: skip tasks already shown by the digest channel today.
+        today = today_utc()
+        shown_by_digest = read_shown(client, today).get(CHANNEL_DIGEST, [])
+        rows = filter_for_channel(list(result.data), shown_by_digest)
+
+        # Mark remaining tasks as shown by session_start.
+        if rows:
+            ids = [str(t.get("id", "")) for t in rows if t.get("id")]
+            write_shown(client, today, CHANNEL_SESSION_START, ids)
+
+        if not rows:
+            return None
+
+        tasks = [_fmt_owner_task(t) for t in rows]
+        return f"## Owner-Assigned Tasks ({len(rows)})\n" + "\n".join(tasks)
     except Exception as e:
         print(f"[session-context] owner tasks query failed: {e}", file=sys.stderr)
         return None
