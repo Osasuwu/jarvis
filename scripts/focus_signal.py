@@ -174,7 +174,8 @@ def compute(
         top_goal_project = _top_goal_project(goals)
         # Focus project: the one with the most attributed decisions.
         # Tie-break alphabetically for determinism.
-        # ceiling: O(n) over project_counts — fine at solo-dev scale (<20 projects)
+        # ceiling: O(n) over project_counts — fine at solo-dev scale (<20 projects);
+        # switch to a running-max accumulator in the loop above if that's crossed
         focus_project = max(
             project_counts,
             key=lambda p: (project_counts[p], p),
