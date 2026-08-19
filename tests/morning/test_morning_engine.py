@@ -89,6 +89,40 @@ def test_analyze_synthesizes_plan_items_with_all_required_fields():
     assert digest.plan.cut_line_after is not None
 
 
+def test_analyze_builds_escalations_section_from_owner_tasks():
+    sources = _sources(
+        owner_tasks=[
+            {"id": "t1", "goal": "ship #1591", "escalated_reason": "blocked 3 days"},
+        ],
+        provenance={
+            "gh_milestones": {"ran": True, "ok": True, "input_rows": 1},
+            MorningSourceKind.OWNER_TASKS: {"ran": True, "ok": True, "input_rows": 1},
+        },
+    )
+
+    digest = analyze(sources)
+
+    section = digest.section("escalations")
+    assert section is not None
+    assert section.items == [{"id": "t1", "goal": "ship #1591", "reason": "blocked 3 days"}]
+
+
+def test_analyze_escalations_section_absent_reason_when_source_not_connected():
+    digest = analyze(
+        _sources(
+            provenance={
+                "gh_milestones": {"ran": True, "ok": True, "input_rows": 1},
+                MorningSourceKind.OWNER_TASKS: {"ran": False, "ok": False},
+            }
+        )
+    )
+
+    section = digest.section("escalations")
+    assert section is not None
+    assert section.items == []
+    assert section.reason == "источник не подключён"
+
+
 def test_analyze_builds_detector_gaps_section_only_for_repeated_gaps():
     sources = _sources(
         detector_gaps=[
@@ -145,7 +179,13 @@ def test_analyze_detector_gaps_provenance_carries_real_input_rows():
 
 # Canonical section set produced by analyze(). Changing this set intentionally
 # requires updating this constant — the test below will catch accidental drifts.
-_EXPECTED_SECTIONS = {"repo_hygiene", "detector_gaps", "learning", "goals_and_milestones"}
+_EXPECTED_SECTIONS = {
+    "escalations",
+    "repo_hygiene",
+    "detector_gaps",
+    "learning",
+    "goals_and_milestones",
+}
 
 
 def test_analyze_section_set_is_locked():

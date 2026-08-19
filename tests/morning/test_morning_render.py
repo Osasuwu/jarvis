@@ -241,6 +241,45 @@ def test_main_returns_2_on_invalid_json(monkeypatch, capsys):
     assert "invalid digest JSON" in capsys.readouterr().err
 
 
+def test_escalations_section_renders_with_goal_and_reason():
+    digest = _digest(
+        sections=[
+            Section(
+                name="escalations",
+                items=[{"id": "t1", "goal": "ship #1591", "reason": "blocked 3 days"}],
+                reason=None,
+                provenance=SectionProvenance(ran=True, ok=True, source="morning_gather"),
+            ),
+        ]
+    )
+
+    out = render(digest.to_dict())
+
+    assert "Эскалации" in out
+    assert "ship #1591" in out
+    assert "blocked 3 days" in out
+
+
+def test_escalations_count_appears_in_know_block():
+    digest = _digest(
+        sections=[
+            Section(
+                name="escalations",
+                items=[
+                    {"id": "t1", "goal": "a", "reason": ""},
+                    {"id": "t2", "goal": "b", "reason": ""},
+                ],
+                reason=None,
+                provenance=SectionProvenance(ran=True, ok=True, source="morning_gather"),
+            ),
+        ]
+    )
+
+    out = render(digest.to_dict())
+
+    assert "Эскалации: 2" in out
+
+
 # ============================================================================
 # #1589 — provenance distinction: NOT_CONNECTED vs FAILED in lead line
 # ============================================================================

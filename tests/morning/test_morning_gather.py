@@ -47,6 +47,16 @@ def _fixture_now() -> callable:
     return lambda: fixed
 
 
+def _noop_read_dedup(date_str: str) -> dict[str, list[str]]:
+    """Hermetic no-op dedup reader — keeps tests off the live-Supabase fallback."""
+    return {}
+
+
+def _noop_write_dedup(date_str: str, channel: str, ids: list[str]) -> None:
+    """Hermetic no-op dedup writer — keeps tests off the live-Supabase fallback."""
+    return None
+
+
 def test_gather_traverses_all_repos_conf_lines_including_inactive_marked_ones(monkeypatch):
     monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
     monkeypatch.setenv("SUPABASE_KEY", "test-key")
@@ -61,6 +71,8 @@ def test_gather_traverses_all_repos_conf_lines_including_inactive_marked_ones(mo
         run_gh_fn=_fixture_run_gh(_make_gh_empty()),
         query_supabase_fn=_fixture_query_by_table({}),
         now_fn=_fixture_now(),
+        read_dedup_fn=_noop_read_dedup,
+        write_dedup_fn=_noop_write_dedup,
     )
 
     assert result.repos == ["Osasuwu/jarvis", "SergazyNarynov/redrobot"]
@@ -84,6 +96,8 @@ def test_gather_populates_milestones_per_repo_via_injected_run_gh(monkeypatch):
         run_gh_fn=_fixture_run_gh(_make_gh_milestones_success([milestone])),
         query_supabase_fn=_fixture_query_by_table({}),
         now_fn=_fixture_now(),
+        read_dedup_fn=_noop_read_dedup,
+        write_dedup_fn=_noop_write_dedup,
     )
 
     assert result.milestones["Osasuwu/jarvis"] == [milestone]
@@ -107,6 +121,8 @@ def test_gather_populates_decisions_via_injected_query_supabase(monkeypatch):
         run_gh_fn=_fixture_run_gh(_make_gh_empty()),
         query_supabase_fn=_fixture_query_by_table({"episodes": [decision_row]}),
         now_fn=_fixture_now(),
+        read_dedup_fn=_noop_read_dedup,
+        write_dedup_fn=_noop_write_dedup,
     )
 
     assert len(result.decisions) == 1
@@ -126,6 +142,8 @@ def test_gather_populates_goals_and_owner_tasks_via_injected_query_supabase(monk
         run_gh_fn=_fixture_run_gh(_make_gh_empty()),
         query_supabase_fn=_fixture_query_by_table({"goals": [goal_row], "task_queue": [task_row]}),
         now_fn=_fixture_now(),
+        read_dedup_fn=_noop_read_dedup,
+        write_dedup_fn=_noop_write_dedup,
     )
 
     assert result.goals == [goal_row]
@@ -150,6 +168,35 @@ def test_gather_missing_supabase_creds_marks_sources_not_ok_without_raising(monk
     assert result.provenance["goals"]["ok"] is False
     assert result.provenance["owner_tasks"]["ok"] is False
     assert result.provenance["supabase_decisions"]["ok"] is False
+
+
+def test_gather_owner_tasks_filters_session_start_shown_and_marks_digest_shown(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+    monkeypatch.setenv("SUPABASE_KEY", "test-key")
+
+    task_row_shown = {"id": "task-1", "assignee": "owner", "status": "pending", "goal": "a"}
+    task_row_new = {"id": "task-2", "assignee": "owner", "status": "pending", "goal": "b"}
+
+    written: list[tuple[str, str, list[str]]] = []
+
+    def _read_dedup(date_str: str) -> dict[str, list[str]]:
+        return {"session_start": ["task-1"]}
+
+    def _write_dedup(date_str: str, channel: str, ids: list[str]) -> None:
+        written.append((date_str, channel, ids))
+
+    result = gather(
+        jarvis_home="/fake/home",
+        read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+        run_gh_fn=_fixture_run_gh(_make_gh_empty()),
+        query_supabase_fn=_fixture_query_by_table({"task_queue": [task_row_shown, task_row_new]}),
+        now_fn=_fixture_now(),
+        read_dedup_fn=_read_dedup,
+        write_dedup_fn=_write_dedup,
+    )
+
+    assert result.owner_tasks == [task_row_new]
+    assert written == [(written[0][0], "digest", ["task-2"])]
 
 
 class _FixtureGapStore:
