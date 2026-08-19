@@ -7,6 +7,7 @@ provenance contract, and window filtering.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -264,8 +265,11 @@ def test_compute_no_days_ignored_counter():
     result = compute(episodes=episodes, goals=goals, window_days=14, now=now)
 
     all_text = "\n".join(result.observations).lower()
-    # No language about days since last touching a project
-    assert "день" not in all_text or "за" in all_text  # "за 14д" is fine; "14 дней без" is not
+    # No language about days since last touching a project.
+    # "за 14д" (window prefix) is fine; a counter like "14 дней без" is not.
+    assert not re.search(r"\d+\s*дн(я|ей)\s*без", all_text), (
+        f"Observation contains a 'days ignored' counter: {result.observations!r}"
+    )
     assert "days since" not in all_text
     assert "дней с" not in all_text
 
