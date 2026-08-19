@@ -38,6 +38,14 @@ regexes = [
   '''(us-east-1|us-west-2|eu-west-1|ap-southeast-1|ap-south-1)''',
   # Supabase public project URLs
   '''https://[a-z0-9]+\.supabase\.co''',
+  # Fake AWS key suffixes used in test fixtures. These classic example patterns
+  # (IOSFODNN7EXAMPLE from AWS docs, ABCDEFGHIJKLMNOP alphabetic sequence)
+  # appear only in test code that asserts the secret-scanner detects them.
+  # The write-scrubber blocks `# gitleaks:allow` inline suppression for these
+  # files because the PreToolUse hook fires on the full AKIA+suffix pattern;
+  # allowlist-level suppression is the correct alternative.
+  '''IOSFODNN7EXAMPLE''',
+  '''ABCDEFGHIJKLMNOP''',
 ]
 
 # #1547: Apprise/webhook notification transport secrets. NOTIFY_APPRISE_URL
