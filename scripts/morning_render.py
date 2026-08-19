@@ -16,14 +16,44 @@ _CUT_LINE_MARKER = "--- cut-line ---"
 
 
 def _degradation_line(digest: dict) -> str | None:
-    degraded = [
-        section.get("name", "?")
-        for section in digest.get("sections", []) or []
-        if not (section.get("provenance") or {}).get("ok", False)
-    ]
-    if not degraded:
+    """Build the lead line that opens the digest when data quality is impaired.
+
+    Prefers the pre-computed ``digest["degradation"]`` field (set by
+    morning_engine.analyze() via an explicit fold_provenance() call) so every
+    per-section stamp is represented. Falls back to scanning sections directly
+    when the field is absent or empty — this keeps old fixtures and hand-built
+    digests working without a schema migration.
+
+    Distinguishes two kinds of not-ok:
+    - FAILED (absence_kind != "not_connected"): real degradation; raises the
+      degradation level; shown under "⚠ Деградация источников".
+    - NOT_CONNECTED (absence_kind == "not_connected"): stable known limitation
+      (e.g. learning section blocked by #1338); does NOT raise degradation;
+      shown separately under "ℹ Ограничения".
+    """
+    deg = digest.get("degradation") or {}
+    failures = list(deg.get("failures") or [])
+    known_limitations = list(deg.get("known_limitations") or [])
+
+    if not deg:
+        for section in digest.get("sections", []) or []:
+            prov = section.get("provenance", {}) or {}
+            if prov.get("ok", False):
+                continue
+            if prov.get("absence_kind") == "not_connected":
+                known_limitations.append(section.get("name", "?"))
+            else:
+                failures.append(section.get("name", "?"))
+
+    if not failures and not known_limitations:
         return None
-    return "⚠ Деградация источников: " + ", ".join(degraded)
+
+    parts = []
+    if failures:
+        parts.append("⚠ Деградация источников: " + ", ".join(failures))
+    if known_limitations:
+        parts.append("ℹ Ограничения: " + ", ".join(known_limitations))
+    return " | ".join(parts)
 
 
 def _know_block(digest: dict) -> list[str]:

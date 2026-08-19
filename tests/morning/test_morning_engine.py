@@ -9,8 +9,8 @@ give different boundaries.
 from __future__ import annotations
 
 from scripts.detector_gap_log import GapRecord
-from scripts.digest_schema import PlanItem, VALID_ESTIMATES
-from scripts.morning_gather import MorningGatherResult
+from scripts.digest_schema import AbsenceKind, PlanItem, VALID_ESTIMATES
+from scripts.morning_gather import MorningGatherResult, MorningSourceKind
 from scripts.morning_engine import (
     DAY_BUDGET_UNITS,
     ESTIMATE_UNITS,
@@ -113,3 +113,97 @@ def test_analyze_detector_gaps_section_empty_when_no_repeats():
     assert section is not None
     assert section.items == []
     assert section.reason == "no repeated gaps"
+
+
+def test_analyze_detector_gaps_provenance_carries_real_input_rows():
+    """Regression: input_rows must come from the gathered count, not default to 0.
+
+    morning_gather.py stamps input_rows=len(gaps) on the DETECTOR_GAPS provenance;
+    _build_detector_gaps_section must read it through, mirroring how
+    _build_repo_hygiene_section already does for its own provenance.
+    """
+    sources = _sources(
+        detector_gaps=[
+            GapRecord(key="k1", description="gap seen twice", count=2),
+            GapRecord(key="k2", description="gap seen once", count=1),
+        ],
+        provenance={
+            "gh_milestones": {"ran": True, "ok": True, "input_rows": 1},
+            MorningSourceKind.DETECTOR_GAPS: {"ran": True, "ok": True, "input_rows": 2},
+        },
+    )
+
+    digest = analyze(sources)
+
+    section = digest.section("detector_gaps")
+    assert section.provenance.input_rows == 2
+
+
+# ============================================================================
+# #1589 — learning section, section-set lock, explicit provenance fold
+# ============================================================================
+
+# Canonical section set produced by analyze(). Changing this set intentionally
+# requires updating this constant — the test below will catch accidental drifts.
+_EXPECTED_SECTIONS = {"repo_hygiene", "detector_gaps", "learning"}
+
+
+def test_analyze_section_set_is_locked():
+    """Removing or adding a section from the engine or render drops this test.
+
+    Intentional changes require updating _EXPECTED_SECTIONS above.
+    """
+    digest = analyze(_sources())
+    actual = {s.name for s in digest.sections}
+    assert actual == _EXPECTED_SECTIONS, (
+        f"Section set changed unexpectedly. Expected {_EXPECTED_SECTIONS}, got {actual}. "
+        "Update _EXPECTED_SECTIONS only when the section change is intentional."
+    )
+
+
+def test_analyze_learning_section_is_empty_with_reason_referencing_1338():
+    digest = analyze(_sources())
+
+    learning = digest.section("learning")
+
+    assert learning is not None
+    assert learning.items == []
+    assert learning.reason is not None
+    assert "#1338" in learning.reason
+
+
+def test_analyze_learning_section_provenance_is_not_connected_not_failed():
+    digest = analyze(_sources())
+
+    learning = digest.section("learning")
+
+    assert learning.provenance.absence_kind == AbsenceKind.NOT_CONNECTED
+    assert learning.provenance.ok is False
+
+
+def test_analyze_fold_provenance_called_explicitly_and_stored_in_digest():
+    """fold_provenance is an explicit operation in analyze() — the result lands
+    in digest.degradation, so the render never has to re-derive it from sections.
+    """
+    digest = analyze(_sources())
+
+    assert isinstance(digest.degradation, dict)
+    assert "degradation_level" in digest.degradation
+    assert "failures" in digest.degradation
+    assert "known_limitations" in digest.degradation
+
+
+def test_analyze_learning_section_is_known_limitation_not_failure():
+    digest = analyze(_sources())
+
+    assert "learning" in digest.degradation["known_limitations"]
+    assert "learning" not in digest.degradation["failures"]
+    assert digest.degradation["degradation_level"] == 0
+
+
+def test_analyze_repo_hygiene_provenance_carries_input_rows():
+    digest = analyze(_sources())
+
+    repo_hygiene = digest.section("repo_hygiene")
+
+    assert isinstance(repo_hygiene.provenance.input_rows, int)
