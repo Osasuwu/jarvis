@@ -148,8 +148,8 @@ def test_compute_observation_cites_counts():
 
     assert result.observations
     obs = result.observations[0]
-    # The count "5" or the fraction should appear
-    assert "5" in obs or "jarvis" in obs
+    # focus_count=5, attributed_total=5 — the "N из M" fraction must be cited verbatim.
+    assert "5 из 5" in obs, f"Observation doesn't cite the count fraction: {obs!r}"
 
 
 # ============================================================================
