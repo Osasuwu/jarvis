@@ -108,6 +108,45 @@ def _render_repo_hygiene(section: dict) -> list[str]:
     return lines
 
 
+def _render_goals_milestones_section(section: dict) -> list[str]:
+    items = section.get("items", []) or []
+    reason = section.get("reason")
+
+    if not items:
+        return [f"Цели и вехи: {reason or 'нет данных'}"]
+
+    lines = ["<details>", "<summary>Цели и вехи</summary>", ""]
+
+    for it in items:
+        kind = it.get("type")
+        flags = it.get("flags") or []
+
+        if kind == "goal":
+            pct = it.get("pct")
+            pct_str = f" {pct}%" if pct is not None else ""
+            flag_str = " ⚠ нет вехи" if "no_milestone" in flags else ""
+            lines.append(
+                f"- [цель/{it.get('priority', '—')}]{pct_str} {it.get('title', it.get('slug', ''))}{flag_str}"
+            )
+
+        elif kind == "open_milestone":
+            flag_str = " ⚠ нет слайсов" if "no_slices" in flags else ""
+            # External text (title) is rendered as-is — not interpreted
+            lines.append(
+                f"- [веха] {it.get('repo')} #{it.get('number')}: {it.get('title', '')}"
+                f" ({it.get('open_issues', 0)} откр / {it.get('closed_issues', 0)} закр){flag_str}"
+            )
+
+        elif kind == "arch_sweep":
+            lines.append(
+                f"- [арх-свип] {it.get('repo')} #{it.get('number')}: {it.get('title', '')}"
+                f" — {it.get('closed_issues', 0)} слайсов, {it.get('age_days', 0)}д назад → /improve-codebase-architecture"
+            )
+
+    lines.append("</details>")
+    return lines
+
+
 def _render_generic_section(section: dict) -> list[str]:
     name = section.get("name", "?")
     items = section.get("items", []) or []
@@ -126,8 +165,11 @@ def _render_generic_section(section: dict) -> list[str]:
 def _evidence_blocks(digest: dict) -> list[list[str]]:
     blocks = []
     for section in digest.get("sections", []) or []:
-        if section.get("name") == "repo_hygiene":
+        name = section.get("name")
+        if name == "repo_hygiene":
             blocks.append(_render_repo_hygiene(section))
+        elif name == "goals_and_milestones":
+            blocks.append(_render_goals_milestones_section(section))
         else:
             blocks.append(_render_generic_section(section))
     return blocks

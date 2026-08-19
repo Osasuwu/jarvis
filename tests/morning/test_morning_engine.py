@@ -145,7 +145,7 @@ def test_analyze_detector_gaps_provenance_carries_real_input_rows():
 
 # Canonical section set produced by analyze(). Changing this set intentionally
 # requires updating this constant — the test below will catch accidental drifts.
-_EXPECTED_SECTIONS = {"repo_hygiene", "detector_gaps", "learning"}
+_EXPECTED_SECTIONS = {"repo_hygiene", "detector_gaps", "learning", "goals_and_milestones"}
 
 
 def test_analyze_section_set_is_locked():

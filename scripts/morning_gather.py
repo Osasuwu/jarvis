@@ -14,6 +14,7 @@ status_engine.py, and their tests are unaffected.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -51,6 +52,7 @@ class MorningSourceKind:
 
     REPOS_CONF = "repos_conf"
     GH_MILESTONES = "gh_milestones"
+    CLOSED_MILESTONES = "closed_milestones"
     SUPABASE_DECISIONS = "supabase_decisions"
     GOALS = "goals"
     OWNER_TASKS = "owner_tasks"
@@ -66,6 +68,7 @@ class MorningSourceKind:
 class MorningGatherResult:
     repos: list[str] = field(default_factory=list)
     milestones: dict[str, list[dict]] = field(default_factory=dict)
+    closed_milestones: dict[str, list[dict]] = field(default_factory=dict)
     decisions: list[DecisionRecord] = field(default_factory=list)
     goals: list[dict] = field(default_factory=list)
     owner_tasks: list[dict] = field(default_factory=list)
@@ -78,6 +81,7 @@ class MorningGatherResult:
         return {
             "repos": self.repos,
             "milestones": self.milestones,
+            "closed_milestones": self.closed_milestones,
             "decisions": [d.to_dict() for d in self.decisions],
             "goals": self.goals,
             "owner_tasks": self.owner_tasks,
@@ -116,6 +120,39 @@ def gather_goals(
     if rows is None:
         return [], Provenance(ran=True, ok=False, input_rows=0, age=elapsed)
     return rows, Provenance(ran=True, ok=True, input_rows=len(rows), age=elapsed)
+
+
+def _gather_gh_closed_milestones(
+    repo: str,
+    run_gh: RunGhFn,
+    now: float,
+) -> tuple[list[dict], Provenance]:
+    """Fetch closed milestones for one repo (for architecture-sweep detection).
+
+    Returns milestones with {number, title, closed_at, open_issues, closed_issues}.
+    """
+    start = time.time()
+    result = run_gh(
+        repo,
+        [
+            "api",
+            f"repos/{repo}/milestones?state=closed&per_page=50",
+            "--jq",
+            ".[] | {number, title, closed_at, open_issues, closed_issues}",
+        ],
+    )
+    elapsed = time.time() - start
+    ok = result["returncode"] == 0
+    data: list[dict] = []
+    if ok and result["stdout"]:
+        for line in result["stdout"].splitlines():
+            if line.strip():
+                try:
+                    data.append(json.loads(line))
+                except json.JSONDecodeError:
+                    ok = False
+    prov = Provenance(ran=True, ok=ok, input_rows=len(data), age=elapsed)
+    return data, prov
 
 
 def gather_owner_tasks(
@@ -221,6 +258,20 @@ def gather(
         age=_now() - gather_start,
     ).to_dict()
 
+    # --- Closed milestones per repo (for architecture-sweep detection, #1590) ---
+    closed_milestones_ok_count = 0
+    for repo_name in result.repos:
+        closed_ms, closed_prov = _gather_gh_closed_milestones(repo_name, _run_gh, _now())
+        result.closed_milestones[repo_name] = closed_ms
+        if closed_prov.ok:
+            closed_milestones_ok_count += 1
+    result.provenance[MorningSourceKind.CLOSED_MILESTONES] = Provenance(
+        ran=True,
+        ok=closed_milestones_ok_count > 0,
+        input_rows=closed_milestones_ok_count,
+        age=_now() - gather_start,
+    ).to_dict()
+
     # --- Supabase-backed sources: decisions, goals, owner tasks ---
     supabase_url = os.environ.get(SUPABASE_URL_ENV, "")
     supabase_key = os.environ.get(SUPABASE_KEY_ENV, "")
@@ -280,8 +331,6 @@ def gather(
 
 
 def main(argv: list[str] | None = None) -> int:
-    import json
-
     result = gather()
     json.dump(result.to_dict(), sys.stdout, indent=2, default=str)
     return 0 if not result.errors else 1
