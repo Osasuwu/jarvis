@@ -161,6 +161,7 @@ def _envelope(
     number: int = 931,
     open_prs: list | None = None,
     open_branches: list | None = None,
+    repo: str = "Osasuwu/jarvis",
 ) -> dict:
     return {
         "issue": {
@@ -168,6 +169,7 @@ def _envelope(
             "body": body,
             "labels": [{"name": n} for n in labels],
         },
+        "repo": repo,
         "open_prs": open_prs if open_prs is not None else [],
         "open_branches": open_branches if open_branches is not None else [],
     }
