@@ -157,6 +157,40 @@ class TestRegistryParsing:
         with pytest.raises(ValueError, match="catch_up"):
             load_registry(registry_file)
 
+    def test_zero_every_raises_error(self, tmp_path: Path):
+        registry_file = tmp_path / "obligations.yaml"
+        registry_file.write_text(
+            textwrap.dedent("""\
+                schema_version: "v1"
+                entries:
+                  - id: "x"
+                    label: "X"
+                    cadence:
+                      unit: "daily"
+                      every: 0
+            """),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="cadence.every"):
+            load_registry(registry_file)
+
+    def test_negative_every_raises_error(self, tmp_path: Path):
+        registry_file = tmp_path / "obligations.yaml"
+        registry_file.write_text(
+            textwrap.dedent("""\
+                schema_version: "v1"
+                entries:
+                  - id: "x"
+                    label: "X"
+                    cadence:
+                      unit: "daily"
+                      every: -1
+            """),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="cadence.every"):
+            load_registry(registry_file)
+
     def test_every_defaults_to_one(self, tmp_path: Path):
         registry_file = tmp_path / "obligations.yaml"
         registry_file.write_text(
