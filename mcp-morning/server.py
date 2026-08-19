@@ -73,7 +73,6 @@ for _env_path in _env_candidates:
 os.environ.update(_preserved_tokens)
 
 from mcp.server import Server, ServerRequestContext  # noqa: E402
-from mcp.server.stdio import stdio_server  # noqa: E402
 from mcp.types import (  # noqa: E402
     CallToolRequestParams,
     CallToolResult,
@@ -85,6 +84,7 @@ from mcp.types import (  # noqa: E402
 
 from scripts.morning_gather import gather  # noqa: E402
 from scripts.morning_engine import analyze  # noqa: E402
+from scripts.lib.mcp_stdio import run_stdio_server  # noqa: E402
 
 # ============================================================================
 # Tool registration
@@ -186,8 +186,7 @@ server = Server("jarvis-morning", on_list_tools=list_tools, on_call_tool=call_to
 
 
 async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+    await run_stdio_server(server)
 
 
 if __name__ == "__main__":
