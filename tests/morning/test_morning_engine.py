@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from scripts.detector_gap_log import GapRecord
 from scripts.digest_schema import AbsenceKind, PlanItem, VALID_ESTIMATES
-from scripts.morning_gather import MorningGatherResult
+from scripts.morning_gather import MorningGatherResult, MorningSourceKind
 from scripts.morning_engine import (
     DAY_BUDGET_UNITS,
     ESTIMATE_UNITS,
@@ -113,6 +113,30 @@ def test_analyze_detector_gaps_section_empty_when_no_repeats():
     assert section is not None
     assert section.items == []
     assert section.reason == "no repeated gaps"
+
+
+def test_analyze_detector_gaps_provenance_carries_real_input_rows():
+    """Regression: input_rows must come from the gathered count, not default to 0.
+
+    morning_gather.py stamps input_rows=len(gaps) on the DETECTOR_GAPS provenance;
+    _build_detector_gaps_section must read it through, mirroring how
+    _build_repo_hygiene_section already does for its own provenance.
+    """
+    sources = _sources(
+        detector_gaps=[
+            GapRecord(key="k1", description="gap seen twice", count=2),
+            GapRecord(key="k2", description="gap seen once", count=1),
+        ],
+        provenance={
+            "gh_milestones": {"ran": True, "ok": True, "input_rows": 1},
+            MorningSourceKind.DETECTOR_GAPS: {"ran": True, "ok": True, "input_rows": 2},
+        },
+    )
+
+    digest = analyze(sources)
+
+    section = digest.section("detector_gaps")
+    assert section.provenance.input_rows == 2
 
 
 # ============================================================================

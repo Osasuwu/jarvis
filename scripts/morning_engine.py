@@ -94,6 +94,7 @@ def _build_detector_gaps_section(sources: MorningGatherResult) -> Section:
 
     ran = gaps_prov.get("ran", False)
     ok = gaps_prov.get("ok", False)
+    input_rows = gaps_prov.get("input_rows", 0)
     # No production GapStore adapter exists yet (#1595) — when the source
     # never ran (no gap_store injected) that's a stable known limitation,
     # not a failure. Only a source that ran and came back not-ok is FAILED.
@@ -115,6 +116,7 @@ def _build_detector_gaps_section(sources: MorningGatherResult) -> Section:
                 ran=ran,
                 ok=ok,
                 source="morning_gather",
+                input_rows=input_rows,
                 absence_kind=absence_kind,
                 absence_reason=absence_reason,
             ),
@@ -131,6 +133,7 @@ def _build_detector_gaps_section(sources: MorningGatherResult) -> Section:
             ran=ran,
             ok=ok,
             source="morning_gather",
+            input_rows=input_rows,
             absence_kind=absence_kind,
             absence_reason=absence_reason,
         ),
