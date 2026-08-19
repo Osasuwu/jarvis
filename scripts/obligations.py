@@ -230,6 +230,14 @@ def evaluate(
     result: list[ObligationStatus] = []
     for entry in registry:
         # --- Evidence probe takes precedence when configured and provided ---
+        # ceiling: probe_fn() runs synchronously with no timeout/cancellation, and
+        # the broad `except Exception` below collapses every failure mode (a
+        # hanging probe, a legitimate "not done yet" signal, a bug inside the
+        # probe) into the same probe_failed=True/"unknown" result with no
+        # diagnostic retained. Fine while probes are small local callables
+        # (git log greps, file checks); if a probe ever does network I/O or can
+        # run long, wrap the call with a timeout and log the caught exception
+        # instead of discarding it.
         if entry.probe_name is not None and entry.probe_name in _probes:
             probe_fn = _probes[entry.probe_name]
             try:
