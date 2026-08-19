@@ -12,12 +12,7 @@ ACs verified:
 
 from __future__ import annotations
 
-import types
-from unittest.mock import MagicMock
 
-import pytest
-
-from scripts.digest_schema import SCHEMA_VERSION, Section, SectionProvenance
 from scripts.escalation_dedup import (
     CHANNEL_DIGEST,
     CHANNEL_SESSION_START,

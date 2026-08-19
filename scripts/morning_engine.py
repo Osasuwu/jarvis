@@ -77,7 +77,13 @@ def _build_escalations_section(sources: MorningGatherResult) -> Section:
             name="escalations",
             items=[],
             reason="источник не подключён",
-            provenance=SectionProvenance(ran=False, ok=False, source="morning_gather"),
+            provenance=SectionProvenance(
+                ran=False,
+                ok=False,
+                source="morning_gather",
+                absence_kind=AbsenceKind.NOT_CONNECTED,
+                absence_reason="источник не подключён",
+            ),
         )
 
     if not ok:
@@ -85,7 +91,13 @@ def _build_escalations_section(sources: MorningGatherResult) -> Section:
             name="escalations",
             items=[],
             reason="запрос не вернул данных",
-            provenance=SectionProvenance(ran=True, ok=False, source="morning_gather"),
+            provenance=SectionProvenance(
+                ran=True,
+                ok=False,
+                source="morning_gather",
+                absence_kind=AbsenceKind.FAILED,
+                absence_reason="запрос не вернул данных",
+            ),
         )
 
     items = [

@@ -171,9 +171,7 @@ def test_gather_owner_tasks_filters_session_start_shown_and_marks_digest_shown(m
         jarvis_home="/fake/home",
         read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
         run_gh_fn=_fixture_run_gh(_make_gh_empty()),
-        query_supabase_fn=_fixture_query_by_table(
-            {"task_queue": [task_row_shown, task_row_new]}
-        ),
+        query_supabase_fn=_fixture_query_by_table({"task_queue": [task_row_shown, task_row_new]}),
         now_fn=_fixture_now(),
         read_dedup_fn=_read_dedup,
         write_dedup_fn=_write_dedup,

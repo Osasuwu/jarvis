@@ -219,9 +219,7 @@ def gather_owner_tasks(
 # ============================================================================
 
 
-def _make_live_dedup_fns(
-    url: str, key: str
-) -> tuple["ReadDedupFn", "WriteDedupFn"]:
+def _make_live_dedup_fns(url: str, key: str) -> tuple["ReadDedupFn", "WriteDedupFn"]:
     """Return (read_fn, write_fn) backed by a live Supabase client.
 
     On client creation failure, returns no-op functions so gather() continues

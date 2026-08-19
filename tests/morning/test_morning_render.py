@@ -265,7 +265,10 @@ def test_escalations_count_appears_in_know_block():
         sections=[
             Section(
                 name="escalations",
-                items=[{"id": "t1", "goal": "a", "reason": ""}, {"id": "t2", "goal": "b", "reason": ""}],
+                items=[
+                    {"id": "t1", "goal": "a", "reason": ""},
+                    {"id": "t2", "goal": "b", "reason": ""},
+                ],
                 reason=None,
                 provenance=SectionProvenance(ran=True, ok=True, source="morning_gather"),
             ),
