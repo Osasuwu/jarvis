@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "jarvis-mcp-memory"
-version = "0.4.1"
+version = "0.5.0"
 description = "Jarvis memory server — persistent memory via Supabase MCP"
 requires-python = ">=3.11"
 dependencies = [
