@@ -106,8 +106,10 @@ def test_compute_observation_on_skew():
 
     assert len(result.observations) >= 1
     obs_text = "\n".join(result.observations)
-    assert "jarvis" in obs_text
-    assert "redrobot" in obs_text
+    # focus_project=jarvis (40/40), top_goal_project=redrobot has 0 attributed
+    # episodes so its count clause is omitted — only the P0-цель tail cites it.
+    assert "jarvis — 40 из 40" in obs_text, f"Observation doesn't cite the fraction: {obs_text!r}"
+    assert "P0-цель в redrobot" in obs_text, f"Observation doesn't cite the skewed goal: {obs_text!r}"
 
 
 def test_compute_no_observation_when_aligned():
