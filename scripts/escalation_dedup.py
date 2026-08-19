@@ -126,6 +126,7 @@ def write_shown(client: Any, date_str: str, channel: str, ids: list[str]) -> Non
                     "name": dedup_name(date_str),
                     "content": content,
                     "project": "jarvis",
+                    "source_provenance": "script:escalation_dedup",
                 }
             ).execute()
     except Exception as exc:
