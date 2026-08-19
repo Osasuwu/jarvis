@@ -393,6 +393,57 @@ class TestJsonRoundtripCaveat:
             json_file.unlink()
 
 
+class TestClaudeProjectDirSubstitution:
+    """settings.json hook commands resolve via hook-resolver.py, not a bare
+    $CLAUDE_PROJECT_DIR/scripts/... path (#1565, supersedes #1186's original fix).
+
+    Baking an install-time absolute path directly into a hook command pins
+    every hook to whichever checkout was live at install time, breaking any
+    other worktree session (#1186). But settings.json is user-level and fires
+    in EVERY Claude Code session, not just jarvis ones — templating that path
+    to $CLAUDE_PROJECT_DIR instead breaks every non-jarvis session, since
+    $CLAUDE_PROJECT_DIR there is that project's own root, with no jarvis
+    scripts/ dir at all (#1565). hook-resolver.py (invoked via a baked
+    absolute path to the resolver itself) resolves the right jarvis checkout
+    at hook-run time instead. Other JSON consumers (.mcp.json's MCP server
+    `args`, spawned without shell expansion) must keep the baked
+    absolute-path form or server launch breaks.
+    """
+
+    def test_transform_json_paths_settings_uses_project_dir_var(self):
+        result = installer._transform_json_paths(
+            "python scripts/foo.py", "/repo", use_project_dir_var=True
+        )
+        assert result == "python /repo/scripts/hook-resolver.py foo.py"
+
+    def test_transform_json_paths_default_bakes_absolute_path(self):
+        result = installer._transform_json_paths(
+            "python scripts/foo.py", "/repo", use_project_dir_var=False
+        )
+        assert result == "python /repo/scripts/foo.py"
+
+    def test_template_content_settings_json_uses_project_dir_var(self, tmp_path):
+        settings = tmp_path / "settings.json"
+        settings.write_text(
+            json.dumps({"hooks": {"PreToolUse": [{"hooks": [{"command": "python scripts/foo.py"}]}]}}),
+            encoding="utf-8",
+        )
+        rendered = installer.template_content(settings, Path("/repo"), tmp_path).decode("utf-8")
+        assert "$CLAUDE_PROJECT_DIR" not in rendered
+        assert "/repo/scripts/hook-resolver.py foo.py" in rendered
+        assert "/repo/scripts/foo.py" not in rendered
+
+    def test_template_content_mcp_json_keeps_baked_absolute_path(self, tmp_path):
+        mcp = tmp_path / ".mcp.json"
+        mcp.write_text(
+            json.dumps({"mcpServers": {"memory": {"args": ["scripts/run-memory-server.py"]}}}),
+            encoding="utf-8",
+        )
+        rendered = installer.template_content(mcp, Path("/repo"), tmp_path).decode("utf-8")
+        assert "/repo/scripts/run-memory-server.py" in rendered
+        assert "$CLAUDE_PROJECT_DIR" not in rendered
+
+
 class TestStatusServerJarvisHomePinned:
     """Regression: status MCP server must pin JARVIS_HOME in its env (#1087).
 

@@ -173,7 +173,7 @@ def tool_definitions() -> list[Tool]:
             description=(
                 "Save or update a memory. Upserts by (project, name). "
                 "Use for: decisions, user preferences, project context, feedback, references. "
-                "Set project=null for cross-project memories."
+                "project is required — pass the literal string 'global' for cross-project memories."
             ),
             input_schema={
                 "type": "object",
@@ -196,8 +196,13 @@ def tool_definitions() -> list[Tool]:
                         "description": "One-line summary for quick relevance matching.",
                     },
                     "project": {
-                        "type": ["string", "null"],
-                        "description": "Project scope. null = global/cross-project. 'jarvis' = this project.",
+                        "type": "string",
+                        "description": (
+                            "Required project scope (e.g. 'jarvis', 'redrobot'). "
+                            "Pass the literal string 'global' for intentional cross-project scope "
+                            "— it normalizes to NULL in the DB. Omitting this silently landed rows "
+                            "under global scope in the past (#1613); it is now rejected."
+                        ),
                     },
                     "tags": {
                         "type": "array",
@@ -228,7 +233,7 @@ def tool_definitions() -> list[Tool]:
                         ),
                     },
                 },
-                "required": ["type", "name", "content", "source_provenance"],
+                "required": ["type", "name", "content", "source_provenance", "project"],
             },
         ),
         Tool(
@@ -763,7 +768,7 @@ def tool_definitions() -> list[Tool]:
             ),
             input_schema={
                 "type": "object",
-                "required": ["decision", "rationale", "reversibility"],
+                "required": ["decision", "rationale", "reversibility", "project"],
                 "properties": {
                     "decision": {
                         "type": "string",
@@ -814,8 +819,13 @@ def tool_definitions() -> list[Tool]:
                         "description": "Source of the decision (e.g. 'skill:delegate', 'session:<id>'). Defaults to 'skill:unknown'.",
                     },
                     "project": {
-                        "type": ["string", "null"],
-                        "description": "Optional project scope for the decision payload.",
+                        "type": "string",
+                        "description": (
+                            "Required project scope for the decision payload "
+                            "(e.g. 'jarvis', 'redrobot') — the focus-signal "
+                            "module groups decision episodes by project, so an "
+                            "unscoped episode is unreachable (#1587)."
+                        ),
                     },
                     "session_id": {
                         "type": "string",

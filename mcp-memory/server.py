@@ -52,16 +52,24 @@ for _env_path in _env_candidates:
         load_dotenv(_env_path, override=True)
         break
 
+# Repo root must be on sys.path before the `scripts.lib.*` import below.
+# When launched as a script (`python mcp-memory/server.py`), sys.path[0] is
+# this file's own dir (mcp-memory/), not the repo root — mirrors the same
+# insert already present in mcp-status/server.py and mcp-morning/server.py.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from mcp.server import Server, ServerRequestContext
-from mcp.server.stdio import stdio_server
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
     ListToolsResult,
     PaginatedRequestParams,
     TextContent,
-    Tool,
 )
+
+from scripts.lib.mcp_stdio import run_stdio_server
 
 # Phase 2b classifier — local module, optional at runtime.
 try:
@@ -348,8 +356,7 @@ server = Server("jarvis-memory", on_list_tools=list_tools, on_call_tool=call_too
 
 
 async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+    await run_stdio_server(server)
 
 
 if __name__ == "__main__":

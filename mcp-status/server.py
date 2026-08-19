@@ -70,7 +70,6 @@ for _env_path in _env_candidates:
 os.environ.update(_preserved_tokens)
 
 from mcp.server import Server, ServerRequestContext  # noqa: E402
-from mcp.server.stdio import stdio_server  # noqa: E402
 from mcp.types import (  # noqa: E402
     CallToolRequestParams,
     CallToolResult,
@@ -86,6 +85,7 @@ from scripts.status_engine import (  # noqa: E402
     analyze,
     deserialize_contradiction_cache,
 )
+from scripts.lib.mcp_stdio import run_stdio_server  # noqa: E402
 
 # ============================================================================
 # Tool registration
@@ -184,18 +184,40 @@ def _convert_gather_to_engine_format(gather_result):
         # Attach per-repo provenance from gather onto the RepoState so the
         # engine and digest see it (previously built into a local that was
         # never used — the RepoState went out with provenance=None).
+        #
+        # A repo has multiple gather sources (git_state, gh_issues, gh_prs,
+        # gh_ci, gh_milestones); merge them pessimistically into one stamp
+        # rather than keeping only the first, which silently dropped a
+        # failed/stale second source (#1576) — ran/ok both require every
+        # source to agree, input_rows sums what was actually gathered, and
+        # age takes the staleness of the oldest source.
         if "provenance" in repo_entry:
             repo_prov = repo_entry["provenance"]
-            # Use the first source stamp as the repo-level provenance, mirroring
-            # how gather stamps a single {ran, ok, input_rows, age} per source.
-            for _src, prov_dict in repo_prov.items():
+            if repo_prov:
+                # A source can be tagged expected_failure=True by gather
+                # (e.g. gh_milestones for a repo without milestone access,
+                # status_gather.py's asymmetric-source pattern) — exclude
+                # it from ran/ok so a known-expected gap doesn't drag the
+                # merged provenance to permanently unhealthy (#1576
+                # follow-up: the original pessimistic all() couldn't tell
+                # an expected gap from a real outage).
+                healthy_prov = [
+                    p for p in repo_prov.values() if not p.get("expected_failure", False)
+                ]
+                # input_rows uses -1 as a sentinel for non-row sources (e.g.
+                # git state) — sum only the row-based sources so a sentinel
+                # doesn't corrupt the total; -1 if every source is non-row.
+                row_counts = [
+                    p.get("input_rows", -1)
+                    for p in repo_prov.values()
+                    if p.get("input_rows", -1) >= 0
+                ]
                 repo_state.provenance = Provenance(
-                    ran=prov_dict.get("ran", False),
-                    ok=prov_dict.get("ok", False),
-                    input_rows=prov_dict.get("input_rows", 0),
-                    age=prov_dict.get("age", 0.0),
+                    ran=all(p.get("ran", False) for p in healthy_prov) if healthy_prov else False,
+                    ok=all(p.get("ok", False) for p in healthy_prov) if healthy_prov else False,
+                    input_rows=sum(row_counts) if row_counts else -1,
+                    age=max(p.get("age", 0.0) for p in repo_prov.values()),
                 )
-                break
 
         delta.repos[repo_name] = repo_state
 
@@ -259,10 +281,12 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
                     timeout=_GATHER_TIMEOUT,
                 )
             except asyncio.TimeoutError:
-                result = [TextContent(
-                    type="text",
-                    text="status gather timed out after 30s",
-                )]
+                result = [
+                    TextContent(
+                        type="text",
+                        text="status gather timed out after 30s",
+                    )
+                ]
                 return CallToolResult(content=result)
 
             # Convert gather result to engine format
@@ -351,8 +375,7 @@ server = Server("jarvis-status", on_list_tools=list_tools, on_call_tool=call_too
 
 
 async def main():
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, server.create_initialization_options())
+    await run_stdio_server(server)
 
 
 if __name__ == "__main__":

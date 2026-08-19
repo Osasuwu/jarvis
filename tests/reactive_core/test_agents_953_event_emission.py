@@ -37,11 +37,11 @@ from agents.orchestrator import (
     _redrive_goal,
     handle_event,
 )
+from agents.pr_evidence import compute_pr_evidence
 from agents.task_dispatch import (
     TrackedProc,
     _augment_branch_directive,
     _augment_closes_mandate,
-    _compute_pr_evidence,
     default_spawn,
     default_stdout_reader,
     format_lineage_key,
@@ -780,14 +780,14 @@ class TestStdoutReaderPathSafety:
 
 
 # =============================================================================
-# AC3: Secondary Evidence Channel — _compute_pr_evidence integration
+# AC3: Secondary Evidence Channel — compute_pr_evidence integration
 # =============================================================================
 
 
 class TestComputePrEvidenceStdoutFallback:
     """The fresh-shape ``False`` → stdout-fallback → verified ``True`` path (MAJOR #1011).
 
-    ``_compute_pr_evidence`` glues three pieces: the fresh-shape head-branch
+    ``compute_pr_evidence`` glues three pieces: the fresh-shape head-branch
     check, the AC3 stdout secondary channel, and the direct PR-number
     verification. Only the leaf parsers were under test; the glue itself —
     "head-branch lookup found nothing BUT the agent's stdout named a real PR" —
@@ -805,7 +805,7 @@ class TestComputePrEvidenceStdoutFallback:
         def stdout_reader(task_id: str) -> str:
             return json.dumps({"status": "completed", "pr_url": "https://github.com/o/r/pull/888"})
 
-        evidence, _ = _compute_pr_evidence(
+        evidence, _ = compute_pr_evidence(
             "abc123",
             "implement feature X",
             spawned_at,
@@ -829,7 +829,7 @@ class TestComputePrEvidenceStdoutFallback:
         def stdout_reader(task_id: str) -> str:
             return json.dumps({"pr_url": "https://github.com/o/r/pull/404"})
 
-        evidence, _ = _compute_pr_evidence(
+        evidence, _ = compute_pr_evidence(
             "abc123",
             "implement feature X",
             spawned_at,
@@ -847,7 +847,7 @@ class TestComputePrEvidenceStdoutFallback:
         def stdout_reader(task_id: str) -> str:
             return json.dumps({"status": "completed", "message": "no PR opened"})
 
-        evidence, _ = _compute_pr_evidence(
+        evidence, _ = compute_pr_evidence(
             "abc123",
             "implement feature X",
             spawned_at,
@@ -864,7 +864,7 @@ class TestComputePrEvidenceStdoutFallback:
 
 
 class TestClosingRefAdvisory:
-    """``_compute_pr_evidence`` emits an advisory WARNING (no blocking, no edit)
+    """``compute_pr_evidence`` emits an advisory WARNING (no blocking, no edit)
     when a fresh-shape task naming an issue produces a PR whose body links but
     does not *close* that issue (#1136 AC5/AC6).
 
@@ -887,8 +887,8 @@ class TestClosingRefAdvisory:
         spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
         client = mock.MagicMock()
         client.get_pull_by_head_branch.return_value = self._fresh_pr("Refs #1136 — partial work.")
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
-            _compute_pr_evidence(
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
+            compute_pr_evidence(
                 "abc123",
                 "implement the guard for #1136",
                 spawned_at,
@@ -902,8 +902,8 @@ class TestClosingRefAdvisory:
         spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
         client = mock.MagicMock()
         client.get_pull_by_head_branch.return_value = self._fresh_pr("No linkage keyword.")
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
-            _compute_pr_evidence(
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
+            compute_pr_evidence(
                 "abc123",
                 "implement the guard for #1136",
                 spawned_at,
@@ -917,8 +917,8 @@ class TestClosingRefAdvisory:
         spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
         client = mock.MagicMock()
         client.get_pull_by_head_branch.return_value = self._fresh_pr("Closes #1136")
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
-            _compute_pr_evidence(
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
+            compute_pr_evidence(
                 "abc123",
                 "implement the guard for #1136",
                 spawned_at,
@@ -932,8 +932,8 @@ class TestClosingRefAdvisory:
         spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
         client = mock.MagicMock()
         client.get_pull_by_head_branch.return_value = self._fresh_pr("no ref")
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
-            _compute_pr_evidence(
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
+            compute_pr_evidence(
                 "abc123",
                 "refactor the usage probe module",  # names no issue
                 spawned_at,
@@ -949,8 +949,8 @@ class TestClosingRefAdvisory:
         client = mock.MagicMock()
         client.get_pull_by_number.return_value = {"number": 7, "state": "open"}
         client.list_commits_for_pull.return_value = []
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
-            _compute_pr_evidence(
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
+            compute_pr_evidence(
                 "abc123",
                 "/rework #7 address review on #1136",
                 spawned_at,
@@ -968,8 +968,8 @@ class TestClosingRefAdvisory:
         spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
         client = mock.MagicMock()
         client.get_pull_by_head_branch.return_value = self._fresh_pr("Refs #1136 — partial work.")
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
-            _compute_pr_evidence(
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
+            compute_pr_evidence(
                 "abc123",
                 "refactor the usage probe module",  # names no issue in text
                 spawned_at,
@@ -988,8 +988,8 @@ class TestClosingRefAdvisory:
         spawned_at = datetime(2026, 6, 21, 10, 0, 0, tzinfo=UTC)
         client = mock.MagicMock()
         client.get_pull_by_head_branch.return_value = self._fresh_pr("Closes #1136")
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
-            _compute_pr_evidence(
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
+            compute_pr_evidence(
                 "abc123",
                 "implement the guard for #999",  # disagreeing goal text
                 spawned_at,
@@ -1585,7 +1585,7 @@ class TestEventEmission:
     def test_spawned_at_none_yields_null_evidence(self) -> None:
         """A proc with no ``spawned_at`` (adopted after restart) emits null pr_evidence.
 
-        ``_compute_pr_evidence`` returns ``None`` when ``spawned_at`` is absent —
+        ``compute_pr_evidence`` returns ``None`` when ``spawned_at`` is absent —
         there is no spawn boundary to date PR activity against, so evidence is
         genuinely unknown (tri-state), not ``False``. The orchestrator routes a
         null on a re-observed completion to escalation, never to a blind re-drive.
@@ -1642,7 +1642,7 @@ class TestEventEmission:
             "body": "Closes #1136",
         }
 
-        with caplog.at_level(logging.WARNING, logger="agents.task_dispatch"):
+        with caplog.at_level(logging.WARNING, logger="agents.pr_evidence"):
             result = poll_completions(
                 _RecordingPort([]),
                 procs,

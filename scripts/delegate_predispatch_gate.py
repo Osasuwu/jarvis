@@ -1,4 +1,4 @@
-"""Pre-dispatch gate for /dispatch and drain_tasks (issues #642, #931, #1099, #1085).
+"""Pre-dispatch gate for /dispatch and drain_tasks (issues #642, #931, #1099, #1085, #1651).
 
 `check_issue` refuses to admit an issue unless it satisfies four readiness
 conditions:
@@ -9,6 +9,14 @@ conditions:
   4. body cites at least one decision UUID, OR carries the explicit
      `[no-decision]` marker for slices that legitimately have none (#1099 —
      pure-mechanical slices should not be forced to cite a synthetic UUID)
+
+`check_repo` (#1651) additionally refuses to admit an issue whose repo does
+not match the caller's `GITHUB_REPO` default. This is a stopgap: `task_queue`
+has no `repo` column yet and spawned work always runs against the local
+checkout's default repo, so enqueuing a foreign-repo issue today would
+silently spawn work against the wrong repository. Milestone 58 (#959) S3
+(queue schema, #1119) and S4a (spawn swap, #1121) are where real per-row
+repo resolution belongs; this check is removable once that lands.
 
 `check_issue` has two call sites, both still live:
 
@@ -35,14 +43,19 @@ dispatch path. The branch-push claim `check_in_flight` used to gate against is
 retired — nothing pushes a claim branch as an atomic dispatch step anymore.
 
 The gate is invoked with a strict envelope on stdin (no bare-issue fallback —
-a missing or malformed `issue` / `open_prs` / `open_branches` fails closed as
-SKIP). Callers that only want the readiness check (e.g. /dispatch's advisory
-gate) pass empty `open_prs`/`open_branches` lists, which makes
+a missing or malformed `issue` / `open_prs` / `open_branches` / `repo` fails
+closed as SKIP). Callers that only want the readiness check (e.g. /dispatch's
+advisory gate) pass empty `open_prs`/`open_branches` lists, which makes
 `check_in_flight` a structural no-op rather than omitting the envelope shape:
 
-  {"issue": {...}, "open_prs": [{number, body, headRefName}, ...],
+  {"issue": {...}, "repo": "owner/name",
+   "open_prs": [{number, body, headRefName}, ...],
    "open_branches": ["feat/123-x", ...]}
     | python scripts/delegate_predispatch_gate.py
+
+`repo` is the issue's own `owner/name` (e.g. from `gh issue view --json
+url` or the `--repo` flag the caller already used to fetch it) — compared
+against `GITHUB_REPO` (default `Osasuwu/jarvis`) by `check_repo`.
 
 Exit codes: 0 ⇒ OK (dispatch), 1 ⇒ REFUSE (readiness failure),
 2 ⇒ SKIP (in-flight or unverifiable evidence). Decision text is on stdout.
@@ -58,6 +71,7 @@ Notes:
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from dataclasses import dataclass, field
@@ -70,6 +84,7 @@ _AC_HEADING_RE = re.compile(r"(?m)^##\s+acceptance\s+criteria\b", re.IGNORECASE)
 _NO_DECISION_MARKER_RE = re.compile(r"\[no-decision\]", re.IGNORECASE)
 _NEEDS_PREFIX = "needs-"
 _REQUIRED_LABEL = "sandcastle"
+_DEFAULT_REPO = "Osasuwu/jarvis"
 
 _CLOSING_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 
@@ -168,15 +183,38 @@ def check_issue(issue: dict) -> GateResult:
         failures.append("missing `## Acceptance criteria` section in body")
 
     if not _UUID_RE.search(body) and not _NO_DECISION_MARKER_RE.search(body):
-        failures.append(
-            "missing decision UUID reference in body (or `[no-decision]` marker)"
-        )
+        failures.append("missing decision UUID reference in body (or `[no-decision]` marker)")
 
     return GateResult(failures=tuple(failures))
 
 
-def _validate_envelope(payload: object) -> tuple[dict, list[dict], list[str]] | str:
-    """Return (issue, open_prs, open_branches) or a SKIP reason string."""
+# ceiling: refuses any repo != GITHUB_REPO/_DEFAULT_REPO wholesale rather than
+# resolving per-row; upgrade path is milestone 58 S3 (#1119, task_queue repo
+# column) + S4a (#1121, per-row spawn resolution).
+def check_repo(repo: str, default_repo: str | None = None) -> GateResult:
+    """Refuse an issue whose repo isn't the caller's configured default (#1651).
+
+    Stopgap until milestone 58 gives `task_queue` a `repo` column (S3, #1119)
+    and spawn resolves it per-row (S4a, #1121) — until then, everything
+    dispatched runs against the local checkout's default repo regardless of
+    which repo the issue actually lives in.
+    """
+    expected = default_repo or os.environ.get("GITHUB_REPO", _DEFAULT_REPO)
+    if repo != expected:
+        return GateResult(
+            failures=(
+                f"cross-repo dispatch not supported yet (issue is `{repo}`, "
+                f"this dispatcher only handles `{expected}`) — blocked on "
+                "milestone 58 (#959) S3/S4a; see #1651",
+            )
+        )
+    return GateResult()
+
+
+def _validate_envelope(
+    payload: object,
+) -> tuple[dict, str, list[dict], list[str]] | str:
+    """Return (issue, repo, open_prs, open_branches) or a SKIP reason string."""
     if not isinstance(payload, dict):
         return "payload is not a JSON object"
     issue = payload.get("issue")
@@ -184,15 +222,16 @@ def _validate_envelope(payload: object) -> tuple[dict, list[dict], list[str]] | 
         return "missing or malformed `issue` key"
     if not isinstance(issue.get("number"), int):
         return "missing or malformed `issue.number`"
+    repo = payload.get("repo")
+    if not isinstance(repo, str) or not repo:
+        return "missing or malformed `repo` key"
     open_prs = payload.get("open_prs")
     if not isinstance(open_prs, list) or any(not isinstance(pr, dict) for pr in open_prs):
         return "missing or malformed `open_prs` (must be a list of objects)"
     open_branches = payload.get("open_branches")
-    if not isinstance(open_branches, list) or any(
-        not isinstance(b, str) for b in open_branches
-    ):
+    if not isinstance(open_branches, list) or any(not isinstance(b, str) for b in open_branches):
         return "missing or malformed `open_branches` (must be a list of strings)"
-    return issue, open_prs, open_branches
+    return issue, repo, open_prs, open_branches
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -207,7 +246,12 @@ def main(argv: list[str] | None = None) -> int:
     if isinstance(validated, str):
         print(f"SKIP: unverifiable — {validated}")
         return 2
-    issue, open_prs, open_branches = validated
+    issue, repo, open_prs, open_branches = validated
+
+    repo_check = check_repo(repo)
+    if not repo_check.allow:
+        print(repo_check.message)
+        return 1
 
     readiness = check_issue(issue)
     if not readiness.allow:

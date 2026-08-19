@@ -161,6 +161,7 @@ def _envelope(
     number: int = 931,
     open_prs: list | None = None,
     open_branches: list | None = None,
+    repo: str = "Osasuwu/jarvis",
 ) -> dict:
     return {
         "issue": {
@@ -168,6 +169,7 @@ def _envelope(
             "body": body,
             "labels": [{"name": n} for n in labels],
         },
+        "repo": repo,
         "open_prs": open_prs if open_prs is not None else [],
         "open_branches": open_branches if open_branches is not None else [],
     }
@@ -300,7 +302,8 @@ def test_cli_fails_closed_on_missing_issue_number(monkeypatch, capsys):
 
 # ── drain_tasks pre-spawn dedup (agents/task_dispatch.py, #931) ──────────────
 
-from agents.task_dispatch import DedupConfig, drain_tasks  # noqa: E402
+from agents.task_dedup import DedupConfig  # noqa: E402
+from agents.task_dispatch import drain_tasks  # noqa: E402
 
 
 class _Queue:
@@ -571,7 +574,7 @@ def test_drain_sibling_check_falls_back_to_goal_text_when_column_null():
 from unittest import mock  # noqa: E402
 
 from agents.github_client import HttpxGitHubClient  # noqa: E402
-from agents.task_dispatch import default_task_dedup  # noqa: E402
+from agents.task_dedup import default_task_dedup  # noqa: E402
 
 
 def _resp(body, status: int = 200):
@@ -668,7 +671,9 @@ def _delegate_task(task_id: str, issue_number: int, attempt: int = 1) -> dict:
     }
 
 
-def _issue(number: int = 931, body: str = READY_BODY, labels: tuple[str, ...] = ("sandcastle",)) -> dict:
+def _issue(
+    number: int = 931, body: str = READY_BODY, labels: tuple[str, ...] = ("sandcastle",)
+) -> dict:
     return {"number": number, "body": body, "labels": [{"name": n} for n in labels]}
 
 

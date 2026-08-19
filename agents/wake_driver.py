@@ -71,8 +71,6 @@ from agents.pid_sidecar import Sidecar
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
-    DEFAULT_WORKTREE_RETENTION_CAP,
-    DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     EventEmit,
     ReadUsage,
     ResolveBinary,
@@ -80,23 +78,37 @@ from agents.task_dispatch import (
     SupabaseTaskQueue,
     TaskQueuePort,
     TrackedProc,
-    WorktreeSweepResult,
     default_read_usage,
-    DedupConfig,
     default_resolve_binary,
     default_spawn,
     default_stdout_reader,
-    default_task_dedup,
     drain_tasks,
-    kill_process_tree,
     kill_runaways,
     poll_completions,
     reclaim_stale_tasks,
-    sweep_task_worktrees,
-    # #1085 S2 review finding 2: production outcome_record wiring for
-    # poll_completions (writes task_outcomes since /task-implement has no MCP).
-    _record_completion_outcome,
 )
+
+# Extracted to agents/process_kill.py (#1609, milestone #66).
+from agents.process_kill import kill_process_tree
+
+# Extracted to agents/task_dedup.py (#1610, milestone #66).
+from agents.task_dedup import DedupConfig, default_task_dedup
+
+# #1085 S2 review finding 2: production outcome_record wiring for
+# poll_completions (writes task_outcomes since /task-implement has no MCP).
+# Extracted to agents/task_outcomes.py (#1605, milestone #66).
+from agents.task_outcomes import record_completion_outcome
+
+# Extracted to agents/task_worktree.py (#1607, milestone #66).
+from agents.task_worktree import (
+    DEFAULT_WORKTREE_RETENTION_CAP,
+    DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
+    WorktreeSweepResult,
+    sweep_task_worktrees,
+)
+
+# Extracted to agents/task_boot_adoption.py (#1608, milestone #66).
+from agents.task_boot_adoption import maybe_adopt_at_boot
 
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
 # no import cycle to defer around. The Path B poll step runs every tick when a
@@ -713,18 +725,12 @@ def run(
     procs = task_procs if task_procs is not None else ({} if task_port is not None else None)
     failed_events: dict[str, int] = {}
 
-    # AC3 (#952) — boot adoption: re-adopt live processes from the sidecar directory.
-    # Only in resident mode (task_port supplied, procs map exists).
-    if task_port is not None and procs is not None and should_continue is None:
-        try:
-            sidecar = Sidecar()
-            for task_id, proc in sidecar.adopt_live_processes():
-                procs[task_id] = TrackedProc(proc=proc, started_at=task_clock())
-        except Exception:  # noqa: BLE001 — boot adoption failure is non-fatal
-            logger.exception("[wake_driver] boot adoption failed; will treat all rows as orphans")
-            sidecar = None
-    else:
-        sidecar = None
+    sidecar = maybe_adopt_at_boot(
+        task_port=task_port,
+        procs=procs,
+        should_continue=should_continue,
+        task_clock=task_clock,
+    )
 
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
@@ -1269,7 +1275,7 @@ def main() -> int:
             task_event_emit=event_emit,
             task_evidence_client=evidence_client,
             task_stdout_reader=default_stdout_reader,
-            task_outcome_record=_record_completion_outcome,
+            task_outcome_record=record_completion_outcome,
             # #931 dispatch-dedup: reuse the one evidence client for the
             # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
             task_dedup=default_task_dedup(evidence_client),

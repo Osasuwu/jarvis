@@ -40,9 +40,17 @@ check are in [`docs/reference/dispatch-ship-gate.md`](../../../docs/reference/di
 
 Every issue passes through the same readiness check `/task-implement`'s spawn path re-runs mechanically (`scripts/delegate_predispatch_gate.py::check_issue`) — but here it is **advisory**: a courtesy filter that avoids wasting a queue row + park cycle on an issue that is obviously not ready, and gives the operator the refusal message immediately instead of after a round-trip through the queue. The actual enforcement authority is `drain_tasks`'s fresh-fetch mechanical re-check (#1085 S2-3), which runs unconditionally regardless of what this skill did or didn't check.
 
-**Four conditions, all required** (canonical implementation:
+**Five conditions, all required** (canonical implementation:
 [`scripts/delegate_predispatch_gate.py`](../../../scripts/delegate_predispatch_gate.py)):
 
+0. **Issue's repo matches `GITHUB_REPO`** (stopgap, #1651 — checked first,
+   short-circuits before the four readiness conditions below). `task_queue`
+   has no `repo` column yet and everything spawned from it runs against the
+   local checkout's default repo, so a foreign-repo issue would silently
+   dispatch work against the wrong repository. Refused with a message
+   pointing at milestone 58 (#959) S3 (#1119)/S4a (#1121) — the slices where
+   real per-row repo resolution belongs. Remove this condition once that
+   ships.
 1. Issue has label `sandcastle` (applied by `/to-tickets` per the AFK-fit
    checklist at slice creation — never manually, never at grill time).
 2. Issue has **no** `needs-*` label (`needs-grill`, `needs-research`,
@@ -59,14 +67,14 @@ Every issue passes through the same readiness check `/task-implement`'s spawn pa
 
 ```bash
 gh issue view <N> --repo <owner/repo> --json number,title,body,labels \
-  | jq '{issue: ., open_prs: [], open_branches: []}' \
+  | jq --arg repo "<owner/repo>" '{issue: ., repo: $repo, open_prs: [], open_branches: []}' \
   | python scripts/delegate_predispatch_gate.py
 # exit 0 ⇒ ready; exit 1 ⇒ refuse, message on stdout names each missing element
 ```
 
-The empty `open_prs`/`open_branches` arrays are deliberate, not a stub to fill in later: `main()`'s envelope is strict (a missing `issue`/`open_prs`/`open_branches` key fails closed as SKIP, exit 2), and `check_in_flight` (the PR/branch predicate) is **not** meant to be exercised here anymore — see §Contract: enqueue below for why the queue's own CAS replaces it for the dedup question. Passing empty lists makes `check_in_flight` a structural no-op while still satisfying the envelope shape.
+`<owner/repo>` in `--arg repo` must be the same value passed to `--repo` above — always the issue's own repo, never assumed. The empty `open_prs`/`open_branches` arrays are deliberate, not a stub to fill in later: `main()`'s envelope is strict (a missing `issue`/`repo`/`open_prs`/`open_branches` key fails closed as SKIP, exit 2), and `check_in_flight` (the PR/branch predicate) is **not** meant to be exercised here anymore — see §Contract: enqueue below for why the queue's own CAS replaces it for the dedup question. Passing empty lists makes `check_in_flight` a structural no-op while still satisfying the envelope shape.
 
-**On refusal** (any one or more of the four conditions fail):
+**On refusal** (any one or more of the five conditions fail):
 
 1. `mcp__memory__outcome_record(task_type="delegation", outcome_status="failure", outcome_summary="readiness gate refused: <message>", project="<repo>", issue_url=...)` — recorded so `/reflect` and `/self-improve` can spot patterns.
 2. `gh issue edit <N> --add-label "status:owner-queue"` — surfaces in next `/status` run.
