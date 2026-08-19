@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from scripts.detector_gap_log import GapRecord, GapStore
 from scripts.status_gather import (
     REPOS_CONF_RELPATH,
     SUPABASE_KEY_ENV,
@@ -53,6 +54,7 @@ class MorningSourceKind:
     SUPABASE_DECISIONS = "supabase_decisions"
     GOALS = "goals"
     OWNER_TASKS = "owner_tasks"
+    DETECTOR_GAPS = "detector_gaps"
 
 
 # ============================================================================
@@ -67,6 +69,7 @@ class MorningGatherResult:
     decisions: list[DecisionRecord] = field(default_factory=list)
     goals: list[dict] = field(default_factory=list)
     owner_tasks: list[dict] = field(default_factory=list)
+    detector_gaps: list[GapRecord] = field(default_factory=list)
     provenance: dict[str, dict] = field(default_factory=dict)
     gathered_at: str = ""
     errors: list[str] = field(default_factory=list)
@@ -78,6 +81,10 @@ class MorningGatherResult:
             "decisions": [d.to_dict() for d in self.decisions],
             "goals": self.goals,
             "owner_tasks": self.owner_tasks,
+            "detector_gaps": [
+                {"key": g.key, "description": g.description, "count": g.count}
+                for g in self.detector_gaps
+            ],
             "provenance": self.provenance,
             "gathered_at": self.gathered_at,
             "errors": self.errors,
@@ -146,6 +153,7 @@ def gather(
     run_gh_fn: RunGhFn | None = None,
     query_supabase_fn: QuerySupabaseFn | None = None,
     now_fn: NowFn | None = None,
+    gap_store: GapStore | None = None,
 ) -> MorningGatherResult:
     """Gather state for the morning digest.
 
@@ -253,6 +261,18 @@ def gather(
                 ran=True, ok=False, input_rows=0, age=_now() - gather_start
             ).to_dict()
             result.errors.append(f"{kind}: {SUPABASE_URL_ENV}/{SUPABASE_KEY_ENV} unset")
+
+    # --- Detector gap journal (optional — not wired to a store by default) ---
+    if gap_store is not None:
+        gaps = gap_store.load_all()
+        result.detector_gaps = gaps
+        result.provenance[MorningSourceKind.DETECTOR_GAPS] = Provenance(
+            ran=True, ok=True, input_rows=len(gaps), age=_now() - gather_start
+        ).to_dict()
+    else:
+        result.provenance[MorningSourceKind.DETECTOR_GAPS] = Provenance(
+            ran=False, ok=False, input_rows=0, age=_now() - gather_start
+        ).to_dict()
 
     return result
 
