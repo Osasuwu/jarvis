@@ -107,7 +107,8 @@ async def list_tools(
                     "Synthesize a morning digest by gathering current repo, goal, "
                     "task and decision state and analyzing it into a day plan. "
                     "Wraps gather() -> engine.analyze() in a single call. Returns "
-                    "the Digest schema (schema_version, sections, plan, origin)."
+                    "the Digest schema (schema_version, sections, plan, degradation, "
+                    "origin)."
                 ),
                 input_schema={
                     "type": "object",
