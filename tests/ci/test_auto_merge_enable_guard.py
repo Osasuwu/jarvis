@@ -54,7 +54,7 @@ def decide(
     am: str,
     state: str = "OPEN",
     code_review_diverged: bool = False,
-    actor: str = "user",
+    pr_author: str = "user",
 ) -> str:
     """Mirror the workflow's enable decision.
 
@@ -71,7 +71,10 @@ def decide(
         return "NOOP"
     if head_repo != base_repo:
         return "NOOP"
-    if actor == "dependabot[bot]":
+    # Keyed off the PR AUTHOR, not the triggering `github.actor` — the latter is
+    # the pusher and changes on `synchronize` events (#944 anti-pattern; same
+    # fix as code-review.yml's own Dependabot guard).
+    if pr_author == "dependabot[bot]":
         return "NOOP"
     # Empty-output guard — fail loud rather than misread as "already enabled".
     if am == "" or state == "":
@@ -210,7 +213,7 @@ def test_dependabot_pr_is_noop():
     # events (same as forks), so APP_ID/APP_PRIVATE_KEY are empty and the Assert
     # step hard-fails. The job-level `if:` guard skips Dependabot entirely.
     assert (
-        decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", actor="dependabot[bot]")
+        decide(draft=False, head_repo="o/r", base_repo="o/r", am="null", pr_author="dependabot[bot]")
         == "NOOP"
     )
 
@@ -219,7 +222,7 @@ def test_dependabot_precedes_empty_output_fail():
     # Dependabot guard is in the `if:` condition (steps never run), so degraded
     # output must yield NOOP, not FAIL — same logic as the fork analog above.
     assert (
-        decide(draft=False, head_repo="o/r", base_repo="o/r", am="", actor="dependabot[bot]")
+        decide(draft=False, head_repo="o/r", base_repo="o/r", am="", pr_author="dependabot[bot]")
         == "NOOP"
     )
 
@@ -428,10 +431,13 @@ def test_workflow_guards_drafts_and_forks():
 
 def test_workflow_skips_dependabot_prs():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
-    assert "github.actor != 'dependabot[bot]'" in text, (
-        "Dependabot guard dropped — Dependabot-triggered pull_request events cannot "
-        "access repo secrets (APP_ID/APP_PRIVATE_KEY), so the Assert step hard-fails "
-        "on every Dependabot PR. The job-level `if:` must skip them."
+    assert "github.event.pull_request.user.login != 'dependabot[bot]'" in text, (
+        "Dependabot guard dropped, or keyed off github.actor (the triggering pusher, "
+        "not the PR author — #944 anti-pattern: github.actor changes to the pusher "
+        "on `synchronize` events, e.g. when dependabot-lockfile.yml pushes to a "
+        "Dependabot branch). Dependabot-triggered pull_request events cannot access "
+        "repo secrets (APP_ID/APP_PRIVATE_KEY), so the Assert step hard-fails on "
+        "every Dependabot PR. The job-level `if:` must skip them by PR author."
     )
 
 
