@@ -9,6 +9,11 @@
 #   cadence.every: multiplier (default 1; e.g. every=2 weekly = biweekly)
 #   catch_up: "single" (cap at one copy when overdue — suits daily/weekly)
 #           | "all"    (track actual missed periods — suits monthly/quarterly)
+#   probe: (optional) string name of an injectable evidence-probe callable.
+#          When evaluate() receives a probes dict with this key, the callable
+#          is invoked to confirm completion by world-state instead of ack alone.
+#          A fired probe must return ProbeResult with a non-empty citation.
+#          A failed probe degrades to "unknown", never to "overdue".
 #
 # Status rules (enforced by evaluate()):
 #   - No ack and no evidence trace → "unknown" (never "overdue")
