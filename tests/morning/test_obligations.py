@@ -555,7 +555,10 @@ class TestEvaluateWithProbes:
     def test_probe_fires_gives_ok_status(self):
         """AC: Fired probe returns verdict — status is 'ok'."""
         entry = _entry_with_probe()
-        probe_fn = lambda: ProbeResult(citation="git log: commit abc123 2026-08-18")
+
+        def probe_fn() -> ProbeResult:
+            return ProbeResult(citation="git log: commit abc123 2026-08-18")
+
         result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
         assert result[0].status == "ok"
 
@@ -563,14 +566,20 @@ class TestEvaluateWithProbes:
         """AC: Fired probe returns verdict together with citation of found evidence."""
         entry = _entry_with_probe()
         citation = "found 3 worktrees removed in git log 2026-08-18"
-        probe_fn = lambda: ProbeResult(citation=citation)
+
+        def probe_fn() -> ProbeResult:
+            return ProbeResult(citation=citation)
+
         result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
         assert result[0].probe_citation == citation
 
     def test_probe_sets_last_done_to_now(self):
         """Probe-confirmed entry sets last_done to now (the verification moment)."""
         entry = _entry_with_probe()
-        probe_fn = lambda: ProbeResult(citation="confirmed")
+
+        def probe_fn() -> ProbeResult:
+            return ProbeResult(citation="confirmed")
+
         result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
         assert result[0].last_done == _NOW
 
@@ -610,7 +619,10 @@ class TestEvaluateWithProbes:
     def test_probe_returning_none_treated_as_failure(self):
         """Non-ProbeResult return value is treated as probe failure."""
         entry = _entry_with_probe()
-        probe_fn = lambda: None  # type: ignore[return-value]
+
+        def probe_fn():  # type: ignore[no-untyped-def]
+            return None
+
         result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
         assert result[0].status == "unknown"
         assert result[0].probe_failed is True

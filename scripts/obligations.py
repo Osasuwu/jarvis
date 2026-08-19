@@ -136,9 +136,7 @@ def load_registry(path: Path | str) -> list[ObligationEntry]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     if not isinstance(raw, dict):
-        raise ValueError(
-            f"obligations registry must be a YAML mapping, got {type(raw).__name__}"
-        )
+        raise ValueError(f"obligations registry must be a YAML mapping, got {type(raw).__name__}")
 
     entries_raw = raw.get("entries", [])
     if not isinstance(entries_raw, list):
@@ -174,31 +172,17 @@ def _validate_entry(item: object, idx: int) -> None:
         raise ValueError(f"{prefix}.cadence: missing 'unit'")
     unit = cadence["unit"]
     if unit not in _VALID_UNITS:
-        raise ValueError(
-            f"{prefix}.cadence.unit: must be one of {_VALID_UNITS}, got {unit!r}"
-        )
+        raise ValueError(f"{prefix}.cadence.unit: must be one of {_VALID_UNITS}, got {unit!r}")
     if "every" in cadence:
         every = cadence["every"]
         if not isinstance(every, int) or isinstance(every, bool) or every < 1:
-            raise ValueError(
-                f"{prefix}.cadence.every: must be a positive integer, got {every!r}"
-            )
+            raise ValueError(f"{prefix}.cadence.every: must be a positive integer, got {every!r}")
     catch_up = item.get("catch_up", "single")
     if catch_up not in _VALID_CATCH_UP:
-        raise ValueError(
-            f"{prefix}.catch_up: must be one of {_VALID_CATCH_UP}, got {catch_up!r}"
-        )
-    if "every" in cadence:
-        every = cadence["every"]
-        if not isinstance(every, int) or isinstance(every, bool) or every < 1:
-            raise ValueError(
-                f"{prefix}.cadence.every: must be a positive integer, got {every!r}"
-            )
+        raise ValueError(f"{prefix}.catch_up: must be one of {_VALID_CATCH_UP}, got {catch_up!r}")
     probe = item.get("probe")
     if probe is not None and not isinstance(probe, str):
-        raise ValueError(
-            f"{prefix}.probe: must be a string if present, got {type(probe).__name__}"
-        )
+        raise ValueError(f"{prefix}.probe: must be a string if present, got {type(probe).__name__}")
 
 
 # ============================================================================
