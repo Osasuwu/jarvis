@@ -208,16 +208,18 @@ def _detect_arch_sweep_items(
             age_days = (now - closed_at).total_seconds() / 86400
             if age_days > window_days:
                 continue
-            items.append({
-                "type": "arch_sweep",
-                "id": f"sweep:{repo}:{m.get('number', 0)}",
-                "repo": repo,
-                "number": m.get("number", 0),
-                # title is external text — stored as data, not interpreted
-                "title": str(m.get("title", "")),
-                "closed_issues": int(closed_issues),
-                "age_days": round(age_days, 1),
-            })
+            items.append(
+                {
+                    "type": "arch_sweep",
+                    "id": f"sweep:{repo}:{m.get('number', 0)}",
+                    "repo": repo,
+                    "number": m.get("number", 0),
+                    # title is external text — stored as data, not interpreted
+                    "title": str(m.get("title", "")),
+                    "closed_issues": int(closed_issues),
+                    "age_days": round(age_days, 1),
+                }
+            )
 
     items.sort(key=lambda x: x["age_days"])
     return items
@@ -249,9 +251,7 @@ def _build_goals_milestones_section(sources: MorningGatherResult) -> Section:
 
     # Projects that have at least one open milestone
     projects_with_open_milestones: set[str] = {
-        _repo_to_project(repo)
-        for repo, ms in sources.milestones.items()
-        if ms
+        _repo_to_project(repo) for repo, ms in sources.milestones.items() if ms
     }
 
     # Goals (flag if the goal's project has no open milestone)
@@ -269,16 +269,18 @@ def _build_goals_milestones_section(sources: MorningGatherResult) -> Section:
             if project not in projects_with_open_milestones:
                 flags.append("no_milestone")
 
-        items.append({
-            "type": "goal",
-            "id": f"goal:{slug}",
-            "slug": slug,
-            "title": title,
-            "priority": priority,
-            "pct": pct_val,
-            "project": project,
-            "flags": flags,
-        })
+        items.append(
+            {
+                "type": "goal",
+                "id": f"goal:{slug}",
+                "slug": slug,
+                "title": title,
+                "priority": priority,
+                "pct": pct_val,
+                "project": project,
+                "flags": flags,
+            }
+        )
 
     # Open milestones (flag if no slices at all: both open_issues=0 and closed_issues=0)
     for repo, milestones in sources.milestones.items():
@@ -287,17 +289,19 @@ def _build_goals_milestones_section(sources: MorningGatherResult) -> Section:
             closed_issues = int(m.get("closed_issues") or 0)
             number = m.get("number", 0)
             flags = ["no_slices"] if open_issues == 0 and closed_issues == 0 else []
-            items.append({
-                "type": "open_milestone",
-                "id": f"ms:{repo}:{number}",
-                "repo": repo,
-                "number": number,
-                # title is external text — stored as data
-                "title": str(m.get("title", "")),
-                "open_issues": open_issues,
-                "closed_issues": closed_issues,
-                "flags": flags,
-            })
+            items.append(
+                {
+                    "type": "open_milestone",
+                    "id": f"ms:{repo}:{number}",
+                    "repo": repo,
+                    "number": number,
+                    # title is external text — stored as data
+                    "title": str(m.get("title", "")),
+                    "open_issues": open_issues,
+                    "closed_issues": closed_issues,
+                    "flags": flags,
+                }
+            )
 
     # Architecture-sweep reminders from recently closed milestones
     sweep_items = _detect_arch_sweep_items(sources.closed_milestones, sources.gathered_at)

@@ -10,7 +10,6 @@ from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from focus_signal import (
     COARSE_NOTICE,
@@ -109,7 +108,9 @@ def test_compute_observation_on_skew():
     # focus_project=jarvis (40/40), top_goal_project=redrobot has 0 attributed
     # episodes so its count clause is omitted — only the P0-цель tail cites it.
     assert "jarvis — 40 из 40" in obs_text, f"Observation doesn't cite the fraction: {obs_text!r}"
-    assert "P0-цель в redrobot" in obs_text, f"Observation doesn't cite the skewed goal: {obs_text!r}"
+    assert "P0-цель в redrobot" in obs_text, (
+        f"Observation doesn't cite the skewed goal: {obs_text!r}"
+    )
 
 
 def test_compute_no_observation_when_aligned():
