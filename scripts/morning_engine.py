@@ -122,6 +122,17 @@ def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
     ok = milestones_prov.get("ok", False)
     input_rows = milestones_prov.get("input_rows", 0)
 
+    # Same NOT_CONNECTED/FAILED distinction as _build_detector_gaps_section:
+    # a source that never ran is a known limitation, not a failure.
+    absence_kind = None
+    absence_reason = None
+    if not ok:
+        if not ran:
+            absence_kind = AbsenceKind.NOT_CONNECTED
+            absence_reason = "gh milestones source not connected"
+        else:
+            absence_kind = AbsenceKind.FAILED
+
     if not sources.repos:
         return Section(
             name="repo_hygiene",
@@ -132,6 +143,8 @@ def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
                 ok=ok,
                 source="morning_gather",
                 input_rows=input_rows,
+                absence_kind=absence_kind,
+                absence_reason=absence_reason,
             ),
         )
 
@@ -148,6 +161,8 @@ def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
             ok=ok,
             source="morning_gather",
             input_rows=input_rows,
+            absence_kind=absence_kind,
+            absence_reason=absence_reason,
         ),
     )
 
@@ -297,7 +312,13 @@ def _build_goals_milestones_section(sources: MorningGatherResult) -> Section:
             name="goals_and_milestones",
             items=[],
             reason="source not available",
-            provenance=SectionProvenance(ran=False, ok=False, source="morning_gather"),
+            provenance=SectionProvenance(
+                ran=False,
+                ok=False,
+                source="morning_gather",
+                absence_kind=AbsenceKind.NOT_CONNECTED,
+                absence_reason="goals/milestones source not connected",
+            ),
         )
 
     items: list[dict] = []
@@ -361,6 +382,8 @@ def _build_goals_milestones_section(sources: MorningGatherResult) -> Section:
     items.extend(sweep_items)
 
     section_ok = ok or bool(sweep_items)
+    # ran is True at this point (early-returned above otherwise) — a ran-but-
+    # not-ok source is a real failure, not a known limitation.
     return Section(
         name="goals_and_milestones",
         items=items,
@@ -369,6 +392,7 @@ def _build_goals_milestones_section(sources: MorningGatherResult) -> Section:
             ran=ran,
             ok=section_ok,
             source="morning_gather",
+            absence_kind=None if section_ok else AbsenceKind.FAILED,
         ),
     )
 

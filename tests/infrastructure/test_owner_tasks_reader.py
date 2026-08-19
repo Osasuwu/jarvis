@@ -10,6 +10,7 @@ test_session_context_recovery.py (hyphenated filename blocks a normal import).
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import types
 from pathlib import Path
@@ -58,14 +59,100 @@ class _FakeTable:
         return types.SimpleNamespace(data=list(self._rows))
 
 
+class _FakeMemoriesTable:
+    """Chain-fake for the `memories` table, covering exactly the
+    select/eq/is_/order/limit/execute (read) and update/insert/eq/execute
+    (write) chains that scripts/escalation_dedup.py's read_shown/write_shown
+    issue against a real Supabase client — so the dedup wiring in
+    _query_owner_tasks() is exercised for real instead of silently
+    swallowing a "wrong table" AssertionError inside read_shown/write_shown's
+    own broad except handlers (#1591 review finding).
+
+    Keyed by dedup `name` (escalation_dedup_YYYY-MM-DD), one row per day,
+    mirroring the real table's shape closely enough for these chains.
+    """
+
+    def __init__(self, store, call_log):
+        self._store = store  # dict[name] -> {"id": str, "content": str}
+        self._call_log = call_log
+        self._filters = {}
+        self._mode = None
+        self._update_payload = None
+        self._insert_payload = None
+
+    def select(self, *a, **kw):
+        self._mode = "select"
+        self._call_log.append(("memories.select", a, kw))
+        return self
+
+    def eq(self, field, value):
+        self._call_log.append(("memories.eq", (field, value), {}))
+        self._filters[field] = value
+        return self
+
+    def is_(self, *a, **kw):
+        self._call_log.append(("memories.is_", a, kw))
+        return self
+
+    def order(self, *a, **kw):
+        self._call_log.append(("memories.order", a, kw))
+        return self
+
+    def limit(self, *a, **kw):
+        self._call_log.append(("memories.limit", a, kw))
+        return self
+
+    def update(self, payload):
+        self._mode = "update"
+        self._update_payload = payload
+        self._call_log.append(("memories.update", (payload,), {}))
+        return self
+
+    def insert(self, payload):
+        self._mode = "insert"
+        self._insert_payload = payload
+        self._call_log.append(("memories.insert", (payload,), {}))
+        return self
+
+    def execute(self):
+        self._call_log.append(("memories.execute", (), {}))
+        if self._mode == "select":
+            name = self._filters.get("name")
+            row = self._store.get(name)
+            data = [{"id": row["id"], "content": row["content"]}] if row else []
+            return types.SimpleNamespace(data=data)
+        if self._mode == "update":
+            row_id = self._filters.get("id")
+            for row in self._store.values():
+                if row["id"] == row_id:
+                    row["content"] = self._update_payload["content"]
+                    break
+            return types.SimpleNamespace(data=[])
+        if self._mode == "insert":
+            # Regression guard: memories table enforces source_provenance NOT
+            # NULL on raw inserts (see #1591 review finding on write_shown()).
+            assert "source_provenance" in self._insert_payload
+            name = self._insert_payload["name"]
+            self._store[name] = {
+                "id": f"row-{len(self._store) + 1}",
+                "content": self._insert_payload["content"],
+            }
+            return types.SimpleNamespace(data=[])
+        raise AssertionError(f"unexpected memories table mode: {self._mode}")
+
+
 class _FakeClient:
-    def __init__(self, rows):
+    def __init__(self, rows, memories_store=None):
         self._rows = rows
         self.call_log = []
+        self._memories_store = memories_store if memories_store is not None else {}
 
     def table(self, name):
-        assert name == "task_queue"
-        return _FakeTable(self._rows, self.call_log)
+        if name == "task_queue":
+            return _FakeTable(self._rows, self.call_log)
+        if name == "memories":
+            return _FakeMemoriesTable(self._memories_store, self.call_log)
+        raise AssertionError(f"unexpected table: {name}")
 
 
 _ROW = {
@@ -113,6 +200,45 @@ def test_query_owner_tasks_handles_query_error(capsys):
     assert sc._query_owner_tasks(_BoomClient()) is None
     err = capsys.readouterr().err
     assert "owner tasks query failed" in err
+
+
+# ---------------------------------------------------------------------------
+# Escalation dedup wiring (#1591) — exercised against a memories-table-aware
+# fake so a wrong table/column/channel constant would actually fail these
+# tests, instead of being swallowed by read_shown/write_shown's own
+# broad except handlers.
+# ---------------------------------------------------------------------------
+def test_query_owner_tasks_filters_tasks_already_shown_by_digest_channel():
+    from scripts.escalation_dedup import CHANNEL_DIGEST, dedup_name, today_utc
+
+    today = today_utc()
+    memories_store = {
+        dedup_name(today): {
+            "id": "mem-1",
+            "content": json.dumps({CHANNEL_DIGEST: [_ROW["id"]]}),
+        }
+    }
+    client = _FakeClient([_ROW], memories_store=memories_store)
+
+    result = sc._query_owner_tasks(client)
+
+    assert result is None
+
+
+def test_query_owner_tasks_marks_returned_tasks_shown_for_session_start_channel():
+    from scripts.escalation_dedup import CHANNEL_SESSION_START, dedup_name, today_utc
+
+    today = today_utc()
+    memories_store: dict = {}
+    client = _FakeClient([_ROW], memories_store=memories_store)
+
+    result = sc._query_owner_tasks(client)
+
+    assert result is not None
+    name = dedup_name(today)
+    assert name in memories_store
+    content = json.loads(memories_store[name]["content"])
+    assert content[CHANNEL_SESSION_START] == [_ROW["id"]]
 
 
 # ---------------------------------------------------------------------------
