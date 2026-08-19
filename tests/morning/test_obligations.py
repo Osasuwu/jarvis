@@ -817,3 +817,29 @@ class TestSectionRendering:
         text = render_section([status])
         assert "CI health check" in text
         assert citation in text
+
+    def test_probe_confirmed_shown_alongside_overdue(self):
+        """AC: probe-confirmed citations render even when other entries are overdue.
+
+        Regression test — render_section() used to gate the probe-confirmed
+        block on `not overdue` (a global flag), silently dropping citations
+        for entries unrelated to the overdue one (code-review MEDIUM finding
+        on PR #1642).
+        """
+        citation = "git log: commit abc123 removed 5 worktrees 2026-08-18"
+        overdue_status = ObligationStatus(
+            "a", "Overdue thing", "overdue", date(2026, 8, 1), date(2026, 8, 8), 1
+        )
+        probe_status = ObligationStatus(
+            id="b",
+            label="Worktree cleanup",
+            status="ok",
+            last_done=_NOW,
+            next_due=_NOW + timedelta(days=7),
+            missed_periods=0,
+            probe_citation=citation,
+        )
+        text = render_section([overdue_status, probe_status])
+        assert "Overdue thing" in text
+        assert "Worktree cleanup" in text
+        assert citation in text
