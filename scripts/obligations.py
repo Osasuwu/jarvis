@@ -381,7 +381,9 @@ def render_section(
             last = status.last_done.isoformat() if status.last_done else "неизвестно"
             lines.append(f"  • {status.label} — последнее: {last}")
 
-    if probe_confirmed and not overdue:
+    if probe_confirmed:
+        if lines:
+            lines.append("")
         lines.append("Обязательства (подтверждено пробой):")
         for s in probe_confirmed:
             lines.append(f"  • {s.label} — {s.probe_citation}")
