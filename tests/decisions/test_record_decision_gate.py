@@ -324,6 +324,50 @@ def test_subprocess_injects_cwd_alongside_session_id():
     assert updated["session_id"] == _SID
 
 
+def test_subprocess_stamps_project_from_cwd_when_missing():
+    # #1587: project is now a hard-required server-side field. detect_project
+    # scans cwd's path parts against KNOWN_PROJECTS so the caller doesn't
+    # have to remember to pass it explicitly.
+    rc, out = _run_hook(
+        {
+            "cwd": "/home/dev/GitHub/jarvis/.claude/worktrees/some-worktree",
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID]},
+        }
+    )
+    assert rc == 0
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert updated["project"] == "jarvis"
+
+
+def test_subprocess_does_not_override_explicit_project():
+    # A deliberate cross-project call (project already set by the caller)
+    # must survive untouched, even if cwd would resolve to a different one.
+    rc, out = _run_hook(
+        {
+            "cwd": "/home/dev/GitHub/jarvis/.claude/worktrees/some-worktree",
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID], "project": "redrobot"},
+        }
+    )
+    assert rc == 0
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert updated["project"] == "redrobot"
+
+
+def test_subprocess_no_project_stamp_when_cwd_unresolvable():
+    rc, out = _run_hook(
+        {
+            "cwd": "/some/unrelated/path",
+            "tool_name": "mcp__memory__record_decision",
+            "tool_input": {"memories_used": [_UUID]},
+        }
+    )
+    assert rc == 0
+    updated = json.loads(out)["hookSpecificOutput"]["updatedInput"]
+    assert "project" not in updated
+
+
 def test_subprocess_no_injection_for_other_tools():
     rc, out = _run_hook(
         {

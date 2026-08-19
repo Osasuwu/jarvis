@@ -26,6 +26,8 @@ After setup, open in Claude Code and run `/status`.
 
 ### Prerequisites
 
+> **Cost of entry:** Claude Code requires a paid Claude.ai plan (Pro, Max, or Team) or Anthropic API billing — there is no free tier. Budget this before cloning.
+
 - [Claude Code](https://claude.ai/code) installed and authenticated
 - Python 3.11+
 - Node.js 18+ (for MCP servers via `npx`)
@@ -59,13 +61,15 @@ User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
 `install.ps1` / `install.sh` (idempotent, backup-first). See
 `scripts/install/installer.py`.
 
+**If you already use Claude Code for other projects:** the installer replaces skills, `CLAUDE.md`/`SOUL.md`, and `.mcp.json` in `~/.claude/`, merges `settings.json` keys (your existing keys survive), and leaves `~/.claude/projects/` untouched. A timestamped backup is created before any write. See `config/SETUP.md` §6 for the full per-path breakdown.
+
 **Design principle:** Claude Code native first. The only custom Python is `mcp-memory/server.py` -- everything else uses skills, hooks, and subagents.
 
 ## What's Working
 
 | Component | Description |
 |-----------|-------------|
-| **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI) + keyword fallback |
+| **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI or local Ollama) + keyword fallback |
 | **Core skills** | `/status`, `/implement`, `/delegate`, `/verify`, `/reflect`, `/research`, `/self-improve`, `/goals`, `/setup-tasks`, `/end` (`--quick` for fast exit). |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |

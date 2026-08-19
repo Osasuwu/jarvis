@@ -18,7 +18,9 @@ The script is idempotent — safe to re-run anytime.
 
 ## Lockfile regeneration (#1313)
 
-CI installs from `uv.lock` to guarantee reproducible dependency resolution. When Dependabot bumps ranges in `pyproject.toml` or `mcp-memory/requirements.txt`, regenerate the lockfiles:
+CI installs from `uv.lock` to guarantee reproducible dependency resolution. When Dependabot bumps ranges in `pyproject.toml` or `mcp-memory/requirements.txt`, `.github/workflows/dependabot-lockfile.yml` automatically regenerates the lockfiles and pushes the result back to the PR branch.
+
+For manual regeneration (e.g. adding a new dependency locally):
 
 ```bash
 pip install uv
@@ -26,7 +28,7 @@ uv lock --project .
 uv lock --project mcp-memory
 ```
 
-Commit the regenerated `uv.lock` files with the Dependabot bump. This ensures CI and local environments resolve to byte-identical packages.
+Commit the regenerated `uv.lock` files. This ensures CI and local environments resolve to byte-identical packages.
 
 ## Manual steps after script
 

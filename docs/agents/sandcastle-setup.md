@@ -140,7 +140,7 @@ The morning after the first overnight run, per slice #545 AC:
 3. Confirm the `outcome_record` row exists in Supabase with:
    - `project = 'jarvis'` (or `redrobot`)
    - `pattern_tags` includes both `sandcastle` and `afk`
-   - device tag matches `VividFormsPC4Workshop`
+   - device tag matches the `routine_host` device name (from `config/device.json`)
 4. Review the agent's PR using the `/delegate` §6 audit checklist
    (scope-fit, value-change, interaction effects, symmetric fixes) before
    merging or commenting.
