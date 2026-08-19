@@ -262,7 +262,9 @@ def gather(
             ).to_dict()
             result.errors.append(f"{kind}: {SUPABASE_URL_ENV}/{SUPABASE_KEY_ENV} unset")
 
-    # --- Detector gap journal (optional — not wired to a store by default) ---
+    # ceiling: no production GapStore adapter exists yet — gap_store defaults to
+    # None so detector_gaps stays empty until a caller injects a real store; the
+    # memory-backed adapter wrapping mcp__memory__* is the upgrade path (#1595).
     if gap_store is not None:
         gaps = gap_store.load_all()
         result.detector_gaps = gaps
