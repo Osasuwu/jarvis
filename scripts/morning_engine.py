@@ -10,9 +10,15 @@ place either constant is defined — real calibration is deferred to #1578.
 
 Provenance (#1589): each section carries its own SectionProvenance; fold_provenance
 is called explicitly in analyze() so no per-section stamp is ever lost silently.
+
+Goals/milestones section and architecture-sweep reminders (#1590) are also
+assembled here, alongside the pre-existing repo_hygiene/detector_gaps/learning
+sections.
 """
 
 from __future__ import annotations
+
+from datetime import datetime, timezone
 
 from scripts.detector_gap_log import PromoteSuggestion
 from scripts.digest_schema import (
@@ -35,6 +41,11 @@ _PROMOTE_THRESHOLD = 2
 # the single explicit place both constants are defined.
 ESTIMATE_UNITS = {"S": 1, "M": 3, "L": 8}
 DAY_BUDGET_UNITS = 10
+
+# ceiling: arch-sweep window and min-slices threshold are not calibrated;
+# real tuning deferred to #1578. Single explicit definition.
+_SWEEP_MIN_SLICES = 3
+_SWEEP_WINDOW_DAYS = 7
 
 
 def compute_cut_line_after(items: list[PlanItem], budget_units: int | None = None) -> int:
@@ -161,6 +172,150 @@ def _build_learning_section() -> Section:
     )
 
 
+def _repo_to_project(repo: str) -> str:
+    """Extract project name from 'owner/name' -> 'name'."""
+    return repo.split("/")[-1].lower()
+
+
+def _detect_arch_sweep_items(
+    closed_milestones: dict[str, list[dict]],
+    gathered_at: str,
+    window_days: int = _SWEEP_WINDOW_DAYS,
+    min_slices: int = _SWEEP_MIN_SLICES,
+) -> list[dict]:
+    """Return arch_sweep items for recently-closed milestones with enough closed slices.
+
+    External text (milestone titles) is treated as data — not executed.
+    """
+    try:
+        now = datetime.fromisoformat(gathered_at.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        now = datetime.now(timezone.utc)
+
+    items: list[dict] = []
+    for repo, milestones in closed_milestones.items():
+        for m in milestones:
+            closed_at_str = m.get("closed_at")
+            closed_issues = m.get("closed_issues", 0)
+            if not closed_at_str or not isinstance(closed_issues, (int, float)):
+                continue
+            if int(closed_issues) < min_slices:
+                continue
+            try:
+                closed_at = datetime.fromisoformat(closed_at_str.replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            age_days = (now - closed_at).total_seconds() / 86400
+            if age_days > window_days:
+                continue
+            items.append({
+                "type": "arch_sweep",
+                "id": f"sweep:{repo}:{m.get('number', 0)}",
+                "repo": repo,
+                "number": m.get("number", 0),
+                # title is external text — stored as data, not interpreted
+                "title": str(m.get("title", "")),
+                "closed_issues": int(closed_issues),
+                "age_days": round(age_days, 1),
+            })
+
+    items.sort(key=lambda x: x["age_days"])
+    return items
+
+
+def _build_goals_milestones_section(sources: MorningGatherResult) -> Section:
+    """Build the goals-and-milestones section for the morning digest (#1590).
+
+    Contains: goals with priority/pct, open milestones (flagging no-slice ones),
+    goals without an open milestone, and architecture-sweep reminders.
+    External text (titles, goal why fields) is stored as data, not executed.
+    """
+    prov = sources.provenance
+    goals_prov = prov.get(MorningSourceKind.GOALS, {})
+    ms_prov = prov.get(MorningSourceKind.GH_MILESTONES, {})
+
+    ran = goals_prov.get("ran", False) or ms_prov.get("ran", False)
+    ok = goals_prov.get("ok", False) or ms_prov.get("ok", False)
+
+    if not ran:
+        return Section(
+            name="goals_and_milestones",
+            items=[],
+            reason="source not available",
+            provenance=SectionProvenance(ran=False, ok=False, source="morning_gather"),
+        )
+
+    items: list[dict] = []
+
+    # Projects that have at least one open milestone
+    projects_with_open_milestones: set[str] = {
+        _repo_to_project(repo)
+        for repo, ms in sources.milestones.items()
+        if ms
+    }
+
+    # Goals (flag if the goal's project has no open milestone)
+    for goal in sources.goals:
+        slug = str(goal.get("slug") or "")
+        # title/why are external text — stored as data
+        title = str(goal.get("title") or slug)
+        priority = str(goal.get("priority") or "—")
+        pct = goal.get("progress_pct")
+        pct_val = int(pct) if isinstance(pct, (int, float)) else None
+        project = str(goal.get("project") or "").lower()
+
+        flags: list[str] = []
+        if project and project != "cross-project":
+            if project not in projects_with_open_milestones:
+                flags.append("no_milestone")
+
+        items.append({
+            "type": "goal",
+            "id": f"goal:{slug}",
+            "slug": slug,
+            "title": title,
+            "priority": priority,
+            "pct": pct_val,
+            "project": project,
+            "flags": flags,
+        })
+
+    # Open milestones (flag if no slices at all: both open_issues=0 and closed_issues=0)
+    for repo, milestones in sources.milestones.items():
+        for m in milestones:
+            open_issues = int(m.get("open_issues") or 0)
+            closed_issues = int(m.get("closed_issues") or 0)
+            number = m.get("number", 0)
+            flags = ["no_slices"] if open_issues == 0 and closed_issues == 0 else []
+            items.append({
+                "type": "open_milestone",
+                "id": f"ms:{repo}:{number}",
+                "repo": repo,
+                "number": number,
+                # title is external text — stored as data
+                "title": str(m.get("title", "")),
+                "open_issues": open_issues,
+                "closed_issues": closed_issues,
+                "flags": flags,
+            })
+
+    # Architecture-sweep reminders from recently closed milestones
+    sweep_items = _detect_arch_sweep_items(sources.closed_milestones, sources.gathered_at)
+    items.extend(sweep_items)
+
+    section_ok = ok or bool(sweep_items)
+    return Section(
+        name="goals_and_milestones",
+        items=items,
+        reason=None if section_ok else "sources not available",
+        provenance=SectionProvenance(
+            ran=ran,
+            ok=section_ok,
+            source="morning_gather",
+        ),
+    )
+
+
 def _plan_item_from_row(
     row: dict, rank: int, default_estimate: str, ref_prefix: str, ref_key: str
 ) -> PlanItem:
@@ -175,14 +330,35 @@ def _plan_item_from_row(
     return PlanItem(rank=rank, estimate=estimate, text=text, refs=refs, cites=[])
 
 
-def _synthesize_plan(sources: MorningGatherResult) -> Plan:
+def _synthesize_plan(
+    sources: MorningGatherResult,
+    goals_ms_section: Section | None = None,
+) -> Plan:
     items: list[PlanItem] = []
     rank = 1
 
+    # Build a slug->id map from the goals_and_milestones section so plan items
+    # can cite their section counterpart (AC6 — machine attribution, not rendered)
+    slug_to_section_id: dict[str, str] = {}
+    if goals_ms_section is not None:
+        for it in goals_ms_section.items:
+            if it.get("type") == "goal":
+                slug_to_section_id[str(it.get("slug", ""))] = str(it.get("id", ""))
+
     for goal in sources.goals:
-        items.append(
-            _plan_item_from_row(goal, rank, default_estimate="M", ref_prefix="goal", ref_key="slug")
+        slug = str(goal.get("slug") or "")
+        item = _plan_item_from_row(
+            goal, rank, default_estimate="M", ref_prefix="goal", ref_key="slug"
         )
+        if slug in slug_to_section_id:
+            item = PlanItem(
+                rank=item.rank,
+                estimate=item.estimate,
+                text=item.text,
+                refs=item.refs,
+                cites=[slug_to_section_id[slug]],
+            )
+        items.append(item)
         rank += 1
 
     for task in sources.owner_tasks:
@@ -201,12 +377,14 @@ def analyze(sources: MorningGatherResult) -> Digest:
     Provenance (#1589): fold_provenance is called as an explicit operation so
     every per-section stamp survives into the top-level degradation summary.
     """
+    goals_ms_section = _build_goals_milestones_section(sources)
     sections = [
         _build_repo_hygiene_section(sources),
         _build_detector_gaps_section(sources),
         _build_learning_section(),
+        goals_ms_section,
     ]
-    plan = _synthesize_plan(sources)
+    plan = _synthesize_plan(sources, goals_ms_section=goals_ms_section)
     degradation = fold_provenance(sections)
 
     return Digest(
