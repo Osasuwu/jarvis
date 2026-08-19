@@ -129,9 +129,11 @@ class _FakeMemoriesTable:
                     break
             return types.SimpleNamespace(data=[])
         if self._mode == "insert":
-            # Regression guard: memories table enforces source_provenance NOT
-            # NULL on raw inserts (see #1591 review finding on write_shown()).
+            # Regression guard: memories table enforces source_provenance AND
+            # type NOT NULL on raw inserts (see #1591 review findings on
+            # write_shown()).
             assert "source_provenance" in self._insert_payload
+            assert "type" in self._insert_payload
             name = self._insert_payload["name"]
             self._store[name] = {
                 "id": f"row-{len(self._store) + 1}",

@@ -64,23 +64,35 @@ def _safe_parse(content: Any) -> dict[str, list[str]]:
     return {}
 
 
+def _fetch_row(client: Any, date_str: str) -> tuple[str | None, dict[str, list[str]]]:
+    """Fetch today's dedup row, if any.
+
+    Returns (row_id, parsed_content) — (None, {}) if no row exists yet.
+    Shared by read_shown() and write_shown(); raises on client error, the
+    caller's try/except is responsible for the non-fatal fallback.
+    """
+    result = (
+        client.table("memories")
+        .select("id, content")
+        .eq("name", dedup_name(date_str))
+        .is_("deleted_at", "null")
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if result.data:
+        return result.data[0]["id"], _safe_parse(result.data[0].get("content"))
+    return None, {}
+
+
 def read_shown(client: Any, date_str: str) -> dict[str, list[str]]:
     """Return {channel: [ids]} shown today from Supabase memories.
 
     Returns {} on any error (non-fatal — treat as no prior shows).
     """
     try:
-        result = (
-            client.table("memories")
-            .select("id, content")
-            .eq("name", dedup_name(date_str))
-            .is_("deleted_at", "null")
-            .order("updated_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        if result.data:
-            return _safe_parse(result.data[0].get("content"))
+        _row_id, data = _fetch_row(client, date_str)
+        return data
     except Exception as exc:
         print(f"[escalation_dedup] read failed: {exc}", file=sys.stderr)
     return {}
@@ -96,20 +108,7 @@ def write_shown(client: Any, date_str: str, channel: str, ids: list[str]) -> Non
     if not ids:
         return
     try:
-        result = (
-            client.table("memories")
-            .select("id, content")
-            .eq("name", dedup_name(date_str))
-            .is_("deleted_at", "null")
-            .order("updated_at", desc=True)
-            .limit(1)
-            .execute()
-        )
-        existing_row_id = None
-        data: dict[str, list[str]] = {}
-        if result.data:
-            existing_row_id = result.data[0]["id"]
-            data = _safe_parse(result.data[0].get("content"))
+        existing_row_id, data = _fetch_row(client, date_str)
 
         current = set(data.get(channel, []))
         current.update(ids)
@@ -123,6 +122,7 @@ def write_shown(client: Any, date_str: str, channel: str, ids: list[str]) -> Non
         else:
             client.table("memories").insert(
                 {
+                    "type": "project",
                     "name": dedup_name(date_str),
                     "content": content,
                     "project": "jarvis",

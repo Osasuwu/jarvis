@@ -219,11 +219,14 @@ def gather_owner_tasks(
 # ============================================================================
 
 
-def _make_live_dedup_fns(url: str, key: str) -> tuple["ReadDedupFn", "WriteDedupFn"]:
+def _make_live_dedup_fns(
+    url: str, key: str
+) -> tuple["ReadDedupFn", "WriteDedupFn"] | tuple[None, None]:
     """Return (read_fn, write_fn) backed by a live Supabase client.
 
-    On client creation failure, returns no-op functions so gather() continues
-    without dedup (worst case: an escalation shows in both channels once).
+    On client creation failure, returns (None, None) — callers already treat
+    a None read/write fn as "dedup unavailable, continue without it" (worst
+    case: an escalation shows in both channels once).
     """
     from scripts.escalation_dedup import read_shown, write_shown
 
@@ -233,14 +236,7 @@ def _make_live_dedup_fns(url: str, key: str) -> tuple["ReadDedupFn", "WriteDedup
         client = create_client(url, key)
     except Exception as exc:
         print(f"[morning_gather] dedup client creation failed: {exc}", file=sys.stderr)
-
-        def _noop_read(date_str: str) -> dict:
-            return {}
-
-        def _noop_write(date_str: str, channel: str, ids: list) -> None:
-            pass
-
-        return _noop_read, _noop_write
+        return None, None
 
     def _read(date_str: str) -> dict[str, list[str]]:
         return read_shown(client, date_str)
