@@ -79,6 +79,7 @@ class TestRecordDecisionInsert:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "hard",
+                "project": "jarvis",
             }
         )
         insert_arg = client.table.return_value.insert.call_args.args[0]
@@ -94,6 +95,7 @@ class TestRecordDecisionInsert:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         payload = client.table.return_value.insert.call_args.args[0]["payload"]
@@ -116,6 +118,7 @@ class TestRecordDecisionInsert:
                 "reversibility": "reversible",
                 "memories_used": [],
                 "intentionally_empty": True,
+                "project": "jarvis",
             }
         )
 
@@ -136,6 +139,7 @@ class TestRecordDecisionInsert:
                 "rationale": "y",
                 "reversibility": "reversible",
                 "memories_used": [UID_A],
+                "project": "jarvis",
             }
         )
 
@@ -159,6 +163,7 @@ class TestRecordDecisionInsert:
                 "reversibility": "reversible",
                 "memories_used": [UID_A],
                 "session_id": sid,
+                "project": "jarvis",
             }
         )
 
@@ -183,6 +188,7 @@ class TestRecordDecisionInsert:
                 "reversibility": "reversible",
                 "memories_used": [UID_A],
                 "session_id": "not a valid sid!",
+                "project": "jarvis",
             }
         )
         assert "ep-77" in result[0].text
@@ -203,6 +209,7 @@ class TestRecordDecisionInsert:
                 "rationale": "y",
                 "reversibility": "reversible",
                 "memories_used": [UID_A],
+                "project": "jarvis",
             }
         )
 
@@ -226,6 +233,7 @@ class TestRecordDecisionInsert:
                 "reversibility": "reversible",
                 "memories_used": [UID_A],
                 "cwd": cwd,
+                "project": "jarvis",
             }
         )
 
@@ -249,6 +257,7 @@ class TestRecordDecisionInsert:
                 "rationale": "y",
                 "reversibility": "reversible",
                 "memories_used": [UID_A],
+                "project": "jarvis",
             }
         )
 
@@ -269,6 +278,7 @@ class TestRecordDecisionInsert:
                 "decision": "x",
                 "rationale": "y",
                 "reversibility": "reversible",
+                "project": "jarvis",
             }
         )
         # Privacy: the error surfaces the exception *type* only, never str(exc).
@@ -324,6 +334,7 @@ class TestRecordDecisionInsert:
                 "rationale": "y",
                 "reversibility": "reversible",
                 "memories_used": [fake_key],
+                "project": "jarvis",
             }
         )
         text = result[0].text
@@ -368,6 +379,7 @@ class TestRecordDecisionInsert:
                 "rationale": "y",
                 "reversibility": "reversible",
                 "memories_used": ["ghost-a", "ghost-b"],
+                "project": "jarvis",
             }
         )
         text = result[0].text
@@ -390,6 +402,7 @@ class TestRecordDecisionInsert:
                 "rationale": "y",
                 "reversibility": "reversible",
                 "memories_used": [UID_A, "mem-b", UID_C],
+                "project": "jarvis",
             }
         )
         payload = client.table.return_value.insert.call_args.args[0]["payload"]

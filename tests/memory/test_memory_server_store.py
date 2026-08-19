@@ -29,6 +29,7 @@ from server import (
 from classifier import ClassifierDecision
 import server as server_module
 import handlers.memory as mem
+import events_canonical
 
 
 # ---------------------------------------------------------------------------
@@ -144,8 +145,8 @@ class TestLinkDecisionPath:
         client.table.return_value.select.return_value.in_.return_value.execute.return_value = (
             MagicMock(data=[])
         )
-        client.table.return_value.update.return_value.eq.return_value.is_.return_value.execute.return_value = (
-            MagicMock(data=[{"id": "row"}])
+        client.table.return_value.update.return_value.eq.return_value.is_.return_value.execute.return_value = MagicMock(
+            data=[{"id": "row"}]
         )
         client.table.return_value.insert.return_value.execute.return_value = MagicMock()
         return client
@@ -162,8 +163,12 @@ class TestLinkDecisionPath:
         return calls
 
     @pytest.mark.asyncio
-    async def test_classifier_path_recorded_on_success(self, mock_client, monkeypatch, capture_emit):
-        decision = ClassifierDecision(decision="NOOP", target_id=None, confidence=0.9, reasoning="r")
+    async def test_classifier_path_recorded_on_success(
+        self, mock_client, monkeypatch, capture_emit
+    ):
+        decision = ClassifierDecision(
+            decision="NOOP", target_id=None, confidence=0.9, reasoning="r"
+        )
 
         async def _fake_classify_write(_candidate, _neighbors):
             return decision
@@ -420,6 +425,7 @@ class TestHandleStoreProvenance:
                 "type": "project",
                 "name": "test_missing",
                 "content": "test content",
+                "project": "jarvis",
             }
         )
         assert len(result) == 1
@@ -434,6 +440,7 @@ class TestHandleStoreProvenance:
                 "name": "test_blank",
                 "content": "test content",
                 "source_provenance": "   ",
+                "project": "jarvis",
             }
         )
         assert "source_provenance is required" in result[0].text
@@ -447,6 +454,7 @@ class TestHandleStoreProvenance:
                 "name": "test_none",
                 "content": "test content",
                 "source_provenance": None,
+                "project": "jarvis",
             }
         )
         assert "source_provenance is required" in result[0].text
@@ -477,6 +485,99 @@ class TestHandleStoreProvenance:
         assert upsert_calls
         data_arg = upsert_calls[-1][0][0]
         assert data_arg["source_provenance"] == "skill:test"
+
+
+class TestHandleStoreProjectRequired:
+    """#1613 — project scope must not silently default to global/NULL."""
+
+    @pytest.fixture(autouse=True)
+    def _patch_client(self, monkeypatch):
+        self.client = MagicMock()
+        monkeypatch.setattr(server_module, "_get_client", lambda: self.client)
+
+    @pytest.mark.asyncio
+    async def test_rejects_missing_project(self):
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_missing_project",
+                "content": "test content",
+                "source_provenance": "skill:test",
+            }
+        )
+        assert len(result) == 1
+        assert "project is required" in result[0].text
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_rejects_none_project(self):
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_none_project",
+                "content": "test content",
+                "source_provenance": "skill:test",
+                "project": None,
+            }
+        )
+        assert "project is required" in result[0].text
+        self.client.table.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_global_is_accepted_and_normalized_to_null(self, monkeypatch):
+        async def _no_embed(_text):
+            return {}
+
+        monkeypatch.setattr(server_module, "_compute_write_embeddings", _no_embed)
+
+        async def _noop_links(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(server_module, "_create_auto_links", _noop_links)
+
+        tbl = MagicMock()
+        tbl.select.return_value.eq.return_value.is_.return_value.limit.return_value.execute.return_value = MagicMock(
+            data=[]
+        )
+        tbl.insert.return_value.execute.return_value = MagicMock(data=[{"id": "stored-1"}])
+        self.client.table.return_value = tbl
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_global_scope",
+                "content": "test content",
+                "source_provenance": "skill:test",
+                "project": "global",
+            }
+        )
+
+        assert "project is required" not in result[0].text
+        insert_calls = [call for call in tbl.insert.call_args_list if "project" in call[0][0]]
+        assert insert_calls
+        data_arg = insert_calls[-1][0][0]
+        assert data_arg["project"] is None
+
+
+class TestMemoryStoreSchemaRequiresProject:
+    """#1613 AC1 — the JSON-schema `required` declaration, not just the handler guard."""
+
+    def test_project_is_in_required_array(self, monkeypatch):
+        # `Tool` is a raw MagicMock class stub in this test environment
+        # (conftest.py) — instances aren't distinguishable by `.name` and
+        # the class itself doesn't record calls. Swap in a spy to capture
+        # the constructor kwargs for the memory_store Tool() call.
+        import tools_schema
+
+        spy = MagicMock()
+        monkeypatch.setattr(tools_schema, "Tool", spy)
+
+        tools_schema.tool_definitions()
+
+        store_call = next(
+            call for call in spy.call_args_list if call.kwargs.get("name") == "memory_store"
+        )
+        assert "project" in store_call.kwargs["input_schema"]["required"]
 
 
 class TestHandleStoreStructuredResponse:
@@ -538,6 +639,7 @@ class TestHandleStoreStructuredResponse:
                 "name": "test_struct_global_new",
                 "content": "x",
                 "source_provenance": "session:test",
+                "project": "global",
             }
         )
 
@@ -563,6 +665,7 @@ class TestHandleStoreStructuredResponse:
                 "name": "test_struct_global_update",
                 "content": "x",
                 "source_provenance": "session:test",
+                "project": "global",
             }
         )
 
@@ -650,9 +753,13 @@ class TestHandleStoreMergeSectionFailureModes:
         self.tbl = tbl
 
     @pytest.mark.asyncio
-    async def test_conflict_after_retries_exhausted_returns_stored_false(self):
+    async def test_conflict_after_retries_exhausted_returns_stored_false(self, monkeypatch):
         self.client.rpc.return_value.execute.return_value = MagicMock(
             data=[{"success": False, "memory_id": None, "conflict_reason": "updated_at mismatch"}]
+        )
+        emitted = []
+        monkeypatch.setattr(
+            events_canonical, "emit_event", lambda client, **kwargs: emitted.append(kwargs) or {}
         )
 
         result = await _handle_store(
@@ -672,10 +779,23 @@ class TestHandleStoreMergeSectionFailureModes:
         assert body["action"] == "conflict"
         assert body["memory_id"] is None
         assert self.client.rpc.call_count == 3
+        # #1582 AC2: the actual conflict_reason must be surfaced, not just
+        # a generic "write did not persist" message.
+        assert "updated_at mismatch" in body["message"]
+        # #1582 AC4: the same detail must land in events_canonical, durably
+        # queryable regardless of --debug=mcp.
+        assert len(emitted) == 1
+        assert emitted[0]["action"] == "merge_section_write_failed"
+        assert emitted[0]["payload"]["detail"] == "updated_at mismatch"
+        assert emitted[0]["payload"]["action"] == "conflict"
 
     @pytest.mark.asyncio
-    async def test_rpc_exception_on_every_attempt_returns_stored_false(self):
+    async def test_rpc_exception_on_every_attempt_returns_stored_false(self, monkeypatch):
         self.client.rpc.side_effect = RuntimeError("connection reset")
+        emitted = []
+        monkeypatch.setattr(
+            events_canonical, "emit_event", lambda client, **kwargs: emitted.append(kwargs) or {}
+        )
 
         result = await _handle_store(
             {
@@ -693,6 +813,62 @@ class TestHandleStoreMergeSectionFailureModes:
         assert body["stored"] is False
         assert body["action"] == "error"
         assert body["memory_id"] is None
+        # #1582 AC3: the caught exception's type + message must be surfaced,
+        # not just a generic "write did not persist" message.
+        assert "RuntimeError" in body["message"]
+        assert "connection reset" in body["message"]
+        # #1582 AC4: the same detail must land in events_canonical.
+        assert len(emitted) == 1
+        assert emitted[0]["action"] == "merge_section_write_failed"
+        assert "RuntimeError" in emitted[0]["payload"]["detail"]
+        assert "connection reset" in emitted[0]["payload"]["detail"]
+        assert emitted[0]["payload"]["action"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_rpc_exception_verified_as_already_persisted_returns_stored_true(self):
+        """#1580: a Postgres RPC commits as part of executing the function,
+        before the HTTP response reaches the client — if that response is
+        lost in transit after commit (timeout, dropped connection), the
+        client sees an exception even though the write already landed. Pins
+        the fix: on exception, verify via a read before reporting failure,
+        and treat a matching read as success instead of a false stored=False.
+
+        Contrast with test_rpc_exception_on_every_attempt_returns_stored_false
+        above, whose always-empty table mock means the verify read never
+        matches — that test pins the still-correct "truly never persisted"
+        path, this one pins the new "persisted despite the exception" path.
+        """
+        content = "## [entry] foo — 2026-01-01\n\nbody"
+        responses = iter(
+            [
+                MagicMock(data=[]),  # initial fetch: no existing doc
+                MagicMock(
+                    data=[{"id": "verified-1", "content": content}]
+                ),  # post-exception verify read
+            ]
+        )
+        self.tbl.select.return_value.limit.return_value.execute.side_effect = lambda: next(
+            responses
+        )
+        self.client.rpc.side_effect = RuntimeError("connection reset")
+
+        result = await _handle_store(
+            {
+                "type": "project",
+                "name": "test_merge_exception_but_persisted",
+                "content": content,
+                "project": "jarvis",
+                "source_provenance": "session:test",
+                "mode": "merge_section",
+            }
+        )
+
+        body = json.loads(result[0].text)
+        assert body["stored"] is True
+        assert body["action"] == "merged"
+        assert body["memory_id"] == "verified-1"
+        # Confirmed via read on the first exception — no need to exhaust retries.
+        assert self.client.rpc.call_count == 1
 
     @pytest.mark.asyncio
     async def test_success_on_first_attempt_still_returns_stored_true(self):
@@ -753,7 +929,9 @@ class TestHandleStoreMergeSectionFailureModes:
         # rpc call (semantic similarity search), so don't assume this is the
         # only rpc() call — pick out the merge_section_into_memory_upsert one.
         merge_calls = [
-            c for c in self.client.rpc.call_args_list if c.args and c.args[0] == "merge_section_into_memory_upsert"
+            c
+            for c in self.client.rpc.call_args_list
+            if c.args and c.args[0] == "merge_section_into_memory_upsert"
         ]
         assert len(merge_calls) == 1
         rpc_call = merge_calls[0]
@@ -790,7 +968,9 @@ class TestHandleStoreMergeSectionFailureModes:
         )
 
         merge_calls = [
-            c for c in self.client.rpc.call_args_list if c.args and c.args[0] == "merge_section_into_memory_upsert"
+            c
+            for c in self.client.rpc.call_args_list
+            if c.args and c.args[0] == "merge_section_into_memory_upsert"
         ]
         assert len(merge_calls) == 1
         rpc_call = merge_calls[0]
@@ -816,8 +996,12 @@ class TestHandleStoreMergeSectionFailureModes:
 
         monkeypatch.setattr(server_module, "_compute_write_embeddings", _tracking_embed)
 
-        conflict = MagicMock(data=[{"success": False, "memory_id": None, "conflict_reason": "updated_at mismatch"}])
-        success = MagicMock(data=[{"success": True, "memory_id": "merged-4", "conflict_reason": None}])
+        conflict = MagicMock(
+            data=[{"success": False, "memory_id": None, "conflict_reason": "updated_at mismatch"}]
+        )
+        success = MagicMock(
+            data=[{"success": True, "memory_id": "merged-4", "conflict_reason": None}]
+        )
         responses = iter([conflict, success])
         # Defensive: a populated embedding also fires the auto-link fire-and-
         # forget RPC call, which shares this same mock — fall back to `success`
@@ -840,10 +1024,16 @@ class TestHandleStoreMergeSectionFailureModes:
         assert len(embed_calls) == 2
 
         merge_calls = [
-            c for c in self.client.rpc.call_args_list if c.args and c.args[0] == "merge_section_into_memory_upsert"
+            c
+            for c in self.client.rpc.call_args_list
+            if c.args and c.args[0] == "merge_section_into_memory_upsert"
         ]
         assert len(merge_calls) == 2
-        second_params = merge_calls[1].args[1] if len(merge_calls[1].args) > 1 else merge_calls[1].kwargs.get("params")
+        second_params = (
+            merge_calls[1].args[1]
+            if len(merge_calls[1].args) > 1
+            else merge_calls[1].kwargs.get("params")
+        )
         assert second_params["p_embedding"] == [2.0] * 512
 
     @pytest.mark.asyncio
@@ -854,7 +1044,9 @@ class TestHandleStoreMergeSectionFailureModes:
         which already degrades on the wider `except Exception`. A transient
         Supabase/network error here must not crash the request either.
         """
-        self.tbl.select.return_value.limit.return_value.execute.side_effect = RuntimeError("network blip")
+        self.tbl.select.return_value.limit.return_value.execute.side_effect = RuntimeError(
+            "network blip"
+        )
 
         result = await _handle_store(
             {
@@ -881,6 +1073,10 @@ class TestHandleStoreMergeSectionFailureModes:
         """
         swallowed = []
         monkeypatch.setattr(mem, "log_swallowed", lambda tag, exc: swallowed.append((tag, exc)))
+        emitted = []
+        monkeypatch.setattr(
+            events_canonical, "emit_event", lambda client, **kwargs: emitted.append(kwargs) or {}
+        )
 
         real_merge = mem._merge_section_into_markdown
         call_count = {"n": 0}
@@ -914,6 +1110,13 @@ class TestHandleStoreMergeSectionFailureModes:
         assert any(
             tag == "memory._handle_store.merge_section_retry_unparseable" for tag, _ in swallowed
         )
+        # #1582 AC3/AC4 sibling coverage: this ValueError-during-retry path
+        # is a third "action=error" exit alongside the two covered above —
+        # it must surface the same detail in the message and the event.
+        assert "document became unparseable" in body["message"]
+        assert len(emitted) == 1
+        assert emitted[0]["action"] == "merge_section_write_failed"
+        assert "document became unparseable" in emitted[0]["payload"]["detail"]
 
 
 # ---------------------------------------------------------------------------

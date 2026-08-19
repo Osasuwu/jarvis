@@ -42,6 +42,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from agents.process_kill import kill_process_tree
+
 logger = logging.getLogger(__name__)
 
 # Module-level sidecar directory, relative to this file location.
@@ -244,12 +246,12 @@ def kill_orphan_process(task_id: str, pid: int, reason: str = "") -> None:
                 pid,
                 reason,
             )
-            proc.kill()
-            # Give it a moment to die.
-            try:
-                proc.wait(timeout=1.0)
-            except psutil.TimeoutExpired:
-                logger.warning("orphan did not die after SIGKILL task_id=%s pid=%s", task_id, pid)
+            # ceiling: kill_process_tree swallows a hung post-kill wait
+            # silently (no "did not die after SIGKILL" log) — acceptable
+            # since boot_scan_sidecars/the reaper re-checks liveness on the
+            # next pass anyway; add an on-timeout callback if that log line
+            # needs to come back.
+            kill_process_tree(proc, wait_timeout=1.0)
     except (psutil.NoSuchProcess, psutil.AccessDenied) as e:
         logger.debug("kill_orphan failed: %s task_id=%s pid=%s", type(e).__name__, task_id, pid)
     except Exception as e:
