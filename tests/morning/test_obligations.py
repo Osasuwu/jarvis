@@ -1,8 +1,10 @@
-"""Tests for obligations pure-function module (#1592).
+"""Tests for obligations pure-function module (#1592, #1593).
 
 Verifies: registry parsing with clear errors, evaluate() pure function,
 cadence calculation (daily/weekly/monthly), catch-up policy (single vs all),
-ack event handling, and section rendering including ack-source-unavailable path.
+ack event handling, section rendering including ack-source-unavailable path,
+evidence-probe support (ProbeResult, probe injection, probe failure handling,
+citation mandatory enforcement, section provenance marking).
 
 Tests are direct — nothing goes through the morning digest engine.
 """
@@ -10,7 +12,7 @@ Tests are direct — nothing goes through the morning digest engine.
 from __future__ import annotations
 
 import textwrap
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from obligations import (
     AckEvent,
     ObligationEntry,
     ObligationStatus,
+    ProbeResult,
     evaluate,
     load_registry,
     render_section,
@@ -57,6 +60,17 @@ _NOW = date(2026, 8, 19)
 
 def _ack(obligation_id: str, done_on: date) -> AckEvent:
     return AckEvent(obligation_id=obligation_id, date=done_on)
+
+
+def _entry_with_probe(probe_name: str = "test-probe") -> ObligationEntry:
+    return ObligationEntry(
+        id="probe-entry",
+        label="Probe entry",
+        cadence_unit="weekly",
+        cadence_every=1,
+        catch_up="single",
+        probe_name=probe_name,
+    )
 
 
 # ============================================================================
@@ -244,6 +258,85 @@ class TestRegistryParsing:
         fresh = load_registry(registry_file)
         assert len(fresh) == 1
         assert fresh[0].id == "a"
+
+    def test_entry_with_probe_parses_probe_name(self, tmp_path: Path):
+        """AC: Registry entry can carry a probe description."""
+        registry_file = tmp_path / "obligations.yaml"
+        registry_file.write_text(
+            textwrap.dedent("""\
+                schema_version: "v1"
+                entries:
+                  - id: "x"
+                    label: "X"
+                    cadence:
+                      unit: "weekly"
+                    probe: "worktree-probe"
+            """),
+            encoding="utf-8",
+        )
+        entries = load_registry(registry_file)
+        assert entries[0].probe_name == "worktree-probe"
+
+    def test_entry_without_probe_has_none_probe_name(self, tmp_path: Path):
+        """AC: Entry without probe continues to work by ack — probe_name is None."""
+        registry_file = tmp_path / "obligations.yaml"
+        registry_file.write_text(
+            textwrap.dedent("""\
+                schema_version: "v1"
+                entries:
+                  - id: "x"
+                    label: "X"
+                    cadence:
+                      unit: "weekly"
+            """),
+            encoding="utf-8",
+        )
+        entries = load_registry(registry_file)
+        assert entries[0].probe_name is None
+
+    def test_non_string_probe_raises_error(self, tmp_path: Path):
+        registry_file = tmp_path / "obligations.yaml"
+        registry_file.write_text(
+            textwrap.dedent("""\
+                schema_version: "v1"
+                entries:
+                  - id: "x"
+                    label: "X"
+                    cadence:
+                      unit: "daily"
+                    probe: 42
+            """),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="probe"):
+            load_registry(registry_file)
+
+
+# ============================================================================
+# AC: ProbeResult — evidence carrier, citation mandatory
+# ============================================================================
+
+
+class TestProbeResult:
+    def test_valid_probe_result_accepted(self):
+        """AC: Fired probe returns verdict together with citation of found evidence."""
+        r = ProbeResult(citation="git log shows commit abc123 on 2026-08-18")
+        assert r.citation == "git log shows commit abc123 on 2026-08-18"
+
+    def test_empty_citation_is_rejected(self):
+        """AC: Verdict without citation is impossible — rejected, not silently accepted."""
+        with pytest.raises(ValueError, match="citation"):
+            ProbeResult(citation="")
+
+    def test_whitespace_only_citation_is_rejected(self):
+        """AC: Whitespace-only citation also rejected — not a disputable verdict."""
+        with pytest.raises(ValueError, match="citation"):
+            ProbeResult(citation="   ")
+
+    def test_none_citation_is_rejected(self):
+        """AC: None citation rejected at construction time."""
+        with pytest.raises((ValueError, TypeError)):
+            ProbeResult(citation=None)  # type: ignore[arg-type]
 
 
 # ============================================================================
@@ -450,7 +543,156 @@ class TestAckEvents:
 
 
 # ============================================================================
-# AC: Section rendering — overdue entries with last execution date
+# AC: Evidence-probe — injectable callables, no network
+# ============================================================================
+
+
+class TestEvaluateWithProbes:
+    """AC: probes tested with injectable callables, without network access.
+    AC: evaluate with probes tested directly, not through the digest engine.
+    """
+
+    def test_probe_fires_gives_ok_status(self):
+        """AC: Fired probe returns verdict — status is 'ok'."""
+        entry = _entry_with_probe()
+
+        def probe_fn() -> ProbeResult:
+            return ProbeResult(citation="git log: commit abc123 2026-08-18")
+
+        result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
+        assert result[0].status == "ok"
+
+    def test_probe_fires_citation_stored_in_status(self):
+        """AC: Fired probe returns verdict together with citation of found evidence."""
+        entry = _entry_with_probe()
+        citation = "found 3 worktrees removed in git log 2026-08-18"
+
+        def probe_fn() -> ProbeResult:
+            return ProbeResult(citation=citation)
+
+        result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
+        assert result[0].probe_citation == citation
+
+    def test_probe_sets_last_done_to_now(self):
+        """Probe-confirmed entry sets last_done to now (the verification moment)."""
+        entry = _entry_with_probe()
+
+        def probe_fn() -> ProbeResult:
+            return ProbeResult(citation="confirmed")
+
+        result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
+        assert result[0].last_done == _NOW
+
+    def test_probe_failure_raises_gives_unknown(self):
+        """AC: Failed probe gives 'unknown', not 'overdue'."""
+        entry = _entry_with_probe()
+
+        def failing_probe() -> ProbeResult:
+            raise RuntimeError("connection failed")
+
+        result = evaluate([entry], [], _NOW, probes={"test-probe": failing_probe})
+        assert result[0].status == "unknown"
+
+    def test_probe_failure_sets_probe_failed_flag(self):
+        """AC: Failed probe is marked in section provenance (probe_failed=True)."""
+        entry = _entry_with_probe()
+
+        def failing_probe() -> ProbeResult:
+            raise ConnectionError("network unreachable")
+
+        result = evaluate([entry], [], _NOW, probes={"test-probe": failing_probe})
+        assert result[0].probe_failed is True
+
+    def test_probe_failure_never_overdue(self):
+        """AC: Failed probe → 'unknown', never 'overdue' — even with old acks."""
+        entry = _entry_with_probe()
+        old_ack = _ack("probe-entry", date(2026, 8, 1))  # would be overdue if ack-only
+
+        def failing_probe() -> ProbeResult:
+            raise OSError("timeout")
+
+        result = evaluate([entry], [old_ack], _NOW, probes={"test-probe": failing_probe})
+        assert result[0].status == "unknown"
+        assert result[0].status != "overdue"
+        assert result[0].probe_failed is True
+
+    def test_probe_returning_none_treated_as_failure(self):
+        """Non-ProbeResult return value is treated as probe failure."""
+        entry = _entry_with_probe()
+
+        def probe_fn():  # type: ignore[no-untyped-def]
+            return None
+
+        result = evaluate([entry], [], _NOW, probes={"test-probe": probe_fn})
+        assert result[0].status == "unknown"
+        assert result[0].probe_failed is True
+
+    def test_verdict_without_citation_rejected_not_silently_accepted(self):
+        """AC: Verdict without citation is impossible — rejected, not silently accepted.
+
+        A probe returning ProbeResult('') raises ValueError in __post_init__,
+        which is caught by evaluate() and treated as probe failure → 'unknown'.
+        The empty-citation result is never propagated silently.
+        """
+        entry = _entry_with_probe()
+
+        def probe_with_empty_citation() -> ProbeResult:
+            return ProbeResult(citation="")  # raises ValueError in __post_init__
+
+        result = evaluate([entry], [], _NOW, probes={"test-probe": probe_with_empty_citation})
+        # The ValueError is caught → probe failure → "unknown", not "ok" or "overdue"
+        assert result[0].status == "unknown"
+        assert result[0].probe_failed is True
+        assert result[0].probe_citation is None
+
+    def test_entry_without_probe_uses_ack_only(self):
+        """AC: Entry without probe continues to work via ack — probe_name=None."""
+        entry = ObligationEntry("x", "X", "daily", 1, "single")  # no probe_name
+        acks = [_ack("x", date(2026, 8, 18))]
+        result = evaluate([entry], acks, _NOW)
+        assert result[0].status == "ok"
+        assert result[0].probe_citation is None
+        assert result[0].probe_failed is False
+
+    def test_probe_name_not_in_probes_dict_falls_back_to_acks(self):
+        """If probe_name is configured but not in the probes dict, use ack logic."""
+        entry = _entry_with_probe("missing-probe")
+        acks = [_ack("probe-entry", date(2026, 8, 18))]
+        result = evaluate([entry], acks, _NOW, probes={})  # probe not provided
+        assert result[0].status == "ok"  # ack-only fallback
+        assert result[0].probe_citation is None
+
+    def test_probe_not_in_dict_without_ack_gives_unknown(self):
+        """Entry with probe_name not in probes dict and no ack → 'unknown'."""
+        entry = _entry_with_probe("missing-probe")
+        result = evaluate([entry], [], _NOW, probes={})
+        assert result[0].status == "unknown"
+
+    def test_probe_with_none_probes_kwarg_uses_ack(self):
+        """probes=None (default) → ack-only logic for all entries."""
+        entry = _entry_with_probe()
+        acks = [_ack("probe-entry", date(2026, 8, 18))]
+        result = evaluate([entry], acks, _NOW, probes=None)
+        assert result[0].status == "ok"
+
+    def test_multiple_entries_mixed_probe_and_ack(self):
+        """Mixed registry: probe entry and ack-only entry evaluated together."""
+        probe_entry = _entry_with_probe()
+        ack_entry = ObligationEntry("ack-only", "Ack Only", "daily", 1, "single")
+        acks = [_ack("ack-only", date(2026, 8, 18))]
+        citation = "CI job #999 passed 2026-08-19"
+        probes = {"test-probe": lambda: ProbeResult(citation=citation)}
+        result = evaluate([probe_entry, ack_entry], acks, _NOW, probes=probes)
+        probe_status = next(s for s in result if s.id == "probe-entry")
+        ack_status = next(s for s in result if s.id == "ack-only")
+        assert probe_status.status == "ok"
+        assert probe_status.probe_citation == citation
+        assert ack_status.status == "ok"
+        assert ack_status.probe_citation is None
+
+
+# ============================================================================
+# AC: Section rendering — overdue, probe citations, probe failures
 # ============================================================================
 
 
@@ -468,7 +710,7 @@ class TestSectionRendering:
         assert "Weekly sweep" in text
         assert "2026-08-05" in text
 
-    def test_ok_entry_not_shown_in_section(self):
+    def test_ok_entry_without_probe_not_shown(self):
         status = ObligationStatus(
             id="x",
             label="Timely thing",
@@ -480,7 +722,7 @@ class TestSectionRendering:
         text = render_section([status])
         assert "Timely thing" not in text
 
-    def test_unknown_entry_not_shown_in_section(self):
+    def test_unknown_entry_without_probe_not_shown(self):
         status = ObligationStatus(
             id="x",
             label="Never done",
@@ -492,7 +734,7 @@ class TestSectionRendering:
         text = render_section([status])
         assert "Never done" not in text
 
-    def test_section_empty_when_all_ok(self):
+    def test_section_all_ok_message_when_no_issues(self):
         status = ObligationStatus(
             id="x",
             label="All good",
@@ -526,3 +768,90 @@ class TestSectionRendering:
         text = render_section(statuses)
         assert "A" in text
         assert "B" in text
+
+    def test_probe_citation_visible_in_output(self):
+        """AC: Evidence citation is visible in output next to the record."""
+        citation = "git log: commit abc123 removed 5 worktrees 2026-08-18"
+        status = ObligationStatus(
+            id="x",
+            label="Worktree cleanup",
+            status="ok",
+            last_done=_NOW,
+            next_due=_NOW + timedelta(days=7),
+            missed_periods=0,
+            probe_citation=citation,
+        )
+        text = render_section([status])
+        assert citation in text
+        assert "Worktree cleanup" in text
+
+    def test_probe_failure_marked_in_section_provenance(self):
+        """AC: Failed probe is marked in section provenance (visible in output)."""
+        status = ObligationStatus(
+            id="x",
+            label="Probe Obligation",
+            status="unknown",
+            last_done=None,
+            next_due=None,
+            missed_periods=0,
+            probe_failed=True,
+        )
+        text = render_section([status])
+        # Section must mention that probe failed — not silently empty
+        lower = text.lower()
+        assert "проба" in lower or "probe" in lower or "не удалась" in lower
+        assert "Probe Obligation" in text
+
+    def test_probe_failure_shown_separately_from_overdue(self):
+        """Probe failures and overdue entries appear as distinct groups."""
+        overdue_status = ObligationStatus(
+            "a", "Overdue thing", "overdue", date(2026, 8, 1), date(2026, 8, 8), 1
+        )
+        failed_probe_status = ObligationStatus(
+            "b", "Probe thing", "unknown", None, None, 0, probe_failed=True
+        )
+        text = render_section([overdue_status, failed_probe_status])
+        assert "Overdue thing" in text
+        assert "Probe thing" in text
+
+    def test_probe_confirmed_section_shows_label_and_citation(self):
+        """Probe-confirmed ok entry shows both label and citation together."""
+        citation = "CI run #42 passed at 2026-08-19T06:00:00Z"
+        status = ObligationStatus(
+            id="ci",
+            label="CI health check",
+            status="ok",
+            last_done=_NOW,
+            next_due=_NOW + timedelta(days=7),
+            missed_periods=0,
+            probe_citation=citation,
+        )
+        text = render_section([status])
+        assert "CI health check" in text
+        assert citation in text
+
+    def test_probe_confirmed_shown_alongside_overdue(self):
+        """AC: probe-confirmed citations render even when other entries are overdue.
+
+        Regression test — render_section() used to gate the probe-confirmed
+        block on `not overdue` (a global flag), silently dropping citations
+        for entries unrelated to the overdue one (code-review MEDIUM finding
+        on PR #1642).
+        """
+        citation = "git log: commit abc123 removed 5 worktrees 2026-08-18"
+        overdue_status = ObligationStatus(
+            "a", "Overdue thing", "overdue", date(2026, 8, 1), date(2026, 8, 8), 1
+        )
+        probe_status = ObligationStatus(
+            id="b",
+            label="Worktree cleanup",
+            status="ok",
+            last_done=_NOW,
+            next_due=_NOW + timedelta(days=7),
+            missed_periods=0,
+            probe_citation=citation,
+        )
+        text = render_section([overdue_status, probe_status])
+        assert "Overdue thing" in text
+        assert "Worktree cleanup" in text
+        assert citation in text
