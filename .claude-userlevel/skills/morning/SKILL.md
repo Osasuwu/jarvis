@@ -7,7 +7,7 @@ disable-model-invocation: true
 
 # Morning
 
-The owner-facing **read** side of the daily-digest capability (#1588, M64). Once-a-day call, so the default surface is **deterministic Python — no LLM narration, no tokens spent on rendering**. The judgment already happened upstream: `morning_digest` wraps `morning_gather.gather() → morning_engine.analyze()` and hands back a fully-decided `Digest` (schema_version, sections, plan, origin). This skill's only job is to surface it.
+The owner-facing **read** side of the daily-digest capability (#1588, M64). Once-a-day call, so the default surface is **deterministic Python — no LLM narration, no tokens spent on rendering**. The judgment already happened upstream: `morning_digest` wraps `morning_gather.gather() → morning_engine.analyze()` and hands back a fully-decided `Digest` (schema_version, sections, plan, degradation, origin). This skill's only job is to surface it.
 
 **Boundary:** this skill reads and renders. It does not investigate, open issues, comment, act on plan items, or negotiate the cut-line — those belong to the owner. Surfacing the day's plan is the whole contract; what to do about it is the reader's call.
 
@@ -19,7 +19,7 @@ The owner-facing **read** side of the daily-digest capability (#1588, M64). Once
 mcp__morning__morning_digest(jarvis_home="<JARVIS_HOME or empty to auto-detect>")
 ```
 
-Pass `jarvis_home` when `JARVIS_HOME` is set (cron / non-repo CWD); leave it empty to let the server auto-detect from CWD via `git rev-parse`. The tool returns the digest as a JSON text block matching `scripts/digest_schema.py`'s `Digest.to_dict()` shape (`schema_version`, `sections`, `plan`, `origin`).
+Pass `jarvis_home` when `JARVIS_HOME` is set (cron / non-repo CWD); leave it empty to let the server auto-detect from CWD via `git rev-parse`. The tool returns the digest as a JSON text block matching `scripts/digest_schema.py`'s `Digest.to_dict()` shape (`schema_version`, `sections`, `plan`, `degradation`, `origin`).
 
 **Registration ceiling:** `mcp-morning/server.py` exists and is fully tested (`tests/morning/test_mcp_morning_server.py`) but is deliberately **not yet registered** in `.claude-userlevel/.mcp.json` — that wiring is a separate, later slice (#1588 body). Until `mcp__morning__morning_digest` is reachable, fall back to calling `gather()`/`analyze()` directly in-process:
 
