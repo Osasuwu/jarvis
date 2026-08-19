@@ -149,6 +149,35 @@ def test_convert_merges_all_repo_provenance_sources():
     assert prov.input_rows == 1  # gh_issues=1, gh_prs=0, gh_ci=0, gh_milestones=0
 
 
+def test_convert_excludes_expected_failure_source_from_ok():
+    """#1576 follow-up: a source tagged expected_failure=True (e.g. gh_milestones
+    for a repo without milestone access, status_gather.py's asymmetric-source
+    pattern) must not drag the merged provenance to ok=False — only a genuine
+    unexpected failure should do that."""
+    gather_result = make_fixture_gather_result()
+    repo_entry = gather_result.repos[0]
+    repo_entry["degraded"] = True
+    repo_entry["degradation_reason"] = (
+        "gh_milestones: failed (expected for repos without milestone access)"
+    )
+    repo_entry["provenance"]["gh_milestones"] = {
+        "ran": True,
+        "ok": False,
+        "input_rows": -1,
+        "age": 0.4,
+        "expected_failure": True,
+    }
+
+    baseline, delta, decisions = _convert_gather_to_engine_format(gather_result)
+
+    prov = delta.repos["Osasuwu/jarvis"].provenance
+    assert prov is not None
+    # All other sources succeeded; the expected gh_milestones gap is excluded
+    # from the ran/ok aggregation rather than flipping the repo unhealthy.
+    assert prov.ok is True
+    assert prov.ran is True
+
+
 def test_convert_drops_project_status_field():
     """#1065: the ProjectV2 board is no longer a data source — IssueInfo has no
     project_status field, and a stray project_status key on a gathered issue is

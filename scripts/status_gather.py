@@ -804,17 +804,24 @@ def gather(
             _run_gh,
             _now(),
         )
+        milestones_prov_dict = milestones_prov.to_dict()
         if not milestones_prov.ok:
-            # Degrade this repo's milestone source but keep other sources
+            # Degrade this repo's milestone source but keep other sources.
+            # Tag the stamp itself as an expected failure so downstream
+            # provenance merges (mcp-status/server.py) can exclude it from
+            # ran/ok aggregation instead of treating it as a real outage —
+            # a repo without milestone access should not show permanently
+            # unhealthy provenance (#1576 follow-up).
             repo_entry["degraded"] = True
             repo_entry["degradation_reason"] = (
                 f"{SourceKind.GH_MILESTONES}: failed (expected for repos without milestone access)"
             )
             repo_entry["milestones"] = None
             repo_entry["milestones_truncated"] = False
+            milestones_prov_dict["expected_failure"] = True
         else:
             repo_entry.update(milestones_state)
-        repo_entry["provenance"][SourceKind.GH_MILESTONES] = milestones_prov.to_dict()
+        repo_entry["provenance"][SourceKind.GH_MILESTONES] = milestones_prov_dict
 
         result.repos.append(repo_entry)
 

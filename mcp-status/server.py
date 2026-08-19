@@ -194,6 +194,16 @@ def _convert_gather_to_engine_format(gather_result):
         if "provenance" in repo_entry:
             repo_prov = repo_entry["provenance"]
             if repo_prov:
+                # A source can be tagged expected_failure=True by gather
+                # (e.g. gh_milestones for a repo without milestone access,
+                # status_gather.py's asymmetric-source pattern) — exclude
+                # it from ran/ok so a known-expected gap doesn't drag the
+                # merged provenance to permanently unhealthy (#1576
+                # follow-up: the original pessimistic all() couldn't tell
+                # an expected gap from a real outage).
+                healthy_prov = [
+                    p for p in repo_prov.values() if not p.get("expected_failure", False)
+                ]
                 # input_rows uses -1 as a sentinel for non-row sources (e.g.
                 # git state) — sum only the row-based sources so a sentinel
                 # doesn't corrupt the total; -1 if every source is non-row.
@@ -203,8 +213,8 @@ def _convert_gather_to_engine_format(gather_result):
                     if p.get("input_rows", -1) >= 0
                 ]
                 repo_state.provenance = Provenance(
-                    ran=all(p.get("ran", False) for p in repo_prov.values()),
-                    ok=all(p.get("ok", False) for p in repo_prov.values()),
+                    ran=all(p.get("ran", False) for p in healthy_prov) if healthy_prov else False,
+                    ok=all(p.get("ok", False) for p in healthy_prov) if healthy_prov else False,
                     input_rows=sum(row_counts) if row_counts else -1,
                     age=max(p.get("age", 0.0) for p in repo_prov.values()),
                 )
