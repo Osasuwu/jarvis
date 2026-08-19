@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from scripts.detector_gap_log import GapRecord
 from scripts.status_gather import parse_repos_conf
 from scripts.morning_gather import gather
 
@@ -149,3 +150,52 @@ def test_gather_missing_supabase_creds_marks_sources_not_ok_without_raising(monk
     assert result.provenance["goals"]["ok"] is False
     assert result.provenance["owner_tasks"]["ok"] is False
     assert result.provenance["supabase_decisions"]["ok"] is False
+
+
+class _FixtureGapStore:
+    def __init__(self, records: list[GapRecord]) -> None:
+        self._records = records
+
+    def load_all(self) -> list[GapRecord]:
+        return list(self._records)
+
+    def save(self, record: GapRecord) -> None:
+        raise NotImplementedError
+
+    def update(self, record: GapRecord) -> None:
+        raise NotImplementedError
+
+
+def test_gather_populates_detector_gaps_via_injected_gap_store(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+
+    records = [GapRecord(key="k1", description="gap one", count=3)]
+
+    result = gather(
+        jarvis_home="/fake/home",
+        read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+        run_gh_fn=_fixture_run_gh(_make_gh_empty()),
+        query_supabase_fn=_fixture_query_by_table({}),
+        now_fn=_fixture_now(),
+        gap_store=_FixtureGapStore(records),
+    )
+
+    assert result.detector_gaps == records
+    assert result.provenance["detector_gaps"]["ok"] is True
+
+
+def test_gather_without_gap_store_leaves_detector_gaps_empty(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+
+    result = gather(
+        jarvis_home="/fake/home",
+        read_repos_conf_fn=_fixture_repos_conf("Osasuwu/jarvis\n"),
+        run_gh_fn=_fixture_run_gh(_make_gh_empty()),
+        query_supabase_fn=_fixture_query_by_table({}),
+        now_fn=_fixture_now(),
+    )
+
+    assert result.detector_gaps == []
+    assert result.provenance["detector_gaps"]["ok"] is False
