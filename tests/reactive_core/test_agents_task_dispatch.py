@@ -22,7 +22,6 @@ from typing import Any
 from agents.driver_heartbeat import HeartbeatStatus
 from agents.task_dispatch import (
     DEFAULT_ASSIGNEE,
-    DEFAULT_CONCURRENCY_CAP,
     LOCAL_DRAIN_DRIVER_NAME,
     DrainResult,
     SupabaseTaskQueue,
@@ -34,13 +33,12 @@ from agents.task_dispatch import (
     default_local_drain_once,
     default_spawn,
     drain_tasks,
-    kill_process_tree,
     kill_runaways,
     local_drain_until_terminal,
     poll_completions,
     reclaim_stale_tasks,
-    sweep_task_worktrees,
 )
+from agents.task_worktree import sweep_task_worktrees
 
 
 # ---------------------------------------------------------------------------
@@ -1223,62 +1221,9 @@ class TestKillRunaways:
         assert calls["n"] == 2  # both attempted — isolation, not abort
 
 
-class TestKillProcessTree:
-    def test_windows_uses_taskkill_tree_force(self, monkeypatch: Any) -> None:
-        # Bare Popen.kill() is terminate() on Windows — children survive. The
-        # tree-kill must go through taskkill /T /F.
-        import agents.task_dispatch as td
-
-        runs: list[list[str]] = []
-        monkeypatch.setattr(td.subprocess, "run", lambda argv, **kw: runs.append(list(argv)))
-        proc = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="win32")
-        assert runs == [["taskkill", "/PID", "1234", "/T", "/F"]]
-        assert proc.killed is False  # win32 path never calls Popen.kill()
-
-    def test_posix_uses_proc_kill(self) -> None:
-        proc = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="linux")
-        assert proc.killed is True
-
-    def test_reaps_handle_with_wait(self, monkeypatch: Any) -> None:
-        # review #957-3: the post-kill wait must actually run (it reaps the
-        # handle so poll() reflects the death immediately), win32 and POSIX
-        # alike — a fake without wait() was silently masking this call.
-        import agents.task_dispatch as td
-
-        monkeypatch.setattr(td.subprocess, "run", lambda argv, **kw: None)
-        win = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(win, platform="win32")
-        posix = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(posix, platform="linux")
-        assert win.waited is True
-        assert posix.waited is True
-
-    def test_hung_wait_is_swallowed(self) -> None:
-        # A child that won't reap within the timeout must not hang the driver
-        # tick: TimeoutExpired is swallowed, the next tick's poll re-checks.
-        class _HangingProc(_FakeProc):
-            def wait(self, timeout: float | None = None) -> int | None:
-                raise subprocess.TimeoutExpired(cmd="claude", timeout=timeout or 10)
-
-        proc = _HangingProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="linux")
-        assert proc.killed is True  # the kill happened despite the hung wait
-
-    def test_missing_taskkill_falls_back_to_proc_kill(self, monkeypatch: Any) -> None:
-        # review #957-7 (MINOR): taskkill absent from PATH (stripped env,
-        # minimal container) must not leave the runaway alive — fall back to
-        # plain Popen.kill(), which at least takes down the direct child.
-        import agents.task_dispatch as td
-
-        def raising_run(argv: list[str], **kw: Any) -> None:
-            raise FileNotFoundError("taskkill not found")
-
-        monkeypatch.setattr(td.subprocess, "run", raising_run)
-        proc = _FakeProc(rc=None, pid=1234)
-        kill_process_tree(proc, platform="win32")
-        assert proc.killed is True
+# kill_process_tree itself moved to tests/reactive_core/test_agents_process_kill.py
+# (#1609, milestone #66 — extracted to agents/process_kill.py, de-duplicated
+# against agents/pid_sidecar.py's kill logic).
 
 
 # ---------------------------------------------------------------------------
@@ -1340,12 +1285,12 @@ class TestDefaultSpawnWorktree:
 
     def test_creates_worktree_and_passes_cwd(self, tmp_path: Any, monkeypatch: Any) -> None:
         import agents.executor as executor
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
         captured: dict[str, Any] = {}
 
@@ -1386,15 +1331,15 @@ class TestWorktreeIsolationRealGit:
     string-inequality assertion on two path values."""
 
     def test_conflicting_writes_stay_isolated(self, tmp_path: Any, monkeypatch: Any) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        path_a = td._create_task_worktree("task-a")
-        path_b = td._create_task_worktree("task-b")
+        path_a = tw.create_task_worktree("task-a")
+        path_b = tw.create_task_worktree("task-b")
 
         # Same relative filename, conflicting content, one write per worktree.
         conflict_a = os.path.join(path_a, "conflict.txt")
@@ -1428,14 +1373,14 @@ class TestFinalizeTaskWorktreeOnTerminal:
     `git worktree add <path> task/<id>` (attach, not -b) succeeding."""
 
     def test_success_removes_worktree(self, tmp_path: Any, monkeypatch: Any) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        worktree_path = td._create_task_worktree("t0")
+        worktree_path = tw.create_task_worktree("t0")
         assert os.path.isdir(worktree_path)
 
         q = FakeTaskQueue()
@@ -1448,14 +1393,14 @@ class TestFinalizeTaskWorktreeOnTerminal:
     def test_failure_detaches_head_and_frees_branch_for_retry(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        worktree_path = td._create_task_worktree("t0")
+        worktree_path = tw.create_task_worktree("t0")
 
         q = FakeTaskQueue()
         procs = {"t0": TrackedProc(_FakeProc(rc=1), started_at=0.0)}
@@ -1496,14 +1441,14 @@ class TestFinalizeTaskWorktreeOnTerminal:
 
 class TestCreateTaskWorktreeBranchDirective:
     def test_no_directive_creates_own_task_branch(self, tmp_path: Any, monkeypatch: Any) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        worktree_path = td._create_task_worktree("t0", "do the thing")
+        worktree_path = tw.create_task_worktree("t0", "do the thing")
 
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -1517,14 +1462,14 @@ class TestCreateTaskWorktreeBranchDirective:
     def test_directive_naming_own_branch_still_creates(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        worktree_path = td._create_task_worktree("t0", "do the thing\n\n(branch=task/t0)")
+        worktree_path = tw.create_task_worktree("t0", "do the thing\n\n(branch=task/t0)")
 
         branch = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -1544,22 +1489,22 @@ class TestCreateTaskWorktreeBranchDirective:
         above) — _create_task_worktree must attach to it, not create
         task/<new_task_id>, or the redrive's evidence check looks at a branch
         that was never populated (PR #1450 review, MEDIUM)."""
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
         # Simulate the root attempt: create + fail + detach, freeing task/root.
-        root_path = td._create_task_worktree("root")
+        root_path = tw.create_task_worktree("root")
         q = FakeTaskQueue()
         procs = {"root": TrackedProc(_FakeProc(rc=1), started_at=0.0)}
         poll_completions(q, procs)
         assert os.path.isdir(root_path)
 
         redrive_goal = "Re-drive (attempt 2): do the thing\n\n(branch=task/root)"
-        redrive_path = td._create_task_worktree("root-r2", redrive_goal)
+        redrive_path = tw.create_task_worktree("root-r2", redrive_goal)
 
         assert os.path.isdir(redrive_path)
         assert redrive_path != root_path
@@ -1592,10 +1537,10 @@ def _write_failed_marker(worktree_path: str, timestamp: float) -> None:
     """Directly write the AC5 marker file with a chosen timestamp — lets the
     AC6 TTL/cap tests control "how old" a retained failure is without
     depending on wall-clock timing."""
-    import agents.task_dispatch as td
+    import agents.task_worktree as tw
 
     with open(
-        os.path.join(worktree_path, td._WORKTREE_FAILED_AT_MARKER), "w", encoding="utf-8"
+        os.path.join(worktree_path, tw._WORKTREE_FAILED_AT_MARKER), "w", encoding="utf-8"
     ) as fh:
         fh.write(str(timestamp))
 
@@ -1608,17 +1553,17 @@ class TestSweepTaskWorktrees:
     def test_prunes_absent_and_terminal_non_failure_rows(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        gone_path = td._create_task_worktree("gone")  # no status row at all
-        done_path = td._create_task_worktree("ok-done")
-        parked_path = td._create_task_worktree("ok-parked")
-        dup_path = td._create_task_worktree("ok-dup")
+        gone_path = tw.create_task_worktree("gone")  # no status row at all
+        done_path = tw.create_task_worktree("ok-done")
+        parked_path = tw.create_task_worktree("ok-parked")
+        dup_path = tw.create_task_worktree("ok-dup")
 
         queue = FakeTaskQueue(
             statuses={
@@ -1640,16 +1585,16 @@ class TestSweepTaskWorktrees:
         assert result.cap_evicted == 0
 
     def test_active_states_all_untouched(self, tmp_path: Any, monkeypatch: Any) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        pending_path = td._create_task_worktree("t-pending")
-        claimed_path = td._create_task_worktree("t-claimed")
-        running_path = td._create_task_worktree("t-running")
+        pending_path = tw.create_task_worktree("t-pending")
+        claimed_path = tw.create_task_worktree("t-claimed")
+        running_path = tw.create_task_worktree("t-running")
 
         queue = FakeTaskQueue(
             statuses={
@@ -1668,15 +1613,15 @@ class TestSweepTaskWorktrees:
         assert result.retained == 0
 
     def test_retains_failed_within_ttl_and_cap(self, tmp_path: Any, monkeypatch: Any) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        worktree_path = td._create_task_worktree("f1")
-        td._finalize_task_worktree("f1", success=False)
+        worktree_path = tw.create_task_worktree("f1")
+        tw.finalize_task_worktree("f1", success=False)
 
         queue = FakeTaskQueue(statuses={"f1": "failed"})
         result = sweep_task_worktrees(queue)
@@ -1688,15 +1633,15 @@ class TestSweepTaskWorktrees:
         assert result.cap_evicted == 0
 
     def test_ttl_prunes_retained_failure_past_window(self, tmp_path: Any, monkeypatch: Any) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        worktree_path = td._create_task_worktree("f2")
-        td._finalize_task_worktree("f2", success=False)
+        worktree_path = tw.create_task_worktree("f2")
+        tw.finalize_task_worktree("f2", success=False)
         _write_failed_marker(worktree_path, 1000.0)
 
         queue = FakeTaskQueue(statuses={"f2": "failed"})
@@ -1710,23 +1655,23 @@ class TestSweepTaskWorktrees:
     def test_cap_evicts_oldest_first_independent_of_ttl(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        path_a = td._create_task_worktree("f-a")
-        td._finalize_task_worktree("f-a", success=False)
+        path_a = tw.create_task_worktree("f-a")
+        tw.finalize_task_worktree("f-a", success=False)
         _write_failed_marker(path_a, 100.0)
 
-        path_b = td._create_task_worktree("f-b")
-        td._finalize_task_worktree("f-b", success=False)
+        path_b = tw.create_task_worktree("f-b")
+        tw.finalize_task_worktree("f-b", success=False)
         _write_failed_marker(path_b, 200.0)
 
-        path_c = td._create_task_worktree("f-c")
-        td._finalize_task_worktree("f-c", success=False)
+        path_c = tw.create_task_worktree("f-c")
+        tw.finalize_task_worktree("f-c", success=False)
         _write_failed_marker(path_c, 300.0)
 
         queue = FakeTaskQueue(statuses={"f-a": "failed", "f-b": "failed", "f-c": "failed"})
@@ -1747,14 +1692,14 @@ class TestSweepTaskWorktrees:
     def test_git_worktree_prune_reconciles_externally_deleted_dir(
         self, tmp_path: Any, monkeypatch: Any
     ) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        worktree_path = td._create_task_worktree("stale")
+        worktree_path = tw.create_task_worktree("stale")
         # Simulate an out-of-band deletion (e.g. a Windows handle-lock that
         # cleared on its own, or a manual cleanup) — the directory is gone,
         # but git's own worktree registration doesn't know that yet.
@@ -1781,24 +1726,24 @@ class TestSweepTaskWorktrees:
         assert "stale" not in after
 
     def test_removal_failure_logs_and_continues(self, tmp_path: Any, monkeypatch: Any) -> None:
-        import agents.task_dispatch as td
+        import agents.task_worktree as tw
 
         repo = tmp_path / "repo"
         repo.mkdir()
         _init_git_repo(repo)
-        monkeypatch.setattr(td, "_REPO_ROOT", str(repo))
+        monkeypatch.setattr(tw, "_REPO_ROOT", str(repo))
 
-        good_path = td._create_task_worktree("good")
-        bad_path = td._create_task_worktree("bad")
+        good_path = tw.create_task_worktree("good")
+        bad_path = tw.create_task_worktree("bad")
 
-        real_remove = td._remove_worktree
+        real_remove = tw.remove_worktree
 
         def flaky_remove(worktree_path: str) -> bool:
             if worktree_path == bad_path:
                 return False
             return real_remove(worktree_path)
 
-        monkeypatch.setattr(td, "_remove_worktree", flaky_remove)
+        monkeypatch.setattr(tw, "remove_worktree", flaky_remove)
 
         queue = FakeTaskQueue(statuses={"good": "done", "bad": "done"})
         result = sweep_task_worktrees(queue)  # must not raise

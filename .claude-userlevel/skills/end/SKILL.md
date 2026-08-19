@@ -144,7 +144,6 @@ memory_store(
     content="""### [entry] <branch-or-task-slug> — <YYYY-MM-DD> — <status>
 - What was done this session
 - Open items, context for next session
-- **Suggested next skills** (e.g. `/status → /implement #532 → /verify`)
 """,
     project=project,
     mode="merge_section",
@@ -166,7 +165,6 @@ The document is a markdown merge-doc with per-session `### [entry]` blocks. Stru
 - What was done this session
 - Open items: unfinished work, things to fix, deferred tasks
 - Key context for next session (blockers, decisions pending review)
-- **Suggested next skills** — explicit chain hint, e.g. `/status → /implement #532 → /verify`. One line, ordered. Omit only if truly nothing pending (rare; usually at least `/status`).
 
 [... possibly other old entries from previous sessions ...]
 ```

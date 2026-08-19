@@ -33,9 +33,9 @@ Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an
 
 ### 3a. AFK-fit checklist (apply per slice, decides `sandcastle` label)
 
-For each slice, answer four questions. Any "yes" ⇒ slice is **NOT** AFK-safe ⇒ do **NOT** apply the `sandcastle` label ⇒ the slice routes through interactive `/implement` rather than `/delegate`. All four "no" ⇒ apply `sandcastle`.
+For each slice, answer four questions. Any "yes" ⇒ slice is **NOT** AFK-safe ⇒ do **NOT** apply the `sandcastle` label ⇒ the slice routes through interactive `/implement` rather than `/dispatch`. All four "no" ⇒ apply `sandcastle`.
 
-This checklist is the upstream pair of the `/delegate` pre-dispatch gate. The gate refuses dispatch when `sandcastle` is missing — `/to-tickets` is the canonical place where the label gets applied (decision `6e753417`). Sandcastle label is **never applied manually** and **never applied by `/grill`** (slice issues don't exist at grill time).
+This checklist is the upstream pair of the `/dispatch` pre-dispatch gate. The gate refuses dispatch when `sandcastle` is missing — `/to-tickets` is the canonical place where the label gets applied (decision `6e753417`). Sandcastle label is **never applied manually** and **never applied by `/grill`** (slice issues don't exist at grill time).
 
 **Q1 — protected-zone intersection (static)**: do this slice's declared-changed files intersect any glob in the per-repo path-list at [`config/protected-paths.json`](../../../config/protected-paths.json)? Mechanical check via [`scripts/to_tickets_afk_fit.py`](../../../scripts/to_tickets_afk_fit.py) — call `intersects_protected(declared_files, repo, config)`. If yes → AFK-no, q2-4 are moot. Unknown repo ⇒ no static match ⇒ fall through to LLM judgement below; flag "unknown repo, judge manually" in the slice notes.
 
@@ -49,7 +49,7 @@ This checklist is the upstream pair of the `/delegate` pre-dispatch gate. The ga
 
 Record the AFK decision per slice (yes/no + the one question that flipped it, when applicable) so the quiz in §4 can show the owner *why* a slice is HITL.
 
-**The AFK-fit verdict is the single source of AFK-truth — for manual *and* automated emission.** The `/delegate` pre-dispatch gate is not the only consumer: any **automated task emitter** the project runs must honor the same verdict rather than trust a label blindly. In jarvis this is the reactive-core orchestrator's `emit_task` route — an orchestrator-emitted `task_queue` row carries the same AFK-fit semantics as a manually-triaged slice: AFK-safe ⇒ `assignee=sandcastle` (auto-spawned by the task-dispatch loop), AFK-unsafe ⇒ `assignee=owner` (routed for owner attention, never auto-spawned), mirroring the `status:owner-queue` landing zone where a refused `/delegate` parks. The binding (event/task state vocabulary, who enqueues with what priority) lives in the project's CLAUDE.md *Responsibility split* and CONTEXT.md `task_queue` glossary — not here, so this checklist stays project-agnostic.
+**The AFK-fit verdict is the single source of AFK-truth — for manual *and* automated emission.** The `/dispatch` pre-dispatch gate is not the only consumer: any **automated task emitter** the project runs must honor the same verdict rather than trust a label blindly. In jarvis this is the reactive-core orchestrator's `emit_task` route — an orchestrator-emitted `task_queue` row carries the same AFK-fit semantics as a manually-triaged slice: AFK-safe ⇒ `assignee=sandcastle` (auto-spawned by the task-dispatch loop), AFK-unsafe ⇒ `assignee=owner` (routed for owner attention, never auto-spawned), mirroring the `status:owner-queue` landing zone where a refused `/dispatch` parks. The binding (event/task state vocabulary, who enqueues with what priority) lives in the project's CLAUDE.md *Responsibility split* and CONTEXT.md `task_queue` glossary — not here, so this checklist stays project-agnostic.
 
 ### 3b. Expand-contract for wide refactors
 
@@ -112,14 +112,14 @@ For each approved slice, publish a new issue to the issue tracker. Use the issue
 **Label application at publish time**:
 
 - Slice passed AFK-fit checklist (all four "no") → apply the `sandcastle` label. This is the canonical place the label is set — see §3a, decision `6e753417`.
-- Slice failed AFK-fit (any "yes") → do **NOT** apply `sandcastle`. The slice routes via interactive `/implement` instead of `/delegate`. **A HITL slice still needs a positive label** — apply the project's HITL/attention marker from its CLAUDE.md label vocabulary (e.g. `unsafe-for-AFK`, `status:owner-queue`, or the repo's equivalent) plus any risk marker the failing question implies (e.g. a safety-review label when the slice touches safety-critical motion). Without a positive label the slice lands with an **empty status column** on the board and is invisible to triage — the AFK-no verdict must *produce* a label, not merely be the absence of `sandcastle`.
-- Slice carries unresolved scope or unclear AC discovered during §3a → apply the matching `needs-*` label (`needs-grill`, `needs-research`, `needs-prd`). The requesting skill removes its own `needs-*` label at terminal success — `/grill` removes `needs-grill`, `/research` removes `needs-research`, `/to-spec` removes `needs-prd`. `/delegate`'s pre-dispatch gate refuses any issue carrying a `needs-*` label.
+- Slice failed AFK-fit (any "yes") → do **NOT** apply `sandcastle`. The slice routes via interactive `/implement` instead of `/dispatch`. **A HITL slice still needs a positive label** — apply the project's HITL/attention marker from its CLAUDE.md label vocabulary (e.g. `unsafe-for-AFK`, `status:owner-queue`, or the repo's equivalent) plus any risk marker the failing question implies (e.g. a safety-review label when the slice touches safety-critical motion). Without a positive label the slice lands with an **empty status column** on the board and is invisible to triage — the AFK-no verdict must *produce* a label, not merely be the absence of `sandcastle`.
+- Slice carries unresolved scope or unclear AC discovered during §3a → apply the matching `needs-*` label (`needs-grill`, `needs-research`, `needs-prd`). The requesting skill removes its own `needs-*` label at terminal success — `/grill` removes `needs-grill`, `/research` removes `needs-research`, `/to-spec` removes `needs-prd`. `/dispatch`'s pre-dispatch gate refuses any issue carrying a `needs-*` label.
 
 **Every published issue MUST carry a starting status label** (the project's `status:ready` / `status:*` equivalent). Where the project's board is a read-only projection of `status:*` labels, an issue with no status label has an empty status column and is invisible to board-scoped triage. A slice startable now gets the "ready" status; a slice whose blockers are still open gets no "ready" status until they close (the native dependency below encodes the block).
 
 Publish issues in dependency order (blockers first) so you can reference real issue identifiers in the "Blocked by" field.
 
-**Wire native dependencies, not just prose** (mandatory): after publishing, encode each "Blocked by" edge as a **native issue dependency** on the tracker, not only as body text. Prose blocks decay and are invisible to the board's blocked-by view and to `/delegate`'s readiness check; the native edge is queryable and renders in the tracker UI. On GitHub, for each blocked→blocker pair:
+**Wire native dependencies, not just prose** (mandatory): after publishing, encode each "Blocked by" edge as a **native issue dependency** on the tracker, not only as body text. Prose blocks decay and are invisible to the board's blocked-by view and to `/dispatch`'s readiness check; the native edge is queryable and renders in the tracker UI. On GitHub, for each blocked→blocker pair:
 
 ```bash
 # blocker_id is the blocker's NUMERIC REST database id — NOT the issue number, NOT the GraphQL node_id.
@@ -133,11 +133,11 @@ MSYS_NO_PATHCONV=1 gh api --method POST repos/<owner>/<repo>/issues/<blockedN>/d
 
 Keep the prose "## Blocked by" section too — it is the human-readable rationale — but the native edge is the source of truth for tooling. Set every edge the DAG requires, including transitive blockers a slice lists explicitly.
 
-**Decision citation (mandatory, #1099)**: `/delegate`'s pre-dispatch gate requires every `sandcastle`-labeled issue's body to cite a decision UUID (or the `[no-decision]` marker) before it can be dispatched AFK. Populate the `## Decisions` section (see `<issue-template>` below) at publish time:
+**Decision citation (mandatory, #1099)**: `/dispatch`'s pre-dispatch gate requires every `sandcastle`-labeled issue's body to cite a decision UUID (or the `[no-decision]` marker) before it can be dispatched AFK. Populate the `## Decisions` section (see `<issue-template>` below) at publish time:
 
 - If this slice's scope was informed by one or more `record_decision` episodes — from the plan/PRD's own grill trail, or from `decision_uuids[]` carried over from an upstream `/grill` session — cite every relevant UUID under `## Decisions`, one per line, each with the one-line rationale from the decision (not just the bare UUID — the gate only needs the UUID present, but a bare hex string is useless to a human reader later).
 - If the slice is genuinely mechanical and no architectural decision informed it (a pure rename, a dependency bump, a doc fix), write `[no-decision]` instead of fabricating a UUID. Do not invent or reuse an unrelated UUID just to satisfy the gate — the gate now accepts the explicit marker for this case.
-- This applies to every slice, HITL or AFK — but it is load-bearing only for `sandcastle`-labeled (AFK) issues, since `/delegate`'s gate is what actually enforces it.
+- This applies to every slice, HITL or AFK — but it is load-bearing only for `sandcastle`-labeled (AFK) issues, since `/dispatch`'s gate is what actually enforces it.
 
 **Milestone assignment (every published issue MUST land in a milestone)**:
 
@@ -171,7 +171,7 @@ Avoid specific file paths or code snippets — they go stale fast. Exception: if
 
 - `<full-8-4-4-4-12-uuid>` — one-line rationale
 
-Or `[no-decision]` if this slice is purely mechanical and no `record_decision` episode informed its scope. Required for `sandcastle`-labeled issues — `/delegate`'s pre-dispatch gate refuses dispatch without one or the other (#1099).
+Or `[no-decision]` if this slice is purely mechanical and no `record_decision` episode informed its scope. Required for `sandcastle`-labeled issues — `/dispatch`'s pre-dispatch gate refuses dispatch without one or the other (#1099).
 
 ## Blocked by
 

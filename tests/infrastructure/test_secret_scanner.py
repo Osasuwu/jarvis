@@ -26,19 +26,19 @@ strip_heredocs = secret_scanner.strip_heredocs
 # ── Secret value detection (shared across GitHub + Bash) ─────────────────
 
 def test_detects_anthropic_key():
-    assert scan_secrets("key: sk-ant-api03-abc123def456ghi789jklmnop")
+    assert scan_secrets("key: sk-ant-api03-abc123def456ghi789jklmnop")  # gitleaks:allow
 
 def test_detects_github_token():
-    assert scan_secrets("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij")
+    assert scan_secrets("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij")  # gitleaks:allow
 
 def test_detects_github_pat():
-    assert scan_secrets("github_pat_11ABCDEFGH0123456789_abcdefghij")
+    assert scan_secrets("github_pat_11ABCDEFGH0123456789_abcdefghij")  # gitleaks:allow
 
 def test_detects_aws_key():
-    assert scan_secrets("AKIAIOSFODNN7EXAMPLE1")
+    assert scan_secrets("AKIAIOSFODNN7EXAMPLE1")  # gitleaks:allow
 
 def test_detects_jwt():
-    assert scan_secrets("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0")
+    assert scan_secrets("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0")  # gitleaks:allow
 
 def test_detects_telegram_bot_token():
     # 10-digit bot ID + 35 char token part
@@ -46,16 +46,16 @@ def test_detects_telegram_bot_token():
     assert scan_secrets(f"1234567890:{token_part}")
 
 def test_detects_openai_key():
-    assert scan_secrets("sk-proj1234567890abcdefghij")
+    assert scan_secrets("sk-proj1234567890abcdefghij")  # gitleaks:allow
 
 def test_detects_slack_token():
-    assert scan_secrets("xoxb-1234567890-abcdefghij")
+    assert scan_secrets("xoxb-1234567890-abcdefghij")  # gitleaks:allow
 
 def test_detects_private_key():
-    assert scan_secrets("-----BEGIN RSA PRIVATE KEY-----")
+    assert scan_secrets("-----BEGIN RSA PRIVATE KEY-----")  # gitleaks:allow
 
 def test_detects_credential_assignment():
-    assert scan_secrets('password = "SuperSecret12345678"')
+    assert scan_secrets('password = "SuperSecret12345678"')  # gitleaks:allow
 
 def test_ignores_normal_text():
     assert not scan_secrets("Fix the login page styling and add responsive layout")
@@ -240,15 +240,15 @@ def test_extract_memory_empty():
 # ── Memory scanning: blocked ──────────────────────────────────────────
 
 def test_memory_blocks_api_key():
-    text = extract_memory_text({"content": "key is sk-ant-api03-abc123def456ghi789jklmnop", "name": "test"})
+    text = extract_memory_text({"content": "key is sk-ant-api03-abc123def456ghi789jklmnop", "name": "test"})  # gitleaks:allow
     assert scan_secrets(text)
 
 def test_memory_blocks_jwt():
-    text = extract_memory_text({"content": "token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0", "name": "creds"})
+    text = extract_memory_text({"content": "token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0", "name": "creds"})  # gitleaks:allow
     assert scan_secrets(text)
 
 def test_memory_blocks_github_token():
-    text = extract_memory_text({"content": "Use ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij for access", "name": "setup"})
+    text = extract_memory_text({"content": "Use ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij for access", "name": "setup"})  # gitleaks:allow
     assert scan_secrets(text)
 
 
