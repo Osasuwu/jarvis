@@ -120,6 +120,32 @@ def test_ci_failure_high_emits_task():
     assert d.assignee == "sandcastle"
 
 
+def test_ci_failure_goal_includes_cross_repo_context():
+    """Cross-repo ci_failure goals carry the originating repo for debuggability."""
+    event = {
+        "event_type": "ci_failure",
+        "severity": "high",
+        "repo": "SergazyNarynov/redrobot",
+        "payload": {"workflow": "CI", "branch": "master"},
+    }
+    d = handle_event(event)
+    assert d.route is Route.EMIT_TASK
+    assert "SergazyNarynov/redrobot" in d.goal
+
+
+def test_ci_failure_goal_no_redundant_repo_for_own_repo():
+    """Own-repo ci_failure goals stay clean — no self-referential repo tag."""
+    event = {
+        "event_type": "ci_failure",
+        "severity": "high",
+        "repo": "Osasuwu/jarvis",
+        "payload": {"workflow": "Tests", "branch": "main"},
+    }
+    d = handle_event(event)
+    assert d.route is Route.EMIT_TASK
+    assert "Osasuwu/jarvis" not in d.goal
+
+
 def test_review_negative_medium_emits_rework():
     d = handle_event(_ev("review_negative", "medium", {"pr": 7}))
     assert d.route is Route.EMIT_TASK
