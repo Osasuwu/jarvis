@@ -316,12 +316,16 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
             reason="write scrubber gate disabled — owner review required",
         )
     if (event_type, severity) == ("ci_failure", "high"):
+        repo = str(event.get("repo") or "")
+        # ceiling: hardcoded own-repo slug preserves handle_event purity; upgrade
+        # path is a GITHUB_REPO config field once config.py carries repo identity.
+        repo_ctx = f" [{repo}]" if repo and repo != "Osasuwu/jarvis" else ""
         return _emit(
             event_type,
             severity,
             target,
             key,
-            goal=f"fix: ci_failure on {target or 'unknown target'}",
+            goal=f"fix: ci_failure on {target or 'unknown target'}{repo_ctx}",
         )
     if (event_type, severity) == ("review_negative", "medium"):
         return _emit(
