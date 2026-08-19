@@ -17,6 +17,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 gate = importlib.import_module("delegate_predispatch_gate")
 check_issue = gate.check_issue
+check_repo = gate.check_repo
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -197,7 +198,12 @@ def test_handles_missing_labels_key():
 
 
 def test_main_returns_zero_on_allow(monkeypatch, capsys):
-    envelope = {"issue": _issue(), "open_prs": [], "open_branches": []}
+    envelope = {
+        "issue": _issue(),
+        "repo": "Osasuwu/jarvis",
+        "open_prs": [],
+        "open_branches": [],
+    }
     monkeypatch.setattr("sys.stdin", _StringStream(json.dumps(envelope)))
     rc = gate.main([])
     assert rc == 0
@@ -208,6 +214,7 @@ def test_main_returns_zero_on_allow(monkeypatch, capsys):
 def test_main_returns_nonzero_on_refuse(monkeypatch, capsys):
     envelope = {
         "issue": _issue(body="", labels=()),
+        "repo": "Osasuwu/jarvis",
         "open_prs": [],
         "open_branches": [],
     }
@@ -217,6 +224,59 @@ def test_main_returns_nonzero_on_refuse(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "REFUSE" in out
     assert "sandcastle" in out
+
+
+def test_main_returns_one_on_repo_mismatch_before_readiness_check(monkeypatch, capsys):
+    """A foreign-repo issue is refused even if it also fails readiness (#1651)."""
+    envelope = {
+        "issue": _issue(body="", labels=()),
+        "repo": "SergazyNarynov/redrobot",
+        "open_prs": [],
+        "open_branches": [],
+    }
+    monkeypatch.setattr("sys.stdin", _StringStream(json.dumps(envelope)))
+    rc = gate.main([])
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "REFUSE" in out
+    assert "SergazyNarynov/redrobot" in out
+    assert "sandcastle" not in out  # repo check short-circuits before readiness
+
+
+def test_main_skips_on_missing_repo_key(monkeypatch, capsys):
+    envelope = {"issue": _issue(), "open_prs": [], "open_branches": []}
+    monkeypatch.setattr("sys.stdin", _StringStream(json.dumps(envelope)))
+    rc = gate.main([])
+    assert rc == 2
+    out = capsys.readouterr().out
+    assert "SKIP" in out
+    assert "repo" in out
+
+
+# ── check_repo (#1651) ───────────────────────────────────────────────────────
+
+
+def test_check_repo_allows_matching_default():
+    result = check_repo("Osasuwu/jarvis", default_repo="Osasuwu/jarvis")
+    assert result.allow
+
+
+def test_check_repo_refuses_mismatch():
+    result = check_repo("SergazyNarynov/redrobot", default_repo="Osasuwu/jarvis")
+    assert not result.allow
+    assert "SergazyNarynov/redrobot" in result.message
+    assert "M58" in result.message or "#1651" in result.message
+
+
+def test_check_repo_falls_back_to_github_repo_env(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPO", "Osasuwu/other-repo")
+    assert check_repo("Osasuwu/other-repo").allow
+    assert not check_repo("Osasuwu/jarvis").allow
+
+
+def test_check_repo_falls_back_to_hardcoded_default_when_env_unset(monkeypatch):
+    monkeypatch.delenv("GITHUB_REPO", raising=False)
+    assert check_repo("Osasuwu/jarvis").allow
 
 
 class _StringStream:
