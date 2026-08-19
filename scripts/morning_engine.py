@@ -7,12 +7,24 @@ sum of S/M/L-converted estimates (never "first N").
 Render (#1588) and the detector-gap-journal source (#1595) are wired in; the S/M/L
 budget-unit translation and the day budget below are the single explicit
 place either constant is defined — real calibration is deferred to #1578.
+
+Provenance (#1589): each section carries its own SectionProvenance; fold_provenance
+is called explicitly in analyze() so no per-section stamp is ever lost silently.
 """
 
 from __future__ import annotations
 
 from scripts.detector_gap_log import PromoteSuggestion
-from scripts.digest_schema import Digest, Plan, PlanItem, SCHEMA_VERSION, Section, SectionProvenance
+from scripts.digest_schema import (
+    AbsenceKind,
+    Digest,
+    Plan,
+    PlanItem,
+    SCHEMA_VERSION,
+    Section,
+    SectionProvenance,
+    fold_provenance,
+)
 from scripts.morning_gather import MorningGatherResult, MorningSourceKind
 
 # below this repeat count, a gap is still noise, not a promote candidate
@@ -42,6 +54,9 @@ def compute_cut_line_after(items: list[PlanItem], budget_units: int | None = Non
 
 def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
     milestones_prov = sources.provenance.get(MorningSourceKind.GH_MILESTONES, {})
+    ran = milestones_prov.get("ran", False)
+    ok = milestones_prov.get("ok", False)
+    input_rows = milestones_prov.get("input_rows", 0)
 
     if not sources.repos:
         return Section(
@@ -49,9 +64,10 @@ def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
             items=[],
             reason="no repos gathered",
             provenance=SectionProvenance(
-                ran=milestones_prov.get("ran", False),
-                ok=milestones_prov.get("ok", False),
+                ran=ran,
+                ok=ok,
                 source="morning_gather",
+                input_rows=input_rows,
             ),
         )
 
@@ -64,9 +80,10 @@ def _build_repo_hygiene_section(sources: MorningGatherResult) -> Section:
         items=items,
         reason=None,
         provenance=SectionProvenance(
-            ran=milestones_prov.get("ran", False),
-            ok=milestones_prov.get("ok", False),
+            ran=ran,
+            ok=ok,
             source="morning_gather",
+            input_rows=input_rows,
         ),
     )
 
@@ -98,6 +115,27 @@ def _build_detector_gaps_section(sources: MorningGatherResult) -> Section:
             ran=gaps_prov.get("ran", False),
             ok=gaps_prov.get("ok", False),
             source="morning_gather",
+        ),
+    )
+
+
+def _build_learning_section() -> Section:
+    """Learning section: always empty pending #1338 (exposition journal).
+
+    Absence kind is NOT_CONNECTED — a stable known limitation, not a failure.
+    It appears in the lead line as a known limitation rather than raising the
+    degradation level.
+    """
+    return Section(
+        name="learning",
+        items=[],
+        reason="exposition journal not yet available (blocked by #1338)",
+        provenance=SectionProvenance(
+            ran=False,
+            ok=False,
+            source="",
+            absence_kind=AbsenceKind.NOT_CONNECTED,
+            absence_reason="blocked by #1338",
         ),
     )
 
@@ -137,13 +175,23 @@ def _synthesize_plan(sources: MorningGatherResult) -> Plan:
 
 
 def analyze(sources: MorningGatherResult) -> Digest:
-    """Assemble a Digest from gathered morning sources."""
-    sections = [_build_repo_hygiene_section(sources), _build_detector_gaps_section(sources)]
+    """Assemble a Digest from gathered morning sources.
+
+    Provenance (#1589): fold_provenance is called as an explicit operation so
+    every per-section stamp survives into the top-level degradation summary.
+    """
+    sections = [
+        _build_repo_hygiene_section(sources),
+        _build_detector_gaps_section(sources),
+        _build_learning_section(),
+    ]
     plan = _synthesize_plan(sources)
+    degradation = fold_provenance(sections)
 
     return Digest(
         schema_version=SCHEMA_VERSION,
         sections=sections,
         plan=plan,
+        degradation=degradation,
         origin={"gathered_at": sources.gathered_at},
     )

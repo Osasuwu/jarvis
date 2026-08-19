@@ -11,7 +11,16 @@ from __future__ import annotations
 import io
 import json
 
-from scripts.digest_schema import Digest, Plan, PlanItem, SCHEMA_VERSION, Section, SectionProvenance
+from scripts.digest_schema import (
+    AbsenceKind,
+    Digest,
+    Plan,
+    PlanItem,
+    SCHEMA_VERSION,
+    Section,
+    SectionProvenance,
+    fold_provenance,
+)
 from scripts.morning_render import main, render
 
 
@@ -230,3 +239,128 @@ def test_main_returns_2_on_invalid_json(monkeypatch, capsys):
 
     assert rc == 2
     assert "invalid digest JSON" in capsys.readouterr().err
+
+
+# ============================================================================
+# #1589 — provenance distinction: NOT_CONNECTED vs FAILED in lead line
+# ============================================================================
+
+
+def _section_with_provenance(
+    name: str,
+    ok: bool,
+    absence_kind: str | None = None,
+    reason: str | None = None,
+) -> Section:
+    return Section(
+        name=name,
+        items=[],
+        reason=reason,
+        provenance=SectionProvenance(
+            ran=ok or absence_kind != AbsenceKind.NOT_CONNECTED,
+            ok=ok,
+            source="test",
+            absence_kind=absence_kind,
+        ),
+    )
+
+
+def test_failed_section_appears_as_degradation_in_lead_line():
+    """A section that ran and returned ok=False raises degradation_level and
+    appears in the '⚠ Деградация' part of the lead line."""
+    failed_section = _section_with_provenance(
+        "goals", ok=False, absence_kind=AbsenceKind.FAILED
+    )
+    degradation = fold_provenance([failed_section])
+    digest = _digest(sections=[failed_section], degradation=degradation)
+
+    out = render(digest.to_dict())
+
+    assert "Деградация" in out
+    assert "goals" in out
+
+
+def test_not_connected_section_appears_as_known_limitation_not_as_degradation():
+    """A NOT_CONNECTED section (stable state, no detector) does NOT raise
+    degradation_level and is shown under '⚠ Ограничения', not '⚠ Деградация'."""
+    not_connected = _section_with_provenance(
+        "learning",
+        ok=False,
+        absence_kind=AbsenceKind.NOT_CONNECTED,
+        reason="blocked by #1338",
+    )
+    degradation = fold_provenance([not_connected])
+    digest = _digest(sections=[not_connected], degradation=degradation)
+
+    out = render(digest.to_dict())
+
+    assert "Деградация" not in out
+    assert "Ограничения" in out
+    assert "learning" in out
+
+
+def test_both_failure_and_not_connected_appear_in_lead_line_distinctly():
+    """When a digest has both a failure and a known limitation, the lead line
+    shows both — failures under '⚠ Деградация', limitations under 'ℹ Ограничения'."""
+    failed = _section_with_provenance("goals", ok=False, absence_kind=AbsenceKind.FAILED)
+    limited = _section_with_provenance(
+        "learning", ok=False, absence_kind=AbsenceKind.NOT_CONNECTED
+    )
+    sections = [failed, limited]
+    degradation = fold_provenance(sections)
+    digest = _digest(sections=sections, degradation=degradation)
+
+    out = render(digest.to_dict())
+
+    assert "Деградация" in out
+    assert "goals" in out
+    assert "Ограничения" in out
+    assert "learning" in out
+
+
+def test_lead_line_appears_before_know_block_when_only_known_limitations():
+    """Known limitations produce a lead line that precedes the Знать block."""
+    not_connected = _section_with_provenance(
+        "learning", ok=False, absence_kind=AbsenceKind.NOT_CONNECTED
+    )
+    degradation = fold_provenance([not_connected])
+    digest = _digest(sections=[not_connected], degradation=degradation)
+
+    out = render(digest.to_dict())
+
+    limitation_pos = out.find("Ограничения")
+    know_pos = out.find("Знать")
+
+    assert limitation_pos != -1
+    assert know_pos != -1
+    assert limitation_pos < know_pos
+
+
+def test_empty_section_with_reason_printed_not_omitted():
+    """A section without items but with a reason is rendered with the reason,
+    not silently omitted from output."""
+    section = _section_with_provenance(
+        "learning",
+        ok=False,
+        absence_kind=AbsenceKind.NOT_CONNECTED,
+        reason="blocked by #1338",
+    )
+    digest = _digest(sections=[section])
+
+    out = render(digest.to_dict())
+
+    assert "learning" in out
+    assert "#1338" in out or "Ограничения" in out or "blocked" in out
+
+
+def test_no_fallback_render_empty_success_when_sections_missing():
+    """When sections are missing entirely (gather failure), the digest must NOT
+    produce a clean 'all-ok' render that hides the missing data."""
+    empty_digest = Digest(schema_version=SCHEMA_VERSION)
+
+    out = render(empty_digest.to_dict())
+
+    # A digest with no sections at all should NOT produce a clean empty success.
+    # The render may produce an output, but it should not contain "без проблем"
+    # (the all-ok repo hygiene line) since there IS no repo hygiene data.
+    assert "без проблем" not in out or "Гигиена" not in out
