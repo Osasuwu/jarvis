@@ -42,8 +42,8 @@ Design resolved in #1147 via `/grill`, decision `9e3584e4-1e62-4ed8-8d2a-3055bf2
 
 Given a milestone (or an explicit set of milestones/issues), an issue is:
 
-- **Ready (frontier)** — open, carries no `needs-*` label, no `status:blocked` label, and every `blocked_by` edge (if any) points to a closed issue.
-- **Blocked** — open, no `needs-*` label, but either carries `status:blocked` or has ≥1 open `blocked_by` edge. Report what it's blocked on when a native edge exists; when only the `status:blocked` label is present with no edge, say so explicitly ("blocked, reason not machine-readable — check issue body/comments") rather than guessing. Confirmed via dry-run against live jarvis issues (#1412, #1375): `status:blocked` is applied manually today and frequently has no matching `blocked_by` edge, so the label must be checked independently of the edge, not inferred from it.
+- **Ready (frontier)** — open, carries no `needs-*` label, and every `blocked_by` edge (if any) points to a closed issue.
+- **Blocked** — open, no `needs-*` label, has ≥1 open `blocked_by` edge. Report what it's blocked on using the edge. Native `blocked_by` edges are the single source of blocked state (#1657) — there is no manual-label fallback; a manual blocker uses a specific label (`needs-*`, `status:owner-queue`) or a native edge, never a catch-all blocked label.
 - **Needs triage** — open and carries a `needs-*` label. Report which one, so the right downstream skill (`/research`, `/grill`, `/to-spec`, or a manual `/prototype` session) is obvious.
 - **Decision node, not a task** — an issue whose body is scoped to producing a decision (typically `needs-grill` or `needs-prd`) rather than shippable code. Flag these explicitly in the report and never recommend dispatching them to an AFK agent as if they were implementation work — this exact confusion is a documented upstream failure mode (Pocock field reports #625, #518: agents ignored a `needs-*`-equivalent label and "resolved" a decision ticket with code, or a decision ticket got mis-triaged as `ready-for-agent`). `/wayfinder`'s bucketing is the guard against repeating it here.
 
@@ -61,7 +61,6 @@ The principal invokes `/wayfinder` and optionally names a scope (a milestone, se
 
    ## Blocked
    - #124 <title> — blocked on #120 (open)
-   - #128 <title> — status:blocked, reason not machine-readable — check issue body/comments
 
    ## Needs triage
    - #125 <title> — needs-grill → route to /grill

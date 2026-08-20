@@ -45,7 +45,6 @@ CLEAN_LABELS: list[CleanLabel] = [
         "status",
     ),
     CleanLabel("status:review", "d4c5f9", "Under review", "status"),
-    CleanLabel("status:blocked", "b60205", "Blocked", "status"),
     CleanLabel(
         "status:owner-queue",
         "f9a03c",

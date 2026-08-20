@@ -817,7 +817,7 @@ class TestGhRunner:
         what still fails if the fix is reverted on a UTF-8-locale runner where
         the round-trip would pass anyway.
         """
-        payload = '[{"description": "Блокировано", "name": "status:blocked"}]'
+        payload = '[{"description": "Блокировано", "name": "status:review"}]'
         real_run = subprocess.run
         captured = {}
 
@@ -830,7 +830,7 @@ class TestGhRunner:
         out = gh_runner("repos/SergazyNarynov/redrobot/labels")
 
         assert captured["kwargs"].get("encoding") == "utf-8"
-        assert out == [{"description": "Блокировано", "name": "status:blocked"}]
+        assert out == [{"description": "Блокировано", "name": "status:review"}]
 
     def test_timeout_maps_to_runtime_error(self, monkeypatch):
         """subprocess.TimeoutExpired must surface as a RuntimeError naming the
