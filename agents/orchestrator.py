@@ -21,6 +21,7 @@ import enum
 import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Callable, Mapping
@@ -316,12 +317,15 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
             reason="write scrubber gate disabled — owner review required",
         )
     if (event_type, severity) == ("ci_failure", "high"):
+        repo = str(event.get("repo") or "")
+        own_repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
+        repo_ctx = f" [{repo}]" if repo and repo != own_repo else ""
         return _emit(
             event_type,
             severity,
             target,
             key,
-            goal=f"fix: ci_failure on {target or 'unknown target'}",
+            goal=f"fix: ci_failure on {target or 'unknown target'}{repo_ctx}",
         )
     if (event_type, severity) == ("review_negative", "medium"):
         return _emit(
