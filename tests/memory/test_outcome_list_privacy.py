@@ -1,9 +1,13 @@
-"""PR #1662 review: outcome_list must not leak cross-project (personal)
-outcomes — sibling of the goal_list leak fixed in the same PR
-(test_goal_list_privacy.py). Before the fix, an unscoped ``outcome_list``
-call (no ``project`` arg) applied no project filter at all, so
-``project IS NULL`` rows — personal task outcomes — came back alongside
-every project-scoped outcome.
+"""#1662 review — outcome_list must NOT filter project=NULL rows out of an
+unscoped call.
+
+Sibling of ``test_goal_list_privacy.py``'s revert: a prior revision applied
+the identical "exclude project=NULL on unscoped call" fix here too, citing
+the goal_list leak as justification. But ``/weekly-release`` never calls
+``outcome_list`` at all (checked against ``weekly-release/SKILL.md``), so
+there was no leak path to close in the first place — while ``/verify``'s
+Step 1 calls ``outcome_list(outcome_status="pending")`` unscoped and expects
+to see *all* pending outcomes, personal ones included.
 """
 
 from __future__ import annotations
@@ -62,7 +66,7 @@ def _client():
 
 
 @pytest.mark.asyncio
-async def test_unscoped_outcome_list_excludes_cross_project_outcomes(monkeypatch):
+async def test_unscoped_outcome_list_includes_cross_project_outcomes(monkeypatch):
     monkeypatch.setattr("server._get_client", _client)
 
     result = await _handle_outcome_list({})
@@ -70,7 +74,7 @@ async def test_unscoped_outcome_list_excludes_cross_project_outcomes(monkeypatch
     text = result[0].text
     assert "Ship weekly-release S1" in text
     assert "Calibrate arm" in text
-    assert "Book dentist appointment" not in text
+    assert "Book dentist appointment" in text
 
 
 @pytest.mark.asyncio

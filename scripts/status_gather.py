@@ -268,6 +268,8 @@ def resolve_jarvis_home(jarvis_home: str = "") -> str:
             capture_output=True,
             text=True,
             stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
         )
         if git_result.returncode == 0:

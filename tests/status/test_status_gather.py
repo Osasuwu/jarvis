@@ -23,6 +23,7 @@ from scripts.status_gather import (
     _default_run_gh,
     gather,
     gather_contradiction_cache,
+    resolve_jarvis_home,
 )
 
 
@@ -972,6 +973,16 @@ class TestDefaultRunnersUtf8:
         assert captured.get("encoding") == "utf-8"
         assert captured.get("errors") == "replace"
         assert out["stdout"] == "тест"
+
+    def test_resolve_jarvis_home_git_fallback_requests_utf8(self, monkeypatch):
+        """#1662 review — resolve_jarvis_home's own git rev-parse call was
+        missing the encoding/errors kwargs its sibling helpers already carry.
+        """
+        monkeypatch.delenv("JARVIS_HOME", raising=False)
+        captured = self._capture_run(monkeypatch)
+        resolve_jarvis_home("")
+        assert captured.get("encoding") == "utf-8"
+        assert captured.get("errors") == "replace"
 
 
 class TestDefaultRunnersDetachStdin:

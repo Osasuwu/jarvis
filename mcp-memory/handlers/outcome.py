@@ -175,11 +175,6 @@ async def _handle_outcome_list(args: dict) -> list[TextContent]:
 
     if args.get("project"):
         query = query.eq("project", args["project"])
-    else:
-        # #1662 review: sibling of the goal_list leak fixed in goal.py —
-        # an unscoped call must not leak cross-project (personal,
-        # project IS NULL) outcomes.
-        query = query.not_.is_("project", "null")
     if args.get("goal_slug"):
         query = query.eq("goal_slug", args["goal_slug"])
     if args.get("outcome_status"):

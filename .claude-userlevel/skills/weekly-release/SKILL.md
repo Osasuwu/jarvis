@@ -43,7 +43,7 @@ For each `RepoWindowResult`:
 
 Write `notes_body`: one line per substantive `window_entries` item, each citing its PR/issue number (`#NNN`) so `lint_release_notes` can validate it against `window_refs`. `lang=ru,en` on the repos.conf entry (`repo_result.lang`) → append an English `<details>` block translating the same cited facts, no new claims.
 
-Write the goals section: `format_goal_section(goal_list(project=<repo-slug>, status="active"))` — **`project` must be the explicit repo slug, never empty/None** (mcp-memory/handlers/goal.py leak fix, same issue #1572 — an empty project used to return cross-project goals, which would leak personal goals into a public release).
+Write the goals section: `format_goal_section(goal_list(project=<repo-slug>, status="active"))` — **`project` must be the explicit repo slug, never empty/None**: `goal_list`'s unscoped default returns cross-project (including personal) goals for other callers' benefit (`/goals`, `/end`, `/verify`), so an empty project here would leak personal goals into a public release body. Scoping is this skill's own responsibility, not the handler's.
 
 Write `remaining_section` as prose over `repo_result.remaining_issues` (LLM rewrites the open-milestone-issue list into prose; the issues themselves are the source of truth, this step only rewrites into readable text under a `## Осталось` heading — omit the heading entirely if there's nothing to say).
 
