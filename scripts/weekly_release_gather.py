@@ -21,9 +21,7 @@ the weekly-release skill as the intended consumer of parse_repos_conf_entries.
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -38,6 +36,7 @@ from scripts.status_gather import (
     QuerySupabaseFn,
     RunGhFn,
     _default_run_gh,
+    resolve_jarvis_home,
 )
 from scripts.weekly_release_engine import compute_window
 
@@ -422,23 +421,7 @@ def gather(
 
     result = WeeklyReleaseGatherResult(gathered_at=gathered_at)
 
-    if not jarvis_home:
-        jarvis_home = os.environ.get("JARVIS_HOME", "").strip()
-    if not jarvis_home:
-        try:
-            git_result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=5,
-            )
-            if git_result.returncode == 0:
-                jarvis_home = git_result.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
-    if not jarvis_home:
-        jarvis_home = os.getcwd()
+    jarvis_home = resolve_jarvis_home(jarvis_home)
 
     conf_path = str(Path(jarvis_home) / REPOS_CONF_RELPATH)
     try:
