@@ -443,11 +443,15 @@ def gather(
             (r["published_at"] for r in releases if r.get("published") and r.get("published_at")),
             None,
         )
-        # A pending draft's own anchor is a live read of that draft release,
-        # not something this gather can infer standalone — left None here;
-        # the caller (skill runtime) threads it through if a pending draft
-        # already exists for this repo.
-        window = compute_window(last_release_at, None, now_iso)
+        # A pending draft's own anchor: if the most recent release in the
+        # history we already fetched is itself unpublished, that's the
+        # in-flight draft to dedup against (its created_at, since drafts
+        # have no published_at) — re-running should update that draft's
+        # window, not restart the clock or duplicate it (#1572 AC).
+        pending_draft_at = (
+            releases[0].get("created_at") if releases and not releases[0].get("published") else None
+        )
+        window = compute_window(last_release_at, pending_draft_at, now_iso)
 
         merged, merged_refs, merged_prov = _gather_merged_window(
             repo, _run_gh, window.start, window.end

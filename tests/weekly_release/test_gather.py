@@ -207,3 +207,44 @@ def test_gather_filters_repos_conf_to_weekly_releases_only():
     repo_names = [r.repo for r in result.repos]
     assert repo_names == ["o/weekly-repo"]
     assert WeeklyReleaseSourceKind.REPOS_CONF in result.provenance
+
+
+def test_gather_anchors_window_on_existing_pending_draft():
+    # #1662 review: a repo's most-recent release is an unpublished (pending)
+    # draft -> compute_window() must anchor on the draft's own created_at,
+    # not on the last *published* release, so re-running updates the same
+    # draft's window instead of restarting the clock or duplicating it.
+    entries = [RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"})]
+
+    releases_ndjson = "\n".join(
+        json.dumps(r)
+        for r in [
+            {
+                "tag_name": "v0.3.0",
+                "published_at": None,
+                "created_at": "2026-08-15T00:00:00Z",
+                "draft": True,
+            },
+            {
+                "tag_name": "v0.2.0",
+                "published_at": "2026-07-01T00:00:00Z",
+                "created_at": "2026-07-01T00:00:00Z",
+                "draft": False,
+            },
+        ]
+    )
+
+    def fake_run_gh(repo, args):
+        if args[0] == "api":
+            return {"stdout": releases_ndjson, "stderr": "", "returncode": 0}
+        return {"stdout": "[]", "stderr": "", "returncode": 0}
+
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=lambda path: entries,
+        run_gh_fn=fake_run_gh,
+        now_fn=lambda: 1786000000.0,
+    )
+    repo_result = result.repos[0]
+    assert repo_result.window_start == "2026-08-15T00:00:00+00:00"
