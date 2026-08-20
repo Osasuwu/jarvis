@@ -1,16 +1,37 @@
 ---
 name: weekly-release
-description: "Draft a weekly GitHub release per config/repos.conf `releases=weekly` repo — readiness/semver/trust-ramp decided by scripts/weekly_release_engine.py, window+repos.conf/gh I/O by scripts/weekly_release_gather.py, release-note prose authored and fact-anchoring-linted inline. S1: manual invocation, draft-only output — never auto-publishes. Routine scheduling and delivery are S2 (#1572 body)."
+description: "Draft a weekly GitHub release per config/repos.conf `releases=weekly` repo — readiness/semver/trust-ramp decided by scripts/weekly_release_engine.py, window+repos.conf/gh I/O by scripts/weekly_release_gather.py, release-note prose authored and fact-anchoring-linted inline. S1 (#1572): manual invocation, draft-only output — never auto-publishes. S2 (#1658): routine invocation on the Workshop host gated by config/device.json, plus a notify_text delivery step — still draft-only."
 disable-model-invocation: true
 ---
 
 # Weekly Release
 
-Produces one draft GitHub release per [`config/repos.conf`](../../../config/repos.conf) repo carrying a `releases=weekly` token. S1 slice (#1572): the vertical to a first **draft**. No scheduling, no auto-publish delivery — those are S2. Invoke by name (`/weekly-release`); it has no anchored chat trigger.
+Produces one draft GitHub release per [`config/repos.conf`](../../../config/repos.conf) repo carrying a `releases=weekly` token. S1 slice (#1572): the vertical to a first **draft**. Invoke by name (`/weekly-release`); it has no anchored chat trigger. S2 slice (#1658) adds routine scheduling (Step 0 device gate) and notification delivery (Step 5) — the draft-authoring steps below are otherwise unchanged from S1.
 
-**Boundary — draft only, always.** Per `docs/context/invariants.md` → *"Sending as the owner isn't autonomous until 'digital twin' ships"*: this skill NEVER runs `gh release edit --draft=false` / publishes. Even when [`trust_ramp_state()`](../../../scripts/weekly_release_engine.py) returns `"auto"`, S1 still stops at a draft — trust-ramp-driven auto-publish is S2 delivery wiring, not this slice. The owner publishes manually.
+**Boundary — draft only, always.** Per `docs/context/invariants.md` → *"Sending as the owner isn't autonomous until 'digital twin' ships"*: this skill NEVER runs `gh release edit --draft=false` / publishes. Even when [`trust_ramp_state()`](../../../scripts/weekly_release_engine.py) returns `"auto"`, this skill still stops at a draft — trust-ramp-driven auto-publish is not this slice. The owner publishes manually; Step 5's notification exists precisely because the owner has to act on the draft themselves.
 
-**Split.** Decision core (pure functions, no I/O) is [`scripts/weekly_release_engine.py`](../../../scripts/weekly_release_engine.py). I/O adapter (repos.conf + `gh` reads, no writes) is [`scripts/weekly_release_gather.py`](../../../scripts/weekly_release_gather.py). This skill is the only place that writes (`gh release create`/`edit --draft`) — neither module touches `gh` write paths, mirroring the read/write split the rest of the gather/engine family uses.
+**Split.** Decision core (pure functions, no I/O) is [`scripts/weekly_release_engine.py`](../../../scripts/weekly_release_engine.py). I/O adapter (repos.conf + `gh` reads, no writes) is [`scripts/weekly_release_gather.py`](../../../scripts/weekly_release_gather.py). This skill is the only place that writes (`gh release create`/`edit --draft`, `notify_text`) — neither module touches `gh` write paths or notification delivery, mirroring the read/write split the rest of the gather/engine family uses.
+
+## Step 0 — Routine-mode device gate (routine invocations only, #1658 AC1)
+
+Manual invocation (the owner typing `/weekly-release`) skips this step entirely — it runs on any device, exactly as in S1. This gate applies only when the Workshop-registered weekly cron cold-boots this skill headlessly.
+
+```bash
+python -c "
+import json
+from scripts.weekly_release_engine import is_routine_host
+
+with open('config/device.json') as f:
+    device_config = json.load(f)
+
+if not is_routine_host(device_config):
+    print('refused: routines are host-only (config/device.json routine_host != true).')
+    print('To designate this device as the routine host, set \"routine_host\": true in config/device.json.')
+    raise SystemExit(1)
+"
+```
+
+Same refusal pattern as `/setup-tasks` — decision `1b7ff8d1-bbca-4207-a7e4-4c1edddef67e`: one device is the sole routine host, every other device refuses rather than double-running the routine. Registering the routine itself (the cron entry on Workshop) is a manual step, not automated by this slice — see `.claude-userlevel/skills/setup-tasks/SKILL.md` → *Routines (MCP)*.
 
 ## Step 1 — Gather
 
@@ -75,6 +96,27 @@ Then, via `gh` (write step — the one thing this skill does that the gather mod
 - **Existing pending draft found in Step 2.6** → `gh release edit <existing-tag> --repo <owner/repo> --notes-file <path-to-body>` (update in place, do not create a second draft for the same window)
 
 Report the draft URL(s) back to the owner. Do not publish. Do not send anything as the owner beyond creating the draft itself (the draft is a proposal artifact, not outbound communication).
+
+## Step 5 — Notify (routine invocations only, #1658 AC2/AC3/AC4)
+
+Manual invocation skips this step too — the draft URL(s) already reported in Step 4's chat output are the notification when the owner is present. Routine invocations have no one watching chat, so this step is what actually reaches the owner.
+
+For each repo, `status` is `"draft"` when Step 4 created or updated a draft for it, or `"none"` when the repo was skipped in Step 2.1 (no release this week) — these are the only two cases that reach this step, and they must map to different `status` values, not the same one: `weekly_release_notification_for` treats any `status == "draft"` as "a draft exists, notify the owner," so passing `"draft"` for the skipped case would send a false notification for a non-existent draft. `"none"` (any value outside `{"draft", "published"}`) is what makes the function return `None` below. This skill never sets `status="published"` per the draft-only boundary above; that value exists in `weekly_release_notification_for` for a future publish-delivery slice, not this one.
+
+```python
+import os
+
+from agents.notify import notify_text
+from scripts.weekly_release_engine import weekly_release_notification_for
+
+# repo, new_version, status come from Steps 2-4 above, per repo processed this run.
+notification = weekly_release_notification_for(repo, new_version, status)
+if notification is not None:
+    subject, body = notification
+    notify_text(subject, body, env=os.environ)
+```
+
+`weekly_release_notification_for` returns `None` for a no-release week (`status` outside `{"draft", "published"}`) — that `None` is the "stay silent" signal (AC3): skip `notify_text` entirely rather than sending an empty notification, so a quiet week doesn't become weekly spam. `notify_text` resolves the transport via `resolve_notifier(env)` and is a no-raise call — read `os.environ` once here, at this step's own boundary, and pass it down as `env`; no other code in this skill or in `weekly_release_engine.py`/`weekly_release_gather.py` reads `os.environ` directly (issue #1658's own requirement). Quiet-hours suppression (AC4, `NOTIFY_QUIET_HOURS`) is handled inside `notify_text` itself — nothing extra to do here.
 
 ## Failure modes
 

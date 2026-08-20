@@ -388,3 +388,130 @@ def test_apprise_notifier_exception_message_sanitizes_non_http_scheme():
     logged_args = " ".join(str(a) for call in fake_logger.warning.call_args_list for a in call.args)
     assert "tok-secret-value" not in logged_args
     assert "<redacted-url>" in logged_args
+
+
+# -- notify_text (#1658 AC2/AC3/AC4) -----------------------------------------
+
+
+def test_notify_text_dispatches_through_resolved_transport():
+    """notify_text must resolve via resolve_notifier — never a parallel
+    transport path — so any transport shape (dotted-path here) works."""
+    import notify_transport_double
+
+    from agents.notify import notify_text
+
+    notify_transport_double.calls.clear()
+    ok = notify_text(
+        "Draft awaiting publication: jarvis v1.2.3",
+        "",
+        {"NOTIFY_TRANSPORT": "notify_transport_double:fake_transport"},
+    )
+    assert ok is True
+    assert len(notify_transport_double.calls) == 1
+    assert notify_transport_double.calls[0].message == "Draft awaiting publication: jarvis v1.2.3"
+
+
+def test_notify_text_joins_subject_and_body():
+    import notify_transport_double
+
+    from agents.notify import notify_text
+
+    notify_transport_double.calls.clear()
+    notify_text(
+        "subject",
+        "body line",
+        {"NOTIFY_TRANSPORT": "notify_transport_double:fake_transport"},
+    )
+    assert notify_transport_double.calls[0].message == "subject\n\nbody line"
+
+
+def test_notify_text_never_reads_process_environ(monkeypatch):
+    class ExplodingEnviron(dict):
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("notify_text must not read os.environ directly")
+
+    monkeypatch.setattr(os, "environ", ExplodingEnviron(TELEGRAM_BOT_TOKEN="tok"))
+    from agents.notify import notify_text
+
+    assert notify_text("subject", "body", {"NOTIFY_TRANSPORT": "none"}) is True
+
+
+def test_notify_text_never_raises_when_notifier_raises(monkeypatch, caplog):
+    def _boom(_decision):
+        raise RuntimeError("transport exploded")
+
+    monkeypatch.setattr("agents.notify.resolve_notifier", lambda env: ("boom", _boom))
+    from agents.notify import notify_text
+
+    with caplog.at_level("WARNING", logger="agents.notify"):
+        assert notify_text("subject", "body", {}) is False
+
+
+# -- quiet hours (#1658 AC4) --------------------------------------------------
+
+
+def test_in_quiet_hours_true_when_now_inside_window():
+    from datetime import datetime
+
+    from agents.notify import _in_quiet_hours
+
+    assert (
+        _in_quiet_hours({"NOTIFY_QUIET_HOURS": "22:00-07:00"}, now=datetime(2026, 8, 20, 23, 30))
+        is True
+    )
+
+
+def test_in_quiet_hours_false_when_now_outside_window():
+    from datetime import datetime
+
+    from agents.notify import _in_quiet_hours
+
+    assert (
+        _in_quiet_hours({"NOTIFY_QUIET_HOURS": "22:00-07:00"}, now=datetime(2026, 8, 20, 12, 0))
+        is False
+    )
+
+
+def test_in_quiet_hours_handles_midnight_wraparound():
+    from datetime import datetime
+
+    from agents.notify import _in_quiet_hours
+
+    env = {"NOTIFY_QUIET_HOURS": "22:00-07:00"}
+    assert _in_quiet_hours(env, now=datetime(2026, 8, 20, 3, 0)) is True
+    assert _in_quiet_hours(env, now=datetime(2026, 8, 20, 21, 59)) is False
+
+
+def test_in_quiet_hours_false_when_unset():
+    from agents.notify import _in_quiet_hours
+
+    assert _in_quiet_hours({}) is False
+
+
+def test_in_quiet_hours_fails_open_on_malformed_value(caplog):
+    from agents.notify import _in_quiet_hours
+
+    with caplog.at_level("WARNING", logger="agents.notify"):
+        assert _in_quiet_hours({"NOTIFY_QUIET_HOURS": "not-a-range"}) is False
+    assert any("malformed" in rec.message for rec in caplog.records)
+
+
+def test_notify_text_suppressed_during_quiet_hours_returns_true_without_dispatch():
+    from datetime import datetime
+
+    import notify_transport_double
+
+    from agents.notify import notify_text
+
+    notify_transport_double.calls.clear()
+    ok = notify_text(
+        "subject",
+        "body",
+        {
+            "NOTIFY_TRANSPORT": "notify_transport_double:fake_transport",
+            "NOTIFY_QUIET_HOURS": "22:00-07:00",
+        },
+        now=datetime(2026, 8, 20, 23, 0),
+    )
+    assert ok is True
+    assert notify_transport_double.calls == []
