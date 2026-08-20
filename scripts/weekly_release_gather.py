@@ -255,7 +255,13 @@ def _gather_closed_issues_window(
 ) -> tuple[list[dict], set[str], Provenance]:
     """Closed issues in [start_iso, end_iso) not already represented by a
     merged PR in the same window (`pr_linked_issue_refs`), excluding issues
-    closed as not_planned — declined work isn't release content."""
+    closed as not_planned — declined work isn't release content.
+
+    ceiling: single un-paginated `gh issue list --limit 100`; a repo closing
+    more than 100 issues in one week would silently truncate. Extend with
+    --paginate (mirroring _gather_prior_releases) if a tracked repo ever
+    approaches that volume.
+    """
     start = time.time()
     result = run_gh(
         repo,
@@ -317,6 +323,11 @@ def _gather_remaining_issues(
     issue touched for an unrelated reason (e.g. relabeled) would count. This
     is drafted into prose by the calling agent, not rendered verbatim, so a
     false positive here is a minor drafting nuisance, not a linter failure.
+
+    ceiling: also a single un-paginated `gh issue list --limit 100`; a repo
+    with more than 100 open milestone-attached issues touched in one week
+    would silently truncate. Extend with --paginate (mirroring
+    _gather_prior_releases) if a tracked repo ever approaches that volume.
     """
     start = time.time()
     result = run_gh(
