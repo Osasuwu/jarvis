@@ -133,8 +133,9 @@ def test_ci_failure_goal_includes_cross_repo_context():
     assert "SergazyNarynov/redrobot" in d.goal
 
 
-def test_ci_failure_goal_no_redundant_repo_for_own_repo():
+def test_ci_failure_goal_no_redundant_repo_for_own_repo(monkeypatch):
     """Own-repo ci_failure goals stay clean — no self-referential repo tag."""
+    monkeypatch.delenv("GITHUB_REPO", raising=False)
     event = {
         "event_type": "ci_failure",
         "severity": "high",
@@ -144,6 +145,21 @@ def test_ci_failure_goal_no_redundant_repo_for_own_repo():
     d = handle_event(event)
     assert d.route is Route.EMIT_TASK
     assert "Osasuwu/jarvis" not in d.goal
+
+
+def test_ci_failure_goal_no_redundant_repo_for_own_repo_on_fork(monkeypatch):
+    """GITHUB_REPO drives the own-repo check — a jarvis-oss fork's own events
+    must stay untagged too, not just the canonical Osasuwu/jarvis slug."""
+    monkeypatch.setenv("GITHUB_REPO", "someoperator/jarvis-oss")
+    event = {
+        "event_type": "ci_failure",
+        "severity": "high",
+        "repo": "someoperator/jarvis-oss",
+        "payload": {"workflow": "Tests", "branch": "main"},
+    }
+    d = handle_event(event)
+    assert d.route is Route.EMIT_TASK
+    assert "someoperator/jarvis-oss" not in d.goal
 
 
 def test_review_negative_medium_emits_rework():
