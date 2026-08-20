@@ -203,6 +203,139 @@ class TestCanonExecRanFailClosed:
         )
 
 
+# #133: a retry/re-dispatch over an unchanged head_sha whose review ran
+# clean (0 errors/denials) but the plugin declined to re-post — documented,
+# normal plugin behaviour, not a silent failure — must still be able to
+# produce a fresh PASS. These patterns carry that override's decision logic
+# and must appear, verbatim, in BOTH the live verdict step and the rendered
+# canon verify-verdict step (CLEAN_RERUN's own derivation is the one
+# exception — live checks EXEC_FILE directly, canon ORs EXEC_RAN_1/
+# EXEC_RAN_2, since EXEC_FILE cannot cross canon's job boundary; that split
+# is covered by its own tests below, not this shared list).
+COMMIT_FREE_RERUN_INVARIANTS = [
+    "COMMIT-FREE CLEAN RE-REVIEW OVERRIDE (#133)",
+    "CLEAN_RERUN=false",
+    "PRIOR_ATTEMPT=false",
+    'rerun_lineage_shas=$(gh api "repos/$REPO/pulls/$PR/commits" --paginate \\',
+    'rerun_lineage_runs=$(gh api "repos/$REPO/actions/workflows/code-review.yml/runs?per_page=100" --paginate \\',
+    """RERUN_COUNT=$(jq -r 'length' <<<"$rerun_lineage_runs")""",
+    "PRIOR_ATTEMPT=true",
+    'LATEST_ANY_CREATED=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \\',
+    'STALE_TO_THIS_RUN=$(jq -rn --arg latest "$LATEST_ANY_CREATED" --arg run_start "$RUN_START"',
+    '($latest == "") or ($latest < $run_start)',
+    'if [ "$CLEAN_RERUN" = "true" ] && [ "$PRIOR_ATTEMPT" = "true" ] && [ "$STALE_TO_THIS_RUN" = "true" ]; then',
+    "Commit-free clean re-review (#133)",
+]
+
+
+class TestCommitFreeRerunOverride133:
+    """#133: pins the commit-free clean re-run override — its presence,
+    ordering relative to the existing total==0 and stale-body branches, and
+    the RUN_START wiring each job topology needs to anchor it — identically
+    in live and canon.
+    """
+
+    @pytest.mark.parametrize("pattern", COMMIT_FREE_RERUN_INVARIANTS)
+    def test_invariant_present_in_live(self, live_verdict_run, pattern):
+        assert pattern in live_verdict_run, (
+            f"Live verdict step is missing the #133 commit-free-rerun "
+            f"override pattern {pattern!r}."
+        )
+
+    @pytest.mark.parametrize("pattern", COMMIT_FREE_RERUN_INVARIANTS)
+    def test_invariant_present_in_canon(self, canon_verdict_run, pattern):
+        assert pattern in canon_verdict_run, (
+            f"Canon verify-verdict step is missing the #133 commit-free-"
+            f"rerun override pattern {pattern!r}. Re-snapshot "
+            f"scripts/repo_baseline/canon/code-review.yml from live."
+        )
+
+    def test_override_ordered_correctly_in_live(self, live_verdict_run):
+        run = live_verdict_run
+        total_branch_end = run.index("legitimately skipped")
+        override_start = run.index("COMMIT-FREE CLEAN RE-REVIEW OVERRIDE (#133)")
+        stale_body_check = run.index('if [ -z "$body" ]; then')
+        assert total_branch_end < override_start < stale_body_check, (
+            "The #133 override must run strictly after the total==0 "
+            "branch's own ran-but-silent fail-closed check (never "
+            "overriding a genuinely first-ever review of a new commit) and "
+            "strictly before the stale-body check (#993), so a comment "
+            "posted DURING this run is never masked."
+        )
+
+    def test_override_ordered_correctly_in_canon(self, canon_verdict_run):
+        run = canon_verdict_run
+        total_branch_end = run.index("legitimately skipped")
+        override_start = run.index("COMMIT-FREE CLEAN RE-REVIEW OVERRIDE (#133)")
+        stale_body_check = run.index('if [ -z "$body" ]; then')
+        assert total_branch_end < override_start < stale_body_check, (
+            "Same ordering requirement as live — see the live test's message."
+        )
+
+    def test_live_clean_rerun_checks_this_runs_own_exec_file(self, live_verdict_run):
+        assert 'if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then' in live_verdict_run, (
+            "Live's CLEAN_RERUN must derive from THIS run's own EXEC_FILE — "
+            "a run whose review step never executed (e.g. autobase-skip) "
+            "never re-examined anything and cannot claim this path."
+        )
+
+    def test_canon_clean_rerun_ors_both_attempts(self, canon_verdict_run):
+        # Mirrors the ran-but-silent OR-aggregate (#1309): the shape must
+        # appear twice — once for the existing ran-but-silent check, once
+        # more for the #133 CLEAN_RERUN assignment. A `:-` fallback here
+        # would never reach attempt-1's real "true" if attempt-2 failed
+        # before its own review step executed.
+        count = canon_verdict_run.count(
+            'if [ "$EXEC_RAN_1" = "true" ] || [ "$EXEC_RAN_2" = "true" ]'
+        )
+        assert count >= 2, (
+            f"Expected the EXEC_RAN_1/EXEC_RAN_2 OR-aggregate shape at least "
+            f"twice (ran-but-silent check + #133 CLEAN_RERUN), found {count}."
+        )
+
+    def test_live_run_start_env_wired(self, live_review_job):
+        step = next(s for s in live_review_job["steps"] if s.get("name") == "Verify review verdict")
+        env = step.get("env") or {}
+        assert "steps.runstart.outputs.time" in env.get("RUN_START", ""), (
+            "Live verify-verdict step's env must wire RUN_START from "
+            "steps.runstart.outputs.time."
+        )
+
+    def test_live_has_run_start_step(self, live_review_job):
+        names = [s.get("name") for s in live_review_job["steps"]]
+        assert "Record run start time" in names, (
+            "Live review job must have a 'Record run start time' step "
+            "(id: runstart) anchoring the #133 override."
+        )
+        step = next(s for s in live_review_job["steps"] if s.get("name") == "Record run start time")
+        assert step.get("id") == "runstart"
+
+    @pytest.mark.parametrize("job_id", ["attempt-1", "attempt-2"])
+    def test_canon_attempt_job_has_run_start_step_and_output(self, canon_doc, job_id):
+        job = canon_doc["jobs"][job_id]
+        names = [s.get("name") for s in job["steps"]]
+        assert "Record run start time" in names, (
+            f"canon {job_id} must have a 'Record run start time' step."
+        )
+        step = next(s for s in job["steps"] if s.get("name") == "Record run start time")
+        assert step.get("id") == "runstart"
+        outputs = job.get("outputs") or {}
+        assert "run_started" in outputs, f"canon {job_id} must declare a run_started job output."
+        assert "steps.runstart.outputs.time" in outputs["run_started"]
+
+    def test_canon_verdict_reads_both_run_start_outputs(self, canon_verdict_job):
+        step = next(s for s in canon_verdict_job["steps"] if s.get("name") == "Verify review verdict")
+        env = step.get("env") or {}
+        assert "needs.attempt-1.outputs.run_started" in env.get("RUN_START_1", ""), (
+            "canon verify-verdict's env must wire RUN_START_1 from "
+            "needs.attempt-1.outputs.run_started."
+        )
+        assert "needs.attempt-2.outputs.run_started" in env.get("RUN_START_2", ""), (
+            "canon verify-verdict's env must wire RUN_START_2 from "
+            "needs.attempt-2.outputs.run_started."
+        )
+
+
 class TestCanonVerdictParity:
     @pytest.mark.parametrize("pattern", VERDICT_INVARIANTS)
     def test_invariant_present_in_canon(self, canon_verdict_run, pattern):
