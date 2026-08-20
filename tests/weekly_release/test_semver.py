@@ -59,7 +59,7 @@ def test_new_capability_window_classifies_as_minor():
 
 
 def test_breaking_marker_never_escalates_to_major():
-    # decision ac5d8e58 / f50b4916: no breaking-change signal in any form —
+    # decision 5b811a25: no breaking-change signal in any form —
     # the skill never emits major, trust ramp is the only human gate.
     window = [{"number": 9001, "title": "feat(api)!: drop legacy v1 endpoint"}]
     assert classify_bump(window) == "minor"

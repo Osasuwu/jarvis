@@ -81,7 +81,7 @@ def is_release_worthy(entries: list[dict]) -> bool:
 
 def classify_bump(entries: list[dict]) -> str:
     """ "patch" if the window is fixes-only, "minor" if it contains a new
-    capability (any `feat` entry). Never "major" — decision ac5d8e58/f50b4916:
+    capability (any `feat` entry). Never "major" — decision 5b811a25:
     there is no breaking-change signal in any form; trust ramp is the only
     human gate, so a `!` marker or a `BREAKING CHANGE:` body never escalates
     the bump beyond minor."""
