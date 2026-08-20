@@ -97,7 +97,7 @@ Report the draft URL(s) back to the owner. Do not publish. Do not send anything 
 
 Manual invocation skips this step too — the draft URL(s) already reported in Step 4's chat output are the notification when the owner is present. Routine invocations have no one watching chat, so this step is what actually reaches the owner.
 
-For each repo, `status` is `"draft"` when Step 4 created or updated a draft for it, or the repo was skipped in Step 2.1 (no release this week) — pass whichever `status` actually happened. This skill never sets `status="published"` per the draft-only boundary above; that value exists in `weekly_release_notification_for` for a future publish-delivery slice, not this one.
+For each repo, `status` is `"draft"` when Step 4 created or updated a draft for it, or `"none"` when the repo was skipped in Step 2.1 (no release this week) — these are the only two cases that reach this step, and they must map to different `status` values, not the same one: `weekly_release_notification_for` treats any `status == "draft"` as "a draft exists, notify the owner," so passing `"draft"` for the skipped case would send a false notification for a non-existent draft. `"none"` (any value outside `{"draft", "published"}`) is what makes the function return `None` below. This skill never sets `status="published"` per the draft-only boundary above; that value exists in `weekly_release_notification_for` for a future publish-delivery slice, not this one.
 
 ```python
 import os
