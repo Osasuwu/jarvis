@@ -149,6 +149,26 @@ def format_goal_section(goals: list[dict]) -> str:
     return "\n".join(lines)
 
 
+# -- Retraction section (#1659 AC1/AC2) ---------------------------------------
+
+
+def format_retraction_section(retractions: list[dict]) -> str:
+    """Empty `retractions` -> "" (AC2: the section is present only when
+    non-empty). Otherwise a `## ⏪ Отозвано` heading with one bullet per
+    retraction, each citing both the original PR/issue and the reverting PR
+    (`{"original_ref", "revert_ref", "title"}`, as produced by
+    weekly_release_gather.py's Reverts #N extraction). Citation-correct by
+    construction — never passed through lint_release_notes, mirroring
+    format_goal_section's own exemption for the same reason (a heading line
+    carries no digit citation of its own)."""
+    if not retractions:
+        return ""
+    lines = ["## ⏪ Отозвано"]
+    for r in retractions:
+        lines.append(f"- #{r['original_ref']} отозвано в #{r['revert_ref']}: {r['title']}")
+    return "\n".join(lines)
+
+
 # -- Draft-aware anchor window (AC11) ----------------------------------------
 
 
@@ -243,6 +263,7 @@ def assemble_release_body(
     remaining_section: str,
     full_changelog_url: str,
     footer: str = "Опубликовано ботом",
+    retraction_section: str = "",
 ) -> str:
     """Structural assembly only. `notes_body` and `remaining_section` are
     already agent-authored prose — facts sourced from the collected window /
@@ -250,8 +271,14 @@ def assemble_release_body(
     `lint_release_notes` before reaching here. This function adds no issue
     links of its own: it only appends the `**Full Changelog**` line and the
     footer, which is what "no issue-links in the body" (issue #1572 AC9)
-    actually constrains — the mechanical part, not the prose."""
+    actually constrains — the mechanical part, not the prose.
+
+    `retraction_section` (#1659) is the pre-formatted "Отозвано" block from
+    format_retraction_section() — included only when non-empty (AC2), placed
+    after notes_body and before remaining_section."""
     parts = [notes_body.rstrip()]
+    if retraction_section.strip():
+        parts.append(retraction_section.rstrip())
     if remaining_section.strip():
         parts.append(remaining_section.rstrip())
     parts.append(f"**Full Changelog**: {full_changelog_url}")

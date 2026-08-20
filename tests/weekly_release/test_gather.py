@@ -114,6 +114,39 @@ def test_merged_window_extracts_closed_issue_for_dedup():
     assert refs == {"13", "999"}
 
 
+def test_merged_window_extracts_reverts_marker():
+    prs = [
+        {
+            "number": 14,
+            "title": "revert: bad rollout behavior",
+            "mergedAt": "2026-08-10T00:00:00Z",
+            "author": {"login": "alice"},
+            "body": "Reverts #1000",
+        },
+    ]
+    entries, refs, prov = _gather_merged_window(
+        "o/r", _gh(json.dumps(prs)), WINDOW_START, WINDOW_END
+    )
+    assert entries[0]["reverts"] == "1000"
+    assert refs == {"14", "1000"}
+
+
+def test_merged_window_reverts_is_none_when_absent():
+    prs = [
+        {
+            "number": 15,
+            "title": "feat: add thing",
+            "mergedAt": "2026-08-10T00:00:00Z",
+            "author": {"login": "alice"},
+            "body": "",
+        },
+    ]
+    entries, refs, prov = _gather_merged_window(
+        "o/r", _gh(json.dumps(prs)), WINDOW_START, WINDOW_END
+    )
+    assert entries[0]["reverts"] is None
+
+
 # -- _gather_closed_issues_window -----------------------------------------------
 
 
@@ -248,3 +281,59 @@ def test_gather_anchors_window_on_existing_pending_draft():
     )
     repo_result = result.repos[0]
     assert repo_result.window_start == "2026-08-15T00:00:00+00:00"
+
+
+def test_gather_collects_retractions_from_merged_window():
+    # #1659 AC1/AC3: a merged PR whose body carries "Reverts #N" must surface
+    # in repo_result.retractions, citing both the reverting PR and the
+    # original PR/issue it undoes - the source data for the "Отозвано" section.
+    entries = [RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"})]
+
+    prs_ndjson = json.dumps(
+        [
+            {
+                "number": 50,
+                "title": "revert: undo risky rollout",
+                "mergedAt": "2026-08-10T00:00:00Z",
+                "author": {"login": "alice"},
+                "body": "Reverts #40",
+            }
+        ]
+    )
+
+    def fake_run_gh(repo, args):
+        if args[0] == "api":
+            return {"stdout": "", "stderr": "", "returncode": 0}
+        if args[0] == "pr":
+            return {"stdout": prs_ndjson, "stderr": "", "returncode": 0}
+        return {"stdout": "[]", "stderr": "", "returncode": 0}
+
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=lambda path: entries,
+        run_gh_fn=fake_run_gh,
+        now_fn=lambda: 1786000000.0,
+    )
+    repo_result = result.repos[0]
+    assert repo_result.retractions == [
+        {"original_ref": "40", "revert_ref": "50", "title": "revert: undo risky rollout"}
+    ]
+
+
+def test_gather_retractions_empty_when_no_reverts_in_window():
+    entries = [RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"})]
+
+    def fake_run_gh(repo, args):
+        if args[0] == "api":
+            return {"stdout": "", "stderr": "", "returncode": 0}
+        return {"stdout": "[]", "stderr": "", "returncode": 0}
+
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=lambda path: entries,
+        run_gh_fn=fake_run_gh,
+        now_fn=lambda: 1786000000.0,
+    )
+    assert result.repos[0].retractions == []
