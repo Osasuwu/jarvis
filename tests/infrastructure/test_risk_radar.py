@@ -88,6 +88,15 @@ class TestLoadRepos:
         monkeypatch.setattr("risk_radar.REPOS_CONF", conf)
         assert _load_repos() == ["owner/repo1", "owner/repo2"]
 
+    def test_strips_trailing_tokens(self, tmp_path, monkeypatch):
+        # Used to append the whole line verbatim, including trailing
+        # key=value tokens (e.g. project=3) — #1572 migration to the shared
+        # scripts/repos_conf.py parser fixes this.
+        conf = tmp_path / "repos.conf"
+        conf.write_text("owner/repo1 project=3\nowner/repo2 project=1\n", encoding="utf-8")
+        monkeypatch.setattr("risk_radar.REPOS_CONF", conf)
+        assert _load_repos() == ["owner/repo1", "owner/repo2"]
+
 
 # ── P1: CI instability ────────────────────────────────────────────────────────
 

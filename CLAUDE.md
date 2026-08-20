@@ -108,6 +108,7 @@ Use skills — don't reinvent with raw tools.
 | Provisioning infra, CI secrets/API keys, unfamiliar third-party dashboard, one-off migration/cutover — a manual procedure only a human can perform | `/wizard` |
 | Author/edit a skill | `/write-a-skill` |
 | "be brief", "caveman", token compression | `/caveman` |
+| Explicit `/weekly-release` invocation only — no chat-text anchor; drafts a weekly GitHub release per `config/repos.conf` `releases=weekly` repo | `/weekly-release` |
 
 Rules:
 - GitHub issue work → /implement or /dispatch, no exceptions. Raw Agent loses PR structure and verification.

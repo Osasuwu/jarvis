@@ -27,13 +27,14 @@ from typing import Any, Callable
 
 import yaml
 
+from scripts.repos_conf import REPOS_CONF_RELPATH, parse_repos_conf
+
 # ============================================================================
 # Public constants
 # ============================================================================
 
 SUPABASE_URL_ENV = "SUPABASE_URL"
 SUPABASE_KEY_ENV = "SUPABASE_KEY"
-REPOS_CONF_RELPATH = "config/repos.conf"
 DEVICE_CONF_RELPATH = "config/device.json"
 
 # ============================================================================
@@ -244,6 +245,41 @@ def _default_run_gh(repo: str, args: list[str]) -> dict:
         return {"stdout": "", "stderr": str(exc), "returncode": -1}
 
 
+def resolve_jarvis_home(jarvis_home: str = "") -> str:
+    """Resolve the jarvis repo root: explicit arg > $JARVIS_HOME > `git
+    rev-parse --show-toplevel` > CWD.
+
+    `git rev-parse` keys off the *current* repo, so a call from another repo
+    (e.g. redrobot) would resolve to the wrong toplevel and degrade the
+    gather. `$JARVIS_HOME` pins the jarvis root regardless of CWD. Shared by
+    status_gather.gather() and weekly_release_gather.gather() (#1662 review —
+    the two gathers had drifted into a verbatim-duplicated inline block).
+    """
+    if jarvis_home:
+        return jarvis_home
+
+    jarvis_home = os.environ.get("JARVIS_HOME", "").strip()
+    if jarvis_home:
+        return jarvis_home
+
+    try:
+        git_result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+        )
+        if git_result.returncode == 0:
+            jarvis_home = git_result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return jarvis_home or os.getcwd()
+
+
 def _default_query_supabase(
     url: str,
     key: str,
@@ -285,23 +321,9 @@ def _default_query_supabase(
 
 
 # ============================================================================
-# Repo parsing
+# Repo parsing — parse_repos_conf now lives in scripts/repos_conf.py
+# (imported above); kept re-exported here for existing consumers/tests.
 # ============================================================================
-
-
-def parse_repos_conf(raw: str) -> list[str]:
-    """Parse repos.conf content into owner/repo list (pure, tested directly).
-
-    A line may carry trailing key=value tokens (e.g. ``project=3``, #1059);
-    only the first whitespace-delimited token — the ``owner/repo`` — is the
-    repo identifier. Bare lines (no tokens) are returned unchanged.
-    """
-    repos: list[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            repos.append(line.split()[0])
-    return repos
 
 
 # ============================================================================
@@ -686,30 +708,7 @@ def gather(
     gathered_at = datetime.fromtimestamp(gather_start, tz=timezone.utc).isoformat()
     result = GatherResult(gathered_at=gathered_at)
 
-    # --- Resolve jarvis_home: explicit arg > $JARVIS_HOME > git rev-parse > cwd ---
-    # git rev-parse keys off the *current* repo, so a call from another repo
-    # (e.g. redrobot) would resolve to the wrong toplevel and degrade the gather.
-    # $JARVIS_HOME pins the jarvis root regardless of CWD.
-    if not jarvis_home:
-        jarvis_home = os.environ.get("JARVIS_HOME", "").strip()
-
-    if not jarvis_home:
-        try:
-            git_result = subprocess.run(
-                ["git", "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                stdin=subprocess.DEVNULL,
-                timeout=5,
-            )
-            if git_result.returncode == 0:
-                jarvis_home = git_result.stdout.strip()
-        except (OSError, subprocess.SubprocessError):
-            pass
-
-    if not jarvis_home:
-        jarvis_home = os.getcwd()
-
+    jarvis_home = resolve_jarvis_home(jarvis_home)
     jarvis_path = Path(jarvis_home)
 
     # --- Step 1: Read repos.conf ---
