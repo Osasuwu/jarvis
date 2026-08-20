@@ -19,9 +19,14 @@ import json
 import re
 import subprocess
 from dataclasses import asdict, dataclass, field, fields
+from pathlib import Path
 from typing import Any, Protocol
 
 import yaml
+
+from scripts.repos_conf import REPOS_CONF_RELPATH, parse_repos_conf
+
+_REPOS_CONF_PATH = Path(__file__).resolve().parent.parent.parent / REPOS_CONF_RELPATH
 
 
 class GhNotFound(Exception):
@@ -45,17 +50,22 @@ class GhRunner(Protocol):
     def __call__(self, path: str, *, paginate: bool = False) -> Any: ...
 
 
-# The baseline audit scope — the five Osasuwu repos named in the milestone #48
-# PRD problem statement. NOT ``config/repos.conf`` (which is the narrower
-# daily-triage list of jarvis + redrobot). ``SergazyNarynov/redrobot`` lives in
-# its own list below: a different owner, hence a separate account pass (#940).
-OSASUWU_REPOS: list[str] = [
-    "Osasuwu/jarvis",
-    "Osasuwu/music-intel-mcp",
-    "Osasuwu/like_spotify_mobile_app",
-    "Osasuwu/dnd-calendar",
-    "Osasuwu/farming-evolution",
-]
+def _repos_by_owner(owner: str, *, conf_path: Path = _REPOS_CONF_PATH) -> list[str]:
+    """Repos under ``owner/`` as listed in ``config/repos.conf``.
+
+    Both audit passes below used to be separate hardcoded Python lists; now
+    they're both filters over the one tracked-repos file (#1572) — adding a
+    repo to ``config/repos.conf`` expands the daily-triage scope and this
+    governance audit's scope in the same edit.
+    """
+    all_repos = parse_repos_conf(conf_path.read_text(encoding="utf-8"))
+    return [r for r in all_repos if r.startswith(f"{owner}/")]
+
+
+# The baseline audit scope, read from config/repos.conf.
+# ``SergazyNarynov/redrobot`` lives in its own list below: a different owner,
+# hence a separate account pass (#940).
+OSASUWU_REPOS: list[str] = _repos_by_owner("Osasuwu")
 
 # The second account pass (#940). Kept a separate list rather than appended to
 # ``OSASUWU_REPOS`` because "one pass per GitHub account" is the orchestration
@@ -71,9 +81,7 @@ OSASUWU_REPOS: list[str] = [
 # redrobot's governance axes are ``off``, so this pass plans nothing that needs
 # admin; a future axis flip does, and that is when the owner credential becomes
 # load-bearing.
-REDROBOT_REPOS: list[str] = [
-    "SergazyNarynov/redrobot",
-]
+REDROBOT_REPOS: list[str] = _repos_by_owner("SergazyNarynov")
 
 
 # ── Snapshot value objects ───────────────────────────────────────────

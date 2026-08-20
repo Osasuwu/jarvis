@@ -27,13 +27,14 @@ from typing import Any, Callable
 
 import yaml
 
+from scripts.repos_conf import REPOS_CONF_RELPATH, parse_repos_conf
+
 # ============================================================================
 # Public constants
 # ============================================================================
 
 SUPABASE_URL_ENV = "SUPABASE_URL"
 SUPABASE_KEY_ENV = "SUPABASE_KEY"
-REPOS_CONF_RELPATH = "config/repos.conf"
 DEVICE_CONF_RELPATH = "config/device.json"
 
 # ============================================================================
@@ -285,23 +286,9 @@ def _default_query_supabase(
 
 
 # ============================================================================
-# Repo parsing
+# Repo parsing — parse_repos_conf now lives in scripts/repos_conf.py
+# (imported above); kept re-exported here for existing consumers/tests.
 # ============================================================================
-
-
-def parse_repos_conf(raw: str) -> list[str]:
-    """Parse repos.conf content into owner/repo list (pure, tested directly).
-
-    A line may carry trailing key=value tokens (e.g. ``project=3``, #1059);
-    only the first whitespace-delimited token — the ``owner/repo`` — is the
-    repo identifier. Bare lines (no tokens) are returned unchanged.
-    """
-    repos: list[str] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            repos.append(line.split()[0])
-    return repos
 
 
 # ============================================================================

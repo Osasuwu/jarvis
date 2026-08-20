@@ -169,6 +169,11 @@ async def _handle_goal_list(args: dict) -> list[TextContent]:
         q = q.eq("status", status)
     if project:
         q = q.eq("project", project)
+    else:
+        # #1572: an unscoped call must not leak cross-project (personal,
+        # project IS NULL) goals — /weekly-release calls this unscoped when
+        # assembling a public release's goal section.
+        q = q.not_.is_("project", "null")
     if priority:
         q = q.eq("priority", priority)
 

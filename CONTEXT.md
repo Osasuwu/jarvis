@@ -138,6 +138,10 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Push/pull split** — Always-loaded surfaces carry ceilings; pull-only bodies grow freely.
 - **Carrier tiers** — Tier A (`@import`, must-hold-every-time) vs Tier B (`.claude/rules/*.md`, advisory + file-scoped).
 - **Post-compaction replay is not ours to tune** — the harness re-injects skill bodies and the tool-result tail; no jarvis hook filters it.
+- **Trust ramp** (`/weekly-release`) — first 4 releases per repo are operator-published drafts; 4 consecutive clean releases (published, no post-publish edit) flips `trust_ramp_state()` to `"auto"`; read live from the GitHub releases API, no local state. S1 (#1572) treats it as informational only — the skill still stops at a draft regardless of ramp state (see *"Sending as the owner isn't autonomous"* invariant); auto-publish wiring is S2.
+- **Fact-anchoring linter** (`/weekly-release`) — release-notes citation gate (`lint_release_notes`): every note line must cite ≥1 PR/issue number present in the collected window, or be rejected. Language-independent — checks provenance, not phrasing — and replaces a banned-word-list approach.
+- **Draft-aware anchor** (`/weekly-release`) — the release window's start is the last published release OR an existing pending draft's original anchor, whichever is present (`compute_window()`), capped at 30 days from now with truncation disclosed in the notes. Re-running against a pending draft updates that draft in place rather than restarting the window or creating a second draft.
+- **Special-class repo** — a foreign-owner repo (e.g. `SergazyNarynov/redrobot`) the owner has personally authorized the bot to manage as its own; auto-actionable within that authorized scope, distinct from ordinary foreign-owner repos which stay flag-only/read. Declared per-repo in `config/repos.conf`.
 
 ### Core entities
 

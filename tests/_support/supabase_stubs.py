@@ -98,6 +98,7 @@ class FakeTableQuery:
         self._limit: int | None = None
         self._op = "select"
         self._row: dict | list | None = None
+        self._negate_next = False
 
     def select(self, columns: str):
         self._op = "select"
@@ -131,10 +132,18 @@ class FakeTableQuery:
         return self
 
     def is_(self, col, val):
-        self._filters.append(("is", col, val))
+        op = "not_is" if self._negate_next else "is"
+        self._negate_next = False
+        self._filters.append((op, col, val))
         return self
 
-    def order(self, col, *, desc: bool = False):
+    @property
+    def not_(self):
+        """``.not_.is_(...)`` accessor — negates the next ``is_`` filter."""
+        self._negate_next = True
+        return self
+
+    def order(self, col, *, desc: bool = False, nullsfirst: bool | None = None):
         self._order = (col, desc)
         return self
 

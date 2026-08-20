@@ -758,8 +758,9 @@ class TestAuditAll:
         assert "1 of 2 repo(s) failed" in msg
 
     def test_osasuwu_repos_constant_is_the_five_baseline_repos(self):
-        # Baseline scope = the milestone #48 PRD's 5 Osasuwu repos, NOT
-        # config/repos.conf (which is the daily-triage list).
+        # Baseline scope is derived from config/repos.conf (#1572) — both this
+        # governance audit and daily-triage now walk the same tracked-repos
+        # file, so the values here should track whatever is committed there.
         assert OSASUWU_REPOS == [
             "Osasuwu/jarvis",
             "Osasuwu/music-intel-mcp",
@@ -779,6 +780,26 @@ class TestAuditAll:
         one-credential run across two accounts."""
         assert REDROBOT_REPOS == ["SergazyNarynov/redrobot"]
         assert set(REDROBOT_REPOS).isdisjoint(OSASUWU_REPOS)
+
+    def test_repos_by_owner_derives_from_a_repos_conf_file(self, tmp_path):
+        """#1572 — OSASUWU_REPOS/REDROBOT_REPOS must come from parsing
+        config/repos.conf, not from Python literals. Proven by pointing the
+        helper at a throwaway conf file with different repos and different
+        owners than the real one, and checking the grouping follows the file."""
+        conf = tmp_path / "repos.conf"
+        conf.write_text(
+            "# comment\nOsasuwu/one project=3\nOsasuwu/two\nSomeOtherOwner/three releases=weekly\n",
+            encoding="utf-8",
+        )
+
+        assert auditor_mod._repos_by_owner("Osasuwu", conf_path=conf) == [
+            "Osasuwu/one",
+            "Osasuwu/two",
+        ]
+        assert auditor_mod._repos_by_owner("SomeOtherOwner", conf_path=conf) == [
+            "SomeOtherOwner/three",
+        ]
+        assert auditor_mod._repos_by_owner("Nobody", conf_path=conf) == []
 
 
 class TestGhRunner:

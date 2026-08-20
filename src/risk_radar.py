@@ -17,23 +17,27 @@ Usage (standalone):
   python src/risk_radar.py
   python src/risk_radar.py --json   # machine-readable output
 """
+
 from __future__ import annotations
 
 import argparse
 import json as _json
-import os
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 REPORTS_DIR = ROOT_DIR / "reports"
 REPOS_CONF = ROOT_DIR / "config" / "repos.conf"
+
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+from scripts.repos_conf import parse_repos_conf  # noqa: E402
 
 # Pattern thresholds
 CI_CRITICAL_RATE = 0.50
@@ -82,12 +86,9 @@ class RiskRadarResult:
 def _load_repos() -> list[str]:
     if not REPOS_CONF.exists():
         return []
-    repos = []
-    for line in REPOS_CONF.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "/" in line:
-            repos.append(line)
-    return repos
+    return [
+        name for name in parse_repos_conf(REPOS_CONF.read_text(encoding="utf-8")) if "/" in name
+    ]
 
 
 def _run_gh(args: list[str], timeout: int = 30) -> tuple[bool, str]:
@@ -96,8 +97,11 @@ def _run_gh(args: list[str], timeout: int = 30) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             ["gh"] + args,
-            capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=timeout,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
         )
         if result.returncode != 0:
             return False, result.stderr.strip() or "gh command failed"
@@ -130,18 +134,25 @@ def _days_ago(iso_str: str) -> float:
 
 
 def _check_ci_instability(repo: str) -> list[RiskAlert]:
-    ok, out = _run_gh([
-        "run", "list", "--repo", repo,
-        "--json", "conclusion,name,createdAt",
-        "--limit", str(CI_RUNS_SAMPLE),
-    ])
+    ok, out = _run_gh(
+        [
+            "run",
+            "list",
+            "--repo",
+            repo,
+            "--json",
+            "conclusion,name,createdAt",
+            "--limit",
+            str(CI_RUNS_SAMPLE),
+        ]
+    )
     if not ok or not out:
         return []
 
     runs = _parse_json(out)
-    terminal = [r for r in runs if r.get("conclusion") in {
-        "success", "failure", "timed_out", "cancelled"
-    }]
+    terminal = [
+        r for r in runs if r.get("conclusion") in {"success", "failure", "timed_out", "cancelled"}
+    ]
     if not terminal:
         return []
 
@@ -158,62 +169,77 @@ def _check_ci_instability(repo: str) -> list[RiskAlert]:
         return []
 
     failure_names = list({r.get("name", "?") for r in failures[:5]})
-    return [RiskAlert(
-        severity=severity,
-        pattern="ci-instability",
-        repo=repo,
-        title=f"CI failure rate {rate:.0%} in last {len(terminal)} runs",
-        details=(
-            f"{len(failures)}/{len(terminal)} terminal runs failed. "
-            f"Patterns: {', '.join(failure_names)}."
-        ),
-        evidence=f"gh run list --repo {repo} --limit {CI_RUNS_SAMPLE}",
-    )]
+    return [
+        RiskAlert(
+            severity=severity,
+            pattern="ci-instability",
+            repo=repo,
+            title=f"CI failure rate {rate:.0%} in last {len(terminal)} runs",
+            details=(
+                f"{len(failures)}/{len(terminal)} terminal runs failed. "
+                f"Patterns: {', '.join(failure_names)}."
+            ),
+            evidence=f"gh run list --repo {repo} --limit {CI_RUNS_SAMPLE}",
+        )
+    ]
 
 
 # ── P2: Critical issue stagnation ────────────────────────────────────────────
 
 
 def _check_critical_stagnation(repo: str) -> list[RiskAlert]:
-    ok, out = _run_gh([
-        "issue", "list", "--repo", repo, "--state", "open",
-        "--label", "priority:high",
-        "--json", "number,title,updatedAt,assignees",
-        "--limit", "100",
-    ])
+    ok, out = _run_gh(
+        [
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--label",
+            "priority:high",
+            "--json",
+            "number,title,updatedAt,assignees",
+            "--limit",
+            "100",
+        ]
+    )
     if not ok:
         return []
 
-    stagnant = [
-        i for i in _parse_json(out)
-        if _days_ago(i.get("updatedAt", "")) >= STAGNATION_DAYS
-    ]
+    stagnant = [i for i in _parse_json(out) if _days_ago(i.get("updatedAt", "")) >= STAGNATION_DAYS]
     if not stagnant:
         return []
 
     count = len(stagnant)
     severity = "high" if count >= STAGNATION_HIGH else "medium"
     sample = [f"#{i['number']}: {i.get('title', '')[:60]}" for i in stagnant[:3]]
-    return [RiskAlert(
-        severity=severity,
-        pattern="critical-stagnation",
-        repo=repo,
-        title=f"{count} priority:high issue{'s' if count != 1 else ''} stagnant >{STAGNATION_DAYS}d",
-        details=(
-            f"{count} critical issues have not been updated in over {STAGNATION_DAYS} days."
-        ),
-        evidence="; ".join(sample),
-    )]
+    return [
+        RiskAlert(
+            severity=severity,
+            pattern="critical-stagnation",
+            repo=repo,
+            title=f"{count} priority:high issue{'s' if count != 1 else ''} stagnant >{STAGNATION_DAYS}d",
+            details=(
+                f"{count} critical issues have not been updated in over {STAGNATION_DAYS} days."
+            ),
+            evidence="; ".join(sample),
+        )
+    ]
 
 
 # ── P3: Security / Dependabot alerts ─────────────────────────────────────────
 
 
 def _check_security_alerts(repo: str) -> list[RiskAlert]:
-    ok, out = _run_gh([
-        "api", f"repos/{repo}/dependabot/alerts",
-        "--jq", '[.[] | select(.state == "open") | {severity:.security_vulnerability.severity, pkg:.dependency.package.name}]',
-    ])
+    ok, out = _run_gh(
+        [
+            "api",
+            f"repos/{repo}/dependabot/alerts",
+            "--jq",
+            '[.[] | select(.state == "open") | {severity:.security_vulnerability.severity, pkg:.dependency.package.name}]',
+        ]
+    )
     if not ok:
         return []
 
@@ -231,26 +257,34 @@ def _check_security_alerts(repo: str) -> list[RiskAlert]:
 
     pkgs = list({a.get("pkg", "?") for a in alerts[:5]})
     total = len(alerts)
-    summary = ", ".join(f"{s}:{n}" for s, n in sorted(by_sev.items(), key=lambda x: -SEVERITY_ORDER.get(x[0], 0)))
-    return [RiskAlert(
-        severity=severity,
-        pattern="security-alert",
-        repo=repo,
-        title=f"{total} open Dependabot alert{'s' if total != 1 else ''} ({summary})",
-        details=f"Affected packages: {', '.join(pkgs)}.",
-        evidence=f"gh api repos/{repo}/dependabot/alerts",
-    )]
+    summary = ", ".join(
+        f"{s}:{n}" for s, n in sorted(by_sev.items(), key=lambda x: -SEVERITY_ORDER.get(x[0], 0))
+    )
+    return [
+        RiskAlert(
+            severity=severity,
+            pattern="security-alert",
+            repo=repo,
+            title=f"{total} open Dependabot alert{'s' if total != 1 else ''} ({summary})",
+            details=f"Affected packages: {', '.join(pkgs)}.",
+            evidence=f"gh api repos/{repo}/dependabot/alerts",
+        )
+    ]
 
 
 # ── P4: Overdue milestones ────────────────────────────────────────────────────
 
 
 def _check_overdue_milestones(repo: str) -> list[RiskAlert]:
-    ok, out = _run_gh([
-        "api", f"repos/{repo}/milestones",
-        "--jq", "[.[] | select(.state == \"open\" and .due_on != null)"
-                " | {title:.title, due:.due_on, open:.open_issues, closed:.closed_issues}]",
-    ])
+    ok, out = _run_gh(
+        [
+            "api",
+            f"repos/{repo}/milestones",
+            "--jq",
+            '[.[] | select(.state == "open" and .due_on != null)'
+            " | {title:.title, due:.due_on, open:.open_issues, closed:.closed_issues}]",
+        ]
+    )
     if not ok:
         return []
 
@@ -267,38 +301,51 @@ def _check_overdue_milestones(repo: str) -> list[RiskAlert]:
         if due < now and ms.get("open", 0) > 0:
             total = ms["open"] + ms.get("closed", 0)
             pct = round(ms["closed"] / total * 100) if total else 0
-            overdue.append({"name": ms["title"], "open": ms["open"], "pct": pct,
-                            "days_late": (now - due).days})
+            overdue.append(
+                {"name": ms["title"], "open": ms["open"], "pct": pct, "days_late": (now - due).days}
+            )
 
     if not overdue:
         return []
 
     severity = "high" if any(ms["pct"] < 50 for ms in overdue) else "medium"
     sample = [f"'{ms['name']}' ({ms['days_late']}d late, {ms['pct']}% done)" for ms in overdue[:3]]
-    return [RiskAlert(
-        severity=severity,
-        pattern="overdue-milestone",
-        repo=repo,
-        title=f"{len(overdue)} milestone{'s' if len(overdue) != 1 else ''} overdue with open issues",
-        details="Scheduled milestones have passed their due date but still contain open work.",
-        evidence="; ".join(sample),
-    )]
+    return [
+        RiskAlert(
+            severity=severity,
+            pattern="overdue-milestone",
+            repo=repo,
+            title=f"{len(overdue)} milestone{'s' if len(overdue) != 1 else ''} overdue with open issues",
+            details="Scheduled milestones have passed their due date but still contain open work.",
+            evidence="; ".join(sample),
+        )
+    ]
 
 
 # ── P5: Review-blocked / stale PRs ───────────────────────────────────────────
 
 
 def _check_review_backlog(repo: str) -> list[RiskAlert]:
-    ok, out = _run_gh([
-        "pr", "list", "--repo", repo, "--state", "open",
-        "--json", "number,title,updatedAt,reviewDecision,isDraft",
-        "--limit", "100",
-    ])
+    ok, out = _run_gh(
+        [
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--json",
+            "number,title,updatedAt,reviewDecision,isDraft",
+            "--limit",
+            "100",
+        ]
+    )
     if not ok:
         return []
 
     blocked = [
-        pr for pr in _parse_json(out)
+        pr
+        for pr in _parse_json(out)
         if not pr.get("isDraft")
         and pr.get("reviewDecision") == "CHANGES_REQUESTED"
         and _days_ago(pr.get("updatedAt", "")) >= CHANGES_STALE_DAYS
@@ -309,17 +356,19 @@ def _check_review_backlog(repo: str) -> list[RiskAlert]:
     count = len(blocked)
     severity = "high" if count >= CHANGES_HIGH_COUNT else "medium"
     sample = [f"#{pr['number']}: {pr.get('title', '')[:60]}" for pr in blocked[:3]]
-    return [RiskAlert(
-        severity=severity,
-        pattern="review-backlog",
-        repo=repo,
-        title=f"{count} PR{'s' if count != 1 else ''} with CHANGES_REQUESTED stale >{CHANGES_STALE_DAYS}d",
-        details=(
-            f"{count} non-draft PRs have unaddressed review changes and have not been "
-            f"updated in over {CHANGES_STALE_DAYS} days. This blocks merging."
-        ),
-        evidence="; ".join(sample),
-    )]
+    return [
+        RiskAlert(
+            severity=severity,
+            pattern="review-backlog",
+            repo=repo,
+            title=f"{count} PR{'s' if count != 1 else ''} with CHANGES_REQUESTED stale >{CHANGES_STALE_DAYS}d",
+            details=(
+                f"{count} non-draft PRs have unaddressed review changes and have not been "
+                f"updated in over {CHANGES_STALE_DAYS} days. This blocks merging."
+            ),
+            evidence="; ".join(sample),
+        )
+    ]
 
 
 # ── Per-repo scan ─────────────────────────────────────────────────────────────
@@ -415,17 +464,27 @@ def run(as_json: bool = False) -> int:
     high_count = sum(1 for a in all_alerts if a.severity == "high")
 
     if as_json:
-        print(_json.dumps({
-            "timestamp": timestamp,
-            "repos_scanned": len(repos),
-            "critical": critical_count,
-            "high": high_count,
-            "alerts": [
-                {"severity": a.severity, "pattern": a.pattern, "repo": a.repo,
-                 "title": a.title, "details": a.details}
-                for a in all_alerts
-            ],
-        }, indent=2))
+        print(
+            _json.dumps(
+                {
+                    "timestamp": timestamp,
+                    "repos_scanned": len(repos),
+                    "critical": critical_count,
+                    "high": high_count,
+                    "alerts": [
+                        {
+                            "severity": a.severity,
+                            "pattern": a.pattern,
+                            "repo": a.repo,
+                            "title": a.title,
+                            "details": a.details,
+                        }
+                        for a in all_alerts
+                    ],
+                },
+                indent=2,
+            )
+        )
         return 0 if not all_alerts else 1
 
     report_text, report_path = _write_report(all_alerts, repos, timestamp)
