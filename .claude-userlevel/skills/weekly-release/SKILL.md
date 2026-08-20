@@ -38,6 +38,7 @@ For each `RepoWindowResult`:
 4. **Trust ramp** — `trust_ramp_state(repo_result.prior_releases)`. Informational only in S1 (see Boundary above) — record it in the report; it does not change what this skill does.
 5. **Draft-aware anchor** — `repo_result.window_truncated` is already computed by `compute_window()` inside `gather()`. If `True`, the notes MUST disclose the covered period ("покрывает период с {window_start} по {window_end}") — this is a fact the linter can't check for you; don't drop it.
 6. **Existing pending draft** — scan `prior_releases` for an entry with `published: False` (an unpublished draft). If one exists for this repo, you are **updating it in place** (`gh release edit`), not creating a second one — this is what "draft-aware anchor" means operationally, not just windowing.
+7. **Retractions** — `repo_result.retractions` (#1659): already extracted by `gather()` from every merged PR in the window whose body carries a `Reverts #<M>` marker (`_reverted_pr_number()`), each entry `{"original_ref", "revert_ref", "title"}`. Empty list is the common case — most weeks have no reverts. Non-empty → this window discloses at least one retraction; carry the list into Step 3.
 
 ## Step 3 — Author the notes (agent-written prose, then linted)
 
@@ -56,11 +57,14 @@ violations = lint_release_notes(notes_body.splitlines() + remaining_section.spli
 
 Non-empty `violations` → rewrite the offending lines (add a real `#NNN` citation from `window_refs`, or drop the uncited claim). Never bypass this by loosening a claim's wording to dodge the digit check — fix the citation or cut the claim.
 
+**Retraction section — do not author, do not lint.** If `repo_result.retractions` is non-empty, call `format_retraction_section(repo_result.retractions)` — this is the *only* step for the "Отозвано" section. It is a structural formatter, not prose you write: each bullet is built from `original_ref`/`revert_ref`/`title` already sourced from a real PR body, so it is citation-correct by construction. Do **not** hand-write this section, and do **not** pass it (or its lines) through `lint_release_notes` in Step 3 above — same exemption as `format_goal_section`'s output (AC2 of #1659: the section exists only when `retractions` is non-empty; an empty list means the formatter returns `""` and the section is omitted entirely, not emitted blank).
+
 ## Step 4 — Assemble and create the draft
 
 ```python
-from scripts.weekly_release_engine import assemble_release_body
-body = assemble_release_body(notes_body, remaining_section, full_changelog_url, footer="Опубликовано ботом")
+from scripts.weekly_release_engine import assemble_release_body, format_retraction_section
+retraction_section = format_retraction_section(repo_result.retractions)
+body = assemble_release_body(notes_body, remaining_section, full_changelog_url, footer="Опубликовано ботом", retraction_section=retraction_section)
 ```
 
 `full_changelog_url` = `https://github.com/<repo>/compare/<last_tag>...<new_version>` (or omit the compare range for a repo's first-ever release — there is no prior tag to diff against).
