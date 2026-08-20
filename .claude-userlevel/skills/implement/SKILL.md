@@ -249,6 +249,8 @@ git push -u origin feat/<N>-<slug>
 
 **PR body must be rich and informative** — this is the primary context for reviewers (human and the Claude code-review bot). Use this template:
 
+**Retraction marker**: if this PR reverts previously-shipped, previously-*released* behavior (not just an unreleased change on the same branch), add a `Reverts #<M>` line — naming the PR or issue whose behavior is undone — alongside `Closes #<N>`. This is the machine-readable marker `/weekly-release` reads (`_reverted_pr_number()`) to populate the "Отозвано" section; a revert without this marker is invisible to that disclosure (CONTEXT.md → *Weekly release* → *Retraction marker*).
+
 ```markdown
 ## Summary
 <what changed, 2-3 sentences — the "what">
@@ -256,6 +258,7 @@ git push -u origin feat/<N>-<slug>
 ## Why
 <problem being solved, link to issue — the "why">
 Closes #<N>
+Reverts #<M>  <!-- only if this PR undoes previously-released behavior -->
 
 ## Decisions & Alternatives
 - **Chose X because Y** (alternative Z was rejected because...)

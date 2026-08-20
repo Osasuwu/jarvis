@@ -88,6 +88,10 @@ class RepoWindowResult:
         default_factory=set
     )  # PR/issue numbers as strings, for the linter
     remaining_issues: list[dict] = field(default_factory=list)  # open milestone issues w/ movement
+    # #1659: merged PRs in the window that carry a "Reverts #N" marker, each
+    # {"original_ref", "revert_ref", "title"} - source data for the
+    # "Отозвано" release-notes section (format_retraction_section).
+    retractions: list[dict] = field(default_factory=list)
     window_start: str = ""
     window_end: str = ""
     window_truncated: bool = False
@@ -100,6 +104,7 @@ class RepoWindowResult:
             "window_entries": self.window_entries,
             "window_refs": sorted(self.window_refs),
             "remaining_issues": self.remaining_issues,
+            "retractions": self.retractions,
             "window_start": self.window_start,
             "window_end": self.window_end,
             "window_truncated": self.window_truncated,
@@ -127,10 +132,19 @@ class WeeklyReleaseGatherResult:
 # ============================================================================
 
 _CLOSES_RE = re.compile(r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*:?\s*#(\d+)", re.IGNORECASE)
+# #1659: mirrors _CLOSES_RE - "Reverts #N" is the machine-readable retraction
+# marker a revert PR/commit uses to name the PR/issue whose shipped behavior
+# it undoes, so /weekly-release can build the "Отозвано" section by construction.
+_REVERTS_RE = re.compile(r"\breverts?\s*:?\s*#(\d+)", re.IGNORECASE)
 
 
 def _closed_issue_number(pr_body: str) -> str | None:
     m = _CLOSES_RE.search(pr_body)
+    return m.group(1) if m else None
+
+
+def _reverted_pr_number(pr_body: str) -> str | None:
+    m = _REVERTS_RE.search(pr_body)
     return m.group(1) if m else None
 
 
@@ -232,6 +246,9 @@ def _gather_merged_window(
         closed_issue = _closed_issue_number(pr.get("body") or "")
         if closed_issue:
             refs.add(closed_issue)
+        reverts = _reverted_pr_number(pr.get("body") or "")
+        if reverts:
+            refs.add(reverts)
         entries.append(
             {
                 "number": pr["number"],
@@ -239,6 +256,7 @@ def _gather_merged_window(
                 "merged_at": merged_at,
                 "is_dependabot": is_dependabot,
                 "closes_issue": closed_issue,
+                "reverts": reverts,
             }
         )
     prov.input_rows = len(entries)
@@ -466,6 +484,15 @@ def gather(
         remaining, remaining_prov = _gather_remaining_issues(
             repo, _run_gh, window.start, window.end
         )
+        retractions = [
+            {
+                "original_ref": e["reverts"],
+                "revert_ref": str(e["number"]),
+                "title": e["title"],
+            }
+            for e in merged
+            if e.get("reverts")
+        ]
 
         repo_result = RepoWindowResult(
             repo=repo,
@@ -474,6 +501,7 @@ def gather(
             window_entries=merged + closed_issues,
             window_refs=merged_refs | closed_refs,
             remaining_issues=remaining,
+            retractions=retractions,
             window_start=window.start,
             window_end=window.end,
             window_truncated=window.truncated,
