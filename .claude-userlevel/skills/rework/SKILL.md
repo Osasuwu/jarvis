@@ -252,9 +252,9 @@ detection guard.
 (not just an unreleased change earlier on this same PR), add a `Reverts #<M>`
 trailer to the fix commit message (§9's `git commit -m` calls) — never to the
 PR title or `Closes #NNN` line, per Territory boundaries above. This is the
-same machine-readable marker `/implement` adds (CONTEXT.md → *Weekly release*
-→ *Retraction marker*); `/weekly-release` reads it to populate the "Отозвано"
-section.
+same machine-readable marker `/implement` adds (jarvis `CONTEXT.md` → *Weekly
+release* → *Retraction marker*); `/weekly-release` reads it to populate the
+"Отозвано" section.
 
 ### 5. Apply MAJOR fixes
 
