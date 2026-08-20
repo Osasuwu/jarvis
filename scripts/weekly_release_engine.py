@@ -211,6 +211,30 @@ def trust_ramp_state(prior_releases: list[dict]) -> str:
     return "draft"
 
 
+# -- Routine mode (#1658 AC1/AC3) ---------------------------------------------
+
+
+def is_routine_host(device_config: dict) -> bool:
+    """True iff this device is the sole routine host (``config/device.json``'s
+    ``routine_host`` flag) — same gate /setup-tasks applies, decision
+    1b7ff8d1-bbca-4207-a7e4-4c1edddef67e. A missing or falsy flag means "not
+    the host", never an error — refusal is the caller's job."""
+    return device_config.get("routine_host") is True
+
+
+def weekly_release_notification_for(repo: str, version: str, status: str) -> tuple[str, str] | None:
+    """(subject, body) for a weekly-release routine notification (AC3's fixed
+    phrasing), or ``None`` when the run produced no release. ``None`` is the
+    "stay silent" signal — the routine caller skips ``notify_text`` entirely
+    rather than sending an empty/no-op notification, since a run with
+    nothing to report must not become weekly spam."""
+    if status == "draft":
+        return f"Draft awaiting publication: {repo} v{version}", ""
+    if status == "published":
+        return f"Published release: {repo} v{version}", ""
+    return None
+
+
 # -- Release-body assembly (AC9) ----------------------------------------------
 
 

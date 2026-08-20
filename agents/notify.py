@@ -53,6 +53,8 @@ except ImportError:  # pragma: no cover - exercised only when apprise is absent
     _apprise_lib = None  # type: ignore[assignment]
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
     from agents.orchestrator import Decision
 
 logger = logging.getLogger(__name__)
@@ -100,6 +102,8 @@ def _describe_transport_value(raw: str) -> str:
 
 
 def _format_message(decision: "Decision") -> str:
+    if decision.message is not None:
+        return decision.message
     lines = [
         f"[{decision.severity.upper()}] {decision.event_type}",
         f"Target: {decision.target}",
@@ -287,3 +291,78 @@ def resolve_notifier(env: Mapping[str, str]) -> tuple[str, NotifierFn]:
         return raw, fn
 
     return _misconfig(f"unrecognized NOTIFY_TRANSPORT value {_describe_transport_value(raw)}")
+
+
+# -- Free-text entrypoint (#1658 AC2/AC3/AC4) --------------------------------
+
+_QUIET_HOURS_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
+
+
+def _in_quiet_hours(env: Mapping[str, str], now: "datetime | None" = None) -> bool:
+    """True iff ``now`` (local time) falls inside ``NOTIFY_QUIET_HOURS``
+    (``"HH:MM-HH:MM"``, wrapping past midnight if start > end).
+
+    Fails open (returns False, i.e. "not quiet") on unset or malformed
+    values — a caller that never suppresses is safer than one that goes
+    silently silent forever on a config typo. Reads only ``env``, matching
+    :func:`resolve_notifier`'s no-``os.environ`` contract.
+    """
+    raw = (env.get("NOTIFY_QUIET_HOURS") or "").strip()
+    if not raw:
+        return False
+    m = _QUIET_HOURS_RE.match(raw)
+    if not m:
+        logger.warning("notify_text: malformed NOTIFY_QUIET_HOURS=%r — ignoring", raw)
+        return False
+
+    from datetime import datetime as _datetime
+
+    start_h, start_m, end_h, end_m = (int(g) for g in m.groups())
+    start = start_h * 60 + start_m
+    end = end_h * 60 + end_m
+    current = now or _datetime.now()
+    minutes = current.hour * 60 + current.minute
+    if start <= end:
+        return start <= minutes < end
+    return minutes >= start or minutes < end
+
+
+def notify_text(
+    subject: str, body: str, env: Mapping[str, str], now: "datetime | None" = None
+) -> bool:
+    """Free-text notification entrypoint (#1658) — for callers (e.g. the
+    ``/weekly-release`` routine) with a plain subject/body message and no
+    natural severity/target/goal shape to fit into the structured
+    :class:`~agents.orchestrator.Decision` fields.
+
+    Resolves via :func:`resolve_notifier` like every other transport — reads
+    only the passed ``env`` mapping, never ``os.environ`` directly. Respects
+    ``NOTIFY_QUIET_HOURS`` (see :func:`_in_quiet_hours`): during quiet hours
+    the call is suppressed and returns ``True`` (a deliberate no-op, same
+    semantics as an explicit ``NOTIFY_TRANSPORT=none`` opt-out — not a
+    delivery failure). Never raises — a broken transport degrades to a
+    logged warning and ``False``, mirroring every other notifier's no-raise
+    contract in this module.
+    """
+    from agents.orchestrator import Decision, Route
+
+    if _in_quiet_hours(env, now):
+        logger.info("notify_text: suppressed — within NOTIFY_QUIET_HOURS")
+        return True
+
+    message = f"{subject}\n\n{body}" if body else subject
+    _transport, notifier = resolve_notifier(env)
+    decision = Decision(
+        route=Route.ESCALATE,
+        event_type="notify_text",
+        severity="info",
+        target="notify_text",
+        idempotency_key=f"notify-text:{subject}",
+        priority=0,
+        message=message,
+    )
+    try:
+        return notifier(decision)
+    except Exception:
+        logger.warning("notify_text: notifier raised — degrading to False", exc_info=True)
+        return False

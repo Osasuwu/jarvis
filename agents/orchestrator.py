@@ -110,6 +110,11 @@ class Decision:
     # (e.g. a github.issue_* event) has somewhere to put the number without
     # a signature change to Decision or dispatch().
     issue_number: int | None = None
+    # #1658: free-text override for _format_message — set by notify_text
+    # callers (e.g. /weekly-release routine notifications) that have no
+    # natural severity/target/goal shape, so the structured rendering is
+    # bypassed entirely rather than stretched to fit.
+    message: str | None = None
 
 
 def priority_for(severity: str) -> int:
