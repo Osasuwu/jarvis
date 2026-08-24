@@ -25,6 +25,9 @@ See `docs/agents/` for per-module operational notes and architectural detail.
 | `github_client.py` | — | Thin wrapper over the GitHub Events API |
 | `scope_hash.py` | — | Deterministic scope-files hash — drift detection (#773) |
 | `pid_sidecar.py` | — | PID sidecar for restart-surviving liveness (#952) |
+| `plan_review_config.py` | — | Loader for `config/plan_review.yaml` — class-2/3 thresholds & criteria (#1685) |
+| `plan_classifier.py` | — | `classify()`/`classify_task_row()` — change-set → `class:1`/`2`/`3` (#1685) |
+| `plan_lock.py` | — | `## Plan` section canonicalize/hash + strict parser (#1685) |
 
 ## Running the loop
 

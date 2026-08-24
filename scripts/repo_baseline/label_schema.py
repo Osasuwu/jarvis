@@ -132,6 +132,16 @@ CLEAN_LABELS: list[CleanLabel] = [
         "Awaiting triage into the issue state machine",
         "needs",
     ),
+    # needs-plan added per issue #1685: plan-review stage — same dash format
+    # as the rest of the needs-* family.
+    CleanLabel(
+        # Distinct pale-orange — unique vs needs-triage (ffe082),
+        # needs-prd (ffc844), needs-grill (fdd835).
+        "needs-plan",
+        "ffb74d",
+        "Needs a locked ## Plan section before implementation",
+        "needs",
+    ),
     # ── Tier ──────────────────────────────────────────────────────────
     CleanLabel(
         "tier:1-auto",
@@ -153,6 +163,29 @@ CLEAN_LABELS: list[CleanLabel] = [
         "d73a4a",
         "Tier 3: owner-driven only",
         "tier",
+    ),
+    # ── Plan review ───────────────────────────────────────────────────
+    # class:2 / plan:locked added per issue #1685. Deliberately a separate
+    # category from tier:* — plan-complexity classification (class:1/2/3,
+    # agents/plan_classifier.py) and dispatch tier (tier:1-auto/2-review/
+    # 3-human, agents/safety.py) are orthogonal systems; see #1685 decision.
+    # Only class:2 gets a label (class:1/3 are the unmarked default paths
+    # in the workflow — no label needed for the common case).
+    CleanLabel(
+        # Distinct gold-orange — unique vs tier:2-review (dbab09),
+        # needs-plan (ffb74d).
+        "class:2",
+        "e8a33d",
+        "Plan-review: shared-surface/high-churn change requiring owner plan review",
+        "plan-review",
+    ),
+    CleanLabel(
+        # Distinct green — unique vs priority:low (0e8a16), status:ready
+        # (c2e0c6), area:quality (bfe5bf).
+        "plan:locked",
+        "2e9e4f",
+        "Plan section hashed and locked for this issue",
+        "plan-review",
     ),
     # ── Special ───────────────────────────────────────────────────────
     CleanLabel(

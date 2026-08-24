@@ -7,9 +7,11 @@
       "pytest",
       "meta-tests",
       "Detect secrets with gitleaks",
-      "pytest-db"
+      "pytest-db",
+      "require-paired-migration"
     ],
     "contexts_source": [
+      null,
       null,
       null,
       null,
@@ -73,6 +75,11 @@
       "name": "area:quality"
     },
     {
+      "color": "0E8A16",
+      "description": "Release/changelog pipeline (/weekly-release)",
+      "name": "area:release"
+    },
+    {
       "color": "e99695",
       "description": "Security & digital hygiene",
       "name": "area:security"
@@ -91,6 +98,11 @@
       "color": "d73a4a",
       "description": "Something isn't working",
       "name": "bug"
+    },
+    {
+      "color": "e8a33d",
+      "description": "Plan-review: shared-surface/high-churn change requiring owner plan review",
+      "name": "class:2"
     },
     {
       "color": "0e8a16",
@@ -138,6 +150,11 @@
       "name": "needs-grill"
     },
     {
+      "color": "ffb74d",
+      "description": "Needs a locked ## Plan section before implementation",
+      "name": "needs-plan"
+    },
+    {
       "color": "FBCA04",
       "description": "Scope defined but no PRD yet \u2014 run /to-spec before slicing",
       "name": "needs-prd"
@@ -156,6 +173,11 @@
       "color": "ffe082",
       "description": "Awaiting triage into the issue state machine",
       "name": "needs-triage"
+    },
+    {
+      "color": "2e9e4f",
+      "description": "Plan section hashed and locked for this issue",
+      "name": "plan:locked"
     },
     {
       "color": "7B0000",
@@ -186,11 +208,6 @@
       "color": "1d76db",
       "description": "AFK queue: issue is safe for sandcastle agent to pick up unattended",
       "name": "sandcastle"
-    },
-    {
-      "color": "b60205",
-      "description": "Blocked",
-      "name": "status:blocked"
     },
     {
       "color": "fbca04",
@@ -270,6 +287,11 @@
       ]
     ],
     ".github/workflows/code-review.yml": [
+      [
+        "ubuntu-latest"
+      ]
+    ],
+    ".github/workflows/dependabot-lockfile.yml": [
       [
         "ubuntu-latest"
       ]
@@ -359,6 +381,7 @@
     ".github/workflows/owner-queue-guard.yml",
     ".github/workflows/auto-merge-enable.yml",
     ".github/workflows/merge-train.yml",
-    ".github/workflows/review-debt-collector.yml"
+    ".github/workflows/review-debt-collector.yml",
+    ".github/workflows/dependabot-lockfile.yml"
   ]
 }
