@@ -6,7 +6,9 @@ https://github.com/mattpocock/skills/blob/733d312884b3878a9a9cff693c5886943753a7
 Jarvis adaptations: (1) anti-horizontal-slicing rule kept verbatim; (2) new
 refactor-permission clause in §Refactor (Jarvis-specific extension, #593);
 (3) §Refactor made an explicit standalone post-green pass, not interleaved
-with the per-AC RED→GREEN cycle (jarvis#1153).
+with the per-AC RED→GREEN cycle (jarvis#1153); (4) §3 gained a mandatory
+mutation-probe step after each item's GREEN (#1287, research:
+docs/research/test-case-design-2026-07-28.md).
 MIT — see THIRD_PARTY_LICENSES/aihero-skills-MIT.txt.
 -->
 
@@ -92,6 +94,22 @@ Rules:
 - Don't anticipate future tests
 - Keep tests focused on observable behavior
 - Each test links back to one acceptance-criterion bullet from the issue body — if a test does not, it is either out of scope or evidence the AC is incomplete (return to `/grill`)
+
+**Mutation probe — mandatory after each item's GREEN, before moving to the next AC item:**
+
+```
+1. Corrupt one behaviorally-significant line of the implementation this test allegedly covers
+   (flip a comparison, invert a condition, change a returned constant — not a comment or a
+   log statement).
+2. Re-run the test. Confirm RED.
+3. Revert the corruption.
+```
+
+- **Survival blocks progress.** If the test stays GREEN against the corrupted line, it is not covering that line — strengthen or rewrite the test before starting the next AC item. Do not proceed on a survived probe.
+- **For markdown/prose implementations** (skill files, docs, config), "corrupt a line" means mutate a meaning-bearing token the test actually pins — a trigger word, a path, a threshold number, a required section heading. If no such token can be named for a given test, the test is asserting decoration (structure, presence, word count) rather than the prose's actual behavioral content, and must be rewritten to pin something real or removed.
+- **No mutation-score threshold or gate.** This is a manual, per-test inner-loop discipline — one probe, one test, right after it goes green, while the corrupting change is still cheap to hold in your head. It is explicitly *not* an automated mutation-score measurement across the suite (that's a separate, unbiased-measurement concern the #1260 CRITIC round already resolved as out of scope here — see `docs/research/test-case-design-2026-07-28.md` Trade-offs & Risks: one-sided evals invite one-sided optimization against the metric, same failure mode a mutation-score gate would create for tests).
+- **Record it.** The PR body's `## Testing` section must carry one evidence line per probed test: the corrupted line + which test reddened. See `implement/SKILL.md` §5 template.
+- Refactoring after this AC item's probe does not require re-probing the same test unless the refactor changes what line the test exercises.
 
 ### 4. Refactor Pass (post-green, not per-test)
 
