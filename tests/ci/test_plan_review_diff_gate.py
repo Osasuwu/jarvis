@@ -18,7 +18,12 @@ from pathlib import Path
 
 from agents.plan_classifier import ChangeSet
 from agents.plan_lock import hash_plan
-from agents.plan_review_config import Class2Thresholds, Class3Criteria, PlanReviewConfig
+from agents.plan_review_config import (
+    Class2Thresholds,
+    Class3Criteria,
+    ModelFloors,
+    PlanReviewConfig,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 gate = importlib.import_module("plan_review_diff_gate")
@@ -30,6 +35,7 @@ _CONFIG = PlanReviewConfig(
         min_prod_areas=2,
     ),
     class_3=Class3Criteria(mechanical_criteria=("docs-only",)),
+    models=ModelFloors(planner="claude-opus-5", critic="claude-sonnet-5"),
 )
 
 

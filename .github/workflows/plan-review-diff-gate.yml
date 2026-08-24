@@ -37,16 +37,20 @@ jobs:
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: uv sync --all-extras
 
       - name: Gather diff facts and linked-issue body
         id: gather
@@ -98,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          output=$(PYTHONPATH=. python scripts/plan_review_diff_gate.py < /tmp/gate_envelope.json)
+          output=$(PYTHONPATH=. uv run python scripts/plan_review_diff_gate.py < /tmp/gate_envelope.json)
           status=$?
           set -e
           echo "output=$output" >> "$GITHUB_OUTPUT"
