@@ -88,6 +88,13 @@ class RepoWindowResult:
         default_factory=set
     )  # PR/issue numbers as strings, for the linter
     remaining_issues: list[dict] = field(default_factory=list)  # open milestone issues w/ movement
+    # remaining_issues' own numbers, as strings - a separate set from
+    # window_refs (merged/closed only) because remaining_section prose cites
+    # these open-issue numbers as its source of truth; lint_release_notes
+    # must validate remaining_section against window_refs | remaining_refs,
+    # never window_refs alone, or every remaining_section line fails as
+    # "missing citation" by construction (found via e2e test against redrobot).
+    remaining_refs: set[str] = field(default_factory=set)
     # #1659: merged PRs in the window that carry a "Reverts #N" marker, each
     # {"original_ref", "revert_ref", "title"} - source data for the
     # "Отозвано" release-notes section (format_retraction_section).
@@ -104,6 +111,7 @@ class RepoWindowResult:
             "window_entries": self.window_entries,
             "window_refs": sorted(self.window_refs),
             "remaining_issues": self.remaining_issues,
+            "remaining_refs": sorted(self.remaining_refs),
             "retractions": self.retractions,
             "window_start": self.window_start,
             "window_end": self.window_end,
@@ -445,8 +453,23 @@ def gather(
     try:
         entries = _read_entries(conf_path)
     except ValueError as exc:
+        # #1671: a parse error must not be masked as ok=True/input_rows=0 —
+        # that reads as "repos.conf legitimately has zero weekly repos"
+        # instead of "repos.conf is broken and nothing was gathered".
         result.errors.append(f"repos.conf parse error: {exc}")
-        entries = []
+        result.provenance[WeeklyReleaseSourceKind.REPOS_CONF] = Provenance(
+            ran=True, ok=False, input_rows=0, age=0.0
+        ).to_dict()
+        return result
+
+    if not entries:
+        # #1671: mirrors status_gather.py's empty/unreadable handling —
+        # distinct from "parsed fine, zero releases=weekly rows" below.
+        result.errors.append("repos.conf is empty, unreadable, or not found")
+        result.provenance[WeeklyReleaseSourceKind.REPOS_CONF] = Provenance(
+            ran=True, ok=False, input_rows=0, age=0.0
+        ).to_dict()
+        return result
 
     weekly_entries = [e for e in entries if e.tokens.get("releases") == "weekly"]
     result.provenance[WeeklyReleaseSourceKind.REPOS_CONF] = Provenance(
@@ -461,15 +484,11 @@ def gather(
             (r["published_at"] for r in releases if r.get("published") and r.get("published_at")),
             None,
         )
-        # A pending draft's own anchor: if the most recent release in the
-        # history we already fetched is itself unpublished, that's the
-        # in-flight draft to dedup against (its created_at, since drafts
-        # have no published_at) — re-running should update that draft's
-        # window, not restart the clock or duplicate it (#1572 AC).
-        pending_draft_at = (
-            releases[0].get("created_at") if releases and not releases[0].get("published") else None
-        )
-        window = compute_window(last_release_at, pending_draft_at, now_iso)
+        # #1667: compute_window() anchors on last_release_at only — a pending
+        # (unpublished) draft never anchors the window. SKILL.md Step 2.6
+        # separately handles the draft-in-place-update case by scanning
+        # prior_releases, so compute_window() doesn't need draft awareness.
+        window = compute_window(last_release_at, now_iso)
 
         merged, merged_refs, merged_prov = _gather_merged_window(
             repo, _run_gh, window.start, window.end
@@ -501,6 +520,7 @@ def gather(
             window_entries=merged + closed_issues,
             window_refs=merged_refs | closed_refs,
             remaining_issues=remaining,
+            remaining_refs={str(i["number"]) for i in remaining},
             retractions=retractions,
             window_start=window.start,
             window_end=window.end,

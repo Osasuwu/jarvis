@@ -219,6 +219,44 @@ def test_remaining_issues_requires_milestone_and_movement_in_window():
 # -- gather() end-to-end ---------------------------------------------------------
 
 
+def test_gather_populates_remaining_refs_from_remaining_issues():
+    # remaining_refs mirrors window_refs but for open milestone issues -
+    # remaining_section prose cites these, and they are categorically
+    # disjoint from window_refs (merged/closed only). Missing this field
+    # made every non-empty remaining_section fail lint_release_notes by
+    # construction (found via e2e test against redrobot).
+    entries = [RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"})]
+
+    open_issues_json = json.dumps(
+        [
+            {
+                "number": 77,
+                "title": "still open",
+                "updatedAt": "2026-08-10T00:00:00Z",
+                "milestone": {"title": "M1"},
+            }
+        ]
+    )
+
+    def fake_run_gh(repo, args):
+        if args[0] == "api":
+            return {"stdout": "", "stderr": "", "returncode": 0}
+        if args[0] == "issue":
+            return {"stdout": open_issues_json, "stderr": "", "returncode": 0}
+        return {"stdout": "[]", "stderr": "", "returncode": 0}
+
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=lambda path: entries,
+        run_gh_fn=fake_run_gh,
+        now_fn=lambda: 1786000000.0,
+    )
+    repo_result = result.repos[0]
+    assert repo_result.remaining_refs == {"77"}
+    assert "77" not in repo_result.window_refs
+
+
 def test_gather_filters_repos_conf_to_weekly_releases_only():
     entries = [
         RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"}),
@@ -242,11 +280,12 @@ def test_gather_filters_repos_conf_to_weekly_releases_only():
     assert WeeklyReleaseSourceKind.REPOS_CONF in result.provenance
 
 
-def test_gather_anchors_window_on_existing_pending_draft():
-    # #1662 review: a repo's most-recent release is an unpublished (pending)
-    # draft -> compute_window() must anchor on the draft's own created_at,
-    # not on the last *published* release, so re-running updates the same
-    # draft's window instead of restarting the clock or duplicating it.
+def test_gather_anchors_window_on_last_published_release_ignoring_pending_draft():
+    # #1667: a repo's most-recent release is an unpublished (pending) draft.
+    # The window must anchor on the last *published* release, not on the
+    # draft's created_at - anchoring on the draft collapsed the window to
+    # near-empty on every re-run (#1667). SKILL.md Step 2.6 handles updating
+    # an in-place draft separately, by scanning prior_releases.
     entries = [RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"})]
 
     releases_ndjson = "\n".join(
@@ -260,8 +299,8 @@ def test_gather_anchors_window_on_existing_pending_draft():
             },
             {
                 "tag_name": "v0.2.0",
-                "published_at": "2026-07-01T00:00:00Z",
-                "created_at": "2026-07-01T00:00:00Z",
+                "published_at": "2026-08-01T00:00:00Z",
+                "created_at": "2026-08-01T00:00:00Z",
                 "draft": False,
             },
         ]
@@ -280,7 +319,56 @@ def test_gather_anchors_window_on_existing_pending_draft():
         now_fn=lambda: 1786000000.0,
     )
     repo_result = result.repos[0]
-    assert repo_result.window_start == "2026-08-15T00:00:00+00:00"
+    assert repo_result.window_start == "2026-08-01T00:00:00+00:00"
+
+
+# -- gather() repos.conf failure handling (#1671) ---------------------------
+
+
+def test_gather_reports_error_on_repos_conf_parse_error():
+    def raising_read(path):
+        raise ValueError("bad token on line 3")
+
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=raising_read,
+        run_gh_fn=_gh("[]"),
+        now_fn=lambda: 1786000000.0,
+    )
+    assert result.repos == []
+    assert any("repos.conf parse error" in e for e in result.errors)
+    assert result.provenance[WeeklyReleaseSourceKind.REPOS_CONF]["ok"] is False
+
+
+def test_gather_reports_error_on_empty_repos_conf():
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=lambda path: [],
+        run_gh_fn=_gh("[]"),
+        now_fn=lambda: 1786000000.0,
+    )
+    assert result.repos == []
+    assert any("repos.conf is empty, unreadable, or not found" in e for e in result.errors)
+    assert result.provenance[WeeklyReleaseSourceKind.REPOS_CONF]["ok"] is False
+
+
+def test_gather_reports_ok_when_repos_conf_has_no_weekly_entries():
+    # Distinct from the empty-file case: parsing succeeded, there just
+    # aren't any releases=weekly rows - not a failure.
+    entries = [RepoEntry(name="o/other-repo", tokens={})]
+    result = gather(
+        jarvis_home="/fake",
+        now="2026-08-20T00:00:00+00:00",
+        read_repos_conf_entries_fn=lambda path: entries,
+        run_gh_fn=_gh("[]"),
+        now_fn=lambda: 1786000000.0,
+    )
+    assert result.repos == []
+    assert result.errors == []
+    assert result.provenance[WeeklyReleaseSourceKind.REPOS_CONF]["ok"] is True
+    assert result.provenance[WeeklyReleaseSourceKind.REPOS_CONF]["input_rows"] == 0
 
 
 def test_gather_collects_retractions_from_merged_window():
