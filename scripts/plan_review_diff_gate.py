@@ -1,0 +1,193 @@
+"""PR-open CI diff-gate: re-classify the actual PR diff, fail closed (#1687).
+
+The ex-post half of two-point plan-review classification (decision
+`d34dd65a`): admission-time classification is best-effort, so this check
+recomputes the class-2 trigger from the real diff on PR open/push. A
+trigger hit with no valid locked plan on the linked issue blocks — the PR
+is converted to draft and labeled `status:owner-queue` (AC2) — rather than
+merging having never seen a plan.
+
+Reuses the shared classifier (`agents.plan_classifier.classify`) and the
+shared lock-verification helper (`agents.plan_lock.verify_lock`) — no
+second implementation of thresholds or hashing logic (AC5, decision
+`fa9c5ab0`). This module does no network/subprocess I/O itself: it reads a
+JSON envelope on stdin (paths, churn, the linked issue body if reachable)
+and prints a decision, mirroring `delegate_predispatch_gate.py`'s
+data-in/decision-out shape. The calling workflow does the `git diff` /
+`gh` calls and acts on the exit code (0 = pass, 1 = block).
+
+Fails closed (AC4): an indeterminate classification, an unreachable linked
+issue, or an unverifiable/malformed lock all block rather than pass.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from agents.plan_classifier import ChangeSet, classify
+from agents.plan_lock import MalformedPlanError, verify_lock
+from agents.plan_review_config import PlanReviewConfig, load_plan_review_config
+
+_DEFAULT_CONFIG_PATH = Path("config/plan_review.yaml")
+
+
+def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
+    """Distinct production areas touched, excluding `tests/` (AC per #1685).
+
+    Area = the top-level path component (directory, or the bare filename
+    for a top-level file like `.mcp.json`) — the same unit `config/plan_review.yaml`
+    documents for `min_prod_areas`.
+    """
+    areas = set()
+    for path in paths:
+        top = path.split("/", 1)[0]
+        if top == "tests":
+            continue
+        areas.add(top)
+    return len(areas)
+
+
+def compute_change_set(
+    paths: tuple[str, ...],
+    churn_lines: int,
+    mechanical_criteria: tuple[str, ...] = (),
+) -> ChangeSet:
+    """Build a `ChangeSet` from raw diff facts — the gate's sole input shape."""
+    return ChangeSet(
+        paths=tuple(paths),
+        churn_lines=churn_lines,
+        prod_areas=prod_areas_from_paths(tuple(paths)),
+        mechanical_criteria=tuple(mechanical_criteria),
+    )
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    classification: str
+    decision: str  # "pass" | "block"
+    reason: str
+
+
+def _class_2_trigger_reason(config: PlanReviewConfig, change: ChangeSet) -> str:
+    """Describe which class-2 condition(s) hold — for the PR comment (AC7).
+
+    Informational readout only: reads the already-loaded config's own
+    values back against the change-set to name what tripped. The
+    pass/block *decision* always comes from `classify()`'s return value,
+    never from this description re-deriving it.
+    """
+    reasons = []
+    hit_globs = [g for g in config.class_2.shared_surface_globs if _matches_any(change.paths, g)]
+    if hit_globs:
+        reasons.append(f"touches shared-surface path(s) matching {hit_globs}")
+    if change.churn_lines > config.class_2.churn_threshold:
+        reasons.append(
+            f"churn {change.churn_lines} lines exceeds threshold {config.class_2.churn_threshold}"
+        )
+    if change.prod_areas >= config.class_2.min_prod_areas:
+        reasons.append(
+            f"touches {change.prod_areas} production areas (>= min {config.class_2.min_prod_areas})"
+        )
+    return "; ".join(reasons) or "class-2 trigger fired"
+
+
+def _matches_any(paths: tuple[str, ...], glob: str) -> bool:
+    import fnmatch
+
+    return any(fnmatch.fnmatch(p, glob) for p in paths)
+
+
+def evaluate(config: PlanReviewConfig, change: ChangeSet, issue_body: str | None) -> GateDecision:
+    """Classify `change` and decide pass/block against the linked issue's plan lock.
+
+    class:1 / class:3 always pass silently (AC3, scoped to class:2). For
+    class:2, an unreachable issue, a malformed plan, or a lock that does
+    not verify all block (AC4, fail closed); only a verified lock passes.
+    """
+    classification = classify(config, change)
+
+    if classification != "class:2":
+        return GateDecision(classification=classification, decision="pass", reason="")
+
+    trigger_reason = _class_2_trigger_reason(config, change)
+
+    if issue_body is None:
+        return GateDecision(
+            classification=classification,
+            decision="block",
+            reason=f"class:2 trigger ({trigger_reason}) but linked issue is unreachable",
+        )
+
+    try:
+        locked = verify_lock(issue_body)
+    except MalformedPlanError as exc:
+        return GateDecision(
+            classification=classification,
+            decision="block",
+            reason=f"class:2 trigger ({trigger_reason}) but linked issue has no valid plan lock "
+            f"({exc.reason})",
+        )
+
+    if not locked:
+        return GateDecision(
+            classification=classification,
+            decision="block",
+            reason=f"class:2 trigger ({trigger_reason}) but linked issue's plan lock does not verify",
+        )
+
+    return GateDecision(classification=classification, decision="pass", reason="")
+
+
+def _validate_envelope(payload: object) -> dict | str:
+    if not isinstance(payload, dict):
+        return "payload is not a JSON object"
+    if not isinstance(payload.get("paths"), list):
+        return "missing or malformed `paths` (must be a list of strings)"
+    if not isinstance(payload.get("churn_lines"), int):
+        return "missing or malformed `churn_lines` (must be an int)"
+    issue_body = payload.get("issue_body")
+    if issue_body is not None and not isinstance(issue_body, str):
+        return "malformed `issue_body` (must be a string or null)"
+    return payload
+
+
+def main(argv: list[str] | None = None) -> int:
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"BLOCK: unverifiable — stdin is not valid JSON ({exc.msg})")
+        return 1
+
+    validated = _validate_envelope(payload)
+    if isinstance(validated, str):
+        print(f"BLOCK: unverifiable — {validated}")
+        return 1
+
+    config_path = Path(validated.get("config_path") or _DEFAULT_CONFIG_PATH)
+    try:
+        config = load_plan_review_config(config_path)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"BLOCK: unverifiable — could not load plan-review config: {exc}")
+        return 1
+
+    change = compute_change_set(
+        paths=tuple(validated["paths"]),
+        churn_lines=validated["churn_lines"],
+        mechanical_criteria=tuple(validated.get("mechanical_criteria") or ()),
+    )
+    result = evaluate(config, change, validated.get("issue_body"))
+
+    if result.decision == "block":
+        print(f"BLOCK: {result.reason}")
+        return 1
+
+    print(f"PASS: classification={result.classification}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
