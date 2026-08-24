@@ -353,6 +353,28 @@ def requeue_running(
     return bool(result.data)
 
 
+def set_plan_digest(
+    task_id: str,
+    digest: str,
+    *,
+    client: Client | None = None,
+) -> dict[str, Any]:
+    """Persist a locked plan's hash onto ``task_id`` via a direct UPDATE (#1689).
+
+    Like :func:`reclaim_stale_claimed`/:func:`requeue_running`, this
+    deliberately bypasses the FSM — setting ``plan_digest`` is not itself an
+    FSM transition, it's metadata the ex-post plan-review drain gate
+    (:mod:`agents.plan_review_drain`) writes once a class:2 row's plan is
+    locked and verified. Returns the updated row dict (unlike
+    ``requeue_running``'s bool — callers need the persisted digest back, not
+    just a success flag), or ``{}`` if no row matched ``task_id``.
+    """
+    cli = client or get_client()
+    result = cli.table("task_queue").update({"plan_digest": digest}).eq("id", task_id).execute()
+    rows = result.data or []
+    return dict(rows[0]) if rows else {}
+
+
 def get_status(
     task_id: str,
     *,

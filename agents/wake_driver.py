@@ -67,7 +67,12 @@ from dotenv import load_dotenv
 
 from agents.config import load_config
 from agents.driver_heartbeat import DRIVER_NAME, HeartbeatPort, SupabaseHeartbeat
+from agents.github_client import default_github_client
 from agents.pid_sidecar import Sidecar
+from agents.plan_review_config import PlanReviewConfig
+from agents.plan_review_drain import PlannerPort
+from agents.plan_review_drain import default_plan_config_loader
+from agents.plan_review_drain import default_run_planner as _default_run_planner
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
@@ -428,6 +433,9 @@ def tick(
     task_spawn: Spawn = default_spawn,
     task_resolve_binary: ResolveBinary = default_resolve_binary,
     task_read_usage: ReadUsage = default_read_usage,
+    task_planner: PlannerPort = _default_run_planner,
+    task_plan_config_loader: Callable[[], PlanReviewConfig] = default_plan_config_loader,
+    task_github_factory: Callable[[], GitHubClient] = default_github_client,
     task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
     task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
     task_procs: dict[str, TrackedProc] | None = None,
@@ -619,6 +627,9 @@ def tick(
                 read_usage=task_read_usage,
                 sidecar=task_sidecar,
                 dedup=task_dedup,
+                planner=task_planner,
+                plan_config_loader=task_plan_config_loader,
+                github_factory=task_github_factory,
             )
             if task_procs is not None:
                 for task_id, proc in task_drain.procs:
@@ -670,6 +681,9 @@ def run(
     task_spawn: Spawn = default_spawn,
     task_resolve_binary: ResolveBinary = default_resolve_binary,
     task_read_usage: ReadUsage = default_read_usage,
+    task_planner: PlannerPort = _default_run_planner,
+    task_plan_config_loader: Callable[[], PlanReviewConfig] = default_plan_config_loader,
+    task_github_factory: Callable[[], GitHubClient] = default_github_client,
     task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
     task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
     task_procs: dict[str, TrackedProc] | None = None,
@@ -745,6 +759,9 @@ def run(
                 task_spawn=task_spawn,
                 task_resolve_binary=task_resolve_binary,
                 task_read_usage=task_read_usage,
+                task_planner=task_planner,
+                task_plan_config_loader=task_plan_config_loader,
+                task_github_factory=task_github_factory,
                 task_claimed_stale_after_seconds=task_claimed_stale_after_seconds,
                 task_running_reap_after_seconds=task_running_reap_after_seconds,
                 task_procs=procs,

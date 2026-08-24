@@ -29,6 +29,7 @@ See `docs/agents/` for per-module operational notes and architectural detail.
 | `plan_classifier.py` | — | `classify()`/`classify_task_row()` — change-set → `class:1`/`2`/`3` (#1685) |
 | `plan_lock.py` | — | `## Plan` section canonicalize/hash + strict parser (#1685) |
 | `implement_plan_gate.py` | — | `evaluate_trigger()` — `/implement`'s ex-ante plan-gate trigger, `priority:critical` carve-out (#1688) |
+| `plan_review_drain.py` | — | `class_gate()`/`needs_plan()`/`write_plan_section()` — `drain_tasks`'s ex-post plan-review gate, no carve-out (#1689) |
 
 ## Running the loop
 

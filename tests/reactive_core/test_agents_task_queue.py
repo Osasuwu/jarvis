@@ -21,6 +21,7 @@ from agents.task_queue import (
     list_stale_running,
     reclaim_stale_claimed,
     requeue_running,
+    set_plan_digest,
     transition,
 )
 
@@ -844,6 +845,32 @@ class TestRequeueRunning:
 
     def test_returns_false_when_missing(self, client: _StubClient) -> None:
         assert requeue_running("ghost", client=client) is False
+
+
+# ===========================================================================
+# set_plan_digest (#1689) — persist the locked plan's hash onto the row
+# ===========================================================================
+
+
+class TestSetPlanDigest:
+    """Direct-UPDATE, FSM-bypassing (like requeue_running/reclaim_stale_claimed) —
+    setting a plan digest is not itself an FSM transition."""
+
+    def test_sets_the_plan_digest_and_returns_the_updated_row(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="tq-1", idempotency_key="k1", plan_digest=None),
+            ],
+        )
+        result = set_plan_digest("tq-1", "abc123", client=client)
+        rows = {r["id"]: r for r in client.table("task_queue")._rows}
+        assert rows["tq-1"]["plan_digest"] == "abc123"
+        assert result["id"] == "tq-1"
+        assert result["plan_digest"] == "abc123"
+
+    def test_returns_empty_dict_when_row_missing(self, client: _StubClient) -> None:
+        assert set_plan_digest("ghost", "abc123", client=client) == {}
 
 
 # ===========================================================================

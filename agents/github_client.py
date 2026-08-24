@@ -227,6 +227,12 @@ class GitHubClient(Protocol):
     def update_pull(self, pr_number: int, *, body: str) -> dict[str, Any] | None:
         """Update a pull request's body. Returns the updated PR dict, or None on error."""
 
+    def update_issue(self, issue_number: int, *, body: str) -> dict[str, Any] | None:
+        """Update an issue's body. Returns the updated issue dict, or None on error."""
+
+    def create_issue_comment(self, issue_number: int, *, body: str) -> dict[str, Any] | None:
+        """Post a comment on an issue. Returns the created comment dict, or None on error."""
+
 
 def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
     """Parse executor stdout JSON and extract PR number if present (AC3 #953).
@@ -659,6 +665,33 @@ class HttpxGitHubClient:
         """
         url = f"https://api.github.com/repos/{self._repo}/pulls/{pr_number}"
         resp = self._client.patch(url, json={"body": body})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_issue(self, issue_number: int, *, body: str) -> dict[str, Any] | None:
+        """Update an issue's body (#1689). Returns the updated issue dict.
+
+        PATCHes the issue resource, mirroring :meth:`update_pull`. A 404
+        (issue not found) is normalised to None; everything else raises.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/issues/{issue_number}"
+        resp = self._client.patch(url, json={"body": body})
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_issue_comment(self, issue_number: int, *, body: str) -> dict[str, Any] | None:
+        """Post a comment on an issue (#1689). Returns the created comment dict.
+
+        POSTs to the issue's comments endpoint, mirroring :meth:`create_pull`'s
+        422-normalization shape but for a 404 (issue not found) instead —
+        comments have no duplicate-resource conflict code of their own.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/issues/{issue_number}/comments"
+        resp = self._client.post(url, json={"body": body})
         if resp.status_code == 404:
             return None
         resp.raise_for_status()

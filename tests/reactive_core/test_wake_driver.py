@@ -30,7 +30,7 @@ from agents import driver_heartbeat
 from agents import task_boot_adoption
 from agents import task_worktree as tw
 from agents import wake_driver
-from agents.task_dispatch import TaskQueuePort, TrackedProc
+from agents.task_dispatch import DrainResult, TaskQueuePort, TrackedProc
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -468,6 +468,10 @@ class _RecordingTaskQueue:
     def get_status(self, task_id: str) -> str | None:
         return self.statuses.get(task_id)
 
+    def set_plan_digest(self, task_id: str, digest: str) -> dict:
+        self._log.append("task_set_plan_digest")
+        return {"id": task_id, "plan_digest": digest}
+
 
 def test_recording_task_queue_conforms_to_the_port_protocol():
     # review #957-2 (MAJOR): the fake must satisfy the full TaskQueuePort
@@ -785,6 +789,53 @@ def test_run_forwards_task_spawn_and_resolver_to_tick():
 
     assert spawned == ["do-the-thing"]  # injected spawn forwarded, not the default
     assert resolved["n"] == 1  # injected resolver forwarded, not the default
+
+
+def test_run_forwards_plan_review_gate_params_to_drain_tasks(monkeypatch):
+    # #1689 step 14: task_planner / task_plan_config_loader / task_github_factory
+    # must reach drain_tasks() by the same two-hop path as task_resolve_binary
+    # (run() -> tick() -> drain_tasks()), else main()'s injected planner/config/
+    # GitHub client are silently dropped in favor of the production defaults.
+    captured: dict[str, Any] = {}
+
+    def fake_drain_tasks(port, spawn, **kwargs):
+        captured.update(kwargs)
+        return DrainResult()
+
+    monkeypatch.setattr(wake_driver, "drain_tasks", fake_drain_tasks)
+
+    log: list = []
+    q = FakeEventQueue([])
+    q.wake_signals = [True]
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t1", "goal": "do-the-thing", "assignee": "sandcastle"}]
+    )
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] <= 1
+
+    fake_planner = object()
+    fake_plan_config_loader = lambda: None  # noqa: E731
+    fake_github_factory = lambda: None  # noqa: E731
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=tq,
+        task_spawn=lambda goal, **_: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_planner=fake_planner,
+        task_plan_config_loader=fake_plan_config_loader,
+        task_github_factory=fake_github_factory,
+    )
+
+    assert captured["planner"] is fake_planner
+    assert captured["plan_config_loader"] is fake_plan_config_loader
+    assert captured["github_factory"] is fake_github_factory
 
 
 def test_run_forwards_task_outcome_record_to_tick():

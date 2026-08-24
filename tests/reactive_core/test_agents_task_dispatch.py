@@ -77,6 +77,7 @@ class FakeTaskQueue:
         self.stale_running: list[dict[str, Any]] = []
         self.requeued: list[str] = []
         self.statuses: dict[str, str] = dict(statuses or {})
+        self.plan_digests: dict[str, str] = {}
 
     def claim_next(self, *, assignee: str) -> dict[str, Any] | None:
         for i, row in enumerate(self._pending):
@@ -109,6 +110,10 @@ class FakeTaskQueue:
 
     def get_status(self, task_id: str) -> str | None:
         return self.statuses.get(task_id)
+
+    def set_plan_digest(self, task_id: str, digest: str) -> dict[str, Any]:
+        self.plan_digests[task_id] = digest
+        return {"id": task_id, "plan_digest": digest}
 
 
 def _always_resolve() -> str:
@@ -1944,3 +1949,206 @@ class TestLocalDrainProductionAdapters:
         monkeypatch.setattr(dh, "check_heartbeat", lambda: expected)
 
         assert default_local_drain_heartbeat_check() is expected
+
+
+# ---------------------------------------------------------------------------
+# #1689 — ex-post plan-review drain gate wiring
+# ---------------------------------------------------------------------------
+
+
+def _class2_row(
+    task_id: str, *, issue_number: int = 1689, plan_digest: str | None = None
+) -> dict[str, Any]:
+    row = _row(task_id)
+    row.update(
+        {
+            "issue_number": issue_number,
+            "scope_files": ("mcp-memory/server.py",),
+            "churn_lines": 5,
+            "prod_areas": 1,
+        }
+    )
+    if plan_digest is not None:
+        row["plan_digest"] = plan_digest
+    return row
+
+
+class _FakePlanReviewGithub:
+    """Fake ``GitHubClient`` for the plan-review gate — tracks call order."""
+
+    def __init__(self, issues: dict[int, dict[str, Any]], events: list[tuple[str, ...]]) -> None:
+        self._issues = issues
+        self._events = events
+
+    def get_issue(self, issue_number: int) -> dict[str, Any] | None:
+        self._events.append(("get_issue", str(issue_number)))
+        return self._issues.get(issue_number)
+
+    def update_issue(self, issue_number: int, *, body: str) -> dict[str, Any]:
+        issue = dict(self._issues.get(issue_number) or {})
+        issue["body"] = body
+        self._issues[issue_number] = issue
+        self._events.append(("update_issue", str(issue_number)))
+        return issue
+
+    def create_issue_comment(self, issue_number: int, *, body: str) -> dict[str, Any]:
+        self._events.append(("create_issue_comment", str(issue_number)))
+        return {"body": body}
+
+
+def _plan_config_with_shared_surface() -> Any:
+    from agents.plan_review_config import (
+        Class2Thresholds,
+        Class3Criteria,
+        ModelFloors,
+        PlanReviewConfig,
+    )
+
+    return PlanReviewConfig(
+        class_2=Class2Thresholds(
+            shared_surface_globs=("mcp-memory/*",),
+            churn_threshold=400,
+            min_prod_areas=99,
+        ),
+        class_3=Class3Criteria(mechanical_criteria=()),
+        models=ModelFloors(planner="claude-opus-5", critic="claude-sonnet-5"),
+    )
+
+
+class TestPlanReviewGateWiring:
+    def test_planner_runs_and_digest_lands_before_spawn_for_class2_row(self) -> None:
+        """AC2/AC7 — synchronous in-tick ordering.
+
+        A class:2 row with no locked plan must go through the planner before
+        ``spawn`` is ever called, ``set_plan_digest`` must land on the row
+        before spawn, and the gate must not create a second ``task_queue``
+        row (the fake port's ``claimed`` list stays length 1).
+        """
+        from agents.plan_lock import hash_plan
+        from agents.plan_review_drain import PlanResult
+
+        events: list[tuple[str, ...]] = []
+        row = _class2_row("t0")
+        q = FakeTaskQueue(pending=[row], running_count=0)
+
+        original_set_digest = q.set_plan_digest
+
+        def recording_set_plan_digest(task_id: str, digest: str) -> dict[str, Any]:
+            events.append(("set_plan_digest", task_id))
+            return original_set_digest(task_id, digest)
+
+        q.set_plan_digest = recording_set_plan_digest  # type: ignore[method-assign]
+
+        # No "## Plan\n" heading here — write_plan_section/replace_plan_section
+        # adds the heading itself; embedding it in plan_text would double it up
+        # and fail verify_lock's re-parse.
+        plan_text = "- Step one\nlock: " + hash_plan("- Step one") + "\n"
+
+        class _FakePlanner:
+            def run_planner(self, row: dict[str, Any], config: Any) -> PlanResult:
+                events.append(("run_planner", str(row["issue_number"])))
+                return PlanResult(plan_text=plan_text, resolved=True)
+
+        github = _FakePlanReviewGithub(
+            {1689: {"body": "## Acceptance Criteria\n- AC one\n"}}, events
+        )
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: events.append(("spawn", g)),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            planner=_FakePlanner(),
+            plan_config_loader=_plan_config_with_shared_surface,
+            github_factory=lambda: github,
+        )
+
+        kinds = [e[0] for e in events]
+        assert "run_planner" in kinds
+        assert "set_plan_digest" in kinds
+        assert "spawn" in kinds
+        assert kinds.index("run_planner") < kinds.index("spawn")
+        assert kinds.index("set_plan_digest") < kinds.index("spawn")
+        assert q.claimed == ["t0"]  # no second row created
+        assert res.spawned == 1
+        assert res.parked == 0
+        assert res.failed == 0
+
+    def test_class2_row_parked_when_planner_does_not_resolve(self) -> None:
+        from agents.plan_review_drain import PlanResult
+
+        class _UnresolvedPlanner:
+            def run_planner(self, row: dict[str, Any], config: Any) -> PlanResult:
+                return PlanResult(plan_text="", resolved=False, reason="critics disagreed")
+
+        row = _class2_row("t0")
+        q = FakeTaskQueue(pending=[row], running_count=0)
+        events: list[tuple[str, ...]] = []
+        github = _FakePlanReviewGithub({1689: {"body": "no plan yet"}}, events)
+        spawns: list[str] = []
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            planner=_UnresolvedPlanner(),
+            plan_config_loader=_plan_config_with_shared_surface,
+            github_factory=lambda: github,
+        )
+
+        assert spawns == []
+        assert res.spawned == 0
+        assert res.parked == 1
+        assert ("t0", "parked", "critics disagreed") in q.transitions
+
+    def test_class1_row_skips_the_plan_gate_entirely(self) -> None:
+        """A row that classifies class:1 never touches the planner or GitHub."""
+        row = _row("t0")  # bare row -> no scope_files/churn/prod_areas -> class:1
+
+        class _ExplodingPlanner:
+            def run_planner(self, row: dict[str, Any], config: Any) -> Any:
+                raise AssertionError("planner must not run for a class:1 row")
+
+        def _exploding_github_factory() -> Any:
+            raise AssertionError("github must not be fetched for a class:1 row")
+
+        q = FakeTaskQueue(pending=[row], running_count=0)
+        spawns: list[str] = []
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            planner=_ExplodingPlanner(),
+            plan_config_loader=_plan_config_with_shared_surface,
+            github_factory=_exploding_github_factory,
+        )
+
+        assert spawns == ["do t0"]
+        assert res.spawned == 1
+
+    def test_drain_skips_entirely_when_plan_config_fails_to_load(self) -> None:
+        def _broken_loader() -> Any:
+            raise RuntimeError("config missing")
+
+        q = FakeTaskQueue(pending=[_class2_row("t0")], running_count=0)
+        spawns: list[str] = []
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            plan_config_loader=_broken_loader,
+        )
+
+        assert spawns == []
+        assert q.claimed == []
+        assert res.skipped_no_plan_config is True
+        assert res.spawned == 0
