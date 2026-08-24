@@ -45,7 +45,7 @@ print(json.dumps(gather().to_dict(), indent=2, default=str))
 "
 ```
 
-Returns a `WeeklyReleaseGatherResult`: one `RepoWindowResult` per `releases=weekly` repos.conf entry, each with `prior_releases` (most-recent-first, `published`/`edited_after_publish` flags), `window_entries` (merged PRs + standalone closed issues, deduped, Dependabot-flagged), `window_refs` (valid PR/issue numbers for the linter), `remaining_issues` (open milestone issues with movement), `window_start`/`window_end`/`window_truncated`.
+Returns a `WeeklyReleaseGatherResult`: one `RepoWindowResult` per `releases=weekly` repos.conf entry, each with `prior_releases` (most-recent-first, `published`/`edited_after_publish` flags), `window_entries` (merged PRs + standalone closed issues, deduped, Dependabot-flagged), `window_refs` (valid PR/issue numbers for the linter), `remaining_issues` (open milestone issues with movement), `remaining_refs` (those issues' own numbers, for linting `remaining_section` — see Step 3), `window_start`/`window_end`/`window_truncated`.
 
 If `result.errors` is non-empty, surface it and stop for that repo — a failed gather must never fall through to an authored-from-nothing release.
 
@@ -57,7 +57,7 @@ For each `RepoWindowResult`:
 2. **Semver bump** — `classify_bump(window_entries)` → `"patch"` or `"minor"`, never `"major"` (no breaking-change signal exists in any form; trust ramp is the only human gate — do not escalate on a `!` marker or `BREAKING CHANGE:` body yourself).
 3. **Version string** — apply the bump to the latest tag from `prior_releases` (semver arithmetic is a skill-runtime step; no helper computes it, `weekly_release_engine.py` only classifies the bump). Zero prior releases → first version is a per-repo decision recorded when the repo was onboarded (e.g. redrobot: `v0.1.0`, target branch `master`, per issue #1572's own text — not a default this skill invents for a new repo).
 4. **Trust ramp** — `trust_ramp_state(repo_result.prior_releases)`. Informational only in S1 (see Boundary above) — record it in the report; it does not change what this skill does.
-5. **Draft-aware anchor** — `repo_result.window_truncated` is already computed by `compute_window()` inside `gather()`. If `True`, the notes MUST disclose the covered period ("покрывает период с {window_start} по {window_end}") — this is a fact the linter can't check for you; don't drop it.
+5. **Draft-aware anchor** — `repo_result.window_truncated` is already computed by `compute_window()` inside `gather()`. `format_window_disclosure(repo_result.window_start, repo_result.window_end, repo_result.window_truncated)` returns the disclosure line when truncated, `""` otherwise — carry its result into Step 4's `disclosure_section`; don't hand-author this line, it's a structural formatter like `format_retraction_section` (#1668).
 6. **Existing pending draft** — scan `prior_releases` for an entry with `published: False` (an unpublished draft). If one exists for this repo, you are **updating it in place** (`gh release edit`), not creating a second one — this is what "draft-aware anchor" means operationally, not just windowing.
 7. **Retractions** — `repo_result.retractions` (#1659): already extracted by `gather()` from every merged PR in the window whose body carries a `Reverts #<M>` marker (`_reverted_pr_number()`), each entry `{"original_ref", "revert_ref", "title"}`. Empty list is the common case — most weeks have no reverts. Non-empty → this window discloses at least one retraction; carry the list into Step 3.
 
@@ -65,7 +65,7 @@ For each `RepoWindowResult`:
 
 Write `notes_body`: one line per substantive `window_entries` item, each citing its PR/issue number (`#NNN`) so `lint_release_notes` can validate it against `window_refs`. `lang=ru,en` on the repos.conf entry (`repo_result.lang`) → append an English `<details>` block translating the same cited facts, no new claims.
 
-Write the goals section: `format_goal_section(goal_list(project=<repo-slug>, status="active"))` — **`project` must be the explicit repo slug, never empty/None**: `goal_list`'s unscoped default returns cross-project (including personal) goals for other callers' benefit (`/goals`, `/end`, `/verify`), so an empty project here would leak personal goals into a public release body. Scoping is this skill's own responsibility, not the handler's.
+Write the goals section: `goal_list(project=<repo-slug>, status="active")` returns rendered markdown (`# Goals (N)` + one `## <title>` block per goal), not the structured list `format_goal_section()` expects — route it through `extract_goal_movements(goal_list_markdown, repo_result.window_start, repo_result.window_end)` first (#1669), then `format_goal_section(extract_goal_movements(...))`. `<repo-slug>` is `repo_result.repo.split("/")[-1]` (e.g. `"jarvis"`, `"redrobot"`) — **never empty/None**: `goal_list`'s unscoped default returns cross-project (including personal) goals for other callers' benefit (`/goals`, `/end`, `/verify`), so an empty project here would leak personal goals into a public release body. Scoping is this skill's own responsibility, not the handler's.
 
 Write `remaining_section` as prose over `repo_result.remaining_issues` (LLM rewrites the open-milestone-issue list into prose; the issues themselves are the source of truth, this step only rewrites into readable text under a `## Осталось` heading — omit the heading entirely if there's nothing to say).
 
@@ -73,19 +73,43 @@ Write `remaining_section` as prose over `repo_result.remaining_issues` (LLM rewr
 
 ```python
 from scripts.weekly_release_engine import lint_release_notes
-violations = lint_release_notes(notes_body.splitlines() + remaining_section.splitlines(), repo_result.window_refs)
+notes_violations = lint_release_notes(notes_body.splitlines(), repo_result.window_refs)
+remaining_violations = lint_release_notes(
+    remaining_section.splitlines(), repo_result.window_refs | repo_result.remaining_refs
+)
+violations = notes_violations + remaining_violations
 ```
 
-Non-empty `violations` → rewrite the offending lines (add a real `#NNN` citation from `window_refs`, or drop the uncited claim). Never bypass this by loosening a claim's wording to dodge the digit check — fix the citation or cut the claim.
+`remaining_section` is linted against `window_refs | remaining_refs`, not `window_refs` alone: it describes `repo_result.remaining_issues` (open milestone issues), whose numbers are never in `window_refs` (built only from merged/closed activity, `weekly_release_gather.py`) — linting it against `window_refs` alone would fail every non-empty `remaining_section` by construction, since its own source-of-truth numbers could never validate. `remaining_refs` (one string set per `RepoWindowResult`, mirroring `window_refs`) exists precisely to make those citations valid — found via e2e testing against real redrobot data, no prior unit test exercised this combination.
+
+Non-empty `violations` → rewrite the offending lines (add a real citation from the applicable ref set, or drop the uncited claim). Never bypass this by loosening a claim's wording to dodge the digit check — fix the citation or cut the claim.
 
 **Retraction section — do not author, do not lint.** If `repo_result.retractions` is non-empty, call `format_retraction_section(repo_result.retractions)` — this is the *only* step for the "Отозвано" section. It is a structural formatter, not prose you write: each bullet is built from `original_ref`/`revert_ref`/`title` already sourced from a real PR body, so it is citation-correct by construction. Do **not** hand-write this section, and do **not** pass it (or its lines) through `lint_release_notes` in Step 3 above — same exemption as `format_goal_section`'s output (AC2 of #1659: the section exists only when `retractions` is non-empty; an empty list means the formatter returns `""` and the section is omitted entirely, not emitted blank).
 
 ## Step 4 — Assemble and create the draft
 
 ```python
-from scripts.weekly_release_engine import assemble_release_body, format_retraction_section
+from scripts.weekly_release_engine import (
+    assemble_release_body,
+    format_goal_section,
+    format_retraction_section,
+    format_window_disclosure,
+)
+
 retraction_section = format_retraction_section(repo_result.retractions)
-body = assemble_release_body(notes_body, remaining_section, full_changelog_url, footer="Опубликовано ботом", retraction_section=retraction_section)
+disclosure_section = format_window_disclosure(
+    repo_result.window_start, repo_result.window_end, repo_result.window_truncated
+)
+goal_section = format_goal_section(goal_movements)  # goal_movements from Step 3's extract_goal_movements(...)
+body = assemble_release_body(
+    notes_body,
+    remaining_section,
+    full_changelog_url,
+    footer="Опубликовано ботом",
+    retraction_section=retraction_section,
+    disclosure_section=disclosure_section,
+    goal_section=goal_section,
+)
 ```
 
 `full_changelog_url` = `https://github.com/<repo>/compare/<last_tag>...<new_version>` (or omit the compare range for a repo's first-ever release — there is no prior tag to diff against).
