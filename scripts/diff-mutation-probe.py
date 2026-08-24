@@ -155,9 +155,23 @@ def apply_mutation(source: str, site: MutationSite) -> str:
 
 
 def probe_file(file_path: str, target_lines: set[int], test_cmd: str) -> list[MutationResult]:
-    """Mutate each site on `target_lines` in turn, run `test_cmd`, restore the file."""
+    """Mutate each site on `target_lines` in turn, run `test_cmd`, restore the file.
+
+    Runs `test_cmd` once against the unmutated source first. A non-zero exit there
+    means the command itself is broken (wrong path, missing fixture/dependency) —
+    every subsequent mutant would also exit non-zero and get misreported `killed`,
+    claiming full mutation coverage while validating nothing. Raise instead of
+    silently proceeding into the mutation loop on a harness that isn't sound.
+    """
     path = Path(file_path)
     original = path.read_text(encoding="utf-8")
+    baseline = subprocess.run(test_cmd, shell=True, capture_output=True, text=True)
+    if baseline.returncode != 0:
+        raise RuntimeError(
+            f"baseline test run failed before any mutation was applied "
+            f"(exit {baseline.returncode}) for command: {test_cmd!r} — fix the "
+            "test command; mutation results against a broken baseline are meaningless"
+        )
     sites = find_mutation_sites(original, target_lines)
     results: list[MutationResult] = []
     for site in sites:
@@ -216,7 +230,12 @@ def main(argv: list[str] | None = None) -> int:
     for file_path, lines in targets.items():
         if not Path(file_path).exists():
             continue
-        for result in probe_file(file_path, lines, args.test_cmd):
+        try:
+            file_results = probe_file(file_path, lines, args.test_cmd)
+        except RuntimeError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        for result in file_results:
             total += 1
             if result.survived:
                 survived += 1

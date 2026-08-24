@@ -199,3 +199,25 @@ class TestProbeFileLive:
             "flipping `== 0` to `!= 0` must break is_even() and redden test_is_even — "
             "if this reports survived, the subprocess wiring or file restore is broken"
         )
+
+    def test_broken_test_cmd_raises_instead_of_reporting_full_kill(self, probe, tmp_path):
+        """A misconfigured test_cmd must not be silently graded as 100% mutation coverage.
+
+        Without a baseline run, every mutant inherits the broken command's non-zero
+        exit and is reported `killed` — the tool would claim full coverage while
+        having validated nothing.
+        """
+        module_path = tmp_path / "under_test_broken.py"
+        module_path.write_text(
+            "def is_even(n):\n    return n % 2 == 0\n",
+            encoding="utf-8",
+        )
+        original = module_path.read_text(encoding="utf-8")
+        broken_cmd = f'"{sys.executable}" -c "import sys; sys.exit(1)"'
+
+        with pytest.raises(RuntimeError, match="baseline"):
+            probe.probe_file(str(module_path), {2}, broken_cmd)
+
+        assert module_path.read_text(encoding="utf-8") == original, (
+            "probe_file must restore the original file even when the baseline check fails"
+        )
