@@ -142,6 +142,33 @@ Fix any gap now:
 
 Process issues are not code bugs — they take 10 seconds to fix here vs. a full rework round if caught by the reviewer.
 
+#### 3b. Plan-gate trigger (interactive lane, #1688)
+
+Runs **after** claim+branch, **before** any §4/§4-TDD edit. This is the interactive lane's ex-ante half of two-point plan-review classification (decision `d34dd65a`) — the CI diff-gate (#1687) is the ex-post, fail-closed backstop that re-classifies from the real diff, so this step does not need an exact diff, only the files-to-touch and a rough churn estimate already known from §2's analysis.
+
+```python
+from agents.implement_plan_gate import evaluate_trigger
+from agents.plan_review_config import load_plan_review_config
+
+config = load_plan_review_config("config/plan_review.yaml")
+result = evaluate_trigger(
+    config,
+    paths=<estimated files-to-touch from §2>,
+    labels=<issue's current labels>,
+    churn_lines=<rough estimate — line count of the planned diff>,
+)
+```
+
+`evaluate_trigger` reuses `agents.plan_classifier.classify_task_row` — the one named policy entry point every consumer (interactive lane, drain, container pick, CI diff-gate) calls — so the thresholds live in `config/plan_review.yaml`, not here.
+
+- **`result.requires_plan is False`** (class:1, or class:3 mechanical, or `priority:critical` carve-out on class:2) → proceed straight to §4/§4-TDD, no planner involved.
+- **`result.requires_plan is True`** (class:2, no carve-out) → before any edit:
+  1. Invoke the `Agent` tool with `subagent_type: "planner"` (contract: `.claude/agents/planner.md`), passing the issue number, body, and the same `paths`/`churn_lines` estimate.
+  2. The planner returns a locked `## Plan` section (hash-locked per `agents/plan_lock.py`'s grammar) once its critic panel reaches consensus. Write that section verbatim to the issue body — `gh issue edit <N> --body "$(gh issue view <N> --json body --jq .body)$(printf '\n\n')<plan section>"` (append, don't overwrite the existing body) — **before** the first §4/§4-TDD file edit. The CI diff-gate reads this lock on PR push; an edit landing before the lock is written risks a class:2 diff with no verifiable plan, which the gate blocks.
+  3. **Unresolved blocking objection** (AC5): if the critic panel does not reach consensus after one revision cycle, the planner subagent stops and returns the unresolved objections instead of forcing a plan through (`.claude/agents/planner.md`'s own escalation clause). At that point **the operator decides** — do not silently proceed past an unresolved blocking objection or invent a plan yourself. Post the objections as an issue comment and pause the pipeline; resume only once the principal weighs in (approve a revised plan, override the objection, or redirect scope).
+
+**`priority:critical` carve-out** (AC3): the label skips only the plan requirement, not the rest of the flow — `evaluate_trigger` still reports the true `classification` (visible for audit in the decision record), it just sets `requires_plan=False`. Rationale: hotfixes need to ship fast; the CI diff-gate still re-classifies the real diff post-hoc and blocks if the class:2 trigger holds with no plan lock, so skipping the interactive-lane plan stage is not skipping the safety net — it's deferring it to the fail-closed backstop.
+
 ### 4. Implement
 
 **Protected files — policy depends on who is editing.** The canonical list (repo-level + user-level `~/.claude/*`) lives in [`docs/security/agent-boundaries.md`](../../../docs/security/agent-boundaries.md). Don't duplicate it here — check that file before editing.

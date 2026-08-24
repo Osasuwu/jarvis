@@ -35,6 +35,25 @@ def _touches_shared_surface(paths: tuple[str, ...], globs: tuple[str, ...]) -> b
     return any(fnmatch.fnmatch(p, g) for p in paths for g in globs)
 
 
+def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
+    """Distinct production areas touched, excluding `tests/` (AC per #1685).
+
+    Area = the top-level path component (directory, or the bare filename
+    for a top-level file like `.mcp.json`) — the same unit
+    `config/plan_review.yaml` documents for `min_prod_areas`. Shared by
+    every caller that needs to derive `prod_areas` from a path list (the CI
+    diff-gate from a real diff, the interactive lane from an estimate) —
+    one implementation, not a copy per caller.
+    """
+    areas = set()
+    for path in paths:
+        top = path.split("/", 1)[0]
+        if top == "tests":
+            continue
+        areas.add(top)
+    return len(areas)
+
+
 def classify(config: PlanReviewConfig, change: ChangeSet) -> str:
     """Return "class:3", "class:2", or "class:1" for ``change``.
 

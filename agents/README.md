@@ -28,6 +28,7 @@ See `docs/agents/` for per-module operational notes and architectural detail.
 | `plan_review_config.py` | — | Loader for `config/plan_review.yaml` — class-2/3 thresholds & criteria (#1685) |
 | `plan_classifier.py` | — | `classify()`/`classify_task_row()` — change-set → `class:1`/`2`/`3` (#1685) |
 | `plan_lock.py` | — | `## Plan` section canonicalize/hash + strict parser (#1685) |
+| `implement_plan_gate.py` | — | `evaluate_trigger()` — `/implement`'s ex-ante plan-gate trigger, `priority:critical` carve-out (#1688) |
 
 ## Running the loop
 
