@@ -27,27 +27,17 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents.plan_classifier import ChangeSet, classify
+from agents.plan_classifier import ChangeSet, classify, prod_areas_from_paths
 from agents.plan_lock import MalformedPlanError, verify_lock
 from agents.plan_review_config import PlanReviewConfig, load_plan_review_config
 
 _DEFAULT_CONFIG_PATH = Path("config/plan_review.yaml")
 
-
-def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
-    """Distinct production areas touched, excluding `tests/` (AC per #1685).
-
-    Area = the top-level path component (directory, or the bare filename
-    for a top-level file like `.mcp.json`) — the same unit `config/plan_review.yaml`
-    documents for `min_prod_areas`.
-    """
-    areas = set()
-    for path in paths:
-        top = path.split("/", 1)[0]
-        if top == "tests":
-            continue
-        areas.add(top)
-    return len(areas)
+# prod_areas_from_paths re-exported from agents.plan_classifier (moved there
+# in #1688 so the interactive lane can share it too) — kept importable from
+# this module's own name for tests/callers already using
+# `plan_review_diff_gate.prod_areas_from_paths`.
+__all__ = ["prod_areas_from_paths"]
 
 
 def compute_change_set(
