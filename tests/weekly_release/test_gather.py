@@ -322,6 +322,77 @@ def test_gather_anchors_window_on_last_published_release_ignoring_pending_draft(
     assert repo_result.window_start == "2026-08-01T00:00:00+00:00"
 
 
+def test_gather_second_run_with_pending_draft_still_yields_nonempty_window():
+    # #1667 AC4 runnable check: two consecutive gather() runs on the same
+    # window, with an existing pending (unpublished) draft already in
+    # prior_releases, must each produce a non-empty window - not just the
+    # first. Pre-fix, anchoring on the draft's created_at (more recent than
+    # the last publish) collapsed the window to near-empty on re-run, which
+    # is exactly the state SKILL.md Step 2.6 needs a non-empty window to
+    # update the same draft in place rather than silently going quiet.
+    entries = [RepoEntry(name="o/weekly-repo", tokens={"releases": "weekly"})]
+
+    releases_ndjson = "\n".join(
+        json.dumps(r)
+        for r in [
+            {
+                "tag_name": "v0.3.0",
+                "published_at": None,
+                "created_at": "2026-08-15T00:00:00Z",
+                "draft": True,
+            },
+            {
+                "tag_name": "v0.2.0",
+                "published_at": "2026-08-01T00:00:00Z",
+                "created_at": "2026-08-01T00:00:00Z",
+                "draft": False,
+            },
+        ]
+    )
+    merged_prs_json = json.dumps(
+        [
+            {
+                "number": 42,
+                "title": "feat: ship thing",
+                "mergedAt": "2026-08-10T00:00:00Z",
+                "author": {"login": "alice"},
+                "body": "",
+            }
+        ]
+    )
+
+    def fake_run_gh(repo, args):
+        if args[0] == "api":
+            return {"stdout": releases_ndjson, "stderr": "", "returncode": 0}
+        if args[0] == "pr":
+            return {"stdout": merged_prs_json, "stderr": "", "returncode": 0}
+        return {"stdout": "[]", "stderr": "", "returncode": 0}
+
+    def run_once():
+        result = gather(
+            jarvis_home="/fake",
+            now="2026-08-20T00:00:00+00:00",
+            read_repos_conf_entries_fn=lambda path: entries,
+            run_gh_fn=fake_run_gh,
+            now_fn=lambda: 1786000000.0,
+        )
+        return result.repos[0]
+
+    first_run = run_once()
+    second_run = run_once()
+
+    for repo_result in (first_run, second_run):
+        assert repo_result.window_start == "2026-08-01T00:00:00+00:00"
+        assert repo_result.window_entries != []
+        assert repo_result.window_refs == {"42"}
+
+    # Same fixture in -> same window both times: the second run does not
+    # collapse relative to the first (the #1667 regression).
+    assert second_run.window_start == first_run.window_start
+    assert second_run.window_entries == first_run.window_entries
+    assert second_run.window_refs == first_run.window_refs
+
+
 # -- gather() repos.conf failure handling (#1671) ---------------------------
 
 
