@@ -405,6 +405,7 @@ def assemble_release_body(
         parts.append(goal_section.rstrip())
     if remaining_section.strip():
         parts.append(remaining_section.rstrip())
-    parts.append(f"**Full Changelog**: {full_changelog_url}")
+    if full_changelog_url:
+        parts.append(f"**Full Changelog**: {full_changelog_url}")
     parts.append(f"— {footer}")
     return "\n\n".join(parts)

@@ -1,8 +1,9 @@
 """#1572 AC9 - release body assembly: no issue links added by the engine
-itself, **Full Changelog** line always present, footer always present.
-notes_body/remaining_section are already agent-authored prose (facts sourced
-from the collected window / milestone per the fact-anchoring linter) - this
-function only appends the mechanical Full-Changelog line and footer.
+itself, **Full Changelog** line present whenever a compare URL is given,
+footer always present. notes_body/remaining_section are already
+agent-authored prose (facts sourced from the collected window / milestone
+per the fact-anchoring linter) - this function only appends the mechanical
+Full-Changelog line and footer.
 """
 
 from __future__ import annotations
@@ -54,6 +55,18 @@ def test_remaining_section_omitted_when_empty():
         full_changelog_url="https://github.com/x/y/compare/a...b",
     )
     assert "## Осталось" not in body
+
+
+def test_full_changelog_line_omitted_for_first_release():
+    """A repo's first-ever release has no prior tag to diff against - the
+    skill passes full_changelog_url=None rather than invent a compare URL."""
+    body = assemble_release_body(
+        notes_body="- Added schema v2 (#1597).",
+        remaining_section="",
+        full_changelog_url=None,
+    )
+    assert "Full Changelog" not in body
+    assert "None" not in body
 
 
 # -- #1668 disclosure_section / #1669 goal_section ---------------------------
