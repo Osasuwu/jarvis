@@ -10,7 +10,12 @@ from __future__ import annotations
 import pytest
 
 from agents.plan_classifier import ChangeSet, classify, classify_task_row
-from agents.plan_review_config import Class2Thresholds, Class3Criteria, PlanReviewConfig
+from agents.plan_review_config import (
+    Class2Thresholds,
+    Class3Criteria,
+    ModelFloors,
+    PlanReviewConfig,
+)
 
 _CFG = PlanReviewConfig(
     class_2=Class2Thresholds(
@@ -19,6 +24,7 @@ _CFG = PlanReviewConfig(
         min_prod_areas=2,
     ),
     class_3=Class3Criteria(mechanical_criteria=("docs-only", "typo-fix")),
+    models=ModelFloors(planner="claude-opus-5", critic="claude-sonnet-5"),
 )
 
 
@@ -67,6 +73,7 @@ def test_classifier_reads_thresholds_from_config_no_code_edit() -> None:
             min_prod_areas=_CFG.class_2.min_prod_areas,
         ),
         class_3=_CFG.class_3,
+        models=_CFG.models,
     )
     assert classify(lowered, change) == "class:2"
 

@@ -19,6 +19,12 @@
 #     mechanical_criteria: list[str]    — named mechanical criteria; a
 #                                          change-set matching any of these is
 #                                          class 3 (no owner review required)
+#   models:
+#     planner: str                      — model floor for the planner role
+#                                          (issue #1686 AC9); strong-model
+#                                          class, since a bad plan is expensive
+#     critic: str                       — model floor for the critic panel;
+#                                          sonnet-class by default
 
 schema_version: "v1"
 
@@ -38,3 +44,7 @@ class_3:
     - "typo-fix"
     - "dependency-bump"
     - "lint-fix"
+
+models:
+  planner: "claude-opus-5"
+  critic: "claude-sonnet-5"

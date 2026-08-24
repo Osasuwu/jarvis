@@ -28,13 +28,24 @@ class Class3Criteria:
 
 
 @dataclass(frozen=True)
+class ModelFloors:
+    """Model floors for the plan-review stage (issue #1686 AC9): read from
+    operator config, never hardcoded on a call path."""
+
+    planner: str
+    critic: str
+
+
+@dataclass(frozen=True)
 class PlanReviewConfig:
     class_2: Class2Thresholds
     class_3: Class3Criteria
+    models: ModelFloors
 
 
 _REQUIRED_CLASS_2_KEYS = ("shared_surface_globs", "churn_threshold", "min_prod_areas")
 _REQUIRED_CLASS_3_KEYS = ("mechanical_criteria",)
+_REQUIRED_MODELS_KEYS = ("planner", "critic")
 
 
 def load_plan_review_config(path: Path) -> PlanReviewConfig:
@@ -58,6 +69,11 @@ def load_plan_review_config(path: Path) -> PlanReviewConfig:
     if missing_3:
         raise ValueError(f"plan-review config {path}: class_3 missing keys {missing_3}")
 
+    models_raw = raw.get("models") or {}
+    missing_models = [k for k in _REQUIRED_MODELS_KEYS if k not in models_raw]
+    if missing_models:
+        raise ValueError(f"plan-review config {path}: models missing keys {missing_models}")
+
     return PlanReviewConfig(
         class_2=Class2Thresholds(
             shared_surface_globs=tuple(class_2_raw["shared_surface_globs"]),
@@ -66,5 +82,9 @@ def load_plan_review_config(path: Path) -> PlanReviewConfig:
         ),
         class_3=Class3Criteria(
             mechanical_criteria=tuple(class_3_raw["mechanical_criteria"]),
+        ),
+        models=ModelFloors(
+            planner=str(models_raw["planner"]),
+            critic=str(models_raw["critic"]),
         ),
     )
