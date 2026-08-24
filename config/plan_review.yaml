@@ -25,6 +25,7 @@ schema_version: "v1"
 class_2:
   shared_surface_globs:
     - "mcp-memory/**"
+    - "supabase/**"
     - ".mcp.json"
     - "config/repos.conf"
     - "scripts/repo_baseline/**"

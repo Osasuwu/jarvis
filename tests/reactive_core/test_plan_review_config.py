@@ -9,6 +9,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+import fnmatch
+
 from agents.plan_review_config import load_plan_review_config
 
 _REPO_CONFIG = Path(__file__).resolve().parents[2] / "config" / "plan_review.yaml"
@@ -21,6 +23,18 @@ def test_loads_repo_config() -> None:
     assert cfg.class_2.min_prod_areas > 0
     assert cfg.class_2.shared_surface_globs
     assert cfg.class_3.mechanical_criteria
+
+
+def test_repo_config_covers_supabase_as_a_shared_surface() -> None:
+    """docs/context/invariants.md: 'Supabase schema are shared surfaces —
+    consumers sit outside this repo ... breakage is invisible from inside
+    it.' A Supabase migration path must trip a shared_surface_globs match,
+    same as mcp-memory/** (#1685 review finding: the glob list omitted
+    supabase/** entirely, so a real supabase/migrations/*.sql change fell
+    through class-2 classification unnoticed)."""
+    cfg = load_plan_review_config(_REPO_CONFIG)
+    sample_path = "supabase/migrations/20260415082814_create_credential_registry.sql"
+    assert any(fnmatch.fnmatch(sample_path, glob) for glob in cfg.class_2.shared_surface_globs)
 
 
 def test_thresholds_are_read_from_config_not_hardcoded(tmp_path: Path) -> None:
