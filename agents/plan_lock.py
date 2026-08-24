@@ -38,8 +38,12 @@ class ParsedPlan:
     lock: str
 
 
-_HEADING_RE = re.compile(r"^##\s*Plan\s*$", re.MULTILINE)
-_NEXT_HEADING_RE = re.compile(r"^#{1,6}(?:\s|$)", re.MULTILINE)
+# Public: reused by agents.plan_section.replace_plan_section (#1689) so the
+# heading/next-heading section-scoping recipe has exactly one implementation.
+HEADING_RE = re.compile(r"^##\s*Plan\s*$", re.MULTILINE)
+NEXT_HEADING_RE = re.compile(r"^#{1,6}(?:\s|$)", re.MULTILINE)
+_HEADING_RE = HEADING_RE
+_NEXT_HEADING_RE = NEXT_HEADING_RE
 _STEP_RE = re.compile(r"^-\s+(.+?)\s*$", re.MULTILINE)
 _LOCK_RE = re.compile(r"^lock:\s*(\S+)\s*$", re.MULTILINE)
 

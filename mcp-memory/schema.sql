@@ -2757,6 +2757,13 @@ create table if not exists task_queue (
   -- supabase/migrations/20260811163000_add_task_queue_issue_number.sql.
   issue_number int,
 
+  -- Plan-review drain gate (#1689): sha256 hex digest (agents.plan_lock.hash_plan)
+  -- of the locked ## Plan section verified for this class:2 row. NULL for
+  -- class:1/class:3 rows and legacy rows enqueued before this column existed.
+  -- Keep in lockstep with
+  -- supabase/migrations/20260825090000_add_task_queue_plan_digest.sql.
+  plan_digest text,
+
   -- Timestamps
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

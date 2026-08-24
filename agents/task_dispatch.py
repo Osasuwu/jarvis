@@ -57,9 +57,19 @@ if TYPE_CHECKING:
 from agents import pr_evidence, task_dedup, task_outcomes, task_queue, task_worktree
 from agents.github_client import (
     GitHubClient,
+    default_github_client,
     parse_goal_shape,
 )
 from agents.pid_sidecar import Sidecar, poll_exit
+from agents.plan_lock import MalformedPlanError, parse_plan, verify_lock
+from agents.plan_review_config import PlanReviewConfig
+from agents.plan_review_drain import PlannerPort
+from agents.plan_review_drain import class_gate as _plan_class_gate
+from agents.plan_review_drain import default_plan_config_loader
+from agents.plan_review_drain import default_run_planner as _default_run_planner
+from agents.plan_review_drain import needs_plan as _plan_needs_plan
+from agents.plan_review_drain import pre_spawn_digest_mismatch as _pre_spawn_digest_mismatch
+from agents.plan_review_drain import write_plan_section as _write_plan_section
 from agents.process_kill import kill_process_tree
 
 logger = logging.getLogger(__name__)
@@ -302,7 +312,7 @@ class TaskQueuePort(Protocol):
     :mod:`agents.task_queue`, and by an in-memory fake in the tests.
 
     ``runtime_checkable`` makes ``isinstance(x, TaskQueuePort)`` check only that
-    the seven method *names* are present — not their signatures — so the
+    the method *names* are present — not their signatures — so the
     ``isinstance`` assertion in the tests is a structural smoke check, not a
     full conformance proof.
     """
@@ -337,6 +347,15 @@ class TaskQueuePort(Protocol):
         existing method here lists all rows or looks up one by id.
         """
 
+    def set_plan_digest(self, task_id: str, digest: str) -> dict[str, Any]:
+        """Persist a locked plan's hash onto ``task_id`` (direct UPDATE, #1689).
+
+        Backs the ex-post plan-review drain gate (:mod:`agents.plan_review_drain`):
+        once a class:2 row's planner-produced plan is written and locked, the
+        digest is persisted here so the pre-spawn recheck can detect a
+        post-approval issue-body edit (AC6, fail closed).
+        """
+
 
 @dataclass(frozen=True)
 class DrainResult:
@@ -355,6 +374,16 @@ class DrainResult:
     # in-flight row is requeued to ``pending``; on requeue failure the AC6
     # reaper is the backstop). Remaining rows stay ``pending`` and self-heal.
     throttled: bool = False
+    # True iff the whole drain was skipped because the plan-review config
+    # (#1689) failed to load — distinct from ``skipped_no_binary``; the ex-post
+    # gate cannot be evaluated for any class:2 row without it, so the drain
+    # fails closed rather than spawning unreviewed class:2 work.
+    skipped_no_plan_config: bool = False
+    # Tasks parked because the ex-post plan-review gate (#1689) could not
+    # produce a resolved, locked plan for a class:2 row (planner raised, or
+    # returned resolved=False) — distinct from the pre-spawn fail-closed
+    # digest mismatch below, which is a hard failure rather than a park.
+    parked: int = 0
     # (task_id, proc) per *successful* spawn that yielded a pollable process
     # handle (#921 AC1). A raising spawn never reaches the append; a throttled
     # spawn returns early (the whole drain stops) before it; a result without
@@ -787,6 +816,9 @@ def drain_tasks(
     read_usage: ReadUsage = default_read_usage,
     sidecar: Sidecar | None = None,
     dedup: task_dedup.DedupConfig | None = None,
+    planner: PlannerPort = _default_run_planner,
+    plan_config_loader: Callable[[], PlanReviewConfig] = default_plan_config_loader,
+    github_factory: Callable[[], GitHubClient] = default_github_client,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -857,8 +889,25 @@ def drain_tasks(
     if budget <= 0:
         return DrainResult()
 
+    # #1689 — plan-review config loaded once per drain (mirrors the AC7a/AC4
+    # preflight pattern above): a broken/missing config means the ex-post
+    # gate cannot be evaluated for ANY class:2 row this drain, so fail closed
+    # by skipping the whole drain rather than silently spawning unreviewed
+    # class:2 work.
+    try:
+        plan_config = plan_config_loader()
+    except Exception:  # noqa: BLE001 — unusable config skips the whole drain
+        logger.warning(
+            "[task_dispatch] plan-review config unavailable; skipping drain "
+            "(no claims, rows stay pending, self-heals when config is fixed)"
+        )
+        return DrainResult(skipped_no_plan_config=True)
+
+    github: GitHubClient | None = None
+
     spawned = 0
     failed = 0
+    parked = 0
     skipped_duplicate = 0
     # #931 — GitHub in-flight evidence, fetched lazily at most once per drain.
     in_flight_evidence: tuple[list[dict[str, Any]], list[str]] | None = None
@@ -1039,6 +1088,88 @@ def drain_tasks(
                             )
                         continue
 
+        # #1689 — ex-post plan-review drain gate. No priority:critical
+        # carve-out here — a task entering via the queue always gets ex-post
+        # review regardless of label (module docstring, agents.plan_review_drain).
+        if _plan_class_gate(plan_config, row) == "class:2":
+            if github is None:
+                github = github_factory()
+            if _plan_needs_plan(plan_config, row, github):
+                try:
+                    plan_result = planner.run_planner(row, plan_config)
+                except Exception as exc:  # noqa: BLE001 — isolate one bad planner run
+                    try:
+                        port.transition(task_id, "parked", reason=f"planner raised: {exc}")
+                    except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                        logger.exception(
+                            "[task_dispatch] could not park task %s after planner raise; "
+                            "row left running for the reaper",
+                            task_id,
+                        )
+                    else:
+                        parked += 1
+                    continue
+                if not plan_result.resolved:
+                    try:
+                        port.transition(
+                            task_id,
+                            "parked",
+                            reason=plan_result.reason or "planner did not resolve the plan",
+                        )
+                    except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                        logger.exception(
+                            "[task_dispatch] could not park task %s after unresolved plan; "
+                            "row left running for the reaper",
+                            task_id,
+                        )
+                    else:
+                        parked += 1
+                    continue
+
+                issue_number = int(row["issue_number"])
+                new_body = _write_plan_section(github, issue_number, plan_result.plan_text)
+                try:
+                    plan_valid = verify_lock(new_body)
+                except MalformedPlanError:
+                    plan_valid = False
+                if not plan_valid:
+                    try:
+                        port.transition(
+                            task_id,
+                            "failed",
+                            reason="planner wrote a malformed or unlocked plan",
+                        )
+                    except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                        logger.exception(
+                            "[task_dispatch] could not fail task %s after malformed planner "
+                            "output; row left running for the reaper",
+                            task_id,
+                        )
+                    else:
+                        failed += 1
+                    continue
+                digest = parse_plan(new_body).lock
+                port.set_plan_digest(task_id, digest)
+                row["plan_digest"] = digest
+
+            # AC6 — fail-closed pre-spawn recheck, immediately before spawn:
+            # the issue body may have drifted (edited post-approval) since the
+            # digest was recorded, whether just above or in a prior drain.
+            if _pre_spawn_digest_mismatch(github, row):
+                try:
+                    port.transition(
+                        task_id, "failed", reason="plan lock mismatch on pre-spawn recheck"
+                    )
+                except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                    logger.exception(
+                        "[task_dispatch] could not fail task %s on plan-lock mismatch; "
+                        "row left running for the reaper",
+                        task_id,
+                    )
+                else:
+                    failed += 1
+                continue
+
         # Capture spawn time BEFORE launching (MAJOR, PR #1011). The terminal
         # evidence check counts PR/commit activity with timestamp > spawned_at;
         # recording it AFTER spawn() returns would let any commit the child makes
@@ -1085,6 +1216,7 @@ def drain_tasks(
                 failed=failed,
                 skipped_duplicate=skipped_duplicate,
                 throttled=True,
+                parked=parked,
                 procs=tuple(procs),
                 spawned_meta=spawned_meta,
             )
@@ -1127,6 +1259,7 @@ def drain_tasks(
         spawned=spawned,
         failed=failed,
         skipped_duplicate=skipped_duplicate,
+        parked=parked,
         procs=tuple(procs),
         spawned_meta=spawned_meta,
     )
@@ -1352,6 +1485,9 @@ class SupabaseTaskQueue:
 
     def get_statuses(self, task_ids: list[str]) -> dict[str, str]:
         return task_queue.get_statuses(task_ids, client=self._client)
+
+    def set_plan_digest(self, task_id: str, digest: str) -> dict[str, Any]:
+        return task_queue.set_plan_digest(task_id, digest, client=self._client)
 
 
 def reconcile_stranded_prs(
