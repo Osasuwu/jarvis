@@ -23,6 +23,8 @@ def test_loads_repo_config() -> None:
     assert cfg.class_2.min_prod_areas > 0
     assert cfg.class_2.shared_surface_globs
     assert cfg.class_3.mechanical_criteria
+    assert cfg.models.planner
+    assert cfg.models.critic
 
 
 def test_repo_config_covers_supabase_as_a_shared_surface() -> None:
@@ -54,6 +56,7 @@ def test_thresholds_are_read_from_config_not_hardcoded(tmp_path: Path) -> None:
                     "min_prod_areas": 7,
                 },
                 "class_3": {"mechanical_criteria": ["only-criterion"]},
+                "models": {"planner": "custom-planner-model", "critic": "custom-critic-model"},
             }
         ),
         encoding="utf-8",
@@ -65,6 +68,30 @@ def test_thresholds_are_read_from_config_not_hardcoded(tmp_path: Path) -> None:
     assert cfg.class_2.min_prod_areas == 7
     assert cfg.class_2.shared_surface_globs == ("only/this/**",)
     assert cfg.class_3.mechanical_criteria == ("only-criterion",)
+    assert cfg.models.planner == "custom-planner-model"
+    assert cfg.models.critic == "custom-critic-model"
+
+
+def test_missing_models_key_raises(tmp_path: Path) -> None:
+    """Issue #1686 AC9: planner/critic model floors must come from config —
+    a config file without them is invalid, not silently defaulted."""
+    bad = tmp_path / "plan_review.yaml"
+    bad.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "v1",
+                "class_2": {
+                    "shared_surface_globs": ["x/**"],
+                    "churn_threshold": 1,
+                    "min_prod_areas": 1,
+                },
+                "class_3": {"mechanical_criteria": ["x"]},
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        load_plan_review_config(bad)
 
 
 def test_missing_file_raises() -> None:
