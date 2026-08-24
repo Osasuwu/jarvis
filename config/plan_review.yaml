@@ -1,0 +1,40 @@
+# Plan-review classification registry — versioned in git.
+# Human-managed: thresholds/globs/criteria are added and changed only via PR
+# review. No automation writes to this file.
+#
+# Single classification artifact (issue #1685): class-2 trigger thresholds
+# and the class-3 mechanical criteria list live together here — they are one
+# classification vocabulary, not two config files.
+#
+# Schema:
+#   class_2:
+#     shared_surface_globs: list[str]   — glob patterns; a change touching any
+#                                          matching path is a shared-surface hit
+#     churn_threshold: int              — total changed-lines strictly above
+#                                          this value trips class 2
+#     min_prod_areas: int               — distinct production areas touched
+#                                          (excluding tests) at or above this
+#                                          count trips class 2
+#   class_3:
+#     mechanical_criteria: list[str]    — named mechanical criteria; a
+#                                          change-set matching any of these is
+#                                          class 3 (no owner review required)
+
+schema_version: "v1"
+
+class_2:
+  shared_surface_globs:
+    - "mcp-memory/**"
+    - "supabase/**"
+    - ".mcp.json"
+    - "config/repos.conf"
+    - "scripts/repo_baseline/**"
+  churn_threshold: 400
+  min_prod_areas: 2
+
+class_3:
+  mechanical_criteria:
+    - "docs-only"
+    - "typo-fix"
+    - "dependency-bump"
+    - "lint-fix"

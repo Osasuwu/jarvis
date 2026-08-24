@@ -126,10 +126,20 @@ CLEAN_LABELS: list[CleanLabel] = [
     # the rest of the needs-* family per the NOTE above.
     CleanLabel(
         # Distinct light-amber — unique vs priority:medium (fbca04),
-        # needs-grill (fdd835), needs-prd (ffc844), tier:2-review (dbab09).
+        # needs-grill (fdd835), needs-prd (ffc844).
         "needs-triage",
         "ffe082",
         "Awaiting triage into the issue state machine",
+        "needs",
+    ),
+    # needs-plan added per issue #1685: plan-review stage — same dash format
+    # as the rest of the needs-* family.
+    CleanLabel(
+        # Distinct pale-orange — unique vs needs-triage (ffe082),
+        # needs-prd (ffc844), needs-grill (fdd835).
+        "needs-plan",
+        "ffb74d",
+        "Needs a locked ## Plan section before implementation",
         "needs",
     ),
     # ── Tier ──────────────────────────────────────────────────────────
@@ -139,20 +149,42 @@ CLEAN_LABELS: list[CleanLabel] = [
         "Tier 1: auto-dispatch",
         "tier",
     ),
-    CleanLabel(
-        # Distinct gold so it does not collide with needs-prd (ffc844) —
-        # same colour across semantic categories is ambiguous.
-        "tier:2-review",
-        "dbab09",
-        "Tier 2: owner review required",
-        "tier",
-    ),
+    # tier:2-review removed per issue #1685 AC: "owner review required" is now
+    # class:2's job (plan-complexity classification, applied at admission and
+    # corrected after the diff-gate). tier:2-review had zero live consumers —
+    # agents/safety.py's Tier enum is a separate tool-call-action gate keyed
+    # on GitHub label prefixes/actions, never on this label's name, and no
+    # open issue carried it (`gh issue list --label tier:2-review` -> empty)
+    # — so removal (not a rename/merge) is the correct reconciliation branch;
+    # dropping it from CLEAN_LABELS surfaces it to the migrator as a
+    # confirm-required orphan rather than a silent auto-delete.
     CleanLabel(
         # Distinct red so it does not collide with priority:high (d93f0b).
         "tier:3-human",
         "d73a4a",
         "Tier 3: owner-driven only",
         "tier",
+    ),
+    # ── Plan review ───────────────────────────────────────────────────
+    # class:2 / plan:locked added per issue #1685; class:2 supersedes
+    # tier:2-review as the "owner review required" carrier (see the removal
+    # note above) rather than coexisting with it as a second vocabulary for
+    # the same idea. Only class:2 gets a label (class:1/3 are the unmarked
+    # default paths in the workflow — no label needed for the common case).
+    CleanLabel(
+        # Distinct gold-orange — unique vs needs-plan (ffb74d).
+        "class:2",
+        "e8a33d",
+        "Plan-review: shared-surface/high-churn change requiring owner plan review",
+        "plan-review",
+    ),
+    CleanLabel(
+        # Distinct green — unique vs priority:low (0e8a16), status:ready
+        # (c2e0c6), area:quality (bfe5bf).
+        "plan:locked",
+        "2e9e4f",
+        "Plan section hashed and locked for this issue",
+        "plan-review",
     ),
     # ── Special ───────────────────────────────────────────────────────
     CleanLabel(
