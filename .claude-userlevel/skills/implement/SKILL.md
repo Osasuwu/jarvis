@@ -236,6 +236,7 @@ Engaged when the §Contract dispatch table routes here. Replaces §4 — but §4
 - Once every AC item's test is green, run **one** refactor pass over the whole green suite (`tdd-loop.md` §4) before moving to §5. Refactor permission is scoped to code freshly covered by a passing test in this session. Adjacent untested code is not in refactor scope — either write a characterization test first (then it is in scope) or flag a follow-up issue and leave it.
 - §4c (E2E smoke) still applies before marking the outcome `success` when the change touches I/O / schema / hooks / subprocess areas.
 - ADR-0001 compliance: do not invoke `/grill` or any other skill mid-task. The reference docs in `_shared/tdd/` are read as files, not as skill invocations.
+- After each AC item's GREEN, run the mutation probe (`tdd-loop.md` §3) before starting the next item — survival blocks progress, and it is a manual per-test discipline, never an automated score/gate.
 
 Final pass before §5: run the full test suite for the touched module(s), not just the AC-tied tests. Green suite is the precondition for opening the PR.
 
@@ -274,6 +275,7 @@ Reverts #<M>  <!-- only if this PR undoes previously-released behavior -->
 ## Testing
 - <commands run: pytest, ruff, tsc, npm run build>
 - <what was verified: specific scenarios, edge cases>
+- <TDD-mode only: mutation-probe evidence, one line per probed test — `<file>:<line> corrupted → <test name> reddened`>
 
 ## Files Changed
 - `file.py` — <why this file, what changed>

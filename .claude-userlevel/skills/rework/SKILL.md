@@ -228,6 +228,8 @@ For **each** CRITICAL finding, in order of appearance:
 
 2. **GREEN** — Implement the fix. Run the test to confirm green.
 
+2a. **Mutation probe** — on the line that primarily fixes this finding: corrupt it, confirm the finding's test goes RED, revert. Survival means the test isn't actually pinning the fix — strengthen it before moving on. Per `tdd-loop.md` §3: manual, per-test, no score/gate; record one evidence line (`<file>:<line> corrupted → <test> reddened`) in the PR body's `## Testing` section. Sibling fixes applied in the symmetric scan below are not separately probed — the probe covers only the finding's primary fix.
+
 2b. **Symmetric scan** — before REFACTOR, grep for the same anti-pattern across every file in the PR diff (not just the specific line flagged). Root cause of multiple rework rounds: the reviewer flags instance A, the fixer fixes A, round 2 flags instance B in the same file, etc.
 
    ```bash
