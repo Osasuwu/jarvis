@@ -39,6 +39,7 @@ class ParsedPlan:
 
 
 _HEADING_RE = re.compile(r"^##\s*Plan\s*$", re.MULTILINE)
+_NEXT_HEADING_RE = re.compile(r"^#{1,6}(?:\s|$)", re.MULTILINE)
 _STEP_RE = re.compile(r"^-\s+(.+?)\s*$", re.MULTILINE)
 _LOCK_RE = re.compile(r"^lock:\s*(\S+)\s*$", re.MULTILINE)
 
@@ -61,20 +62,32 @@ def hash_plan(text: str) -> str:
 def parse_plan(text: str) -> ParsedPlan:
     """Strictly parse a ``## Plan`` section.
 
+    Scoped to the content between the ``## Plan`` heading and the next
+    heading line (of any level) or end of text — so a full issue body
+    with other sections (e.g. "## Acceptance Criteria", "## Decisions")
+    never leaks a stray ``- ...`` or ``lock: ...`` line from outside the
+    plan into the parsed result.
+
     Raises :class:`MalformedPlanError` with a distinct named reason for
     each of: missing ``## Plan`` heading, empty step list, absent lock
     line.
     """
     canonical = canonicalize_plan(text)
 
-    if not _HEADING_RE.search(canonical):
+    heading_match = _HEADING_RE.search(canonical)
+    if not heading_match:
         raise MalformedPlanError("missing_heading", "no '## Plan' heading found")
 
-    steps = tuple(m.group(1) for m in _STEP_RE.finditer(canonical))
+    section_start = heading_match.end()
+    next_heading_match = _NEXT_HEADING_RE.search(canonical, section_start)
+    section_end = next_heading_match.start() if next_heading_match else len(canonical)
+    section = canonical[section_start:section_end]
+
+    steps = tuple(m.group(1) for m in _STEP_RE.finditer(section))
     if not steps:
         raise MalformedPlanError("empty_step_list", "no '- ' step lines found")
 
-    lock_match = _LOCK_RE.search(canonical)
+    lock_match = _LOCK_RE.search(section)
     if not lock_match:
         raise MalformedPlanError("absent_lock_line", "no 'lock: <value>' line found")
 

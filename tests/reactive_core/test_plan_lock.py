@@ -80,3 +80,25 @@ def test_malformed_plan_error_reasons_are_distinct() -> None:
             parse_plan(bad)
         reasons.add(exc_info.value.reason)
     assert len(reasons) == 3
+
+
+def test_parse_plan_ignores_step_and_lock_lines_outside_the_section() -> None:
+    """A stray '- ...' or 'lock: ...' line in another section of a full
+    issue body must not leak into the parsed plan (#1685 review finding:
+    parse_plan scanned the whole document instead of scoping to the
+    content between '## Plan' and the next heading)."""
+    body = (
+        "## Acceptance Criteria\n\n"
+        "- not a plan step\n"
+        "lock: not-the-real-lock\n\n"
+        "## Plan\n\n"
+        "- step one\n"
+        "- step two\n\n"
+        "lock: abc123\n\n"
+        "## Decisions\n\n"
+        "- also not a plan step\n"
+        "lock: also-not-the-real-lock\n"
+    )
+    parsed = parse_plan(body)
+    assert parsed.steps == ("step one", "step two")
+    assert parsed.lock == "abc123"
