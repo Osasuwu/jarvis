@@ -864,10 +864,18 @@ class PsycopgEventQueue:
             with self._conn.cursor() as cur:
                 cur.execute("SELECT * FROM claim_next(%s)", (self._claimer,))
                 row = cur.fetchone()
-                if row is None:
-                    return None
-                cols = [d.name for d in cur.description]
+                cols = [d.name for d in cur.description] if row is not None else []
+            # Commit on BOTH paths (#1645 AC6). The connection is built with
+            # autocommit=False, so the execute above opens a transaction even
+            # when the queue is empty — and the empty result is exactly what
+            # ends the drain loop, after which the driver blocks in
+            # wait_for_wake on this same connection. Returning early left the
+            # backend `idle in transaction` for the whole poll timeout
+            # (observed at 100 s and 152 s), pinning the vacuum horizon
+            # database-wide and blocking dead-tuple reclamation on every table.
             self._conn.commit()
+            if row is None:
+                return None
             return dict(zip(cols, row, strict=True))
 
         return self._with_reconnect(op)
