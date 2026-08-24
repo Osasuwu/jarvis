@@ -44,6 +44,16 @@ alter table memories add column if not exists fts tsvector
 
 create index if not exists idx_memories_fts on memories using gin(fts);
 
+-- Trigram index on name, backing the ilike fallback branch of recall.
+-- Applied out-of-band and undeclared here until Osasuwu/jarvis#1645; kept
+-- because the planner actually chooses it (3,161 lifetime scans). Its two
+-- former siblings on `content` (12 MB, 3 scans) and `description` (2.4 MB,
+-- 7 scans) were dropped in the same issue — the planner preferred a
+-- sequential scan over 680 pages, so they paid full GIN insert cost on
+-- every UPDATE for no read benefit. Do not re-add them.
+create extension if not exists pg_trgm;
+create index if not exists idx_memories_name_trgm on memories using gin(name gin_trgm_ops);
+
 -- Generated project scope key for tiebreakers / grouping on a non-null text.
 -- Applied in production via an out-of-band migration; re-declared here so
 -- schema.sql matches the live DB. Must stay in update_updated_at's strip
@@ -776,12 +786,30 @@ $$;
 
 
 -- Update last_accessed_at for temporal scoring (called fire-and-forget on recall)
+--
+-- Debounced to one write per row per hour (Osasuwu/jarvis#1645). Without the
+-- predicate this fired an UPDATE on every recall hit, and because the average
+-- main-heap tuple is ~2.2 KB (wide fts/content/embedding columns) HOT never
+-- applies: each timestamp bump rewrote all 19 indexes. 124k lifetime UPDATEs
+-- against ~2,500 live rows was the single largest consumer of the instance's
+-- disk-IO budget.
+--
+-- One hour is the coarsest granularity every consumer tolerates, verified
+-- individually: recall temporal scoring (mcp-memory/recall.py) buckets by day;
+-- /curate already excludes touches newer than 2 hours so it never sees the
+-- current session's own reads; the proactive-challenger stale_assumption rule
+-- uses min_idle_days: 90; the context-management catalog sorts by day. The
+-- column is a shared surface (redrobot, future jarvis-oss operators), so the
+-- semantics are stated here rather than left implicit in the predicate:
+-- last_accessed_at now means "seen in this hour", not "seen at this instant".
 create or replace function touch_memories(memory_ids uuid[])
 returns void
 language sql volatile as $$
     update memories
     set last_accessed_at = now()
-    where id = any(memory_ids);
+    where id = any(memory_ids)
+      and (last_accessed_at is null
+           or last_accessed_at < now() - interval '1 hour');
 $$;
 
 

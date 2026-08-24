@@ -1813,11 +1813,14 @@ class _CursorRecordingConn:
     returns a scripted fetchone row — enough to verify an RPC call shape
     without a live DB."""
 
-    def __init__(self, fetchone_row=(True,), fetchall_rows=()):
+    def __init__(self, fetchone_row=(True,), fetchall_rows=(), columns=()):
         self.executed: list[tuple[str, tuple]] = []
         self.commits = 0
         self._fetchone_row = fetchone_row
         self._fetchall_rows = list(fetchall_rows)
+        # Row-returning methods zip(strict=True) against cur.description, so a
+        # test that scripts a non-empty fetchone must name its columns.
+        self._columns = [type("_Col", (), {"name": c})() for c in columns]
 
     def execute(self, sql, *args):
         # Constructor-issued LISTEN calls land here; not under test.
@@ -1830,7 +1833,7 @@ class _CursorRecordingConn:
         conn = self
 
         class _Cur:
-            description = []  # empty column list is fine while fetchall is empty
+            description = conn._columns
 
             def __enter__(self):
                 return self
@@ -2532,3 +2535,39 @@ def test_main_wraps_build_psycopg_queue_in_startup_retry(monkeypatch):
     assert calls["n"] == 2
     assert client.closed == 1
     assert client.closed == 1
+
+
+# --- #1645 AC6: claim_next must not leave a transaction open on empty queue --
+
+
+def test_psycopg_claim_next_commits_when_queue_is_empty():
+    """AC6: the empty-queue path must commit before returning None.
+
+    The connection is built with autocommit=False, so `cur.execute` opens a
+    transaction on every call including the one that finds nothing. The drain
+    loop exits on the first None, and the driver then blocks in
+    `wait_for_wake` on that same connection — leaving the backend `idle in
+    transaction` for the whole poll timeout (observed at 100 s and 152 s in
+    pg_stat_activity). That pins the vacuum horizon database-wide, blocking
+    dead-tuple reclamation on every table and starving HOT of free space.
+    """
+    conn = _CursorRecordingConn(fetchone_row=None)
+    queue = wake_driver.PsycopgEventQueue(conn)
+    before = conn.commits
+
+    assert queue.claim_next() is None
+    assert conn.commits > before, (
+        "claim_next returned None without committing — the transaction opened by "
+        "cur.execute stays open across the subsequent wait_for_wake"
+    )
+
+
+def test_psycopg_claim_next_commits_when_a_row_is_claimed():
+    """The non-empty path already committed; guard it against regression while
+    the empty path is fixed."""
+    conn = _CursorRecordingConn(fetchone_row=("ev-1",), columns=("id",))
+    queue = wake_driver.PsycopgEventQueue(conn)
+    before = conn.commits
+
+    assert queue.claim_next() == {"id": "ev-1"}
+    assert conn.commits > before
