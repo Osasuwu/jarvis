@@ -1,0 +1,128 @@
+# Ex-post half of two-point plan-review classification (#1687). Admission-time
+# classification (#1686) is best-effort — it runs off whatever paths/churn were
+# known when the PR/issue was opened. This check re-derives class-2 from the
+# REAL diff on every push and, on a trigger hit with no valid locked plan on
+# the linked issue, blocks: converts the PR to draft and applies
+# status:owner-queue (the same "park for a human" signal owner-queue-guard
+# already enforces as a hard merge block) rather than letting it merge having
+# never seen a reviewed plan.
+#
+# All classification/lock logic lives in scripts/plan_review_diff_gate.py — a
+# pure, network-free module (see its own docstring) that reuses
+# agents.plan_classifier.classify and agents.plan_lock.verify_lock, the same
+# primitives the admission-time check uses (AC5, decision fa9c5ab0: one
+# shared implementation of thresholds/hashing, not a per-caller copy). This
+# workflow's only job is gathering the real-world inputs (diff paths/churn,
+# the linked issue's body via the authoritative `closingIssuesReferences`
+# linkage — same convention as pr-merged.yml, not a body regex) and acting on
+# the script's decision.
+name: plan-review-diff-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  diff-gate:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        run: python -m pip install uv
+
+      - name: Install dependencies
+        run: uv sync --all-extras
+
+      - name: Gather diff facts and linked-issue body
+        id: gather
+        run: |
+          set -euo pipefail
+
+          # Real diff paths + churn between base and head — the two inputs
+          # admission-time classification only estimated.
+          paths_json=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" | jq -R . | jq -s .)
+          churn=$(git diff --shortstat "$BASE_SHA...$HEAD_SHA" \
+            | grep -oE '[0-9]+ insertion[s]?|[0-9]+ deletion[s]?' \
+            | grep -oE '[0-9]+' \
+            | awk '{s+=$1} END {print s+0}')
+
+          # Authoritative closing linkage (same set GitHub's native auto-close
+          # targets, same source pr-merged.yml uses) — not a body regex, so a
+          # malformed or absent "Closes #N" line can't be misread as present.
+          # Same-repo refs only: a cross-repo `Closes owner/other#N` has no
+          # linked-plan lock to check against in THIS gate's scope, so it is
+          # treated as unreachable (fail closed) rather than followed.
+          if ! refs=$(
+            gh pr view "$PR_NUMBER" --repo "$REPO" \
+              --json closingIssuesReferences \
+              -q '.closingIssuesReferences[] | select(.repository.owner.login + "/" + .repository.name == "'"$REPO"'") | .number'
+          ); then
+            echo "::error::gh pr view failed for #$PR_NUMBER — refusing to assume no linked issue (would fail open)."
+            exit 1
+          fi
+          issue_number=$(printf '%s\n' "$refs" | head -n1)
+
+          issue_body_json=null
+          if [ -n "$issue_number" ]; then
+            if issue_body=$(gh issue view "$issue_number" --repo "$REPO" --json body -q '.body'); then
+              issue_body_json=$(printf '%s' "$issue_body" | jq -Rs .)
+            else
+              echo "::warning::linked issue #$issue_number could not be fetched — treating as unreachable."
+            fi
+          fi
+
+          jq -n \
+            --argjson paths "$paths_json" \
+            --argjson churn "${churn:-0}" \
+            --argjson issue_body "$issue_body_json" \
+            '{paths: $paths, churn_lines: $churn, issue_body: $issue_body}' \
+            > /tmp/gate_envelope.json
+
+      - name: Run plan-review diff gate
+        id: gate
+        run: |
+          set -euo pipefail
+          set +e
+          output=$(PYTHONPATH=. uv run python scripts/plan_review_diff_gate.py < /tmp/gate_envelope.json)
+          status=$?
+          set -e
+          echo "output=$output" >> "$GITHUB_OUTPUT"
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          echo "$output"
+          exit "$status"
+
+      - name: Park the PR on block
+        if: failure() && steps.gate.outputs.status == '1'
+        env:
+          GATE_OUTPUT: ${{ steps.gate.outputs.output }}
+        run: |
+          set -euo pipefail
+          gh pr ready "$PR_NUMBER" --repo "$REPO" --undo || true
+          gh pr edit "$PR_NUMBER" --repo "$REPO" --add-label "status:owner-queue" || true
+
+          {
+            printf '%s\n\n' "**plan-review-diff-gate blocked this PR.**"
+            printf '%s\n\n' "$GATE_OUTPUT"
+            printf '%s\n' "Converted to draft and labeled \`status:owner-queue\` — a human needs to review the plan (or its lock) before this can merge. See #1687 for the check's rationale."
+          } > /tmp/gate_comment.md
+
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/gate_comment.md

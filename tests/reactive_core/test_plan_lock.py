@@ -14,6 +14,7 @@ from agents.plan_lock import (
     canonicalize_plan,
     hash_plan,
     parse_plan,
+    verify_lock,
 )
 
 _LF_PLAN = "## Plan\n\n- step one\n- step two\n\nlock: abc123\n"
@@ -102,3 +103,39 @@ def test_parse_plan_ignores_step_and_lock_lines_outside_the_section() -> None:
     parsed = parse_plan(body)
     assert parsed.steps == ("step one", "step two")
     assert parsed.lock == "abc123"
+
+
+# ── verify_lock (#1687) ──────────────────────────────────────────────────────
+
+
+def _locked_plan(steps: tuple[str, ...]) -> str:
+    """Build a `## Plan` body whose lock value actually matches its steps."""
+    steps_text = "\n".join(f"- {s}" for s in steps)
+    lock = hash_plan(steps_text)
+    return f"## Plan\n\n{steps_text}\n\nlock: {lock}\n"
+
+
+def test_verify_lock_true_for_matching_hash() -> None:
+    body = _locked_plan(("step one", "step two"))
+    assert verify_lock(body) is True
+
+
+def test_verify_lock_false_for_stale_lock_after_step_edit() -> None:
+    body = _locked_plan(("step one", "step two"))
+    tampered = body.replace("step two", "step THREE")
+    assert verify_lock(tampered) is False
+
+
+def test_verify_lock_false_for_placeholder_lock() -> None:
+    assert verify_lock(_LF_PLAN) is False
+
+
+def test_verify_lock_stable_across_crlf_lf() -> None:
+    body = _locked_plan(("step one", "step two"))
+    crlf_body = body.replace("\n", "\r\n")
+    assert verify_lock(crlf_body) is True
+
+
+def test_verify_lock_raises_malformed_plan_error_on_bad_plan() -> None:
+    with pytest.raises(MalformedPlanError, match="absent_lock_line"):
+        verify_lock("## Plan\n\n- step one\n")

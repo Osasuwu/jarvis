@@ -92,3 +92,25 @@ def parse_plan(text: str) -> ParsedPlan:
         raise MalformedPlanError("absent_lock_line", "no 'lock: <value>' line found")
 
     return ParsedPlan(steps=steps, lock=lock_match.group(1))
+
+
+def _steps_text(steps: tuple[str, ...]) -> str:
+    return "\n".join(f"- {s}" for s in steps)
+
+
+def verify_lock(text: str) -> bool:
+    """Verify a ``## Plan`` section's declared ``lock:`` value (#1687).
+
+    The lock is the sha256 (via :func:`hash_plan`) of the canonical
+    steps-only reconstruction (``- <step>`` lines), never of the raw
+    section text — hashing the section including its own ``lock:`` line
+    would be self-referential. This is the one shared recipe every
+    consumer (interactive lane, CI diff-gate) verifies against; it must
+    not be reimplemented per caller.
+
+    Propagates :class:`MalformedPlanError` from :func:`parse_plan` — a
+    malformed plan is not "unlocked", it is an error the caller must
+    handle explicitly (fail closed).
+    """
+    parsed = parse_plan(text)
+    return hash_plan(_steps_text(parsed.steps)) == parsed.lock
