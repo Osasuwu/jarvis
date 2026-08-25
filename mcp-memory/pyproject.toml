@@ -2,6 +2,9 @@
 requires = ["setuptools>=83.0.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[tool.uv]
+package = false
+
 [project]
 name = "jarvis-mcp-memory"
 version = "0.5.0"
