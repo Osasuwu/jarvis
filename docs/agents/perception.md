@@ -24,24 +24,38 @@ comment](https://github.com/Osasuwu/jarvis/issues/386)):
    `(source, tier, executor model)` — never on/off.
 2. Telegram ingest deferred — covered by Claude Code Channels (live
    session) + GitHub ingest (autonomous).
-3. GitHub `tier:1-auto` label **is** the human nod — no second approval
+3. GitHub `source:1-auto` label **is** the human nod — no second approval
    gate.
 
 ## Vocabulary — the three "tiers"
 
-The word "tier" appears in three distinct registers in this codebase.
+The word "tier" appears in multiple distinct registers in this codebase.
 Mixing them is the single biggest source of confusion when wiring
 perception. Keep them separate.
 
+**Label note (#1707):** the board labels `tier:1-auto` / `tier:2-review`
+/ `tier:3-human` were retired repo-wide by #1707 — they had become dead
+plan-review vocabulary and were replaced there by an ordinal
+`classify() -> {1,2,3}` plus `label_for() -> "afk:2-plan"/"afk:3-human"/
+None`. That `afk:*` vocabulary answers a different question ("does this
+change need a plan review before merge?", a complexity/shared-surface
+judgment) than Source tier answers here ("how much do we trust this
+*incoming signal* to auto-dispatch?"). Reusing `afk:2-plan`/`afk:3-human`
+for Source tier would conflate two orthogonal axes and recreate the
+exact ambiguity #1707 exists to resolve. Source tier therefore gets its
+own label prefix, `source:*`, never `tier:*` or `afk:*` — see decision
+record cited at the end of this section.
+
 | Concept | Where it lives | Values | Purpose |
 |---------|---------------|--------|---------|
-| **Source tier** | Perception modules + GitHub issue labels (`tier:1-auto`, `tier:2-review`, `tier:3-human`) | 1, 2, 3 | Classifies an *incoming signal*: how autonomous can dispatch be? |
+| **Source tier** | Perception modules + GitHub issue labels (`source:1-auto`, `source:2-review`, `source:3-human`) | 1, 2, 3 | Classifies an *incoming signal*: how autonomous can dispatch be? |
 | **`safety.Tier`** | `agents/safety.py` (IntEnum: `AUTO`, `OWNER_QUEUE`, `BLOCKED`) | 0, 1, 2 | Classifies an *outgoing action* in `gate(tool_name, action, target, area)`. |
 | **`task_queue.auto_dispatch`** | DB column (boolean) | true / false | Filters what dispatcher's `poll_queue_node` picks up. |
+| **Plan-review class** (`agents/plan_classifier.py`, #1685/#1707) | GitHub issue labels (`afk:2-plan`, `afk:3-human`) | 1, 2, 3 | Classifies a *change-set's complexity*: does it need a locked plan / owner review before merge? Unrelated to perception's ingest-trust question. |
 
 Source tier and `safety.Tier` are independent dimensions: source tier is
 "how trusted is the input," `safety.Tier` is "how dangerous is the
-output." A `tier:1-auto` GitHub issue can still produce a Tier-2 BLOCKED
+output." A `source:1-auto` GitHub issue can still produce a Tier-2 BLOCKED
 action (e.g. an issue body that asks the agent to delete `.env`).
 
 The bridge: perception modules translate **source tier → `auto_dispatch`
@@ -52,9 +66,9 @@ mutation, regardless of source tier.
 
 | Source tier | `auto_dispatch` | Dispatcher behaviour |
 |-------------|-----------------|----------------------|
-| `tier:1-auto` | `true` | Picked up on next tick. Escalation triggers still apply. |
-| `tier:2-review` | `false` | Row sits in `pending`. Principal flips `auto_dispatch=true` after review (or runs `/implement` manually). |
-| `tier:3-human` | `false` | Row exists for tracking only. Dispatcher never touches it. Principal-driven from start to finish. |
+| `source:1-auto` | `true` | Picked up on next tick. Escalation triggers still apply. |
+| `source:2-review` | `false` | Row sits in `pending`. Principal flips `auto_dispatch=true` after review (or runs `/implement` manually). |
+| `source:3-human` | `false` | Row exists for tracking only. Dispatcher never touches it. Principal-driven from start to finish. |
 
 `auto_dispatch=true` is the *only* signal `dispatcher.poll_queue_node`
 honours. The source tier label is metadata for humans and for
@@ -76,10 +90,10 @@ not in *shape* (every row has all the columns).
 | `approved_by` | `github:issue:<owner>/<repo>#<N>` |
 | `approved_at` | Timestamp the `status:ready` label was applied (best-effort: poll-tick time if API doesn't give it cheaply) |
 | `approved_scope_hash` | sha256 of sorted `scope_files[]` (matches dispatcher's `_hash_scope_files`) |
-| `auto_dispatch` | `true` iff `tier:1-auto` label present; `false` for `tier:2-review` and `tier:3-human` |
+| `auto_dispatch` | `true` iff `source:1-auto` label present; `false` for `source:2-review` and `source:3-human` |
 | `idempotency_key` | `sha256(repo \| issue_number \| sorted_label_set)` |
 
-Trigger: poll-tick scans `gh issue list --label status:ready --label tier:*`
+Trigger: poll-tick scans `gh issue list --label status:ready --label source:*`
 on each repo in the per-repo allowlist. Webhook is a stretch goal.
 
 Allowlist: `Osasuwu/jarvis` initially. `SergazyNarynov/redrobot` after
@@ -102,8 +116,8 @@ watcher, but expect zero firings until that upstream change.
 
 Open in flight: what happens if labels change post-ingest — re-tier the
 existing row, or freeze at ingest-time? **Decision: freeze at ingest.**
-Re-tier introduces a race where the dispatcher reads tier:1 but the row
-silently became tier:3. Principal can close + re-open the issue if a re-tier
+Re-tier introduces a race where the dispatcher reads source:1-auto but the row
+silently became source:3-human. Principal can close + re-open the issue if a re-tier
 is needed; idempotency_key includes the label set, so re-applying labels
 produces a fresh key and a fresh row.
 
@@ -116,14 +130,14 @@ produces a fresh key and a fresh row.
 | `approved_by` | `cron:morning_check` |
 | `approved_at` | Cron tick time |
 | `approved_scope_hash` | sha256 of empty list (so drift checks pass trivially — there's no scope to drift from) |
-| `auto_dispatch` | `false` always — every self-perception row is `tier:3-human` |
+| `auto_dispatch` | `false` always — every self-perception row is `source:3-human` |
 | `idempotency_key` | `sha256(YYYY-MM-DD \| alarm_category \| sha256(details_summary))` |
 
 Trigger: `morning_check.py --enqueue-on-alarm` (default off interactive,
 on under cron). Each distinct alarm category produces one row per day.
 Same alarm next day → new key (date is in the formula) → new row.
 
-Why all tier:3: an agent that auto-fixes its own observability alarms
+Why all source:3: an agent that auto-fixes its own observability alarms
 is one config bug away from making things worse silently. Self-modify
 is human-only this sprint. (A future "self-heal Tier 1" surface needs
 its own design issue and its own audit trail.)
@@ -260,8 +274,8 @@ signature ([`safety.py`](../../agents/safety.py)). What changes is
 
 What this means concretely for Sprint 4 implementation:
 
-- **#388 (GitHub ingest)**: no gate changes. `tier:1-auto` rows go through the existing gate. The label is the human nod; the gate is the technical guardrail.
-- **#389 (self-perception)**: every row is tier:3 → `auto_dispatch=false` → never reaches dispatch path → gate not invoked. Principal triggers the actual fix manually.
+- **#388 (GitHub ingest)**: no gate changes. `source:1-auto` rows go through the existing gate. The label is the human nod; the gate is the technical guardrail.
+- **#389 (self-perception)**: every row is source:3 → `auto_dispatch=false` → never reaches dispatch path → gate not invoked. Principal triggers the actual fix manually.
 - **Future sources**: extend the `_TIER0_*` / `_TIER2_*` constants in `agents/safety.py` with source-aware classifications (or add a new `_TIER0_PERCEPTION_*` set). Don't touch the `gate()` signature.
 
 ### Why source tier ≠ skip-gate
@@ -281,7 +295,7 @@ When writing `agents/perception_<source>.py`, hit every one:
 - [ ] Pure `_idempotency_key(payload) -> str` — sha256 hex of the formula in this doc's table. Use `agents.safety.idempotency_key` if the formula matches its `(agent_id, action, target, scope_hash)` shape; otherwise compute directly with `hashlib.sha256(...).hexdigest()`.
 - [ ] `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING` — never raw INSERT
 - [ ] Per-source allowlist as a module constant (chat ids, repos, etc.); reject unknown principals before computing the key
-- [ ] Source tier classification (`tier:1-auto` / `tier:2-review` / `tier:3-human`) — translate to `auto_dispatch` boolean per the mapping table above
+- [ ] Source tier classification (`source:1-auto` / `source:2-review` / `source:3-human`) — translate to `auto_dispatch` boolean per the mapping table above
 - [ ] Tests: idempotency (running the tick twice produces zero new rows), allowlist rejection, row shape correctness
 - [ ] Doc cross-link: extend the relevant "Sources" subsection in this file with anything source-specific
 
@@ -302,6 +316,11 @@ All three runs were dispatched on workshop PC (routine-host machine) on
 2026-04-25. The dispatcher path was the same; the body of each issue
 differed deliberately to exercise three task shapes (doc append / test
 add / docstring edit).
+
+Historical note: at the time of this trace the Source-tier label was
+still named `tier:1-auto` (pre-#1707 vocabulary). The trace below is
+left as-recorded; read `tier:1-auto` here as `source:1-auto` per the
+rename above.
 
 ### Iteration 1 — doc append
 
