@@ -12,6 +12,13 @@ returns which ones. Declared divergences are surfaced with their stated
 reason via :func:`extract_divergences`, not merely counted (AC3) — an
 undeclared divergence is the defect, not a divergence by itself.
 
+# ceiling: no PR-template addendum yet instructs a class-2 executor to
+# actually write ``## Plan-conformance``/``## Plan-divergences`` —
+# missing_sections will fire on effectively every class-2 PR until
+# implement/SKILL.md's PR-body template gets a class-2-specific addendum
+# (follow-up issue), and extract_divergences will stay empty in practice
+# until then.
+
 **Metric half (AC4/AC5/AC6/AC7).** The plan-review stage was justified by a
 rework-cost argument, so its success metric is a rework-round delta, not a
 gut check.
