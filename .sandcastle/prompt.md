@@ -11,12 +11,12 @@
 ## Open issues in the AFK queue
 
 Two-query pick construction (#1691 AC1/AC2 — `agents.sandcastle_admission.build_pick_queries`):
-an unlocked `class:2` issue satisfies neither query below, so it never appears
+an unlocked `afk:2-plan` issue satisfies neither query below, so it never appears
 here and is never pickable by construction.
 
-!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" -label:"class:2"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
+!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" -label:"afk:2-plan"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
 
-!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" label:"class:2" label:"plan:locked"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
+!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" label:"afk:2-plan" label:"plan:locked"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
 
 ## Recent agent commits
 
@@ -44,7 +44,7 @@ issues**, not to the prompt-level context blocks.
 
 1. **Pick** the highest-priority open issue from either search result above,
    not already labelled `status:in-progress`. (You can pull the title from the
-   issue lists in the Context section above without an MCP call.) A `class:2`
+   issue lists in the Context section above without an MCP call.) An `afk:2-plan`
    issue without `plan:locked` never appears in either list — do not pick it
    even if you spot it some other way (e.g. via a stray MCP call); it is
    awaiting a plan from the drain lane, not yours to start.
@@ -58,8 +58,8 @@ issues**, not to the prompt-level context blocks.
    `memory_get` before deciding the approach. **Skipping this step is a
    protocol violation** — the live `/implement` session always recalls; the
    sandcastle agent must match. Empty result is fine; refusing to call is not.
-3. **Verify (class:2 picks only)** — if the issue you picked in step 1 carries
-   the `class:2` label (i.e. it came from the second search query, the
+3. **Verify (afk:2-plan picks only)** — if the issue you picked in step 1 carries
+   the `afk:2-plan` label (i.e. it came from the second search query, the
    `plan:locked` list), re-verify the lock before claiming it (#1691 AC7) —
    the label alone is never trusted; a `plan:locked` issue rendered into the
    list above may have had its plan edited or its lock released since:
@@ -75,7 +75,7 @@ issues**, not to the prompt-level context blocks.
    container has no cheap way to resolve the label-apply timestamp from
    here), so this is a digest/malformed-plan re-check, not an age check —
    age-based lock release is serviced separately by the periodic
-   `plan:locked` sweep. Issues without `class:2` skip this step entirely;
+   `plan:locked` sweep. Issues without `afk:2-plan` skip this step entirely;
    they never needed a plan.
 4. **Claim** — `gh issue edit <N> --add-label status:in-progress` and comment
    `Claimed by sandcastle agent.` The branch is already pinned and checked out
@@ -208,7 +208,7 @@ of a missing field, fix the call and retry — do not skip the write.
   the standard workflow.
 - **NEVER edit protected files.** If the issue scope requires touching any of
   these, refuse the issue: comment on it explaining the blocker, add label
-  `unsafe-for-AFK`, drop `status:in-progress`, and continue to the next issue.
+  `status:owner-queue`, drop `status:in-progress`, and continue to the next issue.
   - `.mcp.json`
   - `CLAUDE.md`, `config/SOUL.md`, `CONTEXT.md`
   - `mcp-memory/server.py`
