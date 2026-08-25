@@ -116,8 +116,8 @@ watcher, but expect zero firings until that upstream change.
 
 Open in flight: what happens if labels change post-ingest — re-tier the
 existing row, or freeze at ingest-time? **Decision: freeze at ingest.**
-Re-tier introduces a race where the dispatcher reads tier:1 but the row
-silently became tier:3. Principal can close + re-open the issue if a re-tier
+Re-tier introduces a race where the dispatcher reads source:1-auto but the row
+silently became source:3-human. Principal can close + re-open the issue if a re-tier
 is needed; idempotency_key includes the label set, so re-applying labels
 produces a fresh key and a fresh row.
 
