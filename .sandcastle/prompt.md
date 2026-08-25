@@ -10,7 +10,13 @@
 
 ## Open issues in the AFK queue
 
-!`gh issue list --repo Osasuwu/jarvis --label "sandcastle" --state open --limit 20 2>&1 || echo "(gh failed)"`
+Two-query pick construction (#1691 AC1/AC2 — `agents.sandcastle_admission.build_pick_queries`):
+an unlocked `class:2` issue satisfies neither query below, so it never appears
+here and is never pickable by construction.
+
+!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" -label:"class:2"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
+
+!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" label:"class:2" label:"plan:locked"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
 
 ## Recent agent commits
 
@@ -36,9 +42,12 @@ the agent's first turn — they are context, not the agent's tool calls. The
 "recall first" rule below applies to **the first MCP tool call the agent
 issues**, not to the prompt-level context blocks.
 
-1. **Pick** the highest-priority open issue labelled `sandcastle` not already
-   labelled `status:in-progress`. (You can pull the title from the issue list in
-   the Context section above without an MCP call.)
+1. **Pick** the highest-priority open issue from either search result above,
+   not already labelled `status:in-progress`. (You can pull the title from the
+   issue lists in the Context section above without an MCP call.) A `class:2`
+   issue without `plan:locked` never appears in either list — do not pick it
+   even if you spot it some other way (e.g. via a stray MCP call); it is
+   awaiting a plan from the drain lane, not yours to start.
 2. **Recall first** (mandatory — first MCP tool call). Before any other MCP
    tool call, invoke the memory bridge:
    ```
