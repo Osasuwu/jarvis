@@ -233,6 +233,12 @@ class GitHubClient(Protocol):
     def create_issue_comment(self, issue_number: int, *, body: str) -> dict[str, Any] | None:
         """Post a comment on an issue. Returns the created comment dict, or None on error."""
 
+    def add_label(self, issue_number: int, label: str) -> None:
+        """Add a label to an issue. Idempotent — adding an already-present label is a no-op."""
+
+    def remove_label(self, issue_number: int, label: str) -> None:
+        """Remove a label from an issue. Idempotent — removing an absent label is a no-op."""
+
 
 def parse_executor_stdout(stdout_text: str) -> dict[str, Any] | None:
     """Parse executor stdout JSON and extract PR number if present (AC3 #953).
@@ -696,6 +702,30 @@ class HttpxGitHubClient:
             return None
         resp.raise_for_status()
         return resp.json()
+
+    def add_label(self, issue_number: int, label: str) -> None:
+        """Add a label to an issue (#1691 sandcastle plan-admission lifecycle).
+
+        POSTs to the issue's labels endpoint. GitHub's add-labels endpoint is
+        itself idempotent (re-adding a present label is a no-op, 200), so no
+        pre-check is needed here.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/issues/{issue_number}/labels"
+        resp = self._client.post(url, json={"labels": [label]})
+        resp.raise_for_status()
+
+    def remove_label(self, issue_number: int, label: str) -> None:
+        """Remove a label from an issue (#1691 sandcastle plan-admission lifecycle).
+
+        DELETEs the label from the issue. A 404 means the label was already
+        absent (or the issue is gone) — normalized to a no-op, mirroring the
+        idempotent-remove contract on the Protocol.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/issues/{issue_number}/labels/{label}"
+        resp = self._client.delete(url)
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
 
 
 def default_github_client() -> HttpxGitHubClient:
