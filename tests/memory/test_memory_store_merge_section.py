@@ -8,6 +8,8 @@ conftest.py stubs MCP SDK + Supabase before any imports, so this file
 can import from server and handlers.memory without external dependencies.
 """
 
+from unittest.mock import MagicMock
+
 import pytest
 import server  # noqa: F401 (needed to break circular import with handlers.memory)
 import handlers.memory as mem
@@ -100,7 +102,9 @@ Different task.
 
 New content for task 1."""
 
-        result = mem._merge_section_into_markdown(existing, "### [entry] task-1 — 2026-01-01 — done", new_section)
+        result = mem._merge_section_into_markdown(
+            existing, "### [entry] task-1 — 2026-01-01 — done", new_section
+        )
 
         # Check that task-1 was replaced
         assert "New content for task 1" in result
@@ -156,7 +160,9 @@ Delta content.
 
 Beta updated."""
 
-        result = mem._merge_section_into_markdown(existing, "### [entry] beta — 2026-01-02 — done", new_section)
+        result = mem._merge_section_into_markdown(
+            existing, "### [entry] beta — 2026-01-02 — done", new_section
+        )
 
         # All other sections intact
         assert "### [entry] alpha — 2026-01-01 — done" in result
@@ -175,7 +181,9 @@ Beta updated."""
 
 First task."""
 
-        result = mem._merge_section_into_markdown("", "### [entry] task-1 — 2026-01-01 — done", new_section)
+        result = mem._merge_section_into_markdown(
+            "", "### [entry] task-1 — 2026-01-01 — done", new_section
+        )
         assert result == new_section
 
     def test_merge_validates_section_header_match(self):
@@ -202,7 +210,9 @@ This has no bracketed-marker headers at all.
 Content."""
 
         with pytest.raises(ValueError, match="not parseable as markdown sections"):
-            mem._merge_section_into_markdown(existing, "### [entry] task — 2026-01-01 — done", new_section)
+            mem._merge_section_into_markdown(
+                existing, "### [entry] task — 2026-01-01 — done", new_section
+            )
 
     def test_merge_appends_new_marker_section_alongside_existing_ones(self):
         """A doc that DOES use the '[marker]' convention, just not for the
@@ -218,7 +228,9 @@ Other content.
 
 Content."""
 
-        result = mem._merge_section_into_markdown(existing, "### [entry] task — 2026-01-02 — done", new_section)
+        result = mem._merge_section_into_markdown(
+            existing, "### [entry] task — 2026-01-02 — done", new_section
+        )
         assert new_section in result
         assert "### [entry] other-task — 2026-01-01 — done" in result
 
@@ -270,7 +282,9 @@ class TestMergeSectionRetryLogic:
         new_section = "## [entry] task-2 — 2026-01-01\n\nTask 2 content\n"
 
         # First merge: existing_v1 + new_section
-        first_merged = mem._merge_section_into_markdown(existing_v1, "## [entry] task-2 — 2026-01-01", new_section)
+        first_merged = mem._merge_section_into_markdown(
+            existing_v1, "## [entry] task-2 — 2026-01-01", new_section
+        )
         assert "## [entry] task-1" in first_merged
         assert "## [entry] task-2" in first_merged
 
@@ -278,7 +292,9 @@ class TestMergeSectionRetryLogic:
         existing_v2 = "## [entry] task-1 — 2026-01-01\n\nTask 1 content\n\n## [entry] task-3 — 2026-01-01\n\nTask 3 content\n"
 
         # CORRECT behavior on retry: merge new_section into existing_v2
-        correct_retry_merge = mem._merge_section_into_markdown(existing_v2, "## [entry] task-2 — 2026-01-01", new_section)
+        correct_retry_merge = mem._merge_section_into_markdown(
+            existing_v2, "## [entry] task-2 — 2026-01-01", new_section
+        )
         assert "## [entry] task-1" in correct_retry_merge
         assert "## [entry] task-2" in correct_retry_merge
         assert "## [entry] task-3" in correct_retry_merge
@@ -290,4 +306,97 @@ class TestMergeSectionRetryLogic:
         # BUG: if code passed first_merged (previous result) as new section on retry:
         # The section validation fails because first_merged doesn't start with task-2's header
         with pytest.raises(ValueError, match="section_content must start with section_header"):
-            mem._merge_section_into_markdown(existing_v2, "## [entry] task-2 — 2026-01-01", first_merged)
+            mem._merge_section_into_markdown(
+                existing_v2, "## [entry] task-2 — 2026-01-01", first_merged
+            )
+
+
+class TestFetchAndRemergeSectionSoftDeleteRevival:
+    """#1714: a soft-deleted row at (project, name) must be treated as an
+    empty base — revive-fresh semantics (decision
+    84c5b737-1887-4c78-9d8b-e58dedac2b04), not revive+preserve. Before the
+    fix, the SELECT filtered `deleted_at is null`, so a soft-deleted row was
+    invisible here and `existing_content` defaulted to "" only because no row
+    was found at all — the RPC then hit its own `deleted_at is null` filter
+    and fell into the INSERT branch, colliding with the still-present
+    unique(project, name) constraint (Postgres 23505). This test pins the
+    fix at the Python layer: a soft-deleted row IS found (so its
+    updated_at threads through as the OCC value for the RPC's revival
+    UPDATE), but its content/description/tags are discarded as if the row
+    were empty.
+    """
+
+    def _mock_client_with_row(self, row: dict) -> MagicMock:
+        client = MagicMock()
+        found = client.table.return_value.select.return_value.eq.return_value
+        found.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[row])
+        found.is_.return_value.limit.return_value.execute.return_value = MagicMock(data=[row])
+        return client
+
+    def test_soft_deleted_row_is_treated_as_empty_base(self):
+        client = self._mock_client_with_row(
+            {
+                "content": "### [entry] old — 2026-01-01 — done\n\nOld content.",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "description": "old description",
+                "tags": ["old-tag"],
+                "deleted_at": "2026-01-02T00:00:00Z",
+            }
+        )
+        new_section = "### [entry] new — 2026-01-03 — in-progress\n\nNew content."
+
+        result = mem._fetch_and_remerge_section(
+            client,
+            mem_name="working_state_test",
+            project="test-proj",
+            section_header="### [entry] new — 2026-01-03 — in-progress",
+            new_section_content=new_section,
+            description="",
+            tags=[],
+        )
+
+        # Old content must NOT survive into the merge — empty base, not
+        # revive+preserve.
+        assert "Old content" not in result["merged_content"]
+        assert result["merged_content"] == new_section
+        # updated_at still threads through so the RPC's OCC check compares
+        # against the tombstone row's real value (needed to find/lock it).
+        assert result["expected_updated_at"] == "2026-01-01T00:00:00Z"
+        # Revive-fresh: never preserve a tombstoned row's description/tags,
+        # even though the caller passed the merge_section defaults ("", [])
+        # that would normally signal "preserve existing".
+        assert result["preserve_description"] is False
+        assert result["preserve_tags"] is False
+
+    def test_live_row_still_preserves_content_and_metadata(self):
+        """Regression guard: the fix must not touch the live-row path — a
+        non-deleted row's content/description/tags are still read and
+        preserve_description/preserve_tags still compute True when the
+        caller passed the "preserve" sentinel values.
+        """
+        client = self._mock_client_with_row(
+            {
+                "content": "### [entry] old — 2026-01-01 — done\n\nOld content.",
+                "updated_at": "2026-01-01T00:00:00Z",
+                "description": "kept description",
+                "tags": ["kept-tag"],
+                "deleted_at": None,
+            }
+        )
+        new_section = "### [entry] new — 2026-01-03 — in-progress\n\nNew content."
+
+        result = mem._fetch_and_remerge_section(
+            client,
+            mem_name="working_state_test",
+            project="test-proj",
+            section_header="### [entry] new — 2026-01-03 — in-progress",
+            new_section_content=new_section,
+            description="",
+            tags=[],
+        )
+
+        assert "Old content" in result["merged_content"]
+        assert "New content" in result["merged_content"]
+        assert result["expected_updated_at"] == "2026-01-01T00:00:00Z"
+        assert result["preserve_description"] is True
+        assert result["preserve_tags"] is True

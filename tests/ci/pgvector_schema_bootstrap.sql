@@ -72,6 +72,30 @@ alter table memories add column if not exists superseded_by uuid
 
 alter table memories add column if not exists deleted_at timestamptz;
 
+-- #1714: merge_section_into_memory_upsert (supabase/migrations/
+-- 20260812130000_add_merge_section_into_memory_rpc.sql, fixed by
+-- 20260825170000_fix_merge_section_soft_delete_revival.sql) touches these.
+alter table memories add column if not exists source_provenance text;
+alter table memories add column if not exists embedding_model text;
+alter table memories add column if not exists embedding_version text;
+alter table memories add column if not exists embedding_v2 vector(1024);
+alter table memories add column if not exists embedding_model_v2 text;
+alter table memories add column if not exists embedding_version_v2 text;
+
 create index if not exists idx_memories_embedding_hnsw
   on memories using hnsw (embedding vector_cosine_ops)
   with (m = 16, ef_construction = 64);
+
+-- ---------------------------------------------------------------------------
+-- #1714: auth.role() stub. Supabase provides this via the auth extension;
+-- a stock pgvector/pgvector image has neither the schema nor the function.
+-- merge_section_into_memory_upsert calls auth.role() for its RLS-parity
+-- check — fix it to a non-'anon' value so CI's superuser connection (which
+-- isn't actually anon, but has no real auth.role() to ask) exercises the
+-- authenticated-caller branch, matching how the DB-backed tests call the RPC.
+-- ---------------------------------------------------------------------------
+create schema if not exists auth;
+
+create or replace function auth.role() returns text as $$
+  select 'service_role'::text;
+$$ language sql stable;
