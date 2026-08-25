@@ -759,7 +759,7 @@ wheels = [
 [[package]]
 name = "jarvis-mcp-memory"
 version = "0.5.0"
-source = { editable = "." }
+source = { virtual = "." }
 dependencies = [
     { name = "httpx" },
     { name = "mcp" },
