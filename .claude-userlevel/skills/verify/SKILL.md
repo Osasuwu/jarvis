@@ -72,9 +72,9 @@ If any check finds a problem:
 - `lessons` records the specific finding.
 - Live drift in `main` → fix inline if trivial/reversible (CLAUDE.md "Fix > track"), else `/file-issue`.
 
-## Step 2c — Plan-conformance check (class-2 PRs, #1692)
+## Step 2c — Plan-conformance check (afk:2-plan PRs, #1692)
 
-Applies to outcomes just verified `success` in Step 2 whose `pattern_tags` include `"class:2"`. Independent detector alongside the CI diff-gate (#1687) and the review gate — this one runs after merge, on the shipped PR body, not before.
+Applies to outcomes just verified `success` in Step 2 whose `pattern_tags` include `"afk:2-plan"`. Independent detector alongside the CI diff-gate (#1687) and the review gate — this one runs after merge, on the shipped PR body, not before.
 
 ```bash
 gh pr view <pr_url> --json body --jq '.body'
@@ -89,19 +89,19 @@ missing = missing_sections(pr_body, is_class_2=True)      # AC1/AC2
 divergences = extract_divergences(pr_body)                # AC3
 ```
 
-- `missing_sections` non-empty → **finding**: a class-2 PR shipped without a `## Plan-conformance` and/or `## Plan-divergences` section where one was required. Downgrade to `partial` in Step 3, `lessons` names which section(s) are missing.
+- `missing_sections` non-empty → **finding**: an `afk:2-plan` PR shipped without a `## Plan-conformance` and/or `## Plan-divergences` section where one was required. Downgrade to `partial` in Step 3, `lessons` names which section(s) are missing.
 - `extract_divergences` non-empty → surface each `(what, reason)` pair in the Step 5 output verbatim, not just a count. A declared divergence is not itself a defect — reviewing readers judge the reason, `/verify` only makes it visible. An **undeclared** divergence (diff clearly departs from the plan but no `## Plan-divergences` bullet mentions it) is the same silent-drift class as the Step 2b divergence audit; if spotted, treat it the same way (downgrade + `lessons`).
 
 ### Rework-round metric (AC4–AC7)
 
-Every class-2 PR's rework rounds = `rework_round_count(history)` from `agents.plan_conformance`, reusing `scripts/rework_policy.py`'s own `/rework` attempt history — no parallel counter (see that module's docstring for the full metric definition, baseline linkage to #1683, and rollback plan). Track it via `pattern_tags` (`"class:2"`) in Step 4's queries below; there is no separate ledger.
+Every `afk:2-plan` PR's rework rounds = `rework_round_count(history)` from `agents.plan_conformance`, reusing `scripts/rework_policy.py`'s own `/rework` attempt history — no parallel counter (see that module's docstring for the full metric definition, baseline linkage to #1683, and rollback plan). Track it via `pattern_tags` (`"afk:2-plan"`) in Step 4's queries below; there is no separate ledger.
 
-When the count of `success`/`partial` class-2 outcomes reaches `agents.plan_conformance.CHECKPOINT_THRESHOLD` (~10) — check via:
+When the count of `success`/`partial` `afk:2-plan` outcomes reaches `agents.plan_conformance.CHECKPOINT_THRESHOLD` (~10) — check via:
 
 ```sql
 SELECT COUNT(*) FROM task_outcomes
 WHERE outcome_status IN ('success', 'partial')
-  AND 'class:2' = ANY(pattern_tags);
+  AND 'afk:2-plan' = ANY(pattern_tags);
 ```
 
 **Computing the window average**: for each class-2 PR in the checkpoint window, fetch its body (`gh pr view <pr_url> --json body --jq '.body'`) and parse `## Rework history` sections the same way `rework/SKILL.md` §3/§8 does, to get that PR's `history` list; feed it to `agents.plan_conformance.rework_round_count(history)`; average the resulting counts across the window (a PR with no `## Rework history` section has 0 rounds by construction, per `rework_round_count`'s own definition).

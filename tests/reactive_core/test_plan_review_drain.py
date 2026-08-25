@@ -16,6 +16,7 @@ from agents.plan_lock import hash_plan
 from agents.plan_review_config import (
     Class2Thresholds,
     Class3Criteria,
+    ExemptCriteria,
     ModelFloors,
     PlanReviewConfig,
 )
@@ -37,7 +38,8 @@ _CFG = PlanReviewConfig(
         churn_threshold=400,
         min_prod_areas=2,
     ),
-    class_3=Class3Criteria(mechanical_criteria=("docs-only", "typo-fix")),
+    exempt=ExemptCriteria(mechanical_criteria=("docs-only", "typo-fix")),
+    class_3=Class3Criteria(mechanical_criteria=("admin-rights-required",)),
     models=ModelFloors(planner="claude-opus-5", critic="claude-sonnet-5"),
 )
 
@@ -73,23 +75,23 @@ def _plan_body(steps: tuple[str, ...]) -> str:
 class TestClassGate:
     def test_class_1_change_does_not_require_a_plan(self):
         row = {"scope_files": ("docs/foo.md",), "churn_lines": 5, "prod_areas": 1}
-        assert class_gate(_CFG, row) == "class:1"
+        assert class_gate(_CFG, row) == 1
 
     def test_shared_surface_path_trips_class_2(self):
         row = {"scope_files": ("mcp-memory/server.py",), "churn_lines": 5, "prod_areas": 1}
-        assert class_gate(_CFG, row) == "class:2"
+        assert class_gate(_CFG, row) == 2
 
     def test_priority_critical_label_does_not_skip_classification(self):
         """Contrast with implement_plan_gate.evaluate_trigger: this ex-post
         gate has no carve-out — a class-2 row with a priority:critical-shaped
-        label is still class:2, and needs_plan still requires a plan."""
+        label is still class 2, and needs_plan still requires a plan."""
         row = {
             "scope_files": ("mcp-memory/server.py",),
             "churn_lines": 5,
             "prod_areas": 1,
             "labels": ("priority:critical",),
         }
-        assert class_gate(_CFG, row) == "class:2"
+        assert class_gate(_CFG, row) == 2
         github = _FakeGitHub({})
         assert needs_plan(_CFG, row, github) is True
 

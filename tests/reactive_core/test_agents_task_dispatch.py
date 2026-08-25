@@ -2000,6 +2000,7 @@ def _plan_config_with_shared_surface() -> Any:
     from agents.plan_review_config import (
         Class2Thresholds,
         Class3Criteria,
+        ExemptCriteria,
         ModelFloors,
         PlanReviewConfig,
     )
@@ -2010,6 +2011,7 @@ def _plan_config_with_shared_surface() -> Any:
             churn_threshold=400,
             min_prod_areas=99,
         ),
+        exempt=ExemptCriteria(mechanical_criteria=()),
         class_3=Class3Criteria(mechanical_criteria=()),
         models=ModelFloors(planner="claude-opus-5", critic="claude-sonnet-5"),
     )

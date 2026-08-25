@@ -145,7 +145,7 @@ def _enqueue_alarm(
     details_summary: str,
     goal: str,
 ) -> None:
-    """Enqueue a self-perception alarm as a tier:3-human task_queue row.
+    """Enqueue a self-perception alarm as a source:3-human task_queue row.
 
     Uses upsert with ignore_duplicates to ensure idempotency: the same alarm
     category + details on the same day produces the same key and never duplicates.
