@@ -375,6 +375,43 @@ def set_plan_digest(
     return dict(rows[0]) if rows else {}
 
 
+def requeue_for_replan(
+    task_id: str,
+    new_replan_count: int,
+    *,
+    client: Client | None = None,
+) -> dict[str, Any]:
+    """Bump ``replan_count`` and return a row to ``pending`` for a replan (#1690).
+
+    Like :func:`requeue_running`/:func:`set_plan_digest`, this bypasses the
+    FSM via a direct UPDATE — ``pending`` is not a legal target from every
+    prior status, and bumping ``replan_count`` is metadata, not a transition.
+    Called by the drain when it reads a replan-request comment on a row with
+    ``replan_count == 0``: the planner reruns with the broken assumption as
+    input, then the row is requeued so the next drain tick re-executes it.
+    ``new_replan_count`` is supplied by the caller (read off the row before
+    calling) rather than incremented server-side, so the caller's read and
+    this write agree even if the caller computed it from a stale-but-close
+    fetch. Returns the updated row dict, or ``{}`` if no row matched
+    ``task_id``.
+    """
+    cli = client or get_client()
+    result = (
+        cli.table("task_queue")
+        .update(
+            {
+                "status": "pending",
+                "claimed_at": None,
+                "replan_count": new_replan_count,
+            }
+        )
+        .eq("id", task_id)
+        .execute()
+    )
+    rows = result.data or []
+    return dict(rows[0]) if rows else {}
+
+
 def get_status(
     task_id: str,
     *,
@@ -411,6 +448,23 @@ def get_statuses(
     cli = client or get_client()
     rows = (cli.table("task_queue").select("id, status").in_("id", task_ids).execute()).data or []
     return {row["id"]: row["status"] for row in rows}
+
+
+def get_row(
+    task_id: str,
+    *,
+    client: Client | None = None,
+) -> dict[str, Any] | None:
+    """Fetch one task row in full, or ``None`` if the row is absent (#1690).
+
+    Unlike :func:`get_status`/:func:`get_statuses` (status column only), the
+    replan-carrier gate needs the whole row — ``issue_number``, ``issue_body``,
+    ``issue_title``, ``replan_count`` — to rebuild the planner's input and read
+    the current replan count before calling :func:`requeue_for_replan`.
+    """
+    cli = client or get_client()
+    rows = (cli.table("task_queue").select("*").eq("id", task_id).limit(1).execute()).data or []
+    return dict(rows[0]) if rows else None
 
 
 def list_active(

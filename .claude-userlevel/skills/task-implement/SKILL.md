@@ -85,6 +85,21 @@ Same gate as `/implement` §4a: enumerate AC symbols, grep for each, read the hi
 
 Same triple-check as `/implement` §4d: symbol exists, call sites exist outside tests, the AC-specific test passes. Fix now, not after.
 
+### 3d. Broken plan assumption mid-implementation → replan-request comment (#1690)
+
+If, partway through implementing a class:2 row's locked plan, you discover the plan rests on an assumption that is actually false (a file/API/schema the plan assumed doesn't match reality, a dependency it assumed present is missing, etc.) — this is **not** the same as HARD RULE 1's design-fork ambiguity. A broken plan assumption has a mechanical recovery path: post a structured replan-request comment and stop, rather than parking with `status:owner-queue`. `agents/task_dispatch.py::poll_completions` watches for this comment after your process exits and automatically reruns the planner with your finding folded in.
+
+Post a comment on the issue starting with the literal marker line, followed by a fenced JSON block:
+
+```
+<!-- jarvis:replan-request -->
+```json
+{"broken_assumption": "<one-line statement of what the plan assumed>", "evidence": "<what you found that contradicts it>"}
+```
+```
+
+Then stop the session (no commit, no PR) — do not attempt to route around the broken assumption yourself. `agents/plan_review_drain.py::find_replan_request` scans for exactly this shape (marker prefix + parseable JSON block with both keys as strings); a free-prose "this isn't working" comment does not trigger a replan. On the first occurrence (`replan_count == 0` on the row) the planner reruns once, informed by your `broken_assumption`/`evidence`, and the row is requeued to `pending` for a fresh spawn against the revised plan. If a second broken-assumption comment lands on a row that has already been replanned once (`replan_count >= 1`), the row is parked instead of replanned again — two consecutive broken plans is signal for a human, not another automatic retry.
+
 ### 4. Commit & PR
 
 ```bash

@@ -13,6 +13,7 @@ Each test names the acceptance criterion it covers (see issue #909, grilled
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -68,6 +69,7 @@ class FakeTaskQueue:
         pending: list[dict[str, Any]] | None = None,
         running_count: int = 0,
         statuses: dict[str, str] | None = None,
+        rows_by_id: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self._pending = list(pending or [])
         self._running_count = running_count
@@ -78,6 +80,7 @@ class FakeTaskQueue:
         self.requeued: list[str] = []
         self.statuses: dict[str, str] = dict(statuses or {})
         self.plan_digests: dict[str, str] = {}
+        self._rows_by_id: dict[str, dict[str, Any]] = dict(rows_by_id or {})
 
     def claim_next(self, *, assignee: str) -> dict[str, Any] | None:
         for i, row in enumerate(self._pending):
@@ -114,6 +117,13 @@ class FakeTaskQueue:
     def set_plan_digest(self, task_id: str, digest: str) -> dict[str, Any]:
         self.plan_digests[task_id] = digest
         return {"id": task_id, "plan_digest": digest}
+
+    def get_row(self, task_id: str) -> dict[str, Any] | None:
+        return self._rows_by_id.get(task_id)
+
+    def requeue_for_replan(self, task_id: str, new_replan_count: int) -> dict[str, Any]:
+        self.transitions.append((task_id, "pending", f"replan:{new_replan_count}"))
+        return {"id": task_id, "status": "pending", "replan_count": new_replan_count}
 
 
 def _always_resolve() -> str:
@@ -1976,9 +1986,15 @@ def _class2_row(
 class _FakePlanReviewGithub:
     """Fake ``GitHubClient`` for the plan-review gate — tracks call order."""
 
-    def __init__(self, issues: dict[int, dict[str, Any]], events: list[tuple[str, ...]]) -> None:
+    def __init__(
+        self,
+        issues: dict[int, dict[str, Any]],
+        events: list[tuple[str, ...]],
+        comments: dict[int, list[dict[str, Any]]] | None = None,
+    ) -> None:
         self._issues = issues
         self._events = events
+        self._comments = comments or {}
 
     def get_issue(self, issue_number: int) -> dict[str, Any] | None:
         self._events.append(("get_issue", str(issue_number)))
@@ -1993,7 +2009,13 @@ class _FakePlanReviewGithub:
 
     def create_issue_comment(self, issue_number: int, *, body: str) -> dict[str, Any]:
         self._events.append(("create_issue_comment", str(issue_number)))
-        return {"body": body}
+        comment = {"body": body}
+        self._comments.setdefault(issue_number, []).append(comment)
+        return comment
+
+    def list_issue_comments(self, issue_number: int) -> list[dict[str, Any]]:
+        self._events.append(("list_issue_comments", str(issue_number)))
+        return list(self._comments.get(issue_number, []))
 
 
 def _plan_config_with_shared_surface() -> Any:
@@ -2152,3 +2174,131 @@ class TestPlanReviewGateWiring:
         assert q.claimed == []
         assert res.skipped_no_plan_config is True
         assert res.spawned == 0
+
+
+def _replan_comment(broken_assumption: str, evidence: str) -> dict[str, Any]:
+    from agents.plan_review_drain import REPLAN_REQUEST_MARKER
+
+    body = (
+        f"{REPLAN_REQUEST_MARKER}\n```json\n"
+        f'{{"broken_assumption": "{broken_assumption}", "evidence": "{evidence}"}}\n'
+        "```\n"
+    )
+    return {"body": body, "created_at": "2026-08-25T10:00:00Z"}
+
+
+class TestPollCompletionsReplanCarrier:
+    """AC7 (#1690) — ``poll_completions`` routes an exited task carrying a
+    replan-request comment to ``_handle_replan_request`` instead of the
+    normal done/failed branch."""
+
+    def test_replan_count_zero_reruns_planner_and_requeues_to_pending(self) -> None:
+        from agents.plan_lock import hash_plan
+        from agents.plan_review_drain import PlanResult
+
+        plan_text = "- Step one\nlock: " + hash_plan("- Step one") + "\n"
+
+        class _FakePlanner:
+            def run_planner(
+                self, row: dict[str, Any], config: Any, prior_failure: str | None = None
+            ) -> PlanResult:
+                assert prior_failure is not None  # #1690 folds the broken assumption in
+                return PlanResult(plan_text=plan_text, resolved=True)
+
+        github = _FakePlanReviewGithub(
+            {42: {"body": "## Acceptance Criteria\n- AC one\n"}},
+            events=[],
+            comments={42: [_replan_comment("assumed X", "X was false")]},
+        )
+        row = _row("t0")
+        row["replan_count"] = 0
+        row["issue_number"] = 42
+        q = FakeTaskQueue(rows_by_id={"t0": row})
+        procs = {
+            "t0": TrackedProc(
+                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
+            )
+        }
+
+        res = poll_completions(
+            q,
+            procs,
+            evidence_client=github,
+            planner=_FakePlanner(),
+            plan_config_loader=_plan_config_with_shared_surface,
+        )
+
+        assert procs == {}
+        assert res.done == 0
+        assert res.failed_exit == 0
+        assert q.plan_digests.get("t0")  # set_plan_digest landed before requeue
+        assert ("t0", "pending", "replan:1") in q.transitions
+
+    def test_replan_count_at_least_one_parks_instead_of_replanning_again(self) -> None:
+        class _ExplodingPlanner:
+            def run_planner(
+                self, row: dict[str, Any], config: Any, prior_failure: str | None = None
+            ) -> Any:
+                raise AssertionError("must not replan a second time")
+
+        github = _FakePlanReviewGithub(
+            {42: {"body": "## Acceptance Criteria\n- AC one\n"}},
+            events=[],
+            comments={42: [_replan_comment("assumed X", "X was false again")]},
+        )
+        row = _row("t0")
+        row["replan_count"] = 1
+        q = FakeTaskQueue(rows_by_id={"t0": row})
+        procs = {
+            "t0": TrackedProc(
+                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
+            )
+        }
+
+        res = poll_completions(
+            q,
+            procs,
+            evidence_client=github,
+            planner=_ExplodingPlanner(),
+            plan_config_loader=_plan_config_with_shared_surface,
+        )
+
+        assert procs == {}
+        assert res.done == 0
+        assert res.failed_exit == 0
+        parked_transitions = [t for t in q.transitions if t[1] == "parked"]
+        assert len(parked_transitions) == 1
+        task_id, _, reason = parked_transitions[0]
+        assert task_id == "t0"
+        payload = json.loads(reason)
+        assert payload["kind"] == "replan_exhausted"
+        assert payload["broken_assumption"] == "assumed X"
+
+    def test_no_replan_comment_falls_through_to_normal_done_branch(self) -> None:
+        github = _FakePlanReviewGithub({42: {"body": "no plan"}}, events=[], comments={})
+        row = _row("t0")
+        row["replan_count"] = 0
+        row["issue_number"] = 42
+        q = FakeTaskQueue(rows_by_id={"t0": row})
+        procs = {
+            "t0": TrackedProc(
+                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
+            )
+        }
+
+        class _ExplodingPlanner:
+            def run_planner(
+                self, row: dict[str, Any], config: Any, prior_failure: str | None = None
+            ) -> Any:
+                raise AssertionError("must not run — there is no replan-request comment")
+
+        res = poll_completions(
+            q,
+            procs,
+            evidence_client=github,
+            planner=_ExplodingPlanner(),
+            plan_config_loader=_plan_config_with_shared_surface,
+        )
+
+        assert res.done == 1
+        assert ("t0", "done", None) in q.transitions

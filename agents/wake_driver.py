@@ -540,6 +540,8 @@ def tick(
                 evidence_client=task_evidence_client,
                 stdout_reader=task_stdout_reader,
                 outcome_record=task_outcome_record,
+                planner=task_planner,
+                plan_config_loader=task_plan_config_loader,
             )
         except Exception:  # noqa: BLE001 — task-store outage must not block event drain
             logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")

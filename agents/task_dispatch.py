@@ -38,6 +38,7 @@ would let the claimed-reclaimer (AC5) hand the same task to a second spawn.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -67,6 +68,7 @@ from agents.plan_review_drain import PlannerPort
 from agents.plan_review_drain import class_gate as _plan_class_gate
 from agents.plan_review_drain import default_plan_config_loader
 from agents.plan_review_drain import default_run_planner as _default_run_planner
+from agents.plan_review_drain import find_replan_request as _find_replan_request
 from agents.plan_review_drain import needs_plan as _plan_needs_plan
 from agents.plan_review_drain import pre_spawn_digest_mismatch as _pre_spawn_digest_mismatch
 from agents.plan_review_drain import write_plan_section as _write_plan_section
@@ -356,6 +358,17 @@ class TaskQueuePort(Protocol):
         post-approval issue-body edit (AC6, fail closed).
         """
 
+    def get_row(self, task_id: str) -> dict[str, Any] | None:
+        """Fetch one task row in full, or ``None`` if the row is absent (#1690).
+
+        Backs the replan-carrier gate: rebuilding the planner's input and
+        reading the current ``replan_count`` needs the whole row, not just
+        the status column ``get_status`` returns.
+        """
+
+    def requeue_for_replan(self, task_id: str, new_replan_count: int) -> dict[str, Any]:
+        """Bump ``replan_count`` and return a ``running`` row to ``pending`` (#1690)."""
+
 
 @dataclass(frozen=True)
 class DrainResult:
@@ -456,6 +469,14 @@ class CompletionResult:
 
     done: int = 0
     failed_exit: int = 0
+    # Tasks routed to a #1690 mid-run replan-request comment instead of the
+    # normal done/failed branch: ``replan_count == 0`` reruns the planner and
+    # requeues to ``pending`` (counted here too, since it is neither done nor
+    # failed_exit); ``replan_count >= 1`` parks with a structured
+    # ``replan_exhausted``/``replan_failed`` reason. Mirrors
+    # :attr:`DrainResult.parked`'s meaning for the completion side of the
+    # pipeline.
+    parked: int = 0
 
 
 # An ``event_emit`` callback: (event_type, severity, payload, *, dedup_key).
@@ -463,6 +484,114 @@ class CompletionResult:
 # severity is explicit (events CHECK constraint), dedup_key absorbs a
 # re-observed terminal event at the DB unique index (#953 AC1/AC9).
 EventEmit = Callable[..., Any]
+
+
+def _finalize_terminal_task(
+    task_id: str,
+    *,
+    sidecar: Sidecar | None,
+    success: bool,
+) -> None:
+    """Best-effort sidecar delete + worktree finalize shared by every terminal
+    exit from :func:`poll_completions` — the done/failed branch and the
+    #1690 replan/park branch alike (AC6 #952, AC5 #1390)."""
+    if sidecar is not None:
+        try:
+            sidecar.delete_sidecar_file(task_id)
+        except Exception:  # noqa: BLE001 — sidecar delete is best-effort
+            logger.exception("[task_dispatch] sidecar delete failed for task %s", task_id)
+    try:
+        task_worktree.finalize_task_worktree(task_id, success=success)
+    except Exception:  # noqa: BLE001 — worktree finalize is best-effort
+        logger.exception("[task_dispatch] worktree finalize failed for task %s", task_id)
+
+
+def _handle_replan_request(
+    task_id: str,
+    row: dict[str, Any],
+    replan_request: Any,
+    *,
+    port: TaskQueuePort,
+    evidence_client: GitHubClient,
+    planner: PlannerPort,
+    plan_config: PlanReviewConfig,
+) -> None:
+    """Act on a #1690 replan-request comment found for a just-exited task.
+
+    ``replan_count == 0`` → rerun the planner with ``prior_failure`` folded
+    in, write the new plan section, verify+digest it, and requeue the row to
+    ``pending`` via :meth:`TaskQueuePort.requeue_for_replan` so the next
+    drain re-executes it. ``replan_count >= 1`` → the row already used its one
+    replan; park it with a structured ``escalated_reason`` (per the Plan
+    section's park-with-structured-reason design) instead of looping forever.
+    A planner raise, an unresolved plan, or a malformed/unlocked plan on the
+    replan attempt itself also parks — a failed replan attempt must not wedge
+    the row in ``running`` forever.
+    """
+    current_replan_count = int(row.get("replan_count") or 0)
+
+    if current_replan_count >= 1:
+        try:
+            port.transition(
+                task_id,
+                "parked",
+                reason=json.dumps(
+                    {
+                        "kind": "replan_exhausted",
+                        "broken_assumption": replan_request.broken_assumption,
+                        "evidence": replan_request.evidence,
+                    }
+                ),
+            )
+        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+            logger.exception(
+                "[task_dispatch] could not park task %s on replan_exhausted; "
+                "row left running for the reaper",
+                task_id,
+            )
+        return
+
+    prior_failure = f"{replan_request.broken_assumption}\n\nEvidence: {replan_request.evidence}"
+    try:
+        plan_result = planner.run_planner(row, plan_config, prior_failure=prior_failure)
+        if not plan_result.resolved:
+            raise RuntimeError(plan_result.reason or "planner did not resolve the replan")
+        issue_number = int(row["issue_number"])
+        new_body = _write_plan_section(evidence_client, issue_number, plan_result.plan_text)
+        if not verify_lock(new_body):
+            raise MalformedPlanError("planner wrote a malformed or unlocked replan")
+        digest = parse_plan(new_body).lock
+    except Exception as exc:  # noqa: BLE001 — a failed replan attempt parks, never wedges
+        logger.exception("[task_dispatch] replan attempt failed for task %s; parking", task_id)
+        try:
+            port.transition(
+                task_id,
+                "parked",
+                reason=json.dumps(
+                    {
+                        "kind": "replan_failed",
+                        "broken_assumption": replan_request.broken_assumption,
+                        "evidence": f"{replan_request.evidence}\n\nreplan error: {exc}",
+                    }
+                ),
+            )
+        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+            logger.exception(
+                "[task_dispatch] could not park task %s on replan_failed; "
+                "row left running for the reaper",
+                task_id,
+            )
+        return
+
+    try:
+        port.set_plan_digest(task_id, digest)
+        port.requeue_for_replan(task_id, current_replan_count + 1)
+    except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+        logger.exception(
+            "[task_dispatch] set_plan_digest/requeue_for_replan failed for task %s after a "
+            "successful replan write; row left running for the reaper",
+            task_id,
+        )
 
 
 def poll_completions(
@@ -474,6 +603,8 @@ def poll_completions(
     evidence_client: GitHubClient | None = None,
     stdout_reader: Callable[[str], str | None] | None = None,
     outcome_record: Callable[[dict[str, Any]], None] | None = None,
+    planner: PlannerPort | None = None,
+    plan_config_loader: Callable[[], PlanReviewConfig] = default_plan_config_loader,
 ) -> CompletionResult:
     """Close ``running`` rows whose process has exited (#921 AC2, Model P).
 
@@ -503,9 +634,21 @@ def poll_completions(
     Per-row isolation: a ``transition`` raising logs, drops the entry, and
     continues — the row stays ``running`` in the store with no live handle, so
     the AC5/AC6 orphan reaper is the backstop. No counter is incremented for it.
+
+    **#1690 replan-carrier**: opt-in via ``planner`` (``None`` by default —
+    without it, replan detection is skipped and this function's behavior is
+    byte-for-byte the pre-#1690 one). When ``planner`` is wired and the exited
+    task carries both ``evidence_client`` and ``tracked.issue_number``, this
+    checks for a replan-request comment (:func:`agents.plan_review_drain.find_replan_request`)
+    posted since ``tracked.spawned_at`` — an executor that hit a broken plan
+    assumption mid-implementation. A hit is routed to
+    :func:`_handle_replan_request` instead of the normal done/failed branch:
+    ``replan_count == 0`` reruns the planner and requeues to ``pending``;
+    ``replan_count >= 1`` parks (the row already used its one replan).
     """
     done = 0
     failed_exit = 0
+    parked = 0
     for task_id, tracked in list(procs.items()):
         # poll_exit handles both handle kinds: a freshly-spawned Popen (real exit
         # code) and an adopted psutil.Process (no poll()/returncode — exited maps
@@ -514,6 +657,39 @@ def poll_completions(
         rc = poll_exit(tracked.proc)
         if rc is None:
             continue
+
+        # #1690 replan-carrier — checked before the normal done/failed branch so
+        # a replan-request comment always wins over whatever exit code the
+        # executor happened to end with. Opt-in: skipped entirely unless the
+        # caller wires ``planner`` (production: wake_driver.tick threads its
+        # own ``task_planner``/``task_plan_config_loader`` through here).
+        if planner is not None and evidence_client is not None and tracked.issue_number is not None:
+            since = tracked.spawned_at.isoformat() if tracked.spawned_at else None
+            try:
+                replan_request = _find_replan_request(
+                    evidence_client, tracked.issue_number, since=since
+                )
+            except Exception:  # noqa: BLE001 — a lookup failure is not a replan
+                logger.exception(
+                    "[task_dispatch] replan-request lookup failed for task %s", task_id
+                )
+                replan_request = None
+            if replan_request is not None:
+                row = port.get_row(task_id)
+                if row is not None:
+                    _handle_replan_request(
+                        task_id,
+                        row,
+                        replan_request,
+                        port=port,
+                        evidence_client=evidence_client,
+                        planner=planner,
+                        plan_config=plan_config_loader(),
+                    )
+                    parked += 1 if int(row.get("replan_count") or 0) >= 1 else 0
+                    _finalize_terminal_task(task_id, sidecar=sidecar, success=False)
+                    procs.pop(task_id, None)
+                    continue
 
         # AC1/AC2/AC3 (#953) — compute evidence and lineage at the boundary, then
         # emit the event BEFORE the transition (event-first ordering). spawned_at
@@ -627,26 +803,12 @@ def poll_completions(
                 task_id,
             )
         finally:
-            # AC6 (#952) — delete sidecar on terminal transition.
-            if sidecar is not None:
-                try:
-                    sidecar.delete_sidecar_file(task_id)
-                except Exception:  # noqa: BLE001 — sidecar delete is best-effort
-                    logger.exception(
-                        "[task_dispatch] sidecar delete failed for task %s",
-                        task_id,
-                    )
-            # AC5 (#1390) — remove the worktree on success; detach HEAD on
-            # failure so the branch ref is free for `_redrive_goal`'s retry.
-            try:
-                task_worktree.finalize_task_worktree(task_id, success=(rc == 0))
-            except Exception:  # noqa: BLE001 — worktree finalize is best-effort
-                logger.exception(
-                    "[task_dispatch] worktree finalize failed for task %s",
-                    task_id,
-                )
+            # AC6 (#952) / AC5 (#1390) — sidecar delete + worktree finalize;
+            # success=(rc == 0) detaches HEAD on failure so the branch ref is
+            # free for `_redrive_goal`'s retry.
+            _finalize_terminal_task(task_id, sidecar=sidecar, success=(rc == 0))
             procs.pop(task_id, None)
-    return CompletionResult(done=done, failed_exit=failed_exit)
+    return CompletionResult(done=done, failed_exit=failed_exit, parked=parked)
 
 
 def kill_runaways(
@@ -1491,6 +1653,12 @@ class SupabaseTaskQueue:
 
     def set_plan_digest(self, task_id: str, digest: str) -> dict[str, Any]:
         return task_queue.set_plan_digest(task_id, digest, client=self._client)
+
+    def get_row(self, task_id: str) -> dict[str, Any] | None:
+        return task_queue.get_row(task_id, client=self._client)
+
+    def requeue_for_replan(self, task_id: str, new_replan_count: int) -> dict[str, Any]:
+        return task_queue.requeue_for_replan(task_id, new_replan_count, client=self._client)
 
 
 def reconcile_stranded_prs(

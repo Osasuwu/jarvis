@@ -472,6 +472,14 @@ class _RecordingTaskQueue:
         self._log.append("task_set_plan_digest")
         return {"id": task_id, "plan_digest": digest}
 
+    def get_row(self, task_id: str) -> dict | None:
+        self._log.append("task_get_row")
+        return {"id": task_id, "status": self.statuses.get(task_id)}
+
+    def requeue_for_replan(self, task_id: str, replan_count: int) -> dict:
+        self._log.append("task_requeue_for_replan")
+        return {"id": task_id, "status": "pending", "replan_count": replan_count}
+
 
 def test_recording_task_queue_conforms_to_the_port_protocol():
     # review #957-2 (MAJOR): the fake must satisfy the full TaskQueuePort
