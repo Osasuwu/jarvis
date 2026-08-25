@@ -351,7 +351,7 @@ class TaskQueuePort(Protocol):
         """Persist a locked plan's hash onto ``task_id`` (direct UPDATE, #1689).
 
         Backs the ex-post plan-review drain gate (:mod:`agents.plan_review_drain`):
-        once a class:2 row's planner-produced plan is written and locked, the
+        once a ordinal-2 row's planner-produced plan is written and locked, the
         digest is persisted here so the pre-spawn recheck can detect a
         post-approval issue-body edit (AC6, fail closed).
         """
@@ -376,11 +376,11 @@ class DrainResult:
     throttled: bool = False
     # True iff the whole drain was skipped because the plan-review config
     # (#1689) failed to load — distinct from ``skipped_no_binary``; the ex-post
-    # gate cannot be evaluated for any class:2 row without it, so the drain
-    # fails closed rather than spawning unreviewed class:2 work.
+    # gate cannot be evaluated for any ordinal-2 row without it, so the drain
+    # fails closed rather than spawning unreviewed ordinal-2 work.
     skipped_no_plan_config: bool = False
     # Tasks parked because the ex-post plan-review gate (#1689) could not
-    # produce a resolved, locked plan for a class:2 row (planner raised, or
+    # produce a resolved, locked plan for a ordinal-2 row (planner raised, or
     # returned resolved=False) — distinct from the pre-spawn fail-closed
     # digest mismatch below, which is a hard failure rather than a park.
     parked: int = 0
@@ -894,9 +894,9 @@ def drain_tasks(
 
     # #1689 — plan-review config loaded once per drain (mirrors the AC7a/AC4
     # preflight pattern above): a broken/missing config means the ex-post
-    # gate cannot be evaluated for ANY class:2 row this drain, so fail closed
+    # gate cannot be evaluated for ANY ordinal-2 row this drain, so fail closed
     # by skipping the whole drain rather than silently spawning unreviewed
-    # class:2 work.
+    # ordinal-2 work.
     try:
         plan_config = plan_config_loader()
     except Exception:  # noqa: BLE001 — unusable config skips the whole drain
@@ -1094,7 +1094,7 @@ def drain_tasks(
         # #1689 — ex-post plan-review drain gate. No priority:critical
         # carve-out here — a task entering via the queue always gets ex-post
         # review regardless of label (module docstring, agents.plan_review_drain).
-        if _plan_class_gate(plan_config, row) == "class:2":
+        if _plan_class_gate(plan_config, row) == 2:
             if github is None:
                 github = github_factory()
             if _plan_needs_plan(plan_config, row, github):

@@ -1,7 +1,7 @@
 """Tests for sandcastle pick admission (#1691).
 
 Covers agents/sandcastle_admission.py: the two-query pick construction
-(AC1/AC2/AC3 — a class:2 issue lacking plan:locked is unpickable by
+(AC1/AC2/AC3 — a afk:2-plan issue lacking plan:locked is unpickable by
 construction, never blocks/waits), the needs-plan servicing drain wires
 into plan_review_drain's existing synchronous planner path (AC4), the
 single-writer discipline over plan:locked/needs-plan (AC5), lock release on
@@ -21,6 +21,7 @@ import pytest
 from agents.plan_review_config import (
     Class2Thresholds,
     Class3Criteria,
+    ExemptCriteria,
     ModelFloors,
     PlanReviewConfig,
 )
@@ -42,7 +43,8 @@ _CFG = PlanReviewConfig(
         churn_threshold=400,
         min_prod_areas=2,
     ),
-    class_3=Class3Criteria(mechanical_criteria=("docs-only", "typo-fix")),
+    exempt=ExemptCriteria(mechanical_criteria=("docs-only", "typo-fix")),
+    class_3=Class3Criteria(mechanical_criteria=("admin-rights-required",)),
     models=ModelFloors(planner="claude-opus-5", critic="claude-sonnet-5"),
     lock_max_age_days=14,
 )
@@ -96,11 +98,11 @@ class TestBuildPickQueries:
 
     def test_query_a_excludes_class_2(self):
         query_a, _ = build_pick_queries("Osasuwu/jarvis")
-        assert "-label:class:2" in query_a
+        assert "-label:afk:2-plan" in query_a
 
     def test_query_b_requires_class_2_and_plan_locked(self):
         _, query_b = build_pick_queries("Osasuwu/jarvis")
-        assert "label:class:2" in query_b
+        assert "label:afk:2-plan" in query_b
         assert "label:plan:locked" in query_b
 
 
@@ -109,34 +111,34 @@ class TestIsPickable:
         assert is_pickable({"sandcastle"}) is True
 
     def test_class_2_without_lock_is_not_pickable(self):
-        assert is_pickable({"sandcastle", "class:2"}) is False
+        assert is_pickable({"sandcastle", "afk:2-plan"}) is False
 
     def test_class_2_with_lock_is_pickable(self):
-        assert is_pickable({"sandcastle", "class:2", "plan:locked"}) is True
+        assert is_pickable({"sandcastle", "afk:2-plan", "plan:locked"}) is True
 
     def test_owner_queue_is_never_pickable_regardless_of_class(self):
         assert is_pickable({"sandcastle", "status:owner-queue"}) is False
-        assert is_pickable({"sandcastle", "class:2", "plan:locked", "status:owner-queue"}) is False
+        assert is_pickable({"sandcastle", "afk:2-plan", "plan:locked", "status:owner-queue"}) is False
 
     def test_missing_sandcastle_label_is_not_pickable(self):
-        assert is_pickable({"class:2", "plan:locked"}) is False
+        assert is_pickable({"afk:2-plan", "plan:locked"}) is False
 
 
 class TestPickPassOutcome:
     def test_pickable_issue_yields_pick(self):
         assert pick_pass_outcome({"sandcastle"}) == "pick"
-        assert pick_pass_outcome({"sandcastle", "class:2", "plan:locked"}) == "pick"
+        assert pick_pass_outcome({"sandcastle", "afk:2-plan", "plan:locked"}) == "pick"
 
     def test_unlocked_class_2_yields_needs_plan_not_a_block(self):
-        """AC3: an unlocked class:2 candidate hit during a pick pass is
+        """AC3: an unlocked afk:2-plan candidate hit during a pick pass is
         flagged and skipped — never blocks or waits on the plan."""
-        assert pick_pass_outcome({"sandcastle", "class:2"}) == "needs_plan"
+        assert pick_pass_outcome({"sandcastle", "afk:2-plan"}) == "needs_plan"
 
     def test_already_flagged_unlocked_class_2_is_skipped_not_reflagged(self):
-        assert pick_pass_outcome({"sandcastle", "class:2", "needs-plan"}) == "skip"
+        assert pick_pass_outcome({"sandcastle", "afk:2-plan", "needs-plan"}) == "skip"
 
     def test_non_sandcastle_issue_is_skipped(self):
-        assert pick_pass_outcome({"class:2"}) == "skip"
+        assert pick_pass_outcome({"afk:2-plan"}) == "skip"
 
     def test_owner_queue_parked_issue_is_skipped(self):
         assert pick_pass_outcome({"sandcastle", "status:owner-queue"}) == "skip"
@@ -164,7 +166,7 @@ class TestServiceNeedsPlan:
                 "number": 42,
                 "title": "Some issue",
                 "body": "## Acceptance Criteria\n- AC one\n",
-                "labels": [{"name": "sandcastle"}, {"name": "class:2"}, {"name": "needs-plan"}],
+                "labels": [{"name": "sandcastle"}, {"name": "afk:2-plan"}, {"name": "needs-plan"}],
             }
         ]
 
@@ -183,7 +185,7 @@ class TestServiceNeedsPlan:
                 "number": 42,
                 "title": "Some issue",
                 "body": "## Acceptance Criteria\n- AC one\n",
-                "labels": [{"name": "sandcastle"}, {"name": "class:2"}, {"name": "needs-plan"}],
+                "labels": [{"name": "sandcastle"}, {"name": "afk:2-plan"}, {"name": "needs-plan"}],
             }
         ]
 
@@ -270,7 +272,7 @@ class TestClassifyLockRelease:
     mirrors pick_pass_outcome's shape (AC6)."""
 
     def test_not_locked_is_none(self):
-        assert classify_lock_release({"sandcastle", "class:2"}, True, "ok") is None
+        assert classify_lock_release({"sandcastle", "afk:2-plan"}, True, "ok") is None
 
     def test_owner_queue_parks_regardless_of_pick_verdict(self):
         assert classify_lock_release({"plan:locked", "status:owner-queue"}, True, "ok") == "parked"

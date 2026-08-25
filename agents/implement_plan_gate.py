@@ -27,7 +27,7 @@ PRIORITY_CRITICAL_LABEL = "priority:critical"
 
 @dataclass(frozen=True)
 class TriggerResult:
-    classification: str
+    classification: int
     requires_plan: bool
     carve_out: bool
 
@@ -58,12 +58,14 @@ def evaluate_trigger(
 
     The `priority:critical` carve-out (AC3) skips only `requires_plan` — it
     never changes `classification` itself, so a class-2 hotfix is still
-    reported as class:2 (visible for audit), just not gated on a plan.
+    reported as ordinal 2 (visible for audit), just not gated on a plan.
+    Ordinal 3 (true-HITL, #1707) never requires the class-2 plan gate
+    either — it routes to a human, not the planner.
     """
     row = build_task_row(paths, churn_lines, mechanical_criteria)
     classification = classify_task_row(config, row)
     carve_out = PRIORITY_CRITICAL_LABEL in tuple(labels)
-    requires_plan = classification == "class:2" and not carve_out
+    requires_plan = classification == 2 and not carve_out
     return TriggerResult(
         classification=classification, requires_plan=requires_plan, carve_out=carve_out
     )
