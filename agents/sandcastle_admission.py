@@ -2,20 +2,25 @@
 
 Pick eligibility is exactly two mechanical label queries — never a class-2
 issue waiting on a plan (:func:`build_pick_queries`, :func:`is_pickable`).
-An unlocked class-2 candidate hit during a pick pass is flagged
-``needs-plan`` and skipped, never blocked on (:func:`pick_pass_outcome`,
-AC3). Drain services ``needs-plan`` issues on its next tick via the same
-synchronous planner path :mod:`agents.plan_review_drain` already built for
-the queue lane (#1689) — :func:`service_needs_plan`, AC4. Only this
-module's two functions (:func:`service_needs_plan`, :func:`release_lock`)
-write ``plan:locked``/``needs-plan`` — single-writer discipline (AC5).
-:func:`release_lock` clears the lock on park/staleness/replan;
-:func:`classify_lock_release` decides which of the three applies from an
-issue's labels and its pick-time verdict, and :func:`service_lock_releases`
-sweeps ``plan:locked`` candidates and performs the release (AC6).
-:func:`verify_pick_time` is the pick-time re-check the container runs
-before honoring a ``plan:locked`` label: digest (via
+:func:`build_pick_queries`'s two queries are wired live into
+``.sandcastle/prompt.md``'s pick step. :func:`verify_pick_time` is likewise
+wired: ``scripts/sandcastle_pick_verify.py`` wraps it, and
+``.sandcastle/prompt.md``'s Claim step invokes that script and branches on
+its exit code before honoring a ``plan:locked`` label — digest (via
 :mod:`agents.plan_lock`) plus a config-held age ceiling (AC7/AC8).
+
+The rest of this module — :func:`pick_pass_outcome` (AC3, flag an unlocked
+class-2 candidate ``needs-plan`` and skip, never block),
+:func:`service_needs_plan` (AC4, service ``needs-plan`` via the same
+synchronous planner path :mod:`agents.plan_review_drain` already built for
+the queue lane, #1689), and :func:`release_lock` /
+:func:`classify_lock_release` / :func:`service_lock_releases` (AC6, release
+``plan:locked`` on park/staleness/replan) — is implemented and unit-tested
+but has **no production caller yet**; nothing periodically invokes it. That
+wiring (a new isolated step in :mod:`agents.wake_driver`'s ``tick()``, plus
+a candidate-fetch mechanism) is tracked in #1702. Only
+:func:`service_needs_plan` and :func:`release_lock` are permitted to write
+``plan:locked``/``needs-plan`` once wired — single-writer discipline (AC5).
 
 The container never merges — that boundary is untouched by this module
 (AC9); the ex-post CI diff-gate and review gate stand as the safety net.
