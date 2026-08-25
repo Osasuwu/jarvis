@@ -364,7 +364,7 @@ def set_plan_digest(
     Like :func:`reclaim_stale_claimed`/:func:`requeue_running`, this
     deliberately bypasses the FSM — setting ``plan_digest`` is not itself an
     FSM transition, it's metadata the ex-post plan-review drain gate
-    (:mod:`agents.plan_review_drain`) writes once a class:2 row's plan is
+    (:mod:`agents.plan_review_drain`) writes once an ordinal-2 row's plan is
     locked and verified. Returns the updated row dict (unlike
     ``requeue_running``'s bool — callers need the persisted digest back, not
     just a success flag), or ``{}`` if no row matched ``task_id``.

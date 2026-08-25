@@ -2,7 +2,7 @@
 
 The ex-post half of two-point plan-review classification (decision
 `d34dd65a`): admission-time classification is best-effort, so this check
-recomputes the class-2 trigger from the real diff on PR open/push. A
+recomputes the ordinal-2 trigger from the real diff on PR open/push. A
 trigger hit with no valid locked plan on the linked issue blocks — the PR
 is converted to draft and labeled `status:owner-queue` (AC2) — rather than
 merging having never seen a plan.
@@ -28,7 +28,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from agents.plan_classifier import ChangeSet, classify, prod_areas_from_paths
+from agents.plan_classifier import ChangeSet, classify, label_for, prod_areas_from_paths
 from agents.plan_lock import MalformedPlanError, verify_lock
 from agents.plan_review_config import PlanReviewConfig, load_plan_review_config
 
@@ -82,13 +82,13 @@ def compute_change_set(
 
 @dataclass(frozen=True)
 class GateDecision:
-    classification: str
+    classification: int
     decision: str  # "pass" | "block"
     reason: str
 
 
 def _class_2_trigger_reason(config: PlanReviewConfig, change: ChangeSet) -> str:
-    """Describe which class-2 condition(s) hold — for the PR comment (AC7).
+    """Describe which ordinal-2 condition(s) hold — for the PR comment (AC7).
 
     Informational readout only: reads the already-loaded config's own
     values back against the change-set to name what tripped. The
@@ -107,7 +107,7 @@ def _class_2_trigger_reason(config: PlanReviewConfig, change: ChangeSet) -> str:
         reasons.append(
             f"touches {change.prod_areas} production areas (>= min {config.class_2.min_prod_areas})"
         )
-    return "; ".join(reasons) or "class-2 trigger fired"
+    return "; ".join(reasons) or "ordinal-2 trigger fired"
 
 
 def _matches_any(paths: tuple[str, ...], glob: str) -> bool:
@@ -124,8 +124,8 @@ def evaluate(
 ) -> GateDecision:
     """Classify `change` and decide pass/block against the linked issue's plan lock.
 
-    class:1 / class:3 always pass silently (AC3, scoped to class:2). For
-    class:2, an unreachable issue, a malformed plan, or a lock that does
+    Ordinal 1 / 3 always pass silently (AC3, scoped to ordinal 2). For
+    ordinal 2, an unreachable issue, a malformed plan, or a lock that does
     not verify all block (AC4, fail closed); only a verified lock passes —
     unless `escape_hatch_reason` is set (#1710), in which case this PR was
     never required to carry a linked issue in the first place (mirrors
@@ -134,7 +134,7 @@ def evaluate(
     """
     classification = classify(config, change)
 
-    if classification != "class:2":
+    if classification != 2:
         return GateDecision(classification=classification, decision="pass", reason="")
 
     trigger_reason = _class_2_trigger_reason(config, change)
@@ -142,11 +142,12 @@ def evaluate(
     if escape_hatch_reason is not None:
         return GateDecision(classification=classification, decision="pass", reason="")
 
+    label = label_for(classification)
     if issue_body is None:
         return GateDecision(
             classification=classification,
             decision="block",
-            reason=f"class:2 trigger ({trigger_reason}) but linked issue is unreachable",
+            reason=f"{label} trigger ({trigger_reason}) but linked issue is unreachable",
         )
 
     try:
@@ -155,7 +156,7 @@ def evaluate(
         return GateDecision(
             classification=classification,
             decision="block",
-            reason=f"class:2 trigger ({trigger_reason}) but linked issue has no valid plan lock "
+            reason=f"{label} trigger ({trigger_reason}) but linked issue has no valid plan lock "
             f"({exc.reason})",
         )
 
@@ -163,7 +164,7 @@ def evaluate(
         return GateDecision(
             classification=classification,
             decision="block",
-            reason=f"class:2 trigger ({trigger_reason}) but linked issue's plan lock does not verify",
+            reason=f"{label} trigger ({trigger_reason}) but linked issue's plan lock does not verify",
         )
 
     return GateDecision(classification=classification, decision="pass", reason="")

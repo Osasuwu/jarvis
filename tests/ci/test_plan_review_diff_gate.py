@@ -21,6 +21,7 @@ from agents.plan_lock import hash_plan
 from agents.plan_review_config import (
     Class2Thresholds,
     Class3Criteria,
+    ExemptCriteria,
     ModelFloors,
     PlanReviewConfig,
 )
@@ -34,6 +35,7 @@ _CONFIG = PlanReviewConfig(
         churn_threshold=400,
         min_prod_areas=2,
     ),
+    exempt=ExemptCriteria(mechanical_criteria=("typo-fix",)),
     class_3=Class3Criteria(mechanical_criteria=("docs-only",)),
     models=ModelFloors(planner="claude-opus-5", critic="claude-sonnet-5"),
 )
@@ -74,7 +76,7 @@ def test_prod_areas_top_level_file_counts_as_its_own_area():
 def test_evaluate_passes_silently_for_class_1():
     change = ChangeSet(paths=("agents/x.py",), churn_lines=1, prod_areas=1)
     result = gate.evaluate(_CONFIG, change, issue_body=None)
-    assert result.classification == "class:1"
+    assert result.classification == 1
     assert result.decision == "pass"
 
 
@@ -83,7 +85,7 @@ def test_evaluate_passes_silently_for_class_3_even_without_issue():
         paths=("docs/x.md",), churn_lines=1, prod_areas=1, mechanical_criteria=("docs-only",)
     )
     result = gate.evaluate(_CONFIG, change, issue_body=None)
-    assert result.classification == "class:3"
+    assert result.classification == 3
     assert result.decision == "pass"
 
 
@@ -93,14 +95,14 @@ def test_evaluate_passes_silently_for_class_3_even_without_issue():
 def test_evaluate_passes_for_class_2_with_valid_lock():
     change = ChangeSet(paths=("mcp-memory/x.py",), churn_lines=1, prod_areas=1)
     result = gate.evaluate(_CONFIG, change, issue_body=_locked_body())
-    assert result.classification == "class:2"
+    assert result.classification == 2
     assert result.decision == "pass"
 
 
 def test_evaluate_blocks_for_class_2_with_stale_lock():
     change = ChangeSet(paths=("mcp-memory/x.py",), churn_lines=1, prod_areas=1)
     result = gate.evaluate(_CONFIG, change, issue_body=_UNLOCKED_BODY)
-    assert result.classification == "class:2"
+    assert result.classification == 2
     assert result.decision == "block"
     assert "lock" in result.reason.lower()
 
@@ -131,7 +133,7 @@ def test_evaluate_passes_for_class_2_no_issue_when_escape_hatch_set():
         issue_body=None,
         escape_hatch_reason="[no-issue] marker (fix-inline per #428)",
     )
-    assert result.classification == "class:2"
+    assert result.classification == 2
     assert result.decision == "pass"
 
 
@@ -177,14 +179,14 @@ def test_has_escape_hatch_none_when_no_bypass_applies():
 def test_evaluate_class_2_via_churn_threshold():
     change = ChangeSet(paths=("agents/x.py",), churn_lines=401, prod_areas=1)
     result = gate.evaluate(_CONFIG, change, issue_body=None)
-    assert result.classification == "class:2"
+    assert result.classification == 2
     assert result.decision == "block"
 
 
 def test_evaluate_class_2_via_prod_areas():
     change = ChangeSet(paths=("agents/x.py", "scripts/y.py"), churn_lines=1, prod_areas=2)
     result = gate.evaluate(_CONFIG, change, issue_body=None)
-    assert result.classification == "class:2"
+    assert result.classification == 2
     assert result.decision == "block"
 
 

@@ -25,8 +25,8 @@ See `docs/agents/` for per-module operational notes and architectural detail.
 | `github_client.py` | — | Thin wrapper over the GitHub Events API |
 | `scope_hash.py` | — | Deterministic scope-files hash — drift detection (#773) |
 | `pid_sidecar.py` | — | PID sidecar for restart-surviving liveness (#952) |
-| `plan_review_config.py` | — | Loader for `config/plan_review.yaml` — class-2/3 thresholds & criteria (#1685) |
-| `plan_classifier.py` | — | `classify()`/`classify_task_row()` — change-set → `class:1`/`2`/`3` (#1685) |
+| `plan_review_config.py` | — | Loader for `config/plan_review.yaml` — `exempt`/class-2/class-3 thresholds & criteria (#1685, #1707) |
+| `plan_classifier.py` | — | `classify()`/`classify_task_row()` — change-set → ordinal `1`/`2`/`3`; `label_for()` maps to `afk:2-plan`/`afk:3-human` (#1685, #1707) |
 | `plan_lock.py` | — | `## Plan` section canonicalize/hash + strict parser (#1685) |
 | `implement_plan_gate.py` | — | `evaluate_trigger()` — `/implement`'s ex-ante plan-gate trigger, `priority:critical` carve-out (#1688) |
 | `plan_review_drain.py` | — | `class_gate()`/`needs_plan()`/`write_plan_section()` — `drain_tasks`'s ex-post plan-review gate, no carve-out (#1689) |

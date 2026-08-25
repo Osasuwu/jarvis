@@ -1,6 +1,6 @@
 ---
 name: planner
-description: "Plan-review stage planner: writes a checkable ## Plan for a class:2/class:3 change, spawns the critic panel, and records the outcome. Never touches GitHub."
+description: "Plan-review stage planner: writes a checkable ## Plan for an afk:2-plan / afk:3-human change, spawns the critic panel, and records the outcome. Never touches GitHub."
 model: claude-sonnet-5
 tools: Read, Grep, Glob, Agent, mcp__memory__memory_recall, mcp__memory__record_decision
 ---
