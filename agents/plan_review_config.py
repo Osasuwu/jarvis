@@ -41,11 +41,18 @@ class PlanReviewConfig:
     class_2: Class2Thresholds
     class_3: Class3Criteria
     models: ModelFloors
+    # Pick-time lock-age ceiling (#1691 AC8): a plan:locked issue whose lock
+    # is older than this is refused at pick time, not blocked or re-planned
+    # automatically — it falls to the same owner-attention path as any other
+    # pick-time refusal. Optional key (default below) so existing config
+    # files predating #1691 keep loading without an edit.
+    lock_max_age_days: int = 14
 
 
 _REQUIRED_CLASS_2_KEYS = ("shared_surface_globs", "churn_threshold", "min_prod_areas")
 _REQUIRED_CLASS_3_KEYS = ("mechanical_criteria",)
 _REQUIRED_MODELS_KEYS = ("planner", "critic")
+_DEFAULT_LOCK_MAX_AGE_DAYS = 14
 
 
 def load_plan_review_config(path: Path) -> PlanReviewConfig:
@@ -87,4 +94,5 @@ def load_plan_review_config(path: Path) -> PlanReviewConfig:
             planner=str(models_raw["planner"]),
             critic=str(models_raw["critic"]),
         ),
+        lock_max_age_days=int(raw.get("lock_max_age_days", _DEFAULT_LOCK_MAX_AGE_DAYS)),
     )
