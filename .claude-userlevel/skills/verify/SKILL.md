@@ -104,7 +104,9 @@ WHERE outcome_status IN ('success', 'partial')
   AND 'class:2' = ANY(pattern_tags);
 ```
 
-— report it prominently in Step 5 and make exactly one of the three decisions `agents.plan_conformance.CHECKPOINT_DECISIONS` states in advance (`retune` / `keep` / `rollback`), comparing the average rework-round count on this window against the #963 baseline (5 rounds, #1683). `rollback` executes `agents.plan_conformance.ROLLBACK_STEPS` in order. Do not defer the checkpoint decision past the report — an honest "the stage did not pay off" is the point of writing the checkpoint down in advance (#1692 description).
+**Computing the window average**: for each class-2 PR in the checkpoint window, fetch its body (`gh pr view <pr_url> --json body --jq '.body'`) and parse `## Rework history` sections the same way `rework/SKILL.md` §3/§8 does, to get that PR's `history` list; feed it to `agents.plan_conformance.rework_round_count(history)`; average the resulting counts across the window (a PR with no `## Rework history` section has 0 rounds by construction, per `rework_round_count`'s own definition).
+
+— report the count and the computed average prominently in Step 5 and make exactly one of the three decisions `agents.plan_conformance.CHECKPOINT_DECISIONS` states in advance (`retune` / `keep` / `rollback`), comparing that average against the #963 baseline (5 rounds, #1683). `rollback` executes `agents.plan_conformance.ROLLBACK_STEPS` in order. Do not defer the checkpoint decision past the report — an honest "the stage did not pay off" is the point of writing the checkpoint down in advance (#1692 description).
 
 ## Step 3 — Update verified outcomes
 

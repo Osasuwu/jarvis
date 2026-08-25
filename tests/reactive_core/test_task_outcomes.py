@@ -13,6 +13,7 @@ from unittest import mock
 from agents.task_outcomes import (
     record_completion_outcome,
     record_skip_outcome,
+    resolve_is_class_2,
     resolve_pr_url,
 )
 
@@ -66,6 +67,66 @@ class TestRecordCompletionOutcome:
         assert payload["pattern_tags"] == ["subagent", "headless", "task-implement"]
         assert payload["source_provenance"] == "sandcastle:task_dispatch-completion"
         assert payload["issue_url"] == "https://github.com/Osasuwu/jarvis/issues/42"
+
+    def test_is_class_2_true_appends_class_2_tag(self) -> None:
+        fake_client = mock.MagicMock()
+        with mock.patch("agents.supabase_client.get_client", return_value=fake_client):
+            record_completion_outcome(
+                {
+                    "task_id": "t0",
+                    "goal": "/task-implement #42",
+                    "issue_number": 42,
+                    "pr_url": "https://github.com/Osasuwu/jarvis/pull/99",
+                    "is_class_2": True,
+                }
+            )
+        payload = fake_client.table.return_value.insert.call_args.args[0]
+        assert payload["pattern_tags"] == ["subagent", "headless", "task-implement", "class:2"]
+
+    def test_is_class_2_false_omits_class_2_tag(self) -> None:
+        fake_client = mock.MagicMock()
+        with mock.patch("agents.supabase_client.get_client", return_value=fake_client):
+            record_completion_outcome(
+                {
+                    "task_id": "t0",
+                    "goal": "/task-implement #42",
+                    "issue_number": 42,
+                    "is_class_2": False,
+                }
+            )
+        payload = fake_client.table.return_value.insert.call_args.args[0]
+        assert payload["pattern_tags"] == ["subagent", "headless", "task-implement"]
+
+
+class TestResolveIsClass2:
+    def test_no_client_returns_false(self) -> None:
+        assert resolve_is_class_2(42, client=None) is False
+
+    def test_no_issue_number_returns_false(self) -> None:
+        client = mock.MagicMock()
+        assert resolve_is_class_2(None, client=client) is False
+        client.get_issue.assert_not_called()
+
+    def test_class_2_label_present_returns_true(self) -> None:
+        client = mock.MagicMock()
+        client.get_issue.return_value = {"labels": [{"name": "class:2"}, {"name": "task"}]}
+        assert resolve_is_class_2(42, client=client) is True
+        client.get_issue.assert_called_once_with(42)
+
+    def test_class_2_label_absent_returns_false(self) -> None:
+        client = mock.MagicMock()
+        client.get_issue.return_value = {"labels": [{"name": "task"}]}
+        assert resolve_is_class_2(42, client=client) is False
+
+    def test_issue_not_found_returns_false(self) -> None:
+        client = mock.MagicMock()
+        client.get_issue.return_value = None
+        assert resolve_is_class_2(42, client=client) is False
+
+    def test_client_raise_is_swallowed(self) -> None:
+        client = mock.MagicMock()
+        client.get_issue.side_effect = RuntimeError("network blip")
+        assert resolve_is_class_2(42, client=client) is False
 
 
 class TestResolvePrUrl:
