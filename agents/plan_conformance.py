@@ -60,6 +60,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from agents.plan_lock import NEXT_HEADING_RE
+
 _PLAN_CONFORMANCE_HEADING = "## Plan-conformance"
 _PLAN_DIVERGENCES_HEADING = "## Plan-divergences"
 
@@ -129,8 +131,8 @@ def extract_divergences(pr_body: str) -> list[Divergence]:
         return []
     start += len(_PLAN_DIVERGENCES_HEADING)
 
-    next_heading = pr_body.find("\n## ", start)
-    section = pr_body[start:] if next_heading == -1 else pr_body[start:next_heading]
+    next_heading_match = NEXT_HEADING_RE.search(pr_body, start)
+    section = pr_body[start:] if next_heading_match is None else pr_body[start:next_heading_match.start()]
 
     divergences: list[Divergence] = []
     for line in section.splitlines():
