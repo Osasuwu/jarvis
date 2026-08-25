@@ -279,7 +279,7 @@ def test_enqueue_on_alarm_flag_set_adds_rows() -> None:
         assert upsert_call[1] == "task_queue"
         payload = upsert_call[2]["payload"]
 
-        # Verify afk:3-human shape
+        # Verify source:3-human shape
         assert payload["auto_dispatch"] is False
         assert payload["approved_by"] == "cron:morning_check"
         assert payload["scope_files"] == []
