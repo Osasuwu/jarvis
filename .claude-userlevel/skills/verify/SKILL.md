@@ -72,6 +72,40 @@ If any check finds a problem:
 - `lessons` records the specific finding.
 - Live drift in `main` → fix inline if trivial/reversible (CLAUDE.md "Fix > track"), else `/file-issue`.
 
+## Step 2c — Plan-conformance check (class-2 PRs, #1692)
+
+Applies to outcomes just verified `success` in Step 2 whose `pattern_tags` include `"class:2"`. Independent detector alongside the CI diff-gate (#1687) and the review gate — this one runs after merge, on the shipped PR body, not before.
+
+```bash
+gh pr view <pr_url> --json body --jq '.body'
+```
+
+Use `agents.plan_conformance`:
+
+```python
+from agents.plan_conformance import missing_sections, extract_divergences, rework_round_count
+
+missing = missing_sections(pr_body, is_class_2=True)      # AC1/AC2
+divergences = extract_divergences(pr_body)                # AC3
+```
+
+- `missing_sections` non-empty → **finding**: a class-2 PR shipped without a `## Plan-conformance` and/or `## Plan-divergences` section where one was required. Downgrade to `partial` in Step 3, `lessons` names which section(s) are missing.
+- `extract_divergences` non-empty → surface each `(what, reason)` pair in the Step 5 output verbatim, not just a count. A declared divergence is not itself a defect — reviewing readers judge the reason, `/verify` only makes it visible. An **undeclared** divergence (diff clearly departs from the plan but no `## Plan-divergences` bullet mentions it) is the same silent-drift class as the Step 2b divergence audit; if spotted, treat it the same way (downgrade + `lessons`).
+
+### Rework-round metric (AC4–AC7)
+
+Every class-2 PR's rework rounds = `rework_round_count(history)` from `agents.plan_conformance`, reusing `scripts/rework_policy.py`'s own `/rework` attempt history — no parallel counter (see that module's docstring for the full metric definition, baseline linkage to #1683, and rollback plan). Track it via `pattern_tags` (`"class:2"`) in Step 4's queries below; there is no separate ledger.
+
+When the count of `success`/`partial` class-2 outcomes reaches `agents.plan_conformance.CHECKPOINT_THRESHOLD` (~10) — check via:
+
+```sql
+SELECT COUNT(*) FROM task_outcomes
+WHERE outcome_status IN ('success', 'partial')
+  AND 'class:2' = ANY(pattern_tags);
+```
+
+— report it prominently in Step 5 and make exactly one of the three decisions `agents.plan_conformance.CHECKPOINT_DECISIONS` states in advance (`retune` / `keep` / `rollback`), comparing the average rework-round count on this window against the #963 baseline (5 rounds, #1683). `rollback` executes `agents.plan_conformance.ROLLBACK_STEPS` in order. Do not defer the checkpoint decision past the report — an honest "the stage did not pay off" is the point of writing the checkpoint down in advance (#1692 description).
+
 ## Step 3 — Update verified outcomes
 
 For each outcome that changed status:
