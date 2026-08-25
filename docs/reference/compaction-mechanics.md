@@ -74,76 +74,19 @@ But it **cannot**:
 }
 ```
 
-## Preserving Rules Through Compaction (#1204)
+## Preserving Rules Through Compaction (#1204, superseded)
 
 **Problem**: Prohibiting rules and standing orders ("don't touch X", "never do Y") die during compaction because they're part of the session history, not the persistent system state.
 
-**Solution**: Three-phase approach
+**Original solution (#1204/#1536, removed)**: `pre-compact-backup.py` used to keyword-scan CLAUDE.md files and re-inject a "Prohibiting Rules & Standing Orders" section into the snapshot. This duplicated a more reliable mechanism that had shipped five days earlier (#1417/#1418, see below) and was removed as dead weight (2026-08-25).
 
-### Phase 1: Capture Rules in PreCompact Hook
+**Current solution**: `docs/context/invariants.md` is loaded via a bare `@import` line in the project `CLAUDE.md` (#1417/#1418). A bare, top-level `@import` expands at prompt-assembly time and is never subject to compaction's summarization or the hook's own best-effort extraction — it simply reloads on every turn, including immediately after compaction. This is strictly more reliable than the old keyword-scan-into-snapshot approach: no heuristic matching, no dependency on the PreCompact hook running, no risk of the recovery payload's size budget dropping the section.
 
-`scripts/pre-compact-backup.py` now extracts prohibiting rules from CLAUDE.md:
-
-```python
-def _extract_prohibiting_rules(cwd: str | None) -> list[str]:
-    """Extract prohibiting rules from CLAUDE.md files for snapshot preservation."""
-```
-
-Looks for lines containing keywords:
-- "do not", "don't", "never", "prohibit", "forbidden", "must not"
-- "standing order", "aligned plan"
-- "autonomy: no", "autonomous: no"
-
-Rules are included in the session snapshot stored to Supabase/local:
-
-```markdown
-## Prohibiting Rules & Standing Orders
-
-The following rules must be preserved and re-injected after compaction.
-These are not summarizable; preserve them verbatim.
-
-- Do not merge PRs without approval.
-- Never bypass pre-commit hooks.
-```
-
-### Phase 2: Re-Inject Rules on Resume
-
-`scripts/session-context.py` (SessionStart `compact` matcher) reads the snapshot and prepends a recovery section. The prohibiting rules are preserved verbatim.
-
-### Phase 3: Re-Emphasize in Context
-
-When session-context.py emits the recovery section, the rules appear in Claude's context **before** the LLM-generated summary. This ensures they're re-established as standing orders before processing resumes.
-
-## Testing Compaction Resilience
-
-To verify rules survive compaction:
-
-1. **Write rules to CLAUDE.md**:
-   ```markdown
-   ## Prohibiting Rules
-   - Do not delete production data without confirmation.
-   - Never bypass the review gate.
-   ```
-
-2. **Trigger compaction**:
-   ```bash
-   /compact focus on the task at hand
-   ```
-
-3. **Verify snapshot contains rules**:
-   ```bash
-   # Check local fallback
-   cat ~/.claude/session-snapshots/<session_id>.md | grep "Prohibiting Rules"
-   
-   # Or query Supabase (if logged in)
-   SELECT content FROM memories WHERE name = 'session_snapshot_<session_id>'
-   ```
-
-4. **Resume session** and check that rules appear in context
+Rules that need to survive compaction belong in `docs/context/invariants.md` (or another bare-`@import`ed file), not in prose elsewhere in CLAUDE.md.
 
 ## Related
 
 - **Phase 1**: #278 — PreCompact hook + snapshot capture (shipped 2026-04-21)
 - **Phase 2**: #279 — session-context recovery injection (shipped 2026-04-21)
 - **Phase 3**: #280 — /end Supabase-authoritative (shipped 2026-04-21)
-- **Extension**: #1204 — preserving prohibiting rules through compaction
+- **Superseded**: #1204/#1536 — prohibiting-rules extraction into snapshot (removed 2026-08-25 in favor of #1417/#1418's bare `@import`)
