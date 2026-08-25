@@ -36,6 +36,13 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       BASE_SHA: ${{ github.event.pull_request.base.sha }}
       HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      # From the event payload, not another `gh` call — avoids a second point
+      # of API failure and mirrors the untrusted-value-via-env pattern (never
+      # spliced directly into a `run:` script) used for the fields above.
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+      PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -90,11 +97,20 @@ jobs:
             fi
           fi
 
+          # PR metadata for the require-linked-issue-style escape hatches
+          # (bot author / priority:critical / [no-issue] / refactor: — #1710).
+          # From the event payload (env above), not a fresh `gh` call.
+          labels_json=$(printf '%s' "$PR_LABELS_JSON" | jq -c '[.[].name]')
+
           jq -n \
             --argjson paths "$paths_json" \
             --argjson churn "${churn:-0}" \
             --argjson issue_body "$issue_body_json" \
-            '{paths: $paths, churn_lines: $churn, issue_body: $issue_body}' \
+            --arg pr_title "$PR_TITLE" \
+            --arg pr_body "$PR_BODY" \
+            --arg pr_author "$PR_AUTHOR" \
+            --argjson pr_labels "$labels_json" \
+            '{paths: $paths, churn_lines: $churn, issue_body: $issue_body, pr_title: $pr_title, pr_body: $pr_body, pr_author: $pr_author, pr_labels: $pr_labels}' \
             > /tmp/gate_envelope.json
 
       - name: Run plan-review diff gate

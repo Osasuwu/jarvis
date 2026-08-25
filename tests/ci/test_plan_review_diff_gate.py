@@ -118,6 +118,62 @@ def test_evaluate_blocks_for_class_2_with_unreachable_issue():
     assert "issue" in result.reason.lower()
 
 
+# ── evaluate: escape-hatch bypass (#1710) ───────────────────────────────────
+
+
+def test_evaluate_passes_for_class_2_no_issue_when_escape_hatch_set():
+    """The actual #1710 regression: a class:2 PR with no linked issue at all
+    (uses [no-issue] instead of Closes #N) must pass, not fail-closed-block."""
+    change = ChangeSet(paths=("mcp-memory/x.py",), churn_lines=1, prod_areas=1)
+    result = gate.evaluate(
+        _CONFIG,
+        change,
+        issue_body=None,
+        escape_hatch_reason="[no-issue] marker (fix-inline per #428)",
+    )
+    assert result.classification == "class:2"
+    assert result.decision == "pass"
+
+
+# ── has_escape_hatch (#1710) ─────────────────────────────────────────────────
+
+
+def test_has_escape_hatch_bot_author():
+    reason = gate.has_escape_hatch(author="dependabot[bot]", title="bump x", body="", labels=())
+    assert reason is not None and "bot" in reason.lower()
+
+
+def test_has_escape_hatch_priority_critical_label():
+    reason = gate.has_escape_hatch(
+        author="petrk", title="fix", body="", labels=("priority:critical",)
+    )
+    assert reason is not None and "priority:critical" in reason.lower()
+
+
+def test_has_escape_hatch_no_issue_marker_in_body():
+    reason = gate.has_escape_hatch(author="petrk", title="fix", body="stuff [no-issue]", labels=())
+    assert reason is not None and "no-issue" in reason.lower()
+
+
+def test_has_escape_hatch_no_issue_marker_in_title():
+    reason = gate.has_escape_hatch(author="petrk", title="fix [no-issue]", body="", labels=())
+    assert reason is not None and "no-issue" in reason.lower()
+
+
+def test_has_escape_hatch_refactor_title_prefix():
+    reason = gate.has_escape_hatch(
+        author="petrk", title="refactor(scripts): tidy up", body="", labels=()
+    )
+    assert reason is not None and "refactor" in reason.lower()
+
+
+def test_has_escape_hatch_none_when_no_bypass_applies():
+    reason = gate.has_escape_hatch(
+        author="petrk", title="feat: add thing", body="Closes #1", labels=()
+    )
+    assert reason is None
+
+
 def test_evaluate_class_2_via_churn_threshold():
     change = ChangeSet(paths=("agents/x.py",), churn_lines=401, prod_areas=1)
     result = gate.evaluate(_CONFIG, change, issue_body=None)
