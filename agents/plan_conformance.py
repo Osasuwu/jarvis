@@ -67,6 +67,10 @@ _REQUIRED_CLASS_2_SECTIONS = ("Plan-conformance", "Plan-divergences")
 
 # #1683's retro-classification of PR #963 (memory d20e20b4-a769-4335-bef6-
 # 0a34070488e1): 3 of 34 review-comment findings were plan-level.
+# ceiling: n=1 heuristic — derived from a single historical PR, not a
+# distribution. Holds as ground truth until the #1692 AC6 checkpoint
+# (~10 class-2 PRs, see checkpoint_reached below) recomputes it from the
+# real post-stage sample; treat it as provisional until then.
 REWORK_BASELINE_PLAN_LEVEL_FRACTION = 3 / 34
 
 CHECKPOINT_THRESHOLD = 10
