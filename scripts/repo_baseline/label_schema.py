@@ -142,40 +142,27 @@ CLEAN_LABELS: list[CleanLabel] = [
         "Needs a locked ## Plan section before implementation",
         "needs",
     ),
-    # ── Tier ──────────────────────────────────────────────────────────
-    CleanLabel(
-        "tier:1-auto",
-        "51dd5f",
-        "Tier 1: auto-dispatch",
-        "tier",
-    ),
-    # tier:2-review removed per issue #1685 AC: "owner review required" is now
-    # class:2's job (plan-complexity classification, applied at admission and
-    # corrected after the diff-gate). tier:2-review had zero live consumers —
-    # agents/safety.py's Tier enum is a separate tool-call-action gate keyed
-    # on GitHub label prefixes/actions, never on this label's name, and no
-    # open issue carried it (`gh issue list --label tier:2-review` -> empty)
-    # — so removal (not a rename/merge) is the correct reconciliation branch;
-    # dropping it from CLEAN_LABELS surfaces it to the migrator as a
+    # ── Plan review ───────────────────────────────────────────────────
+    # tier:1-auto / tier:2-review / tier:3-human / unsafe-for-afk retired per
+    # issue #1707: classify() now returns an ordinal 1|2|3 and label_for()
+    # maps it to a board label — class 1 gets no label, class 2 gets
+    # afk:2-plan, class 3 (true HITL) gets afk:3-human. tier:2-review was
+    # already removed per #1685 AC (see prior history); this rename finishes
+    # the vocabulary migration for the remaining three retired strings.
+    # Dropping them from CLEAN_LABELS surfaces each to the migrator as a
     # confirm-required orphan rather than a silent auto-delete.
     CleanLabel(
-        # Distinct red so it does not collide with priority:high (d93f0b).
-        "tier:3-human",
-        "d73a4a",
-        "Tier 3: owner-driven only",
-        "tier",
-    ),
-    # ── Plan review ───────────────────────────────────────────────────
-    # class:2 / plan:locked added per issue #1685; class:2 supersedes
-    # tier:2-review as the "owner review required" carrier (see the removal
-    # note above) rather than coexisting with it as a second vocabulary for
-    # the same idea. Only class:2 gets a label (class:1/3 are the unmarked
-    # default paths in the workflow — no label needed for the common case).
-    CleanLabel(
         # Distinct gold-orange — unique vs needs-plan (ffb74d).
-        "class:2",
+        "afk:2-plan",
         "e8a33d",
         "Plan-review: shared-surface/high-churn change requiring owner plan review",
+        "plan-review",
+    ),
+    CleanLabel(
+        # Distinct red so it does not collide with priority:high (d93f0b).
+        "afk:3-human",
+        "d73a4a",
+        "Plan-review: mechanical true-HITL criterion — owner-driven only",
         "plan-review",
     ),
     CleanLabel(
@@ -192,12 +179,6 @@ CLEAN_LABELS: list[CleanLabel] = [
         "sandcastle",
         "5319e7",
         "AFK queue: safe for sandcastle agent",
-        "special",
-    ),
-    CleanLabel(
-        "unsafe-for-afk",
-        "e92c42",
-        "Not safe for sandcastle agent",
         "special",
     ),
     # ── Type ──────────────────────────────────────────────────────────

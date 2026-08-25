@@ -64,7 +64,7 @@ class TestSchemaInvariants:
 
         Same color across semantic categories is visually ambiguous — a blue
         chip could be area:skills or sandcastle. Several pairs were de-duped by
-        hand (status:in-progress, area:ci-quality, tier:2-review, tier:3-human,
+        hand (status:in-progress, area:ci-quality, afk:2-plan, afk:3-human,
         sandcastle, task); this pins the invariant so a future addition can't
         silently reintroduce a collision. Labels within the *same* category may
         share a color (the category context disambiguates), so the check is
@@ -83,6 +83,16 @@ class TestSchemaInvariants:
         assert not collisions, (
             "Cross-category color collisions:\n" + "\n".join(collisions)
         )
+
+    def test_afk_labels_present_retired_vocabulary_absent(self):
+        """#1707: board vocabulary is afk:2-plan / afk:3-human (ordinal
+        classify() + label_for()); class:2 and the old tier:*/unsafe-for-afk
+        strings must not reappear in the canonical schema."""
+        names = clean_label_names()
+        assert "afk:2-plan" in names
+        assert "afk:3-human" in names
+        for retired in ("class:2", "tier:1-auto", "tier:3-human", "unsafe-for-afk"):
+            assert retired not in names, f"{retired!r} should have been retired"
 
 
 # ── Fixture helpers ──────────────────────────────────────────────────
