@@ -41,7 +41,7 @@ State transitions: an unlabeled issue normally goes to `needs-triage` first; fro
 
 ### Downstream: how triaged state feeds an AFK loop
 
-`ready-for-agent` is the state an automated AFK loop consumes — the maintainer's signal that an unattended agent may pick the issue up. In a project with a reactive-core event/task substrate (jarvis: `events` → `task_queue`), triaged issues and automatically-emitted tasks share the **same** AFK-fit gate (`/to-tickets` §3a): an issue that passes routes to an autonomous agent, one that fails lands in `ready-for-human` (jarvis: also the `status:owner-queue` label when a dispatch was refused). Triage never enqueues a task itself — it sets the issue **state**; the project's dispatcher/orchestrator is what turns a `ready-for-agent` issue into a running task, and that is also where work *enters* the loop and where loop-closure happens. The concrete state vocabulary and fill-rules live in the project's CLAUDE.md / CONTEXT.md, not in this skill.
+`ready-for-agent` is the state an automated AFK loop consumes — the maintainer's signal that an unattended agent may pick the issue up. In a project with a reactive-core event/task substrate (jarvis: `events` → `task_queue`), triaged issues and automatically-emitted tasks share the **same** mechanical classifier — `classify_static_paths()` in `scripts/to_tickets_afk_fit.py` (Q1, static path-bucket lookup) plus the Q2-Q4 LLM judgement documented in `/to-tickets` §3a (pointer, not reimplemented here): an issue that lands class 1 routes to an autonomous agent, class 3 or a Q4 "yes" lands in `ready-for-human` (jarvis: also the `status:owner-queue` label when a dispatch was refused). Triage never enqueues a task itself — it sets the issue **state**; the project's dispatcher/orchestrator is what turns a `ready-for-agent` issue into a running task, and that is also where work *enters* the loop and where loop-closure happens. The concrete state vocabulary and fill-rules live in the project's CLAUDE.md / CONTEXT.md, not in this skill.
 
 ## Invocation
 
@@ -65,6 +65,14 @@ Show counts and a one-line summary per issue. Let the maintainer pick.
 ## Triage a specific issue
 
 1. **Gather context.** Read the full issue (body, comments, labels, reporter, dates). Parse any prior triage notes so you don't re-ask resolved questions. Explore the codebase using the project's domain glossary, respecting ADRs in the area. Read `.out-of-scope/*.md` and surface any prior rejection that resembles this issue.
+
+1a. **Classify AFK-fit (#1708).** If the issue carries **neither** `sandcastle` **nor** a class label (`afk:2-plan`/`afk:3-human`) — the `/file-issue` path skips `/to-tickets` §3a entirely — classify it now:
+
+   - Extract the issue's declared-changed files (from the body, or from your §1 codebase exploration if the issue doesn't name them explicitly).
+   - Call `classify_static_paths(declared_files, repo, config)` from `scripts/to_tickets_afk_fit.py` against `config/protected-paths.json` for Q1 (static path-bucket lookup).
+   - If Q1 returns no verdict (`cls is None`), run the Q2-Q4 LLM judgement documented in `/to-tickets` §3a (same questions, same rationale — not reimplemented here).
+   - Apply the resulting label(s) alongside the category/state role from step 2 below: class 1 → no class label; class 2 → `afk:2-plan`; class 3 → `afk:3-human`; a Q4 "yes" → the project's HITL/attention marker, no class label (see `/to-tickets` §5 for the full outcome table).
+   - **Writer discipline (#1708 AC6, shared with `/to-tickets` §5)**: the class label has **two writers** — `/to-tickets` at creation, `/triage` here on demand. `plan:locked`/`needs-plan` keep exactly **one** writer — the drain (#1691 AC5); this step never touches them.
 
 2. **Recommend.** Tell the maintainer your category and state recommendation with reasoning, plus a brief codebase summary relevant to the issue. Wait for direction.
 
