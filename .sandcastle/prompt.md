@@ -10,7 +10,13 @@
 
 ## Open issues in the AFK queue
 
-!`gh issue list --repo Osasuwu/jarvis --label "sandcastle" --state open --limit 20 2>&1 || echo "(gh failed)"`
+Two-query pick construction (#1691 AC1/AC2 — `agents.sandcastle_admission.build_pick_queries`):
+an unlocked `class:2` issue satisfies neither query below, so it never appears
+here and is never pickable by construction.
+
+!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" -label:"class:2"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
+
+!`gh search issues --repo Osasuwu/jarvis 'is:open label:sandcastle -label:"status:owner-queue" label:"class:2" label:"plan:locked"' --json number,title --jq '.[] | "#\(.number) \(.title)"' 2>&1 || echo "(gh failed)"`
 
 ## Recent agent commits
 
@@ -36,9 +42,12 @@ the agent's first turn — they are context, not the agent's tool calls. The
 "recall first" rule below applies to **the first MCP tool call the agent
 issues**, not to the prompt-level context blocks.
 
-1. **Pick** the highest-priority open issue labelled `sandcastle` not already
-   labelled `status:in-progress`. (You can pull the title from the issue list in
-   the Context section above without an MCP call.)
+1. **Pick** the highest-priority open issue from either search result above,
+   not already labelled `status:in-progress`. (You can pull the title from the
+   issue lists in the Context section above without an MCP call.) A `class:2`
+   issue without `plan:locked` never appears in either list — do not pick it
+   even if you spot it some other way (e.g. via a stray MCP call); it is
+   awaiting a plan from the drain lane, not yours to start.
 2. **Recall first** (mandatory — first MCP tool call). Before any other MCP
    tool call, invoke the memory bridge:
    ```
@@ -49,36 +58,55 @@ issues**, not to the prompt-level context blocks.
    `memory_get` before deciding the approach. **Skipping this step is a
    protocol violation** — the live `/implement` session always recalls; the
    sandcastle agent must match. Empty result is fine; refusing to call is not.
-3. **Claim** — `gh issue edit <N> --add-label status:in-progress` and comment
+3. **Verify (class:2 picks only)** — if the issue you picked in step 1 carries
+   the `class:2` label (i.e. it came from the second search query, the
+   `plan:locked` list), re-verify the lock before claiming it (#1691 AC7) —
+   the label alone is never trusted; a `plan:locked` issue rendered into the
+   list above may have had its plan edited or its lock released since:
+   ```bash
+   python -c "import json,sys; print(json.dumps({'body': json.load(sys.stdin)['body'], 'locked_at': None}))" \
+     < <(gh issue view <N> --repo Osasuwu/jarvis --json body) \
+     | python scripts/sandcastle_pick_verify.py
+   echo "verify exit: $?"
+   ```
+   Exit 0 → proceed to Claim. Exit non-zero (1=REFUSE, 2=SKIP) → do **not**
+   claim this issue; drop it, pick the next eligible issue from either list,
+   and repeat this step for the new pick. No `locked_at` is supplied (the
+   container has no cheap way to resolve the label-apply timestamp from
+   here), so this is a digest/malformed-plan re-check, not an age check —
+   age-based lock release is serviced separately by the periodic
+   `plan:locked` sweep. Issues without `class:2` skip this step entirely;
+   they never needed a plan.
+4. **Claim** — `gh issue edit <N> --add-label status:in-progress` and comment
    `Claimed by sandcastle agent.` The branch is already pinned and checked out
    for you before this container started (`.sandcastle/main.mts` — issue
    #1118) — do NOT create or check out a different branch. Just commit and
    push to the current branch; the supervisor pushes it and opens the PR
    after this run finishes.
-4. **Explore** — read the issue body fully. Check acceptance criteria. Read
+5. **Explore** — read the issue body fully. Check acceptance criteria. Read
    referenced files. Run a second `memory_recall` keyed off any new entities
    the issue body introduces.
-5. **Implement** — follow the project /implement skill rules:
+6. **Implement** — follow the project /implement skill rules:
    - TDD when tests are non-trivial: red → green → refactor
    - Preserve existing values, defaults, seeds, magic numbers unless the issue
      explicitly says to change them
    - Lint + tests must pass before commit
-6. **Commit** — single rich commit. Do NOT open the PR yourself; the
+7. **Commit** — single rich commit. Do NOT open the PR yourself; the
    supervisor pushes the pinned branch and opens (or updates) the PR after
    this run finishes (AC1, #1118). Just leave the commit(s) on the current
    branch. **The commit message body MUST contain `Closes #<N>` on its own
-   line** (N = the issue you claimed in step 3). The supervisor opens the PR
+   line** (N = the issue you claimed in step 4). The supervisor opens the PR
    with `gh pr create --fill`, which derives the PR body from this commit
    message — if `Closes #<N>` is not in the commit, the merged PR will NOT
    auto-close the issue, silently leaving it open with stale labels (the
    #948 failure mode documented in CLAUDE.md). This is the only place the
    closing keyword can enter a fresh-run PR now that the agent no longer
    opens the PR itself.
-7. **Record outcome** — emit one `outcome_record` describing the iteration
+8. **Record outcome** — emit one `outcome_record` describing the iteration
    (success / partial / failure) with the provenance tags from §"Memory
    provenance" below. Always record, even on failure — failed outcomes are
    the most valuable signal for the orchestrator review.
-8. **Stop on this issue** — do NOT merge, push, or open the PR yourself. The
+9. **Stop on this issue** — do NOT merge, push, or open the PR yourself. The
    supervisor pushes the pinned branch and opens the PR; the orchestrator
    (live Claude Code session) reviews and merges separately.
 

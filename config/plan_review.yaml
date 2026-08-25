@@ -25,6 +25,12 @@
 #                                          class, since a bad plan is expensive
 #     critic: str                       — model floor for the critic panel;
 #                                          sonnet-class by default
+#   lock_max_age_days: int               — pick-time ceiling (issue #1691):
+#                                          a plan:locked sandcastle issue whose
+#                                          lock is older than this is refused
+#                                          at pick time (falls to owner
+#                                          attention, never auto-replanned).
+#                                          Optional; defaults to 14 if absent.
 
 schema_version: "v1"
 
@@ -48,3 +54,5 @@ class_3:
 models:
   planner: "claude-opus-5"
   critic: "claude-sonnet-5"
+
+lock_max_age_days: 14
