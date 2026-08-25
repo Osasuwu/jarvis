@@ -1,16 +1,16 @@
 """Sandcastle pick admission (#1691).
 
-Pick eligibility is exactly two mechanical label queries — never a class-2
-issue waiting on a plan (:func:`build_pick_queries`, :func:`is_pickable`).
-:func:`build_pick_queries`'s two queries are wired live into
-``.sandcastle/prompt.md``'s pick step. :func:`verify_pick_time` is likewise
-wired: ``scripts/sandcastle_pick_verify.py`` wraps it, and
+Pick eligibility is exactly two mechanical label queries — never an
+``afk:2-plan`` issue waiting on a plan (:func:`build_pick_queries`,
+:func:`is_pickable`). :func:`build_pick_queries`'s two queries are wired
+live into ``.sandcastle/prompt.md``'s pick step. :func:`verify_pick_time`
+is likewise wired: ``scripts/sandcastle_pick_verify.py`` wraps it, and
 ``.sandcastle/prompt.md``'s Claim step invokes that script and branches on
 its exit code before honoring a ``plan:locked`` label — digest (via
 :mod:`agents.plan_lock`) plus a config-held age ceiling (AC7/AC8).
 
 The rest of this module — :func:`pick_pass_outcome` (AC3, flag an unlocked
-class-2 candidate ``needs-plan`` and skip, never block),
+``afk:2-plan`` candidate ``needs-plan`` and skip, never block),
 :func:`service_needs_plan` (AC4, service ``needs-plan`` via the same
 synchronous planner path :mod:`agents.plan_review_drain` already built for
 the queue lane, #1689), and :func:`release_lock` /
@@ -38,7 +38,7 @@ from agents.plan_review_config import PlanReviewConfig
 from agents.plan_review_drain import PlannerPort, write_plan_section
 
 _SANDCASTLE = "sandcastle"
-_CLASS_2 = "class:2"
+_AFK_2_PLAN = "afk:2-plan"
 _PLAN_LOCKED = "plan:locked"
 _NEEDS_PLAN = "needs-plan"
 _OWNER_QUEUE = "status:owner-queue"
@@ -47,15 +47,15 @@ _OWNER_QUEUE = "status:owner-queue"
 def build_pick_queries(repo: str) -> tuple[str, str]:
     """GitHub search queries for the two-query pick construction (AC1/AC2).
 
-    Query A: sandcastle issues that are not class:2 (no plan needed).
-    Query B: sandcastle class:2 issues that are already plan:locked.
+    Query A: sandcastle issues that are not afk:2-plan (no plan needed).
+    Query B: sandcastle afk:2-plan issues that are already plan:locked.
     Both exclude status:owner-queue. Union of A and B is exactly the
-    pickable set — an unlocked class:2 issue satisfies neither query, so
-    it is unpickable by construction, not by a runtime check.
+    pickable set — an unlocked afk:2-plan issue satisfies neither query,
+    so it is unpickable by construction, not by a runtime check.
     """
     common = f"repo:{repo} is:open label:{_SANDCASTLE} -label:{_OWNER_QUEUE}"
-    query_a = f"{common} -label:{_CLASS_2}"
-    query_b = f"{common} label:{_CLASS_2} label:{_PLAN_LOCKED}"
+    query_a = f"{common} -label:{_AFK_2_PLAN}"
+    query_b = f"{common} label:{_AFK_2_PLAN} label:{_PLAN_LOCKED}"
     return query_a, query_b
 
 
@@ -63,7 +63,7 @@ def is_pickable(label_names: set[str]) -> bool:
     """Pure re-implementation of the two-query union, for a single issue's labels."""
     if _SANDCASTLE not in label_names or _OWNER_QUEUE in label_names:
         return False
-    if _CLASS_2 not in label_names:
+    if _AFK_2_PLAN not in label_names:
         return True
     return _PLAN_LOCKED in label_names
 
@@ -71,7 +71,7 @@ def is_pickable(label_names: set[str]) -> bool:
 def pick_pass_outcome(label_names: set[str]) -> str:
     """Classify one issue's labels during a pick pass.
 
-    Returns "pick" (eligible now), "needs_plan" (unlocked class:2, flag
+    Returns "pick" (eligible now), "needs_plan" (unlocked afk:2-plan, flag
     and move on — AC3, never a block/wait), or "skip" (not sandcastle,
     owner-queue parked, or already flagged and awaiting drain).
     """
@@ -79,7 +79,7 @@ def pick_pass_outcome(label_names: set[str]) -> str:
         return "pick"
     if _SANDCASTLE not in label_names or _OWNER_QUEUE in label_names:
         return "skip"
-    if _CLASS_2 in label_names and _NEEDS_PLAN not in label_names:
+    if _AFK_2_PLAN in label_names and _NEEDS_PLAN not in label_names:
         return "needs_plan"
     return "skip"
 
