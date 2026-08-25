@@ -127,7 +127,7 @@ Three places work can land. Pick by **who admits the work and how**, not by exec
 - **`/dispatch`** (renamed from `/delegate`) — operator present and chose to fan out; AFK-eligible issues pass an advisory `check_issue` gate and are **enqueued** as thin `task_queue` rows (`goal="/task-implement #N"`), then executed **headlessly** later by `drain_tasks` → `/task-implement`. Admission is operator-driven (a human decided *these* issues, *now*); execution is queue-routed, same as the orchestrator's. `/dispatch` never spawns a subagent itself.
 - **Reactive-core orchestrator (M44)** — no operator; events cold-boot it and it triages **one** event into one of three dispositions, then hands off (CONTEXT.md → *orchestrator*, *Loop closure*). Admission is event-triggered, not human-judged.
 
-Boundary: orchestrator-emitted and `/dispatch`-enqueued task rows share identical AFK-fit/sandcastle admission semantics and the same `check_issue` mechanical re-check at spawn — mechanics: CONTEXT.md → *Core entities* (`Pre-dispatch gate`, `AFK-fit checklist`, `task_queue`, `orchestrator`) and → *Invariants → Skills, infra & eval*.
+Boundary: orchestrator-emitted and `/dispatch`-enqueued task rows share identical AFK-fit/sandcastle admission semantics and the same `check_issue` mechanical re-check at spawn — mechanics: CONTEXT.md → *Core entities* (`Pre-dispatch gate`, `AFK-fit checklist`, `task_queue`, `orchestrator`).
 
 ## Autonomous work
 
