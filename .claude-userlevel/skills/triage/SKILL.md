@@ -71,7 +71,7 @@ Show counts and a one-line summary per issue. Let the maintainer pick.
    - Extract the issue's declared-changed files (from the body, or from your §1 codebase exploration if the issue doesn't name them explicitly).
    - Call `classify_static_paths(declared_files, repo, config)` from `scripts/to_tickets_afk_fit.py` against `config/protected-paths.json` for Q1 (static path-bucket lookup).
    - If Q1 returns no verdict (`cls is None`), run the Q2-Q4 LLM judgement documented in `/to-tickets` §3a (same questions, same rationale — not reimplemented here).
-   - Apply the resulting label(s) alongside the category/state role from step 2 below: class 1 → no class label; class 2 → `afk:2-plan`; class 3 → `afk:3-human`; a Q4 "yes" → the project's HITL/attention marker, no class label (see `/to-tickets` §5 for the full outcome table).
+   - Apply the resulting label(s) alongside the category/state role from step 2 below, matching `/to-tickets` §5's outcome table exactly: class 1 → `sandcastle` (no class label); class 2 → **both** `sandcastle` and `afk:2-plan`; class 3 → `afk:3-human` only (no `sandcastle` — hard refusal); a Q4 "yes" → the project's HITL/attention marker, no class label. Omitting `sandcastle` on a class 1/2 verdict silently makes the issue undispatchable — `/dispatch`'s pre-dispatch gate requires it.
    - **Writer discipline (#1708 AC6, shared with `/to-tickets` §5)**: the class label has **two writers** — `/to-tickets` at creation, `/triage` here on demand. `plan:locked`/`needs-plan` keep exactly **one** writer — the drain (#1691 AC5); this step never touches them.
 
 2. **Recommend.** Tell the maintainer your category and state recommendation with reasoning, plus a brief codebase summary relevant to the issue. Wait for direction.
