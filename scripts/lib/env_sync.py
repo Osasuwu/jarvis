@@ -17,6 +17,17 @@ the pipe — this redirects the child's stdout/stderr to a real log file
 instead of a PIPE). The stamp is written only when install exits 0 AND a
 follow-up probe passes, so a "successful" but incomplete install never masks
 future drift.
+
+On Windows, a sibling MCP server process (from another Claude Code session
+sharing this repo's root .venv) can still have a native extension DLL (e.g.
+pydantic_core) loaded when heal() runs, so uv/pip fail with "os error 5" /
+"Access is denied" while trying to replace it — a lock conflict, not a real
+dependency error. The existing lock file (_acquire_lock) only serializes
+concurrent heal() *calls*; it does nothing about a live server process just
+sitting on the DLL. heal() retries the install a few times with backoff when
+the failure output matches that specific signature (#1713), so a transient
+conflict (e.g. the sibling session cycling its subprocess) has a chance to
+clear before heal() gives up and reports failure.
 """
 
 from __future__ import annotations
@@ -36,6 +47,23 @@ DEFAULT_HEAL_TIMEOUT = 40
 # concurrent Claude Code sessions; switch to os.open(O_CREAT|O_EXCL) if this
 # ever runs on a shared multi-user host.
 LOCK_TTL_SECONDS = 120
+
+# Signatures of a Windows sharing-violation ("file in use by another
+# process") failure, as they appear in uv/pip stdout+stderr (#1713). Distinct
+# from a real dependency error — the install itself is fine, something else
+# just has the file open right now.
+_FILE_LOCK_SIGNATURES = (
+    "os error 5",
+    "OSError: [WinError 5]",
+    "Отказано в доступе",
+)
+
+# Delays (seconds) before each install attempt; first attempt is immediate.
+# Only consulted when the previous attempt's failure matched a lock
+# signature above — a non-lock failure never retries.
+_LOCK_RETRY_DELAYS = (0, 2, 4)
+
+_sleep = time.sleep  # module-level indirection so tests can stub out the wait
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _VENV_PYTHON = _REPO_ROOT / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -296,6 +324,41 @@ def _run_pip_install(python_exe: Path, manifest: Path, log_path: Path, timeout: 
             return -1
 
 
+def _is_file_lock_error(log_path: Path, since_offset: int) -> bool:
+    """Check whether the log content written since `since_offset` looks like
+    a Windows file-lock sharing violation rather than a real install error."""
+    try:
+        with open(log_path, "rb") as f:
+            f.seek(since_offset)
+            tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(sig in tail for sig in _FILE_LOCK_SIGNATURES)
+
+
+def _run_with_lock_retry(run_once, log_path: Path) -> tuple[int, bool]:
+    """Run `run_once()` (an install attempt returning an rc), retrying with
+    backoff only while each failure's log output matches a file-lock
+    signature (#1713). Returns (final_rc, exhausted_as_lock) — the latter is
+    True only when every attempt failed AND the last one was a lock error, so
+    the caller can report a distinct, actionable reason instead of the
+    generic "install failed".
+    """
+    rc = 1
+    was_lock_error = False
+    for delay in _LOCK_RETRY_DELAYS:
+        if delay:
+            _sleep(delay)
+        offset = log_path.stat().st_size if log_path.exists() else 0
+        rc = run_once()
+        if rc == 0:
+            return rc, False
+        was_lock_error = _is_file_lock_error(log_path, offset)
+        if not was_lock_error:
+            return rc, False
+    return rc, was_lock_error
+
+
 def heal(env: ManagedEnv, timeout: int = DEFAULT_HEAL_TIMEOUT) -> HealResult:
     log_path = _LOG_DIR / "env-sync.log"
     try:
@@ -308,14 +371,23 @@ def heal(env: ManagedEnv, timeout: int = DEFAULT_HEAL_TIMEOUT) -> HealResult:
             use_uv = env.lockfile and env.lockfile.exists()
             if use_uv:
                 env_project_dir = env.lockfile.parent
-                rc = _run_uv_sync(env_project_dir, env.venv_python, log_path, timeout)
+                rc, lock_exhausted = _run_with_lock_retry(
+                    lambda: _run_uv_sync(env_project_dir, env.venv_python, log_path, timeout),
+                    log_path,
+                )
                 install_method = "uv_sync"
             else:
-                rc = _run_pip_install(env.venv_python, env.manifest, log_path, timeout)
+                rc, lock_exhausted = _run_with_lock_retry(
+                    lambda: _run_pip_install(env.venv_python, env.manifest, log_path, timeout),
+                    log_path,
+                )
                 install_method = "pip_install"
 
             if rc != 0:
-                return HealResult(False, f"{install_method}_failed", old_hash, log_path=log_path)
+                reason = (
+                    "file_locked_after_retries" if lock_exhausted else f"{install_method}_failed"
+                )
+                return HealResult(False, reason, old_hash, log_path=log_path)
 
             # Compute new hash using same logic as check()
             if env.lockfile and env.lockfile.exists() and env.manifest.exists():
