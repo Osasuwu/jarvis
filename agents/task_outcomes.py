@@ -63,6 +63,33 @@ def resolve_pr_url(
     return pr.get("html_url")
 
 
+def resolve_is_class_2(issue_number: int | None, *, client: GitHubClient | None) -> bool:
+    """Best-effort ``class:2`` label check for a just-completed task (#1706 review).
+
+    Mirrors :func:`resolve_pr_url`'s advisory pattern. Feeds
+    :func:`record_completion_outcome`'s payload so a headlessly-dispatched
+    completion tags ``pattern_tags`` with ``"class:2"`` the same way the
+    interactive ``/implement`` path does (``implement/SKILL.md``'s "Rule —
+    ``class:2`` pattern_tag") — otherwise ``/verify`` Step 2c's checkpoint
+    query (``WHERE 'class:2' = ANY(pattern_tags)``) silently undercounts every
+    class-2 PR shipped via ``/dispatch`` -> ``/task-implement``. Returns
+    ``False`` (never raises) on any resolution failure — the caller ORs this
+    straight into a pattern_tags append, so a plain bool is required.
+    """
+    if client is None or issue_number is None:
+        return False
+    try:
+        issue = client.get_issue(issue_number)
+    except Exception:  # noqa: BLE001 — advisory lookup, never raises to the caller
+        logger.exception(
+            "[task_outcomes] class:2 label resolution failed for issue %s", issue_number
+        )
+        return False
+    if not issue:
+        return False
+    return any(label.get("name") == "class:2" for label in issue.get("labels", []))
+
+
 def record_skip_outcome(payload: dict[str, Any]) -> None:
     """Best-effort ``task_outcomes`` write for a skipped-duplicate (#931).
 
@@ -108,13 +135,19 @@ def record_completion_outcome(payload: dict[str, Any]) -> None:
     the row from the orchestrator side instead, at the terminal boundary where
     ``poll_completions`` already knows the task succeeded (exit 0).
     ``pattern_tags`` MUST include ``"subagent"`` — that's the exact filter
-    Step 2b keys on. Sandcastle-anon insert, mirroring
-    :func:`record_skip_outcome`'s pattern.
+    Step 2b keys on. It also carries ``"class:2"`` when
+    ``payload["is_class_2"]`` is true (see :func:`resolve_is_class_2`) —
+    mirroring the interactive path's rule so /verify Step 2c's checkpoint
+    query counts headlessly-dispatched class-2 PRs too. Sandcastle-anon
+    insert, mirroring :func:`record_skip_outcome`'s pattern.
     """
     from agents.supabase_client import get_client
 
     repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
     issue_number = payload.get("issue_number")
+    pattern_tags = ["subagent", "headless", "task-implement"]
+    if payload.get("is_class_2"):
+        pattern_tags.append("class:2")
     get_client().table("task_outcomes").insert(
         {
             "task_type": "autonomous",
@@ -130,7 +163,7 @@ def record_completion_outcome(payload: dict[str, Any]) -> None:
                 else None
             ),
             "pr_url": payload.get("pr_url"),
-            "pattern_tags": ["subagent", "headless", "task-implement"],
+            "pattern_tags": pattern_tags,
             "source_provenance": "sandcastle:task_dispatch-completion",
         }
     ).execute()

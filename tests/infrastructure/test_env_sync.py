@@ -180,6 +180,94 @@ def test_heal_never_raises_on_internal_error(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Windows file-lock retry (#1713)
+# ---------------------------------------------------------------------------
+
+
+class FakePopenWithLog:
+    """Fake Popen that writes to the real `stdout` (log file) it's given,
+    like the real subprocess would when redirected. Fails with a Windows
+    sharing-violation signature for the first `fail_times` calls, then
+    succeeds — simulating a sibling process releasing a locked DLL.
+    """
+
+    def __init__(
+        self,
+        fail_times,
+        fail_text="error: failed to remove file ...: Access is denied. (os error 5)",
+    ):
+        self.fail_times = fail_times
+        self.fail_text = fail_text
+        self.calls = 0
+        self.pid = 4242
+        self._rc = 1
+
+    def __call__(self, cmd, *args, **kwargs):
+        self.calls += 1
+        stdout = kwargs.get("stdout")
+        if self.calls <= self.fail_times:
+            if stdout is not None:
+                stdout.write(self.fail_text.encode("utf-8"))
+                stdout.flush()
+            self._rc = 1
+        else:
+            self._rc = 0
+        return self
+
+    def wait(self, timeout=None):
+        return self._rc
+
+    def kill(self):
+        pass
+
+
+def test_heal_retries_and_succeeds_after_transient_file_lock(tmp_path, monkeypatch):
+    env = _make_env(tmp_path)
+    fake_popen = FakePopenWithLog(fail_times=2)
+    monkeypatch.setattr(env_sync.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+    monkeypatch.setattr(env_sync, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(env_sync, "_sleep", lambda seconds: None)
+
+    result = env_sync.heal(env)
+
+    assert result.success is True
+    assert fake_popen.calls == 3  # 2 lock-conflict failures, then success
+    assert env.stamp_path.exists()
+
+
+def test_heal_gives_up_after_exhausting_lock_retries(tmp_path, monkeypatch):
+    env = _make_env(tmp_path)
+    fake_popen = FakePopenWithLog(fail_times=999)  # always fails
+    monkeypatch.setattr(env_sync.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+    monkeypatch.setattr(env_sync, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(env_sync, "_sleep", lambda seconds: None)
+
+    result = env_sync.heal(env)
+
+    assert result.success is False
+    assert result.reason == "file_locked_after_retries"
+    assert fake_popen.calls == len(env_sync._LOCK_RETRY_DELAYS)
+    assert not env.stamp_path.exists()
+
+
+def test_heal_does_not_retry_a_non_lock_failure(tmp_path, monkeypatch):
+    env = _make_env(tmp_path)
+    fake_popen = FakePopenWithLog(fail_times=999, fail_text="pip: no matching distribution found")
+    monkeypatch.setattr(env_sync.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(env_sync.subprocess, "run", _probes_all_ok)
+    monkeypatch.setattr(env_sync, "_LOG_DIR", tmp_path / "logs")
+    monkeypatch.setattr(env_sync, "_sleep", lambda seconds: None)
+
+    result = env_sync.heal(env)
+
+    assert result.success is False
+    assert result.reason == "pip_install_failed"
+    assert fake_popen.calls == 1  # no retry — not a lock-signature failure
+
+
+# ---------------------------------------------------------------------------
 # Lock reclaim (AC#2)
 # ---------------------------------------------------------------------------
 

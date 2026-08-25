@@ -602,6 +602,9 @@ def poll_completions(
                         "pr_url": task_outcomes.resolve_pr_url(
                             task_id, goal, client=evidence_client
                         ),
+                        "is_class_2": task_outcomes.resolve_is_class_2(
+                            tracked.issue_number, client=evidence_client
+                        ),
                     }
                 )
             except Exception:  # noqa: BLE001 — outcome write must not block transition

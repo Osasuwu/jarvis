@@ -339,6 +339,8 @@ outcome_record(
 )
 ```
 
+**Rule — `class:2` pattern_tag**: if the issue carries the `class:2` GitHub label (`gh issue view <N> --json labels --jq '[.labels[].name]'`), include `"class:2"` in `pattern_tags`. This is the sole signal `/verify`'s Step 2c plan-conformance check and rework-round checkpoint (#1692) query against — omitting it makes that checkpoint permanently see 0 class-2 outcomes regardless of how many actually shipped.
+
 **Rule — primary informing memory**: pass the first element of the §3 `record_decision` call's `memories_used` that is a **memory-row UUID** — an id that came from `memory_recall`/`memory_get` (the recall map). `memories_used` may legitimately also carry decision-**episode** UUIDs (a grill decision cited in the issue's `## Decisions` section, a `record_decision` return value) — those are NOT valid here: the FK `task_outcomes.memory_id → memories(id)` rejects them with 23503 (bitten 2026-07-02, #971 outcome). Provenance is the discriminator, not shape — both are UUIDs; only where you got it tells them apart. If no element is a memory-row UUID (or `memories_used` was empty), omit `memory_id`. Never pass multiple — the FK is a single UUID and `memory_calibration` joins on one memory per outcome; richer attribution belongs at the view layer, not the row.
 
 **Always record**, even on failure — failed outcomes are the most valuable for learning.
