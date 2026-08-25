@@ -23,6 +23,7 @@ issue, or an unverifiable/malformed lock all block rather than pass.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,31 @@ from agents.plan_lock import MalformedPlanError, verify_lock
 from agents.plan_review_config import PlanReviewConfig, load_plan_review_config
 
 _DEFAULT_CONFIG_PATH = Path("config/plan_review.yaml")
+
+# Mirrors the require-linked-issue bypasses in .github/workflows/pr-body-check.yml
+# (#1710): a PR that doesn't need a linked issue at all has nowhere to hold a
+# plan lock, so blocking it for "linked issue is unreachable" is a false
+# failure, not fail-closed caution. Two separate JS/Python implementations
+# (per-gate convention already in this repo — see AC5 comment above for why
+# the *threshold/hash* logic is shared instead) rather than a cross-language
+# shared module.
+_BOT_AUTHORS = frozenset({"dependabot[bot]", "renovate[bot]"})
+_NO_ISSUE_MARKER = re.compile(r"\[no-issue\]", re.IGNORECASE)
+_REFACTOR_TITLE_PREFIX = re.compile(r"^refactor(\([^)]*\))?:", re.IGNORECASE)
+
+
+def has_escape_hatch(*, author: str, title: str, body: str, labels: tuple[str, ...]) -> str | None:
+    """Return the bypass reason if this PR doesn't need a linked issue, else None."""
+    if author in _BOT_AUTHORS:
+        return f"bot author ({author})"
+    if "priority:critical" in labels:
+        return "priority:critical label (hotfix)"
+    if _NO_ISSUE_MARKER.search(body or "") or _NO_ISSUE_MARKER.search(title or ""):
+        return "[no-issue] marker (fix-inline per #428)"
+    if _REFACTOR_TITLE_PREFIX.match(title or ""):
+        return "refactor: title prefix"
+    return None
+
 
 # prod_areas_from_paths re-exported from agents.plan_classifier (moved there
 # in #1688 so the interactive lane can share it too) — kept importable from
@@ -90,12 +116,21 @@ def _matches_any(paths: tuple[str, ...], glob: str) -> bool:
     return any(fnmatch.fnmatch(p, glob) for p in paths)
 
 
-def evaluate(config: PlanReviewConfig, change: ChangeSet, issue_body: str | None) -> GateDecision:
+def evaluate(
+    config: PlanReviewConfig,
+    change: ChangeSet,
+    issue_body: str | None,
+    escape_hatch_reason: str | None = None,
+) -> GateDecision:
     """Classify `change` and decide pass/block against the linked issue's plan lock.
 
     class:1 / class:3 always pass silently (AC3, scoped to class:2). For
     class:2, an unreachable issue, a malformed plan, or a lock that does
-    not verify all block (AC4, fail closed); only a verified lock passes.
+    not verify all block (AC4, fail closed); only a verified lock passes —
+    unless `escape_hatch_reason` is set (#1710), in which case this PR was
+    never required to carry a linked issue in the first place (mirrors
+    require-linked-issue's own bypasses), so there is no issue to hold a
+    plan lock against and the gate passes.
     """
     classification = classify(config, change)
 
@@ -103,6 +138,9 @@ def evaluate(config: PlanReviewConfig, change: ChangeSet, issue_body: str | None
         return GateDecision(classification=classification, decision="pass", reason="")
 
     trigger_reason = _class_2_trigger_reason(config, change)
+
+    if escape_hatch_reason is not None:
+        return GateDecision(classification=classification, decision="pass", reason="")
 
     if issue_body is None:
         return GateDecision(
@@ -141,6 +179,9 @@ def _validate_envelope(payload: object) -> dict | str:
     issue_body = payload.get("issue_body")
     if issue_body is not None and not isinstance(issue_body, str):
         return "malformed `issue_body` (must be a string or null)"
+    pr_labels = payload.get("pr_labels")
+    if pr_labels is not None and not isinstance(pr_labels, list):
+        return "malformed `pr_labels` (must be a list of strings or null)"
     return payload
 
 
@@ -169,7 +210,15 @@ def main(argv: list[str] | None = None) -> int:
         churn_lines=validated["churn_lines"],
         mechanical_criteria=tuple(validated.get("mechanical_criteria") or ()),
     )
-    result = evaluate(config, change, validated.get("issue_body"))
+    escape_hatch_reason = has_escape_hatch(
+        author=validated.get("pr_author") or "",
+        title=validated.get("pr_title") or "",
+        body=validated.get("pr_body") or "",
+        labels=tuple(validated.get("pr_labels") or ()),
+    )
+    result = evaluate(
+        config, change, validated.get("issue_body"), escape_hatch_reason=escape_hatch_reason
+    )
 
     if result.decision == "block":
         print(f"BLOCK: {result.reason}")
