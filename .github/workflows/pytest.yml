@@ -171,11 +171,20 @@ jobs:
             -f tests/ci/pgvector_schema_bootstrap.sql
           psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -f supabase/migrations/20260715130000_rewrite_find_consolidation_clusters.sql
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20260812130000_add_merge_section_into_memory_rpc.sql
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20260825170000_fix_merge_section_soft_delete_revival.sql
 
       - name: Run DB-gated consolidation-cluster tests
         env:
           REQUIRE_DB: "1"
         run: uv run pytest tests/memory/test_find_consolidation_clusters_db.py -v -rs
+
+      - name: Run DB-gated merge_section RPC tests
+        env:
+          REQUIRE_DB: "1"
+        run: uv run pytest tests/memory/test_merge_section_rpc_db.py -v -rs
 
   # DB-gated task_queue.enqueue() issue_number CAS tests (#1085 S1-3). The
   # partial unique index on issue_number (scoped to non-terminal rows) is

@@ -229,7 +229,11 @@ def tool_definitions() -> list[Tool]:
                             "into the stored document server-side, preserving all sibling sections. "
                             "If target section absent, append as new section. "
                             "If existing content is unparseable as markdown sections, fails loudly. "
-                            "Prevents client-side read-modify-write races."
+                            "Prevents client-side read-modify-write races. "
+                            "If the target (project, name) is soft-deleted, it is revived "
+                            "revive-fresh: deleted_at is cleared but the prior content/"
+                            "description/tags are NOT carried forward — the merge proceeds "
+                            "against an empty base, same as a row that never existed."
                         ),
                     },
                 },
