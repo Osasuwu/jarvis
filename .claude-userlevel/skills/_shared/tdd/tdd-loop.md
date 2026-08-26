@@ -134,4 +134,5 @@ This is a standalone step that runs once, after every test written for this issu
 [ ] Test maps to a specific AC bullet
 [ ] Code is minimal for this test
 [ ] No speculative features added
+[ ] Mutation probe run against this test and recorded (§3) — not deferred to a batch pass later
 ```
