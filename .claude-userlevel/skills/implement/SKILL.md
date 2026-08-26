@@ -265,7 +265,12 @@ Engaged when the §Contract dispatch table routes here. Replaces §4 — but §4
 - ADR-0001 compliance: do not invoke `/grill` or any other skill mid-task. The reference docs in `_shared/tdd/` are read as files, not as skill invocations.
 - After each AC item's GREEN, run the mutation probe (`tdd-loop.md` §3) before starting the next item — survival blocks progress, and it is a manual per-test discipline, never an automated score/gate.
 
-Final pass before §5: run the full test suite for the touched module(s), not just the AC-tied tests. Green suite is the precondition for opening the PR.
+**Mutation-probe gate — final pass before §5, both parts required:**
+
+1. Run the full test suite for the touched module(s), not just the AC-tied tests. Green suite is a precondition for opening the PR.
+2. Enumerate the AC list from the issue body and, for each item, name the mutation-probe evidence line (`<file>:<line> corrupted → <test name> reddened`) recorded for it during §3. **An AC item with no line here means the probe was skipped, not that it's exempt — go back and run it now, before touching §5.** This enumeration is what gets pasted into the PR's `## Testing` section; do not write the PR body from memory of "yeah I think I did those" — build it from this list.
+
+Do not proceed to §5 until every AC item's line is accounted for.
 
 ### 5. Commit & PR
 
