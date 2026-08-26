@@ -2764,6 +2764,13 @@ create table if not exists task_queue (
   -- supabase/migrations/20260825090000_add_task_queue_plan_digest.sql.
   plan_digest text,
 
+  -- Replan-carrier gate (#1690): number of automatic replan cycles already
+  -- spent on this row. 0 -> a replan-request comment triggers one automatic
+  -- re-plan (incremented to 1); >=1 -> the next replan-request parks the row
+  -- instead. Keep in lockstep with
+  -- supabase/migrations/20260825100000_add_task_queue_replan_count.sql.
+  replan_count integer not null default 0,
+
   -- Timestamps
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

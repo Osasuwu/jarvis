@@ -233,6 +233,9 @@ class GitHubClient(Protocol):
     def create_issue_comment(self, issue_number: int, *, body: str) -> dict[str, Any] | None:
         """Post a comment on an issue. Returns the created comment dict, or None on error."""
 
+    def list_issue_comments(self, issue_number: int) -> list[dict[str, Any]]:
+        """List an issue's comments, oldest first. Returns [] if the issue is absent."""
+
     def add_label(self, issue_number: int, label: str) -> None:
         """Add a label to an issue. Idempotent — adding an already-present label is a no-op."""
 
@@ -702,6 +705,30 @@ class HttpxGitHubClient:
             return None
         resp.raise_for_status()
         return resp.json()
+
+    def list_issue_comments(self, issue_number: int) -> list[dict[str, Any]]:
+        """List an issue's comments, oldest first (#1690 replan-carrier drain).
+
+        Paginated like :meth:`list_open_pulls`/:meth:`list_branch_names`. A
+        404 (issue not found) normalizes to ``[]`` — no comments to read is
+        indistinguishable from "issue is gone" for this call's callers.
+        """
+        url = f"https://api.github.com/repos/{self._repo}/issues/{issue_number}/comments"
+        comments: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            resp = self._client.get(url, params={"per_page": 100, "page": page})
+            if resp.status_code == 404:
+                return []
+            resp.raise_for_status()
+            batch = resp.json()
+            if not batch:
+                break
+            comments.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return comments
 
     def add_label(self, issue_number: int, label: str) -> None:
         """Add a label to an issue (#1691 sandcastle plan-admission lifecycle).

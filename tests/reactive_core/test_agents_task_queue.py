@@ -499,6 +499,30 @@ class TestClaimNext:
         row = claim_next(client=client)
         assert row is None
 
+    def test_ignores_parked_status(self, client: _StubClient) -> None:
+        """AC7 (#1690): a row parked by the replan-carrier gate (second broken-
+        plan comment on an already-replanned row) is never re-picked by
+        ``claim_next`` — and by extension ``drain_tasks``, which claims solely
+        through this function. ``parked`` is terminal; the FSM-level guarantee
+        (``TestFSMDefinition.test_no_transition_from_terminal_states``) is
+        backed here by the query-level ``eq("status", "pending")`` filter that
+        actually governs claimability."""
+        client.seed(
+            "task_queue",
+            [
+                _running(
+                    id="parked-task",
+                    status="parked",
+                    idempotency_key="key-parked",
+                    escalated_reason="second broken-plan assumption after one auto-replan",
+                ),
+                _pending(id="fresh-task", idempotency_key="key-fresh"),
+            ],
+        )
+        row = claim_next(client=client)
+        assert row is not None
+        assert row["id"] == "fresh-task"
+
     def test_optimistic_lock_race(self, client: _StubClient) -> None:
         """Another worker claimed the task between our read and update."""
         client.seed(
