@@ -1,4 +1,5 @@
-"""Plan-review change-set classifier (issue #1685).
+"""Plan-review change-set classifier (issue #1685; ordinal vocabulary +
+:func:`label_for` per #1707).
 
 Deep module, narrow interface: :func:`classify` is the single entry point
 consumed by four call sites (interactive lane, drain, container pick,
@@ -10,6 +11,12 @@ hardcoded.
 Classification is two-point per decision `d34dd65a`: the same
 :func:`classify` call is used ex-ante (at admission, from an estimated
 change-set) and ex-post (on the actual diff after the CI diff-gate runs).
+
+:func:`classify` returns an ordinal ``1 | 2 | 3`` — not a ``class:N``
+string. :func:`label_for` is the single place that maps the ordinal to
+its board label (``2 -> "afk:2-plan"``, ``3 -> "afk:3-human"``, ``1 ->
+None`` — class 1 is labelless). Consumers must not re-derive label
+strings themselves.
 """
 
 from __future__ import annotations
@@ -54,31 +61,47 @@ def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
     return len(areas)
 
 
-def classify(config: PlanReviewConfig, change: ChangeSet) -> str:
-    """Return "class:3", "class:2", or "class:1" for ``change``.
+def classify(config: PlanReviewConfig, change: ChangeSet) -> int:
+    """Return the ordinal classification 1, 2, or 3 for ``change``.
 
-    Precedence: a mechanical class:3 criterion short-circuits — a
-    docs-only/typo-fix/etc. change never escalates to class:2 review even
-    if it happens to touch a shared-surface path (e.g. a doc file living
-    under a shared-surface glob). Otherwise class:2 triggers when any of
-    the three thresholds trip (shared-surface glob hit, churn strictly
-    above threshold, or prod-areas at or above the minimum). Default is
-    class:1.
+    Precedence (#1707): an exempt mechanical criterion short-circuits to 1
+    — a docs-only/typo-fix/etc. change never escalates even if it happens
+    to touch a shared-surface path (e.g. a doc file living under a
+    shared-surface glob). Failing that, a true-HITL class_3 criterion wins
+    at 3, even when a class_2 threshold also matches — a change that
+    cannot close without a human is never downgraded to "just needs a
+    plan". Otherwise class 2 triggers when any of the three thresholds
+    trip (shared-surface glob hit, churn strictly above threshold, or
+    prod-areas at or above the minimum). Default is 1.
+
+    Use :func:`label_for` to map the ordinal to its board label.
     """
+    if any(c in config.exempt.mechanical_criteria for c in change.mechanical_criteria):
+        return 1
+
     if any(c in config.class_3.mechanical_criteria for c in change.mechanical_criteria):
-        return "class:3"
+        return 3
 
     if _touches_shared_surface(change.paths, config.class_2.shared_surface_globs):
-        return "class:2"
+        return 2
     if change.churn_lines > config.class_2.churn_threshold:
-        return "class:2"
+        return 2
     if change.prod_areas >= config.class_2.min_prod_areas:
-        return "class:2"
+        return 2
 
-    return "class:1"
+    return 1
 
 
-def classify_task_row(config: PlanReviewConfig, row: dict[str, Any]) -> str:
+def label_for(cls: int) -> str | None:
+    """Map a :func:`classify` ordinal to its board label (#1707).
+
+    Class 1 is labelless — ``sandcastle`` alone already conveys it, so no
+    code path should write an ``afk:1-*`` label.
+    """
+    return {2: "afk:2-plan", 3: "afk:3-human"}.get(cls)
+
+
+def classify_task_row(config: PlanReviewConfig, row: dict[str, Any]) -> int:
     """Named class-2 bundle policy, readable per task row (AC7).
 
     The single entry point every consumer (interactive lane, drain,

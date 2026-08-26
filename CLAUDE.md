@@ -64,7 +64,7 @@ redrobot is not a personal project: it has a second reader and a potential contr
 
 ## Delegation
 
-**Model selection**: complex reasoning / architecture / multi-file → stronger model. Simple edits / searches → lighter. User uses Opus for redrobot — match when delegating redrobot tasks.
+**Model selection**: complex reasoning / architecture / multi-file → stronger model. Simple edits / searches → lighter. User uses Opus for redrobot — match when delegating redrobot tasks. Don't pay LLM tokens to run shell commands — fetch first, send only data.
 
 **Subagents deliver end-to-end** — SOUL §End-to-end ownership binds them too: feature → tests + error handling included; can't complete → document what's left. Don't return "done" if it only works in isolation.
 
@@ -127,7 +127,7 @@ Three places work can land. Pick by **who admits the work and how**, not by exec
 - **`/dispatch`** (renamed from `/delegate`) — operator present and chose to fan out; AFK-eligible issues pass an advisory `check_issue` gate and are **enqueued** as thin `task_queue` rows (`goal="/task-implement #N"`), then executed **headlessly** later by `drain_tasks` → `/task-implement`. Admission is operator-driven (a human decided *these* issues, *now*); execution is queue-routed, same as the orchestrator's. `/dispatch` never spawns a subagent itself.
 - **Reactive-core orchestrator (M44)** — no operator; events cold-boot it and it triages **one** event into one of three dispositions, then hands off (CONTEXT.md → *orchestrator*, *Loop closure*). Admission is event-triggered, not human-judged.
 
-Boundary: **orchestrator-emitted TASK rows carry the same AFK-fit/sandcastle semantics** as `/dispatch`-enqueued ones — `/to-tickets`'s checklist applies regardless of who emits the task, both pass through the same `check_issue` mechanical re-check at spawn time (`drain_tasks`, #1085 S2-3), and an AFK-unsafe row goes to the principal (no auto-spawn), same landing zone as a `/dispatch` refusal. The orchestrator routes, it is not the principal (CONTEXT.md → *Invariants → Skills, infra & eval*).
+Boundary: orchestrator-emitted and `/dispatch`-enqueued task rows share identical AFK-fit/sandcastle admission semantics and the same `check_issue` mechanical re-check at spawn — mechanics: CONTEXT.md → *Core entities* (`Pre-dispatch gate`, `AFK-fit checklist`, `task_queue`, `orchestrator`).
 
 ## Autonomous work
 
@@ -147,11 +147,7 @@ Project-specific addition — transform tasks into verifiable goals — moved to
 
 ### Architecture sweep at milestone close
 
-After a milestone closes (capability shipped), run `/improve-codebase-architecture` in a **fresh session**, never the one that closed the milestone (dumb zone). The skill:
-
-1. Reads `CONTEXT.md` + ADRs + repo state.
-2. Surfaces numbered list of *deepening opportunities* (shallow → deep modules, friction points, untested seams).
-3. Grills you on selected candidates → architectural decisions → child issues attached to a follow-up milestone (or as standalone slices).
+After a milestone closes (capability shipped), run `/improve-codebase-architecture` in a **fresh session**, never the one that closed the milestone (dumb zone) — mechanics live in the skill's own `SKILL.md`.
 
 **Trigger (planned — #605):** the automatic ≥3-closed-slices SessionStart surface described in *Milestone vs pillar hygiene* Rule 6 below is not implemented. Until #605 lands the trigger is **manual**; small milestones (1–2 slices) skip the sweep.
 
@@ -189,12 +185,6 @@ pillar (narrative only) → goal (Type A) → milestone (capability + PRD) → s
 **Mechanics not covered by the rules above:**
 1. Retroactive — if related slices shipped without a milestone, create it, attach the issues+PRs, close it. History must be recoverable.
 2. When user rushes and skips the milestone for grouped work — catch it: "milestone for these N slices?" before creating issues. Don't be a silent executor.
-
-## Token economy
-
-- Don't pay LLM tokens to run shell commands — fetch first, send only data.
-- Prefer editing existing files over creating new ones.
-- Use lighter models for mechanical tasks.
 
 ## Key files
 

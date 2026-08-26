@@ -1734,6 +1734,7 @@ class TestClosesMandate:
 
         import agents.executor as executor_mod
         import agents.task_dispatch as task_dispatch_mod
+        import agents.task_worktree as task_worktree_mod
 
         repo = tmp_path / "repo"
         repo.mkdir()
@@ -1757,6 +1758,13 @@ class TestClosesMandate:
             check=True,
         )
         monkeypatch.setattr(task_dispatch_mod, "_REPO_ROOT", str(repo))
+        # default_spawn also drives agents.task_worktree.create_task_worktree,
+        # which has its own _REPO_ROOT — unpatched, it runs `git worktree add
+        # -b task/t1` against the REAL repo checkout (not the tmp_path repo
+        # above), leaving a real `task/t1` branch + `.reactive/worktrees/t1`
+        # behind after every test run. Patching this too keeps the whole
+        # worktree lifecycle inside tmp_path, which pytest cleans up itself.
+        monkeypatch.setattr(task_worktree_mod, "_REPO_ROOT", str(repo))
 
         captured: dict[str, Any] = {}
 

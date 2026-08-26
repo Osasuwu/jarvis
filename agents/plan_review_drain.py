@@ -1,14 +1,16 @@
 """Ex-post plan-review drain gate (#1689).
 
-Wires the class:1/2/3 plan-review classification (#1685,
-:mod:`agents.plan_classifier`) into :func:`agents.task_dispatch.drain_tasks`:
-a class-2 row claimed off the queue must carry a verified locked ``## Plan``
-before it is spawned. Unlike :mod:`agents.implement_plan_gate` (#1688, the
-*ex-ante* interactive-lane gate), this gate has **no ``priority:critical``
-carve-out** — a task entering via the queue always gets ex-post review
-regardless of label, because there is no operator present to judge the
-carve-out case in the moment (:mod:`agents.task_dispatch` module docstring —
-admission here is event/queue-routed, not human-judged).
+Wires the ordinal 1/2/3 plan-review classification (#1685,
+:mod:`agents.plan_classifier`; ordinal vocabulary + ``afk:2-plan``/
+``afk:3-human`` labels per #1707) into
+:func:`agents.task_dispatch.drain_tasks`: a class-2 row claimed off the
+queue must carry a verified locked ``## Plan`` before it is spawned. Unlike
+:mod:`agents.implement_plan_gate` (#1688, the *ex-ante* interactive-lane
+gate), this gate has **no ``priority:critical`` carve-out** — a task
+entering via the queue always gets ex-post review regardless of label,
+because there is no operator present to judge the carve-out case in the
+moment (:mod:`agents.task_dispatch` module docstring — admission here is
+event/queue-routed, not human-judged).
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ class PlannerPort(Protocol):
     ) -> PlanResult: ...
 
 
-def class_gate(config: PlanReviewConfig, row: dict[str, Any]) -> str:
+def class_gate(config: PlanReviewConfig, row: dict[str, Any]) -> int:
     """Classify ``row`` unconditionally — no ``priority:critical`` carve-out.
 
     Contrast with :func:`agents.implement_plan_gate.evaluate_trigger`, whose
@@ -86,7 +88,7 @@ def class_gate(config: PlanReviewConfig, row: dict[str, Any]) -> str:
 
 
 def needs_plan(config: PlanReviewConfig, row: dict[str, Any], github: GitHubClient) -> bool:
-    """True when ``row`` is class:2 and lacks a verified locked plan.
+    """True when ``row`` is ordinal class 2 and lacks a verified locked plan.
 
     ``task_queue`` carries no cached issue-body column, so a verified plan
     can only be confirmed by a fresh ``github.get_issue`` fetch — this
@@ -94,7 +96,7 @@ def needs_plan(config: PlanReviewConfig, row: dict[str, Any], github: GitHubClie
     ``plan_digest`` alone, since the digest only proves *a* plan was once
     locked, not that the issue's current Plan section still matches it.
     """
-    if class_gate(config, row) != "class:2":
+    if class_gate(config, row) != 2:
         return False
 
     if not row.get("plan_digest"):
@@ -181,7 +183,7 @@ def default_run_planner(
     # final text output in a top-level ``{"result": "<text>"}`` envelope, and
     # that MCP tools (``mcp__memory__*``) are discoverable in a headless
     # ``-p`` invocation the same way they are in an interactive session — the
-    # first live drain run against a real class:2 issue is what verifies
+    # first live drain run against a real ordinal-2 issue is what verifies
     # this; if it's wrong, widen this docstring into a real integration test
     # against a throwaway issue instead of guessing further.
     """

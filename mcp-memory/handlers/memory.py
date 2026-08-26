@@ -1163,11 +1163,17 @@ def _fetch_and_remerge_section(
     Raises:
         ValueError: if existing content is unparseable as markdown sections.
     """
+    # #1714: no `deleted_at is null` filter — a soft-deleted row at this
+    # (project, name) must be found here too, so its updated_at threads
+    # through as the OCC expected value for the RPC's revival UPDATE branch.
+    # Revive-fresh semantics (decision 84c5b737-1887-4c78-9d8b-e58dedac2b04):
+    # a tombstoned row's content/description/tags are never carried forward
+    # into the revived row, so a soft-deleted row is treated as an empty base
+    # exactly like a row that never existed.
     q = (
         client.table("memories")
-        .select("content, updated_at, description, tags")
+        .select("content, updated_at, description, tags, deleted_at")
         .eq("name", mem_name)
-        .is_("deleted_at", "null")
     )
     if project is not None:
         q = q.eq("project", project)
@@ -1175,10 +1181,11 @@ def _fetch_and_remerge_section(
         q = q.is_("project", "null")
     existing_row = q.limit(1).execute()
     existing_data = existing_row.data[0] if existing_row.data else {}
-    existing_content = existing_data.get("content", "")
+    existing_is_deleted = existing_data.get("deleted_at") is not None
+    existing_content = "" if existing_is_deleted else existing_data.get("content", "")
     existing_updated_at = existing_data.get("updated_at")
-    existing_description = existing_data.get("description")
-    existing_tags = existing_data.get("tags")
+    existing_description = None if existing_is_deleted else existing_data.get("description")
+    existing_tags = None if existing_is_deleted else existing_data.get("tags")
 
     merged_content = _merge_section_into_markdown(
         existing_content, section_header, new_section_content
@@ -1249,8 +1256,6 @@ async def _handle_store(args: dict) -> list[TextContent]:
     # existing document (if any), parse sections, and splice only the new section in,
     # preserving all sibling sections. Atomic via RPC to prevent concurrent races.
     mode = args.get("mode", "full")
-    preserve_description_on_merge = False
-    preserve_tags_on_merge = False
     merge_section_data = None  # Data for merge_section RPC call
     stored_id = None
     action = "error"
@@ -1361,6 +1366,13 @@ async def _handle_store(args: dict) -> list[TextContent]:
 
     # #1352: Use atomic RPC for merge_section mode to prevent concurrent races
     # Retry loop: on conflict, re-fetch and re-merge, then retry RPC (up to 3 attempts total)
+    # #1714: populated from the RPC's revival columns on success, used below
+    # to warn when a revived row still carries recall-hiding lifecycle state
+    # (expired_at/superseded_by) that merge_section does not clear.
+    revived = False
+    revived_expired_at = None
+    revived_superseded_by = None
+
     if mode == "merge_section":
         proj_label = f"project={project or 'global'}"
 
@@ -1411,6 +1423,9 @@ async def _handle_store(args: dict) -> list[TextContent]:
                         if row.get("success"):
                             stored_id = row.get("memory_id")
                             action = "merged"
+                            revived = bool(row.get("revived"))
+                            revived_expired_at = row.get("expired_at")
+                            revived_superseded_by = row.get("superseded_by")
                             break  # Success — exit retry loop
                         else:
                             # Conflict detected — log and prepare to retry
@@ -1485,6 +1500,16 @@ async def _handle_store(args: dict) -> list[TextContent]:
                     # dropped connection), the client sees this exception even
                     # though the write already persisted. Verify via a read
                     # before assuming failure, instead of guessing.
+                    #
+                    # ceiling: this verify-read doesn't select expired_at/
+                    # superseded_by, so if a revival commits but the RPC's
+                    # HTTP response is lost, the `revived`/AC4 warning below
+                    # never fires for this narrow recovery path (the RPC's
+                    # own `revived` column is unreachable here — only a
+                    # fresh read is). Upgrade path: select those columns too
+                    # and thread them into revived_expired_at/
+                    # revived_superseded_by, or drop AC4's warning to a
+                    # best-effort basis explicitly. #1714 follow-up if hit.
                     try:
                         verify_q = (
                             client.table("memories")
@@ -1590,6 +1615,18 @@ async def _handle_store(args: dict) -> list[TextContent]:
         proj_label = "project=global"
 
     msg = f"Memory '{mem_name}' {action} ({proj_label}){embed_note}"
+
+    # #1714 AC4: a merge_section revival clears deleted_at but not
+    # expired_at/superseded_by — those are separate lifecycle flags recall
+    # already filters on. Without this warning, a revived row could silently
+    # stay invisible to memory_recall despite `stored=True`, looking like a
+    # recall bug rather than an unfinished revival.
+    if revived and (revived_expired_at is not None or revived_superseded_by is not None):
+        msg += (
+            "\n\nwarning: this row was revived from a soft-deleted state but "
+            "remains hidden from recall (expired_at/superseded_by still set) "
+            "— call memory_unmark_stale if it should be recallable again."
+        )
 
     # #658: structured response fields. Advisory only — the store has already
     # landed atomically above; nothing below this point can block or undo it.

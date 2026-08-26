@@ -3577,6 +3577,154 @@ begin
 end; $$;
 
 -- ===========================================================================
+-- merge_section_into_memory_upsert: server-side section-splice upsert for
+-- memory_store(mode="merge_section") (#1352). Revive-fresh semantics on a
+-- soft-deleted (project, name) row added by #1714 (decision
+-- 84c5b737-1887-4c78-9d8b-e58dedac2b04): a tombstoned row is found by the
+-- existence check (no `deleted_at is null` filter) and revived via UPDATE
+-- instead of colliding with the unique(project, name) constraint via INSERT,
+-- but its prior content/description/tags are never preserved on revival.
+-- Applied to remote as migration 20260812130000_add_merge_section_into_memory_rpc.sql,
+-- fixed by 20260825170000_fix_merge_section_soft_delete_revival.sql (#1714);
+-- documented here per #326 (schema.sql is aspirational; the migration executes).
+-- ===========================================================================
+-- The base migration's function returned table(success, memory_id,
+-- conflict_reason) — 3 OUT params. This version widens to 6 (adding revived,
+-- expired_at, superseded_by), and Postgres refuses to CREATE OR REPLACE a
+-- function whose OUT-parameter-defined row type changed, so the old
+-- signature must be dropped first.
+drop function if exists merge_section_into_memory_upsert(
+  text, text, text, timestamptz, text, text, text, text[],
+  boolean, boolean, vector(512), text, text, vector(1024), text, text
+);
+
+create or replace function merge_section_into_memory_upsert(
+  p_project text,
+  p_name text,
+  p_merged_content text,
+  p_expected_updated_at timestamptz,
+  p_type text default null,
+  p_source_provenance text default 'rpc:merge_section',
+  p_description text default '',
+  p_tags text[] default '{}',
+  p_preserve_existing_description boolean default true,
+  p_preserve_existing_tags boolean default true,
+  p_embedding vector(512) default null,
+  p_embedding_model text default null,
+  p_embedding_version text default null,
+  p_embedding_v2 vector(1024) default null,
+  p_embedding_model_v2 text default null,
+  p_embedding_version_v2 text default null
+)
+returns table (
+  success boolean,
+  memory_id uuid,
+  conflict_reason text,
+  revived boolean,
+  expired_at timestamptz,
+  superseded_by uuid
+) as $$
+declare
+  v_id uuid;
+  v_current_updated_at timestamptz;
+  v_existing_description text;
+  v_existing_tags text[];
+  v_existing_source_provenance text;
+  v_existing_deleted_at timestamptz;
+  v_existing_expired_at timestamptz;
+  v_existing_superseded_by uuid;
+  v_was_deleted boolean;
+  v_final_description text;
+  v_final_tags text[];
+  v_lock_id bigint;
+begin
+  if auth.role() = 'anon'
+     and (p_source_provenance is null or p_source_provenance not like 'sandcastle:%') then
+    return query select false, null::uuid, 'forbidden: anon callers must use sandcastle:%-prefixed source_provenance'::text, null::boolean, null::timestamptz, null::uuid;
+    return;
+  end if;
+
+  v_lock_id := (hashtext(coalesce(p_project, '') || '::' || p_name)::bigint & x'7FFFFFFF'::bigint)::int;
+  perform pg_advisory_xact_lock(v_lock_id);
+
+  -- Table-qualified (m.expired_at, m.superseded_by): this function's own
+  -- RETURNS TABLE columns are named expired_at/superseded_by, which plpgsql
+  -- exposes as variables in scope here — an unqualified select of the same-
+  -- named memories columns raises "column reference is ambiguous".
+  select m.id, m.updated_at, m.description, m.tags, m.source_provenance,
+         m.deleted_at, m.expired_at, m.superseded_by
+    into v_id, v_current_updated_at, v_existing_description, v_existing_tags, v_existing_source_provenance,
+         v_existing_deleted_at, v_existing_expired_at, v_existing_superseded_by
+    from memories m
+   where m.name = p_name
+     and (m.project = p_project or (p_project is null and m.project is null));
+
+  v_was_deleted := v_id is not null and v_existing_deleted_at is not null;
+
+  if v_id is not null and auth.role() = 'anon'
+     and (v_existing_source_provenance is null or v_existing_source_provenance not like 'sandcastle:%') then
+    return query select false, null::uuid, 'forbidden: anon callers may not modify a non-sandcastle-owned row'::text, null::boolean, null::timestamptz, null::uuid;
+    return;
+  end if;
+
+  -- ceiling: memory_delete doesn't bump updated_at on soft-delete, so this
+  -- OCC check can't detect a delete racing an in-flight merge_section. See
+  -- 20260825170000_fix_merge_section_soft_delete_revival.sql for the full
+  -- comment and upgrade path.
+  if v_id is not null then
+    if v_current_updated_at is distinct from p_expected_updated_at then
+      return query select false, null::uuid, 'merge_conflict: concurrent modification'::text, null::boolean, null::timestamptz, null::uuid;
+      return;
+    end if;
+  end if;
+
+  v_final_description := case
+    when v_id is not null and not v_was_deleted and p_preserve_existing_description and v_existing_description is not null
+    then v_existing_description
+    else p_description
+  end;
+
+  v_final_tags := case
+    when v_id is not null and not v_was_deleted and p_preserve_existing_tags and v_existing_tags is not null
+    then v_existing_tags
+    else p_tags
+  end;
+
+  if v_id is not null then
+    update memories
+       set content = p_merged_content,
+           description = v_final_description,
+           tags = v_final_tags,
+           updated_at = now(),
+           deleted_at = null,
+           embedding = coalesce(p_embedding, embedding),
+           embedding_model = coalesce(p_embedding_model, embedding_model),
+           embedding_version = coalesce(p_embedding_version, embedding_version),
+           embedding_v2 = coalesce(p_embedding_v2, embedding_v2),
+           embedding_model_v2 = coalesce(p_embedding_model_v2, embedding_model_v2),
+           embedding_version_v2 = coalesce(p_embedding_version_v2, embedding_version_v2)
+     where id = v_id;
+  else
+    insert into memories (
+      project, name, type, content, description, tags, source_provenance,
+      embedding, embedding_model, embedding_version,
+      embedding_v2, embedding_model_v2, embedding_version_v2
+    )
+    values (
+      p_project, p_name, p_type, p_merged_content, v_final_description, v_final_tags, p_source_provenance,
+      p_embedding, p_embedding_model, p_embedding_version,
+      p_embedding_v2, p_embedding_model_v2, p_embedding_version_v2
+    )
+    returning memories.id into v_id;
+  end if;
+
+  return query select true, v_id, null::text, v_was_deleted, v_existing_expired_at, v_existing_superseded_by;
+end;
+$$ language plpgsql security definer;
+
+grant execute on function merge_section_into_memory_upsert to anon, authenticated;
+
+-- ===========================================================================
 -- scrubber_disabled_event_upsert: day-bucketed dedup + occurrence counter for
 -- mcp_write_scrubber_disabled events (AC1, #1000 — code-review round-2 fix).
 -- Applied to remote as migration 20260810120000_create_scrubber_disabled_event_upsert.sql,
