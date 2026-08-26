@@ -530,9 +530,15 @@ jobs:
             #      denial-bearing run with NO fresh verdict fails there — so
             #      reaching here with zero comments implies the run was in
             #      fact denial-free, yet the model posted zero comments. Passing it
-            #      ships the PR unreviewed (PR #1179 incident). FAIL CLOSED.
+            #      ships the PR unreviewed (PR #1179 incident). FAIL CLOSED —
+            #      UNLESS the PR was a draft at run time (#1733): the
+            #      `/code-review` plugin silently declines drafts at its own
+            #      eligibility check by design (no comment posted, same as the
+            #      IS_DRAFT carve-out at state 5 below), so a clean run with
+            #      zero comments on a draft is expected, not silent failure.
             #      EXEC_FILE is only ever populated when the review step
-            #      actually ran, so its presence alone identifies this state.
+            #      actually ran, so its presence (combined with !IS_DRAFT)
+            #      identifies this state.
             #   4. Still being reviewed. A code-review run over this PR's own
             #      commits has NOT completed, so nothing has verified this head
             #      yet. This is the #1434 hole: the autobase carve-out assumes
@@ -595,7 +601,7 @@ jobs:
               exit 1
             fi
 
-            if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ]; then
+            if [ -n "${EXEC_FILE:-}" ] && [ -f "$EXEC_FILE" ] && [ "${IS_DRAFT:-}" != "true" ]; then
               echo "::error::Code review ran cleanly (execution log present, 0 errors/denials per the prior step) but posted zero /code-review comments. This is a silent no-review, not a legitimate skip. Failing closed; re-run code-review."
               exit 1
             fi

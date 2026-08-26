@@ -228,7 +228,10 @@ def verdict(
             denials — otherwise the job would have already failed before this
             check runs). Only consulted when there is no selected comment: it
             disambiguates "legitimate skip" (ran=False → pass) from
-            "ran-but-silent" (ran=True → fail closed, #1182).
+            "ran-but-silent" (ran=True and not is_draft → fail closed, #1182).
+            A draft that ran cleanly and posted nothing is expected (the
+            plugin declines drafts by design), not silent failure — carved
+            out of this check the same way ``has_code`` is below (#1733).
         lineage_failed: number of FAILED code-review runs over the PR's head
             lineage (#1228). Non-zero means every review attempt died before
             posting, so "no comment" is evidence of never-reviewed, not of a
@@ -265,8 +268,10 @@ def verdict(
         #   3. lineage_in_flight > 0 → a review over this PR's own commits is
         #      still running, so nothing has verified this head yet → fail
         #      closed (#1434; PRs #1429 and #1435 both merged through this hole).
-        #   4. ran=True → eligible + ran cleanly yet posted nothing →
-        #      ran-but-silent → fail closed (#1182 — PR #1179).
+        #   4. ran=True and not is_draft → eligible + ran cleanly yet posted
+        #      nothing → ran-but-silent → fail closed (#1182 — PR #1179). A
+        #      draft is carved out: the plugin declines drafts by design, so
+        #      a clean run with zero comments there is expected (#1733).
         #   5. has_code=True on a non-draft → the PR carries reviewable code and
         #      no verdict comment exists, with nothing failed and nothing in
         #      flight to explain it → it was never reviewed → fail closed
@@ -279,7 +284,7 @@ def verdict(
             return "fail"
         if lineage_in_flight > 0:
             return "fail"
-        if ran:
+        if ran and not is_draft:
             return "fail"
         if has_code and not is_draft:
             return "fail"
@@ -844,6 +849,12 @@ class TestVerdictLogic:
         # skip) — no execution_file at all. Legitimate skip — pass.
         assert verdict([], ran=False) == "pass"
 
+    def test_no_comments_ran_and_draft_passes(self):
+        # #1733: the plugin declines drafts by design (no comment posted) —
+        # a clean run with zero comments on a draft is expected, not a silent
+        # no-review. Must not fail closed merely because ran=True.
+        assert verdict([], ran=True, is_draft=True) == "pass"
+
     def test_unrelated_comments_only_passes(self):
         assert verdict(["LGTM!", RETRY_EXHAUSTED_COMMENT, "merge train queued"]) == "pass"
 
@@ -986,6 +997,10 @@ class TestFreshnessLogic:
     def test_no_review_comment_and_not_ran_passes(self):
         assert verdict_fresh([], self.HEAD, ran=False) == "pass"
 
+    def test_no_review_comment_ran_and_draft_passes(self):
+        # #1733: a draft PR's clean-but-silent run must not fail closed.
+        assert verdict_fresh([], self.HEAD, ran=True, is_draft=True) == "pass"
+
     def test_comment_at_exactly_head_time_is_fresh(self):
         # created_at == head_time is treated as fresh (>=), not stale.
         assert verdict_fresh([(CANONICAL_CLEAN_SPEC, self.HEAD)], self.HEAD) == "pass"
@@ -1090,6 +1105,18 @@ class TestAutobaseAnchorLogic:
                 head,
                 autobase=True,
             )
+            == "pass"
+        )
+
+    def test_autobase_no_review_comment_ran_and_draft_passes(self):
+        # #1733: same draft carve-out on the autobase path.
+        commits = [
+            ("2026-07-01T10:00:00Z", "Osasuwu"),
+            ("2026-07-01T11:00:00Z", AUTOBASE_BOT),
+        ]
+        head = "2026-07-01T11:00:00Z"
+        assert (
+            verdict_autobase([], commits, head, autobase=True, ran=True, is_draft=True)
             == "pass"
         )
 
@@ -2172,6 +2199,22 @@ class TestInFlightWiring:
             "The fall-through pass notice must state which signal it relied on, "
             "so a pass is auditable from the log without re-deriving it "
             "(#1434 AC3)."
+        )
+
+    def test_draft_is_carved_out_of_the_exec_file_gate(self, zero_branch):
+        # #1733: the ran-but-silent (EXEC_FILE-present) check must ALSO respect
+        # IS_DRAFT, not just the later HAS_CODE gate — the plugin declines
+        # drafts by design, so a clean run with zero comments on a draft is a
+        # legitimate skip, not silent failure (PR #1726 was blocked by this).
+        exec_file_line = next(
+            line for line in zero_branch.splitlines() if "EXEC_FILE" in line and "-f" in line
+        )
+        assert "IS_DRAFT" in exec_file_line, (
+            "The `[ -n \"$EXEC_FILE\" ] && [ -f \"$EXEC_FILE\" ]` condition must "
+            "also require IS_DRAFT != true before failing closed (#1733) — a "
+            "draft PR's clean-but-silent run must fall through to the "
+            "genuine-skip pass, not hard-fail before the IS_DRAFT carve-out "
+            "that only ever guarded the later HAS_CODE check."
         )
 
 
