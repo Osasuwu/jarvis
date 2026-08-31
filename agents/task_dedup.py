@@ -32,12 +32,19 @@ def row_issue_number(row: dict[str, Any], goal: str) -> int | None:
 
     ``row["issue_number"]`` is populated for every row enqueued after the
     #1085 S1-1/S1-2 migration; legacy/null rows (enqueued before the column
-    existed, or via a path that never set it) fall back to
+    existed, or via a path that never set it) fall back to ``target_number``
+    when ``target_type == "issue"`` (#1119 — the structured-pin path is now
+    the primary way ``issue_number`` gets populated, so a row enqueued via
+    pins alone must still resolve here), then to
     :func:`pr_evidence.goal_issue_number` parsing ``goal`` — the pre-#1085 behavior.
     """
     value = row.get("issue_number")
     if value is not None:
         return int(value)
+    if row.get("target_type") == "issue":
+        target_number = row.get("target_number")
+        if target_number is not None:
+            return int(target_number)
     return pr_evidence.goal_issue_number(goal)
 
 

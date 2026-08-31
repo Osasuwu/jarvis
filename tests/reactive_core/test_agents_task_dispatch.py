@@ -1861,6 +1861,57 @@ class TestLocalDrainUntilTerminal:
         assert result == {"t1": "pending"}
         assert run_once_calls == 1
 
+    def test_stops_waiting_once_task_is_parked(self) -> None:
+        """#1119: parked is no longer in TERMINAL_STATES, but this loop still
+        stops waiting on a parked task_id — parking means the row needs
+        owner/unpark intervention outside this local-drain loop's control, so
+        polling further would just spin until max_iterations.
+        """
+        run_once_calls = 0
+
+        def fake_run_once() -> None:
+            nonlocal run_once_calls
+            run_once_calls += 1
+
+        result = local_drain_until_terminal(
+            ["t1"],
+            heartbeat_check=lambda: HeartbeatStatus(state="stale"),
+            run_once=fake_run_once,
+            get_statuses=lambda _ids: {"t1": "parked"},
+            sleep=lambda _seconds: None,
+        )
+
+        assert result == {"t1": "parked"}
+        assert run_once_calls == 0
+
+    def test_keeps_waiting_when_status_missing(self) -> None:
+        """A task_id absent from the batch response is not yet resolved —
+        unlike parked, a missing status must not stop the loop early.
+        """
+        status_sequence = [{}, {"t1": "done"}]
+        get_statuses_calls: list[list[str]] = []
+
+        def fake_get_statuses(task_ids: list[str]) -> dict[str, str]:
+            get_statuses_calls.append(list(task_ids))
+            return status_sequence[len(get_statuses_calls) - 1]
+
+        run_once_calls = 0
+
+        def fake_run_once() -> None:
+            nonlocal run_once_calls
+            run_once_calls += 1
+
+        result = local_drain_until_terminal(
+            ["t1"],
+            heartbeat_check=lambda: HeartbeatStatus(state="stale"),
+            run_once=fake_run_once,
+            get_statuses=fake_get_statuses,
+            sleep=lambda _seconds: None,
+        )
+
+        assert result == {"t1": "done"}
+        assert run_once_calls == 1
+
     def test_empty_task_ids_is_noop(self) -> None:
         calls = {"heartbeat": 0, "run_once": 0, "get_statuses": 0}
 

@@ -1,13 +1,21 @@
-"""DB-gated tests for task_queue.enqueue()'s issue_number CAS (#1085 S1-3).
+"""DB-gated tests for task_queue.enqueue()'s target-pin CAS (#1085 S1-3, #1119).
 
 Unit tests in tests/reactive_core/test_agents_task_queue.py cover enqueue()'s
 collision-handling code path against a hand-rolled stub that mimics Postgres's
 unique-violation behavior. That proves the Python is correct, not that the
-partial unique index (idx_task_queue_issue_number_active, scoped to
-pending/claimed/running rows) actually enforces the CAS. This file runs the
-same enqueue() call against real Postgres, applying the REAL migration
-(supabase/migrations/20260811163000_add_task_queue_issue_number.sql) on top
-of the pre-#1085 table shape, so the constraint itself is under test.
+partial unique index actually enforces the CAS. This file runs the same
+enqueue() call against real Postgres, applying the REAL migrations
+(supabase/migrations/20260811163000_add_task_queue_issue_number.sql, then
+supabase/migrations/20260831120000_task_queue_pins_tier_substrate_parked_fsm.sql)
+on top of the pre-#1085 table shape, so the constraint itself is under test.
+
+#1119 replaced idx_task_queue_issue_number_active with
+idx_task_queue_target_active on (target_repo, target_type, target_number),
+scoped to pending/claimed/running/parked (parked added because #1119 made it
+non-terminal — decision f24ad617). enqueue() still derives those pin columns
+from issue_number when the caller doesn't pass them explicitly, so most tests
+below keep using issue_number as the ergonomic entry point; the CAS itself now
+keys on the derived columns, which the new test cases assert directly.
 
 enqueue() is written against the supabase-py/postgrest client interface, but
 the DB-gated CI convention (pytest-db, pytest-db-pgvector) only stands up raw
@@ -139,8 +147,17 @@ def _key() -> str:
     return uuid.uuid4().hex
 
 
-class TestIssueNumberCAS:
-    """Real-constraint proof for idx_task_queue_issue_number_active (#1085 S1-3)."""
+class TestTargetActiveCAS:
+    """Real-constraint proof for idx_task_queue_target_active (#1119).
+
+    #1119 replaced idx_task_queue_issue_number_active with a structured-pin
+    index on (target_repo, target_type, target_number), scoped to
+    pending/claimed/running/parked. issue_number is still the ergonomic
+    kwarg callers pass, but enqueue() now derives the pin columns from it
+    (agents/task_queue.py) and the CAS actually keys on those. parked is
+    new to the scoped set here — decision f24ad617 made parked non-terminal,
+    so a parked row must still occupy the CAS slot instead of freeing it.
+    """
 
     def test_same_idempotency_key_collision_returns_none(self, db_connection: Any) -> None:
         client = _FakeClient(db_connection)
@@ -178,6 +195,38 @@ class TestIssueNumberCAS:
         second = enqueue(goal="g2", idempotency_key=_key(), issue_number=303, client=client)
         assert second is not None
         assert second["issue_number"] == 303
+
+    def test_issue_number_derived_pin_is_what_cas_keys_on(self, db_connection: Any) -> None:
+        """#1119: the index is on (target_repo, target_type, target_number),
+        not issue_number directly — prove the derived pin is what fires."""
+        client = _FakeClient(db_connection)
+
+        first = enqueue(goal="g1", idempotency_key=_key(), issue_number=404, client=client)
+        assert first is not None
+        assert first["target_type"] == "issue"
+        assert first["target_number"] == 404
+        assert first["target_repo"]
+
+        second = enqueue(goal="g2", idempotency_key=_key(), issue_number=404, client=client)
+        assert second is None
+
+    def test_parked_row_still_blocks_new_enqueue(self, db_connection: Any) -> None:
+        """#1119: parked is non-terminal now and included in the index's
+        where clause, so a parked row's pin must keep blocking a re-enqueue
+        (unlike the pre-#1119 world where parked was terminal and freed the
+        slot)."""
+        client = _FakeClient(db_connection)
+
+        first = enqueue(goal="g1", idempotency_key=_key(), issue_number=505, client=client)
+        assert first is not None
+
+        with db_connection.cursor() as cur:
+            cur.execute(
+                "UPDATE task_queue SET status = 'parked' WHERE id = %(id)s", {"id": first["id"]}
+            )
+
+        second = enqueue(goal="g2", idempotency_key=_key(), issue_number=505, client=client)
+        assert second is None
 
 
 if __name__ == "__main__":

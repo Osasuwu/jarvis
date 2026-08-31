@@ -22,6 +22,7 @@ from unittest import mock
 
 import pytest
 
+from agents import orchestrator
 from agents.github_client import (
     GitHubClient,
     HttpxGitHubClient,
@@ -1399,6 +1400,23 @@ class TestRedriveIdempotency:
         }
         decision = handle_event(event)
         # Should escalate, not re-drive (attempt >= MAX_ATTEMPTS)
+        assert decision.route == Route.ESCALATE
+
+    def test_ceiling_is_ladder_derived_not_hardcoded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Ceiling comes from :func:`default_attempt_ceiling` (#1119), not a
+        hardcoded constant — with a 1-slot ladder, attempt=1 escalates."""
+        monkeypatch.setattr(orchestrator, "default_attempt_ceiling", lambda: 1)
+        event = {
+            "event_type": "task_done",
+            "severity": "medium",
+            "payload": {
+                "task_id": "t123",
+                "attempt": 1,
+                "pr_evidence": False,
+                "goal": "implement feature",
+            },
+        }
+        decision = handle_event(event)
         assert decision.route == Route.ESCALATE
 
 

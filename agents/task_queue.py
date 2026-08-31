@@ -1,7 +1,10 @@
 """Task queue interface — enqueue, claim_next, transition.
 
 Built on the reshaped ``task_queue`` table (issue #740):
-- FSM: ``pending → claimed → running → done | failed | parked | skipped_duplicate``
+- FSM (#1119: ``parked`` is non-terminal — a parked row unparks back to
+  ``pending`` and resumes through the normal drain):
+  ``pending → claimed → running → done | failed | skipped_duplicate``
+  ``claimed → parked``, ``running → parked``, ``parked → pending``
 - Priority-ordered claiming (highest first, FIFO for ties)
 - Idempotency-key dedup (colliding key on enqueue is a silent no-op)
 
@@ -25,6 +28,7 @@ Usage::
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -39,13 +43,17 @@ from agents.supabase_client import get_client
 
 _VALID_TRANSITIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"claimed"}),
-    "claimed": frozenset({"running"}),
+    "claimed": frozenset({"running", "parked"}),
     "running": frozenset({"done", "failed", "parked", "skipped_duplicate"}),
+    # #1119: parked is non-terminal — its only legal edge is back to pending
+    # (unpark), which resumes the row through the normal claim/drain cycle.
+    "parked": frozenset({"pending"}),
 }
 
 # `skipped_duplicate` (#931): dispatch-dedup found a live PR (or a live sibling
 # row) for the task's issue after the running transition — terminal, no retry.
-_TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "parked", "skipped_duplicate"})
+# `parked` is deliberately excluded (#1119) — it is a non-terminal hold state.
+_TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "skipped_duplicate"})
 
 # Public alias — #1085 S3-2's local-drain loop polls against this from
 # agents/task_dispatch.py without reaching into the private FSM constant.
@@ -64,6 +72,12 @@ def enqueue(
     scope_files: list[str] | None = None,
     escalated_reason: str | None = None,
     issue_number: int | None = None,
+    target_repo: str | None = None,
+    target_type: str | None = None,
+    target_number: int | None = None,
+    target_branch: str | None = None,
+    tier: str | None = None,
+    substrate: str | None = None,
     client: Client | None = None,
 ) -> dict[str, Any] | None:
     """Insert a task into the queue.
@@ -84,6 +98,18 @@ def enqueue(
     rows with no genuine issue target (PR-target/no-target orchestrator
     events) — NULLs never collide with each other or with anything else.
 
+    ``target_repo``/``target_type``/``target_number``/``target_branch``
+    (#1119) are the structured pin columns. When ``issue_number`` is given
+    and the explicit target_* kwargs are omitted, they default to
+    ``target_type="issue"``, ``target_number=issue_number``, and
+    ``target_repo`` from the ``GITHUB_REPO`` env var (default
+    ``Osasuwu/jarvis``), mirroring
+    :func:`agents.github_client.default_github_client`'s default pattern.
+    Explicit kwargs always win. With no ``issue_number`` and no explicit
+    target_* kwargs, none of these columns are written (legacy PR-target/
+    no-target callers are unaffected). ``tier``/``substrate`` are plain
+    passthrough columns with no derivation.
+
     Returns the inserted row, or ``None`` if the idempotency key or the
     issue-number CAS collided.
     """
@@ -102,6 +128,28 @@ def enqueue(
         row["escalated_reason"] = escalated_reason
     if issue_number is not None:
         row["issue_number"] = issue_number
+
+    if target_repo is not None:
+        row["target_repo"] = target_repo
+    elif issue_number is not None:
+        row["target_repo"] = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
+
+    if target_type is not None:
+        row["target_type"] = target_type
+    elif issue_number is not None:
+        row["target_type"] = "issue"
+
+    if target_number is not None:
+        row["target_number"] = target_number
+    elif issue_number is not None:
+        row["target_number"] = issue_number
+
+    if target_branch is not None:
+        row["target_branch"] = target_branch
+    if tier is not None:
+        row["tier"] = tier
+    if substrate is not None:
+        row["substrate"] = substrate
 
     # #1455 AC5: upsert with ignore_duplicates is the only PostgREST call
     # shape whose duplicate-key outcome is empty data — a bare insert raises
@@ -477,6 +525,9 @@ def list_active(
     already working the same issue. ``id``, ``goal``, ``status`` and
     ``issue_number`` are selected — the dedup predicate prefers the column
     (#1085 S1-5) and falls back to parsing ``goal`` only for legacy/null rows.
+    ``target_repo``/``target_type``/``target_number`` (#1119) are selected
+    too so the predicate also resolves rows enqueued via the structured-pin
+    path alone.
     Two ``eq`` queries instead of ``in_`` keeps the call compatible with the
     minimal client stubs used across the test suite.
     """
@@ -486,7 +537,7 @@ def list_active(
         rows.extend(
             (
                 cli.table("task_queue")
-                .select("id, goal, status, issue_number")
+                .select("id, goal, status, issue_number, target_repo, target_type, target_number")
                 .eq("status", status)
                 .execute()
             ).data

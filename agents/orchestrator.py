@@ -28,15 +28,17 @@ from typing import Any, Callable, Mapping
 
 from agents import safety, task_queue
 from agents.github_client import parse_goal_shape
+from agents.sandcastle_config import default_attempt_ceiling
 from agents.task_dispatch import format_lineage_key
 
 logger = logging.getLogger(__name__)
 
 # Re-drive ceiling (#953 AC7). A task that produced no PR evidence is re-driven
-# at most once; ``attempt >= MAX_ATTEMPTS`` escalates to the owner instead of
-# looping. ``attempt`` is carried on the event payload (1 for the first spawn),
-# so the ceiling is enforced from data, not from a counter the router holds.
-MAX_ATTEMPTS = 2
+# up to the ladder-derived ceiling (#1119 — one attempt per configured slot,
+# see agents/sandcastle_config.py); ``attempt >= default_attempt_ceiling()``
+# escalates to the owner instead of looping. ``attempt`` is carried on the
+# event payload (1 for the first spawn), so the ceiling is enforced from
+# data, not from a counter the router holds.
 
 # Severity ordering — strictly monotonic so priority never ties across tiers.
 _SEVERITY_RANK: dict[str, int] = {
@@ -365,15 +367,16 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         # task_done + pr_evidence=true → inline no-op (PR exists, done).
         if pr_evidence is True:
             return _inline_noop(event_type, severity, target, key)
-        # task_done + pr_evidence=false + attempt < MAX_ATTEMPTS → re-drive (AC7).
+        # task_done + pr_evidence=false + attempt < ceiling → re-drive (AC7).
         # Default to 1 only when absent/None — an explicit 0 is a valid attempt
         # number and must NOT be coerced (``0 or 1`` → 1 mis-numbered lineage,
         # MAJOR #1011).
         attempt = _attempt_of(payload)
-        if pr_evidence is False and attempt < MAX_ATTEMPTS:
+        ceiling = default_attempt_ceiling()
+        if pr_evidence is False and attempt < ceiling:
             return _redrive(event_type, severity, target, payload, attempt)
-        # task_done + pr_evidence=false + attempt >= MAX_ATTEMPTS → escalate (no more re-drives).
-        if pr_evidence is False and attempt >= MAX_ATTEMPTS:
+        # task_done + pr_evidence=false + attempt >= ceiling → escalate (no more re-drives).
+        if pr_evidence is False and attempt >= ceiling:
             return _escalate(
                 event_type,
                 severity,
@@ -433,12 +436,13 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
                 reason="task_failed with unparseable goal (pr_evidence=null)",
             )
 
-        # task_failed + exit_confirmed=true + pr_evidence=false + attempt < MAX_ATTEMPTS → re-drive.
-        if pr_evidence is False and attempt < MAX_ATTEMPTS:
+        # task_failed + exit_confirmed=true + pr_evidence=false + attempt < ceiling → re-drive.
+        ceiling = default_attempt_ceiling()
+        if pr_evidence is False and attempt < ceiling:
             return _redrive(event_type, severity, target, payload, attempt)
 
-        # task_failed + exit_confirmed=true + pr_evidence=false + attempt >= MAX_ATTEMPTS → escalate.
-        if pr_evidence is False and attempt >= MAX_ATTEMPTS:
+        # task_failed + exit_confirmed=true + pr_evidence=false + attempt >= ceiling → escalate.
+        if pr_evidence is False and attempt >= ceiling:
             return _escalate(
                 event_type,
                 severity,

@@ -149,29 +149,30 @@ class TestBlockingTaskStillRunning:
 
 
 # ===========================================================================
-# AC2b: parked task is terminal → event requeued (#964 MAJOR #1)
+# AC2b (#1119): parked task is non-terminal → event stays parked
 # ===========================================================================
 
 
 class TestBlockingTaskParked:
-    """A ``parked`` blocking task is terminal — the event must be re-queued.
+    """A ``parked`` blocking task is non-terminal (#1119) — the event must
+    stay parked, same as a still-``running`` blocking task.
 
-    ``parked`` is in ``task_queue._TERMINAL_STATES`` and the FSM blocks any
-    transition out of it, so a parked task never advances to ``done``. Leaving
-    the event parked would strand it forever; the poller releases it so the
-    orchestrator can re-route.
+    ``parked`` is no longer in ``task_queue._TERMINAL_STATES``: its only
+    legal edge is back to ``pending`` (unpark), after which it resumes
+    through the normal claim/drain cycle and may still reach ``done`` or
+    ``failed``. Requeueing the blocked event early would hand it to the
+    orchestrator before the blocking task's outcome is known.
     """
 
-    def test_requeues_event_when_task_parked(self):
+    def test_does_not_requeue_event_when_task_parked(self):
         port = FakePollerPort(
             events=[_ev("e1", task_id="t1")],
             tasks=[_task("t1", "parked")],
         )
         n = poller.poll(port)
-        assert n == 1
-        assert port.state_of("e1") == "pending"
-        assert len(port.requeue_calls) == 1
-        assert "parked" in port.requeue_calls[0][1]
+        assert n == 0
+        assert port.state_of("e1") == "parked"
+        assert port.requeue_calls == []
 
 
 # ===========================================================================
@@ -194,7 +195,7 @@ class TestBlockingTaskFailed:
         assert "failed" in port.requeue_calls[0][1]
 
     def test_mixed_states_only_requeues_terminal(self):
-        """Terminal tasks (done/failed/parked) requeue; only running stays."""
+        """Terminal tasks (done/failed) requeue; running/parked (#1119) stay."""
         port = FakePollerPort(
             events=[
                 _ev("e-done", task_id="t-done"),
@@ -210,11 +211,11 @@ class TestBlockingTaskFailed:
             ],
         )
         n = poller.poll(port)
-        assert n == 3  # done + failed + parked (all terminal)
+        assert n == 2  # done + failed only — parked (#1119) is non-terminal now
         assert port.state_of("e-done") == "pending"
         assert port.state_of("e-failed") == "pending"
-        assert port.state_of("e-parked") == "pending"
-        assert port.state_of("e-running") == "parked"  # only non-terminal stays
+        assert port.state_of("e-parked") == "parked"  # non-terminal, stays
+        assert port.state_of("e-running") == "parked"  # non-terminal, stays
 
 
 # ===========================================================================

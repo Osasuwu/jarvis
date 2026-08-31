@@ -12,6 +12,7 @@ import pytest
 from postgrest.exceptions import APIError as _RealAPIError
 
 from agents.task_queue import (
+    TERMINAL_STATES,
     _TERMINAL_STATES,
     _VALID_TRANSITIONS,
     claim_next,
@@ -179,8 +180,10 @@ class _StubTable:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
         self._rows = rows
         self.calls: list[Any] = []
+        self.select_calls: list[str | None] = []
 
     def select(self, *args: Any, **kwargs: Any) -> _StubSelect:
+        self.select_calls.append(args[0] if args else None)
         return _StubSelect(self, self._rows)
 
     def insert(self, payload: dict[str, Any]) -> _StubInsert:
@@ -440,6 +443,83 @@ class TestEnqueue:
         assert row is not None
         assert row["issue_number"] == 1085
 
+    def test_issue_number_derives_target_pin(
+        self, client: _StubClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#1119: enqueue(issue_number=N) with no explicit target_* kwargs
+        derives target_type="issue", target_number=N, and target_repo from
+        GITHUB_REPO (default Osasuwu/jarvis), mirroring
+        github_client.default_github_client()'s default pattern."""
+        monkeypatch.delenv("GITHUB_REPO", raising=False)
+        row = enqueue(
+            goal="issue-scoped task",
+            idempotency_key="key-target-derive",
+            issue_number=1119,
+            client=client,
+        )
+        assert row is not None
+        assert row["target_type"] == "issue"
+        assert row["target_number"] == 1119
+        assert row["target_repo"] == "Osasuwu/jarvis"
+
+    def test_issue_number_derives_target_repo_from_env(
+        self, client: _StubClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("GITHUB_REPO", "SergazyNarynov/redrobot")
+        row = enqueue(
+            goal="issue-scoped task",
+            idempotency_key="key-target-env",
+            issue_number=1119,
+            client=client,
+        )
+        assert row is not None
+        assert row["target_repo"] == "SergazyNarynov/redrobot"
+
+    def test_explicit_target_kwargs_pass_through_unchanged(self, client: _StubClient) -> None:
+        """#1119: explicit target_* kwargs override the issue_number-derived
+        defaults — a caller that already knows the pin wins outright."""
+        row = enqueue(
+            goal="explicit target",
+            idempotency_key="key-target-explicit",
+            issue_number=1119,
+            target_repo="SergazyNarynov/redrobot",
+            target_type="pr",
+            target_number=42,
+            target_branch="feat/42-thing",
+            tier="core",
+            substrate="sandbox",
+            client=client,
+        )
+        assert row is not None
+        assert row["target_repo"] == "SergazyNarynov/redrobot"
+        assert row["target_type"] == "pr"
+        assert row["target_number"] == 42
+        assert row["target_branch"] == "feat/42-thing"
+        assert row["tier"] == "core"
+        assert row["substrate"] == "sandbox"
+
+    def test_target_kwargs_omitted_when_none_and_no_issue_number(
+        self, client: _StubClient
+    ) -> None:
+        """#1119: a caller with no issue_number and no explicit target_*
+        kwargs gets none of the new columns written — unaffected legacy
+        callers (PR-target/no-target orchestrator events)."""
+        row = enqueue(
+            goal="no target",
+            idempotency_key="key-notarget",
+            client=client,
+        )
+        assert row is not None
+        for col in (
+            "target_repo",
+            "target_type",
+            "target_number",
+            "target_branch",
+            "tier",
+            "substrate",
+        ):
+            assert col not in row
+
 
 # ===========================================================================
 # claim_next
@@ -603,12 +683,20 @@ class TestTransition:
             transition("tq-claimed", "done", client=client)
 
     def test_transition_from_terminal_state(self, client: _StubClient) -> None:
-        for terminal in ("done", "failed", "parked"):
+        for terminal in ("done", "failed"):
             rows = [_running(id=f"tq-{terminal}", status=terminal)]
             c = _StubClient()
             c.seed("task_queue", rows)
             with pytest.raises(ValueError, match="terminal state"):
                 transition(f"tq-{terminal}", "claimed", client=c)
+
+    def test_parked_to_claimed_is_illegal_not_terminal(self, client: _StubClient) -> None:
+        """#1119 AC1: parked is non-terminal now, so transitioning off it hits
+        the 'Illegal transition' branch, not the terminal-state branch — only
+        transition(id, "pending") (unpark) is a legal edge out of parked."""
+        client.seed("task_queue", [_running(id="tq-parked", status="parked")])
+        with pytest.raises(ValueError, match="Illegal transition"):
+            transition("tq-parked", "claimed", client=client)
 
     def test_task_not_found(self, client: _StubClient) -> None:
         with pytest.raises(RuntimeError, match="Task not found"):
@@ -673,6 +761,31 @@ class TestFSMDefinition:
                 assert target in all_states, (
                     f"Transition {state} -> {target}: {target!r} is not a valid state"
                 )
+
+    def test_parked_is_non_terminal_and_can_unpark(self) -> None:
+        """#1119 AC1: parked becomes non-terminal — claimed can park directly,
+        and a parked row's only legal edge is back to pending (unpark)."""
+        assert "parked" not in _TERMINAL_STATES
+        assert "parked" not in TERMINAL_STATES
+        assert _VALID_TRANSITIONS["parked"] == frozenset({"pending"})
+        assert _VALID_TRANSITIONS["claimed"] == frozenset({"running", "parked"})
+
+
+# ===========================================================================
+# parked <-> pending (#1119 AC1) — parked is non-terminal
+# ===========================================================================
+
+
+class TestParkedNonTerminal:
+    def test_unpark_parked_to_pending(self, client: _StubClient) -> None:
+        client.seed("task_queue", [_running(id="tq-parked", status="parked")])
+        row = transition("tq-parked", "pending", client=client)
+        assert row["status"] == "pending"
+
+    def test_claimed_to_parked(self, client: _StubClient) -> None:
+        client.seed("task_queue", [_claimed()])
+        row = transition("tq-claimed", "parked", client=client)
+        assert row["status"] == "parked"
 
 
 # ===========================================================================
@@ -972,3 +1085,16 @@ class TestListActive:
 
     def test_empty_queue(self, client: _StubClient) -> None:
         assert list_active(client=client) == []
+
+    def test_select_includes_target_pin_columns(self, client: _StubClient) -> None:
+        """#1119: the sibling-dedup predicate must also resolve rows enqueued
+        via the structured-pin path alone, so list_active's select() has to
+        fetch target_repo/target_type/target_number alongside the existing
+        columns."""
+        list_active(client=client)
+        table = client.table("task_queue")
+        assert table.select_calls, "list_active must call select()"
+        for cols in table.select_calls:
+            assert cols is not None
+            names = {c.strip() for c in cols.split(",")}
+            assert {"id", "goal", "status", "issue_number", "target_repo", "target_type", "target_number"} <= names
