@@ -10,12 +10,12 @@ reached a terminal state and re-queues the event accordingly.
   the re-queued event is drained within that same tick, not the next one.
 - Task ``failed`` → event is re-queued to ``pending`` (not silently dropped;
   the orchestrator will re-route it per the deterministic routing table).
-- Task ``parked`` → event is re-queued to ``pending`` as well. ``parked`` is a
-  *terminal* task state (``task_queue._TERMINAL_STATES``) — the blocking task
-  will never advance to ``done``, so leaving the event parked strands it
-  forever. Requeueing hands it back to the orchestrator to re-route, with a
-  distinct reason so the cause is recoverable.
-- Task still ``running`` (or no such task) → event stays ``parked``.
+- Task ``parked`` (#1119: non-terminal — a hold state, not a dead end) →
+  event stays ``parked``, same as a still-``running`` task. The blocking
+  task will unpark back to ``pending`` and resume through the normal
+  claim/drain cycle, so requeueing the blocked event early would hand it to
+  the orchestrator before the blocking task's real outcome is known.
+- Task still ``running`` or ``parked``, or no such task → event stays ``parked``.
 - ``blocked_by_task_id`` column NULL → skipped (parked for a different
   reason, e.g. the #1385 poison-pill path — those stay parked for a human).
 
@@ -87,15 +87,15 @@ class PollerPort(Protocol):
 
 
 # Task FSM states that release a parked event back to ``pending``, mapped to the
-# clause used in the requeue reason. All three are terminal in
+# clause used in the requeue reason. Each is terminal in
 # ``task_queue._TERMINAL_STATES``: a blocking task in any of them will never
-# advance, so the waiting event must be re-routed by the orchestrator rather
-# than stranded. ``parked`` is the #964 fix — it is terminal too, so an event
-# blocked on a parked task was previously stranded forever.
+# advance further, so the waiting event must be re-routed by the orchestrator
+# rather than stranded. ``parked`` is deliberately excluded (#1119) — it is
+# a non-terminal hold state now, so an event blocked on a parked task stays
+# parked until the blocking task unparks and reaches a real terminal state.
 _REQUEUE_REASONS: dict[str, str] = {
     "done": "completed",
     "failed": "failed",
-    "parked": "parked (terminal) — orchestrator re-routes",
     # #931: a task skipped as a duplicate is terminal — an event blocked on it
     # will never see it advance, so re-route rather than strand it. The live PR /
     # sibling row that triggered the skip is the work the event should follow.
@@ -117,10 +117,10 @@ def poll(port: PollerPort) -> int:
 
     For each parked event:
     - If the blocking task reached a terminal state (``done`` / ``failed`` /
-      ``parked``) → requeue the event. The orchestrator re-routes it — it is
-      never silently dropped.
-    - If the blocking task is still ``running``, or the task no longer
-      exists → leave the event parked.
+      ``skipped_duplicate``) → requeue the event. The orchestrator re-routes
+      it — it is never silently dropped.
+    - If the blocking task is still ``running`` or ``parked`` (#1119:
+      non-terminal), or the task no longer exists → leave the event parked.
 
     Returns the number of events requeued.
 

@@ -2714,13 +2714,14 @@ $$;
 -- Issue #740: Reshaped task_queue — drop approval columns, add
 -- priority/assignee, new FSM.
 --
--- FSM transitions (enforced in the interface; DB check guards the enum):
+-- FSM transitions (enforced in the interface; DB check guards the enum).
+-- parked is non-terminal as of #1119 -- a parked row never spawns, but
+-- unpark (transition(id, "pending")) resumes it through the normal drain:
 --   pending  -> claimed
---   claimed  -> running
---   running  -> done | failed | parked
---   done     -> (terminal)
---   failed   -> (terminal)
---   parked   -> (terminal)
+--   claimed  -> running | parked
+--   running  -> done | failed | parked | skipped_duplicate
+--   parked   -> pending
+--   done, failed, skipped_duplicate -> (terminal)
 --
 -- Interface: agents/task_queue.py exposes enqueue(), claim_next()
 -- (priority-ordered), and transition().
@@ -2771,6 +2772,25 @@ create table if not exists task_queue (
   -- supabase/migrations/20260825100000_add_task_queue_replan_count.sql.
   replan_count integer not null default 0,
 
+  -- Structured pins (#1119): supersede issue_number as the CAS key so a row
+  -- can address any spawn target, not just a jarvis issue. Backfilled from
+  -- issue_number; issue_number kept as a deprecated mirror (drop = follow-up
+  -- slice). Nullable, no check constraints. Keep in lockstep with
+  -- supabase/migrations/20260831120000_task_queue_pins_tier_substrate_parked_fsm.sql.
+  target_repo text,
+  target_type text,
+  target_number int,
+  target_branch text,
+
+  -- Sandcastle execution tier for this row/attempt (#1119). Nullable text,
+  -- no check constraint -- slot names are operator config
+  -- (config/sandcastle.yaml), not a fixed enum.
+  tier text,
+
+  -- Execution substrate for this row (#1119, decision c5e2e14a). Nullable
+  -- text, no check constraint.
+  substrate text,
+
   -- Timestamps
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -2781,13 +2801,15 @@ create index if not exists idx_task_queue_pending_scan
   on task_queue(priority desc, created_at asc)
   where status = 'pending';
 
--- Per-issue CAS (#1085 S1-1): a unique index on issue_number scoped to
--- non-terminal rows means two rows targeting the same issue cannot both be
--- pending/claimed/running at once. Nullable-column unique index allows
--- unlimited NULLs, so PR-target/legacy rows never collide with each other.
-create unique index if not exists idx_task_queue_issue_number_active
-  on task_queue(issue_number)
-  where status in ('pending', 'claimed', 'running');
+-- Target-based CAS (#1119): a unique index on (target_repo, target_type,
+-- target_number) scoped to non-terminal rows means two rows targeting the
+-- same spawn target cannot both be pending/claimed/running/parked at once.
+-- parked joins this set because it is non-terminal as of #1119. Supersedes
+-- idx_task_queue_issue_number_active (#1085 S1-1). Nullable-column unique
+-- index allows unlimited NULLs, so untargeted/legacy rows never collide.
+create unique index if not exists idx_task_queue_target_active
+  on task_queue(target_repo, target_type, target_number)
+  where status in ('pending', 'claimed', 'running', 'parked');
 
 -- Dedicated updated_at trigger. The memories-shared update_updated_at()
 -- references last_accessed_at/fts/project_key -- columns task_queue does

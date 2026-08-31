@@ -413,17 +413,26 @@ def test_drain_own_row_is_not_a_sibling():
     assert res.skipped_duplicate == 0
 
 
-def test_drain_stale_branch_parks_for_owner_attention():
+def test_drain_stale_branch_skips_as_duplicate():
+    # #1119: parked is now a genuinely resumable non-terminal state (unpark
+    # -> pending), but nothing unparks a stale claim-branch — routing it
+    # through "parked" would hang it forever. skipped_duplicate is the
+    # terminal dead-end downstream dedup/poller consumers already handle.
     q = _Queue([_task("t1", "Implement #931 dispatch dedup")])
+    outcomes: list[dict] = []
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([], ["feat/931-dispatch-dedup"]),
         list_active_rows=lambda: [],
+        record_outcome=outcomes.append,
     )
     res = _drain(q, cfg)
     assert res.spawned == 0
-    parked = [(t, r) for t, s, r in q.transitions if s == "parked"]
-    assert parked and parked[0][0] == "t1"
-    assert "owner attention" in parked[0][1]
+    assert res.skipped_duplicate == 1
+    skip = [(t, r) for t, s, r in q.transitions if s == "skipped_duplicate"]
+    assert skip and skip[0][0] == "t1"
+    assert "feat/931-dispatch-dedup" in skip[0][1]
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+    assert len(outcomes) == 1
 
 
 def test_drain_fetch_failure_requeues_and_stops():

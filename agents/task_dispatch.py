@@ -109,6 +109,14 @@ DEFAULT_RUNNING_REAP_SECONDS = 6 * 60 * 60
 # terminal state between ``wake_driver --once`` ticks.
 DEFAULT_LOCAL_DRAIN_POLL_SECONDS = 2.0
 
+# #1119: statuses this loop still considers "in flight" and worth waiting on.
+# Deliberately narrower than task_queue.TERMINAL_STATES — a local-drain tick
+# can only ever spawn work forward, and a parked row can never be advanced by
+# a local spawn (only an external unpark actor can do that), so from this
+# loop's perspective a parked row is done draining even though it is not
+# FSM-terminal.
+_ACTIVE_STATUSES = frozenset({"pending", "claimed", "running"})
+
 # ceiling: flat retry cap (150 x poll_seconds ~= 5 minutes), not derived from
 # the reaper's own timeouts (DEFAULT_RUNNING_REAP_SECONDS is hours). "operator
 # present, blocking OK" (#1085 design) still wants a bound so a genuinely
@@ -1015,12 +1023,16 @@ def drain_tasks(
 
     With ``dedup`` wired (#931), each *fresh-shape* task that references an
     issue is checked after the running transition and before the spawn: a live
-    PR for the issue or a live sibling queue row → ``running →
-    skipped_duplicate`` (terminal, best-effort outcome record) and the drain
-    continues; a stale claim branch with no PR → ``running → parked`` for
-    owner attention; evidence fetch failure → the row is requeued to
-    ``pending`` and the drain stops (unverifiable is never terminal).
-    Rework-shape goals bypass the check — they target a live PR by design.
+    PR for the issue, a live sibling queue row, or a stale claim branch with no
+    PR → ``running → skipped_duplicate`` (terminal, best-effort outcome
+    record); evidence fetch failure → the row is requeued to ``pending`` and
+    the drain stops (unverifiable is never terminal). A stale claim branch is
+    routed to ``skipped_duplicate`` rather than ``parked`` (#1119): nothing
+    unparks a stale-branch row, and ``parked`` is now a genuinely resumable
+    non-terminal state, so parking it would strand the row forever instead of
+    landing it on a terminal dead-end the orchestrator already knows how to
+    re-route. Rework-shape goals bypass the check — they target a live PR by
+    design.
     """
     # AC7a — pre-flight once; an unusable binary skips the whole drain. Widened
     # past FileNotFoundError to the other no-usable-binary failures (not
@@ -1148,10 +1160,10 @@ def drain_tasks(
                     ),
                     None,
                 )
-                if in_flight.verdict == "live_pr" or sibling is not None:
+                if in_flight.verdict in ("live_pr", "stale_branch") or sibling is not None:
                     pointer = (
                         in_flight.pointer
-                        if in_flight.verdict == "live_pr"
+                        if in_flight.verdict in ("live_pr", "stale_branch")
                         else f"live task_queue row {sibling['id']} already targets #{issue_number}"
                     )
                     try:
@@ -1182,19 +1194,6 @@ def drain_tasks(
                                 "[task_dispatch] outcome record for skipped task %s raised",
                                 task_id,
                             )
-                    continue
-                if in_flight.verdict == "stale_branch":
-                    # A claim branch with no open PR is owner-attention territory:
-                    # someone (or some run) claimed the issue and went dark. Park —
-                    # don't spawn over it, don't silently drop it.
-                    try:
-                        port.transition(task_id, "parked", reason=in_flight.pointer)
-                    except Exception:  # noqa: BLE001 — row stays running; reaper backstops
-                        logger.exception(
-                            "[task_dispatch] could not park task %s on stale branch; "
-                            "row left running for the reaper",
-                            task_id,
-                        )
                     continue
 
                 # #1085 S2-3 — /dispatch's own check_issue at enqueue time is
@@ -1553,10 +1552,23 @@ def local_drain_until_terminal(
     ``wake_driver --once`` tick (``run_once``) — concurrency-capped by
     construction, since each tick's ``drain_tasks`` call enforces
     ``DEFAULT_CONCURRENCY_CAP`` on its own — polling ``get_statuses`` between
-    ticks, until every id in ``task_ids`` reaches a
-    :data:`agents.task_queue.TERMINAL_STATES` status, the heartbeat goes fresh
-    again (resident driver recovered), or ``max_iterations`` is exhausted.
-    Operator-present, blocking call by design.
+    ticks, until every id in ``task_ids`` leaves :data:`_ACTIVE_STATUSES`
+    (i.e. is no longer ``pending``/``claimed``/``running``), the heartbeat
+    goes fresh again (resident driver recovered), or ``max_iterations`` is
+    exhausted. Operator-present, blocking call by design.
+
+    ``parked`` is deliberately NOT terminal at the FSM level (#1119) — it is
+    a non-terminal hold state whose only legal edge is back to ``pending``
+    (unpark). But this loop stops waiting on a parked row anyway: a local
+    drain tick can only ever spawn work forward, and a parked row can never
+    be advanced by a local spawn — only an external unpark actor can do
+    that. So a parked row is just as much "nothing more this loop can do"
+    as a genuinely terminal one, even though ``task_queue.TERMINAL_STATES``
+    excludes it. Hence the narrower, purpose-specific ``_ACTIVE_STATUSES``
+    set instead of reusing ``task_queue.TERMINAL_STATES`` directly. A
+    missing/``None`` status (task_id absent from the batch response) is
+    unresolved, not parked — the loop keeps waiting on it (unchanged
+    behavior).
 
     ``heartbeat_check`` re-runs immediately before every spawn: if the driver
     has since become fresh (resident driver recovered, or another local drain
@@ -1591,7 +1603,9 @@ def local_drain_until_terminal(
 
     statuses = get_statuses(ids)
     for _ in range(max_iterations):
-        if all(statuses.get(tid) in task_queue.TERMINAL_STATES for tid in ids):
+        if all(
+            statuses.get(tid) is not None and statuses.get(tid) not in _ACTIVE_STATUSES for tid in ids
+        ):
             return statuses
         if not heartbeat_check().is_stale:
             return statuses

@@ -236,6 +236,8 @@ jobs:
             -f tests/ci/task_queue_schema_bootstrap.sql
           psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
             -f supabase/migrations/20260811163000_add_task_queue_issue_number.sql
+          psql -h localhost -U postgres -d postgres -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20260831120000_task_queue_pins_tier_substrate_parked_fsm.sql
 
       - name: Run DB-gated task_queue issue_number tests
         env:
