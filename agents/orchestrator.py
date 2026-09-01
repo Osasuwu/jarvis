@@ -655,6 +655,7 @@ def dispatch(
             target_type=decision.target_type,
             target_number=decision.target_number,
             origin=decision.origin or "orchestrator",
+            substrate="worktree",
             client=client,
         )
         return DispatchResult(

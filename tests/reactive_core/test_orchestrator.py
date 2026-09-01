@@ -473,6 +473,16 @@ def test_dispatch_emit_task_writes_sandcastle_row():
     assert res.row["status"] == "pending"
 
 
+def test_dispatch_emit_task_stamps_substrate_worktree():
+    """#1121 plan step 7: every EMIT_TASK enqueue is stamped substrate="worktree"
+    so drain_tasks can route it onto the new supervisor path (step 8)."""
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}))
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.enqueued is True
+    assert res.row["substrate"] == "worktree"
+
+
 def test_dispatch_emit_task_redelivery_dedups():
     cli = _FakeClient()
     e = _ev("ci_failure", "high", {"pr": 5, "sha": "abc"})
