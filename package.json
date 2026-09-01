@@ -8,7 +8,8 @@
     "sandcastle:check": "node --experimental-strip-types .sandcastle/check-result-contract.mts",
     "sandcastle:check:dedup-key": "node --experimental-strip-types .sandcastle/check-dedup-key-contract.mts",
     "sandcastle:check:billing-denylist": "node --experimental-strip-types .sandcastle/check-billing-denylist.mts",
-    "sandcastle:check:supabase-key-role": "node --experimental-strip-types .sandcastle/check-supabase-key-role.mts"
+    "sandcastle:check:supabase-key-role": "node --experimental-strip-types .sandcastle/check-supabase-key-role.mts",
+    "sandcastle:check:docker-network": "node --experimental-strip-types .sandcastle/check-docker-network.mts"
   },
   "repository": {
     "type": "git",

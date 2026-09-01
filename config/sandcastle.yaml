@@ -1,5 +1,14 @@
 slots: ["slot-1", "slot-2"]
 
+# Dedicated docker network for the container substrate (#1121 step 13).
+# Segmentation only — the container can't reach other containers/services
+# sitting on the default bridge network. This is NOT egress filtering:
+# outbound internet access from the container is unaffected. Created via
+# `docker network create sandcastle-jarvis` on the host before first run;
+# main.mts's docker() sandbox call passes this through as its `network`
+# option (mattpocock/sandcastle's docker sandbox --network passthrough).
+network: sandcastle-jarvis
+
 # Billing-key denylist consumed by BOTH .sandcastle/main.mts (TS, subscription
 # auth-mode guard) and agents/sandcastle_config.py (Python, spawn-env guard) —
 # single shared config source, not two independently-maintained checks

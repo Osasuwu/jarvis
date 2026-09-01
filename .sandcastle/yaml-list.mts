@@ -24,3 +24,14 @@ export function readYamlStringList(yamlPath: string, key: string): string[] {
   }
   return items;
 }
+
+// Single top-level `key: value` scalar (e.g. `network: sandcastle-jarvis`).
+// Same flat-shape ceiling as readYamlStringList above — one line, no nesting.
+export function readYamlScalar(yamlPath: string, key: string): string {
+  const text = readFileSync(yamlPath, "utf-8");
+  const lines = text.split(/\r?\n/);
+  const line = lines.find((l) => l.trim().startsWith(`${key}:`));
+  if (!line) return "";
+  const value = line.trim().slice(key.length + 1).trim();
+  return value.replace(/^["']|["']$/g, "");
+}
