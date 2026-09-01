@@ -1674,6 +1674,70 @@ class TestEventEmission:
             "even though the goal text names a different issue (#999)"
         )
 
+    def test_task_done_event_payload_carries_target_pins(self) -> None:
+        """#1617 plan step 8: the terminal task_done event payload carries
+        target_repo/target_type/target_number from TrackedProc, so a
+        subsequent re-drive (orchestrator's _redrive) can copy them forward
+        rather than losing the original task's pins at the completion
+        boundary."""
+        emitted: list[dict[str, Any]] = []
+        procs = {
+            "t123": TrackedProc(
+                proc=_FakeProc(0),
+                started_at=0.0,
+                goal="implement feature X",
+                idempotency_key="t123",
+                spawned_at=datetime.now(UTC),
+                target_repo="Osasuwu/jarvis",
+                target_type="pr",
+                target_number=5,
+            )
+        }
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = {"id": 1, "number": 42}
+
+        result = poll_completions(
+            _RecordingPort([]),
+            procs,
+            event_emit=_recording_emit([], emitted),
+            evidence_client=client,
+        )
+
+        assert result.done == 1
+        assert emitted[0]["payload"]["target_repo"] == "Osasuwu/jarvis"
+        assert emitted[0]["payload"]["target_type"] == "pr"
+        assert emitted[0]["payload"]["target_number"] == 5
+
+    def test_task_failed_event_payload_carries_target_pins(self) -> None:
+        """Same as above, on the failed-exit branch (#1617 plan step 8)."""
+        emitted: list[dict[str, Any]] = []
+        procs = {
+            "t123": TrackedProc(
+                proc=_FakeProc(1),
+                started_at=0.0,
+                goal="implement feature X",
+                idempotency_key="t123",
+                spawned_at=datetime.now(UTC),
+                target_repo="Osasuwu/jarvis",
+                target_type="none",
+                target_number=None,
+            )
+        }
+        client = mock.MagicMock()
+        client.get_pull_by_head_branch.return_value = None
+
+        result = poll_completions(
+            _RecordingPort([]),
+            procs,
+            event_emit=_recording_emit([], emitted),
+            evidence_client=client,
+        )
+
+        assert result.failed_exit == 1
+        assert emitted[0]["payload"]["target_repo"] == "Osasuwu/jarvis"
+        assert emitted[0]["payload"]["target_type"] == "none"
+        assert emitted[0]["payload"]["target_number"] is None
+
 
 # =============================================================================
 # AC5: Branch Contract — Goal Augmentation in task_dispatch

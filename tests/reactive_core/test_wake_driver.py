@@ -1288,6 +1288,45 @@ def test_tick_folds_issue_number_column_into_the_tracking_map():
     assert procs["t1"].issue_number == 1085
 
 
+def test_tick_folds_target_pins_into_the_tracking_map():
+    # #1617 AC (plan step 8): target_repo/target_type/target_number ride the
+    # claimed row through spawned_meta onto TrackedProc, the same way
+    # issue_number does above — the re-drive completion chain needs them so a
+    # redrive's Decision can carry the original task's pins forward.
+    proc = _TickProc(rc=None)
+    tq = _RecordingTaskQueue(
+        [],
+        pending=[
+            {
+                "id": "t1",
+                "goal": "g",
+                "assignee": "sandcastle",
+                "idempotency_key": "key-1",
+                "target_repo": "Osasuwu/jarvis",
+                "target_type": "pr",
+                "target_number": 5,
+            }
+        ],
+    )
+    procs: dict = {}
+
+    wake_driver.tick(
+        FakeEventQueue([]),
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_spawn=lambda goal, **_: _SpawnHandle(proc),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+        task_clock=lambda: 42.0,
+    )
+
+    assert procs["t1"].target_repo == "Osasuwu/jarvis"
+    assert procs["t1"].target_type == "pr"
+    assert procs["t1"].target_number == 5
+
+
 def test_tick_batch_shares_one_started_at_stamp():
     # #957 MAJOR (#1011): every proc drained in ONE tick shares the single
     # pre-drain stamp — the clock is sampled once, before the drain, NOT
@@ -1973,6 +2012,10 @@ class _CloseRecordingClient:
 
     def get_issue(self, issue_number: int) -> dict | None:
         """Stub for default_task_dedup's fetch_issue wiring (#1085 S2-3)."""
+        return None
+
+    def get_pull_by_number(self, pr_number: int) -> dict | None:
+        """Stub for default_task_dedup's fetch_pull wiring (#1617)."""
         return None
 
 

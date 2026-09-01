@@ -117,6 +117,17 @@ class Decision:
     # natural severity/target/goal shape, so the structured rendering is
     # bypassed entirely rather than stretched to fit.
     message: str | None = None
+    # #1617: structured target pins for the drain-time readiness gate on
+    # orchestrator-emitted rows. Populated by _classify_target for every
+    # EMIT_TASK route (never by _escalate — escalate rows are owner-assignee
+    # and never reach drain_tasks's sandcastle claim loop). None only for
+    # routes that don't go through _emit/_redrive (inline noop, escalate);
+    # every EMIT_TASK Decision sets target_type explicitly to "pr" or "none"
+    # — never left None — so the drain gate can fail-closed on a NULL column
+    # value without conflating it with a legitimately target-less row.
+    target_repo: str | None = None
+    target_type: str | None = None
+    target_number: int | None = None
 
 
 def priority_for(severity: str) -> int:
@@ -141,6 +152,24 @@ def _target_of(payload: Mapping[str, Any]) -> str:
     return ""
 
 
+def _classify_target(event: Mapping[str, Any], target: str) -> tuple[str, int | None, str]:
+    """Classify ``target`` into the (target_type, target_number, target_repo)
+    pin triple the drain-time readiness gate keys on (#1617).
+
+    A numeric target (PR number, from ``_target_of``'s ``pr``/``pr_number``
+    keys) is a ``"pr"`` target; anything else (workflow name, ref, empty) is
+    explicitly ``"none"`` — never left unclassified, so the gate can treat a
+    NULL column as "emit path forgot to pin" rather than a legitimate
+    target-less row. ``target_repo`` mirrors the own-repo defaulting already
+    used for cross-repo goal-string context (``handle_event``'s ci_failure
+    branch): the event's own ``repo`` field, falling back to
+    ``GITHUB_REPO``/``Osasuwu/jarvis`` for events that don't carry one."""
+    repo = str(event.get("repo") or "") or os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
+    if target.isdigit():
+        return "pr", int(target), repo
+    return "none", None, repo
+
+
 def _idempotency_key(event_type: str, target: str, payload: Mapping[str, Any]) -> str:
     """``sha256(event_type | target | payload-state-discriminator)`` (AC2).
 
@@ -155,7 +184,17 @@ def _idempotency_key(event_type: str, target: str, payload: Mapping[str, Any]) -
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _emit(event_type: str, severity: str, target: str, key: str, *, goal: str) -> Decision:
+def _emit(
+    event_type: str,
+    severity: str,
+    target: str,
+    key: str,
+    *,
+    goal: str,
+    target_type: str | None = None,
+    target_number: int | None = None,
+    target_repo: str | None = None,
+) -> Decision:
     return Decision(
         route=Route.EMIT_TASK,
         event_type=event_type,
@@ -165,6 +204,9 @@ def _emit(event_type: str, severity: str, target: str, key: str, *, goal: str) -
         priority=priority_for(severity),
         goal=goal,
         assignee=_ASSIGNEE_WORKER,
+        target_type=target_type,
+        target_number=target_number,
+        target_repo=target_repo,
     )
 
 
@@ -267,7 +309,14 @@ def _redrive(
     so a re-driven attempt is idempotent on the *lineage*, and a duplicate
     re-observation of the same terminal event collapses onto the same task row
     (the ``task_queue`` unique index absorbs it). ``lineage_key`` falls back to
-    the target then the task id when the payload omits it (older emitters)."""
+    the target then the task id when the payload omits it (older emitters).
+
+    Target pins (#1617) are copied from ``payload`` **unconditionally** —
+    never reclassified from the terminal event, whose own payload is
+    typically target-less (it describes task completion, not a PR/issue).
+    The re-drive is a continuation of the original task, so it must carry the
+    original task's pins forward for the drain-time readiness gate to
+    validate against (e.g. re-driving a rework whose PR has since merged)."""
     next_attempt = attempt + 1
     lineage_key = str(payload.get("lineage_key") or target or payload.get("task_id") or "")
     root_task_id = str(payload.get("task_id") or target or "")
@@ -281,6 +330,9 @@ def _redrive(
         priority=priority_for(severity),
         goal=goal,
         assignee=_ASSIGNEE_WORKER,
+        target_type=payload.get("target_type"),
+        target_number=payload.get("target_number"),
+        target_repo=payload.get("target_repo"),
     )
 
 
@@ -327,20 +379,28 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
         repo = str(event.get("repo") or "")
         own_repo = os.environ.get("GITHUB_REPO", "Osasuwu/jarvis")
         repo_ctx = f" [{repo}]" if repo and repo != own_repo else ""
+        target_type, target_number, target_repo = _classify_target(event, target)
         return _emit(
             event_type,
             severity,
             target,
             key,
             goal=f"fix: ci_failure on {target or 'unknown target'}{repo_ctx}",
+            target_type=target_type,
+            target_number=target_number,
+            target_repo=target_repo,
         )
     if (event_type, severity) == ("review_negative", "medium"):
+        target_type, target_number, target_repo = _classify_target(event, target)
         return _emit(
             event_type,
             severity,
             target,
             key,
             goal=f"/rework {target}".rstrip(),
+            target_type=target_type,
+            target_number=target_number,
+            target_repo=target_repo,
         )
     if event_type == "global_task_due" and severity == "low":
         # Global task due — route through EMIT_TASK. The goal string IS the
@@ -359,7 +419,17 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
             goal = f"{goal}: {title}"
         if body:
             goal = f"{goal} — {body}"
-        return _emit(event_type, severity, target, key, goal=goal)
+        target_type, target_number, target_repo = _classify_target(event, target)
+        return _emit(
+            event_type,
+            severity,
+            target,
+            key,
+            goal=goal,
+            target_type=target_type,
+            target_number=target_number,
+            target_repo=target_repo,
+        )
 
     # Issue #953 — task completion events (task_done / task_failed).
     if event_type == "task_done":
@@ -574,6 +644,10 @@ def dispatch(
             assignee=decision.assignee,
             idempotency_key=decision.idempotency_key,
             issue_number=decision.issue_number,
+            target_repo=decision.target_repo,
+            target_type=decision.target_type,
+            target_number=decision.target_number,
+            origin="orchestrator",
             client=client,
         )
         return DispatchResult(
@@ -594,6 +668,10 @@ def dispatch(
             idempotency_key=decision.idempotency_key,
             escalated_reason=decision.escalated_reason,
             issue_number=decision.issue_number,
+            target_repo=decision.target_repo,
+            target_type=decision.target_type,
+            target_number=decision.target_number,
+            origin="orchestrator",
             client=client,
         )
         notice = escalation_notice(decision.severity, now)
@@ -666,10 +744,14 @@ def build_production_orchestrator(
             # (Path B replay closure or a plain re-delivery) — drain will
             # mark_processed, not park. Warn so a silent dedup stays visible.
             logger.warning(
-                "enqueue collision: event %s dedups on idempotency_key %s — "
-                "marking processed, not parking",
+                "enqueue collision: event %s dedups on idempotency_key %s or "
+                "target pins (target_repo=%s target_type=%s target_number=%s) "
+                "— marking processed, not parking",
                 event.get("id"),
                 decision.idempotency_key,
+                decision.target_repo,
+                decision.target_type,
+                decision.target_number,
             )
         return result
 

@@ -78,6 +78,7 @@ def enqueue(
     target_branch: str | None = None,
     tier: str | None = None,
     substrate: str | None = None,
+    origin: str | None = None,
     client: Client | None = None,
 ) -> dict[str, Any] | None:
     """Insert a task into the queue.
@@ -109,6 +110,12 @@ def enqueue(
     target_* kwargs, none of these columns are written (legacy PR-target/
     no-target callers are unaffected). ``tier``/``substrate`` are plain
     passthrough columns with no derivation.
+
+    ``origin`` (#1617) classifies the enqueue path so drain-time routing can
+    apply the right readiness gate: ``"dispatch"`` for /dispatch
+    (``delegate:*``) rows, ``"orchestrator"`` for orchestrator-emitted rows.
+    Plain passthrough, no derivation; omitted when ``None`` (legacy callers
+    and the migration backfill classify these rows instead).
 
     Returns the inserted row, or ``None`` if the idempotency key or the
     issue-number CAS collided.
@@ -150,14 +157,17 @@ def enqueue(
         row["tier"] = tier
     if substrate is not None:
         row["substrate"] = substrate
+    if origin is not None:
+        row["origin"] = origin
 
     # #1455 AC5: upsert with ignore_duplicates is the only PostgREST call
     # shape whose duplicate-key outcome is empty data — a bare insert raises
     # APIError 23505, breaking the documented silent-None contract. That
     # resolves the idempotency_key constraint only: the on_conflict target is
-    # idempotency_key, so a 23505 that still reaches us here (#1085 S1-3) can
-    # only be the separate idx_task_queue_issue_number_active partial unique
-    # index — no other unique constraint sits behind this upsert.
+    # idempotency_key, so a 23505 that still reaches us here can only be the
+    # separate idx_task_queue_target_active partial unique index (#1119,
+    # superseding the legacy idx_task_queue_issue_number_active) — no other
+    # unique constraint sits behind this upsert.
     try:
         result = (
             cli.table("task_queue")

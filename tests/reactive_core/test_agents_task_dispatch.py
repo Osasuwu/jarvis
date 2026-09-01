@@ -1179,6 +1179,43 @@ class TestKillRunaways:
         assert ev["payload"]["attempt"] == 2
         assert ev["dedup_key"] == "task_failed:t0:a2"
 
+    def test_runaway_kill_emits_task_failed_with_target_pins(self) -> None:
+        # #1617 plan step 8: kill_runaways' task_failed payload carries the
+        # same target_repo/target_type/target_number pins poll_completions
+        # carries, so a re-drive after a runaway kill still lands on the
+        # original task's target.
+        q = FakeTaskQueue()
+        emitted: list[dict[str, Any]] = []
+
+        def emit(
+            event_type: str, severity: str, payload: dict[str, Any], *, dedup_key: str | None = None
+        ) -> None:
+            emitted.append({"event_type": event_type, "payload": payload})
+
+        procs = {
+            "t0": TrackedProc(
+                _FakeProc(rc=None),
+                started_at=0.0,
+                goal="implement #5",
+                idempotency_key="task_done:lin5:r2",
+                target_repo="Osasuwu/jarvis",
+                target_type="pr",
+                target_number=7,
+            )
+        }
+        n = kill_runaways(
+            q,
+            procs,
+            max_runtime_seconds=100,
+            now=lambda: 200.0,
+            kill=lambda _p: None,
+            event_emit=emit,
+        )
+        assert n == 1
+        assert emitted[0]["payload"]["target_repo"] == "Osasuwu/jarvis"
+        assert emitted[0]["payload"]["target_type"] == "pr"
+        assert emitted[0]["payload"]["target_number"] == 7
+
     def test_runaway_kill_emit_failure_does_not_block_transition(self) -> None:
         # Decoupled emit (MAJOR, PR #1011): a raising event_emit must NOT stop
         # the FSM transition — else the killed row wedges in `running` until the
