@@ -54,6 +54,12 @@ def _row(task_id: str, *, assignee: str = "sandcastle", goal: str | None = None)
         "goal": goal or f"do {task_id}",
         "assignee": assignee,
         "status": "pending",
+        # #1121 plan step 8: drain_tasks routes substrate="worktree" rows onto
+        # the (real, subprocess-launching) supervisor adapter. Pin every
+        # pre-step-8 fixture row to a non-"worktree" sentinel so these tests
+        # keep exercising the injected goal-string ``spawn`` fake unchanged;
+        # substrate-routing itself is covered by TestSubstrateRouting below.
+        "substrate": "test-bare",
     }
 
 
@@ -1416,6 +1422,97 @@ class TestDefaultSupervisorSpawn:
         assert captured["attempt"] == 1
 
 
+class TestSubstrateRouting:
+    """#1121 plan step 8 AC1: every spawn goes through the supervisor on
+    ``substrate=worktree``; any other resolved substrate keeps using the bare
+    ``spawn`` path unchanged."""
+
+    def test_explicit_worktree_substrate_routes_to_supervisor_spawn(self) -> None:
+        row = _row("t1")
+        row["substrate"] = "worktree"
+        q = FakeTaskQueue(pending=[row])
+        bare_spawns: list[str] = []
+        supervisor_calls: list[dict[str, Any]] = []
+
+        def fake_supervisor_spawn(row: dict[str, Any], *, task_id: str) -> Any:
+            supervisor_calls.append({"row": row, "task_id": task_id})
+            return None
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: bare_spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            supervisor_spawn=fake_supervisor_spawn,
+            operator_default_substrate_loader=lambda: "test-bare",
+        )
+
+        assert len(supervisor_calls) == 1
+        assert supervisor_calls[0]["task_id"] == "t1"
+        assert bare_spawns == []
+        assert res.spawned == 1
+
+    def test_missing_substrate_falls_back_to_default_loader(self) -> None:
+        row = {"id": "t1", "goal": "do t1", "assignee": "sandcastle", "status": "pending"}
+        assert "substrate" not in row
+        q = FakeTaskQueue(pending=[row])
+        bare_spawns: list[str] = []
+        supervisor_calls: list[str] = []
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: bare_spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            supervisor_spawn=lambda row, *, task_id: supervisor_calls.append(task_id),
+            operator_default_substrate_loader=lambda: "worktree",
+        )
+
+        assert supervisor_calls == ["t1"]
+        assert bare_spawns == []
+        assert res.spawned == 1
+
+    def test_non_worktree_substrate_keeps_bare_spawn_path(self) -> None:
+        row = _row("t1")  # _row stamps substrate="test-bare"
+        q = FakeTaskQueue(pending=[row])
+        bare_spawns: list[str] = []
+        supervisor_calls: list[str] = []
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: bare_spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            supervisor_spawn=lambda row, *, task_id: supervisor_calls.append(task_id),
+            operator_default_substrate_loader=lambda: "worktree",
+        )
+
+        assert supervisor_calls == []
+        assert bare_spawns == ["do t1"]
+        assert res.spawned == 1
+
+    def test_explicit_substrate_wins_over_default_loader(self) -> None:
+        row = _row("t1")
+        row["substrate"] = "worktree"
+        q = FakeTaskQueue(pending=[row])
+        supervisor_calls: list[str] = []
+
+        drain_tasks(
+            q,
+            lambda g, task_id=None: None,
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            supervisor_spawn=lambda row, *, task_id: supervisor_calls.append(task_id),
+            operator_default_substrate_loader=lambda: "test-bare",
+        )
+
+        assert supervisor_calls == ["t1"]
+
+
 # ---------------------------------------------------------------------------
 # AC4 (#1390) — isolation proven against real git, not string inequality
 # ---------------------------------------------------------------------------
@@ -2348,11 +2445,7 @@ class TestPollCompletionsReplanCarrier:
         row["replan_count"] = 0
         row["issue_number"] = 42
         q = FakeTaskQueue(rows_by_id={"t0": row})
-        procs = {
-            "t0": TrackedProc(
-                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
-            )
-        }
+        procs = {"t0": TrackedProc(_FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42)}
 
         res = poll_completions(
             q,
@@ -2383,11 +2476,7 @@ class TestPollCompletionsReplanCarrier:
         row = _row("t0")
         row["replan_count"] = 1
         q = FakeTaskQueue(rows_by_id={"t0": row})
-        procs = {
-            "t0": TrackedProc(
-                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
-            )
-        }
+        procs = {"t0": TrackedProc(_FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42)}
 
         res = poll_completions(
             q,
@@ -2414,11 +2503,7 @@ class TestPollCompletionsReplanCarrier:
         row["replan_count"] = 0
         row["issue_number"] = 42
         q = FakeTaskQueue(rows_by_id={"t0": row})
-        procs = {
-            "t0": TrackedProc(
-                _FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42
-            )
-        }
+        procs = {"t0": TrackedProc(_FakeProc(rc=0), started_at=0.0, goal="do t0", issue_number=42)}
 
         class _ExplodingPlanner:
             def run_planner(

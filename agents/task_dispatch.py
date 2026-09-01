@@ -63,6 +63,7 @@ from agents.github_client import (
 )
 from agents.pid_sidecar import Sidecar, poll_exit
 from agents.plan_lock import MalformedPlanError, parse_plan, verify_lock
+from agents.sandcastle_config import default_operator_default_substrate
 from agents.plan_review_config import PlanReviewConfig
 from agents.plan_review_drain import PlannerPort
 from agents.plan_review_drain import class_gate as _plan_class_gate
@@ -137,6 +138,11 @@ LOCAL_DRAIN_DRIVER_NAME = "wake_driver_local_drain"
 # the per-task stdout JSON the #953 AC3 evidence channel reads, so the contract
 # carries the keyword (``Callable[..., Any]`` to keep the kwarg in the type).
 Spawn = Callable[..., Any]
+# Spawn a claimed row onto the supervisor path (#1121 plan step 8). Row-dict-based
+# (not goal-string-based like Spawn above) — the supervisor adapter needs the whole
+# row to derive lineage/attempt and to build its env. Called as
+# ``supervisor_spawn(row, task_id=<id>)``.
+SupervisorSpawn = Callable[..., Any]
 # Resolve the claude binary; raises FileNotFoundError when unresolved (AC7a).
 ResolveBinary = Callable[[], str]
 # Quota probe — returns a UsageReading-shaped object with .near_exhaustion
@@ -996,9 +1002,9 @@ def default_supervisor_spawn(row: dict[str, Any], *, task_id: str) -> Any:
     key with :func:`parse_lineage`, the same 1-based convention every other
     ``SANDCASTLE_ATTEMPT`` emission uses.
 
-    Not yet wired into :func:`drain_tasks`'s spawn call site — routing a
-    claimed row onto this adapter based on ``row["substrate"]`` is plan
-    step 8, a separate change.
+    Wired into :func:`drain_tasks`'s spawn call site (#1121 plan step 8) —
+    routed onto whenever the claimed row's effective substrate is
+    ``"worktree"``, the only routable value this slice.
     """
     from agents.sandcastle_supervisor import launch_supervisor
 
@@ -1038,6 +1044,8 @@ def drain_tasks(
     planner: PlannerPort = _default_run_planner,
     plan_config_loader: Callable[[], PlanReviewConfig] = default_plan_config_loader,
     github_factory: Callable[[], GitHubClient] = default_github_client,
+    supervisor_spawn: SupervisorSpawn = default_supervisor_spawn,
+    operator_default_substrate_loader: Callable[[], str] = default_operator_default_substrate,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -1438,8 +1446,16 @@ def drain_tasks(
         # in that window read as older-than-spawn and be missed as evidence. Take
         # the lower bound: the instant just before the process starts.
         spawn_started_at = datetime.now(UTC)
+        # #1121 plan step 8 — route onto the supervisor for the one routable
+        # substrate this slice ("worktree"); an explicit row value wins over the
+        # config default (AC1: substrate is stamped at enqueue time per step 7,
+        # so this branch is almost always taken once step-7 rows drain).
+        effective_substrate = row.get("substrate") or operator_default_substrate_loader()
         try:
-            result = spawn(row["goal"], task_id=task_id)  # AC3 (#953) — capture stdout JSON
+            if effective_substrate == "worktree":
+                result = supervisor_spawn(row, task_id=task_id)
+            else:
+                result = spawn(row["goal"], task_id=task_id)  # AC3 (#953) — capture stdout JSON
         except Exception as exc:  # noqa: BLE001 — AC7b: isolate one bad spawn
             # AC7b — terminal failure; no internal retry, external loop re-drives.
             try:

@@ -81,17 +81,20 @@ from agents.task_dispatch import (
     ResolveBinary,
     Spawn,
     SupabaseTaskQueue,
+    SupervisorSpawn,
     TaskQueuePort,
     TrackedProc,
     default_read_usage,
     default_resolve_binary,
     default_spawn,
     default_stdout_reader,
+    default_supervisor_spawn,
     drain_tasks,
     kill_runaways,
     poll_completions,
     reclaim_stale_tasks,
 )
+from agents.sandcastle_config import default_operator_default_substrate
 
 # Extracted to agents/process_kill.py (#1609, milestone #66).
 from agents.process_kill import kill_process_tree
@@ -436,6 +439,8 @@ def tick(
     task_planner: PlannerPort = _default_run_planner,
     task_plan_config_loader: Callable[[], PlanReviewConfig] = default_plan_config_loader,
     task_github_factory: Callable[[], GitHubClient] = default_github_client,
+    task_supervisor_spawn: SupervisorSpawn = default_supervisor_spawn,
+    task_operator_default_substrate_loader: Callable[[], str] = default_operator_default_substrate,
     task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
     task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
     task_procs: dict[str, TrackedProc] | None = None,
@@ -632,6 +637,8 @@ def tick(
                 planner=task_planner,
                 plan_config_loader=task_plan_config_loader,
                 github_factory=task_github_factory,
+                supervisor_spawn=task_supervisor_spawn,
+                operator_default_substrate_loader=task_operator_default_substrate_loader,
             )
             if task_procs is not None:
                 for task_id, proc in task_drain.procs:
@@ -690,6 +697,8 @@ def run(
     task_planner: PlannerPort = _default_run_planner,
     task_plan_config_loader: Callable[[], PlanReviewConfig] = default_plan_config_loader,
     task_github_factory: Callable[[], GitHubClient] = default_github_client,
+    task_supervisor_spawn: SupervisorSpawn = default_supervisor_spawn,
+    task_operator_default_substrate_loader: Callable[[], str] = default_operator_default_substrate,
     task_claimed_stale_after_seconds: float = DEFAULT_CLAIMED_STALE_SECONDS,
     task_running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
     task_procs: dict[str, TrackedProc] | None = None,
@@ -768,6 +777,8 @@ def run(
                 task_planner=task_planner,
                 task_plan_config_loader=task_plan_config_loader,
                 task_github_factory=task_github_factory,
+                task_supervisor_spawn=task_supervisor_spawn,
+                task_operator_default_substrate_loader=task_operator_default_substrate_loader,
                 task_claimed_stale_after_seconds=task_claimed_stale_after_seconds,
                 task_running_reap_after_seconds=task_running_reap_after_seconds,
                 task_procs=procs,
