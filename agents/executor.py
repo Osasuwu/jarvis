@@ -261,6 +261,18 @@ def spawn(
     ``probe`` is injectable for tests wanting to control the quota reading;
     defaults to the standard :func:`read_usage` chain.
     """
+    # #1121 step 9 — kill-switch. Unset by default (bare path stays active,
+    # unchanged behavior) until step 23's live verification confirms the
+    # supervisor path in production; this is the opt-in gate AC1 requires
+    # without deleting anything the bare path still depends on.
+    if os.environ.get("JARVIS_DISABLE_BARE_SPAWN"):
+        logger.warning("spawn refused — JARVIS_DISABLE_BARE_SPAWN is set")
+        return SpawnResult(
+            proc=None,
+            throttled=False,
+            reason="refused: JARVIS_DISABLE_BARE_SPAWN is set",
+        )
+
     # Pre-spawn quota gate — refuse when near exhaustion (false-safe:
     # a probe error also reads as near-exhaustion, never as "plenty").
     reading = read_usage(probe=probe)

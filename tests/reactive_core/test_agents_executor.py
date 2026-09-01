@@ -607,3 +607,55 @@ def test_spawn_probe_error_returns_false_safe(
     assert result.proc is None
     assert result.reason is not None
     assert len(captured.calls) == 0
+
+
+def test_spawn_proceeds_by_default_when_kill_switch_unset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Unchanged behavior — bare ``claude -p`` stays enabled until step 23's
+    live verification flips the kill-switch (#1121 step 9)."""
+    from agents.executor import spawn
+
+    monkeypatch.delenv("JARVIS_DISABLE_BARE_SPAWN", raising=False)
+    fake = tmp_path / "claude.exe"
+    fake.write_text("")
+    monkeypatch.setenv("JARVIS_CLAUDE_BIN", str(fake))
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "bare task",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
+
+    assert not result.throttled
+    assert result.proc is not None
+    assert len(captured.calls) == 1
+
+
+def test_spawn_refuses_when_kill_switch_set(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Setting ``JARVIS_DISABLE_BARE_SPAWN`` refuses the bare launch instead
+    of invoking ``claude -p`` (#1121 step 9 — AC1's opt-in gate)."""
+    from agents.executor import spawn
+
+    monkeypatch.setenv("JARVIS_DISABLE_BARE_SPAWN", "1")
+
+    captured = _CapturedPopen()
+    result = spawn(
+        "gated task",
+        stderr_log_dir=str(tmp_path / "logs"),
+        popen=captured,
+        probe=_FixedProbe(_healthy_reading()),
+    )
+
+    assert result.proc is None
+    assert result.throttled is False
+    assert result.reason is not None
+    assert "JARVIS_DISABLE_BARE_SPAWN" in result.reason
+    # Popen must NOT have been called — refused before quota probe/launch.
+    assert len(captured.calls) == 0
