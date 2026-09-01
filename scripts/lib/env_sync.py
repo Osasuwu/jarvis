@@ -277,6 +277,17 @@ def _run_uv_sync(env_dir: Path, venv_python: Path, log_path: Path, timeout: int)
     codebase (and the post-heal probe below) actually uses. The only override
     is the UV_PROJECT_ENVIRONMENT env var (astral-sh/uv#20060 confirms there's
     still no equivalent CLI flag), pointed at venv_python's venv root.
+
+    `--inexact` is required: the shared venv also carries the root
+    jarvis-agent project's own extras (e.g. `agents` — psycopg, ollama,
+    psutil, apprise — used by wake_driver/sandcastle_supervisor, not by
+    mcp-memory). Without `--inexact`, `uv sync` treats mcp-memory's own
+    dependency set as the venv's complete target and removes everything
+    outside it — silently uninstalling psycopg from underneath a live
+    wake_driver every time an MCP server self-heals. Hit live 2026-09-01:
+    a manual `uv sync --all-extras` restored psycopg, then the next
+    mcp-memory heal (triggered by a routine MCP server restart) pruned it
+    straight back out.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     sync_env = dict(os.environ)
@@ -284,7 +295,7 @@ def _run_uv_sync(env_dir: Path, venv_python: Path, log_path: Path, timeout: int)
     with open(log_path, "ab") as logf:
         logf.write(f"\n--- env-sync heal (uv sync) {time.time()} ---\n".encode("utf-8"))
         proc = subprocess.Popen(
-            ["uv", "sync", "--project", str(env_dir)],
+            ["uv", "sync", "--project", str(env_dir), "--inexact"],
             cwd=str(env_dir),
             env=sync_env,
             stdout=logf,
