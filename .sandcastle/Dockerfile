@@ -76,6 +76,18 @@ ENV PATH="/home/agent/.local/bin:$PATH"
 # automatically by Claude Code at runtime.
 COPY --chown=agent:agent .claude-userlevel/skills/ /home/agent/.claude/skills/
 
+# Permission perimeter — baked into the image, not applied at spawn time.
+# container-settings.json carries the credential-path permissions.deny array
+# and the PreToolUse hook wired to scripts/protected-files.py (arrives via the
+# worktree bind-mount at SANDBOX_REPO_DIR, so no separate script COPY needed).
+# Landing at /home/agent/.claude/settings.json makes it Claude Code's
+# user-scope settings inside the container (#1121 step 12).
+COPY --chown=agent:agent .sandcastle/container-settings.json /home/agent/.claude/settings.json
+
+# Documented today (docs/design/sandcastle-integration.md) as an active
+# control on the spawn env — this makes it actually true.
+ENV JARVIS_PRINCIPAL=subagent
+
 # Sandcastle bind-mounts the worktree at SANDBOX_REPO_DIR and exec's into it.
 # Container just needs to stay alive; sandcastle drives commands via `docker exec`.
 ENTRYPOINT ["sleep", "infinity"]
