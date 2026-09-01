@@ -11,13 +11,58 @@ into the image. Watchdog and scheduler land in slices 4/8.
 `npm run sandcastle` builds nothing on its own — it expects the image to exist
 already. It then:
 
-1. Spins up a `sandcastle:jarvis` container with the Jarvis worktree bind-mounted.
+1. Spins up a `sandcastle:jarvis` container with the Jarvis worktree bind-mounted,
+   attached to the dedicated `sandcastle-jarvis` docker network (see
+   **Network segmentation** below).
 2. Hands the agent prompt (`.sandcastle/prompt.md`) to Claude Code CLI inside
    the container.
 3. Claude Code talks to **Ollama on the host** via Ollama's native
    Anthropic-compatible endpoint (no proxy).
 4. Agent picks one issue labelled `sandcastle`, works on it, opens a PR, stops.
    It **never merges** — the live orchestrator session reviews and merges.
+
+## Default spawn path (#1121)
+
+`agents/task_dispatch.py`'s drain loop no longer launches a bare `claude -p`
+process by default. A `task_queue` row's `substrate` column — stamped
+`"worktree"` at enqueue time, or falling back to `config/sandcastle.yaml`'s
+`operator_default_substrate` for rows enqueued before this slice — routes the
+row onto `agents/sandcastle_supervisor.py`'s `supervisor_spawn`, which shells
+out to this same `npm run sandcastle` entry point instead of invoking the
+Claude Code binary directly. The supervisor path enforces two properties the
+bare path didn't: the forwarded `SUPABASE_KEY` is checked by role (anon only,
+never service-role — `agents/supabase_key_role.py`) and any billing-override
+env var (`config/sandcastle.yaml`'s `billing_key_denylist`) is stripped
+before the child process ever sees it.
+
+The bare `claude -p` path (`agents/executor.py:spawn`) still exists and stays
+the default for any row whose resolved substrate is neither `"worktree"` nor
+`"container"` (the latter reserved for a follow-up issue). It carries a
+kill-switch, `JARVIS_DISABLE_BARE_SPAWN` — unset by default, so the bare path
+stays enabled during the rollout. Setting it to any truthy value refuses the
+bare launch outright (before any subprocess call) with an explicit reason
+string, rather than throttling or degrading. The intended cutover: once step
+23's live worktree-drain verification confirms the supervisor path behaves
+correctly end-to-end in production, flip this flag on to retire the bare path
+without deleting the code — a rollback switch stays available for one
+release cycle after cutover.
+
+## Network segmentation (#1121)
+
+The container attaches to a dedicated docker network, `sandcastle-jarvis`
+(`config/sandcastle.yaml`'s `network` key, passed through by `main.mts`'s
+`docker()` sandbox call as its `network` option). Create it once on the host
+before first run:
+
+```bash
+docker network create sandcastle-jarvis
+```
+
+This is **segmentation only** — the container can't reach other
+containers/services sitting on the default bridge network. It is **not
+egress filtering**: outbound internet access from the container is
+unaffected, and Ollama on the host is still reached via
+`host.docker.internal` as before.
 
 ## Prerequisites
 
