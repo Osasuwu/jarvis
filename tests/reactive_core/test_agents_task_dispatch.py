@@ -632,6 +632,61 @@ class TestSpawnFailureIsTerminal:
 # ---------------------------------------------------------------------------
 
 
+class TestUnparseableRowParks:
+    """#1121 plan step 18 — a row whose goal or idempotency_key fails to
+    parse at drain time must park, never spawn. Prior to this, a parse
+    exception (e.g. a non-string field from a corrupted write) surfaced
+    inside spawn()'s own try/except and was mis-classified as a generic
+    spawn failure ("failed"), not the distinct parked-unparseable outcome.
+    """
+
+    def test_non_string_goal_parks_without_spawning(self) -> None:
+        row = _row("t0")
+        row["goal"] = 12345  # malformed: parse_goal_shape requires str.strip()
+        spawns: list[str] = []
+        q = FakeTaskQueue(pending=[row], running_count=0)
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+        )
+
+        assert spawns == []
+        assert res.spawned == 0
+        assert res.failed == 0
+        assert res.parked == 1
+        parked_transitions = [t for t in q.transitions if t[1] == "parked"]
+        assert len(parked_transitions) == 1
+        assert parked_transitions[0][0] == "t0"
+        assert "parse" in (parked_transitions[0][2] or "")
+
+    def test_non_string_idempotency_key_parks_without_spawning(self) -> None:
+        row = _row("t0")
+        row["idempotency_key"] = 999  # malformed: parse_lineage requires str
+        spawns: list[str] = []
+        q = FakeTaskQueue(pending=[row], running_count=0)
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+        )
+
+        assert spawns == []
+        assert res.spawned == 0
+        assert res.failed == 0
+        assert res.parked == 1
+        parked_transitions = [t for t in q.transitions if t[1] == "parked"]
+        assert len(parked_transitions) == 1
+        assert parked_transitions[0][0] == "t0"
+        assert "parse" in (parked_transitions[0][2] or "")
+
+
 class TestThrottledSpawn:
     def test_throttle_stops_drain_without_miscounting(self) -> None:
         # Quota near-exhaustion: executor.spawn returns throttled=True, proc=None

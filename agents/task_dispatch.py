@@ -1593,6 +1593,28 @@ def drain_tasks(
                     failed += 1
                 continue
 
+        # #1121 plan step 18 — a row whose goal or idempotency_key fails to
+        # parse (e.g. a non-string field from a corrupted write) must park,
+        # never spawn. Runs unconditionally, unlike the dedup-gated shape
+        # parse at #931 above, and BEFORE the spawn try/except below so a
+        # parse exception is never mis-classified as a generic spawn
+        # failure ("failed") — it gets its own distinct parked reason.
+        try:
+            parse_goal_shape(row["goal"])
+            parse_lineage(row.get("idempotency_key") or "")
+        except Exception as exc:  # noqa: BLE001 — any parse failure parks, never spawns
+            try:
+                port.transition(task_id, "parked", reason=f"goal/idempotency_key parse failed: {exc}")
+            except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                logger.exception(
+                    "[task_dispatch] could not park task %s on parse failure; "
+                    "row left running for the reaper",
+                    task_id,
+                )
+            else:
+                parked += 1
+            continue
+
         # Capture spawn time BEFORE launching (MAJOR, PR #1011). The terminal
         # evidence check counts PR/commit activity with timestamp > spawned_at;
         # recording it AFTER spawn() returns would let any commit the child makes
