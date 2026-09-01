@@ -393,6 +393,21 @@ export function completionSeverity(eventType: string, prEvidence: boolean | null
 // Emission (idempotent upsert on dedup_key, with retry)
 // ---------------------------------------------------------------------------
 
+/**
+ * Completion-event dedup key: `<eventType>:<taskId>:a<attempt>` (#1121 step 11).
+ *
+ * Single source of truth for the format both this side's own event emission
+ * and the future S4 sweeper's re-emission must reproduce byte-for-byte — the
+ * issue's motivating bug was an `a0`/`a1` drift against the Python mirror
+ * (`agents.task_dispatch.build_dedup_key`). A shared JSON fixture
+ * (`tests/fixtures/sandcastle-dedup-key.json`) asserts this against the
+ * Python side in `tests/sandcastle/test_dedup_key_contract.py` (decision
+ * `17736ef0-01d2-492a-b490-ef5d0b46cb11`).
+ */
+export function buildDedupKey(eventType: string, taskId: string, attempt: number): string {
+  return `${eventType}:${taskId}:a${attempt}`;
+}
+
 export interface EmitCompletionEventInput {
   supabaseUrl: string;
   supabaseKey: string;

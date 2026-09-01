@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "eventType": "task_done",
+      "taskId": "task-fixture-1",
+      "attempt": 1,
+      "dedupKey": "task_done:task-fixture-1:a1"
+    },
+    {
+      "eventType": "task_failed",
+      "taskId": "task-fixture-1",
+      "attempt": 1,
+      "dedupKey": "task_failed:task-fixture-1:a1"
+    },
+    {
+      "eventType": "task_done",
+      "taskId": "task-fixture-2",
+      "attempt": 3,
+      "dedupKey": "task_done:task-fixture-2:a3"
+    }
+  ]
+}
