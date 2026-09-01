@@ -1,4 +1,4 @@
-"""Pre-dispatch gate for /dispatch and drain_tasks (issues #642, #931, #1099, #1085, #1651).
+"""Pre-dispatch gate for /dispatch and drain_tasks (issues #642, #931, #1099, #1085, #1651, #1617).
 
 `check_issue` refuses to admit an issue unless it satisfies four readiness
 conditions:
@@ -59,6 +59,20 @@ against `GITHUB_REPO` (default `Osasuwu/jarvis`) by `check_repo`.
 
 Exit codes: 0 ⇒ OK (dispatch), 1 ⇒ REFUSE (readiness failure),
 2 ⇒ SKIP (in-flight or unverifiable evidence). Decision text is on stdout.
+
+`check_orchestrator_target` (#1617) is a second, distinct condition set for
+`origin="orchestrator"` task_queue rows — the drain-time readiness gate for
+rows the orchestrator (rather than /dispatch) enqueued. Keyed on the row's
+structured `target_type`/`target_repo`/`target_number` pins (#1119 S3)
+instead of the label/body sniffing `check_issue` does: `target_type is None`
+fails closed ("unclassified"); `"none"` passes unconditionally; `"pr"` checks
+the target repo (via the same `_repo_mismatch_failure` helper `check_repo`
+uses) then fetches the PR and requires it open; `"issue"` (no current
+producer emits this) requires a pre-fetched issue and re-runs only the
+sandcastle-label subset of `check_issue`'s conditions, not the AC-heading/
+UUID checks (those are dispatch-authoring conventions, not applicable to an
+orchestrator-classified target). This function has no CLI/`main()` entry
+point yet — `drain_tasks` calls it directly (#1617 plan step 14).
 
 Notes:
   - This module does no network I/O — callers fetch PR/branch lists (with
@@ -166,18 +180,21 @@ class GateResult:
         return "REFUSE: " + "; ".join(self.failures)
 
 
-def check_issue(issue: dict) -> GateResult:
-    failures: list[str] = []
-
+def _sandcastle_label_failures(issue: dict) -> list[str]:
+    """Shared by check_issue and check_orchestrator_target's issue branch."""
     label_names = {label.get("name", "") for label in (issue.get("labels") or [])}
-    body = issue.get("body") or ""
-
+    failures: list[str] = []
     if _REQUIRED_LABEL not in label_names:
         failures.append(f"missing required label `{_REQUIRED_LABEL}`")
-
     needs = sorted(n for n in label_names if n.startswith(_NEEDS_PREFIX))
     if needs:
         failures.append(f"blocked by needs-* label(s): {', '.join(needs)}")
+    return failures
+
+
+def check_issue(issue: dict) -> GateResult:
+    failures = list(_sandcastle_label_failures(issue))
+    body = issue.get("body") or ""
 
     if not _AC_HEADING_RE.search(body):
         failures.append("missing `## Acceptance criteria` section in body")
@@ -191,24 +208,83 @@ def check_issue(issue: dict) -> GateResult:
 # ceiling: refuses any repo != GITHUB_REPO/_DEFAULT_REPO wholesale rather than
 # resolving per-row; upgrade path is milestone 58 S3 (#1119, task_queue repo
 # column) + S4a (#1121, per-row spawn resolution).
-def check_repo(repo: str, default_repo: str | None = None) -> GateResult:
-    """Refuse an issue whose repo isn't the caller's configured default (#1651).
+def _repo_mismatch_failure(repo: str | None, default_repo: str | None, *, kind: str) -> GateResult:
+    """Refuse a repo that isn't the caller's configured default (#1651).
 
-    Stopgap until milestone 58 gives `task_queue` a `repo` column (S3, #1119)
-    and spawn resolves it per-row (S4a, #1121) — until then, everything
-    dispatched runs against the local checkout's default repo regardless of
-    which repo the issue actually lives in.
+    Shared by check_repo (kind="issue") and check_orchestrator_target's `pr`
+    branch (kind="PR"). Stopgap until milestone 58 gives `task_queue` a `repo`
+    column (S3, #1119) and spawn resolves it per-row (S4a, #1121).
     """
     expected = default_repo or os.environ.get("GITHUB_REPO", _DEFAULT_REPO)
     if repo != expected:
         return GateResult(
             failures=(
-                f"cross-repo dispatch not supported yet (issue is `{repo}`, "
+                f"cross-repo dispatch not supported yet ({kind} is `{repo}`, "
                 f"this dispatcher only handles `{expected}`) — blocked on "
                 "milestone 58 (#959) S3/S4a; see #1651",
             )
         )
     return GateResult()
+
+
+def check_repo(repo: str, default_repo: str | None = None) -> GateResult:
+    """Refuse an issue whose repo isn't the caller's configured default (#1651)."""
+    return _repo_mismatch_failure(repo, default_repo, kind="issue")
+
+
+def check_orchestrator_target(
+    row: dict,
+    *,
+    fetch_pull=None,
+    fetched_issue: dict | None = None,
+    default_repo: str | None = None,
+) -> GateResult:
+    """Drain-time readiness gate for origin="orchestrator" task_queue rows (#1617).
+
+    Distinct condition set from check_issue/check_repo (delegate rows) —
+    keyed on `target_type` instead of goal-string sniffing, since
+    orchestrator rows carry structured pins (#1119 S3) at enqueue time. A
+    NULL target_type fails closed ("unclassified") rather than passing: a
+    forgotten pin must park, never silently pass, since this is the only
+    mechanical admission control on the no-human orchestrator lane.
+    """
+    target_type = row.get("target_type")
+
+    if target_type is None:
+        return GateResult(failures=("unclassified orchestrator row — missing target_type",))
+
+    if target_type == "none":
+        return GateResult()
+
+    if target_type == "pr":
+        target_repo = row.get("target_repo")
+        repo_check = _repo_mismatch_failure(target_repo, default_repo, kind="PR")
+        if not repo_check.allow:
+            return repo_check
+
+        target_number = row.get("target_number")
+        if target_number is None or fetch_pull is None:
+            return GateResult(
+                failures=("unverifiable — no target_number or no fetch_pull wired for PR target",)
+            )
+
+        pull = fetch_pull(target_number)
+        if pull is None:
+            return GateResult(failures=(f"target PR #{target_number} not found",))
+        state = pull.get("state")
+        if state != "open":
+            label = "merged" if pull.get("merged") else (state or "closed")
+            return GateResult(failures=(f"target PR #{target_number} is {label}, not open",))
+        return GateResult()
+
+    if target_type == "issue":
+        if fetched_issue is None:
+            return GateResult(
+                failures=("unverifiable — no fetched_issue wired for issue target (not yet)",)
+            )
+        return GateResult(failures=tuple(_sandcastle_label_failures(fetched_issue)))
+
+    return GateResult(failures=(f"unrecognized target_type `{target_type}`",))
 
 
 def _validate_envelope(

@@ -648,6 +648,9 @@ def tick(
                         idempotency_key=meta.get("idempotency_key", ""),
                         spawned_at=meta.get("spawned_at"),
                         issue_number=meta.get("issue_number"),
+                        target_repo=meta.get("target_repo"),
+                        target_type=meta.get("target_type"),
+                        target_number=meta.get("target_number"),
                     )
         except Exception:  # noqa: BLE001 — task-store outage must not crash the tick
             logger.exception(

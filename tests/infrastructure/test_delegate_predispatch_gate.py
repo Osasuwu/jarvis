@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 gate = importlib.import_module("delegate_predispatch_gate")
 check_issue = gate.check_issue
 check_repo = gate.check_repo
+check_orchestrator_target = gate.check_orchestrator_target
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -277,6 +278,95 @@ def test_check_repo_falls_back_to_github_repo_env(monkeypatch):
 def test_check_repo_falls_back_to_hardcoded_default_when_env_unset(monkeypatch):
     monkeypatch.delenv("GITHUB_REPO", raising=False)
     assert check_repo("Osasuwu/jarvis").allow
+
+
+# ── check_orchestrator_target (#1617) ───────────────────────────────────────
+
+
+def _row(target_type=None, target_repo=None, target_number=None):
+    return {
+        "target_type": target_type,
+        "target_repo": target_repo,
+        "target_number": target_number,
+    }
+
+
+def test_orchestrator_target_passes_when_type_none():
+    result = check_orchestrator_target(_row(target_type="none"))
+    assert result.allow
+
+
+def test_orchestrator_target_passes_when_pr_open_and_same_repo():
+    fetch_pull = lambda n: {"state": "open"}  # noqa: E731
+    result = check_orchestrator_target(
+        _row(target_type="pr", target_repo="Osasuwu/jarvis", target_number=42),
+        fetch_pull=fetch_pull,
+        default_repo="Osasuwu/jarvis",
+    )
+    assert result.allow
+
+
+def test_orchestrator_target_parks_when_pr_foreign_repo():
+    fetch_pull = lambda n: {"state": "open"}  # noqa: E731
+    result = check_orchestrator_target(
+        _row(target_type="pr", target_repo="SergazyNarynov/redrobot", target_number=42),
+        fetch_pull=fetch_pull,
+        default_repo="Osasuwu/jarvis",
+    )
+    assert not result.allow
+    assert "SergazyNarynov/redrobot" in result.message
+
+
+def test_orchestrator_target_parks_when_pr_closed_or_merged():
+    fetch_pull = lambda n: {"state": "closed", "merged": True}  # noqa: E731
+    result = check_orchestrator_target(
+        _row(target_type="pr", target_repo="Osasuwu/jarvis", target_number=42),
+        fetch_pull=fetch_pull,
+        default_repo="Osasuwu/jarvis",
+    )
+    assert not result.allow
+    assert "42" in result.message
+
+
+def test_orchestrator_target_parks_when_pr_number_or_fetch_pull_missing():
+    result_no_number = check_orchestrator_target(
+        _row(target_type="pr", target_repo="Osasuwu/jarvis", target_number=None),
+        fetch_pull=lambda n: {"state": "open"},
+        default_repo="Osasuwu/jarvis",
+    )
+    assert not result_no_number.allow
+
+    result_no_fetch = check_orchestrator_target(
+        _row(target_type="pr", target_repo="Osasuwu/jarvis", target_number=42),
+        fetch_pull=None,
+        default_repo="Osasuwu/jarvis",
+    )
+    assert not result_no_fetch.allow
+
+
+def test_orchestrator_target_parks_when_type_null():
+    result = check_orchestrator_target(_row(target_type=None))
+    assert not result.allow
+    assert "unclassified" in result.message
+
+
+def test_orchestrator_target_parks_when_issue_unverifiable():
+    result = check_orchestrator_target(_row(target_type="issue", target_number=7), fetched_issue=None)
+    assert not result.allow
+    assert "unverifiable" in result.message
+
+
+def test_orchestrator_target_passes_when_issue_mechanical_subset_satisfied():
+    fetched_issue = {"labels": [{"name": "sandcastle"}]}
+    result = check_orchestrator_target(
+        _row(target_type="issue", target_number=7), fetched_issue=fetched_issue
+    )
+    assert result.allow
+
+
+def test_orchestrator_target_parks_on_unrecognized_type():
+    result = check_orchestrator_target(_row(target_type="bogus"))
+    assert not result.allow
 
 
 class _StringStream:

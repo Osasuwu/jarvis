@@ -11,6 +11,7 @@ from dataclasses import replace
 from datetime import datetime
 
 import pytest
+from postgrest.exceptions import APIError
 
 from agents import safety
 from agents.orchestrator import (
@@ -67,6 +68,33 @@ class _FakeInsert:
             if self._on_conflict == "idempotency_key" and self._ignore_duplicates:
                 return _FakeResult([])
             raise RuntimeError("23505: duplicate key value violates unique constraint")
+        # #1119's idx_task_queue_target_active partial unique index — a
+        # *different* idempotency_key can still collide on target pins
+        # (target_repo, target_type, target_number), which the on_conflict
+        # clause above doesn't cover. Raises the real APIError shape
+        # task_queue.enqueue's `except APIError as e: e.code == "23505"`
+        # branch actually catches (#1617 plan step 15).
+        target_type = self._payload.get("target_type")
+        if target_type not in (None, "none"):
+            target_key = (
+                self._payload.get("target_repo"),
+                target_type,
+                self._payload.get("target_number"),
+            )
+            if any(
+                (r.get("target_repo"), r.get("target_type"), r.get("target_number")) == target_key
+                for r in self._table.rows
+                if r.get("target_type") not in (None, "none")
+            ):
+                raise APIError(
+                    {
+                        "message": "duplicate key value violates unique constraint "
+                        '"idx_task_queue_target_active"',
+                        "code": "23505",
+                        "details": None,
+                        "hint": None,
+                    }
+                )
         stored = {**self._payload, "id": f"tq-{len(self._table.rows) + 1}"}
         self._table.rows.append(stored)
         return _FakeResult([stored])
@@ -464,14 +492,36 @@ def test_dispatch_emit_task_new_event_reruns():
         now=_FRIDAY,
         client=cli,
     )
-    # A genuinely-new event (different sha) has a different key → re-runs.
+    # A genuinely-new event for a *different* PR has both a different
+    # idempotency_key and a different target pin → re-runs. (Two events on
+    # the *same* PR with only a different sha now collide on the #1119
+    # target-pin index even though their idempotency_key differs — see
+    # test_dispatch_emit_task_same_target_different_key_collides below.)
     second = dispatch(
-        handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "def"})),
+        handle_event(_ev("ci_failure", "high", {"pr": 6, "sha": "def"})),
         now=_FRIDAY,
         client=cli,
     )
     assert first.enqueued is True and second.enqueued is True
     assert len(cli.table("task_queue").rows) == 2
+
+
+def test_dispatch_emit_task_same_target_different_key_collides():
+    """#1617 plan step 15: the #1119 target-pin partial unique index dedups
+    same-PR events even when idempotency_key differs (distinct sha) — a
+    target-CAS collision, not an idempotency-key collision."""
+    cli = _FakeClient()
+    first = dispatch(
+        handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "abc"})),
+        now=_FRIDAY,
+        client=cli,
+    )
+    second_decision = handle_event(_ev("ci_failure", "high", {"pr": 5, "sha": "def"}))
+    second = dispatch(second_decision, now=_FRIDAY, client=cli)
+    assert first.enqueued is True
+    assert second_decision.idempotency_key != first.row["idempotency_key"]
+    assert second.enqueued is False
+    assert len(cli.table("task_queue").rows) == 1
 
 
 # ===========================================================================
@@ -733,3 +783,157 @@ def test_build_production_orchestrator_no_warning_on_fresh_enqueue(
         result = orch({**_ev("ci_failure", "high", {"pr": 5}), "id": "ev-1"})
     assert result.enqueued is True
     assert not [r for r in caplog.records if "collision" in r.getMessage()]
+
+
+def test_build_production_orchestrator_logs_target_pins_on_target_cas_collision(
+    caplog: pytest.LogCaptureFixture,
+):
+    """#1617 plan step 15: two ci_failure/high events on the same PR with
+    *different* idempotency keys (distinct sha) don't dedup on
+    idempotency_key at all — they collide on the target-pin partial unique
+    index (#1119) instead. enqueue() still returns None via the existing
+    APIError/23505 catch, the wrapper still treats it as mark-processed-not-
+    parked, and the warning now names the target pins, not just the
+    idempotency key, since idempotency_key differs across the two events."""
+    cli = _FakeClient()
+    orch = build_production_orchestrator(client=cli, clock=lambda: _FRIDAY)
+    first_event = {**_ev("ci_failure", "high", {"pr": 5, "sha": "abc"}), "id": "ev-1"}
+    second_event = {**_ev("ci_failure", "high", {"pr": 5, "sha": "def"}), "id": "ev-2"}
+
+    first = orch(first_event)
+    assert first.enqueued is True
+    first_key = first.row["idempotency_key"]
+
+    with caplog.at_level(logging.WARNING, logger="agents.orchestrator"):
+        second = orch(second_event)
+
+    second_decision = handle_event(second_event)
+    assert second_decision.idempotency_key != first_key, (
+        "test premise: the two events must NOT dedup on idempotency_key — "
+        "otherwise this isn't exercising the target-CAS collision path"
+    )
+    assert second.enqueued is False
+    collision_logs = [r for r in caplog.records if "collision" in r.getMessage()]
+    assert collision_logs, "expected a warning on the target-CAS collision branch"
+    msg = collision_logs[0].getMessage()
+    assert "ev-2" in msg
+    assert second_decision.target_repo is not None
+    assert second_decision.target_type is not None
+    assert str(second_decision.target_number) in msg
+    assert second_decision.target_repo in msg
+    assert second_decision.target_type in msg
+
+
+# ===========================================================================
+# #1617 AC1: emit-side target pin population (target_type/target_number/
+# target_repo), consumed by the drain-time readiness gate for orchestrator
+# rows. Numeric target (PR) -> "pr"; non-numeric/absent -> explicit "none",
+# never NULL (NULL is reserved for "emit path forgot to classify").
+# ===========================================================================
+
+
+def test_decision_target_pin_fields_default_none():
+    d = handle_event(_ev("pr_merged"))
+    assert d.target_type is None
+    assert d.target_number is None
+    assert d.target_repo is None
+
+
+def test_ci_failure_numeric_pr_pins_target_type_pr(monkeypatch):
+    monkeypatch.delenv("GITHUB_REPO", raising=False)
+    event = {
+        "event_type": "ci_failure",
+        "severity": "high",
+        "repo": "Osasuwu/jarvis",
+        "payload": {"pr": 5},
+    }
+    d = handle_event(event)
+    assert d.target_type == "pr"
+    assert d.target_number == 5
+    assert d.target_repo == "Osasuwu/jarvis"
+
+
+def test_ci_failure_non_numeric_target_pins_target_type_none(monkeypatch):
+    monkeypatch.delenv("GITHUB_REPO", raising=False)
+    event = {
+        "event_type": "ci_failure",
+        "severity": "high",
+        "repo": "Osasuwu/jarvis",
+        "payload": {"workflow": "CI", "branch": "master"},
+    }
+    d = handle_event(event)
+    assert d.target_type == "none"
+    assert d.target_number is None
+    assert d.target_repo == "Osasuwu/jarvis"
+
+
+def test_ci_failure_no_repo_on_event_defaults_target_repo_to_own_repo(monkeypatch):
+    monkeypatch.delenv("GITHUB_REPO", raising=False)
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5}))
+    assert d.target_repo == "Osasuwu/jarvis"
+
+
+def test_ci_failure_target_repo_honors_github_repo_env(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPO", "someoperator/jarvis-oss")
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5}))
+    assert d.target_repo == "someoperator/jarvis-oss"
+
+
+def test_review_negative_numeric_pr_pins_target_type_pr():
+    d = handle_event(_ev("review_negative", "medium", {"pr": 7}))
+    assert d.target_type == "pr"
+    assert d.target_number == 7
+
+
+def test_global_task_due_pins_target_type_none():
+    d = handle_event(
+        _ev(
+            "global_task_due",
+            "low",
+            {"dispatcher_skill": "research", "output_sink": "memory"},
+        )
+    )
+    assert d.target_type == "none"
+    assert d.target_number is None
+
+
+def test_redrive_copies_target_pins_from_payload():
+    """A re-drive must carry the ORIGINAL task's target pins forward — not
+    reclassify from the terminal event's own (typically target-less) payload."""
+    d = handle_event(
+        _ev(
+            "task_failed",
+            "high",
+            {
+                "pr_evidence": False,
+                "attempt": 0,
+                "exit_confirmed": True,
+                "task_id": "t-1",
+                "goal": "/rework #7",
+                "target_type": "pr",
+                "target_number": 7,
+                "target_repo": "Osasuwu/jarvis",
+            },
+        )
+    )
+    assert d.route is Route.EMIT_TASK
+    assert d.target_type == "pr"
+    assert d.target_number == 7
+    assert d.target_repo == "Osasuwu/jarvis"
+
+
+def test_dispatch_emit_task_threads_target_pins_and_origin_to_row():
+    cli = _FakeClient()
+    d = handle_event(_ev("ci_failure", "high", {"pr": 5}))
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.enqueued is True
+    assert res.row["target_type"] == "pr"
+    assert res.row["target_number"] == 5
+    assert res.row["origin"] == "orchestrator"
+
+
+def test_dispatch_escalate_threads_origin_to_row():
+    cli = _FakeClient()
+    d = handle_event(_ev("security_alert", "critical", {"detail": "leaked key"}))
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.row["origin"] == "orchestrator"

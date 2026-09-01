@@ -302,8 +302,8 @@ def test_cli_fails_closed_on_missing_issue_number(monkeypatch, capsys):
 
 # ── drain_tasks pre-spawn dedup (agents/task_dispatch.py, #931) ──────────────
 
-from agents.task_dedup import DedupConfig  # noqa: E402
-from agents.task_dispatch import drain_tasks  # noqa: E402
+from agents.task_dedup import DedupConfig
+from agents.task_dispatch import drain_tasks
 
 
 class _Queue:
@@ -373,7 +373,7 @@ def test_drain_live_pr_skips_as_duplicate_and_records_outcome():
     outcomes: list[dict] = []
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([_pr(number=777, body="Closes #931")], []),
-        list_active_rows=lambda: [],
+        list_active_rows=list,
         record_outcome=outcomes.append,
     )
     res = _drain(q, cfg)
@@ -422,7 +422,7 @@ def test_drain_stale_branch_skips_as_duplicate():
     outcomes: list[dict] = []
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([], ["feat/931-dispatch-dedup"]),
-        list_active_rows=lambda: [],
+        list_active_rows=list,
         record_outcome=outcomes.append,
     )
     res = _drain(q, cfg)
@@ -440,7 +440,7 @@ def test_drain_fetch_failure_requeues_and_stops():
         raise RuntimeError("gh api down")
 
     q = _Queue([_task("t1", "Implement #931 x"), _task("t2", "Implement #932 y")])
-    cfg = DedupConfig(fetch_in_flight=boom, list_active_rows=lambda: [])
+    cfg = DedupConfig(fetch_in_flight=boom, list_active_rows=list)
     res = _drain(q, cfg)
     # Unverifiable is never terminal: the row goes back to pending ...
     assert q.requeued == ["t1"]
@@ -458,7 +458,7 @@ def test_drain_fetches_github_evidence_once_per_drain():
         return ([], [])
 
     q = _Queue([_task("t1", "Implement #931 x"), _task("t2", "Implement #932 y")])
-    cfg = DedupConfig(fetch_in_flight=fetch, list_active_rows=lambda: [])
+    cfg = DedupConfig(fetch_in_flight=fetch, list_active_rows=list)
     res = _drain(q, cfg)
     assert res.spawned == 2
     assert calls["n"] == 1
@@ -473,7 +473,7 @@ def test_drain_rework_goal_bypasses_dedup():
         return ([_pr(body="Closes #931")], [])
 
     q = _Queue([_task("t1", "/rework #931")])
-    cfg = DedupConfig(fetch_in_flight=fetch, list_active_rows=lambda: [])
+    cfg = DedupConfig(fetch_in_flight=fetch, list_active_rows=list)
     res = _drain(q, cfg)
     assert res.spawned == 1
     assert fetched["n"] == 0
@@ -483,7 +483,7 @@ def test_drain_goal_without_issue_ref_proceeds():
     q = _Queue([_task("t1", "chore: tidy the docs")])
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([_pr(body="Closes #1")], []),
-        list_active_rows=lambda: [],
+        list_active_rows=list,
     )
     res = _drain(q, cfg)
     assert res.spawned == 1
@@ -505,7 +505,7 @@ def test_drain_record_outcome_failure_does_not_break_the_skip():
     q = _Queue([_task("t1", "Implement #931 x"), _task("t2", "Implement #932 y")])
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([_pr(body="Closes #931")], []),
-        list_active_rows=lambda: [],
+        list_active_rows=list,
         record_outcome=bad_outcome,
     )
     res = _drain(q, cfg)
@@ -523,7 +523,7 @@ def test_drain_dedup_prefers_issue_number_column_over_goal_text():
     q = _Queue([row])
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([_pr(number=777, body="Closes #931")], []),
-        list_active_rows=lambda: [],
+        list_active_rows=list,
     )
     res = _drain(q, cfg)
     assert res.spawned == 0
@@ -536,7 +536,7 @@ def test_drain_dedup_falls_back_to_goal_text_when_column_null():
     q = _Queue([_task("t1", "Implement #931 x")])
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([_pr(number=777, body="Closes #931")], []),
-        list_active_rows=lambda: [],
+        list_active_rows=list,
     )
     res = _drain(q, cfg)
     assert res.spawned == 0
@@ -580,10 +580,10 @@ def test_drain_sibling_check_falls_back_to_goal_text_when_column_null():
 # client / paginated-GET conventions of the sibling evidence methods and the
 # MagicMock side_effect test pattern in tests/test_agents_953_event_emission.py.
 
-from unittest import mock  # noqa: E402
+from unittest import mock
 
-from agents.github_client import HttpxGitHubClient  # noqa: E402
-from agents.task_dedup import default_task_dedup  # noqa: E402
+from agents.github_client import HttpxGitHubClient
+from agents.task_dedup import default_task_dedup
 
 
 def _resp(body, status: int = 200):
@@ -663,8 +663,15 @@ def test_default_task_dedup_wires_github_and_active_rows():
 def test_default_task_dedup_wires_fetch_issue_from_github_get_issue():
     gh = mock.MagicMock()
     gh.get_issue.return_value = {"number": 931, "body": READY_BODY, "labels": []}
-    cfg = default_task_dedup(gh, list_active=lambda: [])
+    cfg = default_task_dedup(gh, list_active=list)
     assert cfg.fetch_issue is gh.get_issue
+
+
+def test_default_task_dedup_wires_fetch_pull_from_github_get_pull_by_number():
+    gh = mock.MagicMock()
+    gh.get_pull_by_number.return_value = {"number": 42, "state": "open"}
+    cfg = default_task_dedup(gh, list_active=list)
+    assert cfg.fetch_pull is gh.get_pull_by_number
 
 
 # ── drain_tasks readiness re-check for delegate:-prefixed rows (#1085 S2-3) ──
@@ -689,7 +696,7 @@ def _issue(
 def _drain_with_fetch_issue(q: _Queue, fetch_issue, **extra):
     cfg = DedupConfig(
         fetch_in_flight=lambda: ([], []),
-        list_active_rows=lambda: [],
+        list_active_rows=list,
         fetch_issue=fetch_issue,
         **extra,
     )
@@ -738,7 +745,7 @@ def test_drain_readiness_recheck_skipped_when_fetch_issue_not_wired():
     # dedup present but fetch_issue omitted (default None) — pre-#1085-S2-3
     # behavior: no readiness re-check at all, even for a delegate:-prefixed row.
     q = _Queue([_delegate_task("t1", 931)])
-    cfg = DedupConfig(fetch_in_flight=lambda: ([], []), list_active_rows=lambda: [])
+    cfg = DedupConfig(fetch_in_flight=lambda: ([], []), list_active_rows=list)
     res = _drain(q, cfg)
     assert res.spawned == 1
     assert not any(s == "parked" for _, s, _ in q.transitions)
@@ -761,6 +768,28 @@ def test_drain_readiness_recheck_skipped_for_non_delegate_prefixed_rows():
     assert calls["n"] == 0
 
 
+def test_drain_readiness_recheck_routes_on_origin_dispatch_even_without_delegate_prefix():
+    # #1617 plan step 12: origin="dispatch" is now the primary routing signal —
+    # a row the updated /dispatch skill enqueued with an idempotency_key that
+    # does NOT start with "delegate:" must still get the readiness re-check.
+    row = {**_task("t1", "Implement #931 x"), "origin": "dispatch", "idempotency_key": "r1"}
+    q = _Queue([row])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n, body="", labels=()))
+    assert res.spawned == 0
+    parked = [(t, r) for t, s, r in q.transitions if s == "parked"]
+    assert parked and parked[0][0] == "t1"
+
+
+def test_drain_readiness_recheck_still_fires_on_delegate_prefix_when_origin_unbackfilled():
+    # #1617 plan step 12: origin=None (not-yet-backfilled row) must still fall
+    # back to the legacy "delegate:" prefix sniff — the delegate re-check must
+    # never be silently skipped by omission during the origin rollout.
+    q = _Queue([{**_delegate_task("t1", 931), "origin": None}])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n))
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+
+
 def test_drain_readiness_recheck_parked_row_not_terminal_failed():
     # A refused row is parked, not failed/skipped_duplicate — distinct FSM
     # terminal so it reads as owner-attention rather than a drain error.
@@ -770,3 +799,68 @@ def test_drain_readiness_recheck_parked_row_not_terminal_failed():
     assert res.skipped_duplicate == 0
     statuses = [s for _, s, _ in q.transitions]
     assert statuses == ["running", "parked"]
+
+
+# ── drain_tasks orchestrator-target gate (#1617 plan step 14) ────────────────
+
+
+def _orchestrator_task(
+    task_id: str, *, target_type, target_number: int | None = None, target_repo: str | None = None
+) -> dict:
+    return {
+        "id": task_id,
+        "goal": "orchestrator-emitted goal",
+        "assignee": "sandcastle",
+        "status": "pending",
+        "origin": "orchestrator",
+        "target_type": target_type,
+        "target_number": target_number,
+        "target_repo": target_repo,
+    }
+
+
+def test_drain_orchestrator_gate_parks_on_merged_pr():
+    # origin=orchestrator + target_type=pr + merged PR -> parked, not spawned.
+    row = _orchestrator_task("t1", target_type="pr", target_number=42, target_repo="Osasuwu/jarvis")
+    q = _Queue([row])
+    cfg = DedupConfig(
+        fetch_in_flight=lambda: ([], []),
+        list_active_rows=list,
+        fetch_pull=lambda n: {"number": n, "state": "closed", "merged": True},
+    )
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    parked_rows = [(t, r) for t, s, r in q.transitions if s == "parked"]
+    assert parked_rows and parked_rows[0][0] == "t1"
+
+
+def test_drain_orchestrator_gate_spawns_on_target_type_none():
+    # origin=orchestrator + target_type=none -> spawns normally.
+    row = _orchestrator_task("t1", target_type="none")
+    q = _Queue([row])
+    cfg = DedupConfig(fetch_in_flight=lambda: ([], []), list_active_rows=list)
+    res = _drain(q, cfg)
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+
+
+def test_drain_orchestrator_gate_does_not_affect_dispatch_origin_rows():
+    # origin=dispatch rows behave exactly as before — sniff-key swap only,
+    # no outcome change from the new orchestrator-gate block.
+    q = _Queue([_delegate_task("t1", 931)])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n))
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+
+
+def test_drain_orchestrator_gate_fetch_pull_raise_requeues_and_stops():
+    row = _orchestrator_task("t1", target_type="pr", target_number=42, target_repo="Osasuwu/jarvis")
+    q = _Queue([row])
+
+    def boom(_number: int) -> dict:
+        raise RuntimeError("network down")
+
+    cfg = DedupConfig(fetch_in_flight=lambda: ([], []), list_active_rows=list, fetch_pull=boom)
+    res = _drain(q, cfg)
+    assert res.spawned == 0
+    assert q.requeued == ["t1"]

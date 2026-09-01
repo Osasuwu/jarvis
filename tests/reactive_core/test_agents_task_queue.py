@@ -520,6 +520,27 @@ class TestEnqueue:
         ):
             assert col not in row
 
+    def test_origin_kwarg_passed_through(self, client: _StubClient) -> None:
+        """#1617: origin classifies the enqueue path (dispatch/orchestrator)
+        so drain_tasks can route to the right readiness gate."""
+        row = enqueue(
+            goal="orchestrator-emitted",
+            idempotency_key="key-origin",
+            origin="orchestrator",
+            client=client,
+        )
+        assert row is not None
+        assert row["origin"] == "orchestrator"
+
+    def test_origin_omitted_when_none(self, client: _StubClient) -> None:
+        row = enqueue(
+            goal="no origin",
+            idempotency_key="key-origin-none",
+            client=client,
+        )
+        assert row is not None
+        assert "origin" not in row
+
 
 # ===========================================================================
 # claim_next

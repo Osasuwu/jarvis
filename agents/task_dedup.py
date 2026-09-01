@@ -71,19 +71,28 @@ class DedupConfig:
 
     ``fetch_issue`` (optional, #1085 S2-3) fetches a single issue fresh at
     spawn time — returns ``None`` if the issue is gone/inaccessible, raises on
-    a genuine fetch failure. Used only for rows whose ``idempotency_key``
-    starts with ``"delegate:"`` (i.e. ``/dispatch``-originated): the mechanical
+    a genuine fetch failure. Used for rows whose ``idempotency_key`` starts
+    with ``"delegate:"`` (i.e. ``/dispatch``-originated) — the mechanical
     re-run of ``check_issue`` against a fresh fetch, since ``/dispatch``'s own
-    check at enqueue time is advisory, not enforcement. ``None`` here (the
-    default) disables the re-check entirely — orchestrator-emitted and
-    ``/rework`` rows were never subject to ``check_issue``'s readiness
-    conditions and must not start being refused by omission.
+    check at enqueue time is advisory, not enforcement — and for
+    orchestrator-emitted rows pinned to ``target_type == "issue"``, via
+    :func:`~scripts.delegate_predispatch_gate.check_orchestrator_target`
+    (#1617). ``None`` here (the default) disables both re-checks — a row this
+    was never wired for must not start being refused by omission.
+
+    ``fetch_pull`` (optional, #1617) fetches a single PR fresh at spawn time —
+    returns ``None`` if the PR is gone/inaccessible, raises on a genuine fetch
+    failure. Used only for orchestrator-emitted rows pinned to
+    ``target_type == "pr"``, via ``check_orchestrator_target``'s PR-state
+    check (open vs. closed/merged). ``None`` here (the default) disables that
+    re-check entirely.
     """
 
     fetch_in_flight: Callable[[], tuple[list[dict[str, Any]], list[str]]]
     list_active_rows: Callable[[], list[dict[str, Any]]]
     record_outcome: Callable[[dict[str, Any]], None] | None = None
     fetch_issue: Callable[[int], dict[str, Any] | None] | None = None
+    fetch_pull: Callable[[int], dict[str, Any] | None] | None = None
 
 
 def default_task_dedup(
@@ -97,7 +106,10 @@ def default_task_dedup(
     into the ``(open_prs, open_branches)`` shape the gate predicate takes;
     ``list_active_rows`` defaults to :func:`task_queue.list_active`; ``record_outcome``
     is the best-effort ``task_outcomes`` writer above; ``fetch_issue`` is
-    ``github.get_issue`` directly (#1085 S2-3). Wired from
+    ``github.get_issue`` directly (#1085 S2-3), used for delegate-originated
+    re-checks and orchestrator-emitted ``issue``-pinned rows alike;
+    ``fetch_pull`` is ``github.get_pull_by_number`` directly (#1617), used for
+    orchestrator-emitted ``pr``-pinned rows. Wired from
     :func:`wake_driver.main`; unit tests inject fakes into :class:`DedupConfig` directly.
     """
     active = list_active if list_active is not None else task_queue.list_active
@@ -110,4 +122,5 @@ def default_task_dedup(
         list_active_rows=active,
         record_outcome=task_outcomes.record_skip_outcome,
         fetch_issue=github.get_issue,
+        fetch_pull=github.get_pull_by_number,
     )

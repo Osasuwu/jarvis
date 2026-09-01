@@ -2791,6 +2791,13 @@ create table if not exists task_queue (
   -- text, no check constraint.
   substrate text,
 
+  -- Enqueue-path classifier (#1617): 'dispatch' for /dispatch (delegate:*)
+  -- rows, 'orchestrator' for orchestrator-emitted rows (ci_failure/rework/
+  -- global-task). Backfilled from idempotency_key prefix. NULL is
+  -- fail-closed at drain time, not "no gate applies". Keep in lockstep with
+  -- supabase/migrations/20260831130000_task_queue_origin.sql.
+  origin text,
+
   -- Timestamps
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

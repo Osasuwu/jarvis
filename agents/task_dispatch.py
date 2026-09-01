@@ -461,6 +461,11 @@ class TrackedProc:
     column value (when set) so the terminal-boundary PR-evidence computation can
     use it column-first, falling back to parsing ``goal`` for legacy/null rows —
     same default-``None`` rationale as the fields above.
+
+    ``target_repo``/``target_type``/``target_number`` (#1617) carry the claimed
+    row's orchestrator-populated pins forward so the terminal ``task_done``/
+    ``task_failed`` event payloads can copy them onto a re-drive Decision — same
+    default-``None`` rationale as the fields above.
     """
 
     proc: Any
@@ -469,6 +474,9 @@ class TrackedProc:
     idempotency_key: str = ""
     spawned_at: datetime | None = None
     issue_number: int | None = None
+    target_repo: str | None = None
+    target_type: str | None = None
+    target_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -745,6 +753,9 @@ def poll_completions(
                             "pr_evidence": pr_exists,
                             "goal": goal,
                             "closing_ref": closing_ref,
+                            "target_repo": tracked.target_repo,
+                            "target_type": tracked.target_type,
+                            "target_number": tracked.target_number,
                         },
                         dedup_key=f"task_done:{task_id}:a{attempt}",
                     )
@@ -761,6 +772,9 @@ def poll_completions(
                             "pr_evidence": pr_exists,
                             "failure_reason": f"exit {rc}",
                             "goal": goal,
+                            "target_repo": tracked.target_repo,
+                            "target_type": tracked.target_type,
+                            "target_number": tracked.target_number,
                         },
                         dedup_key=f"task_failed:{task_id}:a{attempt}",
                     )
@@ -888,6 +902,9 @@ def kill_runaways(
                         "pr_evidence": None,
                         "failure_reason": "killed: exceeded max runtime",
                         "goal": tracked.goal,
+                        "target_repo": tracked.target_repo,
+                        "target_type": tracked.target_type,
+                        "target_number": tracked.target_number,
                     },
                     dedup_key=f"task_failed:{task_id}:a{attempt}",
                 )
@@ -1198,13 +1215,23 @@ def drain_tasks(
 
                 # #1085 S2-3 — /dispatch's own check_issue at enqueue time is
                 # advisory, not enforcement. This is the mechanical re-run against
-                # a fresh fetch — unconditional for "delegate:"-prefixed rows
-                # (i.e. /dispatch-originated) regardless of what the advisory gate
-                # did or didn't catch. Orchestrator-emitted and /rework rows never
-                # went through check_issue's readiness conditions and must not
-                # start being refused by omission here.
+                # a fresh fetch — unconditional for /dispatch-originated rows
+                # regardless of what the advisory gate did or didn't catch.
+                # Orchestrator-emitted and /rework rows never went through
+                # check_issue's readiness conditions and must not start being
+                # refused by omission here.
+                #
+                # #1617 — origin="dispatch" is the primary routing signal (set
+                # by the updated /dispatch skill going forward); the legacy
+                # "delegate:"-prefix sniff is kept as a fail-safe fallback for
+                # rows enqueued before the origin backfill or by a caller not
+                # yet updated to set it, so this re-check is never silently
+                # skipped by omission during the rollout.
                 idem_key = str(row.get("idempotency_key", "") or "")
-                if dedup.fetch_issue is not None and idem_key.startswith("delegate:"):
+                is_dispatch_origin = row.get("origin") == "dispatch" or (
+                    row.get("origin") is None and idem_key.startswith("delegate:")
+                )
+                if dedup.fetch_issue is not None and is_dispatch_origin:
                     try:
                         fresh_issue = dedup.fetch_issue(issue_number)
                     except Exception:  # noqa: BLE001 — unverifiable is never terminal
@@ -1251,6 +1278,48 @@ def drain_tasks(
                                 task_id,
                             )
                         continue
+
+        # #1617 — orchestrator-target readiness gate. Independent of the
+        # issue_number/fresh-shape dedup block above (rework rows aren't
+        # "fresh" but still carry target pins) — this runs off target_type,
+        # not goal parsing, so it is scoped purely by origin.
+        if row.get("origin") == "orchestrator" and dedup is not None:
+            try:
+                gate_result = pr_evidence.load_gate_module().check_orchestrator_target(
+                    row, fetch_pull=dedup.fetch_pull
+                )
+            except Exception:  # noqa: BLE001 — unverifiable is never terminal
+                try:
+                    requeued = port.requeue_running(task_id)
+                except Exception:  # noqa: BLE001 — requeue is best-effort
+                    requeued = False
+                logger.exception(
+                    "[task_dispatch] orchestrator-target fetch_pull failed; "
+                    "stopping drain — task %s %s",
+                    task_id,
+                    "requeued to pending" if requeued else "left running for the reaper",
+                )
+                return DrainResult(
+                    spawned=spawned,
+                    failed=failed,
+                    skipped_duplicate=skipped_duplicate,
+                    parked=parked,
+                    procs=tuple(procs),
+                    spawned_meta=spawned_meta,
+                )
+
+            if not gate_result.allow:
+                try:
+                    port.transition(task_id, "parked", reason=gate_result.message)
+                except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                    logger.exception(
+                        "[task_dispatch] could not park task %s on orchestrator-target "
+                        "refusal; row left running for the reaper",
+                        task_id,
+                    )
+                else:
+                    parked += 1
+                continue
 
         # #1689 — ex-post plan-review drain gate. No priority:critical
         # carve-out here — a task entering via the queue always gets ex-post
@@ -1401,6 +1470,9 @@ def drain_tasks(
                 "idempotency_key": str(row.get("idempotency_key", "") or ""),
                 "spawned_at": spawn_started_at,
                 "issue_number": row.get("issue_number"),
+                "target_repo": row.get("target_repo"),
+                "target_type": row.get("target_type"),
+                "target_number": row.get("target_number"),
             }
             # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
             if sidecar is not None:
@@ -1604,7 +1676,8 @@ def local_drain_until_terminal(
     statuses = get_statuses(ids)
     for _ in range(max_iterations):
         if all(
-            statuses.get(tid) is not None and statuses.get(tid) not in _ACTIVE_STATUSES for tid in ids
+            statuses.get(tid) is not None and statuses.get(tid) not in _ACTIVE_STATUSES
+            for tid in ids
         ):
             return statuses
         if not heartbeat_check().is_stale:
