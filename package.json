@@ -6,6 +6,7 @@
   "scripts": {
     "sandcastle": "tsx --env-file-if-exists=.sandcastle/.env .sandcastle/main.mts",
     "sandcastle:check": "node --experimental-strip-types .sandcastle/check-result-contract.mts",
+    "sandcastle:check:dedup-key": "node --experimental-strip-types .sandcastle/check-dedup-key-contract.mts",
     "sandcastle:check:billing-denylist": "node --experimental-strip-types .sandcastle/check-billing-denylist.mts",
     "sandcastle:check:supabase-key-role": "node --experimental-strip-types .sandcastle/check-supabase-key-role.mts"
   },

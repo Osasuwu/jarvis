@@ -7,6 +7,7 @@ import { readYamlStringList } from "./yaml-list.mts";
 import { assertSupabaseKeyIsAnon } from "./supabase-key-role.mts";
 import {
   buildCompletionPayload,
+  buildDedupKey,
   buildResultFile,
   classifyCompletion,
   completionSeverity,
@@ -686,7 +687,7 @@ if (taskId) {
         title,
         severity: completionSeverity(eventType, prEvidence),
         payload: scrubbed.scrubbed,
-        dedupKey: `${eventType}:${taskId}:a${attempt ?? 0}`,
+        dedupKey: buildDedupKey(eventType, taskId, attempt ?? 0),
       });
     } catch (err) {
       // The result file is already durable — the S4 sweeper re-emits from it

@@ -214,6 +214,21 @@ def parse_lineage(idempotency_key: str) -> tuple[str, int]:
     return (root, attempt)
 
 
+def build_dedup_key(event_type: str, task_id: str, attempt: int) -> str:
+    """Completion-event dedup key: ``<event_type>:<task_id>:a<attempt>`` (#1121 step 11).
+
+    Single source of truth for the format both the supervisor's own event
+    emission (below) and the future S4 sweeper's re-emission must reproduce
+    byte-for-byte — the issue's motivating bug was an ``a0``/``a1`` drift
+    between the two sides. A shared JSON fixture
+    (``tests/fixtures/sandcastle-dedup-key.json``) asserts this against the
+    TS side's independent string interpolation in
+    ``.sandcastle/check-dedup-key-contract.mts`` (decision
+    ``17736ef0-01d2-492a-b490-ef5d0b46cb11``).
+    """
+    return f"{event_type}:{task_id}:a{attempt}"
+
+
 def _augment_branch_directive(goal: str, task_id: str) -> str:
     """Append the ``task/<task_id>`` branch directive to a fresh-shape goal (AC5).
 
@@ -771,7 +786,7 @@ def poll_completions(
                             "target_number": tracked.target_number,
                             "origin": tracked.origin,
                         },
-                        dedup_key=f"task_done:{task_id}:a{attempt}",
+                        dedup_key=build_dedup_key("task_done", task_id, attempt),
                     )
                 else:
                     event_emit(
@@ -791,7 +806,7 @@ def poll_completions(
                             "target_number": tracked.target_number,
                             "origin": tracked.origin,
                         },
-                        dedup_key=f"task_failed:{task_id}:a{attempt}",
+                        dedup_key=build_dedup_key("task_failed", task_id, attempt),
                     )
             except Exception:  # noqa: BLE001 — emit failure must not block transition
                 logger.exception(
@@ -922,7 +937,7 @@ def kill_runaways(
                         "target_number": tracked.target_number,
                         "origin": tracked.origin,
                     },
-                    dedup_key=f"task_failed:{task_id}:a{attempt}",
+                    dedup_key=build_dedup_key("task_failed", task_id, attempt),
                 )
             except Exception:  # noqa: BLE001 — emit failure must not block transition
                 logger.exception(
