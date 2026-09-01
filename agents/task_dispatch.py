@@ -147,8 +147,15 @@ SupervisorSpawn = Callable[..., Any]
 ResolveBinary = Callable[[], str]
 # Quota probe — returns a UsageReading-shaped object with .near_exhaustion
 # (#921 AC4). The production default is false-safe: it never raises, a probe
-# error reads as near-exhaustion, so a broken probe pauses dispatch.
+# error reads as near-exhaustion, so a probe pauses dispatch.
 ReadUsage = Callable[[], Any]
+# Docker/node availability check for the supervisor path (#1121 plan step 16).
+# Raises on failure (any Exception — the pre-flight doesn't care which infra
+# piece is missing, only that spawning via the supervisor would fail); returns
+# None on success. Unlike ResolveBinary/ReadUsage, failure here is treated as
+# a persistent host-config problem rather than a transient one, so the rows
+# that would have spawned this tick are parked, not left pending.
+InfraCheck = Callable[[], None]
 
 # Repo root, mirroring executor._REPO_ROOT — anchors per-task worktree creation
 # (#1390 AC3) to the main checkout regardless of the daemon's CWD. Tests
@@ -421,10 +428,19 @@ class DrainResult:
     # gate cannot be evaluated for any ordinal-2 row without it, so the drain
     # fails closed rather than spawning unreviewed ordinal-2 work.
     skipped_no_plan_config: bool = False
+    # True iff the whole drain was skipped because the docker/node infra
+    # pre-flight (#1121 plan step 16) failed — distinct from
+    # ``skipped_no_binary``: this is a persistent host-config problem, not a
+    # transient one, so the rows that would have spawned this tick are
+    # counted in ``parked`` below (not left ``pending``) and one structured
+    # infra owner-event is emitted.
+    skipped_no_infra: bool = False
     # Tasks parked because the ex-post plan-review gate (#1689) could not
     # produce a resolved, locked plan for a ordinal-2 row (planner raised, or
     # returned resolved=False) — distinct from the pre-spawn fail-closed
-    # digest mismatch below, which is a hard failure rather than a park.
+    # digest mismatch below, which is a hard failure rather than a park. Also
+    # incremented by the #1121 step-16 infra pre-flight (see
+    # ``skipped_no_infra`` above) when it parks rows instead of spawning.
     parked: int = 0
     # (task_id, proc) per *successful* spawn that yielded a pollable process
     # handle (#921 AC1). A raising spawn never reaches the append; a throttled
@@ -1046,6 +1062,59 @@ def default_read_usage() -> Any:
     return read_usage()
 
 
+# Owner-visible event written when the #1121 step-16 infra pre-flight parks
+# rows instead of spawning. Mirrors agents.escalation's dispatcher_escalation
+# constants but is a distinct event_type — this event is not row-scoped to a
+# single queue_id, it covers every row parked by one drain tick's failure.
+INFRA_PREFLIGHT_EVENT_TYPE = "drain_infra_preflight_failure"
+INFRA_PREFLIGHT_SEVERITY = "high"
+
+
+def default_check_infra_available() -> None:
+    """Production docker/node availability adapter (#1121 plan step 16).
+
+    Raises RuntimeError naming what's missing. Both are required for the
+    supervisor path: docker runs the container, node/npm launches
+    ``.sandcastle/main.mts`` (see ``package.json``'s ``sandcastle`` script).
+    """
+    import shutil
+
+    missing = [name for name in ("docker", "node") if shutil.which(name) is None]
+    if missing:
+        raise RuntimeError(f"missing on PATH: {', '.join(missing)}")
+
+
+def default_emit_infra_preflight_event(
+    task_ids: list[str], reason: str, *, client: Any | None = None
+) -> Any:
+    """Write one ``events`` row when the infra pre-flight parks rows (#1121 step 16).
+
+    Mirrors :func:`agents.escalation.escalate`'s insert shape (same ``repo``/
+    ``source`` fields, same lazy-import-the-client convention), but is not
+    row-scoped to a single ``queue_id`` — one event covers every row parked
+    by this drain tick's pre-flight failure, not one event per row.
+    """
+    from agents.escalation import DISPATCHER_AGENT_ID
+    from agents.supabase_client import get_client
+
+    cli = client or get_client()
+    response = (
+        cli.table("events")
+        .insert(
+            {
+                "event_type": INFRA_PREFLIGHT_EVENT_TYPE,
+                "severity": INFRA_PREFLIGHT_SEVERITY,
+                "repo": "Osasuwu/jarvis",
+                "source": DISPATCHER_AGENT_ID,
+                "title": f"Drain infra pre-flight failed: {reason}",
+                "payload": {"reason": reason, "task_ids": task_ids},
+            }
+        )
+        .execute()
+    )
+    return (response.data or [{}])[0]
+
+
 def drain_tasks(
     port: TaskQueuePort,
     spawn: Spawn = default_spawn,
@@ -1061,6 +1130,8 @@ def drain_tasks(
     github_factory: Callable[[], GitHubClient] = default_github_client,
     supervisor_spawn: SupervisorSpawn = default_supervisor_spawn,
     operator_default_substrate_loader: Callable[[], str] = default_operator_default_substrate,
+    check_infra_available: InfraCheck = default_check_infra_available,
+    infra_event_emitter: Callable[[list[str], str], Any] = default_emit_infra_preflight_event,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -1134,6 +1205,32 @@ def drain_tasks(
     budget = cap - port.count_running(assignee=assignee)
     if budget <= 0:
         return DrainResult()
+
+    # #1121 plan step 16 — docker/node infra pre-flight, once per drain
+    # (mirrors the AC7a/AC4 pattern above in shape). Diverges in outcome:
+    # docker/node missing is a persistent host-config problem, not a transient
+    # one expected to self-heal by the next tick, so the rows that would have
+    # spawned this tick are claimed and parked (not left pending) and one
+    # structured infra owner-event is emitted — the operator needs to fix the
+    # host, and a silently-retrying drain would just crash-loop against it.
+    try:
+        check_infra_available()
+    except Exception as exc:  # noqa: BLE001 — any infra-check failure parks + stops
+        parked_ids: list[str] = []
+        for _ in range(budget):
+            row = port.claim_next(assignee=assignee)
+            if row is None:
+                break
+            task_id = str(row["id"])
+            port.transition(task_id, "parked", reason=f"infra_unavailable: {exc}")
+            parked_ids.append(task_id)
+        logger.warning(
+            "[task_dispatch] infra pre-flight failed (%s); parked %d row(s), skipping drain",
+            exc,
+            len(parked_ids),
+        )
+        infra_event_emitter(parked_ids, str(exc))
+        return DrainResult(parked=len(parked_ids), skipped_no_infra=True)
 
     # #1689 — plan-review config loaded once per drain (mirrors the AC7a/AC4
     # preflight pattern above): a broken/missing config means the ex-post
