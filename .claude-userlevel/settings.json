@@ -13,7 +13,6 @@
       "Edit(**/.env.local)",
       "Edit(**/.env.*.local)",
       "Edit(**/.envrc)",
-      "Read(~/.ssh/**)",
       "Read(~/.aws/**)",
       "Read(~/.gnupg/**)",
       "Read(**/id_rsa*)",
