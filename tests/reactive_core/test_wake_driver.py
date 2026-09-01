@@ -544,7 +544,9 @@ def test_tick_runs_the_four_steps_in_order():
     eq = _LoggingEventQueue(log, [_ev("e1", state="claimed")])
     eq.events[0]["claimed_at"] = 0.0
     eq.clock = 999.0  # the claimed event is stale → reclaimed → drained this tick
-    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
 
     wake_driver.tick(
         eq,
@@ -586,7 +588,7 @@ def test_tick_reports_task_counts():
     eq = FakeEventQueue([])
     tq = _RecordingTaskQueue(
         log,
-        pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}],
+        pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}],
         stale_claimed=2,
         stale_running=[{"id": "r1"}],
     )
@@ -771,7 +773,10 @@ def test_run_forwards_task_spawn_and_resolver_to_tick():
     q = FakeEventQueue([])
     q.wake_signals = [True]
     tq = _RecordingTaskQueue(
-        log, pending=[{"id": "t1", "goal": "do-the-thing", "assignee": "sandcastle"}]
+        log,
+        pending=[
+            {"id": "t1", "goal": "do-the-thing", "assignee": "sandcastle", "substrate": "test-bare"}
+        ],
     )
     spawned: list[str] = []
     resolved = {"n": 0}
@@ -816,7 +821,10 @@ def test_run_forwards_plan_review_gate_params_to_drain_tasks(monkeypatch):
     q = FakeEventQueue([])
     q.wake_signals = [True]
     tq = _RecordingTaskQueue(
-        log, pending=[{"id": "t1", "goal": "do-the-thing", "assignee": "sandcastle"}]
+        log,
+        pending=[
+            {"id": "t1", "goal": "do-the-thing", "assignee": "sandcastle", "substrate": "test-bare"}
+        ],
     )
     ticks = {"n": 0}
 
@@ -856,7 +864,9 @@ def test_run_forwards_task_outcome_record_to_tick():
     log: list = []
     q = FakeEventQueue([])
     q.wake_signals = [True, True]
-    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
     proc = _TickProc(rc=None)  # alive during tick 1...
     recorded: list = []
     ticks = {"n": 0}
@@ -998,7 +1008,9 @@ def test_tick_worktree_sweep_failure_does_not_block_drains(monkeypatch):
 
     log: list = []
     q = FakeEventQueue([_ev("a")])
-    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
 
     result = wake_driver.tick(
         q,
@@ -1071,7 +1083,9 @@ def test_tick_completion_poll_runs_before_watchdogs_and_drains():
     eq = _LoggingEventQueue(log, [_ev("e1", state="claimed")])
     eq.events[0]["claimed_at"] = 0.0
     eq.clock = 999.0
-    tq = _RecordingTaskQueue(log, pending=[{"id": "t2", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t2", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
     procs = {"t1": TrackedProc(proc=_TickProc(rc=0), started_at=0.0)}
 
     wake_driver.tick(
@@ -1225,6 +1239,7 @@ def test_tick_merges_spawned_procs_into_the_tracking_map():
                 "id": "t1",
                 "goal": "g",
                 "assignee": "sandcastle",
+                "substrate": "test-bare",
                 "idempotency_key": "task_done:abc123:r2",
             }
         ],
@@ -1266,6 +1281,7 @@ def test_tick_folds_issue_number_column_into_the_tracking_map():
                 "id": "t1",
                 "goal": "g",
                 "assignee": "sandcastle",
+                "substrate": "test-bare",
                 "idempotency_key": "key-1",
                 "issue_number": 1085,
             }
@@ -1301,6 +1317,7 @@ def test_tick_folds_target_pins_into_the_tracking_map():
                 "id": "t1",
                 "goal": "g",
                 "assignee": "sandcastle",
+                "substrate": "test-bare",
                 "idempotency_key": "key-1",
                 "target_repo": "Osasuwu/jarvis",
                 "target_type": "pr",
@@ -1344,8 +1361,8 @@ def test_tick_batch_shares_one_started_at_stamp():
     tq = _RecordingTaskQueue(
         [],
         pending=[
-            {"id": "t1", "goal": "g1", "assignee": "sandcastle"},
-            {"id": "t2", "goal": "g2", "assignee": "sandcastle"},
+            {"id": "t1", "goal": "g1", "assignee": "sandcastle", "substrate": "test-bare"},
+            {"id": "t2", "goal": "g2", "assignee": "sandcastle", "substrate": "test-bare"},
         ],
     )
     procs: dict = {}
@@ -1384,7 +1401,9 @@ def test_tick_stamps_the_clock_before_spawning():
         order.append("spawn")
         return _SpawnHandle(_TickProc(rc=None))
 
-    tq = _RecordingTaskQueue([], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        [], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
 
     wake_driver.tick(
         FakeEventQueue([]),
@@ -1420,7 +1439,9 @@ def test_tick_with_a_broken_clock_spawns_nothing():
         spawned.append(goal)
         return _SpawnHandle(_TickProc(rc=None))
 
-    tq = _RecordingTaskQueue([], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        [], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
 
     wake_driver.tick(
         FakeEventQueue([]),
@@ -1640,7 +1661,9 @@ def test_run_retains_the_tracking_map_across_ticks():
     log: list = []
     q = FakeEventQueue([])
     q.wake_signals = [True, True]
-    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
     proc = _TickProc(rc=None)  # alive during tick 1...
     procs: dict = {}
     ticks = {"n": 0}
@@ -1673,7 +1696,9 @@ def test_run_creates_and_retains_a_map_when_not_injected():
     log: list = []
     q = FakeEventQueue([])
     q.wake_signals = [True, True]
-    tq = _RecordingTaskQueue(log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle"}])
+    tq = _RecordingTaskQueue(
+        log, pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
     proc = _TickProc(rc=None)
     ticks = {"n": 0}
 

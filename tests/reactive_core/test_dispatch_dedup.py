@@ -339,7 +339,17 @@ class _Queue:
 
 
 def _task(task_id: str, goal: str) -> dict:
-    return {"id": task_id, "goal": goal, "assignee": "sandcastle", "status": "pending"}
+    # #1121 plan step 8: drain_tasks routes substrate="worktree" rows onto the
+    # (real, subprocess-launching) supervisor adapter. Pin every fixture row to
+    # a non-"worktree" sentinel so these dedup tests keep exercising the
+    # injected goal-string ``spawn`` fake above unchanged.
+    return {
+        "id": task_id,
+        "goal": goal,
+        "assignee": "sandcastle",
+        "status": "pending",
+        "substrate": "test-bare",
+    }
 
 
 class _Spawned:
@@ -684,6 +694,8 @@ def _delegate_task(task_id: str, issue_number: int, attempt: int = 1) -> dict:
         "assignee": "sandcastle",
         "status": "pending",
         "idempotency_key": f"delegate:{issue_number}:r{attempt}",
+        # #1121 plan step 8 — keep these rows off the real supervisor adapter.
+        "substrate": "test-bare",
     }
 
 
@@ -816,6 +828,8 @@ def _orchestrator_task(
         "target_type": target_type,
         "target_number": target_number,
         "target_repo": target_repo,
+        # #1121 plan step 8 — keep these rows off the real supervisor adapter.
+        "substrate": "test-bare",
     }
 
 
