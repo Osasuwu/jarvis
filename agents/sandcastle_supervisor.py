@@ -28,6 +28,7 @@ from typing import Any, Callable
 
 from agents.sandcastle_config import default_billing_key_denylist
 from agents.supabase_key_role import SupabaseKeyRoleError, assert_supabase_key_is_anon
+from agents.usage_probe import UsageProbe, read_usage
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,7 @@ def launch_supervisor(
     lineage_key: str,
     attempt: int,
     popen: Launcher | None = None,
+    probe: UsageProbe | None = None,
 ) -> SupervisorSpawnResult:
     """Build the env and launch the supervisor (``npm run sandcastle``).
 
@@ -91,7 +93,30 @@ def launch_supervisor(
     raising when ``SUPABASE_KEY`` fails role validation — the caller
     (``default_supervisor_spawn``) treats a ``None`` proc as "did not spawn"
     the same way ``executor.spawn`` treats a throttled result.
+
+    Re-probes quota per spawn, mirroring ``executor.spawn``'s AC4 backstop
+    (decision behind commit 91db40f5): a throttled reading refuses the
+    launch with ``throttled=True`` so the caller requeues the row instead of
+    counting a phantom spawn. Without this, ``drain_tasks``'s once-per-drain
+    preflight (``task_dispatch.py`` around the ``AC4 (#921)`` comment) is the
+    only quota gate on this path, and a quota flip mid-drain would strand
+    the row as ``running`` with no process.
     """
+    reading = read_usage(probe=probe)
+    if reading.near_exhaustion:
+        logger.warning(
+            "[sandcastle_supervisor] launch refused for task %s — quota near-exhaustion "
+            "(used=%d/%d)",
+            task_id,
+            reading.used,
+            reading.total,
+        )
+        return SupervisorSpawnResult(
+            proc=None,
+            throttled=True,
+            reason=f"quota near-exhaustion: used {reading.used}/{reading.total}",
+        )
+
     try:
         env = build_supervisor_env(row, task_id=task_id, lineage_key=lineage_key, attempt=attempt)
     except SupabaseKeyRoleError as exc:

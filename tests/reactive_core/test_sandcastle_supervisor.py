@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -13,6 +14,7 @@ from agents.sandcastle_supervisor import (
     launch_supervisor,
 )
 from agents.supabase_key_role import SupabaseKeyRoleError
+from agents.usage_probe import UsageReading
 
 
 def _fake_jwt(role: str) -> str:
@@ -24,6 +26,37 @@ def _fake_jwt(role: str) -> str:
 
 ANON_JWT = _fake_jwt("anon")
 SERVICE_ROLE_JWT = _fake_jwt("service_role")
+
+
+class _FixedProbe:
+    """Probe stub returning a fixed ``UsageReading`` (mirrors
+    ``test_agents_executor.py``'s ``_FixedProbe``)."""
+
+    def __init__(self, reading: UsageReading) -> None:
+        self._reading = reading
+
+    def read(self) -> UsageReading:
+        return self._reading
+
+
+def _exhausted_reading() -> UsageReading:
+    return UsageReading(
+        limit_window=timedelta(hours=5),
+        used=95,
+        total=100,
+        reset_at=datetime.now(UTC),
+        near_exhaustion=True,
+    )
+
+
+def _healthy_reading() -> UsageReading:
+    return UsageReading(
+        limit_window=timedelta(hours=5),
+        used=10,
+        total=100,
+        reset_at=datetime.now(UTC),
+        near_exhaustion=False,
+    )
 
 
 class TestBuildSupervisorEnv:
@@ -99,6 +132,7 @@ class TestLaunchSupervisor:
             lineage_key="l1",
             attempt=1,
             popen=fake_popen,
+            probe=_FixedProbe(_healthy_reading()),
         )
 
         assert isinstance(result, SupervisorSpawnResult)
@@ -122,8 +156,28 @@ class TestLaunchSupervisor:
             lineage_key="l",
             attempt=1,
             popen=fake_popen,
+            probe=_FixedProbe(_healthy_reading()),
         )
 
         assert result.proc is None
         assert result.throttled is False
+        assert result.reason is not None
+
+    def test_refuses_without_launching_when_quota_near_exhaustion(self, monkeypatch):
+        monkeypatch.setenv("SUPABASE_KEY", ANON_JWT)
+
+        def fake_popen(argv, **kwargs):
+            raise AssertionError("must not launch when quota is near-exhaustion")
+
+        result = launch_supervisor(
+            {"goal": "g"},
+            task_id="t1",
+            lineage_key="l",
+            attempt=1,
+            popen=fake_popen,
+            probe=_FixedProbe(_exhausted_reading()),
+        )
+
+        assert result.proc is None
+        assert result.throttled is True
         assert result.reason is not None
