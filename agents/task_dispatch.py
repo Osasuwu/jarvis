@@ -1215,9 +1215,7 @@ def drain_tasks(
         quota_gate_continues = bool(quota_gate_loader().get("enabled"))
     except Exception:  # fail closed to the pre-#1121 stop behavior
         quota_gate_continues = False
-        logger.exception(
-            "[task_dispatch] quota_gate_loader raised; defaulting to halt-on-throttle"
-        )
+        logger.exception("[task_dispatch] quota_gate_loader raised; defaulting to halt-on-throttle")
 
     # #1121 plan step 16 — docker/node infra pre-flight, once per drain
     # (mirrors the AC7a/AC4 pattern above in shape). Diverges in outcome:
@@ -1604,7 +1602,9 @@ def drain_tasks(
             parse_lineage(row.get("idempotency_key") or "")
         except Exception as exc:  # noqa: BLE001 — any parse failure parks, never spawns
             try:
-                port.transition(task_id, "parked", reason=f"goal/idempotency_key parse failed: {exc}")
+                port.transition(
+                    task_id, "parked", reason=f"goal/idempotency_key parse failed: {exc}"
+                )
             except Exception:  # noqa: BLE001 — row stays running; reaper backstops
                 logger.exception(
                     "[task_dispatch] could not park task %s on parse failure; "
@@ -1666,9 +1666,10 @@ def drain_tasks(
                 requeued = False
                 logger.exception("[task_dispatch] requeue of throttled task %s raised", task_id)
             logger.warning(
-                "[task_dispatch] spawn throttled (quota near-exhaustion); "
-                "%s — task %s %s",
-                "continuing drain (quota_gate enabled)" if quota_gate_continues else "stopping drain",
+                "[task_dispatch] spawn throttled (quota near-exhaustion); %s — task %s %s",
+                "continuing drain (quota_gate enabled)"
+                if quota_gate_continues
+                else "stopping drain",
                 task_id,
                 "requeued to pending" if requeued else "left running for the reaper",
             )
@@ -1683,6 +1684,33 @@ def drain_tasks(
                 procs=tuple(procs),
                 spawned_meta=spawned_meta,
             )
+
+        # A non-throttled refusal (``proc=None``, e.g. the #1121
+        # ``JARVIS_DISABLE_BARE_SPAWN`` kill-switch or a ``SUPABASE_KEY``
+        # role-validation failure) hits the same Ordering-B problem as the
+        # throttle case above — the row is already ``running`` with no
+        # process to track. Unlike throttling this isn't transient (it will
+        # refuse identically next tick), so requeuing to ``pending`` would
+        # just spin; mark it ``failed`` with the refusal reason so it
+        # surfaces immediately instead of silently stranding for the 6h
+        # reaper (claude[bot] review on PR #1760).
+        # ``result is None`` (bare, not a SpawnResult/SupervisorSpawnResult)
+        # is the pre-existing "spawned but no process handle to track"
+        # convention exercised by several fakes above — not a refusal, so it
+        # must fall through to the ordinary ``spawned += 1`` path unchanged.
+        if result is not None and getattr(result, "proc", None) is None:
+            refusal_reason = getattr(result, "reason", None) or "spawn refused"
+            try:
+                port.transition(task_id, "failed", reason=f"spawn refused: {refusal_reason}")
+            except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                logger.exception(
+                    "[task_dispatch] could not mark task %s failed after spawn refusal; "
+                    "row left running for the reaper",
+                    task_id,
+                )
+            else:
+                failed += 1
+            continue
 
         spawned += 1
         # AC1 (#921) — retain the process handle so the wake_driver can poll
