@@ -1,6 +1,9 @@
 import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { readYamlStringList } from "./yaml-list.mts";
 import {
   buildCompletionPayload,
   buildResultFile,
@@ -12,6 +15,13 @@ import {
   scrubText,
   writeResultFile,
 } from "./completion.mts";
+
+// Billing-key denylist source: config/sandcastle.yaml's billing_key_denylist
+// list, shared with agents/sandcastle_config.py's Python loader — single
+// config source, not two independently-maintained arrays (decision
+// 70f25333-b4f4-454e-903b-ab2d32b125c8, #1121). Parsed via yaml-list.mts.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const sandcastleConfigPath = join(__dirname, "..", "config", "sandcastle.yaml");
 
 // Jarvis sandcastle entry — slices 1 + 2 of epic #534. Manual smoke loop on Main PC.
 // Run: npm run sandcastle  (or: npx tsx .sandcastle/main.mts)
@@ -153,14 +163,17 @@ if (subscription) {
   // sub-keys (AWS_*, ANTHROPIC_VERTEX_*, ANTHROPIC_FOUNDRY_*) only matter once a
   // CLAUDE_CODE_USE_* flag is set, which we already block, so the flag is the
   // sufficient gate.
-  const billingOverrideKeys = [
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_API_KEY",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-    "CLAUDE_CODE_USE_FOUNDRY",
-  ];
+  const billingOverrideKeys = readYamlStringList(
+    sandcastleConfigPath,
+    "billing_key_denylist",
+  );
+  if (billingOverrideKeys.length === 0) {
+    throw new Error(
+      `SANDCASTLE_AGENT_AUTH_MODE=subscription: billing_key_denylist in ` +
+        `${sandcastleConfigPath} is empty or missing — refusing to run with ` +
+        "the billing guard silently disabled.",
+    );
+  }
   for (const key of billingOverrideKeys) {
     if (process.env[key]) {
       throw new Error(
