@@ -3,7 +3,7 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readYamlStringList } from "./yaml-list.mts";
+import { readYamlStringList, readYamlScalar } from "./yaml-list.mts";
 import { assertSupabaseKeyIsAnon } from "./supabase-key-role.mts";
 import {
   buildCompletionPayload,
@@ -24,6 +24,16 @@ import {
 // 70f25333-b4f4-454e-903b-ab2d32b125c8, #1121). Parsed via yaml-list.mts.
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const sandcastleConfigPath = join(__dirname, "..", "config", "sandcastle.yaml");
+
+// Dedicated docker network (#1121 step 13) — segmentation only (the
+// container can't reach other containers/services on the default bridge),
+// NOT egress filtering (outbound internet access is unaffected). Read from
+// config/sandcastle.yaml's `network` scalar so the host-side
+// `docker network create` step and this passthrough stay in sync.
+const sandcastleNetwork = readYamlScalar(sandcastleConfigPath, "network");
+if (!sandcastleNetwork) {
+  throw new Error("config/sandcastle.yaml is missing the required `network` key (#1121 step 13).");
+}
 
 // Jarvis sandcastle entry — slices 1 + 2 of epic #534. Manual smoke loop on Main PC.
 // Run: npm run sandcastle  (or: npx tsx .sandcastle/main.mts)
@@ -407,6 +417,7 @@ try {
     name: "jarvis-worker",
     sandbox: docker({
       imageName: "sandcastle:jarvis",
+      network: sandcastleNetwork,
       env: {
         // Auth path (issue #972): exactly one of
         //   endpoint mode     → ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN (Ollama
