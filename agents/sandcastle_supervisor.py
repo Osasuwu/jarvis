@@ -22,9 +22,11 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from agents.sandcastle_config import default_billing_key_denylist
 from agents.supabase_key_role import SupabaseKeyRoleError, assert_supabase_key_is_anon
@@ -124,8 +126,14 @@ def launch_supervisor(
         return SupervisorSpawnResult(proc=None, reason=str(exc))
 
     spawn_fn = popen or subprocess.Popen
+    # shutil.which (not a bare "npm") -- on Windows npm is npm.cmd, and
+    # CreateProcess (what Popen uses when shell=False) doesn't search
+    # PATHEXT for extensionless names the way a shell does, so
+    # ["npm", ...] raises WinError 2 even though `npm` resolves fine at a
+    # prompt. which() applies the same PATHEXT-aware search cmd.exe would.
+    npm_cmd = shutil.which("npm") or "npm"
     proc = spawn_fn(
-        ["npm", "run", "sandcastle"],
+        [npm_cmd, "run", "sandcastle"],
         env=env,
         cwd=_REPO_ROOT,
         stdout=subprocess.DEVNULL,
