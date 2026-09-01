@@ -1283,6 +1283,30 @@ def drain_tasks(
                 is_dispatch_origin = row.get("origin") == "dispatch" or (
                     row.get("origin") is None and idem_key.startswith("delegate:")
                 )
+
+                # #1121 plan step 15 — extend _repo_mismatch_failure (already
+                # enforced for origin="orchestrator" rows below) to
+                # origin="dispatch" rows too, once the row carries a
+                # target_repo pin (enqueue() stamps it whenever issue_number
+                # is set, #1119). Legacy rows with no pin pass through
+                # unaffected — this is a new enforcement, not a new
+                # requirement on old data.
+                target_repo = row.get("target_repo")
+                if is_dispatch_origin and target_repo is not None:
+                    repo_gate_result = pr_evidence.load_gate_module().check_repo(target_repo)
+                    if not repo_gate_result.allow:
+                        try:
+                            port.transition(task_id, "parked", reason=repo_gate_result.message)
+                        except Exception:  # noqa: BLE001 — row stays running; reaper backstops
+                            logger.exception(
+                                "[task_dispatch] could not park task %s on target_repo "
+                                "mismatch; row left running for the reaper",
+                                task_id,
+                            )
+                        else:
+                            parked += 1
+                        continue
+
                 if dedup.fetch_issue is not None and is_dispatch_origin:
                     try:
                         fresh_issue = dedup.fetch_issue(issue_number)

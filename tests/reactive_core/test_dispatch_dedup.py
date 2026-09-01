@@ -878,3 +878,52 @@ def test_drain_orchestrator_gate_fetch_pull_raise_requeues_and_stops():
     res = _drain(q, cfg)
     assert res.spawned == 0
     assert q.requeued == ["t1"]
+
+
+# ── drain_tasks dispatch-origin repo-mismatch gate (#1121 plan step 15) ──────
+# _repo_mismatch_failure (already used by check_orchestrator_target for
+# origin="orchestrator" rows above) also applies to origin="dispatch" rows
+# once the row carries a target_repo pin (enqueue() defaults it whenever
+# issue_number is set, #1119) — a cross-repo dispatch row must park, not
+# silently spawn against the wrong local checkout.
+
+
+def test_drain_dispatch_gate_parks_on_target_repo_mismatch(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPO", "Osasuwu/jarvis")
+    row = {**_delegate_task("t1", 931), "target_repo": "SergazyNarynov/redrobot"}
+    q = _Queue([row])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n))
+    assert res.spawned == 0
+    parked = [(t, r) for t, s, r in q.transitions if s == "parked"]
+    assert parked and parked[0][0] == "t1"
+    assert "cross-repo" in parked[0][1]
+
+
+def test_drain_dispatch_gate_passes_when_target_repo_matches_default(monkeypatch):
+    monkeypatch.setenv("GITHUB_REPO", "Osasuwu/jarvis")
+    row = {**_delegate_task("t1", 931), "target_repo": "Osasuwu/jarvis"}
+    q = _Queue([row])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n))
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+
+
+def test_drain_dispatch_gate_skipped_when_target_repo_absent():
+    # Pre-#1119 rows with no target_repo pin must not start being refused by
+    # omission — the gate only fires once a pin is actually present.
+    q = _Queue([_delegate_task("t1", 931)])
+    res = _drain_with_fetch_issue(q, lambda n: _issue(n))
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
+
+
+def test_drain_dispatch_gate_does_not_affect_orchestrator_rows():
+    # origin="orchestrator" rows keep going through check_orchestrator_target
+    # only — the new dispatch-gate block must be scoped to origin="dispatch".
+    row = _orchestrator_task("t1", target_type="none")
+    row["target_repo"] = "SergazyNarynov/redrobot"  # would fail if the new gate ran
+    q = _Queue([row])
+    cfg = DedupConfig(fetch_in_flight=lambda: ([], []), list_active_rows=list)
+    res = _drain(q, cfg)
+    assert res.spawned == 1
+    assert not any(s == "parked" for _, s, _ in q.transitions)
