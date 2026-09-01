@@ -817,6 +817,92 @@ class TestThrottleRequeue:
 
 
 # ---------------------------------------------------------------------------
+# claude[bot] review on PR #1760 — a non-throttled spawn refusal (proc=None,
+# throttled=False — e.g. #1121's JARVIS_DISABLE_BARE_SPAWN kill-switch or a
+# SUPABASE_KEY role-validation failure) hit the same Ordering-B problem as
+# the throttle case above, but wasn't special-cased: it fell through to an
+# unconditional `spawned += 1`, reintroducing the phantom-spawn bug
+# commit 91db40f5 fixed for the quota-throttle case. Unlike throttling this
+# refusal isn't transient (it refuses identically next tick), so the row
+# must go to `failed`, not be requeued to `pending`.
+# ---------------------------------------------------------------------------
+
+
+class _RefusedResult:
+    """Non-throttled refusal — proc=None, throttled=False."""
+
+    proc = None
+    throttled = False
+    reason = "refused: JARVIS_DISABLE_BARE_SPAWN is set"
+
+
+class TestNonThrottledRefusal:
+    def test_refusal_marks_row_failed_not_spawned(self) -> None:
+        q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: _RefusedResult(),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            quota_gate_loader=lambda: {"enabled": False},
+        )
+
+        assert res.spawned == 0
+        assert res.failed == 1
+        assert res.procs == ()
+        assert res.spawned_meta == {}
+        assert (
+            "t0",
+            "failed",
+            "spawn refused: refused: JARVIS_DISABLE_BARE_SPAWN is set",
+        ) in q.transitions
+        # Not transient — must not be requeued to pending like a throttle.
+        assert q.requeued == []
+
+    def test_refusal_with_no_reason_falls_back_to_generic_message(self) -> None:
+        class _RefusedNoReason:
+            proc = None
+            throttled = False
+            reason = None
+
+        q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: _RefusedNoReason(),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            quota_gate_loader=lambda: {"enabled": False},
+        )
+
+        assert res.failed == 1
+        assert ("t0", "failed", "spawn refused: spawn refused") in q.transitions
+
+    def test_transition_raise_leaves_row_running_for_reaper(self) -> None:
+        class Q(FakeTaskQueue):
+            def transition(self, task_id: str, to_status: str, *, reason: str | None = None):
+                if to_status == "failed":
+                    raise RuntimeError("supabase transient error")
+                return super().transition(task_id, to_status, reason=reason)
+
+        q = Q(pending=[_row("t0")], running_count=0)
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: _RefusedResult(),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            quota_gate_loader=lambda: {"enabled": False},
+        )
+
+        # transition() raised — must not crash, and must not be miscounted
+        # as spawned either. The row is left running for the 6h reaper.
+        assert res.spawned == 0
+        assert res.failed == 0
+
+
+# ---------------------------------------------------------------------------
 # #1121 plan step 17 — quota_gate binding: requeue-and-continue instead of
 # halting the whole drain on a mid-drain throttle, when enabled.
 # ---------------------------------------------------------------------------
