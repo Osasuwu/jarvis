@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readYamlStringList } from "./yaml-list.mts";
+import { assertSupabaseKeyIsAnon } from "./supabase-key-role.mts";
 import {
   buildCompletionPayload,
   buildResultFile,
@@ -222,7 +223,8 @@ if (!ghToken) {
 // Memory MCP bridge env (slice 2, issue #540). Forwarded into the container so
 // the in-container memory MCP server (/opt/mcp-memory/server.py) can reach
 // Supabase. SUPABASE_KEY MUST be the anon key — service-role is banned per
-// decision 228a2d9b. VOYAGE_API_KEY is optional (recall degrades to keyword).
+// decision 228a2d9b, enforced by role (not mere non-emptiness) per decision
+// 94c55c7b (#1121). VOYAGE_API_KEY is optional (recall degrades to keyword).
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseKey = process.env.SUPABASE_KEY;
 const voyageKey = process.env.VOYAGE_API_KEY ?? "";
@@ -231,6 +233,14 @@ if (!supabaseUrl || !supabaseKey) {
     "SUPABASE_URL and SUPABASE_KEY are required for the memory MCP bridge. " +
       "Set them in .sandcastle/.env — anon key only, never service-role. " +
       "See .sandcastle/.env.example for details.",
+  );
+}
+try {
+  assertSupabaseKeyIsAnon(supabaseKey);
+} catch (e) {
+  const reason = e instanceof Error ? e.message : String(e);
+  throw new Error(
+    `SUPABASE_KEY failed role validation: ${reason} Set an anon key in .sandcastle/.env — see .sandcastle/.env.example.`,
   );
 }
 
