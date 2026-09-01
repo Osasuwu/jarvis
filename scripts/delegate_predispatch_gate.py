@@ -263,10 +263,16 @@ def check_orchestrator_target(
             return repo_check
 
         target_number = row.get("target_number")
-        if target_number is None or fetch_pull is None:
-            return GateResult(
-                failures=("unverifiable — no target_number or no fetch_pull wired for PR target",)
-            )
+        if target_number is None:
+            return GateResult(failures=("unverifiable — no target_number for PR target",))
+
+        # #1758 review fix: fetch_pull is a DI knob with the same disable
+        # contract as fetch_issue (DedupConfig.fetch_pull docstring — "None
+        # here (the default) disables that re-check entirely"). A caller that
+        # never wires it must not have every PR-pinned row parked by
+        # omission — that's the opposite of "disabled".
+        if fetch_pull is None:
+            return GateResult()
 
         pull = fetch_pull(target_number)
         if pull is None:

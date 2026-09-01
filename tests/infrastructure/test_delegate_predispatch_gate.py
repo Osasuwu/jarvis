@@ -328,7 +328,7 @@ def test_orchestrator_target_parks_when_pr_closed_or_merged():
     assert "42" in result.message
 
 
-def test_orchestrator_target_parks_when_pr_number_or_fetch_pull_missing():
+def test_orchestrator_target_parks_when_pr_number_missing():
     result_no_number = check_orchestrator_target(
         _row(target_type="pr", target_repo="Osasuwu/jarvis", target_number=None),
         fetch_pull=lambda n: {"state": "open"},
@@ -336,12 +336,19 @@ def test_orchestrator_target_parks_when_pr_number_or_fetch_pull_missing():
     )
     assert not result_no_number.allow
 
+
+def test_orchestrator_target_disables_pr_gate_when_fetch_pull_unwired():
+    """fetch_pull=None (the default) must DISABLE the PR-state re-check, not
+    park the row — same DI contract as fetch_issue (#1617 AC, DedupConfig
+    .fetch_pull docstring: "None here (the default) disables that re-check
+    entirely"). A caller that never wires fetch_pull must not have every
+    PR-pinned row parked by omission (#1758 review finding 2)."""
     result_no_fetch = check_orchestrator_target(
         _row(target_type="pr", target_repo="Osasuwu/jarvis", target_number=42),
         fetch_pull=None,
         default_repo="Osasuwu/jarvis",
     )
-    assert not result_no_fetch.allow
+    assert result_no_fetch.allow
 
 
 def test_orchestrator_target_parks_when_type_null():
@@ -351,7 +358,9 @@ def test_orchestrator_target_parks_when_type_null():
 
 
 def test_orchestrator_target_parks_when_issue_unverifiable():
-    result = check_orchestrator_target(_row(target_type="issue", target_number=7), fetched_issue=None)
+    result = check_orchestrator_target(
+        _row(target_type="issue", target_number=7), fetched_issue=None
+    )
     assert not result.allow
     assert "unverifiable" in result.message
 
