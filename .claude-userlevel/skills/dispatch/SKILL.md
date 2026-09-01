@@ -101,6 +101,7 @@ task_queue.enqueue(
     assignee="sandcastle",
     idempotency_key=f"delegate:{N}:r1",
     origin="dispatch",
+    substrate="worktree",
 )
 ```
 
