@@ -645,6 +645,11 @@ class TestThrottledSpawn:
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
+            # #1121 step 17 — quota_gate.enabled is what makes the drain
+            # continue past a throttle; pin it disabled to test the
+            # pre-#1121 halt behavior in isolation (see TestQuotaGateContinue
+            # for the enabled-gate continue behavior).
+            quota_gate_loader=lambda: {"enabled": False},
         )
 
         assert res.spawned == 0
@@ -668,7 +673,12 @@ class TestThrottledSpawn:
 
         q = FakeTaskQueue(pending=[_row("t0"), _row("t1"), _row("t2")], running_count=0)
         res = drain_tasks(
-            q, spawn, cap=5, resolve_binary=_always_resolve, read_usage=_healthy_usage
+            q,
+            spawn,
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            quota_gate_loader=lambda: {"enabled": False},
         )
 
         assert res.spawned == 1
@@ -696,6 +706,7 @@ class TestThrottleRequeue:
             cap=5,
             resolve_binary=_always_resolve,
             read_usage=_healthy_usage,
+            quota_gate_loader=lambda: {"enabled": False},
         )
 
         assert res.throttled is True
@@ -748,6 +759,69 @@ class TestThrottleRequeue:
             read_usage=_healthy_usage,
         )
         assert q.requeued == []
+
+
+# ---------------------------------------------------------------------------
+# #1121 plan step 17 — quota_gate binding: requeue-and-continue instead of
+# halting the whole drain on a mid-drain throttle, when enabled.
+# ---------------------------------------------------------------------------
+
+
+class TestQuotaGateContinue:
+    def test_enabled_gate_continues_past_throttle(self) -> None:
+        # t0 throttles, t1 spawns healthily — with the gate enabled the drain
+        # requeues t0 and keeps going instead of halting the whole tick.
+        calls = {"n": 0}
+
+        def spawn(goal: str, task_id: str | None = None) -> Any:
+            calls["n"] += 1
+            return _ThrottledResult() if calls["n"] == 1 else None
+
+        q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
+        res = drain_tasks(
+            q,
+            spawn,
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            quota_gate_loader=lambda: {"enabled": True},
+        )
+
+        assert res.throttled is True
+        assert res.spawned == 1  # t1 still spawned after t0's throttle
+        assert q.requeued == ["t0"]
+        assert len(q.claimed) == 2  # both rows claimed this drain, not just t0
+
+    def test_disabled_gate_preserves_stop_behavior(self) -> None:
+        q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: _ThrottledResult(),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            quota_gate_loader=lambda: {"enabled": False},
+        )
+
+        assert res.throttled is True
+        assert res.spawned == 0
+        assert len(q.claimed) == 1  # stopped after the first throttle
+
+    def test_default_loader_reads_repo_config_which_ships_enabled(self) -> None:
+        # config/sandcastle.yaml ships quota_gate.enabled: true — the real
+        # default should continue draining rather than stop after one
+        # throttled row.
+        q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: _ThrottledResult(),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+        )
+
+        assert res.throttled is True
+        assert len(q.claimed) == 2  # both rows throttled+requeued, budget exhausted
 
 
 # ---------------------------------------------------------------------------

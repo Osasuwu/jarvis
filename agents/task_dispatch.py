@@ -63,7 +63,7 @@ from agents.github_client import (
 )
 from agents.pid_sidecar import Sidecar, poll_exit
 from agents.plan_lock import MalformedPlanError, parse_plan, verify_lock
-from agents.sandcastle_config import default_operator_default_substrate
+from agents.sandcastle_config import default_operator_default_substrate, default_quota_gate
 from agents.plan_review_config import PlanReviewConfig
 from agents.plan_review_drain import PlannerPort
 from agents.plan_review_drain import class_gate as _plan_class_gate
@@ -1132,6 +1132,7 @@ def drain_tasks(
     operator_default_substrate_loader: Callable[[], str] = default_operator_default_substrate,
     check_infra_available: InfraCheck = default_check_infra_available,
     infra_event_emitter: Callable[[list[str], str], Any] = default_emit_infra_preflight_event,
+    quota_gate_loader: Callable[[], dict[str, Any]] = default_quota_gate,
 ) -> DrainResult:
     """Claim pending ``assignee`` tasks up to the cap and spawn each (AC2–AC4, AC7–AC9).
 
@@ -1206,6 +1207,18 @@ def drain_tasks(
     if budget <= 0:
         return DrainResult()
 
+    # #1121 plan step 17 — quota_gate binding, sampled once per drain (same
+    # "once, not per-row" convention as AC7a/AC3/step-16 above). Load failures
+    # fall back to disabled: a broken/missing config should not silently
+    # change halt-on-throttle into continue-on-throttle.
+    try:
+        quota_gate_continues = bool(quota_gate_loader().get("enabled"))
+    except Exception:  # fail closed to the pre-#1121 stop behavior
+        quota_gate_continues = False
+        logger.exception(
+            "[task_dispatch] quota_gate_loader raised; defaulting to halt-on-throttle"
+        )
+
     # #1121 plan step 16 — docker/node infra pre-flight, once per drain
     # (mirrors the AC7a/AC4 pattern above in shape). Diverges in outcome:
     # docker/node missing is a persistent host-config problem, not a transient
@@ -1255,6 +1268,10 @@ def drain_tasks(
     # #931 — GitHub in-flight evidence, fetched lazily at most once per drain.
     in_flight_evidence: tuple[list[dict[str, Any]], list[str]] | None = None
     procs: list[tuple[str, Any]] = []
+    # #1121 plan step 17 — sticky across the loop: a quota_gate-continued
+    # throttle doesn't return early, so the final DrainResult still needs to
+    # know at least one row was throttled this drain.
+    throttled_any = False
     # AC1/AC2 (#953) — carry each spawned task's goal + idempotency key + tz-aware
     # spawn time out to the wake_driver, which folds them onto the TrackedProc so
     # the terminal-boundary poll can compute PR evidence and lineage. spawned_at
@@ -1611,9 +1628,16 @@ def drain_tasks(
         # exists, but the row is already ``running`` (Ordering B). Requeue it to
         # ``pending`` so the next drain retries as soon as quota recovers
         # (#921 AC4) — without this it would strand 6h until the reaper failed
-        # a task that never ran. Quota won't recover mid-drain, so stop
-        # claiming. Not a spawn failure → not counted.
+        # a task that never ran. Not a spawn failure → not counted.
+        #
+        # #1121 plan step 17 — when quota_gate.enabled, the requeue is not
+        # also a reason to stop: the next pending row may not be quota-bound
+        # at all (e.g. a different assignee's cap), so the drain continues
+        # trying the rest of the sampled budget instead of halting the whole
+        # tick on the first throttle. Disabled (or unset) keeps the pre-#1121
+        # behavior — quota won't recover mid-drain, so stop claiming.
         if getattr(result, "throttled", False):
+            throttled_any = True
             try:
                 requeued = port.requeue_running(task_id)
             except Exception:  # noqa: BLE001 — requeue is best-effort
@@ -1621,10 +1645,13 @@ def drain_tasks(
                 logger.exception("[task_dispatch] requeue of throttled task %s raised", task_id)
             logger.warning(
                 "[task_dispatch] spawn throttled (quota near-exhaustion); "
-                "stopping drain — task %s %s",
+                "%s — task %s %s",
+                "continuing drain (quota_gate enabled)" if quota_gate_continues else "stopping drain",
                 task_id,
                 "requeued to pending" if requeued else "left running for the reaper",
             )
+            if quota_gate_continues:
+                continue
             return DrainResult(
                 spawned=spawned,
                 failed=failed,
@@ -1677,6 +1704,7 @@ def drain_tasks(
         spawned=spawned,
         failed=failed,
         skipped_duplicate=skipped_duplicate,
+        throttled=throttled_any,
         parked=parked,
         procs=tuple(procs),
         spawned_meta=spawned_meta,
