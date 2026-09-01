@@ -49,6 +49,7 @@ from typing import Any
 from unittest.mock import patch
 
 from agents import executor, orchestrator, wake_driver
+from agents.sandcastle_supervisor import SupervisorSpawnResult
 
 # Fixed clock — dispatch's escalation policy is weekday/weekend-aware; ci_failure
 # routes to EMIT_TASK (not ESCALATE) so ``now`` is inert here, but it must be a
@@ -238,6 +239,23 @@ def _make_recording_spawn(sink: list[dict[str, Any]]):
     return _spawn
 
 
+def _make_recording_supervisor_spawn(sink: list[dict[str, Any]]):
+    """A drain-compatible supervisor spawn, the #1121-step-8 default path for
+    substrate="worktree" rows — the substrate every row in this file's
+    ``_FakeStore`` rows carries (no explicit ``substrate`` key, so
+    ``drain_tasks`` falls back to the ``operator_default_substrate_loader``,
+    which is ``"worktree"`` in production). Without this override
+    ``_drive_one_tick`` would fall through to the real
+    ``default_supervisor_spawn``, which shells out to the real sandcastle
+    supervisor and fails outside a fully-provisioned host."""
+
+    def _spawn(row: dict[str, Any], *, task_id: str) -> Any:
+        sink.append({"goal": row["goal"], "task_id": task_id})
+        return SupervisorSpawnResult(proc=_DummyProc(), throttled=False)
+
+    return _spawn
+
+
 def _orchestrator_adapter(store: _FakeStore):
     """The sanctioned 'fixed routing' harness: real ``handle_event`` + real
     ``dispatch``, writing to the shared store.
@@ -254,14 +272,25 @@ def _orchestrator_adapter(store: _FakeStore):
     return _run
 
 
-def _drive_one_tick(event_q: _FakeEventQueue, store: _FakeStore, spawn) -> wake_driver.TickResult:
-    """Drive exactly one production tick with the tracer's injected surfaces."""
+def _drive_one_tick(
+    event_q: _FakeEventQueue, store: _FakeStore, spawn, supervisor_spawn=None
+) -> wake_driver.TickResult:
+    """Drive exactly one production tick with the tracer's injected surfaces.
+
+    ``supervisor_spawn`` defaults to a recording fake sharing no sink with
+    ``spawn`` — rows in this file's ``_FakeStore`` carry no explicit
+    ``substrate``, so production ``drain_tasks`` routes them onto the
+    #1121-step-8 default worktree/supervisor path, not the bare ``spawn``
+    contract. Callers that want to assert on what actually launched should
+    pass a recording supervisor spawn explicitly.
+    """
     return wake_driver.tick(
         event_q,
         _orchestrator_adapter(store),
         stale_after_seconds=_BIG,
         task_port=store,
         task_spawn=spawn,
+        task_supervisor_spawn=supervisor_spawn or _make_recording_supervisor_spawn([]),
         task_resolve_binary=lambda: "/fake/claude",
         task_read_usage=lambda: SimpleNamespace(near_exhaustion=False),
         task_procs=None,  # skip Step 0 completion poll — single forward trace
@@ -280,7 +309,12 @@ def test_ci_failure_event_drives_to_spawn_through_tick() -> None:
     store = _FakeStore()
     spawns: list[dict[str, Any]] = []
 
-    result = _drive_one_tick(event_q, store, _make_recording_spawn(spawns))
+    result = _drive_one_tick(
+        event_q,
+        store,
+        _make_recording_spawn([]),
+        supervisor_spawn=_make_recording_supervisor_spawn(spawns),
+    )
 
     # The event was drained and the task was spawned in the SAME tick.
     assert result.processed == 1
@@ -351,13 +385,14 @@ def test_second_tick_is_quiescent() -> None:
     event_q = _FakeEventQueue([_ev("ci-1", payload={"pr": "42"})])
     store = _FakeStore()
     spawns: list[dict[str, Any]] = []
-    spawn = _make_recording_spawn(spawns)
+    spawn = _make_recording_spawn([])
+    supervisor_spawn = _make_recording_supervisor_spawn(spawns)
 
-    _drive_one_tick(event_q, store, spawn)
+    _drive_one_tick(event_q, store, spawn, supervisor_spawn=supervisor_spawn)
     assert len(spawns) == 1  # tick 1 spawned once
     assert event_q.processed == ["ci-1"]  # event consumed
 
-    second = _drive_one_tick(event_q, store, spawn)
+    second = _drive_one_tick(event_q, store, spawn, supervisor_spawn=supervisor_spawn)
 
     # No pending event, the task row is already running — nothing re-drives.
     assert second.processed == 0
@@ -398,7 +433,12 @@ def _demo() -> dict[str, Any]:
     event_q = _FakeEventQueue([_ev("ci-1", payload={"pr": "42"})])
     store = _FakeStore()
     spawns: list[dict[str, Any]] = []
-    result = _drive_one_tick(event_q, store, _make_recording_spawn(spawns))
+    result = _drive_one_tick(
+        event_q,
+        store,
+        _make_recording_spawn([]),
+        supervisor_spawn=_make_recording_supervisor_spawn(spawns),
+    )
     observed = spawns[0] if spawns else {}
     print(  # noqa: T201 — demo entry point, intentional stdout
         f"[demo] ci_failure -> spawned={result.tasks_spawned} "
