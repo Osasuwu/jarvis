@@ -33,6 +33,7 @@ from agents.task_dispatch import (
     default_local_drain_heartbeat_check,
     default_local_drain_once,
     default_spawn,
+    default_supervisor_spawn,
     drain_tasks,
     kill_runaways,
     local_drain_until_terminal,
@@ -1370,6 +1371,49 @@ class TestDefaultSpawnWorktree:
         ).stdout.strip()
         assert branch == "task/t1"
         assert os.environ is not None  # sanity — no monkeypatch leaked
+
+
+class TestDefaultSupervisorSpawn:
+    """#1121 plan step 6: default_supervisor_spawn derives lineage/attempt
+    from the row's idempotency_key and delegates to launch_supervisor."""
+
+    def test_derives_lineage_and_attempt_from_idempotency_key(self, monkeypatch: Any) -> None:
+        import agents.sandcastle_supervisor as sandcastle_supervisor
+
+        captured: dict[str, Any] = {}
+
+        def fake_launch_supervisor(row, *, task_id, lineage_key, attempt):
+            captured.update(row=row, task_id=task_id, lineage_key=lineage_key, attempt=attempt)
+            return sandcastle_supervisor.SupervisorSpawnResult(proc="fake-proc")
+
+        monkeypatch.setattr(sandcastle_supervisor, "launch_supervisor", fake_launch_supervisor)
+
+        row = _row("t1", goal="do the thing")
+        row["idempotency_key"] = "lineage-x:r2"
+
+        result = default_supervisor_spawn(row, task_id="t1")
+
+        assert captured["task_id"] == "t1"
+        assert captured["lineage_key"] == "lineage-x"
+        assert captured["attempt"] == 2
+        assert captured["row"] is row
+        assert result.proc == "fake-proc"
+
+    def test_defaults_to_attempt_1_with_no_idempotency_key(self, monkeypatch: Any) -> None:
+        import agents.sandcastle_supervisor as sandcastle_supervisor
+
+        captured: dict[str, Any] = {}
+
+        def fake_launch_supervisor(row, *, task_id, lineage_key, attempt):
+            captured.update(lineage_key=lineage_key, attempt=attempt)
+            return sandcastle_supervisor.SupervisorSpawnResult(proc="fake-proc")
+
+        monkeypatch.setattr(sandcastle_supervisor, "launch_supervisor", fake_launch_supervisor)
+
+        default_supervisor_spawn(_row("t2"), task_id="t2")
+
+        assert captured["lineage_key"] == ""
+        assert captured["attempt"] == 1
 
 
 # ---------------------------------------------------------------------------

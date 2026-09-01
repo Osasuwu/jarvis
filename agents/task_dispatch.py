@@ -987,6 +987,25 @@ def default_spawn(goal: str, *, task_id: str | None = None) -> Any:
     return executor_spawn(spawn_goal, task_id=task_id, cwd=cwd)
 
 
+def default_supervisor_spawn(row: dict[str, Any], *, task_id: str) -> Any:
+    """Production supervisor-path spawn adapter (#1121 plan step 6).
+
+    Launches ``.sandcastle/main.mts`` (the sandcastle supervisor, via
+    ``npm run sandcastle``) instead of :func:`default_spawn`'s bare
+    ``claude -p``. Attempt/lineage are derived from the row's idempotency
+    key with :func:`parse_lineage`, the same 1-based convention every other
+    ``SANDCASTLE_ATTEMPT`` emission uses.
+
+    Not yet wired into :func:`drain_tasks`'s spawn call site — routing a
+    claimed row onto this adapter based on ``row["substrate"]`` is plan
+    step 8, a separate change.
+    """
+    from agents.sandcastle_supervisor import launch_supervisor
+
+    lineage_key, attempt = parse_lineage(str(row.get("idempotency_key", "") or ""))
+    return launch_supervisor(row, task_id=task_id, lineage_key=lineage_key, attempt=attempt)
+
+
 def default_resolve_binary() -> str:
     """Production binary-resolution adapter (lazy import; see :func:`default_spawn`)."""
     from agents.executor import _resolve_claude_binary
