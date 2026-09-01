@@ -456,6 +456,119 @@ class TestQuotaPreflight:
 
 
 # ---------------------------------------------------------------------------
+# #1121 plan step 16 — infra pre-flight: docker/node unavailable parks the
+# affected rows + emits one owner-event, rather than crash-looping.
+# ---------------------------------------------------------------------------
+
+
+def _broken_infra_check() -> None:
+    raise RuntimeError("missing on PATH: docker")
+
+
+class _StubEventsInsertQuery:
+    def __init__(self, table: "_StubEventsTable", payload: dict[str, Any]) -> None:
+        self._table = table
+        self._payload = payload
+
+    def execute(self) -> Any:
+        from dataclasses import dataclass
+
+        @dataclass
+        class _Response:
+            data: list[dict[str, Any]]
+
+        self._table.calls.append(("insert", self._table.name, self._payload))
+        return _Response(data=[{**self._payload, "id": f"{self._table.name}-evt-1"}])
+
+
+class _StubEventsTable:
+    def __init__(self, name: str, calls: list[Any]) -> None:
+        self.name = name
+        self.calls = calls
+
+    def insert(self, payload: dict[str, Any]) -> _StubEventsInsertQuery:
+        return _StubEventsInsertQuery(self, payload)
+
+
+class _StubEventsClient:
+    def __init__(self) -> None:
+        self.calls: list[Any] = []
+
+    def table(self, name: str) -> _StubEventsTable:
+        return _StubEventsTable(name, self.calls)
+
+
+class TestInfraPreflight:
+    def test_infra_unavailable_parks_affected_rows_and_stops_drain(self) -> None:
+        q = FakeTaskQueue(pending=[_row("t0"), _row("t1")], running_count=0)
+        spawns: list[str] = []
+        events: list[tuple[list[str], str]] = []
+
+        def emitter(task_ids: list[str], reason: str) -> Any:
+            events.append((task_ids, reason))
+            return {}
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: spawns.append(g),
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            check_infra_available=_broken_infra_check,
+            infra_event_emitter=emitter,
+        )
+
+        assert spawns == []
+        assert q.claimed == ["t0", "t1"]  # both affected rows claimed...
+        assert q.transitions == [
+            ("t0", "parked", "infra_unavailable: missing on PATH: docker"),
+            ("t1", "parked", "infra_unavailable: missing on PATH: docker"),
+        ]  # ...and parked, not left pending
+        assert res.parked == 2
+        assert res.skipped_no_infra is True
+        assert res.spawned == 0
+        assert len(events) == 1
+        assert events[0][0] == ["t0", "t1"]
+        assert "docker" in events[0][1]
+
+    def test_infra_check_not_consulted_when_infra_healthy(self) -> None:
+        calls = {"n": 0}
+
+        def healthy_check() -> None:
+            calls["n"] += 1
+
+        q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: None,
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+            check_infra_available=healthy_check,
+        )
+
+        assert calls["n"] == 1
+        assert res.spawned == 1
+        assert res.skipped_no_infra is False
+
+    def test_default_emit_infra_preflight_event_writes_expected_shape(self) -> None:
+        from agents.task_dispatch import default_emit_infra_preflight_event
+
+        client = _StubEventsClient()
+        default_emit_infra_preflight_event(["t0", "t1"], "missing on PATH: docker", client=client)
+
+        insert_calls = [c for c in client.calls if c[0] == "insert"]
+        assert len(insert_calls) == 1
+        _, table, payload = insert_calls[0]
+        assert table == "events"
+        assert payload["event_type"] == "drain_infra_preflight_failure"
+        assert payload["severity"] == "high"
+        assert payload["source"] == "task-dispatcher"
+        assert payload["payload"]["task_ids"] == ["t0", "t1"]
+        assert payload["payload"]["reason"] == "missing on PATH: docker"
+
+
+# ---------------------------------------------------------------------------
 # AC7b — spawn raises: mark that task failed (terminal), continue the drain
 # ---------------------------------------------------------------------------
 
