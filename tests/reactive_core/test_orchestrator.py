@@ -937,3 +937,58 @@ def test_dispatch_escalate_threads_origin_to_row():
     d = handle_event(_ev("security_alert", "critical", {"detail": "leaked key"}))
     res = dispatch(d, now=_FRIDAY, client=cli)
     assert res.row["origin"] == "orchestrator"
+
+
+def test_redrive_preserves_dispatch_origin_from_payload():
+    """A re-drive of a /dispatch-origin task must re-enqueue with
+    origin="dispatch", not fall back to "orchestrator" — otherwise the
+    redrive is permanently unable to drain via check_orchestrator_target's
+    (currently always-failing) "issue" branch instead of the dispatch rows'
+    own check_issue/check_repo gate (#1758 review finding)."""
+    d = handle_event(
+        _ev(
+            "task_failed",
+            "high",
+            {
+                "pr_evidence": False,
+                "attempt": 0,
+                "exit_confirmed": True,
+                "task_id": "t-1",
+                "goal": "/dispatch #7",
+                "target_type": "issue",
+                "target_number": 7,
+                "target_repo": "Osasuwu/jarvis",
+                "origin": "dispatch",
+            },
+        )
+    )
+    assert d.origin == "dispatch"
+    cli = _FakeClient()
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.row["origin"] == "dispatch"
+
+
+def test_redrive_defaults_origin_to_orchestrator_when_payload_omits_it():
+    """Older/orchestrator-originated terminal events carry no `origin` key —
+    the re-drive must still default to "orchestrator", preserving pre-#1758
+    behavior for genuine orchestrator-detected retries."""
+    d = handle_event(
+        _ev(
+            "task_failed",
+            "high",
+            {
+                "pr_evidence": False,
+                "attempt": 0,
+                "exit_confirmed": True,
+                "task_id": "t-2",
+                "goal": "/rework #7",
+                "target_type": "pr",
+                "target_number": 7,
+                "target_repo": "Osasuwu/jarvis",
+            },
+        )
+    )
+    assert d.origin is None
+    cli = _FakeClient()
+    res = dispatch(d, now=_FRIDAY, client=cli)
+    assert res.row["origin"] == "orchestrator"

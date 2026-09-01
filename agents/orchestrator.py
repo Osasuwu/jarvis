@@ -128,6 +128,12 @@ class Decision:
     target_repo: str | None = None
     target_type: str | None = None
     target_number: int | None = None
+    # #1758 review fix: the enqueue-time origin ("dispatch" vs "orchestrator")
+    # a re-drive must preserve from the terminal event's payload. None means
+    # "no origin carried" — dispatch() then defaults to "orchestrator", which
+    # is correct for genuine orchestrator-detected events (_emit never sets
+    # this) and for pre-fix terminal events that never recorded an origin.
+    origin: str | None = None
 
 
 def priority_for(severity: str) -> int:
@@ -333,6 +339,7 @@ def _redrive(
         target_type=payload.get("target_type"),
         target_number=payload.get("target_number"),
         target_repo=payload.get("target_repo"),
+        origin=payload.get("origin"),
     )
 
 
@@ -647,7 +654,7 @@ def dispatch(
             target_repo=decision.target_repo,
             target_type=decision.target_type,
             target_number=decision.target_number,
-            origin="orchestrator",
+            origin=decision.origin or "orchestrator",
             client=client,
         )
         return DispatchResult(
