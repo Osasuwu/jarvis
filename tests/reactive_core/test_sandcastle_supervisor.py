@@ -116,6 +116,7 @@ class TestLaunchSupervisor:
         # pin it to a known-good anon key so this test is deterministic
         # regardless of ambient environment (was flaky/CI-only-failing before).
         monkeypatch.setenv("SUPABASE_KEY", ANON_JWT)
+        monkeypatch.setattr("agents.sandcastle_supervisor.shutil.which", lambda cmd: "npm.cmd")
         captured = {}
 
         class FakeProc:
@@ -139,7 +140,10 @@ class TestLaunchSupervisor:
         assert result.proc is not None
         assert result.proc.pid == 4242
         assert result.throttled is False
-        assert captured["argv"] == ["npm", "run", "sandcastle"]
+        # npm resolved via shutil.which (not a bare "npm") -- avoids WinError 2
+        # on Windows, where npm is npm.cmd and Popen(shell=False) doesn't
+        # search PATHEXT for extensionless names.
+        assert captured["argv"] == ["npm.cmd", "run", "sandcastle"]
         env = captured["kwargs"]["env"]
         assert env["SANDCASTLE_TASK_ID"] == "t1"
         assert env["SANDCASTLE_GOAL"] == "do it"
