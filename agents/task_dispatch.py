@@ -463,9 +463,15 @@ class TrackedProc:
     same default-``None`` rationale as the fields above.
 
     ``target_repo``/``target_type``/``target_number`` (#1617) carry the claimed
-    row's orchestrator-populated pins forward so the terminal ``task_done``/
-    ``task_failed`` event payloads can copy them onto a re-drive Decision — same
-    default-``None`` rationale as the fields above.
+    row's pins forward so the terminal ``task_done``/``task_failed`` event
+    payloads can copy them onto a re-drive Decision — same default-``None``
+    rationale as the fields above.
+
+    ``origin`` (#1758 review fix) carries the claimed row's own ``origin``
+    column (``"dispatch"`` vs ``"orchestrator"``) forward the same way, so a
+    re-drive of a ``/dispatch``-issued task preserves its origin instead of
+    the orchestrator's re-enqueue defaulting it to ``"orchestrator"`` — which
+    would route the re-drive through the wrong drain-time readiness gate.
     """
 
     proc: Any
@@ -477,6 +483,7 @@ class TrackedProc:
     target_repo: str | None = None
     target_type: str | None = None
     target_number: int | None = None
+    origin: str | None = None
 
 
 @dataclass(frozen=True)
@@ -756,6 +763,7 @@ def poll_completions(
                             "target_repo": tracked.target_repo,
                             "target_type": tracked.target_type,
                             "target_number": tracked.target_number,
+                            "origin": tracked.origin,
                         },
                         dedup_key=f"task_done:{task_id}:a{attempt}",
                     )
@@ -775,6 +783,7 @@ def poll_completions(
                             "target_repo": tracked.target_repo,
                             "target_type": tracked.target_type,
                             "target_number": tracked.target_number,
+                            "origin": tracked.origin,
                         },
                         dedup_key=f"task_failed:{task_id}:a{attempt}",
                     )
@@ -905,6 +914,7 @@ def kill_runaways(
                         "target_repo": tracked.target_repo,
                         "target_type": tracked.target_type,
                         "target_number": tracked.target_number,
+                        "origin": tracked.origin,
                     },
                     dedup_key=f"task_failed:{task_id}:a{attempt}",
                 )
@@ -1473,6 +1483,7 @@ def drain_tasks(
                 "target_repo": row.get("target_repo"),
                 "target_type": row.get("target_type"),
                 "target_number": row.get("target_number"),
+                "origin": row.get("origin"),
             }
             # AC2 (#952) — record spawn to sidecar for restart liveness recovery.
             if sidecar is not None:

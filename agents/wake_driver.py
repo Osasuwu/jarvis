@@ -651,6 +651,7 @@ def tick(
                         target_repo=meta.get("target_repo"),
                         target_type=meta.get("target_type"),
                         target_number=meta.get("target_number"),
+                        origin=meta.get("origin"),
                     )
         except Exception:  # noqa: BLE001 — task-store outage must not crash the tick
             logger.exception(
