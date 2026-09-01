@@ -1,1 +1,25 @@
 slots: ["slot-1", "slot-2"]
+
+# Billing-key denylist consumed by BOTH .sandcastle/main.mts (TS, subscription
+# auth-mode guard) and agents/sandcastle_config.py (Python, spawn-env guard) —
+# single shared config source, not two independently-maintained checks
+# (decision 70f25333-b4f4-454e-903b-ab2d32b125c8, #1121).
+billing_key_denylist:
+  - ANTHROPIC_BASE_URL
+  - ANTHROPIC_AUTH_TOKEN
+  - ANTHROPIC_API_KEY
+  - CLAUDE_CODE_USE_BEDROCK
+  - CLAUDE_CODE_USE_VERTEX
+  - CLAUDE_CODE_USE_FOUNDRY
+
+# Per-row tier-aware quota gate (decision cc5f9c2c-4371-4cec-bd54-79b7163c398c,
+# #1121): a throttled row is skipped at drain time, never halts the drain.
+quota_gate:
+  enabled: true
+
+# Default substrate for a queue row with no explicit substrate value — rows
+# created before this slice, or enqueued by a caller that hasn't been updated
+# to stamp substrate="worktree" yet (decision c5e2e14a, #1121 plan step 7).
+# Only "worktree" is routable this slice; "container" is reserved for the
+# #1121 follow-up issue and must not be set here.
+operator_default_substrate: worktree

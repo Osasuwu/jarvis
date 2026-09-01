@@ -15,6 +15,9 @@ from agents.sandcastle_config import (
     SandcastleConfig,
     attempt_ceiling,
     default_attempt_ceiling,
+    default_billing_key_denylist,
+    default_operator_default_substrate,
+    default_quota_gate,
     load_sandcastle_config,
 )
 
@@ -61,3 +64,81 @@ class TestDefaultAttemptCeiling:
         )
 
         assert default_attempt_ceiling() == len(config.slots)
+
+
+class TestBillingKeyDenylist:
+    """Single shared config source consumed by both TS and Python spawn paths
+    (decision 70f25333, #1121) — asserted against the repo's own config here so
+    a drift between the yaml and the loader's defaults is caught immediately.
+    """
+
+    def test_loads_denylist_list(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text(
+            'slots: ["slot-1"]\nbilling_key_denylist: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]\n',
+            encoding="utf-8",
+        )
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.billing_key_denylist == ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+    def test_absent_denylist_defaults_to_empty_tuple(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text('slots: ["slot-1"]\n', encoding="utf-8")
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.billing_key_denylist == ()
+
+    def test_default_billing_key_denylist_reads_repo_config(self) -> None:
+        config = load_sandcastle_config(
+            Path(__file__).resolve().parent.parent.parent / "config" / "sandcastle.yaml"
+        )
+
+        assert default_billing_key_denylist() == config.billing_key_denylist
+        # The repo's own config must actually carry a non-empty denylist —
+        # an empty list here would silently disable the billing guard.
+        assert "ANTHROPIC_API_KEY" in default_billing_key_denylist()
+
+
+class TestQuotaGate:
+    def test_loads_quota_gate_mapping(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text('slots: ["slot-1"]\nquota_gate:\n  enabled: true\n', encoding="utf-8")
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.quota_gate == {"enabled": True}
+
+    def test_absent_quota_gate_defaults_to_empty_dict(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text('slots: ["slot-1"]\n', encoding="utf-8")
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.quota_gate == {}
+
+    def test_default_quota_gate_reads_repo_config(self) -> None:
+        assert default_quota_gate() == {"enabled": True}
+
+
+class TestOperatorDefaultSubstrate:
+    def test_loads_operator_default_substrate(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text('slots: ["slot-1"]\noperator_default_substrate: worktree\n', encoding="utf-8")
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.operator_default_substrate == "worktree"
+
+    def test_absent_operator_default_substrate_defaults_to_worktree(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text('slots: ["slot-1"]\n', encoding="utf-8")
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.operator_default_substrate == "worktree"
+
+    def test_default_operator_default_substrate_reads_repo_config(self) -> None:
+        assert default_operator_default_substrate() == "worktree"
