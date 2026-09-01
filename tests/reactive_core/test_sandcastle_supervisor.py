@@ -77,7 +77,12 @@ class TestBuildSupervisorEnv:
 
 
 class TestLaunchSupervisor:
-    def test_launches_npm_run_sandcastle_with_built_env(self):
+    def test_launches_npm_run_sandcastle_with_built_env(self, monkeypatch):
+        # SUPABASE_KEY read from the real process env (build_supervisor_env's
+        # os.environ fallback) must not leak from whatever the runner has set —
+        # pin it to a known-good anon key so this test is deterministic
+        # regardless of ambient environment (was flaky/CI-only-failing before).
+        monkeypatch.setenv("SUPABASE_KEY", ANON_JWT)
         captured = {}
 
         class FakeProc:
