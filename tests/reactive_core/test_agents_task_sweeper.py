@@ -35,6 +35,7 @@ CONFIG = SweeperConfig(
     daemon_failure_threshold=3,
     docker_call_timeout_seconds=30,
     runtime_root=".sandcastle/runtime",
+    late_result_drift_threshold=3,
 )
 
 
@@ -421,6 +422,65 @@ class TestSweepLateResultCorrelation:
         assert outcome.noop == 0
         assert outcome.late_result == 0
         assert port.transitions == []
+
+    def _late_result_pass(self, state: SweeperState, emit: Any, config: SweeperConfig) -> None:
+        terminal_row = _row(status="done", claimed_at=NOW - timedelta(hours=10))
+        port = FakePort(running_rows=[], rows_by_id={"t1": terminal_row})
+        container = _container(task_id="t1", running=False, container_id="sandcastle-c1")
+        docker = FakeDocker(containers=[container])
+        sweep(port, docker, config=config, event_emit=emit, now=lambda: NOW, state=state)
+
+    def test_late_result_drift_event_fires_at_threshold(self, tmp_path: Any) -> None:
+        config = SweeperConfig(
+            run_timeout_hours=4,
+            destructive_min_age_minutes=10,
+            daemon_failure_threshold=3,
+            docker_call_timeout_seconds=30,
+            runtime_root=str(tmp_path),
+            late_result_drift_threshold=3,
+        )
+        result_dir = tmp_path / "t1-a1"
+        result_dir.mkdir()
+        (result_dir / "result.json").write_text(
+            __import__("json").dumps(_result(outcome="success")), encoding="utf-8"
+        )
+        state = SweeperState()
+        events, emit = _events_recorder()
+
+        for _ in range(3):
+            self._late_result_pass(state, emit, config)
+
+        drift_events = [c for c in events if c[0] == "sweeper_late_result_drift"]
+        assert len(drift_events) == 1
+        assert drift_events[0][1] == "medium"
+        assert drift_events[0][2]["consecutive_passes"] == 3
+
+    def test_late_result_drift_counter_resets_after_clean_pass(self, tmp_path: Any) -> None:
+        config = SweeperConfig(
+            run_timeout_hours=4,
+            destructive_min_age_minutes=10,
+            daemon_failure_threshold=3,
+            docker_call_timeout_seconds=30,
+            runtime_root=str(tmp_path),
+            late_result_drift_threshold=3,
+        )
+        result_dir = tmp_path / "t1-a1"
+        result_dir.mkdir()
+        (result_dir / "result.json").write_text(
+            __import__("json").dumps(_result(outcome="success")), encoding="utf-8"
+        )
+        state = SweeperState()
+        events, emit = _events_recorder()
+        self._late_result_pass(state, emit, config)
+        assert state.consecutive_late_result_passes == 1
+
+        clean_port = FakePort(running_rows=[])
+        clean_docker = FakeDocker()
+        sweep(
+            clean_port, clean_docker, config=config, event_emit=emit, now=lambda: NOW, state=state
+        )
+
+        assert state.consecutive_late_result_passes == 0
 
 
 class TestApplyActionIsolation:

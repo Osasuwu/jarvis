@@ -42,3 +42,4 @@ sweeper:
   daemon_failure_threshold: 3
   docker_call_timeout_seconds: 30
   runtime_root: .sandcastle/runtime
+  late_result_drift_threshold: 3

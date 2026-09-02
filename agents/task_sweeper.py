@@ -354,6 +354,12 @@ class SweeperState:
 
     consecutive_docker_failures: int = 0
 
+    # AC7 — consecutive sweep passes containing at least one late-result
+    # occurrence (a straggling result on an already-terminal row); mirrors
+    # the AC6 shape above: an owner event fires once this crosses
+    # ``late_result_drift_threshold``, and it resets on the next clean pass.
+    consecutive_late_result_passes: int = 0
+
 
 @dataclass(frozen=True)
 class SweepResult:
@@ -503,5 +509,24 @@ def sweep(
         action = decide(row, result, container, moment, cfg, resolved_ceiling)
         _apply_action(task_id, action, port=port, docker=docker, event_emit=event_emit)
         counts[action.kind] = counts.get(action.kind, 0) + 1
+
+    # AC7 — drift counter: a late-result occurrence is expected occasionally
+    # (a straggling completion racing the sweeper), but repeated occurrences
+    # across consecutive passes indicate a correlation/timing problem an
+    # owner should look at, mirroring the AC6 daemon-failure pattern above.
+    if counts["late_result"] > 0:
+        st.consecutive_late_result_passes += 1
+        if event_emit and st.consecutive_late_result_passes >= cfg.late_result_drift_threshold:
+            try:
+                event_emit(
+                    "sweeper_late_result_drift",
+                    "medium",
+                    {"consecutive_passes": st.consecutive_late_result_passes},
+                    dedup_key=f"sweeper_late_result_drift:{moment.date().isoformat()}",
+                )
+            except Exception:  # noqa: BLE001 — emit failure must not raise
+                logger.exception("[task_sweeper] late-result-drift event emit failed")
+    else:
+        st.consecutive_late_result_passes = 0
 
     return SweepResult(aborted=False, startup=startup, **counts)

@@ -34,6 +34,9 @@ class SweeperConfig:
     daemon_failure_threshold: int = 3
     docker_call_timeout_seconds: float = 30
     runtime_root: str = _DEFAULT_SWEEPER_RUNTIME_ROOT
+    # AC7 — consecutive sweep passes with a late-result occurrence before the
+    # drift is surfaced as an owner event (mirrors daemon_failure_threshold).
+    late_result_drift_threshold: int = 3
 
 
 @dataclass(frozen=True)
@@ -83,13 +86,17 @@ def load_sandcastle_config(path: Path) -> SandcastleConfig:
             "docker_call_timeout_seconds", default_sweeper.docker_call_timeout_seconds
         ),
         runtime_root=raw_sweeper.get("runtime_root") or default_sweeper.runtime_root,
+        late_result_drift_threshold=raw_sweeper.get(
+            "late_result_drift_threshold", default_sweeper.late_result_drift_threshold
+        ),
     )
 
     return SandcastleConfig(
         slots=tuple(raw["slots"]),
         billing_key_denylist=tuple(raw.get("billing_key_denylist") or ()),
         quota_gate=dict(raw.get("quota_gate") or {}),
-        operator_default_substrate=raw.get("operator_default_substrate") or _DEFAULT_OPERATOR_SUBSTRATE,
+        operator_default_substrate=raw.get("operator_default_substrate")
+        or _DEFAULT_OPERATOR_SUBSTRATE,
         sweeper=sweeper,
     )
 
