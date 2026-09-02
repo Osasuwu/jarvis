@@ -88,6 +88,7 @@ except ImportError:
 # generation is not re-shown via a different tool query.
 if str(_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_ROOT / "scripts"))
+from lib.harness import home as _harness_home  # noqa: E402
 from lib.recall_dedup import (  # noqa: E402
     MODE_PRETOOLUSE,
     filter_emittable,
@@ -116,10 +117,7 @@ KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
 # Where to stash the dedup cache. Co-located with the rest of the user-level
 # ephemera under ~/.claude/cache/ so install.ps1 --apply doesn't stomp it.
-_CLAUDE_HOME_OVERRIDE = os.environ.get("JARVIS_CLAUDE_HOME")
-_CLAUDE_HOME = (
-    Path(_CLAUDE_HOME_OVERRIDE).expanduser() if _CLAUDE_HOME_OVERRIDE else Path.home() / ".claude"
-)
+_CLAUDE_HOME = _harness_home()
 CACHE_DIR = _CLAUDE_HOME / "cache"
 CACHE_FILE = CACHE_DIR / "pretooluse-recall-dedup.json"
 STATS_FILE = CACHE_DIR / "pretooluse-recall-stats.json"
