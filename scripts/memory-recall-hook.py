@@ -98,6 +98,7 @@ from recall import (  # noqa: E402
 # recall hook (#1276). Mode keeps the two hooks' namespaces disjoint so a
 # memory shown at UserPromptSubmit can still surface mid-turn and vice versa.
 sys.path.insert(0, str(_root / "scripts"))
+from lib.harness import home as _harness_home  # noqa: E402
 from lib.recall_dedup import (  # noqa: E402
     MODE_BRIEF,
     MODE_FULL,
@@ -175,12 +176,7 @@ KNOWN_PROJECTS = {"jarvis", "redrobot"}
 # pretooluse-recall-hook stats file (same keys, same best-effort semantics):
 # fired (recall returned ≥1 allowed hit), emitted (≥1 memory injected),
 # deduped (memories skipped by the (id, mode) generation dedup).
-_CLAUDE_HOME_OVERRIDE = os.environ.get("JARVIS_CLAUDE_HOME")
-_CLAUDE_HOME = (
-    Path(_CLAUDE_HOME_OVERRIDE).expanduser()
-    if _CLAUDE_HOME_OVERRIDE
-    else Path.home() / ".claude"
-)
+_CLAUDE_HOME = _harness_home()
 STATS_FILE = _CLAUDE_HOME / "cache" / "memory-recall-stats.json"
 
 
