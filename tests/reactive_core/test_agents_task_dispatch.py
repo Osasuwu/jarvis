@@ -77,6 +77,7 @@ class FakeTaskQueue:
         running_count: int = 0,
         statuses: dict[str, str] | None = None,
         rows_by_id: dict[str, dict[str, Any]] | None = None,
+        running_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self._pending = list(pending or [])
         self._running_count = running_count
@@ -88,6 +89,7 @@ class FakeTaskQueue:
         self.statuses: dict[str, str] = dict(statuses or {})
         self.plan_digests: dict[str, str] = {}
         self._rows_by_id: dict[str, dict[str, Any]] = dict(rows_by_id or {})
+        self.running_rows: list[dict[str, Any]] = list(running_rows or [])
 
     def claim_next(self, *, assignee: str) -> dict[str, Any] | None:
         for i, row in enumerate(self._pending):
@@ -117,6 +119,9 @@ class FakeTaskQueue:
     def requeue_running(self, task_id: str) -> bool:
         self.requeued.append(task_id)
         return True
+
+    def list_running(self) -> list[dict[str, Any]]:
+        return list(self.running_rows)
 
     def get_status(self, task_id: str) -> str | None:
         return self.statuses.get(task_id)
@@ -1116,10 +1121,6 @@ class TestReclaimStaleClaimed:
                 calls["claimed"] = (assignee, older_than_seconds)
                 return 1
 
-            def list_stale_running(self, *, assignee: str, older_than_seconds: float) -> list:
-                calls["running"] = (assignee, older_than_seconds)
-                return []
-
         res = reclaim_stale_tasks(
             Q(),
             assignee="sandcastle",
@@ -1127,7 +1128,6 @@ class TestReclaimStaleClaimed:
             running_reap_after_seconds=21600,
         )
         assert calls["claimed"] == ("sandcastle", 300)
-        assert calls["running"] == ("sandcastle", 21600)
         assert res.reclaimed_claimed == 1
 
     def test_reclaimed_count_propagates(self) -> None:
@@ -1138,78 +1138,35 @@ class TestReclaimStaleClaimed:
 
 
 # ---------------------------------------------------------------------------
-# AC6 — running reaper: stale running -> failed; nothing stale -> no-op
+# #1122 AC9 — reclaim_stale_tasks no longer fails running rows: the sweeper
+# (agents/task_sweeper.py) is now the sole closer of orphaned/stuck running
+# rows, via its own destructive-fail clock. The list_stale_running branch
+# that used to live here is deleted outright, not merely disabled — this
+# class proves reclaim_stale_tasks never touches a running row, even when
+# the port's list_stale_running would return one.
 # ---------------------------------------------------------------------------
 
 
-class TestRunningReaper:
-    def test_stale_running_marked_failed(self) -> None:
+class TestReclaimStaleTasksNoLongerTouchesRunning:
+    def test_stale_running_rows_are_left_alone(self) -> None:
         q = FakeTaskQueue()
         q.stale_running = [{"id": "stuck1"}, {"id": "stuck2"}]
-        res = reclaim_stale_tasks(q, running_reap_after_seconds=21600)
-        failed = [t for t in q.transitions if t[1] == "failed"]
-        assert {t[0] for t in failed} == {"stuck1", "stuck2"}
-        assert all(t[2] and "reaped" in t[2] for t in failed)
-        assert res.reaped_running == 2
-
-    def test_noop_when_nothing_stale(self) -> None:
-        q = FakeTaskQueue()
-        q.stale_running = []
-        res = reclaim_stale_tasks(q)
-        assert res.reaped_running == 0
+        reclaim_stale_tasks(q, running_reap_after_seconds=21600)
         assert q.transitions == []
 
-
-# ---------------------------------------------------------------------------
-# #921 AC5 — reaper is orphan-only: live-tracked rows are never time-reaped
-# ---------------------------------------------------------------------------
-
-
-class TestOrphanOnlyReaper:
-    def test_live_rows_not_reaped(self) -> None:
-        # A row with a live tracked process is NOT an orphan, however old —
-        # long-running tasks are legitimate; runaways are AC6's job (tree-kill),
-        # not the time-reaper's.
-        q = FakeTaskQueue()
-        q.stale_running = [{"id": "live"}, {"id": "orphan"}]
-        res = reclaim_stale_tasks(q, live_task_ids={"live"})
-        failed = [t for t in q.transitions if t[1] == "failed"]
-        assert {t[0] for t in failed} == {"orphan"}
-        assert res.reaped_running == 1
-
-    def test_orphan_reason_names_orphan(self) -> None:
+    def test_live_task_ids_argument_is_a_no_op(self) -> None:
+        # live_task_ids is kept on the signature for call-site compatibility
+        # (wake_driver still passes it) but has nothing left to filter.
         q = FakeTaskQueue()
         q.stale_running = [{"id": "orphan"}]
         reclaim_stale_tasks(q, live_task_ids=set())
-        failed = [t for t in q.transitions if t[1] == "failed"]
-        assert failed[0][2] and "orphan" in failed[0][2]
+        assert q.transitions == []
 
-    def test_default_live_set_empty_reaps_all_stale(self) -> None:
-        # Restart semantics: a fresh driver has no map, so every stale running
-        # row is an orphan (AC7 — the in-memory map does not survive restart).
+    def test_result_carries_no_reaped_running_field(self) -> None:
+        # AC9: the field this branch used to populate is gone, not just zeroed.
         q = FakeTaskQueue()
-        q.stale_running = [{"id": "a"}, {"id": "b"}]
         res = reclaim_stale_tasks(q)
-        assert res.reaped_running == 2
-
-    def test_orphan_transition_raise_isolated(self) -> None:
-        # review #957-5 (MINOR): one orphan's failed-mark raising must not
-        # abort the sweep — the remaining orphans are still reaped this pass
-        # (per-row isolation, mirroring poll_completions).
-        class Q(FakeTaskQueue):
-            def transition(
-                self, task_id: str, to_status: str, *, reason: str | None = None
-            ) -> dict[str, Any]:
-                if task_id == "bad":
-                    raise RuntimeError("transient store error")
-                return super().transition(task_id, to_status, reason=reason)
-
-        q = Q()
-        q.stale_running = [{"id": "bad"}, {"id": "ok"}]
-        res = reclaim_stale_tasks(q)
-        assert res.reaped_running == 1  # 'bad' raised → not counted
-        failed = [t[0] for t in q.transitions if t[1] == "failed"]
-        assert failed == ["ok"]  # the sweep continued past the bad row
+        assert not hasattr(res, "reaped_running")
 
 
 # ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -158,6 +159,75 @@ class TestBuildSupervisorEnv:
                 attempt=1,
                 base_env={"SUPABASE_KEY": SERVICE_ROLE_JWT},
             )
+
+    # -- #1122 AC2 -----------------------------------------------------
+
+    def test_run_id_defaults_to_bare_task_id(self):
+        env = build_supervisor_env(
+            {"goal": "do the thing"}, task_id="t1", lineage_key="l", attempt=1, base_env={}
+        )
+        assert env["SANDCASTLE_RUN_ID"] == "t1"
+
+    def test_run_id_extracted_from_branch_directive(self):
+        env = build_supervisor_env(
+            {"goal": "Re-drive (attempt 2): do it\n\n(branch=task/root-42)"},
+            task_id="t99",
+            lineage_key="l",
+            attempt=2,
+            base_env={},
+        )
+        assert env["SANDCASTLE_RUN_ID"] == "root-42"
+
+    def test_run_id_ignores_non_task_prefixed_branch_directive(self):
+        # Only a literal `task/`-prefixed directive is a run-id source; any
+        # other (branch=...) form falls back to the bare task_id.
+        env = build_supervisor_env(
+            {"goal": "g\n\n(branch=feature/x)"}, task_id="t1", lineage_key="l", attempt=1, base_env={}
+        )
+        assert env["SANDCASTLE_RUN_ID"] == "t1"
+
+    def test_result_file_keyed_by_task_id_and_attempt(self):
+        env = build_supervisor_env(
+            {"goal": "g"},
+            task_id="t7",
+            lineage_key="l",
+            attempt=3,
+            base_env={},
+            runtime_root="/tmp/runtime",
+        )
+        assert env["SANDCASTLE_RESULT_FILE"] == "/tmp/runtime/t7-a3/result.json"
+
+    def test_result_file_defaults_runtime_root_from_config(self):
+        env = build_supervisor_env(
+            {"goal": "g"}, task_id="t7", lineage_key="l", attempt=1, base_env={}
+        )
+        assert env["SANDCASTLE_RESULT_FILE"] == ".sandcastle/runtime/t7-a1/result.json"
+
+    def test_pinned_branch_matches_pr_evidence_head_fresh_shape(self):
+        # main.mts pins task/<runId> verbatim (main.mts:319); pr_evidence's
+        # ensure_pr_closing_ref derives the evidence head via its own regex
+        # (agents/pr_evidence.py:276-277) — for a fresh-shape goal (no
+        # existing directive) both must land on task/<task_id>.
+        env = build_supervisor_env(
+            {"goal": "implement the thing"}, task_id="t5", lineage_key="l", attempt=1, base_env={}
+        )
+        pinned_branch = f"task/{env['SANDCASTLE_RUN_ID']}"
+
+        goal = "implement the thing"
+        evidence_match = re.search(r"\(branch=([^)]+)\)", goal)
+        evidence_head = evidence_match.group(1).strip() if evidence_match else f"task/t5"
+        assert pinned_branch == evidence_head
+
+    def test_pinned_branch_matches_pr_evidence_head_redrive_shape(self):
+        goal = "Re-drive (attempt 2): implement the thing\n\n(branch=task/t5)"
+        env = build_supervisor_env(
+            {"goal": goal}, task_id="t5-redrive", lineage_key="l", attempt=2, base_env={}
+        )
+        pinned_branch = f"task/{env['SANDCASTLE_RUN_ID']}"
+
+        evidence_match = re.search(r"\(branch=([^)]+)\)", goal)
+        evidence_head = evidence_match.group(1).strip() if evidence_match else "task/t5-redrive"
+        assert pinned_branch == evidence_head
 
 
 class TestLaunchSupervisor:

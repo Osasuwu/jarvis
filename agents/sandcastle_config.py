@@ -22,6 +22,22 @@ _REQUIRED_KEYS = ("slots",)
 
 _DEFAULT_OPERATOR_SUBSTRATE = "worktree"
 
+_DEFAULT_SWEEPER_RUNTIME_ROOT = ".sandcastle/runtime"
+
+
+@dataclass(frozen=True)
+class SweeperConfig:
+    """Task sweeper tunables (#1122 AC11) — no sweeper literal on a code path."""
+
+    run_timeout_hours: float = 4
+    destructive_min_age_minutes: float = 10
+    daemon_failure_threshold: int = 3
+    docker_call_timeout_seconds: float = 30
+    runtime_root: str = _DEFAULT_SWEEPER_RUNTIME_ROOT
+    # AC7 — consecutive sweep passes with a late-result occurrence before the
+    # drift is surfaced as an owner event (mirrors daemon_failure_threshold).
+    late_result_drift_threshold: int = 3
+
 
 @dataclass(frozen=True)
 class SandcastleConfig:
@@ -37,6 +53,8 @@ class SandcastleConfig:
     # Default substrate for a row with no explicit substrate value (#1121,
     # decision c5e2e14a). Only "worktree" is routable this slice.
     operator_default_substrate: str = _DEFAULT_OPERATOR_SUBSTRATE
+    # Task sweeper config (#1122 AC11).
+    sweeper: SweeperConfig = field(default_factory=SweeperConfig)
 
 
 def load_sandcastle_config(path: Path) -> SandcastleConfig:
@@ -54,11 +72,32 @@ def load_sandcastle_config(path: Path) -> SandcastleConfig:
     if missing:
         raise ValueError(f"sandcastle config {path}: missing keys {missing}")
 
+    raw_sweeper = dict(raw.get("sweeper") or {})
+    default_sweeper = SweeperConfig()
+    sweeper = SweeperConfig(
+        run_timeout_hours=raw_sweeper.get("run_timeout_hours", default_sweeper.run_timeout_hours),
+        destructive_min_age_minutes=raw_sweeper.get(
+            "destructive_min_age_minutes", default_sweeper.destructive_min_age_minutes
+        ),
+        daemon_failure_threshold=raw_sweeper.get(
+            "daemon_failure_threshold", default_sweeper.daemon_failure_threshold
+        ),
+        docker_call_timeout_seconds=raw_sweeper.get(
+            "docker_call_timeout_seconds", default_sweeper.docker_call_timeout_seconds
+        ),
+        runtime_root=raw_sweeper.get("runtime_root") or default_sweeper.runtime_root,
+        late_result_drift_threshold=raw_sweeper.get(
+            "late_result_drift_threshold", default_sweeper.late_result_drift_threshold
+        ),
+    )
+
     return SandcastleConfig(
         slots=tuple(raw["slots"]),
         billing_key_denylist=tuple(raw.get("billing_key_denylist") or ()),
         quota_gate=dict(raw.get("quota_gate") or {}),
-        operator_default_substrate=raw.get("operator_default_substrate") or _DEFAULT_OPERATOR_SUBSTRATE,
+        operator_default_substrate=raw.get("operator_default_substrate")
+        or _DEFAULT_OPERATOR_SUBSTRATE,
+        sweeper=sweeper,
     )
 
 
@@ -91,3 +130,8 @@ def default_quota_gate() -> dict[str, Any]:
 def default_operator_default_substrate() -> str:
     """Operator default substrate from the repo's own ``config/sandcastle.yaml``."""
     return default_sandcastle_config().operator_default_substrate
+
+
+def default_sweeper_config() -> SweeperConfig:
+    """Sweeper config from the repo's own ``config/sandcastle.yaml``."""
+    return default_sandcastle_config().sweeper

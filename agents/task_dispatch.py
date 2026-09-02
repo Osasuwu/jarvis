@@ -374,6 +374,14 @@ class TaskQueuePort(Protocol):
     ) -> list[dict[str, Any]]:
         """List ``running`` rows older than the reaper threshold for ``assignee``."""
 
+    def list_running(self) -> list[dict[str, Any]]:
+        """List every ``running`` row, full columns, unconditionally (#1122 AC1).
+
+        Backs the sweeper's harvest pass — it inspects every running row on
+        every tick, not just stale ones, and needs full row data to decide
+        the per-row action. See :func:`agents.task_queue.list_running`.
+        """
+
     def requeue_running(self, task_id: str) -> bool:
         """Return one process-less ``running`` row to ``pending`` (direct UPDATE, #921 AC4)."""
 
@@ -463,7 +471,6 @@ class ReclaimResult:
     """What one :func:`reclaim_stale_tasks` did."""
 
     reclaimed_claimed: int = 0
-    reaped_running: int = 0
 
 
 @dataclass(frozen=True)
@@ -1769,59 +1776,32 @@ def reclaim_stale_tasks(
     running_reap_after_seconds: float = DEFAULT_RUNNING_REAP_SECONDS,
     live_task_ids: Collection[str] = (),
 ) -> ReclaimResult:
-    """Sweep stranded tasks before a drain (#909 AC5/AC6, #921 AC5 orphan-only).
+    """Sweep stranded ``claimed`` tasks before a drain (#909 AC5/AC6).
 
-    - **Stale claimed** rows return to ``pending`` via a direct UPDATE that
-      bypasses the FSM (``claimed → pending`` is not a legal transition; this
-      mirrors :meth:`wake_driver.PsycopgEventQueue.reclaim_stale`). Never
-      touches ``running``.
-    - **Orphaned running** rows — stale AND not in ``live_task_ids`` — are
-      transitioned ``running → failed`` so rows with no process behind them (a
-      child that died without a completion, a crash in the running↔spawn
-      window, a pre-restart spawn) stop ratcheting the cap toward 0.
+    **Stale claimed** rows return to ``pending`` via a direct UPDATE that
+    bypasses the FSM (``claimed → pending`` is not a legal transition; this
+    mirrors :meth:`wake_driver.PsycopgEventQueue.reclaim_stale`). Never
+    touches ``running``.
 
-    ``live_task_ids`` is the wake_driver's tracked-process map keyset (#921
-    AC5): a row with a live handle is *not* an orphan however old — legitimate
-    long tasks are never time-reaped; genuinely stuck live processes are
-    :func:`kill_runaways`' job, which kills the tree and closes the row
-    explicitly. Restart semantics: a fresh driver has an empty map, so every
-    stale running row is an orphan again (AC7 — the map does not survive
-    restart; the backstop self-heals via Path-A).
+    #1122 AC9: this function used to also fail orphaned ``running`` rows
+    (stale + no tracked live process) via a ``list_stale_running`` scan.
+    That branch is deleted — :mod:`agents.task_sweeper`'s result-file-first
+    sweep is now the sole closer of ``running`` rows, via its own
+    destructive-fail clock (result file absent/invalid past
+    ``destructive_min_age_minutes`` past the process no longer running).
+    ``live_task_ids`` and ``running_reap_after_seconds`` are kept on the
+    signature only for call-site compatibility with :func:`wake_driver.tick`,
+    which still passes them; they are unused here.
 
     Invoked by :func:`wake_driver.tick` *before* :func:`drain_tasks`, so a row
     reclaimed this pass is eligible to be re-claimed and spawned in the same
     tick — symmetric to the event watchdog running before ``drain_pending``.
     """
-    # Stale claimed → pending (FSM-bypassing direct UPDATE).
+    del running_reap_after_seconds, live_task_ids  # #1122 AC9 — kept for call-site compat only
     reclaimed = port.reclaim_stale_claimed(
         assignee=assignee, older_than_seconds=claimed_stale_after_seconds
     )
-
-    # Orphaned running → failed (stale + no tracked live process).
-    reaped = 0
-    for row in port.list_stale_running(
-        assignee=assignee, older_than_seconds=running_reap_after_seconds
-    ):
-        task_id = str(row["id"])
-        if task_id in live_task_ids:
-            continue
-        try:
-            port.transition(
-                task_id,
-                "failed",
-                reason=(
-                    f"reaped: orphaned running row (no tracked process) "
-                    f"after {running_reap_after_seconds:.0f}s"
-                ),
-            )
-            reaped += 1
-        except Exception:  # noqa: BLE001 — isolate one bad row; the rest still reap
-            logger.exception(
-                "[task_dispatch] orphan reap of task %s failed; retried next sweep",
-                task_id,
-            )
-
-    return ReclaimResult(reclaimed_claimed=reclaimed, reaped_running=reaped)
+    return ReclaimResult(reclaimed_claimed=reclaimed)
 
 
 def default_local_drain_heartbeat_check() -> HeartbeatStatus:
@@ -1988,6 +1968,9 @@ class SupabaseTaskQueue:
         return task_queue.list_stale_running(
             assignee=assignee, older_than_seconds=older_than_seconds, client=self._client
         )
+
+    def list_running(self) -> list[dict[str, Any]]:
+        return task_queue.list_running(client=self._client)
 
     def requeue_running(self, task_id: str) -> bool:
         return task_queue.requeue_running(task_id, client=self._client)

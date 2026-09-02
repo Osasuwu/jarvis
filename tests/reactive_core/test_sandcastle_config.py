@@ -13,11 +13,13 @@ import pytest
 
 from agents.sandcastle_config import (
     SandcastleConfig,
+    SweeperConfig,
     attempt_ceiling,
     default_attempt_ceiling,
     default_billing_key_denylist,
     default_operator_default_substrate,
     default_quota_gate,
+    default_sweeper_config,
     load_sandcastle_config,
 )
 
@@ -37,6 +39,47 @@ class TestLoadSandcastleConfig:
 
         with pytest.raises(ValueError, match="slots"):
             load_sandcastle_config(config_path)
+
+    def test_missing_sweeper_block_uses_defaults(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text('slots: ["slot-1"]\n', encoding="utf-8")
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.sweeper == SweeperConfig()
+
+    def test_loads_sweeper_block(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "sandcastle.yaml"
+        config_path.write_text(
+            "slots: [\"slot-1\"]\n"
+            "sweeper:\n"
+            "  run_timeout_hours: 2\n"
+            "  destructive_min_age_minutes: 5\n"
+            "  daemon_failure_threshold: 7\n"
+            "  docker_call_timeout_seconds: 15\n"
+            "  runtime_root: /var/run/sandcastle\n",
+            encoding="utf-8",
+        )
+
+        config = load_sandcastle_config(config_path)
+
+        assert config.sweeper == SweeperConfig(
+            run_timeout_hours=2,
+            destructive_min_age_minutes=5,
+            daemon_failure_threshold=7,
+            docker_call_timeout_seconds=15,
+            runtime_root="/var/run/sandcastle",
+        )
+
+
+class TestDefaultSweeperConfig:
+    def test_default_sweeper_config_matches_repo_yaml(self) -> None:
+        config = default_sweeper_config()
+        assert config.run_timeout_hours == 4
+        assert config.destructive_min_age_minutes == 10
+        assert config.daemon_failure_threshold == 3
+        assert config.docker_call_timeout_seconds == 30
+        assert config.runtime_root == ".sandcastle/runtime"
 
     def test_missing_file_raises_file_not_found_error(self, tmp_path: Path) -> None:
         missing_path = tmp_path / "does-not-exist.yaml"

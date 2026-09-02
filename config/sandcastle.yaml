@@ -32,3 +32,14 @@ quota_gate:
 # Only "worktree" is routable this slice; "container" is reserved for the
 # #1121 follow-up issue and must not be set here.
 operator_default_substrate: worktree
+
+# Task sweeper tunables (#1122 AC11) — the primary closer of `running` rows.
+# No sweeper literal may live on a code path; everything the sweeper needs
+# comes from here.
+sweeper:
+  run_timeout_hours: 4
+  destructive_min_age_minutes: 10
+  daemon_failure_threshold: 3
+  docker_call_timeout_seconds: 30
+  runtime_root: .sandcastle/runtime
+  late_result_drift_threshold: 3
