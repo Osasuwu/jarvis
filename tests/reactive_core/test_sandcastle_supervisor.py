@@ -80,9 +80,9 @@ class TestBuildSupervisorEnv:
         )
         assert "SANDCASTLE_REPO" not in env
 
-    def test_injects_target_issue_from_target_number(self):
+    def test_injects_target_issue_from_target_number_when_target_type_issue(self):
         env = build_supervisor_env(
-            {"goal": "g", "target_number": 1123},
+            {"goal": "g", "target_type": "issue", "target_number": 1123},
             task_id="t1",
             lineage_key="l",
             attempt=1,
@@ -100,19 +100,34 @@ class TestBuildSupervisorEnv:
         )
         assert env["SANDCASTLE_TARGET_ISSUE"] == "1124"
 
-    def test_target_number_takes_precedence_over_issue_number(self):
+    def test_issue_number_mirror_takes_precedence_over_target_number(self):
         env = build_supervisor_env(
-            {"goal": "g", "target_number": 1123, "issue_number": 999},
+            {"goal": "g", "target_type": "issue", "target_number": 1123, "issue_number": 999},
             task_id="t1",
             lineage_key="l",
             attempt=1,
             base_env={},
         )
-        assert env["SANDCASTLE_TARGET_ISSUE"] == "1123"
+        assert env["SANDCASTLE_TARGET_ISSUE"] == "999"
 
     def test_omits_target_issue_when_row_has_neither(self):
         env = build_supervisor_env(
             {"goal": "g"}, task_id="t1", lineage_key="l", attempt=1, base_env={}
+        )
+        assert "SANDCASTLE_TARGET_ISSUE" not in env
+
+    def test_omits_target_issue_for_pr_typed_rework_row(self):
+        # Orchestrator-emitted rework rows: target_type == "pr", target_number
+        # holds a PR number. Must never be forwarded as an issue pin -- that
+        # would tell the container "escalation retry on issue #<PR#>" instead
+        # of leaving it in free-pick (the existing, separate, pre-fix bug for
+        # PR-typed rows; SANDCASTLE_TARGET_PR is not wired anywhere yet).
+        env = build_supervisor_env(
+            {"goal": "g", "target_type": "pr", "target_number": 1781},
+            task_id="t1",
+            lineage_key="l",
+            attempt=1,
+            base_env={},
         )
         assert "SANDCASTLE_TARGET_ISSUE" not in env
 
