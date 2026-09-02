@@ -146,6 +146,10 @@ Describe 'Test-IsInfraDown' {
         Test-IsInfraDown -Reason 'provider-billing'                            | Should Be $true
         Test-IsInfraDown -Reason 'provider-billing: exit=1 (deepseek 402)'     | Should Be $true
     }
+
+    It 'returns true for zero-commits reasons (#1382)' {
+        Test-IsInfraDown -Reason 'zero-commits' | Should Be $true
+    }
 }
 
 Describe 'Test-IsProviderBilling' {
@@ -574,7 +578,7 @@ Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
             return [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
                 result = [pscustomobject]@{
-                    branch = 'feat/200-bar'; commits = @(); iterations = @()
+                    branch = 'feat/200-bar'; commits = @('abc123'); iterations = @()
                 }
             }
         }
@@ -608,7 +612,7 @@ Describe 'Invoke-Watchdog tier escalation matrix (slice 5, #543)' {
             return [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
                 result = [pscustomobject]@{
-                    branch = 'feat/300-baz'; commits = @(); iterations = @()
+                    branch = 'feat/300-baz'; commits = @('abc123'); iterations = @()
                 }
             }
         }
@@ -837,7 +841,7 @@ Describe 'Invoke-Watchdog Tier 2-as-primary (AFK quota split, 2026-05-14)' {
             [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
                 result = [pscustomobject]@{
-                    branch = 'feat/700-deepseek-primary'; commits = @(); iterations = @()
+                    branch = 'feat/700-deepseek-primary'; commits = @('abc123'); iterations = @()
                 }
             }
         }
@@ -1088,7 +1092,7 @@ Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, 
             $script:calls += @{ Model = $Model; Mode = $AuthMode; Effort = $Effort; BaseUrl = $BaseUrl; Token = $AuthToken }
             [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
-                result = [pscustomobject]@{ branch = 'feat/900-sub'; commits = @(); iterations = @() }
+                result = [pscustomobject]@{ branch = 'feat/900-sub'; commits = @('abc123'); iterations = @() }
             }
         }
         Mock Test-IsOOM { $false }
@@ -1175,7 +1179,7 @@ Describe 'Invoke-Watchdog subscription-primary (Anthropic Max Agent-SDK credit, 
             } else {
                 [pscustomobject]@{
                     ok = $true; exitCode = 0; reason = $null
-                    result = [pscustomobject]@{ branch = 'feat/902-fallback'; commits = @(); iterations = @() }
+                    result = [pscustomobject]@{ branch = 'feat/902-fallback'; commits = @('abc123'); iterations = @() }
                 }
             }
         }
@@ -2107,7 +2111,7 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
             [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
                 result = [pscustomobject]@{
-                    branch = 'feat/630-pytest'; commits = @(); iterations = @()
+                    branch = 'feat/630-pytest'; commits = @('abc123'); iterations = @()
                 }
             }
         }
@@ -2135,7 +2139,7 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
             [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
                 result = [pscustomobject]@{
-                    branch = 'feat/630-fail'; commits = @(); iterations = @()
+                    branch = 'feat/630-fail'; commits = @('abc123'); iterations = @()
                 }
             }
         }
@@ -2165,7 +2169,7 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
             [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
                 result = [pscustomobject]@{
-                    branch = 'feat/630-broken'; commits = @(); iterations = @()
+                    branch = 'feat/630-broken'; commits = @('abc123'); iterations = @()
                 }
             }
         }
@@ -2192,7 +2196,7 @@ Describe 'Invoke-Watchdog pytest gate integration (redrobot)' {
             [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
                 result = [pscustomobject]@{
-                    branch = 'feat/630-jarvis'; commits = @(); iterations = @()
+                    branch = 'feat/630-jarvis'; commits = @('abc123'); iterations = @()
                 }
             }
         }
@@ -2299,7 +2303,29 @@ Describe 'Invoke-Watchdog claim release on crash (#1403)' {
         Assert-MockCalled Add-IssueComment  -Times 0 -Exactly -Scope It
     }
 
-    It 'does not release any claim on successful completion' {
+    It 'does not release any claim on successful completion (commits present)' {
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = 'feat/4242-thing'; commits = @('abc123'); iterations = @() }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
+        Assert-MockCalled Remove-IssueLabel -Times 0 -Exactly -Scope It
+        Assert-MockCalled Add-IssueComment  -Times 0 -Exactly -Scope It
+    }
+
+    It 'AC #1382: releases the claim on a clean zero-commit exit instead of recording success' {
+        # main.mts exits 0 and writes a normal result file even when it
+        # classified the run as an infra fault (0 commits / branch never
+        # materialized) -- `ok=$true`, empty commits. Before this fix that
+        # fell straight into the plain 'success' branch, which is exactly
+        # what the OLD version of the previous test asserted.
         Mock Invoke-Sandcastle {
             [pscustomobject]@{
                 ok = $true; exitCode = 0; reason = $null
@@ -2312,8 +2338,41 @@ Describe 'Invoke-Watchdog claim release on crash (#1403)' {
             -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
             -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
 
+        Assert-MockCalled Remove-IssueLabel -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Issue -eq 4242 -and $Label -eq 'status:in-progress' -and $RepoSlug -eq 'Osasuwu/jarvis'
+        }
+        Assert-MockCalled Add-IssueComment -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Issue -eq 4242 -and $RepoSlug -eq 'Osasuwu/jarvis' -and $Body -like '*releasing claim*'
+        }
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Status -eq 'partial' -and $Summary -like '*zero-commits*' -and $Summary -like '*issue=4242*'
+        }
+        Assert-MockCalled Send-TelegramAlert -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Message -like '*zero-commits*'
+        }
+    }
+
+    It 'AC #1382: does not misclassify a genuinely idle queue-drained run as zero-commits' {
+        # completionSignal means the agent explicitly reported nothing left
+        # to pick -- that is the pre-existing 'success:idle' heartbeat, not
+        # an infra fault, and must not release a claim that was never made.
+        Mock Invoke-Sandcastle {
+            [pscustomobject]@{
+                ok = $true; exitCode = 0; reason = $null
+                result = [pscustomobject]@{ branch = $null; commits = @(); iterations = @(); completionSignal = $true }
+            }
+        }
+        Mock Test-IsOOM { $false }
+
+        Invoke-Watchdog -Repo 'jarvis' -MaxIterations 1 -Model 'qwen-large' `
+            -Tier1Model 'qwen-small' -Tier2Provider 'deepseek' `
+            -WindowEnd '' -DockerTimeoutSec 5 -OllamaTimeoutSec 5
+
         Assert-MockCalled Remove-IssueLabel -Times 0 -Exactly -Scope It
         Assert-MockCalled Add-IssueComment  -Times 0 -Exactly -Scope It
+        Assert-MockCalled Write-OutcomeRecord -Times 1 -Exactly -Scope It -ParameterFilter {
+            $Status -eq 'success' -and $Summary -like '*success:idle*'
+        }
     }
 }
 
