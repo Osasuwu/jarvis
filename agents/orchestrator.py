@@ -176,16 +176,38 @@ def _classify_target(event: Mapping[str, Any], target: str) -> tuple[str, int | 
     return "none", None, repo
 
 
+# Per-event-type key subset for the idempotency discriminator (#1777 AC1). An
+# event type not listed here keeps the original whole-payload behaviour — the
+# documented default for types that declare none.
+_IDEMPOTENCY_KEY_FIELDS: dict[str, tuple[str, ...]] = {
+    # `task_ids` is the volatile field: the set of rows the drain would have
+    # spawned changes on every tick even when the underlying fault (host
+    # missing docker, etc.) is identical. Keying on `reason` alone collapses
+    # repeated deliveries of the same fault into one escalation (AC2) while a
+    # genuinely different `reason` still produces a different key (AC3).
+    INFRA_PREFLIGHT_EVENT_TYPE: ("reason",),
+}
+
+
 def _idempotency_key(event_type: str, target: str, payload: Mapping[str, Any]) -> str:
     """``sha256(event_type | target | payload-state-discriminator)`` (AC2).
 
-    The state-discriminator is the canonical JSON of the payload: an identical
-    re-delivery hashes the same (dedup), while a genuinely-new event — a fresh
-    commit SHA, a new run id — changes the payload and so re-runs. Choosing the
-    whole payload (rather than a curated key subset) is an MVP simplification;
-    a tighter discriminator that ignores volatile fields belongs with the
-    model-layer refinement (#872)."""
-    discriminator = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    The state-discriminator is the canonical JSON of either a declared key
+    subset (``_IDEMPOTENCY_KEY_FIELDS``) or, for event types that declare
+    none, the whole payload — the original MVP default. An identical
+    re-delivery hashes the same (dedup), while a genuinely-new fault — a
+    changed ``reason``, a fresh commit SHA — changes the discriminator and so
+    re-runs. This used to point at the gemma4 judgment-routing layer (#872)
+    for the tighter-discriminator refinement; that scope may never land and
+    doesn't need to for this fix, so the pointer is retired in favor of the
+    per-event-type table above (#1777)."""
+    fields = _IDEMPOTENCY_KEY_FIELDS.get(event_type)
+    discriminator_payload: Any = (
+        {k: payload.get(k) for k in fields} if fields is not None else payload
+    )
+    discriminator = json.dumps(
+        discriminator_payload, sort_keys=True, separators=(",", ":"), default=str
+    )
     raw = "|".join([event_type, target, discriminator])
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
