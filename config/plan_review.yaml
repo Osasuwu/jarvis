@@ -52,7 +52,6 @@ class_2:
     - "supabase/**"
     - ".mcp.json"
     - "config/repos.conf"
-    - "scripts/repo_baseline/**"
   churn_threshold: 400
   min_prod_areas: 2
 

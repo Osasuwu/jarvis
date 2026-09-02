@@ -53,11 +53,13 @@ meta-test rule, jarvis#326).
 ## Repo settings
 
 Auto-merge, `delete_branch_on_merge`, branch protection and the required-check context list
-are **applied from the per-repo manifest by repo-baseline**, not by hand — jarvis `CONTEXT.md`
-→ *repo-baseline*, *Axis* (`auto_merge`, `branch_protection`, `required_check_contexts[]`).
-Two values are load-bearing: `enforce_admins=false` keeps the escape hatch open for the two
-structural cases below, and `required_pull_request_reviews=null` because the `review` check
-already encodes the AI verdict — a required human review would defeat AFK Path A.
+are **applied by hand per repo**, following the checklist in
+[`docs/reference/github-repo-setup.md`](../../docs/reference/github-repo-setup.md) (§3 CI
+gates, §8 Merge discipline) — there is no sync mechanism, decision
+`bfd16494-f2e7-46dc-9194-2b43935525f1`. Two values are load-bearing: `enforce_admins=false`
+keeps the escape hatch open for the two structural cases below, and
+`required_pull_request_reviews=null` because the `review` check already encodes the AI
+verdict — a required human review would defeat AFK Path A.
 
 ## When to break the rules
 

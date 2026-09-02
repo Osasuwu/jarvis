@@ -5,8 +5,8 @@ Two entry points, deliberately different strictness:
   (status_gather.py, morning_gather.py) depend on this never raising and
   never validating trailing tokens (#1059 behavior, must not regress).
 - ``parse_repos_conf_entries`` — new structured parser with per-token
-  validation, for consumers that need repos.conf metadata (repo_baseline
-  auditor, weekly-release skill).
+  validation, for consumers that need repos.conf metadata (weekly-release
+  skill).
 """
 
 from __future__ import annotations

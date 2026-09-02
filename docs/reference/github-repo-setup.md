@@ -11,10 +11,10 @@ retired the repo-baseline auto-sync approach (milestone #48) — every project n
 meaningfully different shape, and what actually helps is a document a human follows to set up
 a repo's infra, not an automated re-sync that fights per-repo customization. This doc is that
 replacement. It describes the *current* jarvis baseline as a reference point to copy from and
-adapt, not a canon that must match byte-for-byte. Full teardown of the repo-baseline
-machinery (`scripts/repo_baseline/`, its manifests, CONTEXT.md's Repo-baseline glossary
-section) is a separate, later slice — this doc does not remove or invalidate that code, it
-just stops being the process anyone should run.
+adapt, not a canon that must match byte-for-byte. The repo-baseline machinery
+(`scripts/repo_baseline/`, its manifests, CONTEXT.md's Repo-baseline glossary section) has
+been fully torn down (#1755) — this doc is now the only process for bringing a repo to
+baseline.
 
 ## 1. Labels
 
@@ -110,7 +110,81 @@ If the repo participates in AFK/agent dispatch classification, add an entry to
 A repo with no shared surfaces and no identity-adjacent files can have both arrays empty.
 Adding a new repo to this file should never require touching skill logic — it's pure data.
 
-## 5. Issue templates
+## 5. Dependabot config
+
+`.github/dependabot.yml` — one `updates` entry per ecosystem the repo actually uses (jarvis:
+`pip` and `github-actions`), each on a weekly Monday schedule:
+
+```yaml
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: main
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: main
+```
+
+**Gotcha**: `target-branch` must match the repo's actual default branch, not `main`
+unconditionally — redrobot's default branch is `master`. A hardcoded `main` on a repo whose
+default branch differs sends every Dependabot PR at a branch that doesn't exist, and they
+silently never land. Check `gh repo view <owner>/<repo> --json defaultBranchRef` before
+copying this file into a new repo.
+
+## 6. PR template
+
+`.github/PULL_REQUEST_TEMPLATE.md` — hand-create per repo from this shape:
+
+```markdown
+## Summary
+
+<!-- What changed and why, 2-3 sentences -->
+
+## Why
+
+<!-- Problem being solved, motivation -->
+
+Closes #
+
+## Decisions & Alternatives
+
+<!-- Key choices made during implementation. What alternatives were considered and why they were rejected. -->
+
+-
+
+## Risk Assessment
+
+- **LOW**: <!-- cosmetic, imports, naming -->
+- **MEDIUM**: <!-- refactors, new helpers -->
+- **HIGH**: <!-- logic changes, safety-adjacent -->
+- **CRITICAL**: <!-- data loss, security, breaking API -->
+
+## Testing
+
+- [ ] Unit/integration tests pass
+- [ ] CI is green
+- [ ] Manual verification (if needed)
+
+## Files Changed
+
+| File | Change |
+|------|--------|
+| | |
+```
+
+The Risk Assessment tiers cross-reference the #1512 risk-assessment carve-out named in
+`.claude-userlevel/reference/merge-gates.md` — keep the tier names (LOW/MEDIUM/HIGH/CRITICAL)
+in sync with that doc if either changes.
+
+## 7. Issue templates
 
 `.github/ISSUE_TEMPLATE/` — at minimum a `task.yml` and a `bug.yml` form, plus a `config.yml`
 disabling blank issues (`blank_issues_enabled: false`) so every issue goes through a
@@ -118,7 +192,7 @@ structured form. Match the label vocabulary from §1 in the form's default/requi
 (e.g. an `Area` dropdown that emits `area:<x>` so `issue-checks.yml`-equivalent automation can
 read it back out of the body).
 
-## 6. Merge discipline
+## 8. Merge discipline
 
 - **Auto-merge**: enable it repo-wide (`Settings → General → Allow auto-merge`), then turn it
   on per-PR the moment a PR opens non-draft (a small workflow calling
@@ -149,7 +223,7 @@ platform — treat the CI gates as advisory-only (still run them, still read the
 merge manually once they're green: `gh pr merge <N> --squash --delete-branch`. Don't retry
 `--auto` in a loop hoping it starts working.
 
-## 7. What this doc deliberately does not give you
+## 9. What this doc deliberately does not give you
 
 - A byte-for-byte canon file to copy-paste blind — the workflow *content* above is a shape to
   adapt, not a template to stamp. Copy from an existing repo's actual `.github/workflows/`
@@ -157,6 +231,3 @@ merge manually once they're green: `gh pr merge <N> --squash --delete-branch`. D
 - Automated drift detection or re-sync. If a repo drifts from what this doc describes, that's
   either fine (the repo has its own reasons) or a manual re-pass through this checklist — no
   tooling watches for it.
-- A migration path for the retired `scripts/repo_baseline/` mechanism's own manifests/canon
-  files. Those still exist in the jarvis repo as of this writing; removing them is tracked as
-  a separate future slice, not part of adopting this doc.

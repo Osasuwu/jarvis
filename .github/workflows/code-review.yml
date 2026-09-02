@@ -180,7 +180,7 @@ jobs:
             # gate fails closed → admin-merge. sed/awk/python3(-c)/jq are
             # deliberately EXCLUDED (write-capable). Keep this list and the plugin
             # frontmatter in lockstep (tests/ci/test_code_review_allowed_tools.py
-            # pins it; kept byte-identical with scripts/repo_baseline/canon).
+            # pins this file's allowlist).
             --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write,Skill(code-review:code-review)"
 
       # Diagnostic escape hatch for silent no-review runs (#1239). The action

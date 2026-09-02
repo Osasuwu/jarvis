@@ -84,9 +84,9 @@ Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD 
 Merging in an owned repo is gated by four required CI checks on the default branch — `review`
 (the code-review verdict), `owner-queue-guard`, `require-linked-issue`, and the repo's own test
 gates. They are branch-protection-enforced, so they need no cooperation from you: gate-by-gate
-semantics, the per-repo files that implement them, and the repo-baseline settings that apply
-them live in `~/.claude/reference/merge-gates.md`. Read it when changing a gate, onboarding a
-repo, or diagnosing a stuck PR. What you must act on without reading anything:
+semantics, the per-repo files that implement them, and the repo settings that apply them live
+in `~/.claude/reference/merge-gates.md`. Read it when changing a gate, onboarding a repo, or
+diagnosing a stuck PR. What you must act on without reading anything:
 
 - **Drafts are the manual hold.** A PR stays in draft while your attention is owed (design
   feedback pending, intentional batching); drafts never auto-merge. Once flipped to ready, the

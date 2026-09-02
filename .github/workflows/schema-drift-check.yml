@@ -11,8 +11,7 @@ name: Schema Drift Check
 # The path check therefore lives INSIDE the job, which already lists the
 # PR's files and returns early — reporting success — when schema.sql is
 # untouched. Same gate, but it always reports. Do not re-add `paths:` here
-# while this job is in `required_check_contexts[]`
-# (scripts/repo_baseline/manifests/Osasuwu__jarvis.manifest.yml).
+# while this job is a required check in the repo's branch protection.
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
