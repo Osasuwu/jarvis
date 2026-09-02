@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import subprocess
 import tomllib
 import types
@@ -26,10 +27,8 @@ from typing import Any
 
 import pytest
 
-from agents import driver_heartbeat
-from agents import task_boot_adoption
+from agents import driver_heartbeat, task_boot_adoption, wake_driver
 from agents import task_worktree as tw
-from agents import wake_driver
 from agents.task_dispatch import DrainResult, TaskQueuePort, TrackedProc
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -942,8 +941,8 @@ def test_run_forwards_plan_review_gate_params_to_drain_tasks(monkeypatch):
         return ticks["n"] <= 1
 
     fake_planner = object()
-    fake_plan_config_loader = lambda: None  # noqa: E731
-    fake_github_factory = lambda: None  # noqa: E731
+    fake_plan_config_loader = lambda: None
+    fake_github_factory = lambda: None
 
     wake_driver.run(
         q,
@@ -2308,23 +2307,34 @@ def test_main_wires_build_production_orchestrator_into_run(monkeypatch):
     assert captured["orchestrator"] is sentinel
 
 
-def test_main_wires_telegram_notifier_into_build_production_orchestrator(monkeypatch):
-    # #1385 AC-D: the live driver must pass agents.notify.telegram_notifier,
-    # not leave the escalation path silently un-notified.
+def test_main_wires_registry_resolved_notifier_into_build_production_orchestrator(monkeypatch):
+    # #1385 AC-D: the live driver must not leave the escalation path silently
+    # un-notified. #1548: the notifier main() passes is whatever
+    # agents.notify.resolve_notifier resolves from the environment at wiring
+    # time — not a hardcoded telegram_notifier import — so this pins the call
+    # (env passed through) and the passthrough (its result reaches the
+    # orchestrator factory), rather than the literal transport.
     captured_kwargs: dict[str, object] = {}
 
     def _capture_factory(**kwargs):
         captured_kwargs.update(kwargs)
         return object()
 
+    sentinel_notifier = object()
+    resolve_calls: list[object] = []
+
+    def _fake_resolve_notifier(env):
+        resolve_calls.append(env)
+        return "fake", sentinel_notifier
+
     monkeypatch.setattr("agents.orchestrator.build_production_orchestrator", _capture_factory)
+    monkeypatch.setattr("agents.notify.resolve_notifier", _fake_resolve_notifier)
     _wire_main(monkeypatch, run_impl=lambda *a, **k: None)
 
     assert wake_driver.main() == 0
 
-    from agents.notify import telegram_notifier
-
-    assert captured_kwargs.get("notifier") is telegram_notifier
+    assert resolve_calls == [os.environ]
+    assert captured_kwargs.get("notifier") is sentinel_notifier
 
 
 def test_main_once_wires_build_production_orchestrator_into_tick(monkeypatch):

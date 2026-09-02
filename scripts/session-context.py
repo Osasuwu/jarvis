@@ -51,6 +51,8 @@ for _env in [_root / ".env", _root.parent / ".env"]:
         load_dotenv(_env)
         break
 
+from datetime import UTC
+
 from supabase import create_client
 
 # Ensure UTF-8 output on Windows (cp1251 can't handle Cyrillic in some contexts)
@@ -168,7 +170,7 @@ def _load_snapshot_from_supabase(client, session_id: str, project: str | None = 
     on it to avoid picking up a sibling row. `.order(..., desc=True)` keeps
     selection deterministic even when the filter leaves multiple rows.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     sid = _safe_session_id(session_id)
     if not sid:
@@ -201,7 +203,7 @@ def _load_snapshot_from_supabase(client, session_id: str, project: str | None = 
     row = result.data[0]
     ts = _parse_ts(row.get("updated_at"))
     if ts is not None:
-        age = datetime.now(timezone.utc) - ts
+        age = datetime.now(UTC) - ts
         if age > timedelta(minutes=PRE_COMPACT_FRESHNESS_MINUTES):
             return None
     content = row.get("content")
@@ -210,7 +212,7 @@ def _load_snapshot_from_supabase(client, session_id: str, project: str | None = 
 
 def _load_snapshot_from_local(session_id: str):
     """Return snapshot content from `.claude/session-snapshots/<session_id>.md` if fresh."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     sid = _safe_session_id(session_id)
     if not sid:
@@ -219,11 +221,11 @@ def _load_snapshot_from_local(session_id: str):
     if not path.exists():
         return None
     try:
-        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
     except Exception:
         mtime = None
     if mtime is not None:
-        age = datetime.now(timezone.utc) - mtime
+        age = datetime.now(UTC) - mtime
         if age > timedelta(minutes=PRE_COMPACT_FRESHNESS_MINUTES):
             return None
     try:
@@ -284,7 +286,7 @@ def _cap_recovery_payload(payload: str, max_chars: int = RECOVERY_SECTION_MAX_CH
 
     # Second pass: result is still too long, trim truncated part more aggressively
     overage = len(result) - max_chars
-    truncated = payload[:available - overage].rstrip()
+    truncated = payload[: available - overage].rstrip()
     omitted = len(payload) - len(truncated)
     marker = f"\n\n[truncated, {omitted} chars omitted]"
     result = truncated + marker
@@ -548,7 +550,7 @@ def _self_log(
     transcript pulls against the row's ``ts``, or it will conflate distinct
     resumed runs into one inflated denominator.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # session_id arrives over stdin from Claude Code; run it through the same
     # allowlist used everywhere else it acts as a key. A value that fails it
@@ -557,7 +559,7 @@ def _self_log(
     try:
         _SELF_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": datetime.now(UTC).isoformat(),
             "session_id": safe_session,
             "project": project or None,
             "emitted_chars": emitted_chars,
@@ -876,9 +878,7 @@ def _query_working_state(client, project):
         client,
         mem_type="project",
         limit=1,
-        extra_filter=lambda q: q.eq("name", f"working_state_{project}").eq(
-            "project", project
-        ),
+        extra_filter=lambda q: q.eq("name", f"working_state_{project}").eq("project", project),
     )
 
 
@@ -950,12 +950,12 @@ def _query_always_load(client, *, compact=False):
 
 def _parse_ts(val):
     """Parse Supabase timestamp (ISO str or datetime) to aware UTC datetime, or None."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if val is None:
         return None
     if isinstance(val, datetime):
-        return val if val.tzinfo else val.replace(tzinfo=timezone.utc)
+        return val if val.tzinfo else val.replace(tzinfo=UTC)
     if isinstance(val, str):
         try:
             return datetime.fromisoformat(val.replace("Z", "+00:00"))
@@ -1088,7 +1088,7 @@ def _fmt_goal(g):
 #
 # dispatch() (agents/orchestrator.py) writes an assignee='owner' task_queue
 # row for every escalation, regardless of notification mode — but nothing
-# ever read those rows back before this. TELEGRAM_NOW pings immediately;
+# ever read those rows back before this. NOTIFY_NOW pings immediately;
 # SESSIONSTART/PARK_MONDAY relied on a reader that didn't exist, so the row
 # sat invisible in the DB. This surfaces pending owner rows on every session
 # start.
@@ -1185,12 +1185,12 @@ def _check_milestone_sweep(
     Thresholds are configurable via env (MILESTONE_SWEEP_DAYS,
     MILESTONE_SWEEP_MIN_SLICES) or overridden per-call.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     if repo is None:
         return None
 
-    now = _now if _now is not None else datetime.now(timezone.utc)
+    now = _now if _now is not None else datetime.now(UTC)
     window_days = days if days is not None else _MILESTONE_SWEEP_DAYS
     min_count = min_slices if min_slices is not None else _MILESTONE_SWEEP_MIN_SLICES
 
@@ -1408,13 +1408,13 @@ def _check_mcp_failures(
     newer than 24h, deduped against previously-reported entries so a failure
     never re-reports across sessions. Never raises.
     """
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     fp = failures_path if failures_path is not None else _MCP_FAILURES_PATH
     rp = reported_path if reported_path is not None else _MCP_FAILURES_REPORTED_PATH
 
     try:
-        now = _now if _now is not None else datetime.now(timezone.utc)
+        now = _now if _now is not None else datetime.now(UTC)
         if not fp.exists():
             return None
         try:

@@ -70,9 +70,23 @@ from agents.driver_heartbeat import DRIVER_NAME, HeartbeatPort, SupabaseHeartbea
 from agents.github_client import default_github_client
 from agents.pid_sidecar import Sidecar
 from agents.plan_review_config import PlanReviewConfig
-from agents.plan_review_drain import PlannerPort
-from agents.plan_review_drain import default_plan_config_loader
+from agents.plan_review_drain import PlannerPort, default_plan_config_loader
 from agents.plan_review_drain import default_run_planner as _default_run_planner
+
+# Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
+# no import cycle to defer around. The Path B poll step runs every tick when a
+# poller_port is wired, so a per-call import bought nothing but obscurity.
+from agents.poller import poll as poll_parked
+
+# Extracted to agents/process_kill.py (#1609, milestone #66).
+from agents.process_kill import kill_process_tree
+from agents.sandcastle_config import default_operator_default_substrate, default_sweeper_config
+
+# Extracted to agents/task_boot_adoption.py (#1608, milestone #66).
+from agents.task_boot_adoption import maybe_adopt_at_boot
+
+# Extracted to agents/task_dedup.py (#1610, milestone #66).
+from agents.task_dedup import DedupConfig, default_task_dedup
 from agents.task_dispatch import (
     DEFAULT_CLAIMED_STALE_SECONDS,
     DEFAULT_RUNNING_REAP_SECONDS,
@@ -94,29 +108,11 @@ from agents.task_dispatch import (
     poll_completions,
     reclaim_stale_tasks,
 )
-from agents.sandcastle_config import default_operator_default_substrate, default_sweeper_config
-
-# Extracted to agents/process_kill.py (#1609, milestone #66).
-from agents.process_kill import kill_process_tree
-
-# Extracted to agents/task_dedup.py (#1610, milestone #66).
-from agents.task_dedup import DedupConfig, default_task_dedup
 
 # #1085 S2 review finding 2: production outcome_record wiring for
 # poll_completions (writes task_outcomes since /task-implement has no MCP).
 # Extracted to agents/task_outcomes.py (#1605, milestone #66).
 from agents.task_outcomes import record_completion_outcome
-
-# Extracted to agents/task_worktree.py (#1607, milestone #66).
-from agents.task_worktree import (
-    DEFAULT_WORKTREE_RETENTION_CAP,
-    DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
-    WorktreeSweepResult,
-    sweep_task_worktrees,
-)
-
-# Extracted to agents/task_boot_adoption.py (#1608, milestone #66).
-from agents.task_boot_adoption import maybe_adopt_at_boot
 
 # #1122 AC1/AC10: result-file-first sweeper (harvest/destructive-fail/
 # poison-pill/late-result), wired into tick() below as Step 0.5.
@@ -129,10 +125,13 @@ from agents.task_sweeper import (
     sweep,
 )
 
-# Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
-# no import cycle to defer around. The Path B poll step runs every tick when a
-# poller_port is wired, so a per-call import bought nothing but obscurity.
-from agents.poller import poll as poll_parked
+# Extracted to agents/task_worktree.py (#1607, milestone #66).
+from agents.task_worktree import (
+    DEFAULT_WORKTREE_RETENTION_CAP,
+    DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
+    WorktreeSweepResult,
+    sweep_task_worktrees,
+)
 
 if TYPE_CHECKING:
     import psycopg
@@ -546,7 +545,7 @@ def tick(
     if heartbeat_port is not None:
         try:
             heartbeat_port.record_tick(heartbeat_driver_name)
-        except Exception:  # noqa: BLE001 — heartbeat outage must not block event drain
+        except Exception:
             logger.exception("[wake_driver] heartbeat write failed; retried next tick")
 
     # Step 0 — completion poll + runaway kill (#921 AC2/AC3/AC6). Two
@@ -567,7 +566,7 @@ def tick(
                 planner=task_planner,
                 plan_config_loader=task_plan_config_loader,
             )
-        except Exception:  # noqa: BLE001 — task-store outage must not block event drain
+        except Exception:
             logger.exception("[wake_driver] completion poll failed; tracked rows retry next tick")
         try:
             runaways_killed = kill_runaways(
@@ -579,7 +578,7 @@ def tick(
                 sidecar=task_sidecar,
                 event_emit=task_event_emit,
             )
-        except Exception:  # noqa: BLE001 — same isolation for the runaway killer
+        except Exception:
             logger.exception("[wake_driver] runaway kill failed; live rows retry next tick")
 
     # Step 0.5 — result-file-first sweeper (#1122 AC1). Runs after the
@@ -600,7 +599,7 @@ def tick(
                 now=task_sweeper_now,
                 state=task_sweeper_state,
             )
-        except Exception:  # noqa: BLE001 — task-store/docker outage must not block event drain
+        except Exception:
             logger.exception("[wake_driver] task sweep failed; stale rows left for the next tick")
 
     # Step 1 — event watchdog.
@@ -616,7 +615,7 @@ def tick(
                 running_reap_after_seconds=task_running_reap_after_seconds,
                 live_task_ids=frozenset(task_procs or ()),
             )
-        except Exception:  # noqa: BLE001 — task-store outage must not block event drain
+        except Exception:
             logger.exception(
                 "[wake_driver] task watchdog failed; stale task rows left for the next tick"
             )
@@ -633,7 +632,7 @@ def tick(
                 retention_cap=task_worktree_retention_cap,
                 now=task_worktree_now,
             )
-        except Exception:  # noqa: BLE001 — task-store/git outage must not block event drain
+        except Exception:
             logger.exception(
                 "[wake_driver] worktree sweep failed; stale worktrees left for the next tick"
             )
@@ -650,7 +649,7 @@ def tick(
         # and bypass drain_pending entirely — the primary wake path.
         try:
             requeued = poll_parked(poller_port)
-        except Exception:  # noqa: BLE001 — poller outage must not block the event drain
+        except Exception:
             logger.exception(
                 "[wake_driver] parked-event poller failed; parked events retry next tick"
             )
@@ -700,7 +699,7 @@ def tick(
                         target_number=meta.get("target_number"),
                         origin=meta.get("origin"),
                     )
-        except Exception:  # noqa: BLE001 — task-store outage must not crash the tick
+        except Exception:
             logger.exception(
                 "[wake_driver] task drain failed; pending tasks left for the next tick"
             )
@@ -822,7 +821,7 @@ def run(
                 state=sweeper_state,
                 startup=True,
             )
-        except Exception:  # noqa: BLE001 — a boot-time sweep failure must not block startup
+        except Exception:
             logger.exception("[wake_driver] startup task sweep failed; stale rows left for tick 1")
 
     while keep_going():
@@ -863,7 +862,7 @@ def run(
                 task_sweeper_now=task_sweeper_now,
                 failed_events=failed_events,
             )
-        except Exception:  # noqa: BLE001 — daemon must survive a bad tick
+        except Exception:
             logger.exception("[wake_driver] tick failed; event left claimed for watchdog re-claim")
 
 
@@ -1333,10 +1332,14 @@ def main() -> int:
     # #1385 — live routing. The stub only logged; this closes handle_event's
     # Decision over dispatch's side effects (task_queue enqueue / escalation),
     # sharing the same lifetime Supabase client built above.
-    from agents.notify import telegram_notifier
+    # #1548: resolved through the NOTIFY_TRANSPORT registry at wiring time —
+    # not a hardcoded telegram_notifier import — so the install's bound
+    # transport (telegram / apprise / none / custom) is what actually fires.
+    from agents.notify import resolve_notifier
     from agents.orchestrator import build_production_orchestrator
 
-    orchestrator = build_production_orchestrator(client=event_client, notifier=telegram_notifier)
+    _notify_transport, notifier = resolve_notifier(os.environ)
+    orchestrator = build_production_orchestrator(client=event_client, notifier=notifier)
 
     if args.once:
         # Deliberately no task_procs: a one-shot tick has no map from a prior
