@@ -26,6 +26,7 @@ from pathlib import Path
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import principal as _principal  # noqa: E402
+    from lib.harness import home as _harness_home  # noqa: E402
 finally:
     pass
 
@@ -66,10 +67,13 @@ _USER_LEVEL_PROTECTED_FILES = {
 
 
 def _user_claude_home() -> str:
-    """Return the user-level Claude home directory as a forward-slash string."""
-    override = os.environ.get("JARVIS_CLAUDE_HOME")
-    home = Path(override).expanduser() if override else (Path.home() / ".claude")
-    return home.as_posix().rstrip("/")
+    """Return the user-level Claude home directory as a forward-slash string.
+
+    Resolved through the harness seam (#1741); under claude-code this honours
+    ``$JARVIS_CLAUDE_HOME`` exactly as the former inline copy did, read at call
+    time so a test-set override is picked up without reimport.
+    """
+    return _harness_home().as_posix().rstrip("/")
 
 
 def normalize_path(path: str) -> str:
