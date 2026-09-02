@@ -13,8 +13,9 @@ from datetime import datetime
 import pytest
 from postgrest.exceptions import APIError
 
-from agents import safety
+from agents import safety, task_dispatch
 from agents.orchestrator import (
+    INFRA_PREFLIGHT_EVENT_TYPE,
     Decision,
     DispatchResult,
     EscalationNotice,
@@ -322,6 +323,65 @@ def test_mcp_write_scrubber_disabled_high_escalates():
     assert d.route is Route.ESCALATE
     assert d.escalated_reason is not None
     assert "scrubber" in d.escalated_reason
+
+
+def test_drain_infra_preflight_failure_escalates_with_named_fault():
+    """The #1121 step-16 infra pre-flight event must have a *deterministic*
+    ESCALATE route, not fall through to the Step-5 fail-safe.
+
+    docker/node missing on the host halts the whole drain and leaves rows
+    ``parked``; no agent can fix it (the substrate that would run the agent is
+    what's missing), so ESCALATE is the route — but the owner-visible reason
+    must name the fault and the parked count, not read "no deterministic
+    route", which misattributes a host-config fault to an unknown event type
+    (same failure mode as the #1011 malformed-payload fall-throughs).
+    """
+    d = handle_event(
+        _ev(
+            INFRA_PREFLIGHT_EVENT_TYPE,
+            "high",
+            {"reason": "missing on PATH: docker, node", "task_ids": ["t1", "t2"]},
+        )
+    )
+    assert d.route is Route.ESCALATE
+    assert d.assignee == "owner"
+    assert d.escalated_reason is not None
+    assert "no deterministic route" not in d.escalated_reason
+    assert "missing on PATH: docker, node" in d.escalated_reason
+    assert "2 task(s) parked" in d.escalated_reason
+
+
+def test_drain_infra_preflight_route_is_severity_independent():
+    """Route is keyed on event_type alone: the producer pins severity in a
+    constant (task_dispatch.INFRA_PREFLIGHT_SEVERITY), so a bump there must not
+    silently drop the event back to the generic fail-safe (#326 desync class).
+    """
+    for severity in ("info", "low", "medium", "high", "critical"):
+        d = handle_event(_ev(INFRA_PREFLIGHT_EVENT_TYPE, severity, {"reason": "docker"}))
+        assert d.route is Route.ESCALATE
+        assert d.escalated_reason is not None
+        assert "no deterministic route" not in d.escalated_reason
+
+
+def test_drain_infra_preflight_route_matches_live_producer_pair():
+    """Meta-test pinning the route to the producer's own constants — a rename
+    on either side must fail here rather than silently unrouting the event."""
+    d = handle_event(
+        _ev(task_dispatch.INFRA_PREFLIGHT_EVENT_TYPE, task_dispatch.INFRA_PREFLIGHT_SEVERITY)
+    )
+    assert d.route is Route.ESCALATE
+    assert d.escalated_reason is not None
+    assert "no deterministic route" not in d.escalated_reason
+
+
+def test_drain_infra_preflight_tolerates_malformed_payload():
+    """A missing/garbage payload must still produce a named escalation, never
+    raise — handle_event is the pure router the wake_driver tick depends on."""
+    d = handle_event(_ev(INFRA_PREFLIGHT_EVENT_TYPE, "high", {"task_ids": "not-a-list"}))
+    assert d.route is Route.ESCALATE
+    assert d.escalated_reason is not None
+    assert "unspecified" in d.escalated_reason
+    assert "0 task(s) parked" in d.escalated_reason
 
 
 def test_unknown_event_type_failsafe_escalates():
