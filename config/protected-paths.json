@@ -1,5 +1,5 @@
 {
-  "_comment": "Per-repo path buckets consumed by /to-tickets AFK-fit classification (#642, split per #1708). Adding a new repo MUST NOT require editing any SKILL.md — only this file. Paths are gitignore-style globs evaluated against an issue's declared-changed file list. Two buckets per repo: `hitl` = identity/security config, a categorical security boundary — any match is class 3 (afk:3-human), hard refusal. `guarded` = shared surfaces with off-repo consumers — any match is class 2 (afk:2-plan), AFK-eligible once a plan locks. No match in either bucket falls through to Q2-Q4 LLM judgement. For jarvis, hitl mirrors the identity/security subset of docs/security/agent-boundaries.md; guarded covers mcp-memory/**, .mcp.json, and supabase/** (schema is a shared surface per docs/context/invariants.md — kept in sync with config/plan_review.yaml's class_2.shared_surface_globs, commit 481c938b), whose consumers (redrobot, future jarvis-oss operators) sit outside this repo. For redrobot, the safety-critical zones (driver/, planning/, mujoco/) are guarded, not hitl — redrobot has no hitl entries.",
+  "_comment": "Per-repo path buckets consumed by /to-tickets AFK-fit classification (#642, split per #1708). Adding a new repo MUST NOT require editing any SKILL.md — only this file. Paths are gitignore-style globs evaluated against an issue's declared-changed file list. Two buckets per repo: `hitl` = identity/security config, a categorical security boundary — any match is class 3 (afk:3-human), hard refusal. `guarded` = shared surfaces with off-repo consumers — any match is class 2 (afk:2-plan), AFK-eligible once a plan locks. No match in either bucket falls through to Q2-Q4 LLM judgement. For jarvis, hitl mirrors the identity/security subset of docs/security/agent-boundaries.md; guarded covers mcp-memory/**, .mcp.json, and supabase/** (schema is a shared surface per docs/context/invariants.md — kept in sync with config/plan_review.yaml's class_2.shared_surface_globs, commit 481c938b), whose consumers (redrobot, future jarvis-oss operators) sit outside this repo. For redrobot, the research-mode tier-1 safety core (redrobot/driver/**, redrobot/planning/**, redrobot/experiments.py, tests/safety/**, tests/experiments/test_rehearsal_guard.py per decision a7111a44) is guarded, not hitl — redrobot has no hitl entries. Redrobot globs are repo-relative and carry the `redrobot/` package prefix.",
   "Osasuwu/jarvis": {
     "hitl": [
       "config/SOUL.md",
@@ -19,11 +19,14 @@
     ]
   },
   "SergazyNarynov/redrobot": {
+    "_comment": "Guarded == research-mode tier 1 (safety core) per decision a7111a44. Globs are repo-relative to the redrobot checkout, so the safety-critical package paths carry the `redrobot/` package prefix (`redrobot/driver/**`, not `driver/**`) — a bare prefix matched no real path and made Q1 fail-open for redrobot (#1684). `mujoco/**` was dropped: MuJoCo now lives under `assets/` + `redrobot/simulation/` (no top-level `mujoco/`), and simulation is tier 2 (measurement instrument) guarded by mandatory golden/replay tests, not the plan gate.",
     "hitl": [],
     "guarded": [
-      "driver/**",
-      "planning/**",
-      "mujoco/**"
+      "redrobot/driver/**",
+      "redrobot/planning/**",
+      "redrobot/experiments.py",
+      "tests/safety/**",
+      "tests/experiments/test_rehearsal_guard.py"
     ]
   }
 }
