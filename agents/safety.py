@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Callable, Iterable, TypeVar
+from typing import TypeVar
 
 from agents import supabase_client
 
@@ -120,7 +121,12 @@ _TIER2_AREAS: frozenset[str] = frozenset({"messaging"})
 # other messaging action (posting to third parties, arbitrary sends) stays
 # Tier 2. Owner escalation is Tier 0, not Tier 1: paging is itself the
 # review step for a critical event, so queuing it for owner approval would
-# be circular.
+# be circular. Widened premise (#1548, milestone #65 S2): the destination is
+# no longer a single hardcoded Telegram chat — it's whatever transport the
+# owner bound at install time via NOTIFY_TRANSPORT (agents/notify.py's
+# registry). The carve-out still holds because the destination is owner-set
+# install-time env, i.e. trusted owner input, not attacker- or event-payload
+# controlled — regardless of which transport resolves.
 _TIER0_MESSAGING_ACTIONS: frozenset[str] = frozenset({"notify_owner_escalation"})
 
 # Single-repo scope for Sprint 2. Extend only when we have audit proof it

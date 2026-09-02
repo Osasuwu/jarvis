@@ -27,9 +27,12 @@ Telegram silently — it logs loudly, writes an owner ``task_queue`` row, and
 resolves to an effective ``none`` transport whose callable reports failure
 (distinct from an explicit, successful ``none`` opt-out) so callers such as
 ``wake_driver --notify-test`` can tell "intentionally disabled" apart from
-"broken". Production wiring through this registry, and the
-``TELEGRAM_NOW``→``NOTIFY_NOW`` rename, are milestone #65 S2 scope (#1548) —
-S1 only adds the registry and the ``--notify-test`` smoke check.
+"broken". Every callable ``resolve_notifier`` returns is tagged with a
+``notify_transport_name`` attribute equal to its registry key — production
+wiring (#1548, milestone #65 S2) passes the resolved callable straight into
+``build_production_orchestrator``/``dispatch``, whose safety-audit row reads
+that attribute for ``tool_name`` so the audit trail names the transport that
+actually fired instead of a hardcoded ``"telegram_notifier"``.
 """
 
 from __future__ import annotations
@@ -38,7 +41,8 @@ import importlib
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, Callable, Mapping
+from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
 
 from agents import task_queue
 
@@ -62,6 +66,24 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API = "https://api.telegram.org"
 
 NotifierFn = Callable[["Decision"], bool]
+
+
+def _tag(fn: NotifierFn, name: str) -> NotifierFn:
+    """Stamp ``fn.notify_transport_name = name`` (#1548) so a caller holding
+    only the callable — e.g. ``dispatch()``'s safety-audit row — can recover
+    the registry key it resolved from without threading a second value
+    through the injectable ``notifier`` parameter's signature.
+
+    Best-effort: a dotted-path transport can resolve to any callable,
+    including ones without a settable ``__dict__`` (e.g. some builtins);
+    ``dispatch()``'s ``getattr(..., "notifier")`` fallback covers that case.
+    """
+    try:
+        fn.notify_transport_name = name  # type: ignore[attr-defined]
+    except AttributeError:
+        pass
+    return fn
+
 
 # URL-shaped substrings may embed tokens/webhook secrets (Telegram bot token,
 # Apprise service URL) — never let one reach log output (#1547 AC9). Apprise
@@ -101,7 +123,7 @@ def _describe_transport_value(raw: str) -> str:
     return f"<redacted, {len(raw)} chars, not a recognized transport-value shape>"
 
 
-def _format_message(decision: "Decision") -> str:
+def _format_message(decision: Decision) -> str:
     if decision.message is not None:
         return decision.message
     lines = [
@@ -115,7 +137,7 @@ def _format_message(decision: "Decision") -> str:
     return "\n".join(lines)
 
 
-def telegram_notifier(decision: "Decision") -> bool:
+def telegram_notifier(decision: Decision) -> bool:
     """Send one Telegram message for an escalated :class:`Decision`.
 
     Returns ``True`` only on a confirmed send; every other case (missing
@@ -165,12 +187,12 @@ def telegram_notifier(decision: "Decision") -> bool:
         return False
 
 
-def _none_notifier(decision: "Decision") -> bool:
+def _none_notifier(decision: Decision) -> bool:
     """Explicit ``none`` transport — a deliberate no-op, not a failure."""
     return True
 
 
-def _disabled_notifier(decision: "Decision") -> bool:
+def _disabled_notifier(decision: Decision) -> bool:
     """Effective-none fallback after a misconfiguration.
 
     Distinct from :func:`_none_notifier`: this always reports failure so
@@ -209,11 +231,11 @@ def _misconfig(reason: str) -> tuple[str, NotifierFn]:
             _sanitize(str(exc)),
         )
     _log_resolved("none")
-    return "none", _disabled_notifier
+    return "none", _tag(_disabled_notifier, "none")
 
 
 def _make_apprise_notifier(apprise_url: str) -> NotifierFn:
-    def _apprise_notifier(decision: "Decision") -> bool:
+    def _apprise_notifier(decision: Decision) -> bool:
         if _apprise_lib is None:
             logger.warning(
                 "apprise_notifier: apprise package not installed — skipping notification"
@@ -252,25 +274,30 @@ def resolve_notifier(env: Mapping[str, str]) -> tuple[str, NotifierFn]:
 
     if normalized == "telegram":
         _log_resolved("telegram")
-        return "telegram", telegram_notifier
+        return "telegram", _tag(telegram_notifier, "telegram")
 
     if normalized == "apprise":
         apprise_url = (env.get("NOTIFY_APPRISE_URL") or "").strip()
         if not apprise_url:
             return _misconfig("NOTIFY_TRANSPORT=apprise but NOTIFY_APPRISE_URL is unset")
+        if apprise_url.startswith("http://"):
+            logger.warning(
+                "notify: NOTIFY_APPRISE_URL uses insecure http:// — notification "
+                "content (and any embedded webhook path/token) travels unencrypted"
+            )
         _log_resolved("apprise")
-        return "apprise", _make_apprise_notifier(apprise_url)
+        return "apprise", _tag(_make_apprise_notifier(apprise_url), "apprise")
 
     if normalized == "none":
         _log_resolved("none")
-        return "none", _none_notifier
+        return "none", _tag(_none_notifier, "none")
 
     if not normalized:
         token = (env.get("TELEGRAM_BOT_TOKEN") or "").strip()
         chat_id = (env.get("TELEGRAM_ALLOW_USER_ID") or "").strip()
         if token and chat_id:
             _log_resolved("telegram")
-            return "telegram", telegram_notifier
+            return "telegram", _tag(telegram_notifier, "telegram")
         return _misconfig(
             "NOTIFY_TRANSPORT unset and no Telegram credentials configured — notifications disabled"
         )
@@ -288,7 +315,7 @@ def resolve_notifier(env: Mapping[str, str]) -> tuple[str, NotifierFn]:
                 f"{type(exc).__name__}: {_sanitize(str(exc))}"
             )
         _log_resolved(raw)
-        return raw, fn
+        return raw, _tag(fn, raw)
 
     return _misconfig(f"unrecognized NOTIFY_TRANSPORT value {_describe_transport_value(raw)}")
 
@@ -298,7 +325,7 @@ def resolve_notifier(env: Mapping[str, str]) -> tuple[str, NotifierFn]:
 _QUIET_HOURS_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)-([01]\d|2[0-3]):([0-5]\d)$")
 
 
-def _in_quiet_hours(env: Mapping[str, str], now: "datetime | None" = None) -> bool:
+def _in_quiet_hours(env: Mapping[str, str], now: datetime | None = None) -> bool:
     """True iff ``now`` (local time) falls inside ``NOTIFY_QUIET_HOURS``
     (``"HH:MM-HH:MM"``, wrapping past midnight if start > end).
 
@@ -328,7 +355,7 @@ def _in_quiet_hours(env: Mapping[str, str], now: "datetime | None" = None) -> bo
 
 
 def notify_text(
-    subject: str, body: str, env: Mapping[str, str], now: "datetime | None" = None
+    subject: str, body: str, env: Mapping[str, str], now: datetime | None = None
 ) -> bool:
     """Free-text notification entrypoint (#1658) — for callers (e.g. the
     ``/weekly-release`` routine) with a plain subject/body message and no

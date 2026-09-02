@@ -682,16 +682,16 @@ def test_dispatch_escalate_writes_owner_row_with_reason():
 
 def test_escalation_notice_critical_pings_any_day():
     for day in (_FRIDAY, _SATURDAY, _SUNDAY, _MONDAY):
-        assert escalation_notice("critical", day) is EscalationNotice.TELEGRAM_NOW
+        assert escalation_notice("critical", day) is EscalationNotice.NOTIFY_NOW
 
 
 def test_escalation_notice_high_pings_any_day():
     """AC1/AC2 (#1392): the immediate-notify floor is >= high, not == critical —
-    critical-only made TELEGRAM_NOW practically unreachable (no live producer
+    critical-only made NOTIFY_NOW practically unreachable (no live producer
     emits critical; escalate_to_human fail-safe events land at high/medium).
     Decision db4495da-4746-43fd-a3c6-755fc24ea0a9."""
     for day in (_FRIDAY, _SATURDAY, _SUNDAY, _MONDAY):
-        assert escalation_notice("high", day) is EscalationNotice.TELEGRAM_NOW
+        assert escalation_notice("high", day) is EscalationNotice.NOTIFY_NOW
 
 
 def test_escalation_notice_noncritical_weekend_parks_to_monday():
@@ -709,7 +709,7 @@ def test_dispatch_critical_fires_notifier():
     pinged: list[Decision] = []
     d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
     res = dispatch(d, now=_SATURDAY, client=cli, notifier=pinged.append)
-    assert res.notice is EscalationNotice.TELEGRAM_NOW
+    assert res.notice is EscalationNotice.NOTIFY_NOW
     assert res.notified is True
     assert pinged == [d]
 
@@ -754,10 +754,57 @@ def test_dispatch_escalate_notifier_routes_through_safety_gate(monkeypatch: pyte
     call = gate_calls[0]
     assert call["area"] == "messaging"
     assert call["action"] == "notify_owner_escalation"
-    assert call["tool_name"] == "telegram_notifier"
+    # #1548: no notify_transport_name attribute on this plain callable
+    # (pinged.append) — dispatch() falls back to the stable placeholder.
+    assert call["tool_name"] == "notifier"
     assert safety.classify(call["tool_name"], call["action"], "x", area=call["area"]) == (
         safety.Tier.AUTO
     )
+
+
+def test_dispatch_escalate_tool_name_is_resolved_transport(monkeypatch: pytest.MonkeyPatch):
+    """#1548 AC2: the safety-audit tool_name is the registry key of the
+    transport that fired, not a hardcoded string — a notifier tagged by
+    resolve_notifier() (or anything with a matching attribute) is read back
+    verbatim into the audit row."""
+    cli = _FakeClient()
+    gate_calls: list[dict] = []
+    real_gate = safety.gate
+
+    def _spy_gate(**kwargs):
+        gate_calls.append(kwargs)
+        return real_gate(**kwargs)
+
+    monkeypatch.setattr("agents.orchestrator.safety.gate", _spy_gate)
+
+    pinged: list[Decision] = []
+
+    def _fake_notifier(decision: Decision) -> bool:
+        pinged.append(decision)
+        return True
+
+    _fake_notifier.notify_transport_name = "apprise"
+
+    d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
+    res = dispatch(d, now=_SATURDAY, client=cli, notifier=_fake_notifier)
+
+    assert res.notified is True
+    assert pinged == [d]
+    assert len(gate_calls) == 1
+    assert gate_calls[0]["tool_name"] == "apprise"
+
+
+def test_dispatch_escalate_no_notifier_logs(caplog: pytest.LogCaptureFixture):
+    """#1548 AC6: when the resolved transport is none/absent (notifier=None)
+    on a NOTIFY_NOW-eligible decision, dispatch logs rather than silently
+    doing nothing."""
+    cli = _FakeClient()
+    d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
+    with caplog.at_level(logging.INFO, logger="agents.orchestrator"):
+        res = dispatch(d, now=_SATURDAY, client=cli, notifier=None)
+    assert res.notice is EscalationNotice.NOTIFY_NOW
+    assert res.notified is False
+    assert any("no notifier configured" in rec.message for rec in caplog.records)
 
 
 def test_dispatch_notifier_exception_does_not_abort_tick():
@@ -774,7 +821,7 @@ def test_dispatch_notifier_exception_does_not_abort_tick():
 
     d = handle_event(_ev("security_alert", "critical", {"detail": "x"}))
     res = dispatch(d, now=_SATURDAY, client=cli, notifier=_boom)
-    assert res.notice is EscalationNotice.TELEGRAM_NOW
+    assert res.notice is EscalationNotice.NOTIFY_NOW
     assert res.notified is False
     assert res.row is not None and res.row["assignee"] == "owner"
 

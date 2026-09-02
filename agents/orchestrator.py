@@ -22,9 +22,10 @@ import hashlib
 import json
 import logging
 import os
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Callable, Mapping
+from typing import Any
 
 from agents import safety, task_queue
 from agents.github_client import parse_goal_shape
@@ -622,7 +623,7 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
 class EscalationNotice(enum.Enum):
     """How/when to surface an ``escalate_to_human`` decision to the owner."""
 
-    TELEGRAM_NOW = "telegram_now"  # critical — ping immediately, any day (incident exception)
+    NOTIFY_NOW = "notify_now"  # critical — ping immediately, any day (incident exception)
     PARK_MONDAY = "park_monday"  # non-critical on a weekend — defer owner attention to Monday
     SESSIONSTART = "sessionstart"  # non-critical weekday — surface at next SessionStart + on-demand
 
@@ -632,11 +633,11 @@ def escalation_notice(severity: str, now: datetime) -> EscalationNotice:
 
     Pure function of ``(severity, now)`` so it is assertable on fixed inputs:
 
-    - ``severity`` rank >= ``high`` → :attr:`EscalationNotice.TELEGRAM_NOW`
+    - ``severity`` rank >= ``high`` → :attr:`EscalationNotice.NOTIFY_NOW`
       regardless of weekday (a real incident overrides the no-weekend-HITL
       rule). Threshold is ``>= high``, not ``== critical`` (#1392 AC1/AC2,
       decision db4495da-4746-43fd-a3c6-755fc24ea0a9): no live producer emits
-      ``critical``, so a critical-only floor made TELEGRAM_NOW unreachable in
+      ``critical``, so a critical-only floor made NOTIFY_NOW unreachable in
       practice — the ``escalate_to_human`` fail-safe route lands at
       high/medium severities.
     - below-threshold on a weekend (Sat/Sun) → :attr:`EscalationNotice.PARK_MONDAY`
@@ -645,7 +646,7 @@ def escalation_notice(severity: str, now: datetime) -> EscalationNotice:
       (no interrupting ping; surfaced at the next session and on demand).
     """
     if _SEVERITY_RANK.get(severity, -1) >= _SEVERITY_RANK["high"]:
-        return EscalationNotice.TELEGRAM_NOW
+        return EscalationNotice.NOTIFY_NOW
     # datetime.weekday(): Monday=0 … Saturday=5, Sunday=6.
     if now.weekday() >= 5:
         return EscalationNotice.PARK_MONDAY
@@ -689,7 +690,9 @@ def dispatch(
       event dedups; a genuinely-new event has a different key and re-runs).
     - :attr:`Route.ESCALATE` → write an ``owner`` row carrying
       ``escalated_reason`` (AC3), then apply the weekend-aware notification
-      policy: ``critical`` pings Telegram via ``notifier``, routed through
+      policy: ``critical``/``high`` pings the owner via ``notifier`` (the
+      install-configured transport, resolved by the caller through
+      :func:`agents.notify.resolve_notifier`), routed through
       ``safety.gate()`` under the ``notify_owner_escalation`` Tier-0
       carve-out; everything else is parked (weekend) or left for
       SessionStart (weekday).
@@ -736,7 +739,7 @@ def dispatch(
         )
         notice = escalation_notice(decision.severity, now)
         notified = False
-        if notice is EscalationNotice.TELEGRAM_NOW and notifier is not None:
+        if notice is EscalationNotice.NOTIFY_NOW and notifier is not None:
             # #1385 AC-D: the owner row above already landed — a notifier
             # failure (network, bad token) must not undo that or abort the
             # tick that's draining this event. `notified` stays False so
@@ -746,11 +749,17 @@ def dispatch(
             # escalation ping is classified + audited like every other
             # action-agent side effect. `notify_owner_escalation` is the
             # narrow Tier-0 carve-out inside the blanket "messaging" block —
-            # see agents/safety.py's `_TIER0_MESSAGING_ACTIONS` comment.
+            # see agents/safety.py's `_TIER0_MESSAGING_ACTIONS` comment. The
+            # audit row's `tool_name` is the registry key of the transport
+            # that actually fired (#1548) — resolve_notifier tags its
+            # returned callable with `notify_transport_name`; an untagged
+            # notifier (e.g. an injected test double) falls back to the
+            # stable placeholder "notifier".
+            tool_name = getattr(notifier, "notify_transport_name", "notifier")
             try:
                 outcome = safety.gate(
                     agent_id=_INLINE_AGENT_ID,
-                    tool_name="telegram_notifier",
+                    tool_name=tool_name,
                     action="notify_owner_escalation",
                     target=decision.event_type,
                     area="messaging",
@@ -763,6 +772,12 @@ def dispatch(
                     decision.event_type,
                     decision.severity,
                 )
+        elif notice is EscalationNotice.NOTIFY_NOW and notifier is None:
+            logger.info(
+                "dispatch: no notifier configured — skipping ping for %s/%s",
+                decision.event_type,
+                decision.severity,
+            )
         return DispatchResult(
             route=decision.route,
             enqueued=row is not None,

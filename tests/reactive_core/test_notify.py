@@ -147,6 +147,35 @@ def test_resolve_notifier_apprise_delivers_via_apprise_library():
     assert "security_alert" in fake_app.notify.call_args.kwargs["title"]
 
 
+def test_resolve_notifier_apprise_http_url_warns(monkeypatch, caplog):
+    """#1548 AC4: an http:// destination is a real config, not a misconfig —
+    delivery still proceeds — but it warns because the payload (and any
+    embedded webhook path/token) travels unencrypted."""
+    fake_app = MagicMock()
+    fake_app.add.return_value = True
+    fake_app.notify.return_value = True
+    fake_apprise_lib = MagicMock()
+    fake_apprise_lib.Apprise.return_value = fake_app
+
+    with patch("agents.notify._apprise_lib", fake_apprise_lib):
+        with caplog.at_level("WARNING", logger="agents.notify"):
+            name, notifier = resolve_notifier(
+                {"NOTIFY_TRANSPORT": "apprise", "NOTIFY_APPRISE_URL": "http://example/hook"}
+            )
+        assert name == "apprise"
+        assert notifier(_decision()) is True
+    assert any("http://" in rec.message for rec in caplog.records)
+
+
+def test_resolve_notifier_tags_returned_callable_with_transport_name():
+    """#1548 AC2: every resolve_notifier() branch stamps its returned
+    callable with notify_transport_name == the registry key it returned —
+    dispatch()'s safety-audit tool_name reads this attribute back."""
+    name, notifier = resolve_notifier({"NOTIFY_TRANSPORT": "none"})
+    assert name == "none"
+    assert notifier.notify_transport_name == "none"
+
+
 def test_resolve_notifier_apprise_missing_url_is_loud_misconfig(monkeypatch, caplog):
     enqueue_calls = []
     monkeypatch.setattr(
