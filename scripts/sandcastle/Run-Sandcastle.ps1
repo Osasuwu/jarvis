@@ -672,7 +672,8 @@ $script:TelegramInfraReasons = @(
     'ollama-down',
     'npm-not-found',
     'no-result-file',
-    'provider-billing'
+    'provider-billing',
+    'zero-commits'
 )
 
 function Test-IsInfraDown {
@@ -1553,6 +1554,24 @@ function Invoke-Watchdog {
                 $totalUsage.cache_read_input_tokens    += [int]$it.usage.cacheReadInputTokens
                 $totalUsage.cache_creation_input_tokens+= [int]$it.usage.cacheCreationInputTokens
             }
+        }
+
+        # #1382: main.mts classifies a clean exit with zero commits (or a
+        # pinned branch that never materialized) as an "infra fault" and
+        # skips push/PR -- but the process still exits 0, so without this
+        # check the run falls straight into the plain 'success' branch below,
+        # leaving the issue claimed (`status:in-progress`) forever: no
+        # requeue, and no alert (the reason string was empty, so
+        # Test-IsInfraDown never fired). Release the claim immediately here
+        # instead of relying solely on the ~4h reconciliation sweep, and
+        # record 'partial' with a reason that IS on the Telegram whitelist.
+        if ($targetIssue -and -not $r.commits -and -not $r.completionSignal) {
+            Release-StaleClaim -Issue $targetIssue -RepoSlug $repoSlug `
+                -Reason "sandcastle run produced 0 commits for #$targetIssue (tier=$tierCompleted)" | Out-Null
+            $summary = "partial:zero-commits -- issue=$targetIssue branch=$branch iterations=$iter tier=$tierCompleted"
+            Record 'partial' $summary $totalUsage 'zero-commits'
+            Write-Host "[watchdog] $summary"
+            return
         }
 
         # Honor the agent's completion signal (prompt.md §Done): it fires only
