@@ -79,6 +79,30 @@ The original flow. Most "fix typo / bump dep / move file" issues land here. Cont
 
 Every `/implement` entry re-runs the checkbox and re-reads `working_state_jarvis`. There is no `tdd_mode` flag carried in from the orchestrator. This means: when `/grill` finishes and the orchestrator re-dispatches `/implement #N`, the route flips from `grill_required` → TDD-mode automatically because the grill populated the artifact. Same code path, different input state.
 
+## Exploratory tasks
+
+Dispatch to this section is by **task type**, never by repo path — a slice is exploratory when the issue frames a hypothesis with an acceptance criterion pre-registered before the run, not when it happens to touch a particular directory. Skills stay issue-agnostic (decision `b760edd2-c989-4101-bb3b-cb871e802e8d`): nothing below names a repo-specific path. This section runs alongside the §Contract dispatch above, not instead of it — an exploratory issue still routes through mechanical/TDD-mode/`grill_required` for its *implementation* half; this section governs the *experiment* half.
+
+**Recognizing an exploratory task**: the issue reads as a question or hypothesis ("does X improve Y", "is Z the cause of W") rather than a spec, and states — before any run happens — what result would confirm or refute it. If the acceptance criterion is written or revised *after* looking at a run's output, the slice is not pre-registered and does not qualify; register the criterion first, then run.
+
+### AFK-fit: objective oracle required
+
+An exploratory slice is AFK-eligible **if and only if** the hypothesis's pre-registered acceptance criterion has an objective, machine-checkable oracle. No human judgment call in the loop — the run either resolves the criterion the way a script can check it, or it doesn't, and if it doesn't the slice is interactive, not AFK.
+
+The vocabulary for "objective machine-checkable oracle" (decision `b9c78373-4c7a-4f35-a304-c8a12e953507`, SLR arxiv:1804.01954) is exactly one of:
+
+- **pseudo-oracle** — a second, independent implementation whose output the run is checked against
+- **analytical solution** — a closed-form or derived expected value, computed independently of the run
+- **metamorphic relation** — a relation that must hold between two related runs when no single-run oracle exists (see `_shared/tdd/tests.md` — same vocabulary this repo already uses for tests-as-value-oracle)
+- **property invariant** — a property that must hold regardless of input, checked mechanically against the run's output
+- **golden run** — a previously-validated reference run the new run is compared against
+
+If none of these five apply to the hypothesis's acceptance criterion, the slice has no oracle from this vocabulary — it is interactive, and stays with a human in the loop. External practice draws the same line: a pipeline with an objective oracle runs unattended, while a pipeline that only produces a report or analysis for a person to judge still gets that output reviewed — a human judgment call is not an objective enough oracle to run AFK.
+
+### Negative results are mandatory journal entries
+
+A negative result — the hypothesis is not confirmed, the run doesn't reproduce, the experiment fails — is **not** a reason to skip the record. Losing the experimental intent behind a run is the primary driver of irreproducibility (arxiv:2506.16051); an unrecorded negative result is a lost experiment, not a saved one. Every exploratory run, positive or negative, must leave a journal entry: what the pre-registered criterion was, what the run actually produced, and whether the criterion resolved true or false. Do not defer this to "only write it up if it works."
+
 ## Pipeline
 
 ### 1. Pre-flight checks (parallel work protocol)
