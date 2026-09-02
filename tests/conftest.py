@@ -456,3 +456,42 @@ class FakeWriteRunner:
         if key in self.raise_for:
             raise self.raise_for[key]
         return self.responses.get(key, {})
+
+
+# ---------------------------------------------------------------------------
+# Live-Supabase write guard (#1121 step 16 fallout)
+# ---------------------------------------------------------------------------
+# Incident 2026-09-02: `pytest tests/reactive_core` wrote 392 real
+# `drain_infra_preflight_failure` rows into the production events table in six
+# minutes, and wake_driver began fanning them into owner escalations. Mechanism:
+# 44 of 46 `drain_tasks(...)` call sites pass neither `check_infra_available`
+# nor `infra_event_emitter`, so both production defaults ran; on a pytest
+# process that cannot see docker/node on PATH the pre-flight raises and the real
+# `default_emit_infra_preflight_event` calls `get_client()`, which `load_config`
+# happily fills from the developer's `.env`.
+#
+# The env vars set above are decoys — `setdefault` loses to a real .env, so
+# "tests use a test URL" was never true. This guard is the actual boundary: any
+# test that reaches a live client fails, loudly, naming itself. A test that
+# legitimately needs a client stubs `get_client` itself, which overrides this.
+
+
+@pytest.fixture(autouse=True)
+def _no_live_supabase(monkeypatch):
+    """Fail any test that constructs a real Supabase client."""
+
+    def _blocked(*_args, **_kwargs):
+        raise AssertionError(
+            "test constructed a LIVE Supabase client - it would read/write the "
+            "production database. Pass a stub client (or monkeypatch get_client) "
+            "in the test instead."
+        )
+
+    # Blocked at create_client, not get_client: get_client's own
+    # missing-credentials RuntimeError runs first and is itself under test
+    # (test_supabase_client_errors_without_credentials), so blocking the outer
+    # function would shadow the contract it asserts. Both seams are patched
+    # because agents/supabase_client.py imports the name at module level while
+    # every scripts/ helper imports it lazily inside the function.
+    monkeypatch.setattr("supabase.create_client", _blocked, raising=False)
+    monkeypatch.setattr("agents.supabase_client.create_client", _blocked, raising=False)

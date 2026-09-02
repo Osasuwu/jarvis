@@ -29,7 +29,7 @@ from typing import Any, Callable, Mapping
 from agents import safety, task_queue
 from agents.github_client import parse_goal_shape
 from agents.sandcastle_config import default_attempt_ceiling
-from agents.task_dispatch import format_lineage_key
+from agents.task_dispatch import INFRA_PREFLIGHT_EVENT_TYPE, format_lineage_key
 
 logger = logging.getLogger(__name__)
 
@@ -350,7 +350,8 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
 
     1. ``security_alert`` → ``ESCALATE`` at any severity — a safety floor the
        route table cannot override (never inline).
-    2. Enumerated ``(event_type, severity)`` pairs → their specific route.
+    2. Enumerated deterministic routes — an ``(event_type, severity)`` pair,
+       or an ``event_type`` alone where severity is not routing-relevant.
     3. Pure-pipeline events (``pr_approved`` / ``pr_merged`` / ``ci_success``)
        → inline no-op (the wake_driver marks the event processed).
     4. Telemetry/observability events (``_TELEMETRY_EVENT_TYPES`` + any
@@ -381,6 +382,35 @@ def handle_event(event: Mapping[str, Any]) -> Decision:
             target,
             key,
             reason="write scrubber gate disabled — owner review required",
+        )
+    # Drain infra pre-flight failure — producer is #1121 step 16
+    # (agents.task_dispatch.default_emit_infra_preflight_event). docker/node
+    # missing on the host is a persistent operator-config fault, not a
+    # transient one: the drain halts and every row it would have spawned is
+    # left ``parked``, a state only a requeue (parked→pending) clears. No
+    # agent can route around it — the substrate that would run the agent is
+    # exactly what is missing — so this escalates and never emits a task.
+    #
+    # Matched on event_type alone, severity-independent (the security_alert /
+    # telemetry convention, not the ci_failure pair convention): severity here
+    # is a constant the *producer* pins (task_dispatch.INFRA_PREFLIGHT_SEVERITY),
+    # so keying the route on the pair would silently drop the event back to the
+    # Step-5 "no deterministic route" fail-safe if that constant were ever
+    # bumped — the #326 desync class. The event_type is imported from the
+    # producer for the same reason, rather than restated as a literal.
+    if event_type == INFRA_PREFLIGHT_EVENT_TYPE:
+        fault = str(payload.get("reason") or "unspecified")
+        task_ids = payload.get("task_ids")
+        parked = len(task_ids) if isinstance(task_ids, (list, tuple)) else 0
+        return _escalate(
+            event_type,
+            severity,
+            target,
+            key,
+            reason=(
+                f"drain halted — infra pre-flight failed ({fault}); "
+                f"{parked} task(s) parked, requeue them after fixing the host"
+            ),
         )
     if (event_type, severity) == ("ci_failure", "high"):
         repo = str(event.get("repo") or "")

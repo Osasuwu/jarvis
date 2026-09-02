@@ -551,6 +551,27 @@ class TestInfraPreflight:
         assert res.spawned == 1
         assert res.skipped_no_infra is False
 
+    def test_drain_with_default_infra_check_does_not_reach_the_host(self) -> None:
+        # The other 44 drain_tasks() call sites in this file pass no
+        # check_infra_available / infra_event_emitter, so they run the real
+        # production defaults. Before the conftest fixture, that meant a pytest
+        # process without docker/node on PATH parked every fixture row AND had
+        # default_emit_infra_preflight_event write a live events row (392 of
+        # them on 2026-09-02). This pins the drain's default path as healthy
+        # regardless of the host.
+        q = FakeTaskQueue(pending=[_row("t0")], running_count=0)
+
+        res = drain_tasks(
+            q,
+            lambda g, task_id=None: None,
+            cap=5,
+            resolve_binary=_always_resolve,
+            read_usage=_healthy_usage,
+        )
+
+        assert res.skipped_no_infra is False
+        assert res.parked == 0
+
     def test_default_emit_infra_preflight_event_writes_expected_shape(self) -> None:
         from agents.task_dispatch import default_emit_infra_preflight_event
 
