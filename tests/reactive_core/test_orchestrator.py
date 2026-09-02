@@ -442,6 +442,33 @@ def test_idempotency_key_differs_for_new_payload_state():
     assert k1 != k2
 
 
+def test_infra_preflight_key_ignores_volatile_task_ids():
+    """#1777 AC2: same reason + target, different task_ids -> same key.
+
+    task_ids is the list of rows the drain would have spawned; it changes on
+    every tick even when the underlying fault is identical, so it must not be
+    part of the discriminator."""
+    k1 = handle_event(
+        _ev(INFRA_PREFLIGHT_EVENT_TYPE, "high", {"reason": "docker", "task_ids": ["t1"]})
+    ).idempotency_key
+    k2 = handle_event(
+        _ev(INFRA_PREFLIGHT_EVENT_TYPE, "high", {"reason": "docker", "task_ids": ["t2", "t3"]})
+    ).idempotency_key
+    assert k1 == k2
+
+
+def test_infra_preflight_key_differs_for_new_reason():
+    """#1777 AC3: a genuinely different fault must not collapse into the same
+    dedup key — a new `reason` still escalates."""
+    k1 = handle_event(
+        _ev(INFRA_PREFLIGHT_EVENT_TYPE, "high", {"reason": "docker", "task_ids": ["t1"]})
+    ).idempotency_key
+    k2 = handle_event(
+        _ev(INFRA_PREFLIGHT_EVENT_TYPE, "high", {"reason": "node", "task_ids": ["t1"]})
+    ).idempotency_key
+    assert k1 != k2
+
+
 def test_idempotency_key_differs_by_event_type():
     k1 = handle_event(_ev("ci_failure", "high", {"pr": 5})).idempotency_key
     k2 = handle_event(_ev("review_negative", "medium", {"pr": 5})).idempotency_key
