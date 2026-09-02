@@ -220,7 +220,9 @@ def test_load_protected_paths_real_config_has_both_repos():
     assert "SergazyNarynov/redrobot" in config
     assert ".mcp.json" in config["Osasuwu/jarvis"]["guarded"]
     assert "CLAUDE.md" in config["Osasuwu/jarvis"]["hitl"]
-    assert any(p.startswith("driver/") for p in config["SergazyNarynov/redrobot"]["guarded"])
+    assert any(
+        p.startswith("redrobot/driver/") for p in config["SergazyNarynov/redrobot"]["guarded"]
+    )
     assert config["SergazyNarynov/redrobot"]["hitl"] == []
 
 
@@ -228,13 +230,45 @@ def test_real_config_redrobot_driver_path_is_class_2():
     repo_root = Path(__file__).resolve().parents[2]
     config = load_protected_paths(repo_root / "config" / "protected-paths.json")
     verdict = classify_static_paths(
-        ["driver/joint_controller.py"],
+        ["redrobot/driver/joint_controller.py"],
         repo="SergazyNarynov/redrobot",
         config=config,
     )
     assert verdict.cls == 2
     assert verdict.label == "afk:2-plan"
-    assert verdict.matched_files == ("driver/joint_controller.py",)
+    assert verdict.matched_files == ("redrobot/driver/joint_controller.py",)
+
+
+def test_real_config_redrobot_planning_path_is_class_2_not_fail_open():
+    """Regression for #1684: redrobot guarded globs must carry the `redrobot/`
+    package prefix so real repo-relative safety-core paths actually match. The
+    original bug shipped `planning/**`, which no real path (`redrobot/planning/
+    strategist.py`) matched — Q1 silently fell through to AFK-safe (fail-open).
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    config = load_protected_paths(repo_root / "config" / "protected-paths.json")
+    verdict = classify_static_paths(
+        ["redrobot/planning/strategist.py"],
+        repo="SergazyNarynov/redrobot",
+        config=config,
+    )
+    assert verdict.cls == 2, "redrobot/planning/** must classify as class 2, not fail-open"
+    assert verdict.bucket == "guarded"
+    assert verdict.label == "afk:2-plan"
+
+
+def test_real_config_redrobot_prefixless_planning_no_longer_shadow_matches():
+    """The prefixless glob (`planning/**`) was the fail-open bug. A bare
+    `planning/...` path is not a real redrobot repo-relative path; guarding it
+    while missing the real `redrobot/planning/...` path is exactly the shadow
+    match #1684 removed. Assert the config no longer carries prefixless globs.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    config = load_protected_paths(repo_root / "config" / "protected-paths.json")
+    guarded = config["SergazyNarynov/redrobot"]["guarded"]
+    assert "planning/**" not in guarded
+    assert "driver/**" not in guarded
+    assert "mujoco/**" not in guarded, "mujoco/** dropped per a7111a44 (tier 2, not plan-gated)"
 
 
 def test_real_config_jarvis_hitl_file_is_class_3():
