@@ -874,18 +874,6 @@ def test_auto_merge_enable_is_sole_requester_of_workflows_scope():
     )
 
 
-def test_auto_merge_enable_is_not_a_canon_baseline_file():
-    # AC10 (#1234): scripts/repo_baseline/canon/ files are mirrored into other
-    # repos, so a change there owes a parity slice. auto-merge-enable.yml is
-    # jarvis-local — this test pins that, so if it is ever promoted to canon the
-    # red forces the parity question instead of silently skipping it.
-    canon_dir = WORKFLOW_PATH.resolve().parents[2] / "scripts" / "repo_baseline" / "canon"
-    assert not (canon_dir / WORKFLOW_PATH.name).exists(), (
-        "auto-merge-enable.yml became a canon baseline file — the #1234 carve-out "
-        "and workflows-scope grant now owe a canon-parity slice."
-    )
-
-
 def test_workflow_has_concurrency_guard():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
     assert "concurrency:" in text, (

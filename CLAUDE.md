@@ -22,7 +22,7 @@ The invariants ride a bare `@import` instead of the hook, so they expand at laun
 
 @docs/context/invariants.md
 
-Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, repo-baseline, merge-gate vocabulary, workflow, AFK spawn substrate, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
+Unfamiliar term? `CONTEXT.md` → `## Glossary` is the pull-only home (categories: core entities, self-improvement, merge-gate vocabulary, workflow, AFK spawn substrate, skill triggers, context delivery, devices). Its category index was itself always-loaded until #1418 retired it — an index of where to look does not need to be in the window to be found.
 
 ## Project
 

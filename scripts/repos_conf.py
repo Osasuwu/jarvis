@@ -12,8 +12,8 @@ Two entry points, deliberately different strictness:
   is depended on by status_gather.py / morning_gather.py and their tests
   (#1059) — it must never raise and must never change shape.
 - ``parse_repos_conf_entries`` — structured parser with per-token
-  validation, for consumers that need repos.conf metadata (repo_baseline
-  auditor, the weekly-release skill). An unknown key is forward-compat
+  validation, for consumers that need repos.conf metadata (the
+  weekly-release skill). An unknown key is forward-compat
   tolerated (non-fatal warning, OSS operators may add tokens this parser
   doesn't know yet); a known key with an invalid value is an error.
 """
