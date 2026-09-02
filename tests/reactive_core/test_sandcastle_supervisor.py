@@ -80,6 +80,42 @@ class TestBuildSupervisorEnv:
         )
         assert "SANDCASTLE_REPO" not in env
 
+    def test_injects_target_issue_from_target_number(self):
+        env = build_supervisor_env(
+            {"goal": "g", "target_number": 1123},
+            task_id="t1",
+            lineage_key="l",
+            attempt=1,
+            base_env={},
+        )
+        assert env["SANDCASTLE_TARGET_ISSUE"] == "1123"
+
+    def test_injects_target_issue_from_deprecated_issue_number_mirror(self):
+        env = build_supervisor_env(
+            {"goal": "g", "issue_number": 1124},
+            task_id="t1",
+            lineage_key="l",
+            attempt=1,
+            base_env={},
+        )
+        assert env["SANDCASTLE_TARGET_ISSUE"] == "1124"
+
+    def test_target_number_takes_precedence_over_issue_number(self):
+        env = build_supervisor_env(
+            {"goal": "g", "target_number": 1123, "issue_number": 999},
+            task_id="t1",
+            lineage_key="l",
+            attempt=1,
+            base_env={},
+        )
+        assert env["SANDCASTLE_TARGET_ISSUE"] == "1123"
+
+    def test_omits_target_issue_when_row_has_neither(self):
+        env = build_supervisor_env(
+            {"goal": "g"}, task_id="t1", lineage_key="l", attempt=1, base_env={}
+        )
+        assert "SANDCASTLE_TARGET_ISSUE" not in env
+
     def test_strips_billing_denylist_keys(self):
         base_env = {"ANTHROPIC_API_KEY": "sk-live-x", "SOME_OTHER_VAR": "keep-me"}
         env = build_supervisor_env(

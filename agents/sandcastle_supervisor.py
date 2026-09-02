@@ -77,6 +77,15 @@ def build_supervisor_env(
     target_repo = row.get("target_repo")
     if target_repo:
         env["SANDCASTLE_REPO"] = str(target_repo)
+    # target_number (#1119 structured pin) preferred over the deprecated
+    # issue_number mirror. Without this, main.mts/prompt.md see an empty
+    # SANDCASTLE_TARGET_ISSUE and run the agent in free-pick-from-queue mode
+    # regardless of which issue the row was enqueued for (#1123/#1124 r1-r3
+    # silently no-op'd this way: free-pick refused the mid-chain issues,
+    # exited rc=0, and drain_tasks marked the row "done" with no artifact).
+    target_number = row.get("target_number") or row.get("issue_number")
+    if target_number:
+        env["SANDCASTLE_TARGET_ISSUE"] = str(target_number)
     return env
 
 
