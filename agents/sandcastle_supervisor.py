@@ -77,6 +77,21 @@ def build_supervisor_env(
     target_repo = row.get("target_repo")
     if target_repo:
         env["SANDCASTLE_REPO"] = str(target_repo)
+    # Without this, main.mts/prompt.md see an empty SANDCASTLE_TARGET_ISSUE
+    # and run the agent in free-pick-from-queue mode regardless of which
+    # issue the row was enqueued for (#1123/#1124 r1-r3 silently no-op'd
+    # this way: free-pick refused the mid-chain issues, exited rc=0, and
+    # drain_tasks marked the row "done" with no artifact). Same precedence
+    # as the sibling agents/task_dedup.py::row_issue_number: the deprecated
+    # issue_number mirror first, then target_number but ONLY when
+    # target_type == "issue" -- orchestrator-emitted rework rows use
+    # target_type == "pr" with target_number holding a PR number, which
+    # must never be forwarded as an issue pin.
+    target_issue = row.get("issue_number")
+    if target_issue is None and row.get("target_type") == "issue":
+        target_issue = row.get("target_number")
+    if target_issue is not None:
+        env["SANDCASTLE_TARGET_ISSUE"] = str(target_issue)
     return env
 
 
