@@ -556,6 +556,25 @@ def list_active(
     return rows
 
 
+def list_running(
+    *,
+    client: Client | None = None,
+) -> list[dict[str, Any]]:
+    """List every ``running`` row, full columns, unconditionally (#1122 AC1).
+
+    Distinct from :func:`list_active` (narrow column set, ``claimed`` +
+    ``running``, dedup use case) and :func:`list_stale_running` (``id`` only,
+    age-filtered, reaper use case). The sweeper's harvest clock has no grace
+    period — it must inspect every ``running`` row on every pass, not just
+    ones past an age threshold — and needs the whole row (``attempt``,
+    ``lineage_key``, ``target_repo``, ``claimed_at``, ...) to decide the
+    per-row action, so neither existing helper fits.
+    """
+    cli = client or get_client()
+    rows = (cli.table("task_queue").select("*").eq("status", "running").execute()).data or []
+    return list(rows)
+
+
 def list_stale_running(
     *,
     assignee: str,

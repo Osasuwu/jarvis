@@ -22,13 +22,14 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from agents.sandcastle_config import default_billing_key_denylist
+from agents.sandcastle_config import default_billing_key_denylist, default_sweeper_config
 from agents.supabase_key_role import SupabaseKeyRoleError, assert_supabase_key_is_anon
 from agents.usage_probe import UsageProbe, read_usage
 
@@ -37,6 +38,25 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 Launcher = Callable[..., "subprocess.Popen[Any]"]
+
+# #1122 AC2 / decision 00aed037: SANDCASTLE_RUN_ID is the branch pin ONLY
+# (main.mts pins `task/<runId>` verbatim), so this must extract the bare
+# suffix after the literal `task/` prefix inside `(branch=...)` — NOT the
+# same pattern as pr_evidence.ensure_pr_closing_ref, which captures the full
+# `task/...`-prefixed string for its own, different purpose (the evidence
+# head, not a runId to be re-prefixed).
+_BRANCH_RUN_ID_PATTERN = re.compile(r"\(branch=task/([^)]+)\)")
+
+
+def _run_id_from_goal(goal: str, *, task_id: str) -> str:
+    """Derive ``SANDCASTLE_RUN_ID`` from a goal's ``(branch=task/X)`` directive.
+
+    Falls back to the bare ``task_id`` when no directive is present — either
+    way the result is a bare id, since ``main.mts`` reconstructs the pinned
+    branch as ``task/<runId>`` itself (main.mts:319).
+    """
+    match = _BRANCH_RUN_ID_PATTERN.search(goal)
+    return match.group(1) if match else task_id
 
 
 @dataclass(frozen=True)
@@ -56,11 +76,15 @@ def build_supervisor_env(
     lineage_key: str,
     attempt: int,
     base_env: dict[str, str] | None = None,
+    runtime_root: str | None = None,
 ) -> dict[str, str]:
     """Build the env dict for a supervisor-path launch.
 
     Raises :class:`SupabaseKeyRoleError` if ``SUPABASE_KEY`` (read from
     ``base_env`` or the real process env) is not an anon-equivalent key.
+
+    ``runtime_root`` defaults to ``config/sandcastle.yaml``'s ``sweeper.runtime_root``
+    (#1122 AC2/AC11) — never a literal path on this spawn path.
     """
     source = base_env if base_env is not None else os.environ
     denylist = set(default_billing_key_denylist())
@@ -70,10 +94,17 @@ def build_supervisor_env(
     if supabase_key:
         assert_supabase_key_is_anon(supabase_key)
 
+    goal = str(row.get("goal") or "")
+    root = runtime_root if runtime_root is not None else default_sweeper_config().runtime_root
+
     env["SANDCASTLE_TASK_ID"] = task_id
     env["SANDCASTLE_LINEAGE_KEY"] = lineage_key
     env["SANDCASTLE_ATTEMPT"] = str(attempt)
-    env["SANDCASTLE_GOAL"] = str(row.get("goal") or "")
+    env["SANDCASTLE_GOAL"] = goal
+    # #1122 AC2 (decision 00aed037): branch pin, separate from the
+    # correlation key above — see _run_id_from_goal's docstring.
+    env["SANDCASTLE_RUN_ID"] = _run_id_from_goal(goal, task_id=task_id)
+    env["SANDCASTLE_RESULT_FILE"] = f"{root}/{task_id}-a{attempt}/result.json"
     target_repo = row.get("target_repo")
     if target_repo:
         env["SANDCASTLE_REPO"] = str(target_repo)

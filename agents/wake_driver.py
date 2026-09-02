@@ -94,7 +94,7 @@ from agents.task_dispatch import (
     poll_completions,
     reclaim_stale_tasks,
 )
-from agents.sandcastle_config import default_operator_default_substrate
+from agents.sandcastle_config import default_operator_default_substrate, default_sweeper_config
 
 # Extracted to agents/process_kill.py (#1609, milestone #66).
 from agents.process_kill import kill_process_tree
@@ -117,6 +117,17 @@ from agents.task_worktree import (
 
 # Extracted to agents/task_boot_adoption.py (#1608, milestone #66).
 from agents.task_boot_adoption import maybe_adopt_at_boot
+
+# #1122 AC1/AC10: result-file-first sweeper (harvest/destructive-fail/
+# poison-pill/late-result), wired into tick() below as Step 0.5.
+from agents.task_sweeper import (
+    DockerAdapter,
+    SubprocessDocker,
+    SweeperConfig,
+    SweeperState,
+    SweepResult,
+    sweep,
+)
 
 # Module-level, not lazy-in-tick: agents.poller imports only stdlib, so there is
 # no import cycle to defer around. The Path B poll step runs every tick when a
@@ -324,7 +335,6 @@ class TickResult:
     processed: int
     requeued: int = 0
     tasks_reclaimed: int = 0
-    tasks_reaped: int = 0
     tasks_spawned: int = 0
     tasks_failed: int = 0
     tasks_done: int = 0
@@ -333,6 +343,10 @@ class TickResult:
     worktrees_retained: int = 0
     worktrees_ttl_pruned: int = 0
     worktrees_cap_evicted: int = 0
+    tasks_harvested: int = 0
+    tasks_sweep_destructive_fail: int = 0
+    tasks_sweep_poison_park: int = 0
+    tasks_sweep_late_result: int = 0
 
 
 def default_orchestrator(event: dict[str, Any]) -> None:
@@ -446,6 +460,10 @@ def tick(
     task_procs: dict[str, TrackedProc] | None = None,
     task_clock: Callable[[], float] = time.monotonic,
     task_kill: Callable[[Any], None] = kill_process_tree,
+    task_docker: DockerAdapter | None = None,
+    task_sweeper_config: SweeperConfig | None = None,
+    task_sweeper_state: SweeperState | None = None,
+    task_sweeper_now: Callable[[], Any] | None = None,
     task_sidecar: Sidecar | None = None,
     task_event_emit: EventEmit | None = None,
     task_evidence_client: GitHubClient | None = None,
@@ -461,6 +479,7 @@ def tick(
 
         record_tick()                                         # Step H, #1085 S3-1
         poll_completions() + kill_runaways()                  # Step 0, #921
+        → sweep()                                             # Step 0.5, #1122 AC1
         → reclaim_stale(events)                               # Step 1, event watchdog
         → reclaim_stale_tasks()                               # Step 2, task watchdog
         → sweep_task_worktrees()                              # Step 2a, #1390 AC6
@@ -562,6 +581,27 @@ def tick(
             )
         except Exception:  # noqa: BLE001 — same isolation for the runaway killer
             logger.exception("[wake_driver] runaway kill failed; live rows retry next tick")
+
+    # Step 0.5 — result-file-first sweeper (#1122 AC1). Runs after the
+    # completion poll (Step 0) so a row Step 0 just closed via a tracked
+    # process is already terminal when the sweeper's docker snapshot scans
+    # it, and before the task watchdog (Step 2) so a row the sweeper reaps
+    # this tick doesn't wait a full cycle to be swept for a worktree/orphan
+    # follow-up. Gated on task_docker (not just task_port) — every pre-#1122
+    # tick() caller omits task_docker and must see unchanged behavior.
+    sweep_result: SweepResult | None = None
+    if task_port is not None and task_docker is not None:
+        try:
+            sweep_result = sweep(
+                task_port,
+                task_docker,
+                config=task_sweeper_config,
+                event_emit=task_event_emit,
+                now=task_sweeper_now,
+                state=task_sweeper_state,
+            )
+        except Exception:  # noqa: BLE001 — task-store/docker outage must not block event drain
+            logger.exception("[wake_driver] task sweep failed; stale rows left for the next tick")
 
     # Step 1 — event watchdog.
     reclaimed = run_watchdog(port, stale_after_seconds=stale_after_seconds)
@@ -670,7 +710,6 @@ def tick(
         processed=processed,
         requeued=requeued,
         tasks_reclaimed=task_reclaim.reclaimed_claimed if task_reclaim else 0,
-        tasks_reaped=task_reclaim.reaped_running if task_reclaim else 0,
         tasks_spawned=task_drain.spawned if task_drain else 0,
         tasks_failed=task_drain.failed if task_drain else 0,
         tasks_done=completions.done if completions else 0,
@@ -679,6 +718,10 @@ def tick(
         worktrees_retained=worktree_sweep.retained if worktree_sweep else 0,
         worktrees_ttl_pruned=worktree_sweep.ttl_pruned if worktree_sweep else 0,
         worktrees_cap_evicted=worktree_sweep.cap_evicted if worktree_sweep else 0,
+        tasks_harvested=sweep_result.harvest if sweep_result else 0,
+        tasks_sweep_destructive_fail=sweep_result.destructive_fail if sweep_result else 0,
+        tasks_sweep_poison_park=sweep_result.poison_park if sweep_result else 0,
+        tasks_sweep_late_result=sweep_result.late_result if sweep_result else 0,
     )
 
 
@@ -712,6 +755,9 @@ def run(
     task_worktree_retention_seconds: float = DEFAULT_WORKTREE_RETENTION_TTL_SECONDS,
     task_worktree_retention_cap: int = DEFAULT_WORKTREE_RETENTION_CAP,
     task_worktree_now: Callable[[], float] = time.time,
+    task_docker: DockerAdapter | None = None,
+    task_sweeper_config: SweeperConfig | None = None,
+    task_sweeper_now: Callable[[], Any] | None = None,
 ) -> None:
     """The event-driven loop: block on a wake signal, then run one tick.
 
@@ -753,6 +799,7 @@ def run(
     keep_going = should_continue or (lambda: True)
     procs = task_procs if task_procs is not None else ({} if task_port is not None else None)
     failed_events: dict[str, int] = {}
+    sweeper_state = SweeperState()
 
     sidecar = maybe_adopt_at_boot(
         task_port=task_port,
@@ -760,6 +807,23 @@ def run(
         should_continue=should_continue,
         task_clock=task_clock,
     )
+
+    # #1122 AC10: one startup=True sweep pass runs at boot, next to sidecar
+    # adoption and before the first tick, sharing the same SweeperState the
+    # tick loop below uses -- no other special semantics than startup=True.
+    if task_port is not None and task_docker is not None:
+        try:
+            sweep(
+                task_port,
+                task_docker,
+                config=task_sweeper_config,
+                event_emit=task_event_emit,
+                now=task_sweeper_now,
+                state=sweeper_state,
+                startup=True,
+            )
+        except Exception:  # noqa: BLE001 — a boot-time sweep failure must not block startup
+            logger.exception("[wake_driver] startup task sweep failed; stale rows left for tick 1")
 
     while keep_going():
         port.wait_for_wake(timeout_seconds=stale_after_seconds)
@@ -793,6 +857,10 @@ def run(
                 task_worktree_retention_seconds=task_worktree_retention_seconds,
                 task_worktree_retention_cap=task_worktree_retention_cap,
                 task_worktree_now=task_worktree_now,
+                task_docker=task_docker,
+                task_sweeper_config=task_sweeper_config,
+                task_sweeper_state=sweeper_state,
+                task_sweeper_now=task_sweeper_now,
                 failed_events=failed_events,
             )
         except Exception:  # noqa: BLE001 — daemon must survive a bad tick
@@ -1242,6 +1310,16 @@ def main() -> int:
     # `task_port is not None`) — routing/escalation stay live, spawn doesn't.
     task_port = None if args.no_task_drain else shared_task_queue
 
+    # #1122 AC10: real docker adapter + sweeper config for run()'s startup
+    # sweep + Step 0.5 -- None under --no-task-drain, symmetric to task_port
+    # above (run()/tick() already no-op the sweep when either is None).
+    task_sweeper_config = None if args.no_task_drain else default_sweeper_config()
+    task_docker = (
+        None
+        if args.no_task_drain
+        else SubprocessDocker(timeout_seconds=task_sweeper_config.docker_call_timeout_seconds)
+    )
+
     # #953 — evidence + terminal-event emission wiring. The repo scopes both the
     # GitHub evidence client (PR lookups) and the emitted events; the stdout
     # reader recovers a claimed PR number from the executor's JSON log when the
@@ -1285,12 +1363,11 @@ def main() -> int:
             )
             logger.info(
                 "[wake_driver] one-shot tick: reclaimed=%d processed=%d requeued=%d "
-                "tasks_reclaimed=%d tasks_reaped=%d tasks_spawned=%d tasks_failed=%d",
+                "tasks_reclaimed=%d tasks_spawned=%d tasks_failed=%d",
                 result.reclaimed,
                 result.processed,
                 result.requeued,
                 result.tasks_reclaimed,
-                result.tasks_reaped,
                 result.tasks_spawned,
                 result.tasks_failed,
             )
@@ -1322,6 +1399,8 @@ def main() -> int:
             # drain-time in-flight PR/branch fetch; sibling rows via task_queue.
             task_dedup=default_task_dedup(evidence_client),
             poller_port=queue,
+            task_docker=task_docker,
+            task_sweeper_config=task_sweeper_config,
         )
     except KeyboardInterrupt:
         logger.info("[wake_driver] KeyboardInterrupt — stopping")

@@ -19,6 +19,7 @@ from agents.task_queue import (
     count_running,
     enqueue,
     list_active,
+    list_running,
     list_stale_running,
     reclaim_stale_claimed,
     requeue_running,
@@ -1119,3 +1120,47 @@ class TestListActive:
             assert cols is not None
             names = {c.strip() for c in cols.split(",")}
             assert {"id", "goal", "status", "issue_number", "target_repo", "target_type", "target_number"} <= names
+
+
+class TestListRunning:
+    """#1122 AC1: the sweeper's unconditional, full-row running-rows query."""
+
+    def test_lists_running_only(self, client: _StubClient) -> None:
+        client.seed(
+            "task_queue",
+            [
+                _pending(id="p", idempotency_key="k1"),
+                _claimed(id="c", idempotency_key="k2"),
+                _running(id="r1", idempotency_key="k3"),
+                _running(id="r2", idempotency_key="k4"),
+                _running(id="d", status="done", idempotency_key="k5"),
+            ],
+        )
+        rows = list_running(client=client)
+        assert {r["id"] for r in rows} == {"r1", "r2"}
+
+    def test_rows_are_full_not_narrowed(self, client: _StubClient) -> None:
+        """Unlike list_active/list_stale_running, every column is needed
+        (attempt, lineage_key, claimed_at, ...) — assert a column list_active
+        doesn't select survives here."""
+        client.seed(
+            "task_queue",
+            [_running(id="r", attempt=2, lineage_key="lin-1", idempotency_key="k")],
+        )
+        rows = list_running(client=client)
+        assert rows[0]["attempt"] == 2
+        assert rows[0]["lineage_key"] == "lin-1"
+
+    def test_empty_queue(self, client: _StubClient) -> None:
+        assert list_running(client=client) == []
+
+    def test_no_age_filter_applied(self, client: _StubClient) -> None:
+        """Distinct from list_stale_running — a just-claimed running row must
+        still be returned, since the sweeper's harvest clock has no grace
+        period."""
+        client.seed(
+            "task_queue",
+            [_running(id="r", claimed_at="2099-01-01T00:00:00", idempotency_key="k")],
+        )
+        rows = list_running(client=client)
+        assert {r["id"] for r in rows} == {"r"}

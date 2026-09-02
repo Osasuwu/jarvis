@@ -438,6 +438,13 @@ try {
         VOYAGE_API_KEY: voyageKey,
         // Per-run id for the agent's source_provenance tags. See prompt.md.
         SANDCASTLE_RUN_ID: runId,
+        // Sweeper correlation key (#1122 AC2) — the sweeper's docker inspect
+        // reads this from the container's env to match it back to its queue
+        // row. Distinct from SANDCASTLE_RUN_ID (branch pin only): the run id
+        // is not guaranteed unique per queue row across watchdog fallback,
+        // while taskId (sourced from the same process.env this supervisor
+        // inherited from the Python launcher) is.
+        SANDCASTLE_TASK_ID: taskId,
         // Forced-target issue for slice-5 escalation retries. Empty string =
         // free pick from queue (default behavior).
         SANDCASTLE_TARGET_ISSUE: targetIssue,

@@ -430,11 +430,20 @@ class _RecordingTaskQueue:
     ``reclaim(events) → reclaim_tasks() → drain(events) → drain_tasks()`` order.
     """
 
-    def __init__(self, log: list, *, pending=None, stale_claimed: int = 0, stale_running=None):
+    def __init__(
+        self,
+        log: list,
+        *,
+        pending=None,
+        stale_claimed: int = 0,
+        stale_running=None,
+        running_rows=None,
+    ):
         self._log = log
         self._pending = list(pending or [])
         self._stale_claimed = stale_claimed
         self._stale_running = list(stale_running or [])
+        self._running_rows = list(running_rows or [])
         self.transitions: list[tuple[str, str, str | None]] = []
         self.statuses: dict[str, str] = {}
 
@@ -460,6 +469,10 @@ class _RecordingTaskQueue:
     def list_stale_running(self, *, assignee: str, older_than_seconds: float):
         self._log.append("task_list_running")
         return list(self._stale_running)
+
+    def list_running(self) -> list[dict]:
+        self._log.append("task_sweep_list_running")
+        return list(self._running_rows)
 
     def requeue_running(self, task_id: str) -> bool:
         self._log.append("task_requeue")
@@ -560,10 +573,105 @@ def test_tick_runs_the_four_steps_in_order():
 
     # AC1 order: reclaim(events) → reclaim_tasks() → drain(events) → drain_tasks()
     assert log.index("event_reclaim") < log.index("task_reclaim")
-    # Within the task watchdog, claimed-reclaim precedes the running-reaper scan.
-    assert log.index("task_reclaim") < log.index("task_list_running")
-    assert log.index("task_list_running") < log.index("event_drain")
+    # #1122 AC9: reclaim_stale_tasks no longer scans running rows, so
+    # task_list_running is never logged here -- only task_reclaim precedes
+    # the event drain.
+    assert log.index("task_reclaim") < log.index("event_drain")
     assert log.index("event_drain") < log.index("task_drain")
+
+
+def test_tick_wires_the_sweeper_between_step_0_and_step_2(monkeypatch):
+    # #1122 AC1: sweep() runs between Step 0 (completion poll) and Step 2
+    # (task watchdog). Step 0 is proven live here via a tracked proc that
+    # exits 0 -> transition(done); sweep is monkeypatched to log its own
+    # marker rather than drive real docker/sweeper logic (that's
+    # test_agents_task_sweeper.py's job — this proves the wiring only).
+    log: list = []
+
+    def _fake_sweep(port, docker, **kwargs):
+        log.append("task_sweep")
+        return wake_driver.SweepResult()
+
+    monkeypatch.setattr(wake_driver, "sweep", _fake_sweep)
+
+    q = FakeEventQueue([])
+    tq = _RecordingTaskQueue(log)
+    procs = {"t0": TrackedProc(proc=_TickProc(rc=0), started_at=0.0, goal="g")}
+
+    wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_docker=object(),
+        task_spawn=lambda goal, **_: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+        task_procs=procs,
+    )
+
+    assert log.index("task_transition:done") < log.index("task_sweep")
+    assert log.index("task_sweep") < log.index("task_reclaim")
+
+
+def test_tick_skips_the_sweeper_without_a_docker_adapter():
+    # Backward-compat: task_port alone (no task_docker) must not invoke
+    # sweep() -- every pre-#1122 tick() caller omits task_docker.
+    calls: list = []
+
+    def _fake_sweep(*_a, **_k):
+        calls.append("called")
+        return wake_driver.SweepResult()
+
+    q = FakeEventQueue([])
+    tq = _RecordingTaskQueue([])
+
+    import agents.wake_driver as wd
+
+    orig = wd.sweep
+    wd.sweep = _fake_sweep
+    try:
+        wd.tick(
+            q,
+            wd.default_orchestrator,
+            stale_after_seconds=300,
+            task_port=tq,
+            task_spawn=lambda goal, **_: None,
+            task_resolve_binary=lambda: "claude",
+            task_read_usage=_healthy_usage,
+        )
+    finally:
+        wd.sweep = orig
+
+    assert calls == []
+
+
+def test_tick_sweeper_failure_does_not_block_drains(monkeypatch):
+    # Same isolation contract as the other task-side steps (#921): a sweeper
+    # outage must not starve the event drain (Step 3) or task drain (Step 4).
+    def _boom(*_a, **_k):
+        raise RuntimeError("docker unreachable")
+
+    monkeypatch.setattr(wake_driver, "sweep", _boom)
+
+    q = FakeEventQueue([_ev("a")])
+    tq = _RecordingTaskQueue(
+        [], pending=[{"id": "t1", "goal": "g", "assignee": "sandcastle", "substrate": "test-bare"}]
+    )
+
+    result = wake_driver.tick(
+        q,
+        wake_driver.default_orchestrator,
+        stale_after_seconds=300,
+        task_port=tq,
+        task_docker=object(),
+        task_spawn=lambda goal, **_: None,
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+    )
+
+    assert result.processed == 1
+    assert result.tasks_spawned == 1
 
 
 def test_tick_without_task_port_is_event_only():
@@ -573,7 +681,6 @@ def test_tick_without_task_port_is_event_only():
     assert result.processed == 1
     assert result.tasks_spawned == 0
     assert result.tasks_reclaimed == 0
-    assert result.tasks_reaped == 0
     assert result.tasks_failed == 0
     assert result.tasks_done == 0
     assert result.tasks_failed_exit == 0
@@ -584,6 +691,10 @@ def test_tick_without_task_port_is_event_only():
 
 
 def test_tick_reports_task_counts():
+    # #1122 AC9: stale_running is no longer reaped by reclaim_stale_tasks (the
+    # result-file-first sweeper is now the sole closer of running rows), so
+    # this fixture's stale_running row is left untouched — only stale_claimed
+    # and the pending spawn are exercised here.
     log: list = []
     eq = FakeEventQueue([])
     tq = _RecordingTaskQueue(
@@ -602,7 +713,6 @@ def test_tick_reports_task_counts():
         task_read_usage=_healthy_usage,
     )
     assert result.tasks_reclaimed == 2  # AC5 stale claimed → pending
-    assert result.tasks_reaped == 1  # AC6 stale running → failed
     assert result.tasks_spawned == 1  # AC2/AC3/AC4 the pending sandcastle row
 
 
@@ -664,7 +774,6 @@ def test_tick_task_watchdog_failure_does_not_block_event_drain():
     )
     assert result.processed == 2  # events drained despite the task-side outage
     assert result.tasks_reclaimed == 0
-    assert result.tasks_reaped == 0
 
 
 def test_tick_task_drain_failure_does_not_crash_tick():
@@ -894,9 +1003,81 @@ def test_run_forwards_task_outcome_record_to_tick():
     assert recorded[0]["task_id"] == "t1"
 
 
+def test_run_sweeps_at_startup_before_the_first_tick(monkeypatch):
+    # #1122 AC10: one sweep(startup=True) pass runs at boot, next to sidecar
+    # adoption, before the first tick -- and the tick loop's own Step 0.5
+    # sweep (startup=False, the sweep() default) still runs every tick after
+    # that. Both calls share the same SweeperState instance.
+    calls: list = []
+    states: list = []
+
+    def _fake_sweep(port, docker, *, config=None, event_emit=None, now=None, state=None, **kw):
+        calls.append(kw.get("startup", False))
+        states.append(state)
+        return wake_driver.SweepResult()
+
+    monkeypatch.setattr(wake_driver, "sweep", _fake_sweep)
+
+    q = FakeEventQueue([])
+    q.wake_signals = [False]
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] <= 1
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=_RecordingTaskQueue([]),
+        task_docker=object(),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+    )
+
+    assert calls == [True, False]  # boot pass first, then tick 1's Step 0.5
+    assert states[0] is states[1]  # one SweeperState shared across boot + tick loop
+
+
+def test_run_skips_startup_sweep_without_a_docker_adapter(monkeypatch):
+    # Backward-compat: task_port alone (no task_docker) must not invoke
+    # sweep() at boot either -- symmetric to tick()'s own skip (#1122 AC1).
+    calls: list = []
+
+    def _fake_sweep(*_a, **_k):
+        calls.append("called")
+        return wake_driver.SweepResult()
+
+    monkeypatch.setattr(wake_driver, "sweep", _fake_sweep)
+
+    q = FakeEventQueue([])
+    q.wake_signals = [False]
+    ticks = {"n": 0}
+
+    def should_continue() -> bool:
+        ticks["n"] += 1
+        return ticks["n"] <= 1
+
+    wake_driver.run(
+        q,
+        wake_driver.default_orchestrator,
+        should_continue=should_continue,
+        task_port=_RecordingTaskQueue([]),
+        task_resolve_binary=lambda: "claude",
+        task_read_usage=_healthy_usage,
+    )
+
+    assert calls == []
+
+
 def test_run_forwards_task_thresholds_to_tick():
-    # The claimed/running staleness thresholds must reach reclaim_stale_tasks;
-    # a partial forward would silently apply the module defaults instead.
+    # The claimed staleness threshold must reach reclaim_stale_tasks; a
+    # dropped forward would silently apply the module default instead.
+    # #1122 AC9: running_reap_after_seconds is still accepted on the run()/
+    # tick() signature for call-site compatibility but reclaim_stale_tasks no
+    # longer does anything with it -- list_stale_running is never called from
+    # here, so this port doesn't even define it.
     seen: dict = {}
 
     class _ThresholdPort:
@@ -912,10 +1093,6 @@ def test_run_forwards_task_thresholds_to_tick():
         def reclaim_stale_claimed(self, *, assignee: str, older_than_seconds: float) -> int:
             seen["claimed"] = older_than_seconds
             return 0
-
-        def list_stale_running(self, *, assignee: str, older_than_seconds: float):
-            seen["running"] = older_than_seconds
-            return []
 
     q = FakeEventQueue([])
     q.wake_signals = [False]
@@ -936,7 +1113,7 @@ def test_run_forwards_task_thresholds_to_tick():
         task_running_reap_after_seconds=222,
     )
 
-    assert seen == {"claimed": 111, "running": 222}
+    assert seen == {"claimed": 111}
 
 
 # --- #1390 AC6: tick wires the on-disk task-worktree sweep (Step 2a) --------
@@ -1167,14 +1344,17 @@ def test_tick_forwards_task_outcome_record_to_poll_completions():
     assert recorded[0]["task_id"] == "ok"
 
 
-def test_tick_shields_live_rows_from_the_orphan_reaper():
-    # #921 AC5: a stale running row WITH a live tracked process is not reaped;
-    # the stale row with no tracked process is an orphan → failed.
+def test_tick_no_longer_reaps_stale_running_rows():
+    # #1122 AC9: reclaim_stale_tasks (tick's Step 2) no longer fails running
+    # rows regardless of live-process tracking -- that job moved entirely to
+    # the result-file-first sweeper (Step 0.5). Formerly
+    # test_tick_shields_live_rows_from_the_orphan_reaper (#921 AC5); the
+    # orphan-reap branch it exercised is deleted, not merely disabled.
     log: list = []
     tq = _RecordingTaskQueue(log, stale_running=[{"id": "live"}, {"id": "orphan"}])
     procs = {"live": TrackedProc(proc=_TickProc(rc=None), started_at=0.0)}
 
-    result = wake_driver.tick(
+    wake_driver.tick(
         FakeEventQueue([]),
         wake_driver.default_orchestrator,
         stale_after_seconds=300,
@@ -1185,9 +1365,8 @@ def test_tick_shields_live_rows_from_the_orphan_reaper():
         task_clock=lambda: 0.0,
     )
 
-    assert result.tasks_reaped == 1
     failed_ids = [t[0] for t in tq.transitions if t[1] == "failed"]
-    assert failed_ids == ["orphan"]
+    assert failed_ids == []
     assert "live" in procs  # still tracked, still running
 
 
@@ -1493,10 +1672,11 @@ def test_tick_poll_blowup_does_not_block_the_runaway_killer():
     assert killed == [runaway]
 
 
-def test_tick_without_task_procs_reaps_all_stale_running_as_orphans():
-    # AC7 restart simulation: no map (fresh driver / --once) → poll and kill
-    # are skipped, and EVERY stale running row is an orphan again — reaped to
-    # failed; Path-A re-drives the lost work as fresh events.
+def test_tick_without_task_procs_no_longer_reaps_stale_running():
+    # #1122 AC9: reclaim_stale_tasks no longer touches stale running rows even
+    # in the no-tracked-process-map restart case (formerly AC7's orphan-reap
+    # simulation) -- that job belongs solely to the result-file-first sweeper
+    # now. Path-A re-drives lost work as fresh events regardless.
     log: list = []
     tq = _RecordingTaskQueue(log, stale_running=[{"id": "r1"}, {"id": "r2"}])
 
@@ -1509,7 +1689,7 @@ def test_tick_without_task_procs_reaps_all_stale_running_as_orphans():
         task_read_usage=_healthy_usage,
     )
 
-    assert result.tasks_reaped == 2
+    assert tq.transitions == []
     assert result.tasks_done == 0
     assert result.tasks_failed_exit == 0
 
@@ -2100,7 +2280,6 @@ def test_main_once_closes_evidence_client(monkeypatch):
         processed=0,
         requeued=0,
         tasks_reclaimed=0,
-        tasks_reaped=0,
         tasks_spawned=0,
         tasks_failed=0,
     )
@@ -2158,7 +2337,6 @@ def test_main_once_wires_build_production_orchestrator_into_tick(monkeypatch):
         processed=0,
         requeued=0,
         tasks_reclaimed=0,
-        tasks_reaped=0,
         tasks_spawned=0,
         tasks_failed=0,
     )
@@ -2187,7 +2365,6 @@ def test_main_once_wires_supabase_heartbeat_into_tick(monkeypatch):
         processed=0,
         requeued=0,
         tasks_reclaimed=0,
-        tasks_reaped=0,
         tasks_spawned=0,
         tasks_failed=0,
     )
@@ -2215,7 +2392,6 @@ def test_main_once_driver_name_flag_threads_into_tick(monkeypatch):
         processed=0,
         requeued=0,
         tasks_reclaimed=0,
-        tasks_reaped=0,
         tasks_spawned=0,
         tasks_failed=0,
     )
@@ -2244,7 +2420,6 @@ def test_main_once_driver_name_defaults_to_resident_name(monkeypatch):
         processed=0,
         requeued=0,
         tasks_reclaimed=0,
-        tasks_reaped=0,
         tasks_spawned=0,
         tasks_failed=0,
     )
@@ -2273,6 +2448,47 @@ def test_main_wires_supabase_heartbeat_into_run(monkeypatch):
 
     assert wake_driver.main() == 0
     assert captured["heartbeat_port"] is sentinel
+
+
+def test_main_wires_real_docker_adapter_and_sweeper_config_into_run(monkeypatch):
+    # #1122 AC10 production wiring: run() previously never received a
+    # task_docker, so the AC1/AC10 sweeper was unreachable outside tests
+    # even though tick()/run() forwarded whatever they were given. main()
+    # must now build a real SubprocessDocker off the repo's own
+    # config/sandcastle.yaml sweeper config and thread both into run().
+    sentinel_config = wake_driver.SweeperConfig(docker_call_timeout_seconds=7)
+    monkeypatch.setattr(wake_driver, "default_sweeper_config", lambda: sentinel_config)
+    captured: dict[str, object] = {}
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["task_docker"] = kwargs.get("task_docker")
+        captured["task_sweeper_config"] = kwargs.get("task_sweeper_config")
+
+    _wire_main(monkeypatch, run_impl=_capture_run)
+
+    assert wake_driver.main() == 0
+    assert captured["task_sweeper_config"] is sentinel_config
+    assert isinstance(captured["task_docker"], wake_driver.SubprocessDocker)
+    assert captured["task_docker"]._timeout == 7
+
+
+def test_main_no_task_drain_skips_the_docker_adapter_too(monkeypatch):
+    # Symmetric to test_main_no_task_drain_passes_none_task_port_into_run:
+    # --no-task-drain means no `claude -p` spawn, so there is nothing for the
+    # sweeper to reconcile either -- both task_docker and task_sweeper_config
+    # must stay None rather than building a live docker adapter for nothing.
+    captured: dict[str, object] = {}
+
+    def _capture_run(queue, orchestrator, **kwargs):
+        captured["task_docker"] = kwargs.get("task_docker")
+        captured["task_sweeper_config"] = kwargs.get("task_sweeper_config")
+
+    _wire_main(monkeypatch, run_impl=_capture_run)
+    monkeypatch.setattr("sys.argv", ["wake_driver", "--no-task-drain"])
+
+    assert wake_driver.main() == 0
+    assert captured["task_docker"] is None
+    assert captured["task_sweeper_config"] is None
 
 
 # --- AC-E (#1385): staged rollout — --dry-run / --no-task-drain -------------
