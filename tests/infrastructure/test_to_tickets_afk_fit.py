@@ -220,7 +220,9 @@ def test_load_protected_paths_real_config_has_both_repos():
     assert "SergazyNarynov/redrobot" in config
     assert ".mcp.json" in config["Osasuwu/jarvis"]["guarded"]
     assert "CLAUDE.md" in config["Osasuwu/jarvis"]["hitl"]
-    assert any(p.startswith("driver/") for p in config["SergazyNarynov/redrobot"]["guarded"])
+    assert any(
+        p.startswith("redrobot/driver/") for p in config["SergazyNarynov/redrobot"]["guarded"]
+    )
     assert config["SergazyNarynov/redrobot"]["hitl"] == []
 
 
@@ -228,13 +230,63 @@ def test_real_config_redrobot_driver_path_is_class_2():
     repo_root = Path(__file__).resolve().parents[2]
     config = load_protected_paths(repo_root / "config" / "protected-paths.json")
     verdict = classify_static_paths(
-        ["driver/joint_controller.py"],
+        ["redrobot/driver/joint_controller.py"],
         repo="SergazyNarynov/redrobot",
         config=config,
     )
     assert verdict.cls == 2
     assert verdict.label == "afk:2-plan"
-    assert verdict.matched_files == ("driver/joint_controller.py",)
+    assert verdict.matched_files == ("redrobot/driver/joint_controller.py",)
+
+
+def test_real_config_redrobot_planning_path_is_class_2():
+    """#1684 fail-open repro: a real redrobot safety path (`redrobot/planning/…`)
+    must match the guarded bucket. Before the fix the glob was the bare
+    `planning/**`, which matched no real repo-relative path and silently
+    returned no-match (class None → LLM fall-through)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    config = load_protected_paths(repo_root / "config" / "protected-paths.json")
+    verdict = classify_static_paths(
+        ["redrobot/planning/strategist.py"],
+        repo="SergazyNarynov/redrobot",
+        config=config,
+    )
+    assert verdict.cls == 2
+    assert verdict.bucket == "guarded"
+    assert verdict.matched_files == ("redrobot/planning/strategist.py",)
+
+
+def test_real_config_redrobot_tier1_files_are_class_2():
+    """Full tier-1 safety core (decision a7111a44) — each declared path must be
+    class 2, guarding against a partial fix that only prefixes some zones."""
+    repo_root = Path(__file__).resolve().parents[2]
+    config = load_protected_paths(repo_root / "config" / "protected-paths.json")
+    for path in (
+        "redrobot/driver/motor.py",
+        "redrobot/planning/policy.py",
+        "redrobot/experiments.py",
+        "tests/safety/test_limits.py",
+        "tests/experiments/test_rehearsal_guard.py",
+    ):
+        verdict = classify_static_paths(
+            [path], repo="SergazyNarynov/redrobot", config=config
+        )
+        assert verdict.cls == 2, f"{path} should be class 2, got {verdict.cls}"
+        assert verdict.bucket == "guarded", path
+
+
+def test_real_config_redrobot_mujoco_removed_and_no_bare_prefixes():
+    """`mujoco/**` retired (tier 2, guarded by golden/replay tests not the plan
+    gate); no guarded glob is a bare zone prefix that would fail open against
+    real `redrobot/…` paths (#1684)."""
+    repo_root = Path(__file__).resolve().parents[2]
+    config = load_protected_paths(repo_root / "config" / "protected-paths.json")
+    guarded = config["SergazyNarynov/redrobot"]["guarded"]
+    assert not any("mujoco" in g for g in guarded)
+    # Every package-dir zone glob must carry the redrobot/ prefix; a bare
+    # `driver/**` or `planning/**` is the exact fail-open shape from #1684.
+    for bare in ("driver/**", "planning/**"):
+        assert bare not in guarded, f"bare {bare} reintroduces the #1684 fail-open"
 
 
 def test_real_config_jarvis_hitl_file_is_class_3():
