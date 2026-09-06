@@ -207,7 +207,20 @@ Save to a repo-local file if the finding is significant:
 docs/research/<topic-slug>-<date>.md
 ```
 
-The filename's `<topic-slug>` (kebab-case) identifies the research topic for gate matching — e.g. `topic-agent-loop-architecture`, `topic-memory-subsystem-scaling`, `topic-ci-gate-prevention`. This ties the artifact to the decision topic it was researched for — the research-pass gate only accepts an artifact file whose slug matches the current topic (see grill/SKILL.md's Research-pass gate section).
+The filename's `<topic-slug>` (kebab-case) identifies the research topic for gate matching — e.g. `topic-agent-loop-architecture`, `topic-memory-subsystem-scaling`, `topic-ci-gate-prevention`. This ties the artifact to the decision topic it was researched for — the research-pass-gate only accepts an artifact file whose slug matches the current topic (see grill/SKILL.md's Research-pass-gate section).
+
+Give the file itself a small header block so the topic and tags travel with the artifact instead of living in an external store:
+
+```
+write_research_artifact(
+    topic="<topic-slug>",
+    tags="area:<area-tag>, research",
+    content="<findings body, the template above>",
+    source_provenance="<issue #, /research invocation, or scheduled run>",
+)
+```
+
+`topic:` here MUST match the filename's `<topic-slug>` exactly — a mismatch (writing `topic: foo` into a file named `bar-<date>.md`) is exactly the #1351 regression this discipline exists to prevent.
 
 If finding is actionable → create GitHub issue in appropriate repo:
 

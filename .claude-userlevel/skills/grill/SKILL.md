@@ -61,7 +61,7 @@ They are carried **verbatim**. Paraphrasing them into general wording is exactly
 
 Question 2 ships with a heuristic: **прогон без единого непонятного результата подозрителен**. A clean sheet is more often a reporting artefact than a clean run — press for what was seen and waved off. The heuristic points one way only, and deliberately so: it says a spotless run is suspicious, and it says nothing about what a count of anomalies implies. Do not extend it into a claim that more of them reported means the work is in better shape.
 
-### Research-pass gate (precondition to Phase 3)
+### Research-pass-gate (precondition to Phase 3)
 
 Before entering the CRITIC subagent phase, check whether a recent research
 artifact exists for the current topic. The gate fires only for
