@@ -245,24 +245,33 @@ class TestResearchSkillWritesTopic:
         assert "tags=" in step5_section, "research skill does not show tags parameter"
 
     def test_research_skill_topic_tag_in_memory_store_call(self):
-        """AC: /research SKILL.md memory_store call uses real schema parameters only (issue #1351)."""
+        """AC: /research SKILL.md file-save call uses the real file-based schema only (issue #1351, #1794).
+
+        Post-#1794 the artifact is a repo-local file, not a memory_store row — this test
+        was updated to assert the equivalent invariant (topic/tags travel with the file
+        call) without requiring the retired memory_store literal.
+        """
         _, content = _load_file("research", "SKILL.md")
         assert content is not None
         step5_section = content[content.find("### 5. Save"):content.find("### 6. Remove")]
 
-        # Extract the memory_store call from code block
-        code_block_match = re.search(r'```\nmemory_store\((.*?)\)\n```', step5_section, re.DOTALL)
-        assert code_block_match, "No memory_store call found in Step 5"
+        # Extract the file-save call from code block
+        code_block_match = re.search(r'```\nwrite_research_artifact\((.*?)\)\n```', step5_section, re.DOTALL)
+        assert code_block_match, "No write_research_artifact call found in Step 5"
         call_args = code_block_match.group(1)
 
-        # Verify it uses real schema parameters: type, name, description, content, source_provenance, tags
-        real_params = ['type=', 'name=', 'description=', 'content=', 'source_provenance=', 'tags=']
+        # Verify it uses the real file-based parameters: topic, tags, content, source_provenance
+        real_params = ['topic=', 'tags=', 'content=', 'source_provenance=']
         for param in real_params:
-            assert param in call_args, f"Expected parameter {param} not found in memory_store call"
+            assert param in call_args, f"Expected parameter {param} not found in write_research_artifact call"
 
         # Verify it does NOT use non-existent topic_slug parameter
         assert 'topic_slug=' not in call_args, \
-            "memory_store call must not use non-existent topic_slug parameter (use tags instead)"
+            "write_research_artifact call must not use non-existent topic_slug parameter (use topic instead)"
+
+        # #1794 AC1: the retired memory_store literal must not reappear
+        assert "memory_store(" not in content, \
+            "research skill must not reintroduce a memory_store(...) call (issue #1794 AC1)"
 
     def test_memory_store_schema_does_not_have_topic_slug(self):
         """AC: Verify actual memory_store schema does not accept topic_slug parameter.

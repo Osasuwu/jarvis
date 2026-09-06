@@ -1,11 +1,15 @@
 """Golden-text regression test for the AFK-fit SKILL.md prose (#1708 AC7).
 
-The Q2/Q3 -> afk:2-plan-without-sandcastle outcome is driven by LLM judgement
-reading skill prose, not by executable Python logic — classify_static_paths()
-only covers the static Q1 half (unit-tested directly in
+The Q2/Q3 -> afk:2-plan-without-automation-queue-label outcome is driven by LLM
+judgement reading skill prose, not by executable Python logic —
+classify_static_paths() only covers the static Q1 half (unit-tested directly in
 test_to_tickets_afk_fit.py). This test is the runnable check for the
 documented contract: it fails if the SKILL.md prose regresses to the old
 binary AFK-yes/no framing, or drops the two-writer discipline sentence.
+
+Post-#1794 the queue mechanism is referred to as "the automation-queue label"
+rather than the retired `sandcastle` literal — these assertions were updated
+to the new phrase while preserving the original structural checks.
 """
 
 from __future__ import annotations
@@ -22,7 +26,9 @@ def test_to_tickets_skill_documents_three_class_outcomes():
     assert "classify_static_paths" in text
     assert "afk:2-plan" in text
     assert "afk:3-human" in text
-    assert "WITHOUT" in text and "sandcastle" in text
+    assert "WITHOUT" in text and "automation-queue label" in text
+    # #1794 AC1: the retired sandcastle literal must not reappear
+    assert "sandcastle" not in text.lower()
 
 
 def test_to_tickets_skill_ties_afk_2_plan_to_q2_and_q3():
@@ -32,7 +38,7 @@ def test_to_tickets_skill_ties_afk_2_plan_to_q2_and_q3():
     q4_idx = text.index("**Q4")
     between_q2_and_q4 = text[q2_idx:q4_idx]
     assert "afk:2-plan" in between_q2_and_q4
-    assert "WITHOUT" in between_q2_and_q4 and "sandcastle" in between_q2_and_q4
+    assert "WITHOUT" in between_q2_and_q4 and "automation-queue label" in between_q2_and_q4
     assert q2_idx < q3_idx < q4_idx
 
 
