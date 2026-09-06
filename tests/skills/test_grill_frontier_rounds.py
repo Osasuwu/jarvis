@@ -167,14 +167,21 @@ class TestPhase2FrontierRounds:
             "Phase 2 round summary must cover settled + next frontier"
 
     def test_two_line_ceiling_is_display_only(self, phase2_section: str):
+        # Post-#1794 the decision record is a repo-local "decision-log entry"
+        # (CONTEXT.md / docs/decisions / docs/adr), not the retired memory-tool
+        # record_decision(...) call — this test checks the new equivalent
+        # invariant (still uncapped despite the display ceiling).
         assert re.search(r"display", phase2_section, re.IGNORECASE), \
             "Phase 2 must state the two-line ceiling is a display-only ceiling"
-        assert re.search(r"record_decision", phase2_section), \
-            "Phase 2 must state record_decision emission is uncapped despite the display ceiling"
+        assert re.search(r"decision-log entry", phase2_section, re.IGNORECASE), \
+            "Phase 2 must state the decision-log entry is uncapped despite the display ceiling"
         assert re.search(r"CONTEXT\.md", phase2_section), \
             "Phase 2 must state inline CONTEXT.md capture is uncapped despite the display ceiling"
         assert re.search(r"uncapped|not capped", phase2_section, re.IGNORECASE), \
-            "Phase 2 must explicitly state record_decision/CONTEXT.md capture stay uncapped"
+            "Phase 2 must explicitly state decision-log entry/CONTEXT.md capture stay uncapped"
+        # #1794 AC1: the retired record_decision literal must not reappear
+        assert "record_decision" not in phase2_section, \
+            "grill Phase 2 must not reintroduce a record_decision(...) call (issue #1794 AC1)"
 
     def test_answer_conflict_reopens_earlier_question(self, phase2_section: str):
         assert re.search(r"contradict", phase2_section, re.IGNORECASE), \
