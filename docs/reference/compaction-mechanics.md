@@ -80,9 +80,9 @@ But it **cannot**:
 
 **Original solution (#1204/#1536, removed)**: `pre-compact-backup.py` used to keyword-scan CLAUDE.md files and re-inject a "Prohibiting Rules & Standing Orders" section into the snapshot. This duplicated a more reliable mechanism that had shipped five days earlier (#1417/#1418, see below) and was removed as dead weight (2026-08-25).
 
-**Current solution**: `docs/context/invariants.md` is loaded via a bare `@import` line in the project `CLAUDE.md` (#1417/#1418). A bare, top-level `@import` expands at prompt-assembly time and is never subject to compaction's summarization or the hook's own best-effort extraction — it simply reloads on every turn, including immediately after compaction. This is strictly more reliable than the old keyword-scan-into-snapshot approach: no heuristic matching, no dependency on the PreCompact hook running, no risk of the recovery payload's size budget dropping the section.
+**Current solution**: root `AGENTS.md` is loaded via a bare `@AGENTS.md` line in the project `CLAUDE.md` (#1417/#1418, rebuilt by #1791). A bare, top-level `@import` expands at prompt-assembly time and is never subject to compaction's summarization or the hook's own best-effort extraction — it simply reloads on every turn, including immediately after compaction. This is strictly more reliable than the old keyword-scan-into-snapshot approach: no heuristic matching, no dependency on the PreCompact hook running, no risk of the recovery payload's size budget dropping the section.
 
-Rules that need to survive compaction belong in `docs/context/invariants.md` (or another bare-`@import`ed file), not in prose elsewhere in CLAUDE.md.
+Rules that need to survive compaction belong in `AGENTS.md` (or another bare-`@import`ed file), not in prose elsewhere in CLAUDE.md.
 
 ## Related
 

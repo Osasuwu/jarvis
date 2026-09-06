@@ -1,13 +1,14 @@
 # Memory subsystem — pull-only reference
 
-Evicted from the always-loaded [`docs/context/invariants.md`](../context/invariants.md) by
-[#1418](https://github.com/Osasuwu/jarvis/issues/1418). These facts are read at the instant of an
-`mcp__memory__*` call or while working inside `mcp-memory/` — they decide nothing in a session that
-never touches memory internals, so they are not worth a byte in every window. Pull this file when
-the answer turns on how the memory server behaves.
+These facts are read at the instant of an `mcp__memory__*` call or while working inside
+`mcp-memory/` — they decide nothing in a session that never touches memory internals, so they
+are not worth a byte in every window. Pull this file when the answer turns on how the memory
+server behaves.
 
-The two memory rules that *do* bind every session stay in `invariants.md`: Supabase is cross-device
-truth, and secrets never land in any persistent surface.
+## Supabase is cross-device truth
+
+GitHub carries state — percentages, dates, PR markers — while file-based memory is device-local
+only. Anything that must be true across devices belongs in Supabase, not a local file.
 
 ## `memory_store` contract
 

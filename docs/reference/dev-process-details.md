@@ -15,7 +15,34 @@ Trivial, reversible, scope-obvious change (<30 min, own repo): **fix inline**. D
 
 The `Fix > track` rule does **not** override the rest of the development process — fixes still go through PR review, with the `[no-issue]` commit-msg marker.
 
+## Checking the code-review verdict before merging
+
+The Claude code-review bot reviews every PR (via `code-review.yml`). It posts as an
+**issue-comment**, not a PR review, so it does NOT appear in the Reviews tab:
+
+```bash
+gh api --paginate repos/Osasuwu/jarvis/issues/NUMBER/comments
+```
+
+Use `--paginate` so a comment past the first page isn't missed. Address valid findings with code
+changes, or explain why no change is needed — don't assume the Reviews tab is the only place
+feedback lands.
+
+## Linking a sub-issue to a parent epic via API
+
+```bash
+# Get the internal ID of the child issue (NOT the issue number)
+CHILD_ID=$(gh api repos/OWNER/REPO/issues/CHILD_NUMBER --jq '.id')
+
+# Add it as a sub-issue to the parent
+gh api repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues \
+  --method POST \
+  -F sub_issue_id="$CHILD_ID"
+```
+
+Use `-F` (not `-f`) so the ID is sent as an integer.
+
 ## Other pointers
 
-- Decisions-to-memory rule: [`.claude/rules/decisions-to-memory-not-markdown.md`](../../.claude/rules/decisions-to-memory-not-markdown.md) (path-gated, #1274).
-- Path-filtered CI guards require a meta-test (#326): [`.claude/rules/path-filtered-ci-guards-meta-test.md`](../../.claude/rules/path-filtered-ci-guards-meta-test.md) (path-gated, #1274).
+- Decisions belong in the queryable memory store, not a markdown file (#1274).
+- Path-filtered CI guards require a meta-test (#326): [`tests/ci/test_guard_test_convention.py`](../../tests/ci/test_guard_test_convention.py), detail in [`docs/reference/ci-guard-meta-tests.md`](ci-guard-meta-tests.md).

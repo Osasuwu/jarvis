@@ -1,12 +1,17 @@
 """Anti-regrowth ratchet on the always-pushed context layer (#1273).
 
 CI ceilings on push surfaces only — the five canonical source files: the four
-original identity/rules files plus the @import-delivered
-``docs/context/invariants.md`` that replaced the SessionStart hook's
-assembly-derived CONTEXT.md push (#1417). #1417 extracted a second file,
-``docs/context/glossary-index.md``; #1418 retired it — a category index of
-where to look does not need to be always-loaded to be findable, so a pull
-pointer in CLAUDE.md replaced it and its surface row is gone.
+identity/rules files plus the @import-delivered root ``AGENTS.md`` (#1791),
+which replaced ``docs/context/invariants.md`` (#1417's extraction) as the
+file that bypasses the SessionStart hook's assembly-derived CONTEXT.md push.
+#1417 also extracted a second file, ``docs/context/glossary-index.md``;
+#1418 retired it — a category index of where to look does not need to be
+always-loaded to be findable, so a pull pointer in CLAUDE.md replaced it and
+its surface row is gone. #1791 rebuilt the always-loaded half from scratch:
+root ``CLAUDE.md`` collapsed to a single bare ``@AGENTS.md`` import, and
+``AGENTS.md`` itself absorbed ``docs/context/invariants.md``,
+``.claude/rules/*.md``, ``.github/AGENTS.md``, and
+``.github/copilot-instructions.md`` — one file instead of five.
 Ceilings live in checked-in JSON
 (``tests/ci/fixtures/push_surface_ceilings.json``); the guard fails red when a
 surface exceeds its ceiling, and raising a ceiling requires editing the fixture
@@ -17,9 +22,8 @@ Key design rules, per #1273 (as amended by #1417):
 - **Every canonical surface is a plain file.** All five surfaces are measured
   by reading their file directly — there is no assembly-derived surface left
   since #1417 retired ``_load_project_context`` and its budget-constrained
-  push. ``docs/context/invariants.md`` rides a bare ``@import`` in CLAUDE.md,
-  which bypasses the SessionStart assembler and its ``ASSEMBLY_BUDGET_CHARS``
-  cap entirely.
+  push. ``AGENTS.md`` rides a bare ``@import`` in CLAUDE.md, which bypasses
+  the SessionStart assembler and its ``ASSEMBLY_BUDGET_CHARS`` cap entirely.
 - **Item definition is pinned and load-bearing.** bullet at any nesting depth +
   numbered line; only block-level HTML comments are excluded. Fenced code, YAML
   frontmatter, and ``.claude/rules/*`` without a ``paths:`` key are all counted
@@ -95,7 +99,7 @@ CANONICAL_SURFACES = {
     "project_claude_md": "CLAUDE.md",
     "userlevel_claude_md": ".claude-userlevel/CLAUDE.md",
     "userlevel_doctrine_md": ".claude-userlevel/DOCTRINE.md",
-    "invariants_md": "docs/context/invariants.md",
+    "agents_md": "AGENTS.md",
 }
 
 
@@ -499,7 +503,7 @@ class TestFixtureIntegrity:
         assert fixture["_meta"]["context_md_whole_file"]["has_ceiling"] is False
         # The whole-file CONTEXT.md must not be ratcheted; the extracted
         # content lives in its own ratcheted files instead (#1417).
-        assert "invariants_md" in fixture["surfaces"]
+        assert "agents_md" in fixture["surfaces"]
         # #1418 retired the glossary category index; its row must stay gone.
         assert "glossary_index_md" not in fixture["surfaces"]
         assert "context_md_pushed" not in fixture["surfaces"]
@@ -539,9 +543,7 @@ class TestBareImportParsing:
     distinguish the form that actually resolves (#1426's lesson)."""
 
     def test_bare_line_start_import_is_parsed(self):
-        assert _parse_bare_imports("@docs/context/invariants.md\n") == [
-            "docs/context/invariants.md"
-        ]
+        assert _parse_bare_imports("@AGENTS.md\n") == ["AGENTS.md"]
 
     def test_mid_prose_mention_is_not_an_import(self):
         # This is exactly the #1426 defect: a mention inside a sentence never
@@ -584,10 +586,7 @@ class TestImportResolution:
         )
 
     def test_repo_root_import_resolves(self):
-        assert (
-            _resolve_import("docs/context/invariants.md", "CLAUDE.md")
-            == "docs/context/invariants.md"
-        )
+        assert _resolve_import("AGENTS.md", "CLAUDE.md") == "AGENTS.md"
 
     def test_missing_target_resolves_to_none(self):
         assert _resolve_import("nope-does-not-exist.md", "CLAUDE.md") is None
@@ -628,7 +627,7 @@ class TestFanoutBudget:
         assert "CLAUDE.md" in inherited
         assert ".claude-userlevel/CLAUDE.md" in inherited
         # ...as is every bare @import reachable from them.
-        assert "docs/context/invariants.md" in inherited
+        assert "AGENTS.md" in inherited
 
     def test_hook_injected_context_is_not_inherited(self):
         """A one-time session cost must never be counted per agent (#1270)."""

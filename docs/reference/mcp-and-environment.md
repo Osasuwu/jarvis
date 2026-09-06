@@ -1,14 +1,17 @@
 # MCP servers & environment health — pull-only reference
 
-Evicted from the always-loaded [`docs/context/invariants.md`](../context/invariants.md) by
-[#1418](https://github.com/Osasuwu/jarvis/issues/1418). Every fact here is load-bearing while
-authoring or debugging an MCP bootstrap and dead weight otherwise — the definition of situational.
-Pull this file when an MCP server misbehaves, when touching `mcp-memory/`, or when editing anything
-under `.github/workflows/`.
+Every fact here is load-bearing while authoring or debugging an MCP bootstrap and dead weight
+otherwise — the definition of situational. Pull this file when an MCP server misbehaves, when
+touching `mcp-memory/`, or when editing anything under `.github/workflows/`.
 
-These were the strongest `.claude/rules/` + `paths:` candidates in the milestone; that carrier is
-blocked on [#1274](https://github.com/Osasuwu/jarvis/issues/1274), so they land at carrier 5 for now.
-Re-home them once `paths:` resolution is settled.
+## Metered billing needs explicit consent
+
+No silent tier move or subscription-OAuth fallback; billing vars never reach containers.
+
+## `mcp-memory/server.py`, `.mcp.json`, and the Supabase schema are shared surfaces
+
+Consumers sit outside this repo (redrobot, other operator instances); breakage is invisible from
+inside it. Verify consumers before pushing a change to any of them.
 
 ## An MCP bootstrap's stdout IS the JSON-RPC transport
 

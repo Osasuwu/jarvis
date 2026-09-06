@@ -15,7 +15,7 @@ The fix shipped in this PR has two parts:
    that fails any commit re-introducing a non-leading ``!`` directly followed
    by a backtick in that file.
 
-This file is the meta-test. Per .claude/rules/path-filtered-ci-guards-meta-test.md
+This file is the meta-test. Per docs/reference/ci-guard-meta-tests.md
 (#326), and per the schema-drift-guard pattern in
 ``tests/ci/test_schema_drift_guard.py``, every guard ships with a co-located
 test that asserts both (a) the config wires the canonical target and regex,
