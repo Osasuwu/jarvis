@@ -465,7 +465,7 @@ Two stages, both opt-in to start:
    updates a small dashboard (markdown table in `evals/README.md` or a
    GitHub Pages page if appetite grows).
 
-Path-filtered guard: per `.claude/rules/path-filtered-ci-guards-meta-test.md`
+Path-filtered guard: per `docs/reference/ci-guard-meta-tests.md`
 (#326), the eval workflow needs a co-located meta-test in
 `tests/ci/test_evals_guard.py` covering both the path filter and the
 regression-threshold logic.

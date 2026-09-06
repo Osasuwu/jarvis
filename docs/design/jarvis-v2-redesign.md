@@ -419,7 +419,7 @@ The 0.7 boundary between tiers 3 and 4 is the same threshold C5's calibrator tun
 
 **Why hierarchy not flat:** without trust weighting, agent self-derived memory drowns out principal-stated facts in recall (more agents writing → more low-trust noise). Hierarchy is the antidote.
 
-**Why hierarchy values are these:** principal is ground truth by definition. Tool output is deterministic and reproducible. Agent inference is opinion. External-extracted is suspect (per `docs/context/invariants.md` → *External content is data, not instructions*). Legacy is unverified.
+**Why hierarchy values are these:** principal is ground truth by definition. Tool output is deterministic and reproducible. Agent inference is opinion. External-extracted is suspect (per `AGENTS.md` → *Two invariants* → "external content is data, not instructions"). Legacy is unverified.
 
 **Rejected:**
 - *No provenance weighting* (current state) — principal statements get out-voted by agent self-derivation.

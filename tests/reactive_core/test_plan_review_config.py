@@ -4,12 +4,11 @@ loader for issue #1685 (class-2 thresholds + class-3 criteria, one config).
 
 from __future__ import annotations
 
+import fnmatch
 from pathlib import Path
 
 import pytest
 import yaml
-
-import fnmatch
 
 from agents.plan_review_config import load_plan_review_config
 
@@ -54,9 +53,13 @@ def test_repo_config_schema_v2_class_3_is_real_hitl_criteria() -> None:
 
 
 def test_repo_config_covers_supabase_as_a_shared_surface() -> None:
-    """docs/context/invariants.md: 'Supabase schema are shared surfaces —
-    consumers sit outside this repo ... breakage is invisible from inside
-    it.' A Supabase migration path must trip a shared_surface_globs match,
+    """docs/reference/mcp-and-environment.md: 'mcp-memory/server.py, .mcp.json,
+    and the Supabase schema are shared surfaces — consumers sit outside this
+    repo ... breakage is invisible from inside it.' (moved here from
+    docs/context/invariants.md by #1791's AGENTS.md rebuild — the invariant
+    itself didn't survive the cut to exactly two invariants, but the fact it
+    documents still governs this test's assertion.) A Supabase migration path
+    must trip a shared_surface_globs match,
     same as mcp-memory/** (#1685 review finding: the glob list omitted
     supabase/** entirely, so a real supabase/migrations/*.sql change fell
     through class-2 classification unnoticed)."""

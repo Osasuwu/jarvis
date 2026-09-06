@@ -15,7 +15,53 @@ Trivial, reversible, scope-obvious change (<30 min, own repo): **fix inline**. D
 
 The `Fix > track` rule does **not** override the rest of the development process — fixes still go through PR review, with the `[no-issue]` commit-msg marker.
 
+## Checking the code-review verdict before merging
+
+The Claude code-review bot reviews every PR (via `code-review.yml`). It posts as an
+**issue-comment**, not a PR review, so it does NOT appear in the Reviews tab:
+
+```bash
+gh api --paginate repos/Osasuwu/jarvis/issues/NUMBER/comments
+```
+
+Use `--paginate` so a comment past the first page isn't missed. Address valid findings with code
+changes, or explain why no change is needed — don't assume the Reviews tab is the only place
+feedback lands.
+
+## Linking a sub-issue to a parent epic via API
+
+See [`.github/github-process-runbook.md`](../../.github/github-process-runbook.md) → *5. Parent/Epic
+Rules* for the `gh api .../sub_issues` call and the `-F` (not `-f`) integer-ID gotcha — not
+duplicated here to avoid the two drifting apart.
+
+## Deliberate simplifications carry a `ceiling:` marker
+
+When you knowingly ship a shortcut with a known limit — global lock, O(n²) scan over a list
+assumed small, naive heuristic, hardcoded single-device path — leave an inline `ceiling:` comment
+naming *both* the limit and the upgrade path:
+`# ceiling: O(n²) over labels, fine <200; switch to a set-diff if a repo crosses that`.
+
+Not for ordinary "could be prettier" code — only for a corner cut against a limit you can name.
+This is the cheap end of "tech debt must be visible" (`~/.claude/SOUL.md` → *Judgment
+calibration*): `grep -rn 'ceiling:'` is the debt list, so a shortcut no longer needs an issue to
+stay visible. An unnamed limit means you don't understand the shortcut well enough to ship it.
+
+## No state in static storage
+
+State (% done, ✅/❌ markers, "shipped in PR #X", sprint dates, "last audit YYYY-MM-DD") belongs
+in GitHub Issues/Projects/PRs/commit history — not in markdown files, not in memory. Static
+storage (this repo's `.md` files, `docs/**`) may hold: evergreen lessons, decisions + rationale,
+reference info (API shapes, config locations), target architecture, pointers ("see #633 for
+current status"). If a field would be wrong in two weeks, it belongs in GitHub, not here.
+
+## Skills live in `.claude-userlevel/skills/`
+
+That directory is the canonical location (rare project overrides aside); `~/.claude/skills/` is
+just the installed mirror. Editing a skill under `~/.claude/skills/` directly is silently
+reverted by the next `install.ps1 -Apply` — always edit the `.claude-userlevel/` source and
+re-run the installer to propagate.
+
 ## Other pointers
 
-- Decisions-to-memory rule: [`.claude/rules/decisions-to-memory-not-markdown.md`](../../.claude/rules/decisions-to-memory-not-markdown.md) (path-gated, #1274).
-- Path-filtered CI guards require a meta-test (#326): [`.claude/rules/path-filtered-ci-guards-meta-test.md`](../../.claude/rules/path-filtered-ci-guards-meta-test.md) (path-gated, #1274).
+- Decisions belong in the queryable memory store, not a markdown file (#1274).
+- Path-filtered CI guards require a meta-test (#326): [`tests/ci/test_guard_test_convention.py`](../../tests/ci/test_guard_test_convention.py), detail in [`docs/reference/ci-guard-meta-tests.md`](ci-guard-meta-tests.md).
