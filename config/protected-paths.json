@@ -4,6 +4,7 @@
     "hitl": [
       "config/SOUL.md",
       "CLAUDE.md",
+      "AGENTS.md",
       ".gitleaks.toml",
       ".pre-commit-config.yaml",
       ".claude/settings.json",
