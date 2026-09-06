@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Implement a SINGLE GitHub issue directly in the current session. Triggers: "реализуй #42", "сделай #42", "implement #X". Multiple parallel issues → /delegate. NOT for viewing, triaging, or discussing issues — implementation requests only.
+description: Implement a SINGLE GitHub issue directly in the current session. Triggers: "реализуй #42", "сделай #42", "implement #X". Multiple parallel issues → /dispatch. NOT for viewing, triaging, or discussing issues — implementation requests only.
 version: 2.0.0
 ---
 
@@ -10,18 +10,18 @@ Autonomously implement a GitHub issue **inline, in the current session** — no 
 
 Use this when the work benefits from the full session context (memories just loaded, recent decisions, cross-cutting awareness) or when the issue is safety-adjacent and you can't afford a context-blind coding agent.
 
-Memory recall and the `record_decision` contract come from user-level CLAUDE.md `### Memory & decision protocol` — they are session-wide and don't need restating here. The skill-specific gates below are what `/implement` adds on top.
+Decisions and working state are logged as plain lines under native auto memory (`~/.claude/projects/<project>/memory/decisions.md`, `handoff.md`) — see §3 and §6 below for the exact format. The skill-specific gates below are what `/implement` adds on top.
 
 ## Usage
 
 Invoke when principal says "реализуй #42", "сделай #42", "implement #X".
-Single-issue by default. If multiple issues arrive but only one needs session context → implement the context-heavy one here, hand the rest to `/delegate`.
+Single-issue by default. If multiple issues arrive but only one needs session context → implement the context-heavy one here, hand the rest to `/dispatch`.
 
 Target repo: determined from context (CWD, recent conversation, user mention). If ambiguous, ask. Read `config/repos.conf` for the full list of tracked repos.
 
 ## Contract: dispatch routing (mechanical / TDD-mode / `grill_required`)
 
-Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/implement` does **not** run `/grill` inline (and there is no standalone `/tdd` skill — TDD-mode is operated from `_shared/tdd/` reference docs as inline discipline). Instead it inspects two inputs at the very start of the pipeline and routes to one of three branches.
+Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/implement` does **not** run `/grill` inline. Instead it inspects two inputs at the very start of the pipeline and routes to one of three branches.
 
 **Inputs** (run both before the dispatch table):
 
@@ -37,17 +37,14 @@ Per ADR-0001, skills do not self-trigger mid-task ("Type 3" is rejected). `/impl
    - Will tests be non-trivial?
    - Crosses existing non-trivial code?
 
-2. **Grill artifact for this issue** — present iff *either* of the following holds:
-
-   - **(a) working_state** — `memory_get(name="working_state_<project>", project="<project>")` where `<project>` is the short project slug (`jarvis`, `redrobot`), matching the convention in `scripts/session-context.py`. If the returned record references this issue number alongside one or more decision UUIDs, the artifact is present. The exact key shape inside the record (`decision_uuids[]` keyed by issue, an episodes list, free-form notes) is project-controlled — accept any structure where a decision UUID is reachable from the issue number; if `/grill` populated working_state for this issue, the link will be there. If working_state has no entry for this issue, fall through to (b).
-   - **(b) issue body** — the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section cites at least one decision UUID. This is the opt-in path for manually-annotated or grill-refined issue bodies (e.g. #593/#594/#595/#596 in the TDD-wiring chain). The automated `/to-tickets` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
+2. **Grill artifact for this issue** — present iff the issue body contains a heading starting with `## Decisions` (prefix match — `## Decisions`, `## Decisions & Alternatives`, etc.) AND that section states the grill's resolution inline (a plain-prose decision line, no UUID required). This is the opt-in path for manually-annotated or grill-refined issue bodies (e.g. #593/#594/#595/#596 in the TDD-wiring chain). The automated `/to-tickets` template does not yet emit this section — a separate issue tracks adding it; until then `## Decisions` in the body is treated as a deliberate annotation by the author.
 
 **Dispatch table** — pick exactly one branch:
 
 | checkbox | grill artifact present for this issue? | route |
 |---|---|---|
 | 0 yes | n/a | **mechanical-mode** → continue to §1 |
-| ≥1 yes | yes (UUIDs in working_state OR cited in issue body) | **TDD-mode** → §4-TDD instead of §4 (rest of pipeline unchanged) |
+| ≥1 yes | yes (`## Decisions` section states the resolution inline) | **TDD-mode** → §4-TDD instead of §4 (rest of pipeline unchanged) |
 | ≥1 yes | no | **exit `grill_required`** |
 
 ### Branch: `grill_required` exit
@@ -57,15 +54,15 @@ Emit the structured block below and stop the pipeline. No claim, no branch, no d
 ```
 EXIT: grill_required
 issue: <owner/repo>#<N>
-reason: trigger-checkbox-fired (<count>/4 yes); no grill artifact in working_state or issue body
+reason: trigger-checkbox-fired (<count>/4 yes); no grill artifact (`## Decisions` section) in issue body
 next: run /grill against #<N>, then re-dispatch /implement #<N>
 ```
 
-The orchestrator parses this, runs `/grill` in a fresh session (so the smart-zone budget is intact), updates the issue AC + CONTEXT.md + memory, then re-dispatches `/implement #<N>`. On the second run the grill artifact is present and the dispatch routes to TDD-mode.
+The orchestrator parses this, runs `/grill` in a fresh session (so the smart-zone budget is intact), updates the issue AC + CONTEXT.md + the issue's `## Decisions` section, then re-dispatches `/implement #<N>`. On the second run the grill artifact is present and the dispatch routes to TDD-mode.
 
 ### Branch: TDD-mode
 
-Continue through §1–§3 (pre-flight, fetch, claim+branch+record_decision) as in mechanical-mode. Then take **§4-TDD** in place of §4. §5–§8 (commit/PR/outcome/cleanup) are shared.
+Continue through §1–§3 (pre-flight, fetch, claim+branch+log the decision) as in mechanical-mode. Then take **§4-TDD** in place of §4. §5–§8 (commit/PR/outcome/cleanup) are shared.
 
 No symmetric "skip TDD" override: a grill artifact is a positive commitment to red→green→refactor for this issue. If the principal disagrees with TDD-mode for a specific grilled issue, the right move is to re-grill (which may resolve to a different approach) rather than bypass the loop.
 
@@ -77,11 +74,11 @@ The original flow. Most "fix typo / bump dep / move file" issues land here. Cont
 
 ### Re-entry is stateless
 
-Every `/implement` entry re-runs the checkbox and re-reads `working_state_jarvis`. There is no `tdd_mode` flag carried in from the orchestrator. This means: when `/grill` finishes and the orchestrator re-dispatches `/implement #N`, the route flips from `grill_required` → TDD-mode automatically because the grill populated the artifact. Same code path, different input state.
+Every `/implement` entry re-runs the checkbox and re-reads the issue body's `## Decisions` section. There is no `tdd_mode` flag carried in from the orchestrator. This means: when `/grill` finishes and the orchestrator re-dispatches `/implement #N`, the route flips from `grill_required` → TDD-mode automatically because the grill populated the `## Decisions` section. Same code path, different input state.
 
 ## Exploratory tasks
 
-Dispatch to this section is by **task type**, never by repo path — a slice is exploratory when the issue frames a hypothesis with an acceptance criterion pre-registered before the run, not when it happens to touch a particular directory. Skills stay issue-agnostic (decision `b760edd2-c989-4101-bb3b-cb871e802e8d`): nothing below names a repo-specific path. This section runs alongside the §Contract dispatch above, not instead of it — an exploratory issue still routes through mechanical/TDD-mode/`grill_required` for its *implementation* half; this section governs the *experiment* half.
+Dispatch to this section is by **task type**, never by repo path — a slice is exploratory when the issue frames a hypothesis with an acceptance criterion pre-registered before the run, not when it happens to touch a particular directory. Skills stay issue-agnostic: nothing below names a repo-specific path. This section runs alongside the §Contract dispatch above, not instead of it — an exploratory issue still routes through mechanical/TDD-mode/`grill_required` for its *implementation* half; this section governs the *experiment* half.
 
 **Recognizing an exploratory task**: the issue reads as a question or hypothesis ("does X improve Y", "is Z the cause of W") rather than a spec, and states — before any run happens — what result would confirm or refute it. If the acceptance criterion is written or revised *after* looking at a run's output, the slice is not pre-registered and does not qualify; register the criterion first, then run.
 
@@ -89,11 +86,11 @@ Dispatch to this section is by **task type**, never by repo path — a slice is 
 
 An exploratory slice is AFK-eligible **if and only if** the hypothesis's pre-registered acceptance criterion has an objective, machine-checkable oracle. No human judgment call in the loop — the run either resolves the criterion the way a script can check it, or it doesn't, and if it doesn't the slice is interactive, not AFK.
 
-The vocabulary for "objective machine-checkable oracle" (decision `b9c78373-4c7a-4f35-a304-c8a12e953507`, SLR arxiv:1804.01954) is exactly one of:
+The vocabulary for "objective machine-checkable oracle" (SLR arxiv:1804.01954) is exactly one of:
 
 - **pseudo-oracle** — a second, independent implementation whose output the run is checked against
 - **analytical solution** — a closed-form or derived expected value, computed independently of the run
-- **metamorphic relation** — a relation that must hold between two related runs when no single-run oracle exists (see `_shared/tdd/tests.md` — same vocabulary this repo already uses for tests-as-value-oracle)
+- **metamorphic relation** — a relation that must hold between two related runs when no single-run oracle exists
 - **property invariant** — a property that must hold regardless of input, checked mechanically against the run's output
 - **golden run** — a previously-validated reference run the new run is compared against
 
@@ -130,7 +127,7 @@ Identify: files to change, acceptance criteria, safety implications.
 - Wait for principal approval before implementing
 - Do NOT dispatch to subagents (keep inline — this skill is the right tool)
 
-### 3. Claim, branch, record decision
+### 3. Claim, branch, log the decision
 
 ```bash
 gh issue edit <N> --add-label "status:in-progress"
@@ -139,7 +136,7 @@ git checkout master && git pull
 git checkout -b feat/<N>-<slug>
 ```
 
-Then emit `mcp__memory__record_decision` per the contract in user-level CLAUDE.md `### 3. record_decision contract`. Issue implementation always satisfies trigger #1 — the call is non-optional. `memories_used` carries UUIDs from the session-start recall map.
+Then append one line to `~/.claude/projects/<project>/memory/decisions.md`: `- YYYY-MM-DD — <decision> — <why, one clause> — #<N>`. Issue implementation always gets a line — the append is non-optional, no UUID required.
 
 #### 3a. Process preflight gate (mandatory — run before opening PR)
 
@@ -168,7 +165,7 @@ Process issues are not code bugs — they take 10 seconds to fix here vs. a full
 
 #### 3b. Plan-gate trigger (interactive lane, #1688)
 
-Runs **after** claim+branch, **before** any §4/§4-TDD edit. This is the interactive lane's ex-ante half of two-point plan-review classification (decision `d34dd65a`) — the CI diff-gate (#1687) is the ex-post, fail-closed backstop that re-classifies from the real diff, so this step does not need an exact diff, only the files-to-touch and a rough churn estimate already known from §2's analysis.
+Runs **after** claim+branch, **before** any §4/§4-TDD edit. This is the interactive lane's ex-ante half of two-point plan-review classification — the CI diff-gate (#1687) is the ex-post, fail-closed backstop that re-classifies from the real diff, so this step does not need an exact diff, only the files-to-touch and a rough churn estimate already known from §2's analysis.
 
 ```python
 from agents.implement_plan_gate import evaluate_trigger
@@ -197,7 +194,7 @@ result = evaluate_trigger(
 
 **Protected files — policy depends on who is editing.** The canonical list (repo-level + user-level `~/.claude/*`) lives in [`docs/security/agent-boundaries.md`](../../../docs/security/agent-boundaries.md). Don't duplicate it here — check that file before editing.
 
-- **Subagent dispatch (`/delegate`)** — never edits protected files. If the task requires it, escalate to inline `/implement`.
+- **Subagent dispatch (`/dispatch`)** — never edits protected files. If the task requires it, escalate to inline `/implement`.
 - **Inline `/implement` with explicit principal approval in-session** — MAY edit protected files. Document the change prominently in the PR body (mark the file `[PROTECTED]` in the §Files Changed list + rationale) so the principal sees it before merge.
 - **Inline `/implement` without explicit approval** — document the needed change in the PR body and leave the file untouched for the principal.
 
@@ -277,17 +274,24 @@ A `TypeError` or `AttributeError` on first call is the most embarrassing rework 
 
 Engaged when the §Contract dispatch table routes here. Replaces §4 — but §4a (already-done audit), §4b (per-change hygiene), and §4c (E2E smoke) above all still apply; the constraints they impose are restated in Operating discipline below.
 
-**Procedural source: [`.claude-userlevel/skills/_shared/tdd/tdd-loop.md`](../_shared/tdd/tdd-loop.md).** Load it as your operating procedure for this issue. Do not duplicate the loop here — read the file and follow it. Related references in the same directory: [tests.md](../_shared/tdd/tests.md), [mocking.md](../_shared/tdd/mocking.md), [refactoring.md](../_shared/tdd/refactoring.md).
+**The loop, inlined (this is now the sole source — nothing external to load):**
+
+1. **Red** — write one failing test for the current AC item. Run it, confirm it fails for the expected reason (not a typo/import error).
+2. **Green** — write the minimal implementation that makes that test pass. Nothing more.
+3. **Mutation probe** — corrupt the line(s) you just wrote (flip a comparison, off-by-one a bound, drop a branch) and confirm the test you just wrote reddens. Record the evidence line (`<file>:<line> corrupted → <test name> reddened`). If it doesn't redden, the test is not actually exercising the behavior — fix the test before moving on.
+4. **Refactor** — deferred: not per AC item (see the anti-horizontal-slicing rule below), only as the single whole-suite pass after all AC items are green.
+
+**Anti-horizontal-slicing rule**: do not write all the tests first and then all the implementation, and do not batch several AC items' RED states before going GREEN on any of them. One AC item goes red→green→(mutation probe) before the next item starts. Horizontal slicing defeats the point of the loop — it turns TDD into "write tests after" with extra steps.
 
 **Operating discipline:**
 
 - §4a (already-done audit) still runs first — TDD-mode is no excuse to skip it. Symbols from the issue AC drive the grep; if the behavior already exists with tests, stop and close as `not-planned`.
-- Iterate one acceptance-criterion bullet at a time. Per AC item: write a failing test → confirm RED → write the minimal implementation → confirm GREEN → next AC item. The inner loop is strictly red→green — do **not** refactor between AC items. Do **not** write all tests first then all code either (the anti-horizontal-slicing rule in `tdd-loop.md` is binding).
+- Iterate one acceptance-criterion bullet at a time. Per AC item: write a failing test → confirm RED → write the minimal implementation → confirm GREEN → next AC item. The inner loop is strictly red→green — do **not** refactor between AC items. Do **not** write all tests first then all code either (the anti-horizontal-slicing rule above is binding).
 - Every test must trace back to an AC bullet. If a test does not, the test is either out of scope or evidence the AC is incomplete — in the latter case stop and escalate (re-grill, do not invent AC inline).
-- Once every AC item's test is green, run **one** refactor pass over the whole green suite (`tdd-loop.md` §4) before moving to §5. Refactor permission is scoped to code freshly covered by a passing test in this session. Adjacent untested code is not in refactor scope — either write a characterization test first (then it is in scope) or flag a follow-up issue and leave it.
+- Once every AC item's test is green, run **one** refactor pass over the whole green suite (step 4 above) before moving to §5. Refactor permission is scoped to code freshly covered by a passing test in this session. Adjacent untested code is not in refactor scope — either write a characterization test first (then it is in scope) or flag a follow-up issue and leave it.
 - §4c (E2E smoke) still applies before marking the outcome `success` when the change touches I/O / schema / hooks / subprocess areas.
-- ADR-0001 compliance: do not invoke `/grill` or any other skill mid-task. The reference docs in `_shared/tdd/` are read as files, not as skill invocations.
-- After each AC item's GREEN, run the mutation probe (`tdd-loop.md` §3) before starting the next item — survival blocks progress, and it is a manual per-test discipline, never an automated score/gate.
+- ADR-0001 compliance: do not invoke `/grill` or any other skill mid-task. The loop above is inline discipline, not a skill invocation.
+- After each AC item's GREEN, run the mutation probe (step 3 above) before starting the next item — survival blocks progress, and it is a manual per-test discipline, never an automated score/gate.
 
 **Mutation-probe gate — final pass before §5, both parts required:**
 
@@ -347,30 +351,13 @@ EOF
 
 **Why this matters**: the Claude code-review bot and human reviewers see reasoning inline, not just diff. HIGH/CRITICAL risks are flagged before review starts. No back-and-forth asking "why did you do X?"
 
-### 6. Record outcome
+### 6. Log the outcome
 
-After PR creation (or failure at any step), record the outcome for the Outcome Tracking & Learning pillar:
+After PR creation (or failure at any step), append one line to `~/.claude/projects/<project>/memory/decisions.md`:
 
 ```
-outcome_record(
-  task_type: "delegation",
-  task_description: "<issue title> (#N)",
-  outcome_status: "success" | "partial" | "failure",
-  outcome_summary: "<what happened — PR created, tests passed/failed, etc.>",
-  goal_slug: "<related goal if known>",
-  project: "<repo name>",
-  issue_url: "<issue URL>",
-  pr_url: "<PR URL if created>",
-  memory_id: "<primary informing memory id>",   # see rule below
-  tests_passed: true/false,
-  lessons: "<anything non-obvious learned>",
-  pattern_tags: ["delegation", "inline", "<area>"]
-)
+- YYYY-MM-DD — outcome <success|partial|failure> — #N — <PR> — <one-clause lesson>
 ```
-
-**Rule — `class:2` pattern_tag**: if the issue carries the `class:2` GitHub label (`gh issue view <N> --json labels --jq '[.labels[].name]'`), include `"class:2"` in `pattern_tags`. This is the sole signal `/verify`'s Step 2c plan-conformance check and rework-round checkpoint (#1692) query against — omitting it makes that checkpoint permanently see 0 class-2 outcomes regardless of how many actually shipped.
-
-**Rule — primary informing memory**: pass the first element of the §3 `record_decision` call's `memories_used` that is a **memory-row UUID** — an id that came from `memory_recall`/`memory_get` (the recall map). `memories_used` may legitimately also carry decision-**episode** UUIDs (a grill decision cited in the issue's `## Decisions` section, a `record_decision` return value) — those are NOT valid here: the FK `task_outcomes.memory_id → memories(id)` rejects them with 23503 (bitten 2026-07-02, #971 outcome). Provenance is the discriminator, not shape — both are UUIDs; only where you got it tells them apart. If no element is a memory-row UUID (or `memories_used` was empty), omit `memory_id`. Never pass multiple — the FK is a single UUID and `memory_calibration` joins on one memory per outcome; richer attribution belongs at the view layer, not the row.
 
 **Always record**, even on failure — failed outcomes are the most valuable for learning.
 
@@ -389,7 +376,7 @@ When implementing multiple related issues back-to-back:
 - CI infra-blocked (billing failure, empty `steps` array — not *failing* tests) → merge if local tests green AND Claude code-review clean
 - Claude code-review findings are advisory — address substantive ones, ignore style nits. The bot posts as an **issue-comment** (`gh api repos/<owner>/<repo>/issues/<n>/comments`), not a PR review — check it explicitly; "no Copilot review" is no longer a valid merge basis.
 
-Waiting for manual review on every LOW-risk PR is the anti-pattern. See memories: `pm_autonomy_redrobot`, `copilot_review_advisory_only`, `no_confirm_commits_pushes_merges`.
+Waiting for manual review on every LOW-risk PR is the anti-pattern.
 
 ### 8. Post-merge cleanup
 
@@ -417,12 +404,12 @@ git diff main...HEAD
 ```
 
 Check for:
-- **Scope fit**: does the file list match the issue scope? Unrelated files → revert them before pushing (memory `check_pr_scope_fit_at_open_time`)
+- **Scope fit**: does the file list match the issue scope? Unrelated files → revert them before pushing
 - Files that shouldn't have been modified (especially protected files)
 - Debug code, `console.log`, `print` statements left behind
 - Unrelated changes that crept in
 - Secrets or credentials in any form
-- **Symmetric patterns**: when fixing a class of bug, grep for sibling instances across the file AND other files — not just the one the reviewer flagged (memory `feedback_symmetric_fixes`)
+- **Symmetric patterns**: when fixing a class of bug, grep for sibling instances across the file AND other files — not just the one the reviewer flagged
 
 #### Self-review checklist (cheap catch — PR plugin is authoritative)
 
@@ -454,6 +441,6 @@ If the diff looks wrong, fix it before pushing.
 
 See `docs/security/recovery-playbook.md` for how to handle:
 - Broke a file → revert from main
-- Corrupted memory → `memory_restore`
+- Corrupted decisions.md/handoff.md → restore from the file's own edit history, or accept the loss and note it in the PR
 - Created bad PR → close + delete branch
 - Committed to wrong branch → cherry-pick + reset
