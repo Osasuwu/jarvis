@@ -42,6 +42,13 @@ gh api repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues \
 
 Use `-F` (not `-f`) so the ID is sent as an integer.
 
+## Skills live in `.claude-userlevel/skills/`
+
+That directory is the canonical location (rare project overrides aside); `~/.claude/skills/` is
+just the installed mirror. Editing a skill under `~/.claude/skills/` directly is silently
+reverted by the next `install.ps1 -Apply` — always edit the `.claude-userlevel/` source and
+re-run the installer to propagate.
+
 ## Other pointers
 
 - Decisions belong in the queryable memory store, not a markdown file (#1274).
