@@ -33,7 +33,16 @@ Assemble >=3 keyword sets:
 
 Check in order; first match passes the gate.
 
-#### a. Working-state check
+#### a. File-based artifact check
+
+Look for a file under `docs/research/<topic-slug>-*.md` in the current repo
+whose slug matches one of the topic keywords and whose date is within 60 days
+of today. First match passes the gate.
+
+This is `/research`'s current save format (`write_research_artifact(...)`,
+see `research/SKILL.md`) — check it first since it's the primary channel.
+
+#### b. Working-state check (legacy)
 
 ```
 memory_get(name="working_state_<project>", project="<project>")
@@ -45,7 +54,7 @@ Within your own `### [entry]` block (do not search other blocks in the merge-doc
 
 Both conditions must hold. A UUID without a matching `topic:<slug>` tag (pre-fix research artifacts or mismatched topic) is rejected.
 
-#### b. Memory recall
+#### c. Memory recall (legacy)
 
 ```
 memory_recall(type=reference, query=<topic-keywords>, project=<project>, limit=5)
