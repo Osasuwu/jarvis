@@ -31,22 +31,24 @@ Slices may be 'HITL' or 'AFK'. HITL slices require human interaction, such as an
 - Prefer many thin slices over few thick ones
 </vertical-slice-rules>
 
-### 3a. AFK-fit checklist (apply per slice, decides `sandcastle` and class labels)
+### 3a. AFK-fit checklist (apply per slice, decides the automation-queue label and class labels)
+
+**Automation-queue label** — the label that makes an issue eligible for unattended dispatch. Its concrete value is the `DEFAULT_ASSIGNEE` constant in [`agents/task_dispatch.py`](../../../agents/task_dispatch.py); the `/dispatch` pre-dispatch gate that checks for it lives in [`scripts/delegate_predispatch_gate.py`](../../../scripts/delegate_predispatch_gate.py). This skill refers to it as **the automation-queue label** throughout rather than hardcoding its value, so the label name stays a single source of truth in the dispatcher config.
 
 For each slice, run the static Q1 classification first, then Q2-Q4 by LLM judgement. The verdict lands in one of **three outcomes** (#1708 — replaces the old binary AFK-yes/AFK-no framing):
 
 | Outcome | Trigger | Labels applied |
 |---|---|---|
-| **Class 1** | No protected-path match (Q1) AND all of Q2-Q4 answer "no" | `sandcastle`, no class label |
-| **Class 2** (`afk:2-plan`) | A `guarded`-bucket match (Q1), **or** any of Q2/Q3 answers "yes" | `sandcastle` **and** `afk:2-plan` |
-| **Class 3** (`afk:3-human`) | A `hitl`-bucket match (Q1) | `afk:3-human`, **no** `sandcastle` |
+| **Class 1** | No protected-path match (Q1) AND all of Q2-Q4 answer "no" | the automation-queue label, no class label |
+| **Class 2** (`afk:2-plan`) | A `guarded`-bucket match (Q1), **or** any of Q2/Q3 answers "yes" | the automation-queue label **and** `afk:2-plan` |
+| **Class 3** (`afk:3-human`) | A `hitl`-bucket match (Q1) | `afk:3-human`, **no** automation-queue label |
 
-This checklist is the upstream pair of the `/dispatch` pre-dispatch gate. The gate refuses dispatch when `sandcastle` is missing — `/to-tickets` is the canonical place where the label gets applied (decision `6e753417`). The class label (`afk:2-plan`/`afk:3-human`) has **two writers**: `/to-tickets` at creation (here) and `/triage` on demand for issues that skipped this flow (`/file-issue` path) — see §5 and `triage/SKILL.md`. `sandcastle` is never applied manually and never applied by `/grill` (slice issues don't exist at grill time).
+This checklist is the upstream pair of the `/dispatch` pre-dispatch gate. The gate refuses dispatch when the automation-queue label is missing — `/to-tickets` is the canonical place where the label gets applied (decision `6e753417`). The class label (`afk:2-plan`/`afk:3-human`) has **two writers**: `/to-tickets` at creation (here) and `/triage` on demand for issues that skipped this flow (`/file-issue` path) — see §5 and `triage/SKILL.md`. The automation-queue label is never applied manually and never applied by `/grill` (slice issues don't exist at grill time).
 
 **Q1 — protected-zone intersection (static)**: call `classify_static_paths(declared_files, repo, config)` from [`scripts/to_tickets_afk_fit.py`](../../../scripts/to_tickets_afk_fit.py) against [`config/protected-paths.json`](../../../config/protected-paths.json). It returns a `ClassVerdict`:
 
-- **`hitl` bucket hit** → `verdict.cls == 3` → this is a categorical security boundary (identity/security config) — apply `afk:3-human`, do **not** apply `sandcastle`, Q2-4 are moot.
-- **`guarded` bucket hit** → `verdict.cls == 2` → a shared surface with off-repo consumers, recoverable via a locked plan — apply `sandcastle` **and** `afk:2-plan`, Q2-4 are moot (the plan-gate downstream in `/implement`/`/task-implement` handles the "recoverable via a locked plan" half).
+- **`hitl` bucket hit** → `verdict.cls == 3` → this is a categorical security boundary (identity/security config) — apply `afk:3-human`, do **not** apply the automation-queue label, Q2-4 are moot.
+- **`guarded` bucket hit** → `verdict.cls == 2` → a shared surface with off-repo consumers, recoverable via a locked plan — apply the automation-queue label **and** `afk:2-plan`, Q2-4 are moot (the plan-gate downstream in `/implement`/`/task-implement` handles the "recoverable via a locked plan" half).
 - **No match, known repo** → `verdict.cls is None`, `verdict.reason` mentions "fall through" → proceed to Q2-Q4.
 - **Unknown repo** → `verdict.cls is None`, `verdict.reason == "unknown repo, judge manually"` → proceed to Q2-Q4 by LLM judgement and flag "unknown repo, judge manually" in the slice notes (verbatim from `verdict.reason`).
 
@@ -54,9 +56,9 @@ This checklist is the upstream pair of the `/dispatch` pre-dispatch gate. The ga
 
 **Q3 — mid-execution judgement call (LLM)**: does the slice need a human judgement mid-implementation that no programmatic test can verify — e.g. "pick a sensible default timeout", "match the existing visual style"? **no** only when the AC fully constrains the answer.
 
-A Q2 or Q3 "yes" now applies `afk:2-plan` **WITHOUT** `sandcastle` — the slice is under-specified in a way a locked plan can recover (the same class-2 plan-gate that `/implement`/`/task-implement` run for a `guarded`-bucket hit), but it is not sandcastle-safe to auto-spawn, since the class-2 plan-gate assumes an interactive lane or a drain-produced plan, not a bare AFK spawn. It still runs — inline via `/implement`, or headlessly once its plan locks — it just never carries `sandcastle`.
+A Q2 or Q3 "yes" now applies `afk:2-plan` **WITHOUT** the automation-queue label — the slice is under-specified in a way a locked plan can recover (the same class-2 plan-gate that `/implement`/`/task-implement` run for a `guarded`-bucket hit), but it is not safe to auto-spawn onto the automation queue, since the class-2 plan-gate assumes an interactive lane or a drain-produced plan, not a bare AFK spawn. It still runs — inline via `/implement`, or headlessly once its plan locks — it just never carries the automation-queue label.
 
-**Q4 — cross-cutting / multi-repo / external-state (LLM)**: does the slice touch multiple repos, external services that need credentials beyond what the sandcastle image carries, or side effects (Telegram send, prod DB write, Stripe charge) that need owner confirmation? **yes** → AFK-no, **unchanged from today**: apply the project's HITL/attention marker (e.g. `status:owner-queue`), no new class label. Q4 is categorically an owner-confirmation gate (a human must confirm the side effect happens at all), not an under-specification problem a locked plan can resolve — that's why it keeps its own pre-existing treatment instead of folding into the Q2/Q3 → `afk:2-plan` outcome.
+**Q4 — cross-cutting / multi-repo / external-state (LLM)**: does the slice touch multiple repos, external services that need credentials beyond what the automation sandbox image carries, or side effects (Telegram send, prod DB write, Stripe charge) that need owner confirmation? **yes** → AFK-no, **unchanged from today**: apply the project's HITL/attention marker (e.g. `status:owner-queue`), no new class label. Q4 is categorically an owner-confirmation gate (a human must confirm the side effect happens at all), not an under-specification problem a locked plan can resolve — that's why it keeps its own pre-existing treatment instead of folding into the Q2/Q3 → `afk:2-plan` outcome.
 
 **Why the asymmetry (#1708 AC4)**: `hitl` paths are a categorical security boundary — no plan makes editing `config/SOUL.md` autonomous, so it's a hard class-3 refusal. Q2/Q3 under-specification is recoverable by writing down a plan that pins the missing judgement call, so it downgrades to class-2 rather than a hard refusal. Q4 risk is neither a security boundary nor a specification gap — it's "a human must confirm this side effect happens," which a plan cannot substitute for, so it keeps its own unchanged owner-confirmation treatment.
 
@@ -64,7 +66,7 @@ A Q2 or Q3 "yes" now applies `afk:2-plan` **WITHOUT** `sandcastle` — the slice
 
 Record the AFK decision per slice (which outcome + the one question/bucket that produced it) so the quiz in §4 can show the owner *why* a slice landed where it did.
 
-**The AFK-fit verdict is the single source of AFK-truth — for manual *and* automated emission.** The `/dispatch` pre-dispatch gate is not the only consumer: any **automated task emitter** the project runs must honor the same verdict rather than trust a label blindly. In jarvis this is the reactive-core orchestrator's `emit_task` route — an orchestrator-emitted `task_queue` row carries the same AFK-fit semantics as a manually-triaged slice: AFK-safe ⇒ `assignee=sandcastle` (auto-spawned by the task-dispatch loop), AFK-unsafe ⇒ `assignee=owner` (routed for owner attention, never auto-spawned), mirroring the `status:owner-queue` landing zone where a refused `/dispatch` parks. The binding (event/task state vocabulary, who enqueues with what priority) lives in the project's CLAUDE.md *Responsibility split* and CONTEXT.md `task_queue` glossary — not here, so this checklist stays project-agnostic.
+**The AFK-fit verdict is the single source of AFK-truth — for manual *and* automated emission.** The `/dispatch` pre-dispatch gate is not the only consumer: any **automated task emitter** the project runs must honor the same verdict rather than trust a label blindly. In jarvis this is the reactive-core orchestrator's `emit_task` route — an orchestrator-emitted `task_queue` row carries the same AFK-fit semantics as a manually-triaged slice: AFK-safe ⇒ `assignee` set to the automation-queue value (auto-spawned by the task-dispatch loop), AFK-unsafe ⇒ `assignee=owner` (routed for owner attention, never auto-spawned), mirroring the `status:owner-queue` landing zone where a refused `/dispatch` parks. The binding (event/task state vocabulary, who enqueues with what priority) lives in the project's CLAUDE.md *Responsibility split* and CONTEXT.md `task_queue` glossary — not here, so this checklist stays project-agnostic.
 
 ### 3b. Expand-contract for wide refactors
 
@@ -126,13 +128,13 @@ For each approved slice, publish a new issue to the issue tracker. Use the issue
 
 **Label application at publish time** — apply per the §3a three-outcome table:
 
-- **Class 1** (no protected-path match, Q2-Q4 all "no") → apply the `sandcastle` label, no class label. This is the canonical place the label is set — see §3a, decision `6e753417`.
-- **Class 2** (`guarded`-bucket match, or a Q2/Q3 "yes") → apply **both** `sandcastle` **and** `afk:2-plan`. The slice is AFK-eligible once its plan locks (the class-2 plan-gate in `/implement`/`/task-implement` handles the lock) — it is not a HITL slice, so it still needs `sandcastle` alongside the class label.
-- **Class 3** (`hitl`-bucket match) → apply `afk:3-human`, do **NOT** apply `sandcastle`. The slice routes via interactive `/implement` instead of `/dispatch`. This is a categorical security-boundary refusal, not a plan-recoverable gap.
-- **Q4 "yes"** (cross-repo / external-credential / owner-confirmation side effect) → unchanged from before #1708: do **NOT** apply `sandcastle`; apply the project's HITL/attention marker from its CLAUDE.md label vocabulary (e.g. `unsafe-for-AFK`, `status:owner-queue`, or the repo's equivalent) plus any risk marker the failing question implies (e.g. a safety-review label when the slice touches safety-critical motion). No class label — Q4 is an owner-confirmation gate, not a plan-recoverable classification. Without a positive label the slice lands with an **empty status column** on the board and is invisible to triage — the AFK-no verdict must *produce* a label, not merely be the absence of `sandcastle`.
+- **Class 1** (no protected-path match, Q2-Q4 all "no") → apply the automation-queue label, no class label. This is the canonical place the label is set — see §3a, decision `6e753417`.
+- **Class 2** (`guarded`-bucket match, or a Q2/Q3 "yes") → apply **both** the automation-queue label **and** `afk:2-plan`. The slice is AFK-eligible once its plan locks (the class-2 plan-gate in `/implement`/`/task-implement` handles the lock) — it is not a HITL slice, so it still needs the automation-queue label alongside the class label.
+- **Class 3** (`hitl`-bucket match) → apply `afk:3-human`, do **NOT** apply the automation-queue label. The slice routes via interactive `/implement` instead of `/dispatch`. This is a categorical security-boundary refusal, not a plan-recoverable gap.
+- **Q4 "yes"** (cross-repo / external-credential / owner-confirmation side effect) → unchanged from before #1708: do **NOT** apply the automation-queue label; apply the project's HITL/attention marker from its CLAUDE.md label vocabulary (e.g. `unsafe-for-AFK`, `status:owner-queue`, or the repo's equivalent) plus any risk marker the failing question implies (e.g. a safety-review label when the slice touches safety-critical motion). No class label — Q4 is an owner-confirmation gate, not a plan-recoverable classification. Without a positive label the slice lands with an **empty status column** on the board and is invisible to triage — the AFK-no verdict must *produce* a label, not merely be the absence of the automation-queue label.
 - Slice carries unresolved scope or unclear AC discovered during §3a → apply the matching `needs-*` label (`needs-grill`, `needs-research`, `needs-prd`). The requesting skill removes its own `needs-*` label at terminal success — `/grill` removes `needs-grill`, `/research` removes `needs-research`, `/to-spec` removes `needs-prd`. `/dispatch`'s pre-dispatch gate refuses any issue carrying a `needs-*` label.
 
-**Writer discipline (#1708 AC6)**: the class label (`afk:2-plan` / `afk:3-human`) has **two writers** — `/to-tickets` at creation (here) and `/triage` on demand, for issues that skipped this flow and carry neither `sandcastle` nor a class label (see `triage/SKILL.md`). `plan:locked` / `needs-plan` keep exactly **one** writer — the drain (#1691 AC5). Do not add a third writer for the class label, and do not let either skill touch `plan:locked`/`needs-plan`.
+**Writer discipline (#1708 AC6)**: the class label (`afk:2-plan` / `afk:3-human`) has **two writers** — `/to-tickets` at creation (here) and `/triage` on demand, for issues that skipped this flow and carry neither the automation-queue label nor a class label (see `triage/SKILL.md`). `plan:locked` / `needs-plan` keep exactly **one** writer — the drain (#1691 AC5). Do not add a third writer for the class label, and do not let either skill touch `plan:locked`/`needs-plan`.
 
 **Every published issue MUST carry a starting status label** (the project's `status:ready` / `status:*` equivalent). Where the project's board is a read-only projection of `status:*` labels, an issue with no status label has an empty status column and is invisible to board-scoped triage. A slice startable now gets the "ready" status; a slice whose blockers are still open gets no "ready" status until they close (the native dependency below encodes the block).
 
@@ -152,11 +154,11 @@ MSYS_NO_PATHCONV=1 gh api --method POST repos/<owner>/<repo>/issues/<blockedN>/d
 
 Keep the prose "## Blocked by" section too — it is the human-readable rationale — but the native edge is the source of truth for tooling. Set every edge the DAG requires, including transitive blockers a slice lists explicitly.
 
-**Decision citation (mandatory, #1099)**: `/dispatch`'s pre-dispatch gate requires every `sandcastle`-labeled issue's body to cite a decision UUID (or the `[no-decision]` marker) before it can be dispatched AFK. Populate the `## Decisions` section (see `<issue-template>` below) at publish time:
+**Decision citation (mandatory, #1099)**: `/dispatch`'s pre-dispatch gate requires every issue body carrying the automation-queue label to cite a decision UUID (or the `[no-decision]` marker) before it can be dispatched AFK. Populate the `## Decisions` section (see `<issue-template>` below) at publish time:
 
-- If this slice's scope was informed by one or more `record_decision` episodes — from the plan/PRD's own grill trail, or from `decision_uuids[]` carried over from an upstream `/grill` session — cite every relevant UUID under `## Decisions`, one per line, each with the one-line rationale from the decision (not just the bare UUID — the gate only needs the UUID present, but a bare hex string is useless to a human reader later).
+- If this slice's scope was informed by one or more decision-log entries — from the plan/PRD's own grill trail, or from the decision UUIDs carried over from an upstream `/grill` session — cite every relevant UUID under `## Decisions`, one per line, each with the one-line rationale from the decision (not just the bare UUID — the gate only needs the UUID present, but a bare hex string is useless to a human reader later). A decision-log entry is whatever persistent, git-tracked decision record the current project already keeps — its own `CONTEXT.md`, a `docs/decisions/*.md` shard, or `docs/adr/`; this skill never hardcodes a filename for it.
 - If the slice is genuinely mechanical and no architectural decision informed it (a pure rename, a dependency bump, a doc fix), write `[no-decision]` instead of fabricating a UUID. Do not invent or reuse an unrelated UUID just to satisfy the gate — the gate now accepts the explicit marker for this case.
-- This applies to every slice, HITL or AFK — but it is load-bearing only for `sandcastle`-labeled (AFK) issues, since `/dispatch`'s gate is what actually enforces it.
+- This applies to every slice, HITL or AFK — but it is load-bearing only for issues carrying the automation-queue label (AFK), since `/dispatch`'s gate is what actually enforces it.
 
 **Milestone assignment (every published issue MUST land in a milestone)**:
 
@@ -190,7 +192,7 @@ Avoid specific file paths or code snippets — they go stale fast. Exception: if
 
 - `<full-8-4-4-4-12-uuid>` — one-line rationale
 
-Or `[no-decision]` if this slice is purely mechanical and no `record_decision` episode informed its scope. Required for `sandcastle`-labeled issues — `/dispatch`'s pre-dispatch gate refuses dispatch without one or the other (#1099).
+Or `[no-decision]` if this slice is purely mechanical and no decision-log entry informed its scope. Required for issues carrying the automation-queue label — `/dispatch`'s pre-dispatch gate refuses dispatch without one or the other (#1099).
 
 ## Blocked by
 
