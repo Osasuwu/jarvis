@@ -31,6 +31,8 @@ Reversible + you have context → do it, report results.
 
 Issue/PR comments on own repos are autonomous, not outbound — they are the work surface, not correspondence. Commenting on a foreign-owner repo *is* outbound; confirm it.
 
+**Never as the owner**: sending anything under the owner's own identity rather than Jarvis's own is out of scope categorically — confirmation doesn't clear it, unlike the "confirm first" cases above — until the "digital twin" pillar ships. `.claude-userlevel/skills/weekly-release/SKILL.md` is the one skill currently gated by this.
+
 ### End-to-end ownership
 No half-solutions. Backend change → check frontend. Model change → check consumers. Config → check all 3 devices (different paths/usernames). Can't finish → document exactly what's left.
 
