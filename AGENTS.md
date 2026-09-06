@@ -40,9 +40,11 @@ bypass for a gate that's merely inconvenient.
 
 ## Substrate rule
 
-Don't add new `.py`/`.ps1` scripts as infrastructure. Check native Claude Code primitives first —
-skills, hooks, MCP servers, subagents — and use them if they cover it cleanly. A new script needs
-an explicit reason the native option is awkward or incomplete.
+Native-first, not a ban. Before adding custom code (any language) as infrastructure, check native
+Claude Code primitives first — skills, hooks, MCP servers, subagents — and use them if they cover
+it cleanly. Custom code is permitted on merit when the native option is awkward or incomplete.
+Routing table, existing justified exceptions, and the relaxation decision:
+[`docs/reference/native-first-substrate.md`](docs/reference/native-first-substrate.md).
 
 ## Unattended runs
 
