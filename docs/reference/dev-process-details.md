@@ -30,17 +30,29 @@ feedback lands.
 
 ## Linking a sub-issue to a parent epic via API
 
-```bash
-# Get the internal ID of the child issue (NOT the issue number)
-CHILD_ID=$(gh api repos/OWNER/REPO/issues/CHILD_NUMBER --jq '.id')
+See [`.github/github-process-runbook.md`](../../.github/github-process-runbook.md) → *5. Parent/Epic
+Rules* for the `gh api .../sub_issues` call and the `-F` (not `-f`) integer-ID gotcha — not
+duplicated here to avoid the two drifting apart.
 
-# Add it as a sub-issue to the parent
-gh api repos/OWNER/REPO/issues/PARENT_NUMBER/sub_issues \
-  --method POST \
-  -F sub_issue_id="$CHILD_ID"
-```
+## Deliberate simplifications carry a `ceiling:` marker
 
-Use `-F` (not `-f`) so the ID is sent as an integer.
+When you knowingly ship a shortcut with a known limit — global lock, O(n²) scan over a list
+assumed small, naive heuristic, hardcoded single-device path — leave an inline `ceiling:` comment
+naming *both* the limit and the upgrade path:
+`# ceiling: O(n²) over labels, fine <200; switch to a set-diff if a repo crosses that`.
+
+Not for ordinary "could be prettier" code — only for a corner cut against a limit you can name.
+This is the cheap end of "tech debt must be visible" (`~/.claude/SOUL.md` → *Judgment
+calibration*): `grep -rn 'ceiling:'` is the debt list, so a shortcut no longer needs an issue to
+stay visible. An unnamed limit means you don't understand the shortcut well enough to ship it.
+
+## No state in static storage
+
+State (% done, ✅/❌ markers, "shipped in PR #X", sprint dates, "last audit YYYY-MM-DD") belongs
+in GitHub Issues/Projects/PRs/commit history — not in markdown files, not in memory. Static
+storage (this repo's `.md` files, `docs/**`) may hold: evergreen lessons, decisions + rationale,
+reference info (API shapes, config locations), target architecture, pointers ("see #633 for
+current status"). If a field would be wrong in two weeks, it belongs in GitHub, not here.
 
 ## Skills live in `.claude-userlevel/skills/`
 

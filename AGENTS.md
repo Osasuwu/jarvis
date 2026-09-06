@@ -58,6 +58,12 @@ an interactive session.
   end-to-end before claiming something already exists.
 - **Skills are a contract, not a trigger.** Invoke the matching skill when the action matches its
   contract, not only when asked by name.
+- **Non-trivial logic leaves one runnable check.** Any change with real logic ships with at least
+  one thing that fails if the logic breaks — the smallest such thing, not a suite. Trivial edits
+  need nothing; this doesn't relax the TDD requirement inside `/implement`/`/rework`.
+- **Sibling-grep on fixes.** When a reviewer flags a bug in one helper/pattern, grep sibling
+  occurrences across the file and related files before declaring the fix done — a second round
+  with the same class of finding means the first fix was partial.
 
 ## Definition of Done
 
