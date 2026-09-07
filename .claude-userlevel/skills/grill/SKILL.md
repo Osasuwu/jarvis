@@ -117,11 +117,11 @@ Single-axis touch or lone slices ⇒ sampling tier only. Owner may invoke covera
 
 #### Context scrubbing — behavioural, not structural
 
-Dispatch each critic via the `Agent` tool with `subagent_type: general-purpose`. **Do not** pass `isolation: "worktree"` — that would block the codebase + memory tools the critic needs to ground its critique. Instead, scrub by **what you put in the prompt**, mirroring the precedent in [`reason/NEUTRAL-RESEARCHER.md`](../reason/NEUTRAL-RESEARCHER.md):
+Dispatch each critic via the `Agent` tool with `subagent_type: general-purpose`. **Do not** pass `isolation: "worktree"` — that would block the codebase + memory tools the critic needs to ground its critique. Instead, scrub by **what you put in the prompt**:
 
 - Forward: the problem statement, the owner's proposed direction (verbatim), the acceptance criteria as drafted. **For the coverage tier additionally**: the node enumeration (see CRITIC-COVERAGE.md "Node enumeration" section).
 - Omit: which side of any disagreement the operator favours, prior memory hits used to shape the proposal, SOUL.md / CLAUDE.md / CONTEXT.md content, any "I think…" framing.
-- The behavioural nudge in each critic's system block does the rest. Isolation here is **behavioural, not structural** — a known limitation, sufficient for routine bias prevention (same trade-off as NEUTRAL-RESEARCHER; worktree isolation would lose access to project memory the critic still needs for grounded critique).
+- The behavioural nudge in each critic's system block does the rest. Isolation here is **behavioural, not structural** — a known limitation, sufficient for routine bias prevention (worktree isolation would lose access to project memory the critic still needs for grounded critique).
 
 #### Loopback — forced per-item disposition blocks AC-lock
 

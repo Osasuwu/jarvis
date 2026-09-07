@@ -71,12 +71,12 @@ Check condition 0 against the fetched repo, conditions 1 and 4 against `labels`,
 
 **On refusal** (any one or more of the five conditions fail):
 
-1. `gh issue edit <N> --add-label "status:owner-queue"` — surfaces in next `/status` run.
+1. `gh issue edit <N> --add-label "status:owner-queue"` — surfaces in the next `status_digest` read.
 2. Append one line to `~/.claude/projects/<project>/memory/decisions.md`: `- YYYY-MM-DD — refused dispatch of #<N> — <verbatim gate message> — #<N>`.
 3. Report to the principal in the batch summary: `#N refused — <verbatim gate message>`.
 4. The issue is **not** labeled `agent:dispatch`, not claimed, no label churn beyond the owner-queue flag. `/grill` / `/research` / fixing the cited gap are the unblock paths — once fixed, re-dispatch flips the route.
 
-**No Telegram escalation** even on repeat refuses — last-resort rule. Owner discovers via `/status`.
+**No Telegram escalation** even on repeat refuses — last-resort rule. Owner discovers via a `status_digest` read.
 
 **Interactive `/implement` is NOT gated by this check.** The gate guards
 *label-routed* dispatch where no operator is present at execution time.
@@ -108,7 +108,9 @@ The `claude-code-action` workflow triggered by `issues.labeled` (once it
 exists — see the disclosure above) is the only thing that spawns work.
 No `Agent(subagent_type="coding", ...)` call exists anywhere in this skill,
 no worktree isolation setup here, no diff review, no merge decision — those
-belong to the executor workflow, or to `/verify` (the post-merge audit).
+belong to the executor workflow. Post-merge audit of dispatched work has no
+dedicated skill as of milestone #70; until one exists, treat it as a manual
+review step, same as any other merged PR.
 
 ## Pipeline
 
@@ -155,8 +157,8 @@ Batch summary to the principal:
 ```
 
 No further action from this skill. Outcome recording for *dispatched* issues
-happens post-merge in `/verify`, once an executor workflow actually exists to
-produce a merge to verify.
+happens post-merge (manual review — see *Never spawns in-session* above),
+once an executor workflow actually exists to produce a merge to review.
 
 ## Safety rules
 - All `/implement` safety rules apply.

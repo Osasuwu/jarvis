@@ -1,4 +1,4 @@
-"""detect_rule_violations.py — regex/keyword starter detector for /reflect (#513).
+"""detect_rule_violations.py — regex/keyword starter detector for the comms-audit pipeline (#513).
 
 Reads `feedback`-type, `always_load`-tagged memories from Supabase, extracts a
 keyword set per rule, and flags assistant messages in a comms_extract.jsonl

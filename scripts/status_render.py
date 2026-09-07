@@ -1,11 +1,11 @@
-"""Deterministic /status renderer (#1018).
+"""Deterministic status renderer (#1018).
 
 Pure function over the `status_digest` MCP JSON
 (`{health, detector_hits, ranking, provenance}` — see mcp-status/server.py).
 The default render is 0-LLM deterministic Python: a health line, a ranked
 top-N "Куда смотреть" list, and an "Аномалии" block. `--deep` adds the
-deterministic full picture (every hit + a provenance table) for the
-/status skill session to layer LLM narration onto — the renderer itself
+deterministic full picture (every hit + a provenance table) for a
+downstream session to layer LLM narration onto — the renderer itself
 never calls an LLM.
 
 Provenance contract (issue #1018 AC3): the renderer is forbidden from

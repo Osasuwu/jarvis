@@ -16,7 +16,7 @@ The two imports below are what actually load identity and shared doctrine. Keep 
 
 Skills consume this section instead of restating it. Three load-bearing rules: **recall before deciding**, **brief-mode UUIDs**, and the **`record_decision` contract**.
 
-**Scope carve-out (jarvis #1793):** the six keep-set skills — `implement`, `end`, `file-issue`, `dispatch`, `triage`, `weekly-release` — do **not** follow this section and must not call `mcp__memory__record_decision` / `memory_recall`. Not all six document the native auto-memory replacement (plain-text `decisions.md`/`handoff.md` appends under `~/.claude/projects/<project>/memory/`) the same way: `implement`, `end`, and `dispatch` spell out that convention in their own SKILL.md (rewritten by #1793/#1813); `file-issue` never called the memory MCP to begin with, so there's nothing to migrate away from; `triage` and `weekly-release` are carved out here (no `record_decision`/`memory_recall` calls) but don't themselves restate the `decisions.md`/`handoff.md` mechanics — they rely on the convention as documented by `implement`/`end`/`dispatch` rather than duplicating it. Every other skill (e.g. `curate`, `reason`, `reflect`, `rework`, `self-improve`, `status-record`, `task-implement`) still follows this section as written — the memory MCP itself is not retired, only these six skills' contract with it. If a skill not on this list is later migrated, add it here.
+**Scope carve-out (jarvis #1793, #1795):** none of the 11 skills in the current keep-set (`implement`, `end`, `file-issue`, `dispatch`, `triage`, `weekly-release`, `to-tickets`, `diagnose`, `grill`, `research`, `improve-codebase-architecture`) call `mcp__memory__record_decision` / `memory_recall` — all have been migrated onto native auto-memory (plain-text `decisions.md`/`handoff.md` appends under `~/.claude/projects/<project>/memory/`). Not all document the convention the same way: `implement`, `end`, and `dispatch` spell out that convention in their own SKILL.md (rewritten by #1793/#1813); `file-issue` never called the memory MCP to begin with, so there's nothing to migrate away from; the rest rely on the convention as documented by `implement`/`end`/`dispatch` rather than duplicating it. The memory MCP itself is not retired — only these skills' contract with it. If a future skill still calls it, note the exception here.
 
 This is the **Tier 1** layer (soft prompt rule); Tier 2 hooks and Tier 3 skill gates back it up — DOCTRINE.md → *Protocol layers*. If the empty-`memories_used` rate rises after centralising here, the relevant rule escalates Tier 1 → Tier 2 (jarvis `CONTEXT.md` → *Protocol layers (ADR-0002)*, #532).
 
@@ -67,7 +67,7 @@ Rule of thumb: "I just made a call that will outlive this session" → emit. "I 
 
 #### Post-hoc marker
 
-If a decision is recorded after-the-fact (catching up on a missed call, e.g. during `/end` reconciliation), encode `:post-hoc` into the `actor` field — `actor="session:<id>:post-hoc"`. `/self-improve` greps actor for regression patterns; real-time capture is the goal, post-hoc saves are a regression. (#517 tracks adding a structured `post_hoc` field.)
+If a decision is recorded after-the-fact (catching up on a missed call, e.g. during `/end` reconciliation), encode `:post-hoc` into the `actor` field — `actor="session:<id>:post-hoc"`. The `:post-hoc` marker is grepped for regression patterns; real-time capture is the goal, post-hoc saves are a regression. (No current skill runs that grep as of milestone #70 — #517 tracks adding a structured `post_hoc` field.)
 
 ### Memory staleness
 
@@ -79,7 +79,7 @@ Memory records can be wrong:
 
 ### Decisions belong in memory, not in issue/PR bodies
 
-Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD prose all decay; the queryable decision log doesn't. Skills that produce issues (`/to-spec`, `/to-tickets`) reference `decision_uuids[]` rather than restating the *why* — see each skill for the section template.
+Architectural resolutions go to `record_decision`. Issue bodies, PR bodies, PRD prose all decay; the queryable decision log doesn't. Skills that produce issues (`/to-tickets`) reference `decision_uuids[]` rather than restating the *why* — see each skill for the section template.
 
 ## Repo policy — auto-merge & merge gates
 

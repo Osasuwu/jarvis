@@ -1,7 +1,7 @@
 """Tests for /weekly-release S2 routine-mode helpers (#1658).
 
-``is_routine_host`` mirrors the /setup-tasks device gate (``config/device.json``'s
-``routine_host`` flag) — decision ``1b7ff8d1-bbca-4207-a7e4-4c1edddef67e``: one
+``is_routine_host`` gates on the device's ``routine_host`` flag
+(``config/device.json``) — decision ``1b7ff8d1-bbca-4207-a7e4-4c1edddef67e``: one
 device is the sole routine host, all others refuse.
 
 ``weekly_release_notification_for`` produces the ``notify_text`` subject/body

@@ -5,9 +5,12 @@ Sibling of ``test_goal_list_privacy.py``'s revert: a prior revision applied
 the identical "exclude project=NULL on unscoped call" fix here too, citing
 the goal_list leak as justification. But ``/weekly-release`` never calls
 ``outcome_list`` at all (checked against ``weekly-release/SKILL.md``), so
-there was no leak path to close in the first place — while ``/verify``'s
-Step 1 calls ``outcome_list(outcome_status="pending")`` unscoped and expects
-to see *all* pending outcomes, personal ones included.
+there was no leak path to close in the first place — while, at #1662 review
+time, a since-removed skill's Step 1 called
+``outcome_list(outcome_status="pending")`` unscoped and expected to see
+*all* pending outcomes, personal ones included. This test protects that
+unscoped-call contract at the server level regardless of which skill
+currently relies on it.
 """
 
 from __future__ import annotations

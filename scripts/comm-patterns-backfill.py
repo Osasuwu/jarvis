@@ -1,7 +1,7 @@
 """One-time backfill: classify ~/.cache/jarvis-comms-analysis/* and write rows.
 
 The cache holds previously-extracted (trigger, correction) pairs from the
-old regex-driven /reflect pipeline. We re-classify each example through
+old regex-driven comms-audit pipeline. We re-classify each example through
 the new Ollama classifier and write rows with
 ``source_provenance="backfill:reflect"``.
 

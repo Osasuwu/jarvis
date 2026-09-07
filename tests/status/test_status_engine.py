@@ -734,7 +734,7 @@ def make_verdict(
 class TestContradictionFolding:
     """fold_contradiction_verdicts maps verdicts → DetectorHits (AC1, AC6).
 
-    The LLM judgment itself is the native status-record cron session — not
+    The LLM judgment itself is the native status-digest cron session — not
     tested here. This covers only the deterministic fold of its output.
     """
 
@@ -892,7 +892,7 @@ class TestL1OnlyGuard:
     Behavioral guard (replaces an earlier source-grep): the meaningful L1-only
     contract is that ``analyze`` never *generates* contradiction verdicts — it
     only folds verdicts handed to it explicitly. The LLM judgment lives in the
-    upstream L1 status-record cron; the intraday (L2) path calls ``analyze``
+    upstream L1 status-digest cron; the intraday (L2) path calls ``analyze``
     with the default empty ``contradiction_verdicts`` and therefore pays for no
     LLM and surfaces no contradiction. Folding a *cached* verdict (already
     computed in the morning) is deterministic and free, so it is allowed.

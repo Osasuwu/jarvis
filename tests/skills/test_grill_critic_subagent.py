@@ -7,8 +7,7 @@ AC1 (trigger heuristic, decision c29c2b00-e9e1-43d1-93ff-ada5820c434c):
     record_decision(reversibility in {hard, irreversible}).
 AC2 (context scrubbing, part of decision 222e9bfe-2150-400c-afd9-a3e8defb5988):
     Scrubbing is behavioural (Agent + nudge prompt), not structural
-    (no isolation=worktree). Documented alongside the NEUTRAL-RESEARCHER
-    precedent reference.
+    (no isolation=worktree).
 AC3 (CRITIC.md exists with fixed-schema output, decisions 222e9bfe... and
     5d084972-5adb-4df7-8edb-717a3515f522):
     Sibling file under .claude-userlevel/skills/grill/CRITIC.md.
@@ -98,10 +97,6 @@ class TestAC2ContextScrubbing:
         )
         assert mentions_isolation_disclaimer, \
             "SKILL.md must explicitly disclaim structural (worktree) isolation in favour of behavioural nudge"
-
-    def test_skill_md_references_neutral_researcher_precedent(self, skill_md: str):
-        assert "NEUTRAL-RESEARCHER" in skill_md, \
-            "SKILL.md must reference the NEUTRAL-RESEARCHER.md precedent from /reason"
 
 
 class TestAC3CriticMdFixedSchema:

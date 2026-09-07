@@ -24,7 +24,7 @@ git clone https://github.com/Osasuwu/jarvis.git
 cd jarvis
 ```
 
-**Edit `config/repos.conf` before running `/status` or `/triage`** — it ships with the original author's repos. Replace those lines with your own (`owner/repo` format, one per line) so skill output refers to your projects, not someone else's.
+**Edit `config/repos.conf` before running `/triage`** — it ships with the original author's repos. Replace those lines with your own (`owner/repo` format, one per line) so skill output refers to your projects, not someone else's.
 
 ```bash
 # Windows

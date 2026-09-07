@@ -1,4 +1,4 @@
-"""Tests for scripts/status_render.py — the deterministic /status renderer (#1018).
+"""Tests for scripts/status_render.py — the deterministic status renderer (#1018).
 
 The renderer is a pure function over the status_digest MCP JSON
 ({health, detector_hits, ranking, provenance}). The default path is

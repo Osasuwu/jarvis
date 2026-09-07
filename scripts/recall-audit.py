@@ -1,17 +1,18 @@
 """Recall-audit: scan session jsonl for decision points without preceding recall (#333).
 
-NOTE (#510): the ``/reflect`` references below describe the OLD reflect
-skill (cross-session aggregate consumer). After #510, ``/reflect`` is a
-behavioral comms-audit skill and no longer consumes this aggregate.
-The aggregate consumer migrates to ``/self-improve`` once that skill is
-grilled — see ``docs/design/reflect-aggregates-pending-migration.md``
-and follow-up issue #516.
+NOTE (#510): the cross-session aggregate-consumer references below describe
+an earlier skill design that treated this aggregate as its input. That
+consumer role was later separated out into a behavioral comms-audit
+concern that no longer consumes this aggregate; migrating the
+aggregate-consumer role to a self-improvement pass once grilled is
+tracked by ``docs/design/reflect-aggregates-pending-migration.md`` and
+follow-up issue #516.
 
 Complements ``scripts/memory-recall-hook.py`` (UserPromptSubmit) and
 ``scripts/pretooluse-recall-hook.py`` (PreToolUse). Those hooks *inject*
 recall. This script *audits* whether recall actually happened at the
-moments that matter — so ``/end`` can show per-session gaps and
-``/reflect`` can aggregate across sessions.
+moments that matter — so ``/end`` can show per-session gaps and a
+cross-session pass can aggregate them over time.
 
 Detectors
 ---------
@@ -34,8 +35,8 @@ Output
 ------
 ``dict`` with ``session_id``, ``file``, ``counters``, and ``flags`` (a
 list of per-event records). Can be printed as JSON or pretty markdown
-via ``--format=md``. The markdown rendering is what ``/end`` and
-``/reflect`` embed.
+via ``--format=md``. The markdown rendering is what ``/end`` and the
+cross-session aggregate pass embed.
 
 Exit codes
 ----------
@@ -290,7 +291,7 @@ def render_markdown(result: AuditResult) -> str:
 
 
 def aggregate(results: list[AuditResult]) -> dict:
-    """Summarize a batch of audits for /reflect cross-session view."""
+    """Summarize a batch of audits for a cross-session view."""
     totals = {
         "sessions": len(results),
         "records": 0,
@@ -377,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         "--format",
         choices=("json", "md"),
         default="json",
-        help="Output format. json = machine; md = human (/end, /reflect).",
+        help="Output format. json = machine; md = human (/end, cross-session aggregate).",
     )
     parser.add_argument(
         "--aggregate",

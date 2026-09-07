@@ -137,7 +137,7 @@ def _bump_stat(key: str, delta: int = 1) -> None:
         else:
             data = {}
         data[key] = int(data.get(key, 0)) + delta
-        # session_started_at is set on first write so /reflect can compute rate
+        # session_started_at is set on first write so downstream analysis can compute rate
         data.setdefault("session_started_at", time.time())
         tmp = STATS_FILE.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(data), encoding="utf-8")

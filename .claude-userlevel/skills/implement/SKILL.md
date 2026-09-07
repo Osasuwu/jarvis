@@ -433,7 +433,7 @@ Quick scan through two lenses before opening the PR:
 - [ ] All acceptance criteria addressed?
 - [ ] No scope creep beyond the issue?
 
-This is a **cheap catch**, not a merge gate. The Claude code-review plugin is the authoritative reviewer; missing items will be caught there. The goal is to catch obvious errors before the PR opens, not to replace the review. The same vocabulary (Standards + Spec, Fowler-12) is used by `/rework` so pre-PR and post-review passes share a common language.
+This is a **cheap catch**, not a merge gate. The Claude code-review plugin is the authoritative reviewer; missing items will be caught there. The goal is to catch obvious errors before the PR opens, not to replace the review.
 
 If the diff looks wrong, fix it before pushing.
 
