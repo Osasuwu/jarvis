@@ -97,10 +97,9 @@ jobs:
             # rationale as code-review.yml's allowlist — no human to approve
             # a mid-run permission prompt. Covers the full implement loop:
             # read/search, edit, git, gh issue/PR mechanics, and this repo's
-            # lint/test commands. Deliberately excludes anything that can
-            # rewrite git history (`git push --force`, `git reset --hard`)
-            # or touch CI/hook/secret config paths — those stay a step-5
-            # escalation, never an unattended edit.
+            # lint/test commands. CI/hook/secret config paths stay a step-5
+            # escalation, never an unattended edit (mechanically Edit/Write-
+            # denied below).
             --max-turns 40
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
             # Mechanical backstop for the prompt's "never edit" ask above —
@@ -108,10 +107,24 @@ jobs:
             # from `.claude/hooks/protected-files.py`, are Edit/Write-denied
             # here so the worker can't self-modify or blind its own guard
             # even on a bad turn. Path-scoped, not a whole-tool deny, so
-            # normal implementation edits elsewhere stay unaffected. Also
-            # covers the history-rewrite gap the design comment above
-            # claims but the allowlist alone doesn't enforce: `Bash(git
-            # push:*)`/`Bash(git commit:*)` are prefix matches, so without
-            # these explicit denials they'd also match `git push --force`/
-            # `git push -f`/`git commit --amend`.
+            # normal implementation edits elsewhere stay unaffected.
+            #
+            # The Bash entries below catch the common spellings of a
+            # force-push/history-rewrite (`git push --force`/`-f`/
+            # `--force-with-lease`, `git commit --amend`, `git reset
+            # --hard`) that a worker turning genuinely wrong is likely to
+            # type. They are NOT a hard security boundary: `Bash(...:*)`
+            # is a literal prefix match, so a differently-ordered or
+            # differently-spelled command (a refspec force-push like `git
+            # push origin +HEAD:main`, or a flag placed after a positional
+            # arg like `git commit -am "wip" --amend`) is not caught by
+            # any finite list of prefixes, and no such list ever will be.
+            # This is deliberately defense-in-depth, not the backstop:
+            # the actual hard boundary is that `main` has branch
+            # protection with `allow_force_pushes: false` server-side, so
+            # nothing this worker's shell does can force-push or rewrite
+            # history on the branch that matters. This worker only ever
+            # pushes to its own fresh `claude/issue-N-*` branch, so even a
+            # successful force-push/amend here is blast-radius-limited to
+            # a branch nobody else has based work on.
             --disallowed-tools "Edit(./.github/workflows/**)" "Write(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Write(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Write(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Write(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Write(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Write(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Write(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Write(./scripts/principal.py)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git push --force-with-lease:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
