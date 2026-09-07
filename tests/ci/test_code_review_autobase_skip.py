@@ -188,11 +188,11 @@ def test_autobase_step_condition_gates_on_first_attempt():
 
 def test_review_step_gated_on_autobase():
     steps = _load_steps()
-    step = _step_by_name(steps, "Run /code-review")
-    assert step is not None, "Run /code-review step not found"
+    step = _step_by_name(steps, "Run code review (Layer B)")
+    assert step is not None, "Run code review (Layer B) step not found"
     condition = str(step.get("if", ""))
     assert "steps.autobase.outputs.skip" in condition, (
-        "Run /code-review step must gate on steps.autobase.outputs.skip != 'true'"
+        "Run code review (Layer B) step must gate on steps.autobase.outputs.skip != 'true'"
     )
 
 

@@ -106,28 +106,34 @@ NONBLOCK_SEV_RE = re.compile(
 # severity heading at all (which the non-block grep above would miss).
 LGTM_RE = re.compile(r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b", re.I)
 
-# Structured findings block (#1456). The plugin emits an HTML comment whose
-# JSON gives every finding an explicit "severity". Consulted BEFORE the prose
-# ladder, because it is machine-emitted: severity does not have to be inferred
-# from heading shape. The prose ladder only sees line-start markdown headings,
-# so when the plugin uses the numbered-list shape ("Found N issues:" + prose
-# bullets) the JSON is the ONLY place severity lives — and the FOUND_RE branch
-# then passes the whole comment as advisory. PR #1452 auto-merged that way with
-# two MEDIUM findings.
+# Structured verdict block (#1816 code-gate rebuild). Layer B (the tiered LLM
+# reviewer) emits a single HTML comment carrying a binary
+# ``{"blocking": bool, "findings": [{"class": str, "file": str}, ...]}``
+# payload — no severity ladder, no line numbers. Consulted BEFORE the prose
+# ladder and, when present, is fully authoritative in BOTH directions (a
+# malformed/absent-field block still fails closed): the whole point of the
+# rebuild is that Layer B never emits ambiguous prose, so once the block is
+# there nothing downstream needs to infer intent from heading shape. Older
+# comments that predate this schema (or come from an unrelated bot) carry no
+# marker at all and fall through to the prose ladder unchanged (kept as a
+# defense-in-depth fallback, not a live emission path any more) — this is the
+# additive guarantee pinned by test_absent_block_leaves_every_prose_branch_unchanged.
 FINDINGS_MARKER_RE = re.compile(r"<!-- *code-review-findings")
 FINDINGS_BLOCK_RE = re.compile(
     r"<!-- *code-review-findings[^\n]*\n(.*?)\n-->", re.S
 )
-BLOCKING_SEVERITIES = frozenset({"CRITICAL", "MAJOR", "BLOCKING", "MEDIUM"})
 
 
 def structured_verdict(body: str) -> str | None:
-    """Mirror of the verdict step's structured-findings check (#1456).
+    """Mirror of the verdict step's structured-verdict check (#1816).
 
-    Returns ``'fail'`` when the block carries a blocking severity or is present
-    but unparseable, and ``None`` when the block is absent or carries only
-    non-blocking severities — ``None`` meaning "fall through to the prose
-    ladder", which is what keeps this additive over every older comment shape.
+    Returns ``'fail'``/``'pass'`` per the ``blocking`` field when the block is
+    present and well-formed, ``'fail'`` when the block is present but
+    malformed (missing/non-bool ``blocking``, non-list ``findings``, or a
+    ``blocking``/``findings``-emptiness mismatch — fail closed rather than
+    trust a payload that violates its own schema invariant), and ``None`` when
+    the block is absent at all — ``None`` meaning "fall through to the prose
+    ladder", the additive-over-older-shapes guarantee.
     """
     if not FINDINGS_MARKER_RE.search(body):
         return None
@@ -140,12 +146,17 @@ def structured_verdict(body: str) -> str | None:
         return "fail"
     if not isinstance(payload, dict):
         return "fail"
-    severities = {
-        str(f.get("severity", "")).upper()
-        for f in payload.get("findings", [])
-        if isinstance(f, dict)
-    }
-    return "fail" if severities & BLOCKING_SEVERITIES else None
+    blocking = payload.get("blocking")
+    if not isinstance(blocking, bool):
+        return "fail"
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        return "fail"
+    if blocking and not findings:
+        return "fail"  # schema invariant: blocking=true requires findings
+    if not blocking and findings:
+        return "fail"  # schema invariant: blocking=false requires no findings
+    return "fail" if blocking else "pass"
 
 
 def lineage_failed_runs(
@@ -290,10 +301,13 @@ def verdict(
             return "fail"
         return "pass"
     body = selected[-1]  # latest review comment wins
-    # Structured findings block first (#1456) — authoritative severity, and the
-    # only signal present at all when the plugin uses the numbered-list shape.
-    if structured_verdict(body) == "fail":
-        return "fail"
+    # Structured verdict block first (#1816) — fully authoritative in BOTH
+    # directions when present, since Layer B always emits it. Only an absent
+    # marker (a pre-rebuild or unrelated-bot comment) falls through to the
+    # prose ladder below.
+    sv = structured_verdict(body)
+    if sv is not None:
+        return sv
     # BLOCK check runs first: a pass signal must never shadow a CRITICAL/MAJOR/
     # BLOCKING heading.
     if BLOCK_RE.search(body):
@@ -655,56 +669,46 @@ SIMPLIFICATION_COMMENT = """\
 2. Collapse branch Y
 """
 
-# --- #1456: the structured findings block ---------------------------------
-# The verbatim shape that auto-merged PR #1452: numbered-list prose, no severity
-# heading anywhere, and both MEDIUMs living ONLY inside the machine-readable
-# block. Under the prose-only ladder this hit the "Found N issues:" branch and
-# exited 0 — a required check passing a PR it was meant to block. Kept verbatim
-# (permalinks trimmed) as the regression fixture: it must now FAIL.
+# --- #1816: the structured verdict block -----------------------------------
+# The verbatim shape that auto-merged PR #1452 under the OLD prose+severity
+# ladder: numbered-list prose, no severity heading anywhere, both real findings
+# living ONLY inside the machine-readable block. Under the #1816 rebuild Layer B
+# never emits ambiguous prose at all — this fixture now carries the new binary
+# ``{blocking, findings}`` shape directly and must FAIL.
 PR_1452_COMMENT = """\
 ### Code review
 
 Found 2 issues:
 
-1. **`.claude-userlevel/settings.json:9`** — the blanket `Read/Edit(**/.env.*)`
+1. **`.claude-userlevel/settings.json`** — the blanket `Read/Edit(**/.env.*)`
    deny reverts the `.env.example` carve-out and blocks a skill's documented
    Phase 1 read.
-2. **`tests/ci/test_context_extraction_guard.py:3`** — the PR body names files
+2. **`tests/ci/test_context_extraction_guard.py`** — the PR body names files
    under "Files Changed" that carry no diff hunk.
 
 <!-- code-review-findings
 {
-  "schema_version": 1,
+  "blocking": true,
   "findings": [
-    {"severity": "MEDIUM", "rule": "git-blame-context",
-     "file": ".claude-userlevel/settings.json", "line": 9,
-     "description": "Blanket dotenv deny reverts the .env.example carve-out"},
-    {"severity": "MEDIUM", "rule": "diff-coherence",
-     "file": "tests/ci/test_context_extraction_guard.py", "line": 3,
-     "description": "PR body names files with no diff hunk"}
+    {"class": "requirement-semantics", "file": ".claude-userlevel/settings.json"},
+    {"class": "requirement-semantics", "file": "tests/ci/test_context_extraction_guard.py"}
   ]
 }
 -->
 """
 
-# Same prose, but the block carries only advisory severities. Must fall through
-# to the prose ladder — where "Found N issues:" passes it, as before.
-FINDINGS_BLOCK_MINOR_ONLY = """\
+# Same prose, but the block is explicitly non-blocking (empty findings) — the
+# new schema's clean shape.
+FINDINGS_BLOCK_NONBLOCKING = """\
 ### Code review
 
-Found 2 issues:
+Found 2 issues, neither merge-blocking:
 
 1. Naming drift
 2. Stale comment
 
 <!-- code-review-findings
-{
-  "schema_version": 1,
-  "findings": [
-    {"severity": "MINOR", "rule": "naming", "file": "a.py", "line": 1},
-    {"severity": "LOW", "rule": "comment", "file": "b.py", "line": 2}
-  ]
-}
+{"blocking": false, "findings": []}
 -->
 """
 
@@ -717,9 +721,9 @@ No issues found.
 
 <!-- code-review-findings
 {
-  "schema_version": 1,
+  "blocking": false,
   "findings": [
-    {"severity": "MEDIUM", "rule": "truncated
+    {"class": "truncated
 -->
 """
 
@@ -884,32 +888,43 @@ class TestVerdictLogic:
         # Non-review comments in between don't affect selection.
         assert verdict([BLOCKING_COMMENT, "thanks, reworking", CANONICAL_CLEAN_SPEC]) == "pass"
 
-    # --- #1456: structured findings block is authoritative -------------------
+    # --- #1816: structured verdict block is authoritative both ways ----------
     def test_pr_1452_structured_medium_findings_fail(self):
-        # The regression fixture. Prose says only "Found 2 issues:", so the old
-        # ladder passed it and the PR auto-merged; the JSON says MEDIUM twice.
+        # The regression fixture. Under the binary schema this is unambiguous:
+        # blocking: true with two findings.
         assert verdict([PR_1452_COMMENT]) == "fail"
 
-    def test_structured_block_blocks_every_blocking_severity(self):
-        for sev in ("CRITICAL", "MAJOR", "BLOCKING", "MEDIUM", "medium", "Major"):
+    def test_structured_block_blocks_every_finding_class(self):
+        for cls in (
+            "regression",
+            "exception-handling",
+            "intent-vs-logic",
+            "breaking-contract",
+            "concurrency",
+            "requirement-semantics",
+            "design-modularity",
+            "performance",
+        ):
             body = (
                 "### Code review\n\nFound 1 issue:\n\n1. x\n\n"
                 "<!-- code-review-findings\n"
-                '{"findings": [{"severity": "%s"}]}\n'
-                "-->\n" % sev
+                '{"blocking": true, "findings": [{"class": "%s", "file": "x.py"}]}\n'
+                "-->\n" % cls
             )
-            assert verdict([body]) == "fail", sev
+            assert verdict([body]) == "fail", cls
 
-    def test_structured_block_with_only_advisories_falls_through(self):
-        # Non-blocking severities do not block; the prose ladder still decides.
-        assert verdict([FINDINGS_BLOCK_MINOR_ONLY]) == "pass"
+    def test_structured_block_nonblocking_passes_even_with_prose_findings(self):
+        # A well-formed blocking:false block is directly authoritative — no
+        # fallthrough to the prose ladder under the binary schema.
+        assert verdict([FINDINGS_BLOCK_NONBLOCKING]) == "pass"
 
-    def test_structured_block_advisory_does_not_shadow_prose_block(self):
-        # A MINOR-only JSON block must not green-light a real "### MAJOR".
+    def test_structured_block_blocking_shadows_clean_prose(self):
+        # A blocking:true JSON block must not be shadowed by clean-sounding
+        # prose above it.
         body = (
-            "### Code review\n\n### MAJOR\n\n1. real bug\n\n"
+            "### Code review\n\nNo issues found.\n\n"
             "<!-- code-review-findings\n"
-            '{"findings": [{"severity": "MINOR"}]}\n'
+            '{"blocking": true, "findings": [{"class": "regression", "file": "x.py"}]}\n'
             "-->\n"
         )
         assert verdict([body]) == "fail"
@@ -920,7 +935,7 @@ class TestVerdictLogic:
         assert verdict([FINDINGS_BLOCK_MALFORMED]) == "fail"
 
     def test_absent_block_leaves_every_prose_branch_unchanged(self):
-        # The additive guarantee: no marker ⇒ identical to pre-#1456 behavior.
+        # The additive guarantee: no marker ⇒ identical to pre-#1816 behavior.
         for body, want in (
             (CANONICAL_FINDINGS, "pass"),
             (CANONICAL_CLEAN_SPEC, "pass"),
@@ -940,10 +955,33 @@ class TestVerdictLogic:
         body = (
             "### Code review\n\nNo issues found.\n\n"
             "<!-- code-review-findings\n"
-            '{"schema_version": 1, "findings": []}\n'
+            '{"blocking": false, "findings": []}\n'
             "-->\n"
         )
         assert verdict([body]) == "pass"
+
+    def test_missing_blocking_field_fails_closed(self):
+        # blocking is required — a payload that only carries findings (old
+        # pre-#1816 shape, or a malformed emission) must fail, not silently
+        # infer intent from array length.
+        body = (
+            "### Code review\n\nNo issues found.\n\n"
+            "<!-- code-review-findings\n"
+            '{"findings": []}\n'
+            "-->\n"
+        )
+        assert verdict([body]) == "fail"
+
+    def test_blocking_true_with_empty_findings_fails_closed(self):
+        # Schema-inconsistent payload — blocking:true asserts a defect exists
+        # but names none. Fail closed rather than trust it.
+        body = (
+            "### Code review\n\n"
+            "<!-- code-review-findings\n"
+            '{"blocking": true, "findings": []}\n'
+            "-->\n"
+        )
+        assert verdict([body]) == "fail"
 
     # --- fail-closed ---
     def test_unrecognized_review_comment_fails_closed(self):
@@ -1391,7 +1429,7 @@ def verdict_step(workflow_text) -> dict:
 def review_step(workflow_text) -> dict:
     workflow = yaml.safe_load(workflow_text)
     steps = workflow["jobs"]["review"]["steps"]
-    return next(s for s in steps if s.get("name") == "Run /code-review")
+    return next(s for s in steps if s.get("name") == "Run code review (Layer B)")
 
 
 @pytest.fixture(scope="module")
@@ -1423,7 +1461,7 @@ class TestReviewStepBotGate:
         # merge-train.yml's update-branch (synchronize as the App token). With
         # this unset, every retried / merge-train-updated PR jams the gate.
         assert review_step["with"].get("allowed_bots") == "*", (
-            "Run /code-review must set allowed_bots: '*' — otherwise bot-"
+            "Run code review (Layer B) must set allowed_bots: '*' — otherwise bot-"
             "triggered runs (retry dispatch, merge-train synchronize) fail at "
             "the action level and the `review` check goes permanently red."
         )
@@ -1484,36 +1522,49 @@ class TestVerdictStepWiring:
             "— minors never block merge."
         )
 
-    # --- #1456: the structured-findings check must exist in the bash ---------
+    # --- #1816: the structured-verdict check must exist in the bash ----------
     # Without these the Python mirror above can stay green while the workflow
     # loses the check entirely — the mirror is only evidence if it mirrors
     # something. Same reason the prose-ladder wiring tests exist.
     def test_structured_findings_block_is_extracted(self, verdict_step):
         run = verdict_step["run"]
         assert "code-review-findings" in run, (
-            "The verdict step must read the plugin's machine-emitted "
+            "The verdict step must read Layer B's machine-emitted "
             "<!-- code-review-findings --> block. Prose shape alone missed two "
-            "MEDIUM findings on PR #1452 and auto-merged it (#1456)."
+            "MEDIUM findings on PR #1452 and auto-merged it under the old "
+            "prose ladder (#1456, superseded by #1816)."
         )
         assert re.search(r"sed -n '/<!-- \*code-review-findings/,/-->/p'", run), (
             "Extraction must slice from the marker to the closing --> so the "
             "payload can be handed to jq."
         )
 
-    def test_structured_check_blocks_on_blocking_severities(self, verdict_step):
+    def test_structured_check_is_authoritative_both_ways(self, verdict_step):
         run = verdict_step["run"]
-        for sev in ("CRITICAL", "MAJOR", "BLOCKING", "MEDIUM"):
-            assert f'== "{sev}"' in run, (
-                f"The structured severity filter must treat {sev} as blocking "
-                "— it is the same blocking set the prose ladder uses (#1385)."
-            )
-        assert "ascii_upcase" in run, (
-            "Severity comparison must be case-normalized; the plugin has "
-            "emitted title-case severities before (#1050)."
+        assert '.blocking == ((.findings | length) > 0)' in run, (
+            "The verdict must be the binary {blocking, findings} shape (#1816) "
+            "— not a severity ladder — and must fail closed on a schema-"
+            "inconsistent payload (blocking asserted with no findings, or vice "
+            "versa)."
         )
-        assert '== "MINOR"' not in run and '== "LOW"' not in run, (
-            "Advisory severities must NOT block — they fall through to the "
-            "prose ladder, preserving the two-gate model (#988)."
+        assert 'jq -r \'.blocking\'' in run, (
+            "The block/pass decision must key off the .blocking boolean "
+            "directly, not off any severity string."
+        )
+        for sev in ("CRITICAL", "MAJOR", "BLOCKING", "MEDIUM", "MINOR", "LOW"):
+            assert f'== "{sev}"' not in run, (
+                f"The structured check must not filter on severity strings "
+                f"({sev}) — Layer B emits no severity field under #1816."
+            )
+
+    def test_structured_check_requires_blocking_and_findings_types(self, verdict_step):
+        run = verdict_step["run"]
+        assert '(.blocking | type) == "boolean"' in run, (
+            "A missing/non-bool 'blocking' field must fail closed, not be "
+            "inferred from findings length."
+        )
+        assert '(.findings | type) == "array"' in run, (
+            "A missing/non-array 'findings' field must fail closed."
         )
 
     def test_structured_check_fails_closed_on_bad_json(self, verdict_step):

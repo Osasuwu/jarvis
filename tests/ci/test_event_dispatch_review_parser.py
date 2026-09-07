@@ -1,26 +1,23 @@
 """Meta-test for the `review-negative-claude-bot` parser in event-dispatch.yml.
 
-Two-gate alignment (#992, milestone #52): the event-side `review_negative`
-trigger must use the SAME merge-blocking predicate as the MERGE gate in
-code-review.yml — emit iff the bot comment carries an all-caps
-CRITICAL/MAJOR/BLOCKING/MEDIUM severity heading (case-sensitive; MEDIUM
-promoted into the blocking set, #1385 follow-up). The old parser keyed
-on a bare `^Found N issues:` line, which was simultaneously:
-
-  - too loose — it fired `review_negative` (→ a /rework round) on a minor-only
-    advisory comment, even though that is a non-blocking PASS under the two-gate
-    model, re-introducing on the event side the churn #988 removed; and
-  - too tight — the plugin routinely emits severity-sectioned comments
-    (`### MAJOR`, `### 🔴 BLOCKING`, #954/#956) with NO `Found N issues:` line,
-    so a genuinely blocking review failed to raise `review_negative`.
+Two-gate alignment (#992, re-grounded on the `{blocking, findings}` shape by
+#1816): the event-side `review_negative` trigger must use the SAME
+merge-blocking predicate as the MERGE gate in code-review.yml. The structured
+`<!-- code-review-findings -->` JSON marker is authoritative in both
+directions when present (fail-closed on a malformed/legacy-shaped payload);
+the legacy all-caps CRITICAL/MAJOR/BLOCKING/MEDIUM severity-heading check is
+kept ONLY as a fallback for comments that predate #1816 and carry no marker
+at all.
 
 This guard pins the corrected contract along the #326 two-dimension convention:
   - Config: the parser step contains the canonical block pattern (byte-identical
-    to code-review.yml), is case-sensitive, drops MINOR, loosened the title
-    selector off the literal `### Code review` first line, and no longer keys
-    the emit decision on `Found N issues:`.
-  - Logic: reimplement the emit/skip decision in Python and assert it fires on
-    the blocking shapes and stays silent on the non-blocking ones.
+    to code-review.yml) for the legacy-fallback path, is case-sensitive, drops
+    MINOR, and matches the structured marker/JSON extraction the same way
+    scripts/review_debt_collector.py and code-review.yml's "Verify review
+    verdict" step do.
+  - Logic: reimplement the emit/skip decision (and findings/fingerprint
+    derivation) in Python and assert it fires on the blocking shapes, stays
+    silent on the non-blocking ones, and fails closed on a malformed marker.
 
 event-dispatch.yml is event-triggered (not path-filtered), so #326 does not
 strictly mandate this test — but PRD #41 calls this parser "the only fragile
@@ -50,27 +47,79 @@ REVIEW_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "code-review.yml"
 # anchored so a bare `^` is the line-start equivalent of the gate's `(^|\n)`.
 TITLE_RE = re.compile(r"^#{1,6}[ \t]*(?:Claude[ \t]+)?Code[ \t]+Review", re.I | re.M)
 
-# BLOCK signal: an all-caps CRITICAL/MAJOR/BLOCKING/MEDIUM severity heading —
-# the ONLY merge-blocking shapes (two-gate, #988/#992; MEDIUM promoted from
-# advisory, #1385 follow-up). Byte-identical to BLOCK_RE in
-# tests/ci/test_code_review_verdict_guard.py. Case-SENSITIVE (no re.I): real
-# plugin severity sections are all-caps; title-case prose ("### Blocking issues
-# — None", #962) must NOT match. MINOR dropped — minors never block.
-#
-# Locale faithfulness: Python's `[^A-Za-z0-9\n]` consumes a multibyte emoji
-# rune-by-rune, so this mirror matches "### 🔴 BLOCKING". The bash grep only
-# behaves the same once the step exports LC_ALL=C (test_severity_greps_run_
-# under_c_locale pins that). Without LC_ALL=C the bash would diverge — match 0
-# on the emoji while this mirror says 1 — so the locale pin is what keeps the
-# `test_emoji_decorated_blocking_emits` expectation truthful at runtime.
+# Structured marker: `<!-- code-review-findings ... -->` on its own lines.
+# Mirrors the bash `grep -q '<!-- *code-review-findings'` detection and the
+# `sed -n '/<!-- *code-review-findings/,/-->/p' | sed '1d;$d'` extraction —
+# take the lines strictly between the marker-open line and the first `-->`
+# line found after it.
+MARKER_OPEN_RE = re.compile(r"<!-- *code-review-findings")
+
+# Legacy BLOCK signal: an all-caps CRITICAL/MAJOR/BLOCKING/MEDIUM severity
+# heading — the ONLY merge-blocking shapes under the pre-#1816 prose contract
+# (two-gate, #988/#992; MEDIUM promoted from advisory, #1385 follow-up).
+# Byte-identical to the legacy fallback in code-review.yml. Case-SENSITIVE
+# (no re.I): real plugin severity sections are all-caps; title-case prose
+# ("### Blocking issues — None", #962) must NOT match. MINOR dropped —
+# minors never block.
 BLOCK_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|MAJOR|BLOCKING|MEDIUM)\b", re.M)
 
-# Back-compat count derivation (blocking-heading counts).
-CRIT_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*(?:CRITICAL|BLOCKING)\b", re.M)
-MAJOR_RE = re.compile(r"^#{1,6}[^A-Za-z0-9\n]*MAJOR\b", re.M)
-MINOR_RE = re.compile(
-    r"^#{1,6}[^A-Za-z0-9\n]*(?:MINOR|NITPICK|LOW|INFO|MEDIUM)\b", re.M
-)
+
+def _extract_findings_block(comment_body: str) -> str | None:
+    """Mirror of the bash marker detection + extraction.
+
+    Returns the raw text between the `<!-- code-review-findings` line and the
+    first subsequent line containing `-->`, or None if no marker is present.
+    """
+    lines = comment_body.splitlines()
+    start = None
+    end = None
+    for i, line in enumerate(lines):
+        if start is None and MARKER_OPEN_RE.search(line):
+            start = i
+            continue
+        if start is not None and "-->" in line:
+            end = i
+            break
+    if start is None or end is None:
+        return None
+    return "\n".join(lines[start + 1 : end])
+
+
+def parse_verdict(comment_body: str) -> tuple[bool, list]:
+    """Reimplementation of the parser's blocking/findings resolution (#1816).
+
+    Three-tier resolution order, mirroring scripts/review_debt_collector.py's
+    has_blocking_finding() and code-review.yml's "Verify review verdict" step
+    byte-for-byte:
+      1. Structured marker present + valid JSON + boolean `blocking` +
+         array `findings` → authoritative, both directions.
+      2. Marker present but malformed JSON, or missing/wrong-typed fields →
+         fail closed (blocking=True, findings=[]).
+      3. Marker absent entirely → legacy prose severity-heading fallback.
+
+    Returns (blocking, findings).
+    """
+    block = _extract_findings_block(comment_body)
+    if block is not None:
+        try:
+            data = json.loads(block)
+        except json.JSONDecodeError:
+            return True, []
+        if not isinstance(data, dict):
+            return True, []
+        blocking_val = data.get("blocking")
+        findings_val = data.get("findings")
+        if not isinstance(blocking_val, bool) or not isinstance(findings_val, list):
+            return True, []
+        blocking = blocking_val
+        findings = findings_val if blocking else []
+        return blocking, findings
+    return bool(BLOCK_RE.search(comment_body)), []
+
+
+def fingerprint(findings: list) -> list[str]:
+    """Mirror of `jq -c '[.[] | "\\(.class)|\\(.file)"] | unique'` (#1816 step 13)."""
+    return sorted({f"{f['class']}|{f['file']}" for f in findings})
 
 
 def should_emit(comment_body: str) -> bool:
@@ -80,17 +129,8 @@ def should_emit(comment_body: str) -> bool:
     """
     if not TITLE_RE.search(comment_body):
         return False  # not a code-review verdict comment
-    if not BLOCK_RE.search(comment_body):
-        return False  # no blocking severity heading → non-blocking, skip
-    return True
-
-
-def counts(comment_body: str) -> tuple[int, int, int, int]:
-    """Returns (n_critical, n_major, n_minor, n_issues) as the step derives them."""
-    n_critical = len(CRIT_RE.findall(comment_body))
-    n_major = len(MAJOR_RE.findall(comment_body))
-    n_minor = len(MINOR_RE.findall(comment_body))
-    return n_critical, n_major, n_minor, n_critical + n_major
+    blocking, _ = parse_verdict(comment_body)
+    return blocking
 
 
 # -- Fixtures: real / representative comment shapes ---------------------------
@@ -176,9 +216,73 @@ SIMPLIFICATION = """\
 
 ORCHESTRATOR_DISPATCH = "Re-queued event evt_123 for the orchestrator.\n"
 
+# -- Structured {blocking, findings} marker shapes (#1816) --------------------
+
+STRUCTURED_BLOCKING = """\
+### Code review
+
+<!-- code-review-findings
+{"blocking": true, "findings": [{"class": "regression", "file": "src/foo.py"}]}
+-->
+"""
+
+STRUCTURED_PASS = """\
+### Code review
+
+<!-- code-review-findings
+{"blocking": false, "findings": []}
+-->
+"""
+
+# Marker present but blocking=false while the prose ALSO happens to carry a
+# MAJOR heading (e.g. LLM narrative referencing a fixed issue) — the
+# structured marker is authoritative, the legacy fallback must NOT be
+# consulted once a marker is present.
+STRUCTURED_PASS_WITH_STALE_MAJOR_PROSE = """\
+### Code review
+
+Previously flagged as MAJOR, now resolved.
+
+<!-- code-review-findings
+{"blocking": false, "findings": []}
+-->
+"""
+
+STRUCTURED_MALFORMED_JSON = """\
+### Code review
+
+<!-- code-review-findings
+{not valid json
+-->
+"""
+
+STRUCTURED_MISSING_BLOCKING_FIELD = """\
+### Code review
+
+<!-- code-review-findings
+{"findings": []}
+-->
+"""
+
+STRUCTURED_NONBOOL_BLOCKING = """\
+### Code review
+
+<!-- code-review-findings
+{"blocking": "true", "findings": []}
+-->
+"""
+
+STRUCTURED_NONARRAY_FINDINGS = """\
+### Code review
+
+<!-- code-review-findings
+{"blocking": true, "findings": "oops"}
+-->
+"""
+
 
 class TestEmitDecision:
-    # --- blocking shapes EMIT ---
+    # --- blocking shapes EMIT (legacy prose, no marker) ---
     def test_major_findings_section_emits(self):
         assert should_emit(PR_957_MAJOR) is True
 
@@ -196,7 +300,7 @@ class TestEmitDecision:
         # real blocker from the trigger.
         assert should_emit("## Claude Code Review — PR #960\n\n### MAJOR\n\n1. x\n") is True
 
-    # --- non-blocking shapes SKIP ---
+    # --- non-blocking shapes SKIP (legacy prose, no marker) ---
     def test_found_n_no_severity_skips(self):
         # The core #992 false-positive fix: bare Found-N no longer triggers.
         assert should_emit(FOUND_N_NO_SEVERITY) is False
@@ -225,25 +329,63 @@ class TestEmitDecision:
         # Even with a valid review title, MINOR alone is non-blocking.
         assert should_emit("### Code review\n\n### MINOR\n\n1. nit\n") is False
 
+    # --- structured {blocking, findings} marker (#1816) ---
+    def test_structured_blocking_emits(self):
+        assert should_emit(STRUCTURED_BLOCKING) is True
 
-class TestCountDerivation:
-    def test_major_count_set(self):
-        nc, nm, nmi, ni = counts(PR_957_MAJOR)
-        assert (nc, nm) == (0, 1) and ni == 1
+    def test_structured_pass_skips(self):
+        assert should_emit(STRUCTURED_PASS) is False
 
-    def test_blocking_maps_to_critical_bucket(self):
-        nc, nm, nmi, ni = counts(PR_954_BLOCKING)
-        assert nc == 1 and ni == 1
+    def test_structured_marker_overrides_stale_prose(self):
+        # Marker is authoritative once present — a leftover MAJOR mention in
+        # the narrative must not resurrect a blocking verdict.
+        assert should_emit(STRUCTURED_PASS_WITH_STALE_MAJOR_PROSE) is False
 
-    def test_critical_count_set(self):
-        nc, nm, nmi, ni = counts(CRITICAL_COMMENT)
-        assert nc == 1 and ni == 1
+    def test_structured_malformed_json_fails_closed_emits(self):
+        assert should_emit(STRUCTURED_MALFORMED_JSON) is True
 
-    def test_blocking_branch_always_has_at_least_one_issue(self):
-        # Every comment that emits must yield n_issues >= 1, else the dispatch
-        # title and ISSUE_WORD logic underflow.
-        for body in (PR_957_MAJOR, PR_956_BARE_MAJOR, PR_954_BLOCKING, CRITICAL_COMMENT):
-            assert should_emit(body) and counts(body)[3] >= 1, body
+    def test_structured_missing_blocking_field_fails_closed_emits(self):
+        assert should_emit(STRUCTURED_MISSING_BLOCKING_FIELD) is True
+
+    def test_structured_nonbool_blocking_fails_closed_emits(self):
+        assert should_emit(STRUCTURED_NONBOOL_BLOCKING) is True
+
+    def test_structured_nonarray_findings_fails_closed_emits(self):
+        assert should_emit(STRUCTURED_NONARRAY_FINDINGS) is True
+
+
+class TestFindingsAndFingerprint:
+    def test_findings_extracted_from_structured_marker(self):
+        blocking, findings = parse_verdict(STRUCTURED_BLOCKING)
+        assert blocking is True
+        assert findings == [{"class": "regression", "file": "src/foo.py"}]
+
+    def test_findings_empty_on_legacy_fallback(self):
+        # No per-finding class/file is derivable from prose alone (#1816 step 13).
+        blocking, findings = parse_verdict(PR_957_MAJOR)
+        assert blocking is True
+        assert findings == []
+
+    def test_findings_empty_when_pass(self):
+        blocking, findings = parse_verdict(STRUCTURED_PASS)
+        assert blocking is False
+        assert findings == []
+
+    def test_findings_empty_on_fail_closed_path(self):
+        blocking, findings = parse_verdict(STRUCTURED_MALFORMED_JSON)
+        assert blocking is True
+        assert findings == []
+
+    def test_fingerprint_sorted_and_deduped(self):
+        findings = [
+            {"class": "regression", "file": "b.py"},
+            {"class": "regression", "file": "b.py"},
+            {"class": "performance", "file": "a.py"},
+        ]
+        assert fingerprint(findings) == ["performance|a.py", "regression|b.py"]
+
+    def test_fingerprint_empty_on_no_findings(self):
+        assert fingerprint([]) == []
 
 
 # -- Workflow wiring ----------------------------------------------------------
@@ -260,25 +402,27 @@ def parser_run() -> str:
 class TestParserWiring:
     def test_block_pattern_present_and_canonical(self, parser_run):
         assert r"^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)\b" in parser_run, (
-            "Parser must key the emit decision on the all-caps CRITICAL/MAJOR/"
-            "BLOCKING/MEDIUM severity heading (two-gate, #992; MEDIUM "
-            "promoted #1385 follow-up)."
+            "Parser's legacy fallback must key the emit decision on the all-caps "
+            "CRITICAL/MAJOR/BLOCKING/MEDIUM severity heading (two-gate, #992; "
+            "MEDIUM promoted #1385 follow-up)."
         )
 
     def test_block_pattern_byte_identical_to_merge_gate(self, parser_run):
         # The whole point of #992: event trigger and merge gate share ONE
-        # predicate. Pin them to the same literal so they cannot drift apart.
+        # legacy-fallback predicate. Pin them to the same literal so they
+        # cannot drift apart.
         review_run = REVIEW_WORKFLOW.read_text(encoding="utf-8")
         pattern = r"^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)\b"
         assert pattern in parser_run and pattern in review_run, (
-            "Block pattern must be byte-identical in event-dispatch.yml and "
-            "code-review.yml — divergence reopens the two-gate alignment gap."
+            "Legacy block pattern must be byte-identical in event-dispatch.yml "
+            "and code-review.yml — divergence reopens the two-gate alignment gap."
         )
 
     def test_block_check_is_case_sensitive(self, parser_run):
         assert "grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)" in parser_run, (
-            "Block check must be case-sensitive (grep -qE, not -qiE) so title-"
-            "case prose like 'Blocking issues — None' does not false-trigger."
+            "Legacy block check must be case-sensitive (grep -qE, not -qiE) so "
+            "title-case prose like 'Blocking issues — None' does not "
+            "false-trigger."
         )
 
     def test_minor_not_in_block_alternation(self, parser_run):
@@ -305,12 +449,38 @@ class TestParserWiring:
             "prefix, mirroring the merge gate."
         )
 
-    def test_block_check_precedes_count_derivation(self, parser_run):
+    def test_structured_marker_checked_before_legacy_fallback(self, parser_run):
+        marker_at = parser_run.index("<!-- *code-review-findings")
+        legacy_at = parser_run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)")
+        assert marker_at < legacy_at, (
+            "The structured {blocking, findings} marker must be checked before "
+            "falling back to the legacy severity-heading grep (#1816: marker "
+            "is authoritative, legacy prose is fallback-only)."
+        )
+
+    def test_fails_closed_on_malformed_marker(self, parser_run):
+        assert "failing closed" in parser_run, (
+            "A present-but-malformed code-review-findings marker (invalid "
+            "JSON, or missing/wrong-typed blocking/findings) must fail closed "
+            "(BLOCKING=true), mirroring scripts/review_debt_collector.py and "
+            "code-review.yml's Verify review verdict step (#1816)."
+        )
+
+    def test_n_critical_n_major_n_minor_removed(self, parser_run):
+        assert "N_CRITICAL" not in parser_run
+        assert "N_MAJOR" not in parser_run
+        assert "N_MINOR" not in parser_run
+
+    def test_findings_and_fingerprint_fields_present(self, parser_run):
+        assert "finding_fingerprint" in parser_run
+        assert "findings: $findings" in parser_run
+
+    def test_block_check_precedes_fingerprint_derivation(self, parser_run):
         block_at = parser_run.index("(CRITICAL|MAJOR|BLOCKING|MEDIUM)")
-        count_at = parser_run.index("N_CRITICAL=$(grep")
-        assert block_at < count_at, (
-            "The blocking-heading gate must run before count derivation — "
-            "counts are only meaningful once a block is confirmed."
+        fp_at = parser_run.index("FINGERPRINT_JSON=$(jq")
+        assert block_at < fp_at, (
+            "The blocking-heading gate must run before fingerprint derivation "
+            "— the fingerprint is only meaningful once a block is confirmed."
         )
 
     def test_severity_greps_run_under_c_locale(self, parser_run):
@@ -318,9 +488,9 @@ class TestParserWiring:
         # ("### 🔴 BLOCKING", #954) per-byte under the C locale; under the
         # runner default LANG=C.UTF-8 it reads the emoji as one non-consumed
         # rune and the block check silently misses. `export LC_ALL=C` must be
-        # set, AND it must precede the severity greps (after jq, so JSON stays
-        # UTF-8 aware). Verified at runtime: LANG=C.UTF-8 → emoji match 0,
-        # LC_ALL=C → emoji match 1.
+        # set, AND it must precede the legacy severity grep (after jq, so
+        # JSON stays UTF-8 aware). Verified at runtime: LANG=C.UTF-8 → emoji
+        # match 0, LC_ALL=C → emoji match 1.
         assert "export LC_ALL=C" in parser_run, (
             "Severity greps must run under LC_ALL=C — otherwise an emoji-"
             "decorated CRITICAL/MAJOR/BLOCKING heading (#954) escapes the "
@@ -328,7 +498,7 @@ class TestParserWiring:
         )
         assert parser_run.index("export LC_ALL=C") < parser_run.index(
             "(CRITICAL|MAJOR|BLOCKING|MEDIUM)"
-        ), "LC_ALL=C must be exported before the first severity grep."
+        ), "LC_ALL=C must be exported before the legacy severity grep."
 
 
 # -- Payload escaping (#1080) --------------------------------------------------
@@ -448,8 +618,8 @@ class TestPayloadEscaping:
     def test_review_negative_claude_bot_payload_escapes_adversarial_title(
         self, parser_run
     ):
-        # Same step TestParserWiring pins for severity parsing (#992) — here
-        # we isolate just its payload-construction tail (#1080).
+        # Same step TestParserWiring pins for severity parsing (#992/#1816) —
+        # here we isolate just its payload-construction tail (#1080).
         pipeline = _extract_payload_pipeline(parser_run)
         payload = _run_payload_pipeline(
             pipeline,
@@ -460,12 +630,15 @@ class TestPayloadEscaping:
                 "COMMENT_ID": "99",
                 "COMMENT_URL": "https://github.com/Osasuwu/jarvis/pull/1080#comment-99",
                 "N_ISSUES": "1",
-                "N_CRITICAL": "0",
-                "N_MAJOR": "1",
-                "N_MINOR": "0",
                 "ISSUE_WORD": "issue",
+                "FINDINGS_JSON": '[{"class":"regression","file":"src/foo.py"}]',
+                "FINGERPRINT_JSON": '["regression|src/foo.py"]',
             },
         )
         assert payload["payload"]["pr_title"] == ADVERSARIAL_TITLE
         assert payload["payload"]["pr_number"] == 1080
-        assert payload["payload"]["n_major"] == 1
+        assert payload["payload"]["findings"] == [
+            {"class": "regression", "file": "src/foo.py"}
+        ]
+        assert payload["payload"]["finding_fingerprint"] == ["regression|src/foo.py"]
+        assert payload["payload"]["n_issues"] == 1

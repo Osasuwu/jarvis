@@ -66,7 +66,7 @@ Minimum viable gate set, each as its own workflow file under `.github/workflows/
 
 | Gate (check name) | Workflow | What it blocks |
 |---|---|---|
-| `review` | `code-review.yml` (+ retry wrapper) | Claude code-review verdict — fails closed on CRITICAL/MAJOR/BLOCKING/MEDIUM findings |
+| `review` | `code-review.yml` (+ retry wrapper) | Code-gate: Layer A (`ruff check`, lint rule group 1) + Layer B (tiered LLM review) — fails closed on a `{blocking: true, findings: [...]}` verdict or a missing/malformed one |
 | `owner-queue-guard` | `owner-queue-guard.yml` | PR carries `status:owner-queue` — explicit manual hold |
 | `require-linked-issue` | `pr-body-check.yml` | PR body has no `Closes #N`/`Refs #N`, no `[no-issue]` marker, no `refactor:` prefix, no `priority:critical` hotfix bypass |
 | test suite (`pytest`, language-equivalent) | your language's own CI workflow | Tests fail |
