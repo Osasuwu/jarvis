@@ -80,12 +80,17 @@ jobs:
                line and a filled-in Summary/Why/Risk Assessment/Testing
                section per AGENTS.md's PR template.
 
-            Never edit anything matching this repo's protected-files policy
-            (`docs/security/agent-boundaries.md`) — `.claude/settings.json`,
-            `.claude/hooks/**`, `.github/workflows/**`, and the rest of that
-            list. If the issue's scope requires touching one of those, that
-            is itself a reason to escalate per step 5, not a reason to edit
-            it anyway.
+            Never edit this workflow file, any other file under
+            `.github/workflows/**`, anything under `.claude/hooks/**`, or
+            `.claude/settings.json` — these are YOUR OWN execution
+            environment (this job's permissions, its worker prompt, and the
+            hooks that would otherwise catch a bad edit), and unlike
+            `docs/security/agent-boundaries.md`'s T2 file set they are NOT
+            mechanically blocked below, only asked of you here. If the
+            issue's scope requires touching one of those, or any file in
+            `docs/security/agent-boundaries.md`'s protected-files policy,
+            that is itself a reason to escalate per step 5, not a reason to
+            edit it anyway.
           claude_args: |
             # Headless: any tool not listed here is denied outright, same
             # rationale as code-review.yml's allowlist — no human to approve
@@ -97,3 +102,10 @@ jobs:
             # escalation, never an unattended edit.
             --max-turns 40
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
+            # Mechanical backstop for the prompt's "never edit" ask above —
+            # this job's own workflow/hooks/settings, plus the real T2 set
+            # from `.claude/hooks/protected-files.py`, are Edit/Write-denied
+            # here so the worker can't self-modify or blind its own guard
+            # even on a bad turn. Path-scoped, not a whole-tool deny, so
+            # normal implementation edits elsewhere stay unaffected.
+            --disallowed-tools "Edit(./.github/workflows/**)" "Write(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Write(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Write(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Write(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Write(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Write(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Write(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Write(./scripts/principal.py)"
