@@ -168,6 +168,19 @@ class TestToTicketsNativeMemoryVocabulary:
     reactive-core orchestrator's still-live `emit_task` row concept, not as
     leftover Supabase-memory-MCP vocabulary. Banning it outright would fail
     AC4 (no source changes required) against the already-genericized file.
+
+    `test_all_relative_links_resolve` below resolves links relative to
+    `TO_TICKETS_PATH` — the `.claude-userlevel/` mirror inside *this* repo,
+    which is self-contained and still resolves today. It does NOT exercise
+    the canonical copy in `Osasuwu/jarvis-private` (moved there by #1798),
+    where the equivalent parent-directory-style links were dead on arrival —
+    fixed separately in #1838 by naming those targets as plain paths or
+    permanent GitHub URLs instead. Retargeting this test at a local clone of
+    jarvis-private was considered and rejected: it would depend on a
+    device-specific filesystem path with no guarantee of existing in CI or on
+    another operator's machine (#1838 decision). Instead this coverage rides
+    with `.claude-userlevel/` and retires alongside it in #1800, when the
+    mirror is deleted and jarvis-private becomes the sole copy.
     """
 
     def test_no_banned_tokens(self, to_tickets_text: str) -> None:
