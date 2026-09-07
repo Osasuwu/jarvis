@@ -76,7 +76,7 @@ agents = [
   # Multi-service notification transport for agents/notify.py's `apprise`
   # NOTIFY_TRANSPORT (#1547). Lazily imported (try/except ImportError) so the
   # registry still resolves telegram/none/dotted-path without it installed.
-  "apprise>=1.12.0,<2",
+  "apprise>=1.13.0,<2",
 ]
 # All runtime components
 full = [
