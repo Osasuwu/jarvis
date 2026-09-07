@@ -74,11 +74,15 @@ def test_exempt_takes_precedence_over_class_3_on_criterion_overlap() -> None:
     overlapping_cfg = PlanReviewConfig(
         class_2=_CFG.class_2,
         exempt=ExemptCriteria(mechanical_criteria=("docs-only", "ambiguous-criterion")),
-        class_3=Class3Criteria(mechanical_criteria=("admin-rights-required", "ambiguous-criterion")),
+        class_3=Class3Criteria(
+            mechanical_criteria=("admin-rights-required", "ambiguous-criterion")
+        ),
         models=_CFG.models,
     )
     change = ChangeSet(
-        paths=("agents/foo.py",), churn_lines=5, prod_areas=1,
+        paths=("agents/foo.py",),
+        churn_lines=5,
+        prod_areas=1,
         mechanical_criteria=("ambiguous-criterion",),
     )
     assert classify(overlapping_cfg, change) == 1
@@ -136,3 +140,72 @@ def test_classify_task_row_defaults_missing_fields() -> None:
 )
 def test_label_for(cls, expected_label) -> None:
     assert label_for(cls) == expected_label
+
+
+# --- docs-only derivation (#1818) -------------------------------------------
+#
+# `mechanical_criteria` is populated by no production caller — neither the CI
+# diff-gate's jq envelope nor `/implement` §3b passes one — so the exempt
+# short-circuit above was dead code in prod and a docs-only PR spanning two
+# top-level areas got hard-blocked (PR #1817). classify() now derives the
+# criterion from paths when, and only when, the caller supplied none.
+
+_DOCS_CHANGE = ("CONTEXT.md", "docs/research/x.md")
+
+
+def test_docs_only_is_derived_when_caller_supplies_no_criteria() -> None:
+    """The PR #1817 shape: root markdown + a docs/ file = two prod areas,
+    which trips min_prod_areas — but it is documentation, so it exempts."""
+    change = ChangeSet(paths=_DOCS_CHANGE, churn_lines=5, prod_areas=2, mechanical_criteria=())
+    assert classify(_CFG, change) == 1
+
+
+@pytest.mark.parametrize(
+    "paths",
+    [
+        # skills/hooks markdown is agent behavior, not documentation about it
+        (".claude/skills/foo/SKILL.md", "docs/x.md"),
+        # rules files at the root are executable process, not documentation
+        ("AGENTS.md", "docs/x.md"),
+        ("CLAUDE.md", "docs/x.md"),
+        # a code file anywhere in the set defeats the derivation
+        ("agents/foo.py", "docs/x.md"),
+    ],
+)
+def test_non_documentation_paths_defeat_the_derivation(paths) -> None:
+    change = ChangeSet(paths=paths, churn_lines=5, prod_areas=2, mechanical_criteria=())
+    assert classify(_CFG, change) == 2
+
+
+def test_explicit_criteria_win_over_derivation() -> None:
+    """A caller that names its own criteria is never second-guessed — in
+    particular a true-HITL class_3 criterion is not downgraded by paths that
+    happen to look like documentation."""
+    change = ChangeSet(
+        paths=_DOCS_CHANGE,
+        churn_lines=5,
+        prod_areas=2,
+        mechanical_criteria=("admin-rights-required",),
+    )
+    assert classify(_CFG, change) == 3
+
+
+def test_derivation_has_no_authority_of_its_own() -> None:
+    """The derivation only names a criterion; whether it exempts is still the
+    config's call. Drop `docs-only` from exempt and the same change classifies
+    on thresholds like anything else."""
+    no_docs_exempt = PlanReviewConfig(
+        class_2=_CFG.class_2,
+        exempt=ExemptCriteria(mechanical_criteria=("typo-fix",)),
+        class_3=_CFG.class_3,
+        models=_CFG.models,
+    )
+    change = ChangeSet(paths=_DOCS_CHANGE, churn_lines=5, prod_areas=2, mechanical_criteria=())
+    assert classify(no_docs_exempt, change) == 2
+
+
+def test_empty_path_set_derives_nothing() -> None:
+    """`all()` over an empty set is vacuously true — an empty change must not
+    be read as documentation."""
+    change = ChangeSet(paths=(), churn_lines=500, prod_areas=0, mechanical_criteria=())
+    assert classify(_CFG, change) == 2
