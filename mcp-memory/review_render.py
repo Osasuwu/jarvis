@@ -245,6 +245,6 @@ def render_proposal_list(
         )
 
     blocks: list[str] = []
-    for i, (row, ctx) in enumerate(zip(rows, contexts)):
+    for _i, (row, ctx) in enumerate(zip(rows, contexts, strict=False)):
         blocks.append(render_proposal(row, ctx))
     return "\n\n---\n\n".join(blocks)

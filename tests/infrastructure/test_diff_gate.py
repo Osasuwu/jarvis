@@ -16,7 +16,7 @@ import textwrap
 
 import pytest
 
-from src.diff_gate import is_comment_only_change, Formatter
+from src.diff_gate import is_comment_only_change
 
 
 # ---------------------------------------------------------------------------

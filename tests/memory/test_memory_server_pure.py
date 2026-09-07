@@ -22,9 +22,6 @@ from server import (
     _parse_pgvector,
     _rrf_merge,
     CONFIDENCE_FLOOR,
-    MAX_AUTO_LINKS,
-    SUPERSEDE_SIM_THRESHOLD,
-    TEMPORAL_HALF_LIVES,
 )
 
 

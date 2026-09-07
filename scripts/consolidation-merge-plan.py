@@ -868,7 +868,7 @@ def render_markdown(
 
     id_to_name = {m["id"]: m["name"] for c in clusters for m in c["members"]}
 
-    for cluster, plan in zip(clusters, plans):
+    for cluster, plan in zip(clusters, plans, strict=False):
         lines.append(
             f"## Cluster {cluster['cluster_id']} — {plan['decision']} "
             f"(confidence {plan['confidence']:.2f})"
@@ -1121,7 +1121,7 @@ def main() -> int:
     if args.apply:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         print(f"Applying plans (confidence gate {args.confidence_gate:.2f})...", file=sys.stderr)
-        for cluster, plan in zip(clusters, plans):
+        for cluster, plan in zip(clusters, plans, strict=False):
             try:
                 if plan["decision"] == "KEEP_DISTINCT":
                     r = note_keep_distinct(client, cluster, plan, today=today, model=args.model)

@@ -7,7 +7,7 @@ every assertion here pins a fixed (event_type, severity) input to its route.
 from __future__ import annotations
 
 import logging
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime
 
 import pytest
@@ -489,7 +489,7 @@ def test_escalate_decision_fields():
 
 def test_decision_is_frozen():
     d = handle_event(_ev("pr_merged"))
-    with pytest.raises(Exception):
+    with pytest.raises(FrozenInstanceError):
         d.route = Route.ESCALATE  # type: ignore[misc]
     assert isinstance(d, Decision)
 

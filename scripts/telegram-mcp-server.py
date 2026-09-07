@@ -30,12 +30,8 @@ from telethon.tl.types import (
     ChatBannedRights,
     ChannelParticipantsKicked,
     ChannelParticipantsAdmins,
-    InputChatPhoto,
     InputChatUploadedPhoto,
     InputChatPhotoEmpty,
-    InputPeerUser,
-    InputPeerChat,
-    InputPeerChannel,
     DialogFilter,
     DialogFilterChatlist,
     DialogFilterDefault,
@@ -1352,7 +1348,7 @@ async def list_messages(
 
                     from_date_obj = from_date_obj.replace(tzinfo=timezone.utc)
             except ValueError:
-                return f"Invalid from_date format. Use YYYY-MM-DD."
+                return "Invalid from_date format. Use YYYY-MM-DD."
 
         if to_date:
             try:
@@ -1367,7 +1363,7 @@ async def list_messages(
 
                     to_date_obj = to_date_obj.replace(tzinfo=timezone.utc)
             except ValueError:
-                return f"Invalid to_date format. Use YYYY-MM-DD."
+                return "Invalid to_date format. Use YYYY-MM-DD."
 
         # Prepare filter parameters
         params = {}
@@ -1616,7 +1612,7 @@ async def list_chats(
             results.append(chat_info)
 
         if not results:
-            return f"No chats found matching the criteria."
+            return "No chats found matching the criteria."
 
         return "\n".join(results)
     except Exception as e:
@@ -1786,7 +1782,6 @@ async def get_contact_chats(contact_id: Union[int, str]) -> str:
         )
 
         # Find direct chat
-        direct_chat = None
         dialogs = await client.get_dialogs()
 
         results = []
@@ -1801,14 +1796,13 @@ async def get_contact_chats(contact_id: Union[int, str]) -> str:
                 break
 
         # Look for common groups/channels
-        common_chats = []
         try:
             common = await client.get_common_chats(contact)
             for chat in common:
                 chat_type = get_entity_type(chat)
                 chat_info = f"Chat ID: {chat.id}, Title: {chat.title}, Type: {chat_type}"
                 results.append(chat_info)
-        except:
+        except Exception:
             results.append("Could not retrieve common groups.")
 
         if not results:
@@ -1982,7 +1976,7 @@ async def add_contact(
 
                 user = resolve_result.users[0]
                 if not isinstance(user, User):
-                    return f"Error: Resolved entity is not a user."
+                    return "Error: Resolved entity is not a user."
 
                 user_id = user.id
                 access_hash = user.access_hash
@@ -2058,7 +2052,7 @@ async def add_contact(
                 logger.exception(f"add_contact (alt method) failed (phone={phone})")
                 return log_and_format_error("add_contact", alt_e, phone=phone)
         else:
-            logger.exception(f"add_contact (type error) failed")
+            logger.exception("add_contact (type error) failed")
             return log_and_format_error("add_contact", type_err)
     except Exception as e:
         logger.exception(f"add_contact failed (phone={phone}, username={username})")
@@ -2330,7 +2324,7 @@ async def leave_chat(chat_id: Union[int, str]) -> str:
             return log_and_format_error(
                 "leave_chat",
                 Exception(
-                    f"Error leaving chat: This appears to be a channel/supergroup. Please check the chat ID and try again."
+                    "Error leaving chat: This appears to be a channel/supergroup. Please check the chat ID and try again."
                 ),
                 chat_id=chat_id,
             )
@@ -2587,7 +2581,6 @@ async def set_privacy_settings(
             InputPrivacyValueAllowUsers,
             InputPrivacyValueDisallowUsers,
             InputPrivacyValueAllowAll,
-            InputPrivacyValueDisallowAll,
         )
 
         # Map the simplified keys to their corresponding input types
@@ -2646,7 +2639,7 @@ async def set_privacy_settings(
 
         # Apply the privacy settings
         try:
-            result = await client(
+            await client(
                 functions.account.SetPrivacyRequest(key=privacy_key, rules=rules)
             )
             return f"Privacy settings for {key} updated successfully."
@@ -2888,7 +2881,7 @@ async def promote_admin(
         )
 
         try:
-            result = await client(
+            await client(
                 functions.channels.EditAdminRequest(
                     channel=chat, user_id=user, admin_rights=admin_rights, rank="Admin"
                 )
@@ -2941,7 +2934,7 @@ async def demote_admin(group_id: Union[int, str], user_id: Union[int, str]) -> s
         )
 
         try:
-            result = await client(
+            await client(
                 functions.channels.EditAdminRequest(
                     channel=chat, user_id=user, admin_rights=admin_rights, rank=""
                 )
@@ -3188,7 +3181,7 @@ async def join_chat_by_link(link: str) -> str:
         if result and hasattr(result, "chats") and result.chats:
             chat_title = getattr(result.chats[0], "title", "Unknown Chat")
             return f"Successfully joined chat: {chat_title}"
-        return f"Joined chat via invite hash."
+        return "Joined chat via invite hash."
     except Exception as e:
         err_str = str(e).lower()
         if "expired" in err_str:
@@ -3255,13 +3248,6 @@ async def import_chat_invite(hash: str) -> str:
 
         # Try checking the invite before joining
         try:
-            from telethon.errors import (
-                InviteHashExpiredError,
-                InviteHashInvalidError,
-                UserAlreadyParticipantError,
-                ChatAdminRequiredError,
-                UsersTooMuchError,
-            )
 
             # Try to check invite info first (will often fail if not a member)
             invite_info = await client(functions.messages.CheckChatInviteRequest(hash=hash))
@@ -3269,7 +3255,7 @@ async def import_chat_invite(hash: str) -> str:
                 # If we got chat info, we're already a member
                 chat_title = getattr(invite_info.chat, "title", "Unknown Chat")
                 return f"You are already a member of this chat: {chat_title}"
-        except Exception as check_err:
+        except Exception:
             # This often fails if not a member - just continue
             pass
 
@@ -3279,7 +3265,7 @@ async def import_chat_invite(hash: str) -> str:
             if result and hasattr(result, "chats") and result.chats:
                 chat_title = getattr(result.chats[0], "title", "Unknown Chat")
                 return f"Successfully joined chat: {chat_title}"
-            return f"Joined chat via invite hash."
+            return "Joined chat via invite hash."
         except Exception as join_err:
             err_str = str(join_err).lower()
             if "expired" in err_str:
@@ -3700,7 +3686,7 @@ async def mute_chat(chat_id: Union[int, str]) -> str:
             )
         )
         return f"Chat {chat_id} muted."
-    except (ImportError, AttributeError) as type_err:
+    except (ImportError, AttributeError):
         try:
             # Alternative approach directly using raw API
             peer = await resolve_input_entity(chat_id)
@@ -3743,7 +3729,7 @@ async def unmute_chat(chat_id: Union[int, str]) -> str:
             )
         )
         return f"Chat {chat_id} unmuted."
-    except (ImportError, AttributeError) as type_err:
+    except (ImportError, AttributeError):
         try:
             # Alternative approach directly using raw API
             peer = await resolve_input_entity(chat_id)
@@ -4052,7 +4038,7 @@ async def set_bot_commands(bot_username: str, commands: list) -> str:
         ]
 
         # Get the bot entity
-        bot = await resolve_entity(bot_username)
+        await resolve_entity(bot_username)
 
         # Set the commands with proper scope
         await client(
@@ -4249,7 +4235,7 @@ async def create_poll(
             try:
                 close_date_obj = datetime.fromisoformat(close_date.replace("Z", "+00:00"))
             except ValueError:
-                return f"Invalid close_date format. Use YYYY-MM-DD HH:MM:SS format."
+                return "Invalid close_date format. Use YYYY-MM-DD HH:MM:SS format."
 
         # Create the poll using InputMediaPoll with SendMediaRequest
         from telethon.tl.types import InputMediaPoll, Poll, PollAnswer, TextWithEntities
@@ -4268,7 +4254,7 @@ async def create_poll(
             close_date=close_date_obj,
         )
 
-        result = await client(
+        await client(
             functions.messages.SendMediaRequest(
                 peer=entity,
                 media=InputMediaPoll(poll=poll),

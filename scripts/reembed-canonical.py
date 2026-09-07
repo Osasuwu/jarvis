@@ -94,7 +94,7 @@ async def main(apply: bool) -> int:
             for r in batch
         ]
         embeddings = await embed_batch(texts)
-        for r, emb in zip(batch, embeddings):
+        for r, emb in zip(batch, embeddings, strict=False):
             client.table("memories").update({
                 "embedding": emb,
                 "embedding_model": VOYAGE_MODEL,

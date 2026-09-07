@@ -248,7 +248,7 @@ async def _handle_recall(args: dict) -> list[TextContent]:
                 # dominate semantic recall via ACT-R temporal scoring.
                 ids_to_touch = [
                     rid
-                    for rid, row in zip(ids, rows)
+                    for rid, row in zip(ids, rows, strict=False)
                     if "always_load" not in (row.get("tags") or [])
                 ]
                 if ids_to_touch:
@@ -644,7 +644,7 @@ async def _backfill_missing_embeddings(client, project) -> None:
             f"embedding backfill count mismatch: {len(rows)} rows vs {len(embeddings)} embeddings"
         )
 
-        for mem, embedding in zip(rows, embeddings):
+        for mem, embedding in zip(rows, embeddings, strict=False):
             client.table("memories").update(
                 _embed_upsert_fields(embedding, server.EMBEDDING_MODEL_PRIMARY)
             ).eq("id", mem["id"]).execute()

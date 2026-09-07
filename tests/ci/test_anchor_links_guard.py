@@ -10,9 +10,6 @@ Pattern follows #326: fixture tests validate both config and logic.
 
 from __future__ import annotations
 
-import re
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -130,7 +127,7 @@ def test_collect_anchors_lowercase_inline():
 
 def test_fence_skipping_skip_code_in_fence():
     """Fence-skipping: lines inside ``` ``` are not parsed for anchors."""
-    from scripts.audit_anchors import find_broken_links, collect_anchors
+    from scripts.audit_anchors import find_broken_links
     # This text has an anchor-like #foo inside a code fence — should be ignored
     corpus = {
         REPO_ROOT / "test.md": """# Foo
@@ -392,7 +389,7 @@ def test_live_no_broken_anchors_in_corpus():
 
 def test_l3_line_annotation_simple():
     """L3: Line-number annotation inside link text is detected."""
-    from scripts.audit_anchors import find_line_number_annotations, LINE_NUMBER_ANNOTATION_RE
+    from scripts.audit_anchors import LINE_NUMBER_ANNOTATION_RE
     # This should match the L3 pattern
     text = "[text (line 42)](url)"
     assert LINE_NUMBER_ANNOTATION_RE.search(text)

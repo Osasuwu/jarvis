@@ -14,7 +14,6 @@ Format ordering: trim → run repo formatter if available → compare.
 from __future__ import annotations
 
 import io
-import re
 import tokenize
 from typing import Protocol
 
@@ -115,7 +114,7 @@ def _py_comment_only(before: str, after: str) -> bool:
 
     return all(
         bt.type == at.type and bt.string == at.string
-        for bt, at in zip(before_tokens, after_tokens)
+        for bt, at in zip(before_tokens, after_tokens, strict=False)
     )
 
 

@@ -8,8 +8,6 @@ import json
 import os
 import platform
 import socket
-import subprocess
-import sys
 from pathlib import Path
 
 _root = Path(__file__).resolve().parent.parent

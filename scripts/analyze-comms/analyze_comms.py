@@ -36,11 +36,11 @@ def main(src_path: str):
         print("no interactive sessions found")
         return
 
-    print(f"=== SCOPE ===")
+    print("=== SCOPE ===")
     print(f"interactive sessions: {len(real)}")
     print(f"user msgs: {len(user_msgs)}  asst msgs: {len(asst_msgs)}")
 
-    print(f"\n=== USER MSG LENGTH ===")
+    print("\n=== USER MSG LENGTH ===")
     lens = sorted(m["len"] for m in user_msgs)
     n = len(lens)
     pct = lambda p: lens[int(n * p)]
@@ -62,7 +62,7 @@ def main(src_path: str):
     pos = sum(1 for m in user_msgs if POS_RE.search(m["text"]))
     print(f"\n=== TONE ===  corrective={neg} ({100*neg/n:.1f}%)  affirmative={pos} ({100*pos/n:.1f}%)")
 
-    print(f"\n=== TIME OF DAY (UTC) ===")
+    print("\n=== TIME OF DAY (UTC) ===")
     hours = Counter()
     for m in user_msgs:
         try:
@@ -74,7 +74,7 @@ def main(src_path: str):
         for h in sorted(hours):
             print(f"  {h:02d}: {hours[h]:3d}  {'#' * (hours[h] * 40 // mx)}")
 
-    print(f"\n=== SESSION ECONOMICS (top 10) ===")
+    print("\n=== SESSION ECONOMICS (top 10) ===")
     rows = []
     for s, msgs in real.items():
         u = [m for m in msgs if m["role"] == "u"]

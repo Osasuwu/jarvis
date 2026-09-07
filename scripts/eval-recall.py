@@ -136,7 +136,7 @@ async def _embed_query(text: str) -> list[float]:
 
 def _cosine_distance(a: list[float], b: list[float]) -> float:
     """1 - cosine_similarity. NaN when either vector has zero norm."""
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(y * y for y in b))
     if norm_a == 0.0 or norm_b == 0.0:
@@ -918,12 +918,12 @@ async def run_context_rot_eval(
 
     only_plain = [
         q["id"]
-        for q, p, c in zip(queries, plain_results, context_results)
+        for q, p, c in zip(queries, plain_results, context_results, strict=False)
         if p.passed and not c.passed
     ]
     only_context = [
         q["id"]
-        for q, p, c in zip(queries, plain_results, context_results)
+        for q, p, c in zip(queries, plain_results, context_results, strict=False)
         if c.passed and not p.passed
     ]
 

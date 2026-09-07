@@ -215,7 +215,7 @@ class TestBuildSupervisorEnv:
 
         goal = "implement the thing"
         evidence_match = re.search(r"\(branch=([^)]+)\)", goal)
-        evidence_head = evidence_match.group(1).strip() if evidence_match else f"task/t5"
+        evidence_head = evidence_match.group(1).strip() if evidence_match else "task/t5"
         assert pinned_branch == evidence_head
 
     def test_pinned_branch_matches_pr_evidence_head_redrive_shape(self):

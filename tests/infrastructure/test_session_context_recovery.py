@@ -743,7 +743,6 @@ def test_format_recovery_section_respects_cap():
 
 def test_recovery_payload_cap_limit_respected():
     """Payload should never exceed RECOVERY_SECTION_MAX_CHARS."""
-    import re
 
     test_cases = [
         100,

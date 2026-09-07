@@ -563,7 +563,6 @@ def test_upsert_failure_does_not_crash() -> None:
     def failing_table(name: str) -> Any:
         t = original_table(name)
         if name == "task_queue":
-            original_upsert = t.upsert
 
             def failing_upsert(*args: Any, **kwargs: Any) -> Any:
                 raise RuntimeError("Simulated DB error")

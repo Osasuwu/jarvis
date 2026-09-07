@@ -589,7 +589,7 @@ def _get_venv_python():
 
 def main():
     print(f"\n{BOLD}{'=' * 50}")
-    print(f"  Jarvis - Device Setup")
+    print("  Jarvis - Device Setup")
     print(f"{'=' * 50}{RESET}")
     print(f"  {DIM}Project: {ROOT}{RESET}")
     print(f"  {DIM}OS: {platform.system()} {platform.version()}{RESET}")
