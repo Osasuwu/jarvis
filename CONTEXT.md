@@ -23,7 +23,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Recall** — Query-to-ranked-hits pipeline: rewriter→embed→semantic+keyword→RRF merge→temporal→link expansion→gate.
 - **RecallConfig** — Frozen dataclass of pipeline toggles and constants; prod all-on defaults.
 - **RecallHit** — Structured result row with multi-axis scores and provenance source.
-- **Outcome** — Recorded delegated-task result, used during reflection and verification passes for attribution.
+- **Outcome** — Recorded delegated-task result, used to attribute success/failure back to the originating decision.
 - **Decision** — `decision_made` episode via `record_decision`; rationale+alternatives+memories+reversibility.
 - **Decision recovery key** — `(project, cwd, since)`, not `session_id`; a resume/compaction always mints a new session_id.
 - **FOK** — First-of-Kind recall calibration metric; novelty of surfaced memories.
@@ -141,7 +141,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Recall** — the pipeline that turns a query into ranked Memory hits: rewriter → embed → semantic + keyword search → RRF merge → temporal scoring → link expansion → known-unknown gate. Lives in `mcp-memory/recall.py` as the deep module behind every recall call site (MCP `recall` tool, PreToolUse hook, eval harness). Three adapters, one implementation.
 - **RecallConfig** — frozen dataclass of pipeline toggles + constants (`use_rewriter`, `use_links`, `use_classifier`, `use_temporal`, thresholds, RRF-K, temporal half-lives, excluded tags). Prod uses `PROD_RECALL_CONFIG` (all-on defaults); eval flips flags for ablation. Adding a recall feature = one new flag in this dataclass, no fanout across hook/server/eval.
 - **RecallHit** — structured result row: raw memory + `semantic_score`, `keyword_score`, `rrf_score`, `temporal_score`, `final_score`, `source` (`semantic|keyword|linked`), `linked_via`. Formatting (TextContent vs brief markdown vs eval JSON) is per-adapter, not per-pipeline.
-- **Outcome** — recorded result of a delegated task / decision, used during reflection and verification passes to attribute success/failure back to reasoning. Linked to `decision_made` episodes.
+- **Outcome** — recorded result of a delegated task / decision, used to attribute success/failure back to the originating reasoning. Linked to `decision_made` episodes.
 - **Decision** — a `decision_made` episode emitted via `record_decision`. Captures rationale + alternatives + memories used + reversibility. Trigger conditions in CLAUDE.md memory rules.
 - **Decision recovery key** — `(project, cwd, since)`, replacing `session_id` as the sole key `decision_list` recovers by (#1423). A harness resume/compaction always mints a new `session_id` (#1269), so decisions recorded under the old one became unreachable the instant that boundary crossed — the exact failure `/end` Step 0's "Real-time decisions" bullet used to hit. `session_id` is demoted to forensic grouping metadata: still stamped on every `record_decision` call (by the PreToolUse gate, from hook stdin's `cwd` field for the `cwd` half), still accepted by `decision_list` as an *optional* extra AND-combined filter, but never required and never sufficient alone. `project` is required whenever `session_id` is absent (there is always at least one non-`session_id` anchor). `since` accepts either a relative window (`"<N>h"`/`"<N>d"`) or an absolute ISO-8601 timestamp; `/end` derives it from the last trusted `session_snapshot_*` row's `updated_at` when one exists, else falls back to a relative `12h` window (see `.claude-userlevel/skills/end/SKILL.md` Step 0 item 2). Verified live end-to-end against real Supabase (decision `b2a208ec-c883-4c4d-8742-d5756bbee5b4`): a row written with `cwd` stamped is retrievable via `(project, cwd, since)` with no `session_id`, and a mismatched `session_id` correctly excludes it when supplied — confirming the AND-combination, not OR. Locked by grill decision `bdefee1b-c639-4a05-9aa0-f10373a249c1`.
 - **FOK** (First-of-Kind) — a memory recall calibration metric. Indicates how often a recall returns a memory the agent has never seen before. Pillar-1 quality signal.
@@ -324,7 +324,7 @@ jarvis/
 
 - **Session start:** `SessionStart` hook → `scripts/session-context.py` → loads compact memory profile + always-load rules + working state + active goals + this file → injected as `<context>` into Claude's window.
 - **Memory write:** skill / hook / user → `memory_store` (with `source_provenance`) → Supabase → embedding generated → cross-device available immediately.
-- **Decision:** skill execution → `record_decision` (with `memories_used`, alternatives, reversibility) → episode UUID → later attributed to outcome during reflection.
+- **Decision:** skill execution → `record_decision` (with `memories_used`, alternatives, reversibility) → episode UUID → later attributed to outcome.
 - **Skill installation:** edit `.claude-userlevel/skills/<name>/SKILL.md` → PR review → merge → `install.ps1 -Apply` on each device → `~/.claude/skills/<name>/SKILL.md` is what Claude Code reads.
 
 ---
