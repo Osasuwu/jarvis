@@ -77,7 +77,7 @@ Terms used across the codebase. Definitions are domain-meaningful, not implement
 - **Pre-dispatch gate** — Five-condition check (`/dispatch` v4.0.0, post-#1793): repo match, no `needs-*`, AC section, decision reference, not `afk:3-human`. Detail below is current; historical `sandcastle`-label mechanism retired for `/dispatch`.
 - **In-flight (dispatch dedup)** — `task_queue.enqueue()`'s partial unique index on `issue_number` is the atomic claim (#1085 Slice 2); legacy open-PR/branch detection (`check_in_flight`, atomic claim via ref push) survives only as a second-line catch for pre-Slice-2 work with no queue row.
 - **AFK-fit checklist** — Four-question gate at slice creation deciding the `sandcastle` label.
-- **/rework skill** — Parses structured code-review verdict, applies fixes per severity; separate from `/implement`.
+- **`/rework` skill** (removed, #1795) — formerly parsed structured code-review verdict and applied fixes per severity, separate from `/implement`; the PR-rework loop above still applies fixes via sandcastle's rework path. History-vs-live pass on this term tracked in #1803.
 - **Strategic-ideation lane (C15)** — Strategy-generation arm: produces non-memory improvement proposals; owner-gated.
 - **strategic_proposal_queue** — Sibling of `memory_review_queue`; proposal menu with FSM and confidence.
 - **Proposal candidate shape** — `tier`/`benefit_kind`/`traceability` fields; trust state is separate config.
