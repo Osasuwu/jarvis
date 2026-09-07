@@ -108,5 +108,10 @@ jobs:
             # from `.claude/hooks/protected-files.py`, are Edit/Write-denied
             # here so the worker can't self-modify or blind its own guard
             # even on a bad turn. Path-scoped, not a whole-tool deny, so
-            # normal implementation edits elsewhere stay unaffected.
-            --disallowed-tools "Edit(./.github/workflows/**)" "Write(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Write(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Write(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Write(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Write(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Write(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Write(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Write(./scripts/principal.py)"
+            # normal implementation edits elsewhere stay unaffected. Also
+            # covers the history-rewrite gap the design comment above
+            # claims but the allowlist alone doesn't enforce: `Bash(git
+            # push:*)`/`Bash(git commit:*)` are prefix matches, so without
+            # these explicit denials they'd also match `git push --force`/
+            # `git push -f`/`git commit --amend`.
+            --disallowed-tools "Edit(./.github/workflows/**)" "Write(./.github/workflows/**)" "Edit(./.claude/hooks/**)" "Write(./.claude/hooks/**)" "Edit(./.claude/settings.json)" "Write(./.claude/settings.json)" "Edit(./.gitleaks.toml)" "Write(./.gitleaks.toml)" "Edit(./.pre-commit-config.yaml)" "Write(./.pre-commit-config.yaml)" "Edit(./scripts/secret-scanner.py)" "Write(./scripts/secret-scanner.py)" "Edit(./scripts/protected-files.py)" "Write(./scripts/protected-files.py)" "Edit(./scripts/principal.py)" "Write(./scripts/principal.py)" "Bash(git push --force:*)" "Bash(git push -f:*)" "Bash(git push --force-with-lease:*)" "Bash(git commit --amend:*)" "Bash(git reset --hard:*)"
