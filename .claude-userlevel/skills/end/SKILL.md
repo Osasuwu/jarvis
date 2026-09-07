@@ -49,7 +49,7 @@ Read `~/.claude/projects/<project>/memory/decisions.md`. Go through the conversa
 Scan for domain terms this session that fall outside the CONTEXT.md glossary, and check for new design docs that may need documentation.
 
 **Trigger (skip silently if neither fires):**
-1. **Rationale-term diff** — extract topic/domain terms from all `decision_made` episode rationales (snapshot + session decisions). Common terms: noun phrases from rationale text that appear 2+ times and are not in `CONTEXT.md` glossary section.
+1. **Rationale-term diff** — extract topic/domain terms from the `decisions.md` lines this session appended (Step 1) plus any recorded earlier this session. Common terms: noun phrases from those lines that appear 2+ times and are not in `CONTEXT.md` glossary section.
 2. **Design-doc git-diff** — run `git diff --name-only HEAD origin/main -- docs/design/ docs/adr/`. If files were added/modified this session → signal fires.
 
 If **either signal fires**:
