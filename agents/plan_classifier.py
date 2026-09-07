@@ -61,8 +61,51 @@ def prod_areas_from_paths(paths: tuple[str, ...]) -> int:
     return len(areas)
 
 
+_DOCS_ONLY_CRITERION = "docs-only"
+
+# Root markdown that is executable process, not documentation about it: an
+# agent reads these as rules, so a change to one is a behavior change.
+_NON_DOC_ROOT_MARKDOWN = frozenset({"AGENTS.md", "CLAUDE.md"})
+
+
+def _is_documentation_path(path: str) -> bool:
+    """Deliberately narrow: `docs/**`, plus root-level markdown that is not a
+    rules file. Everything else — `.claude/**` skills and hooks above all —
+    is agent behavior or code, and exempting it would be a real hole.
+    """
+    if path.startswith("docs/"):
+        return True
+    if "/" in path:
+        return False
+    return path.endswith(".md") and path not in _NON_DOC_ROOT_MARKDOWN
+
+
+def derive_mechanical_criteria(paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Criteria inferable from the paths alone (#1818).
+
+    `mechanical_criteria` has no producer in either lane — the CI diff-gate's
+    envelope carries no such key and `/implement` §3b passes none — so the
+    exempt short-circuit in :func:`classify` was unreachable in production and
+    a documentation-only change classified on raw thresholds. Deriving here,
+    inside the one entry point that already holds both config and paths, fixes
+    every call site at once without touching a single caller's signature.
+
+    Naming a criterion is not the same as acting on it: the config still
+    decides whether `docs-only` exempts (drop it from `exempt` and this
+    derivation stops mattering).
+    """
+    if paths and all(_is_documentation_path(p) for p in paths):
+        return (_DOCS_ONLY_CRITERION,)
+    return ()
+
+
 def classify(config: PlanReviewConfig, change: ChangeSet) -> int:
     """Return the ordinal classification 1, 2, or 3 for ``change``.
+
+    Criteria are taken from ``change.mechanical_criteria`` when the caller
+    supplied any, and otherwise derived from the paths (#1818) — an explicit
+    criterion always wins over a derived one, so a caller naming a true-HITL
+    criterion is never downgraded by documentation-shaped paths.
 
     Precedence (#1707): an exempt mechanical criterion short-circuits to 1
     — a docs-only/typo-fix/etc. change never escalates even if it happens
@@ -76,10 +119,12 @@ def classify(config: PlanReviewConfig, change: ChangeSet) -> int:
 
     Use :func:`label_for` to map the ordinal to its board label.
     """
-    if any(c in config.exempt.mechanical_criteria for c in change.mechanical_criteria):
+    criteria = change.mechanical_criteria or derive_mechanical_criteria(change.paths)
+
+    if any(c in config.exempt.mechanical_criteria for c in criteria):
         return 1
 
-    if any(c in config.class_3.mechanical_criteria for c in change.mechanical_criteria):
+    if any(c in config.class_3.mechanical_criteria for c in criteria):
         return 3
 
     if _touches_shared_surface(change.paths, config.class_2.shared_surface_globs):
