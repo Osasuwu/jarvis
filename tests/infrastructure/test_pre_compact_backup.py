@@ -1,8 +1,7 @@
 """Unit tests for scripts/pre-compact-backup.py.
 
-The Supabase-upsert path is exercised live (not here). This file covers the
-deterministic parsing + composition pieces that don't need network, plus the
-local fallback and the "never raises" guarantee.
+This file covers the deterministic parsing + composition pieces that don't
+need network, plus local persistence and the "never raises" guarantee.
 
 The module filename uses a dash so importlib is required.
 """
@@ -13,26 +12,9 @@ import importlib.util
 import io
 import json
 import sys
-import types
 from pathlib import Path
 
 import pytest
-
-
-# ---------------------------------------------------------------------------
-# Stub optional deps so module import succeeds on minimal CI
-# ---------------------------------------------------------------------------
-for _stub in ("dotenv", "supabase"):
-    if _stub not in sys.modules:
-        try:
-            __import__(_stub)
-        except ImportError:
-            mod = types.ModuleType(_stub)
-            if _stub == "dotenv":
-                mod.load_dotenv = lambda *a, **k: None
-            if _stub == "supabase":
-                mod.create_client = lambda *a, **k: None
-            sys.modules[_stub] = mod
 
 
 _PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "pre-compact-backup.py"
@@ -395,110 +377,6 @@ class TestIsWithin:
 
 
 # ---------------------------------------------------------------------------
-# _persist_supabase — missing-env path must be loud, not silent
-# ---------------------------------------------------------------------------
-class TestPersistSupabaseMissingEnv:
-    def test_missing_env_returns_false_and_warns(self, monkeypatch, capsys):
-        monkeypatch.delenv("SUPABASE_URL", raising=False)
-        monkeypatch.delenv("SUPABASE_KEY", raising=False)
-        assert pcb._persist_supabase("s", "jarvis", "auto", "content") is False
-        assert "SUPABASE_URL/SUPABASE_KEY not set" in capsys.readouterr().err
-
-
-# ---------------------------------------------------------------------------
-# _purge_stale_snapshots — TTL retention (#1272 AC3)
-# ---------------------------------------------------------------------------
-class _PurgeTable:
-    def __init__(self, rows, call_log):
-        self._rows = rows
-        self._call_log = call_log
-
-    def delete(self):
-        self._call_log.append(("delete", (), {}))
-        return self
-
-    def like(self, *a, **kw):
-        self._call_log.append(("like", a, kw))
-        return self
-
-    def lt(self, *a, **kw):
-        self._call_log.append(("lt", a, kw))
-        return self
-
-    def execute(self):
-        self._call_log.append(("execute", (), {}))
-        return types.SimpleNamespace(data=list(self._rows))
-
-
-class _PurgeClient:
-    def __init__(self, rows):
-        self._rows = rows
-        self.call_log = []
-
-    def table(self, name):
-        self.call_log.append(("table", name))
-        return _PurgeTable(self._rows, self.call_log)
-
-
-class TestPurgeStaleSnapshots:
-    def test_deletes_matching_rows_with_ttl_cutoff(self):
-        from datetime import datetime, timezone
-
-        client = _PurgeClient([{"id": 1}, {"id": 2}])
-        deleted = pcb._purge_stale_snapshots(client)
-        assert deleted == 2
-        assert ("table", "memories") in client.call_log
-        assert ("delete", (), {}) in client.call_log
-        assert ("like", ("name", "session_snapshot_%"), {}) in client.call_log
-        lt_calls = [c for c in client.call_log if c[0] == "lt"]
-        assert len(lt_calls) == 1
-        field, cutoff_str = lt_calls[0][1]
-        assert field == "updated_at"
-        cutoff = datetime.fromisoformat(cutoff_str)
-        age = (datetime.now(timezone.utc) - cutoff).total_seconds()
-        assert 29 * 86400 <= age <= 31 * 86400
-
-    def test_never_raises_on_error(self, capsys):
-        class _Boom:
-            def table(self, _):
-                raise RuntimeError("boom")
-
-        assert pcb._purge_stale_snapshots(_Boom()) is None
-        assert "snapshot TTL purge failed" in capsys.readouterr().err
-
-    def test_zero_rows_is_success(self):
-        client = _PurgeClient([])
-        assert pcb._purge_stale_snapshots(client) == 0
-
-    def test_persist_supabase_runs_purge_after_upsert(self, monkeypatch):
-        monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
-        monkeypatch.setenv("SUPABASE_KEY", "anon-key")
-
-        calls = []
-
-        class _Exec:
-            def execute(self):
-                return self
-
-        class _Table:
-            def upsert(self, payload, **kw):
-                calls.append("upsert")
-                return _Exec()
-
-        class _Client:
-            def table(self, name):
-                return _Table()
-
-        monkeypatch.setattr(sys.modules["supabase"], "create_client", lambda url, key: _Client())
-        monkeypatch.setattr(
-            pcb, "_purge_stale_snapshots", lambda client: calls.append("purge") or 0
-        )
-
-        assert pcb._persist_supabase("s", "jarvis", "auto", "content") is True
-        assert calls == ["upsert", "purge"]
-
-
-# ---------------------------------------------------------------------------
 # _append_hook_log — heartbeat
 # ---------------------------------------------------------------------------
 def _read_hook_log(root: Path) -> str:
@@ -606,13 +484,11 @@ class TestMain:
         # contract auditable in line with every sibling test.
         assert "session=x trigger=unknown outcome=transcript-missing" in _read_hook_log(tmp_path)
 
-    def test_supabase_fail_triggers_local_fallback(self, tmp_path, monkeypatch):
+    def test_persists_locally(self, tmp_path, monkeypatch):
         # Build a tiny transcript
         t = tmp_path / "t.jsonl"
         t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
         monkeypatch.setattr(pcb, "_root", tmp_path)
-        # Force supabase path to return False → fallback taken
-        monkeypatch.setattr(pcb, "_persist_supabase", lambda *a, **k: False)
         monkeypatch.setattr(
             sys,
             "stdin",
@@ -633,33 +509,7 @@ class TestMain:
         text = out.read_text(encoding="utf-8")
         assert "Session Snapshot — sess-fallback" in text
         assert "**Trigger:** manual" in text
-        assert "session=sess-fallback trigger=manual outcome=local-fallback" in _read_hook_log(
-            tmp_path
-        )
-
-    def test_supabase_success_heartbeats(self, tmp_path, monkeypatch):
-        t = tmp_path / "t.jsonl"
-        t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
-        monkeypatch.setattr(pcb, "_root", tmp_path)
-        monkeypatch.setattr(pcb, "_persist_supabase", lambda *a, **k: True)
-        monkeypatch.setattr(
-            sys,
-            "stdin",
-            io.StringIO(
-                json.dumps(
-                    {
-                        "session_id": "sess-ok",
-                        "transcript_path": str(t),
-                        "cwd": str(tmp_path),
-                        "trigger": "auto",
-                    }
-                )
-            ),
-        )
-        assert pcb.main() == 0
-        assert "session=sess-ok trigger=auto outcome=supabase" in _read_hook_log(tmp_path)
-        # Supabase succeeded — no local fallback file
-        assert not (tmp_path / ".claude" / "session-snapshots" / "sess-ok.md").exists()
+        assert "session=sess-fallback trigger=manual outcome=local" in _read_hook_log(tmp_path)
 
     def test_bad_hook_input_does_not_raise(self, tmp_path, monkeypatch):
         monkeypatch.setattr(pcb, "_root", tmp_path)
@@ -676,7 +526,6 @@ class TestMain:
         t = tmp_path / "t.jsonl"
         t.write_text(json.dumps(_user_entry("ts", "hi")) + "\n", encoding="utf-8")
         monkeypatch.setattr(pcb, "_root", tmp_path)
-        monkeypatch.setattr(pcb, "_persist_supabase", lambda *a, **k: False)
         monkeypatch.setattr(pcb, "_persist_local", lambda *a, **k: None)
         monkeypatch.setattr(
             sys,
@@ -706,9 +555,7 @@ class TestMain:
         evil = tmp_path / "secret.jsonl"  # outside the repo and outside ~/.claude
         evil.write_text(json.dumps(_user_entry("ts", "secret")) + "\n", encoding="utf-8")
         called: list[int] = []
-        monkeypatch.setattr(
-            pcb, "_persist_supabase", lambda *a, **k: called.append(1) or True
-        )
+        monkeypatch.setattr(pcb, "_persist_local", lambda *a, **k: called.append(1) or tmp_path)
         monkeypatch.setattr(
             sys,
             "stdin",
@@ -725,9 +572,8 @@ class TestMain:
         )
         assert pcb.main() == 0
         assert called == []  # never reached persistence
-        assert (
-            "session=evil-sess trigger=auto outcome=transcript-path-rejected"
-            in _read_hook_log(repo)
+        assert "session=evil-sess trigger=auto outcome=transcript-path-rejected" in _read_hook_log(
+            repo
         )
 
     def test_unhandled_error_still_heartbeats(self, tmp_path, monkeypatch):
@@ -757,10 +603,7 @@ class TestMain:
             ),
         )
         assert pcb.main() == 0
-        assert (
-            "session=sess-err trigger=auto outcome=error-after:init"
-            in _read_hook_log(tmp_path)
-        )
+        assert "session=sess-err trigger=auto outcome=error-after:init" in _read_hook_log(tmp_path)
 
     def test_session_id_newline_is_escaped(self, tmp_path, monkeypatch):
         # A `\n` in the stdin-sourced session_id must NOT split the heartbeat
@@ -776,8 +619,7 @@ class TestMain:
         # One physical line — the injected newline is escaped, not honoured.
         assert len(log.splitlines()) == 1
         assert (
-            "session=real\\ninjected outcome=supabase "
-            "trigger=unknown outcome=no-transcript-path"
+            "session=real\\ninjected outcome=supabase trigger=unknown outcome=no-transcript-path"
         ) in log
 
     def test_trigger_newline_is_escaped(self, tmp_path, monkeypatch):

@@ -1,17 +1,13 @@
 """PreCompact + SessionEnd hook: capture a durable session snapshot.
 
 Parses the session JSONL transcript, composes a structured markdown snapshot,
-and upserts it to Supabase (name=`session_snapshot_<session_id>`, type=project)
-with source_provenance="hook:pre-compact". Falls back to a local file under
-`.claude/session-snapshots/<session_id>.md` when Supabase is unreachable.
+and writes it to a local file under `.claude/session-snapshots/<session_id>.md`
+(#1826 — Supabase is retired; local is the sole persistence path).
 
 Invariants:
 - **Never** blocks compaction. Exits 0 on all paths, including failures.
 - Snapshot content stays under SIZE_BUDGET bytes (~30KB). Long transcripts
   keep only the last TAIL_KEEP entries with a dropped-head counter.
-- TTL retention (#1272): snapshot rows older than SNAPSHOT_TTL_DAYS are
-  deleted at write time (best-effort; the Supabase path calls
-  `_purge_stale_snapshots` after each successful upsert).
 - Every invocation appends one heartbeat line to
   `.claude/session-snapshots/hook.log` — no line at compaction time means the
   harness never ran the hook (e.g. the 2026-06-12 outage: rewriting
@@ -49,19 +45,12 @@ _venv_py = _root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/
 # Guard: only re-exec when run as script. When imported (e.g. by tests via
 # importlib with a non-"__main__" module name), skip the re-exec so the
 # module's top-level sys.exit doesn't kill pytest collection.
-if __name__ == "__main__" and _venv_py.exists() and Path(sys.executable).resolve() != _venv_py.resolve():
+if (
+    __name__ == "__main__"
+    and _venv_py.exists()
+    and Path(sys.executable).resolve() != _venv_py.resolve()
+):
     sys.exit(subprocess.call([str(_venv_py), str(Path(__file__).resolve())]))
-
-# ---------------------------------------------------------------------------
-# Under venv — safe to import deps
-# ---------------------------------------------------------------------------
-from dotenv import load_dotenv
-
-for _env in [_root / ".env", _root.parent / ".env"]:
-    if _env.exists():
-        # override=True: some shells pre-set empty SUPABASE_*; .env wins.
-        load_dotenv(_env, override=True)
-        break
 
 # UTF-8 output on Windows — Cyrillic in transcripts must survive the hook log.
 if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
@@ -83,7 +72,6 @@ SIZE_BUDGET = 30_000  # bytes — content column target
 MAX_TRANSCRIPT_LINES = 10_000  # tail-truncate above this
 TAIL_KEEP = 8_000  # keep last N lines when truncating
 ACTIONS_CAP = 200  # per-section cap on verbose action lines
-SNAPSHOT_TTL_DAYS = 30  # snapshot rows older than this are purged at write time
 KNOWN_PROJECTS = {"jarvis", "redrobot"}
 
 
@@ -373,75 +361,6 @@ def _compose_markdown(
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
-def _purge_stale_snapshots(client, ttl_days: int = SNAPSHOT_TTL_DAYS) -> int | None:
-    """Delete session_snapshot_* rows older than ttl_days (#1272 AC3).
-
-    Enforced at write time — called after each successful upsert. Best-effort:
-    returns the number of rows deleted, or None on failure; never raises, so
-    the never-blocks-compaction invariant holds. RLS may filter the delete to
-    zero rows for an anon-key caller; that is logged, not fatal.
-    """
-    from datetime import datetime, timedelta, timezone
-
-    try:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=ttl_days)).isoformat()
-        # ceiling: LIKE scan over name with no index — fine at ~1.4k rows once
-        # per compaction; add idx_memories_name if the table ever grows large.
-        result = (
-            client.table("memories")
-            .delete()
-            .like("name", "session_snapshot_%")
-            .lt("updated_at", cutoff)
-            .execute()
-        )
-        deleted = len(result.data or [])
-        if deleted:
-            print(f"[pre-compact] TTL purge: deleted {deleted} stale snapshot rows", file=sys.stderr)
-        return deleted
-    except Exception as e:
-        print(f"[pre-compact] snapshot TTL purge failed: {e}", file=sys.stderr)
-        return None
-
-
-def _persist_supabase(
-    session_id: str,
-    project: str | None,
-    trigger: str,
-    content: str,
-) -> bool:
-    """Upsert the snapshot to memories. Returns True on success."""
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_KEY")
-    if not url or not key:
-        print(
-            "[pre-compact] SUPABASE_URL/SUPABASE_KEY not set — skipping Supabase",
-            file=sys.stderr,
-        )
-        return False
-    try:
-        from supabase import create_client
-
-        client = create_client(url, key)
-        payload = {
-            "name": f"session_snapshot_{session_id}",
-            "type": "project",
-            "project": project,
-            "tags": ["session-snapshot", "compression-resilience", trigger or "unknown"],
-            "source_provenance": "hook:pre-compact",
-            "description": (
-                f"Pre-compact session snapshot ({trigger or 'unknown'}) — "
-                "recovery source for /end post-compact"
-            ),
-            "content": content,
-        }
-        client.table("memories").upsert(payload, on_conflict="project,name").execute()
-        _purge_stale_snapshots(client)
-        return True
-    except Exception as e:
-        print(f"[pre-compact] supabase persist failed: {e}", file=sys.stderr)
-        return False
-
-
 def _sanitize_session_id(session_id: str) -> str:
     """Reduce a stdin-sourced session_id to a safe single filename component.
 
@@ -505,15 +424,15 @@ def _persist_local(session_id: str, content: str) -> Path | None:
         # _is_within compares resolved path components (not string prefixes),
         # so "session-snapshots-evil" can't masquerade as "session-snapshots".
         if not _is_within(out_file, out_dir):
-            print("[pre-compact] suspicious session_id in local fallback", file=sys.stderr)
+            print("[pre-compact] suspicious session_id in local persist", file=sys.stderr)
             return None
         # Use binary write to avoid Windows \n→\r\n translation, which would
         # inflate size past SIZE_BUDGET by one byte per newline.
         out_file.write_bytes(content.encode("utf-8"))
-        print(f"[pre-compact] local fallback: {out_file}", file=sys.stderr)
+        print(f"[pre-compact] persisted locally: {out_file}", file=sys.stderr)
         return out_file
     except Exception as e:
-        print(f"[pre-compact] local fallback failed: {e}", file=sys.stderr)
+        print(f"[pre-compact] local persist failed: {e}", file=sys.stderr)
         return None
 
 
@@ -601,12 +520,7 @@ def main() -> int:
         transcript_path = hook.get("transcript_path") or hook.get("transcriptPath") or ""
         cwd = hook.get("cwd") or os.getcwd()
         event = hook.get("hook_event_name") or hook.get("hookEventName") or ""
-        trigger = (
-            hook.get("trigger")
-            or hook.get("matcher")
-            or hook.get("end_reason")
-            or "unknown"
-        )
+        trigger = hook.get("trigger") or hook.get("matcher") or hook.get("end_reason") or "unknown"
 
         # Compaction-generation counter (the dumb-zone signal under auto-compact).
         # Bump ONLY on PreCompact — this hook is dual-purpose (also SessionEnd),
@@ -624,8 +538,8 @@ def main() -> int:
         p = Path(transcript_path)
         # transcript_path is attacker-influenceable hook stdin. Confine reads to
         # the dirs transcripts actually live in (~/.claude and the repo) so a
-        # crafted path (e.g. "/etc/passwd") can't be slurped into a snapshot and
-        # upserted to Supabase. Fail safe: skip with a logged outcome, never raise.
+        # crafted path (e.g. "/etc/passwd") can't be slurped into a snapshot.
+        # Fail safe: skip with a logged outcome, never raise.
         allowed_roots = [Path.home() / ".claude", _root]
         if not any(_is_within(p, r) for r in allowed_roots):
             print(f"[pre-compact] transcript_path outside allowed dirs: {p}", file=sys.stderr)
@@ -639,12 +553,9 @@ def main() -> int:
 
         entries, total, dropped = _parse_transcript(p)
         content = _compose_markdown(session_id, trigger, cwd, entries, total, dropped)
-        project = _detect_project(cwd)
 
-        if _persist_supabase(session_id, project, trigger, content):
-            outcome = "supabase"
-        elif _persist_local(session_id, content) is not None:
-            outcome = "local-fallback"
+        if _persist_local(session_id, content) is not None:
+            outcome = "local"
         else:
             outcome = "persist-failed"
     except Exception as e:

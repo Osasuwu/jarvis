@@ -13,8 +13,8 @@ lines whose checkbox was filled in, and aggregates them into a Supabase
 truth Phase 2 (`eval_detectors.py`) reads back out.
 
 Idempotent on re-runs: the Supabase write is an upsert keyed on
-`(project, name)` (same idiom as `pre-compact-backup.py::_persist_supabase`),
-so re-running against the same period overwrites rather than duplicates.
+`(project, name)`, so re-running against the same period overwrites rather
+than duplicates.
 """
 
 from __future__ import annotations
