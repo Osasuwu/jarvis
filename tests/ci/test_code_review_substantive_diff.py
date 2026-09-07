@@ -24,19 +24,14 @@ from pathlib import Path
 
 import yaml
 
-WORKFLOW_PATH = (
-    Path(__file__).resolve().parents[2]
-    / ".github"
-    / "workflows"
-    / "code-review.yml"
-)
+WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "code-review.yml"
 
 DIFF_STEP_ID = "diff"
 
 
 def _load_steps() -> list[dict]:
     spec = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
-    return spec["jobs"]["review"]["steps"]
+    return spec["jobs"]["code-gate"]["steps"]
 
 
 def _diff_step() -> dict:
@@ -90,9 +85,7 @@ def test_no_double_zero_echo_pattern():
     """
     run = _diff_step()["run"]
     # Strip comment lines — the fix documents the old `|| echo 0` bug in prose.
-    code = "\n".join(
-        ln for ln in run.splitlines() if not ln.lstrip().startswith("#")
-    )
+    code = "\n".join(ln for ln in run.splitlines() if not ln.lstrip().startswith("#"))
     assert "|| echo 0" not in code, (
         "`grep -c ... || echo 0` reintroduces the 'Invalid format 0' crash on "
         "zero matches (grep -c already emits '0' and exits 1). Use `|| true`."

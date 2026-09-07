@@ -27,12 +27,7 @@ from pathlib import Path
 import yaml
 
 
-WORKFLOW_PATH = (
-    Path(__file__).resolve().parents[2]
-    / ".github"
-    / "workflows"
-    / "code-review.yml"
-)
+WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "code-review.yml"
 
 DEPENDABOT = "dependabot[bot]"
 
@@ -100,7 +95,7 @@ def test_workflow_dispatch_always_runs():
 
 def _review_if() -> str:
     spec = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
-    return spec["jobs"]["review"]["if"]
+    return spec["jobs"]["code-gate"]["if"]
 
 
 def test_workflow_exists():
