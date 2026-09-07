@@ -36,10 +36,10 @@ Memory recall and the decision-logging discipline come from user-level CLAUDE.md
 
 Every issue passes through the same readiness check before this skill applies `agent:dispatch` — an **advisory** courtesy filter that catches an obviously-not-ready issue before it gets labeled for headless pickup, and gives the operator the refusal message immediately instead of after the executor workflow eventually runs (or, until that workflow ships, never runs) and fails silently.
 
-**Four conditions, all required:**
+**Five conditions, all required:**
 
 0. **Issue's repo matches `GITHUB_REPO`** (stopgap, #1651 — checked first,
-   short-circuits before the three readiness conditions below). Label-triggered
+   short-circuits before the readiness conditions below). Label-triggered
    execution runs per-repo (the workflow lives in the issue's own repo), so a
    foreign-repo issue would need cross-repo labeling this skill doesn't do.
    Refused with a message pointing at milestone 58 (#959) S3 (#1119)/S4a
@@ -53,6 +53,13 @@ Every issue passes through the same readiness check before this skill applies `a
 3. Issue body cites at least one decision reference (a `decisions.md` line,
    a decision UUID from before the native-memory rewrite, or the explicit
    `[no-decision]` marker for slices that legitimately have none).
+4. Issue does **not** carry the `afk:3-human` label. Per `/triage`'s AFK-fit
+   classification (`/to-tickets` §3a) `afk:3-human` is a hard refusal from
+   headless dispatch, not just a plan-review speed bump like `afk:2-plan` —
+   this condition is what makes that refusal actually bind at the one place
+   headless execution is triggered, instead of only living in triage
+   documentation. No new API call: `labels` is already fetched for
+   condition 1.
 
 **Invocation** (per issue, before labeling):
 
@@ -60,9 +67,9 @@ Every issue passes through the same readiness check before this skill applies `a
 gh issue view <N> --repo <owner/repo> --json number,title,body,labels
 ```
 
-Check condition 0 against the fetched repo, condition 1 against `labels`, conditions 2–3 against `body` directly — no external script; the checks are simple enough to run inline against the fetched JSON.
+Check condition 0 against the fetched repo, conditions 1 and 4 against `labels`, conditions 2–3 against `body` directly — no external script; the checks are simple enough to run inline against the fetched JSON.
 
-**On refusal** (any one or more of the four conditions fail):
+**On refusal** (any one or more of the five conditions fail):
 
 1. `gh issue edit <N> --add-label "status:owner-queue"` — surfaces in next `/status` run.
 2. Append one line to `~/.claude/projects/<project>/memory/decisions.md`: `- YYYY-MM-DD — refused dispatch of #<N> — <verbatim gate message> — #<N>`.

@@ -30,6 +30,15 @@ That's it. Go.
 
 **Mindset — survives compaction:** *`decisions.md` and `handoff.md` are the session journal. The conversation is working memory.* The post-compact conversation is a lossy summary; the two files under `~/.claude/projects/<project>/memory/` are the authoritative record. `/end` reconciles decisions.md and rewrites this session's block in handoff.md. Don't rely on scanning the conversation alone — anything older than the last summary may already be gone from your window.
 
+## Compaction check — independent signal, read before Step 1
+
+Whether this session compacted is answered by the per-session generation counter the PreCompact hook bumps (`scripts/pre-compact-backup.py` → `_bump_compaction_count`), never by memory of a compaction happening in the conversation. This decoupling is why #1052 added the counter in the first place: a hook outage (`~/.claude/settings.json` rewritten while the desktop app runs, 2026-06-12) can silently break compaction recovery with no other symptom, and the old pre-#1793 detection inferred "compacted?" from Supabase `session_snapshot_*` row presence alone — exactly the signal the outage killed. The counter itself is a plain local file (`~/.claude/compaction-counts/<session_id>.txt`), unrelated to Supabase, so this check survives #1793's move off the memory MCP for this skill.
+
+- **Read** `~/.claude/compaction-counts/<session_id>.txt` — sanitize the id the same way the writer does (`_sanitize_session_id`: keep only `[A-Za-z0-9_-]`, empty → `unknown-session`). Use `Read`, not `Bash`'s `read` builtin — `~` may not expand there; resolve the absolute path. Missing file, unreadable, or non-integer content → `gen = 0`.
+- `gen == 0` → this session never compacted (or the counter file was lost, e.g. a wiped `~/.claude`) — nothing to flag either way.
+- `gen > 0` **and** no `## Pre-Compact Recovery` block was ever auto-loaded into this conversation (check your own context — that heading, when present, appears in a `SessionStart:compact hook success` system reminder) → the hook bumped the counter but recovery-context delivery failed silently this session. Flag loudly in Step 8: "compacted `gen`× but recovery context never loaded — hook or `session-context.py` may be broken."
+- `gen > 0` **and** a `## Pre-Compact Recovery` block did load at least once → normal compacted session; note the count in Step 8, no flag needed.
+
 ## Step 1 — Decision reconciliation & post-hoc marking
 
 Read `~/.claude/projects/<project>/memory/decisions.md`. Go through the conversation and check: every decision you can identify (per the trigger list in `/implement` §3/§6, and any made outside that pipeline) → is it already a line in the file?
@@ -200,6 +209,9 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 ```
 ## Session closed — YYYY-MM-DD
 
+### Compaction check
+- <"gen=N, recovery loaded OK" | "gen=N, recovery context never loaded — hook or session-context.py may be broken" | "never compacted (gen=0)">
+
 ### Decision log (N lines appended)
 - <line> — <one-line>
 
@@ -220,4 +232,4 @@ If stashing (mid-task), report the stash ref and repo in output so next session 
 - <unfinished work, deferred tasks, things for next session>
 ```
 
-Keep it concise. This is a handoff, not a report. Render the CONTEXT.md gap and Working state sections only when their respective steps fire (heuristic triggers for Step 2; Step 5 always renders).
+Keep it concise. This is a handoff, not a report. Render the CONTEXT.md gap and Working state sections only when their respective steps fire (heuristic triggers for Step 2; Step 5 always renders). Compaction check always renders too — it's a one-line read, not a heuristic trigger.
