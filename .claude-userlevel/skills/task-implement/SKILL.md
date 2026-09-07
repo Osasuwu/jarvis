@@ -65,7 +65,7 @@ Branch checkout/creation follows whatever `(branch=...)` directive is present in
 
 ### 3. Route: mechanical-mode or TDD-mode
 
-Per §Contract above. TDD-mode follows `.claude-userlevel/skills/_shared/tdd/tdd-loop.md` exactly as `/implement`'s §4-TDD does — read it as a file, not a skill invocation (ADR-0001: no mid-task self-triggering of other skills).
+Per §Contract above. TDD-mode follows `.claude-userlevel/skills/_shared/tdd/tdd-loop.md` — read it as a file, not a skill invocation (ADR-0001: no mid-task self-triggering of other skills). (`/implement`'s own §4-TDD inlines its own copy of this loop instead of linking the shared file — the two are meant to stay behaviorally identical, but `task-implement` reads the shared source directly rather than duplicating it.)
 
 ### 3a. Already-done audit (mandatory, both routes)
 

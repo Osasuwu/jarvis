@@ -16,6 +16,8 @@ The two imports below are what actually load identity and shared doctrine. Keep 
 
 Skills consume this section instead of restating it. Three load-bearing rules: **recall before deciding**, **brief-mode UUIDs**, and the **`record_decision` contract**.
 
+**Scope carve-out (jarvis #1793):** the six keep-set skills — `implement`, `end`, `file-issue`, `dispatch`, `triage`, `weekly-release` — do **not** follow this section and must not call `mcp__memory__record_decision` / `memory_recall`. Not all six document the native auto-memory replacement (plain-text `decisions.md`/`handoff.md` appends under `~/.claude/projects/<project>/memory/`) the same way: `implement`, `end`, and `dispatch` spell out that convention in their own SKILL.md (rewritten by #1793/#1813); `file-issue` never called the memory MCP to begin with, so there's nothing to migrate away from; `triage` and `weekly-release` are carved out here (no `record_decision`/`memory_recall` calls) but don't themselves restate the `decisions.md`/`handoff.md` mechanics — they rely on the convention as documented by `implement`/`end`/`dispatch` rather than duplicating it. Every other skill (e.g. `curate`, `reason`, `reflect`, `rework`, `self-improve`, `status-record`, `task-implement`) still follows this section as written — the memory MCP itself is not retired, only these six skills' contract with it. If a skill not on this list is later migrated, add it here.
+
 This is the **Tier 1** layer (soft prompt rule); Tier 2 hooks and Tier 3 skill gates back it up — DOCTRINE.md → *Protocol layers*. If the empty-`memories_used` rate rises after centralising here, the relevant rule escalates Tier 1 → Tier 2 (jarvis `CONTEXT.md` → *Protocol layers (ADR-0002)*, #532).
 
 ### 1. Recall before deciding

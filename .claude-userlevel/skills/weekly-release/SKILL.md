@@ -65,8 +65,6 @@ For each `RepoWindowResult`:
 
 Write `notes_body`: one line per substantive `window_entries` item, each citing its PR/issue number (`#NNN`) so `lint_release_notes` can validate it against `window_refs`. `lang=ru,en` on the repos.conf entry (`repo_result.lang`) → append an English `<details>` block translating the same cited facts, no new claims.
 
-Write the goals section: `goal_list(project=<repo-slug>, status="active")` returns rendered markdown (`# Goals (N)` + one `## <title>` block per goal), not the structured list `format_goal_section()` expects — route it through `extract_goal_movements(goal_list_markdown, repo_result.window_start, repo_result.window_end)` first (#1669), then `format_goal_section(extract_goal_movements(...))`. `<repo-slug>` is `repo_result.repo.split("/")[-1]` (e.g. `"jarvis"`, `"redrobot"`) — **never empty/None**: `goal_list`'s unscoped default returns cross-project (including personal) goals for other callers' benefit (`/goals`, `/end`, `/verify`), so an empty project here would leak personal goals into a public release body. Scoping is this skill's own responsibility, not the handler's.
-
 Write `remaining_section` as prose over `repo_result.remaining_issues` (LLM rewrites the open-milestone-issue list into prose; the issues themselves are the source of truth, this step only rewrites into readable text under a `## Осталось` heading — omit the heading entirely if there's nothing to say).
 
 **Lint gate — mandatory, not advisory:**
@@ -84,14 +82,13 @@ violations = notes_violations + remaining_violations
 
 Non-empty `violations` → rewrite the offending lines (add a real citation from the applicable ref set, or drop the uncited claim). Never bypass this by loosening a claim's wording to dodge the digit check — fix the citation or cut the claim.
 
-**Retraction section — do not author, do not lint.** If `repo_result.retractions` is non-empty, call `format_retraction_section(repo_result.retractions)` — this is the *only* step for the "Отозвано" section. It is a structural formatter, not prose you write: each bullet is built from `original_ref`/`revert_ref`/`title` already sourced from a real PR body, so it is citation-correct by construction. Do **not** hand-write this section, and do **not** pass it (or its lines) through `lint_release_notes` in Step 3 above — same exemption as `format_goal_section`'s output (AC2 of #1659: the section exists only when `retractions` is non-empty; an empty list means the formatter returns `""` and the section is omitted entirely, not emitted blank).
+**Retraction section — do not author, do not lint.** If `repo_result.retractions` is non-empty, call `format_retraction_section(repo_result.retractions)` — this is the *only* step for the "Отозвано" section. It is a structural formatter, not prose you write: each bullet is built from `original_ref`/`revert_ref`/`title` already sourced from a real PR body, so it is citation-correct by construction. Do **not** hand-write this section, and do **not** pass it (or its lines) through `lint_release_notes` in Step 3 above (AC2 of #1659: the section exists only when `retractions` is non-empty; an empty list means the formatter returns `""` and the section is omitted entirely, not emitted blank).
 
 ## Step 4 — Assemble and create the draft
 
 ```python
 from scripts.weekly_release_engine import (
     assemble_release_body,
-    format_goal_section,
     format_retraction_section,
     format_window_disclosure,
 )
@@ -100,7 +97,6 @@ retraction_section = format_retraction_section(repo_result.retractions)
 disclosure_section = format_window_disclosure(
     repo_result.window_start, repo_result.window_end, repo_result.window_truncated
 )
-goal_section = format_goal_section(goal_movements)  # goal_movements from Step 3's extract_goal_movements(...)
 body = assemble_release_body(
     notes_body,
     remaining_section,
@@ -108,7 +104,6 @@ body = assemble_release_body(
     footer="Опубликовано ботом",
     retraction_section=retraction_section,
     disclosure_section=disclosure_section,
-    goal_section=goal_section,
 )
 ```
 
@@ -141,6 +136,22 @@ if notification is not None:
 ```
 
 `weekly_release_notification_for` returns `None` for a no-release week (`status` outside `{"draft", "published"}`) — that `None` is the "stay silent" signal (AC3): skip `notify_text` entirely rather than sending an empty notification, so a quiet week doesn't become weekly spam. `notify_text` resolves the transport via `resolve_notifier(env)` and is a no-raise call — read `os.environ` once here, at this step's own boundary, and pass it down as `env`; no other code in this skill or in `weekly_release_engine.py`/`weekly_release_gather.py` reads `os.environ` directly (issue #1658's own requirement). Quiet-hours suppression (AC4, `NOTIFY_QUIET_HOURS`) is handled inside `notify_text` itself — nothing extra to do here.
+
+## Step 6 — Register the weekly Routine (one-time, Workshop host only)
+
+Not part of a normal `/weekly-release` invocation — run once to set up the routine (or again to re-register after a device migration), never on every draft run.
+
+**Gate**: the same `is_routine_host(device_config)` check as Step 0, against the same `config/device.json`. This is deliberate defense-in-depth, not redundancy — Step 0 protects a routine invocation that somehow reaches the wrong device (a stale cron copied off-host) from actually running; this gate protects *registration itself* from happening on the wrong device in the first place. Refuse with the same message pattern as Step 0 if `routine_host` isn't `true` here.
+
+**Registration surface**: the local `create_scheduled_task` MCP tool (`mcp__scheduled-tasks__create_scheduled_task`, Workshop-only per `setup-tasks/SKILL.md` → *Routine host policy*) — confirmed callable in-session. This is explicitly **not** the cloud `/schedule` Routines surface: that surface runs on Anthropic's hosted infrastructure with no access to this repo's local `gh` auth or `scripts/` modules, so it cannot execute this skill.
+
+Canonical registration already lives in `setup-tasks/SKILL.md`'s *Routines (MCP)* table (one idempotent bootstrap covering every routine, this one included) — running `/setup-tasks` on the Workshop host is the normal path. The row, verbatim:
+
+| Task ID | Cron | Prompt |
+|---|---|---|
+| weekly-release | `0 6 * * 0` | Run `/weekly-release` — draft this week's GitHub release for each `config/repos.conf` `releases=weekly` repo, then `notify_text` the owner per repo (#1658 S2). Registration is this table's own manual step — the skill's own Step 0 device gate (`is_routine_host`) is a defense-in-depth re-check, not a substitute for it. |
+
+If registering this task alone rather than running the full `/setup-tasks` bootstrap: call `list_scheduled_tasks` first — present and `enabled=true` → skip (already registered); present and `enabled=false` → `update_scheduled_task(taskId, enabled=true)`; absent → `create_scheduled_task` with the cron + prompt above. Mirrors `setup-tasks/SKILL.md` step 4's own idempotency rule exactly — no separate rule invented here.
 
 ## Failure modes
 
