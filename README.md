@@ -57,11 +57,17 @@ Supabase DB
   |-- events      (CI, alerts, deployments)
 ```
 
-User-level Jarvis is seeded from `.claude-userlevel/` in this repo by
-`install.ps1` / `install.sh` (idempotent, backup-first). See
-`scripts/install/installer.py`.
+User-level Jarvis can still be seeded from `.claude-userlevel/` in this repo by
+`install.ps1` / `install.sh` (idempotent, backup-first) -- this remains how the
+operator's own existing devices stay in sync while the installer migration
+(#1798/#1799/#1800) is in flight. See `scripts/install/installer.py`.
 
-**If you already use Claude Code for other projects:** the installer replaces skills, `CLAUDE.md`/`SOUL.md`, and `.mcp.json` in `~/.claude/`, merges `settings.json` keys (your existing keys survive), and leaves `~/.claude/projects/` untouched. A timestamped backup is created before any write. See `config/SETUP.md` §6 for the full per-path breakdown.
+**If you already use Claude Code for other projects:** the installer replaces skills, `CLAUDE.md`/`SOUL.md`, and `.mcp.json` in `~/.claude/`, merges `settings.json` keys (your existing keys survive), and leaves `~/.claude/projects/` untouched. A timestamped backup is created before any write. See [`docs/setup.md`](docs/setup.md) for the full setup guide.
+
+**Setting up `~/.claude/` for the first time?** Skip the legacy installer above --
+make `~/.claude/` your own private dotfiles repo instead, per
+[`docs/setup.md`](docs/setup.md), which also covers manual MCP registration and the
+recommended plugin list.
 
 **Design principle:** Claude Code native first. The only custom Python is `mcp-memory/server.py` -- everything else uses skills, hooks, and subagents.
 

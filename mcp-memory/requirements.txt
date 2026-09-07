@@ -1,6 +1,6 @@
 # Every range below carries an explicit upper bound (next major, or <1 while
 # still pre-1.0) — #1296. This file is the actual install manifest for the
-# live memory server (see SETUP.md), so it was exposed to the identical
+# live memory server (see docs/setup.md), so it was exposed to the identical
 # unbounded-mcp risk that turned every jarvis CI run red on 2026-07-28
 # (#1292/#1294) — that fix touched pyproject.toml's `mcp` extra only and
 # missed this sibling manifest. Bounds are lifted by Dependabot's weekly

@@ -149,7 +149,7 @@ Telegram via **Claude Code Channels** (official Anthropic plugin) — no custom 
 
 Setup: `claude --channels plugin:telegram@claude-plugins-official`
 
-See `docs/telegram-setup.md` for full guide.
+See `docs/setup.md` §8 for full guide.
 
 ## 7. Scheduling
 
@@ -171,7 +171,6 @@ Nightly research runs at 03:00, topics configured in `config/research-topics.yam
 jarvis/
 ├── config/
 │   ├── SOUL.md              ← Jarvis personality (canonical; installed to ~/.claude/SOUL.md)
-│   ├── SETUP.md             ← First-time device setup
 │   └── repos.conf           ← Repos scanned by risk-radar (and historically by autonomous-loop, superseded)
 ├── .claude-userlevel/       ← SOURCE OF TRUTH for user-level install
 │   ├── settings.json        ← Hooks (installed to ~/.claude/settings.json)
