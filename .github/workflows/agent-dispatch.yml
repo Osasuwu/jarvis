@@ -1,0 +1,99 @@
+name: Agent Dispatch
+
+# Fires once per issue, on the `agent:dispatch` label being added (never on
+# any other label, and never on unlabel/reopen/etc — `issues: labeled` fires
+# once per label-add event, and the job condition below narrows it further
+# to the one label this workflow reacts to, so a PR/other-label churn on the
+# same issue does not re-trigger a worker run).
+on:
+  issues:
+    types: [labeled]
+
+# One worker per issue at a time; a second `agent:dispatch` re-label (e.g.
+# after removing it to retry a failed run, per dispatch/SKILL.md's
+# recovery note) cancels an in-flight run for the same issue rather than
+# racing it.
+concurrency:
+  group: agent-dispatch-issue-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  worker:
+    if: github.event.label.name == 'agent:dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Run unattended worker
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Fine-grained PAT (contents/issues/pull-requests write, scoped to
+          # this repo, <=1y expiry — rotation tracked in issue #1810), NOT
+          # the default GITHUB_TOKEN: commits/pushes authored with the
+          # default token do not trigger other workflows (GitHub's own
+          # loop-prevention), so `review`/`pytest`/auto-merge would never
+          # fire on the worker's own PR. A PAT-authored push is a normal
+          # external actor as far as Actions is concerned, so downstream CI
+          # runs like it would for a human push (#1805).
+          github_token: ${{ secrets.AGENT_DISPATCH_PAT }}
+          prompt: |
+            Implement GitHub issue #${{ github.event.issue.number }} in
+            ${{ github.repository }}, end to end, unattended. Nobody is
+            watching this run — do not ask questions, make the best call
+            and document it, or stop and escalate per step 5 below.
+
+            This runner has no user-level ~/.claude layer (no SOUL.md,
+            no DOCTRINE.md, no memory tools) — only this repo's own
+            AGENTS.md / CLAUDE.md / .claude/settings.json are in scope
+            (decision a2d10d70-1282-45e1-a8be-b6bdbda92fa4). Read AGENTS.md
+            first and follow its process rules as the sole instruction
+            layer for this run.
+
+            1. `gh issue view ${{ github.event.issue.number }} --json
+               title,body,labels,milestone` — read the full issue body,
+               including any `## Decisions` / `## Plan` section.
+            2. Preflight per AGENTS.md: confirm nobody already claimed this
+               issue (assignee, `status:in-progress`, an open PR, an
+               existing `claude/issue-${{ github.event.issue.number }}-*`
+               branch). If claimed, stop and do nothing.
+            3. Branch from `main`:
+               `claude/issue-${{ github.event.issue.number }}-<slug>`.
+            4. Implement every acceptance-criteria bullet. Run the repo's
+               lint and test commands before committing; fix failures
+               before moving on.
+            5. If genuinely blocked — ambiguous scope, an acceptance
+               criterion contradicts the codebase, or the change needs a
+               human decision — do NOT guess. Comment the specific blocker
+               on the issue, apply the `status:owner-queue` label, and stop
+               without opening a PR.
+            6. Otherwise commit, push the branch, and open a PR whose body
+               has `Closes #${{ github.event.issue.number }}` on its own
+               line and a filled-in Summary/Why/Risk Assessment/Testing
+               section per AGENTS.md's PR template.
+
+            Never edit anything matching this repo's protected-files policy
+            (`docs/security/agent-boundaries.md`) — `.claude/settings.json`,
+            `.claude/hooks/**`, `.github/workflows/**`, and the rest of that
+            list. If the issue's scope requires touching one of those, that
+            is itself a reason to escalate per step 5, not a reason to edit
+            it anyway.
+          claude_args: |
+            # Headless: any tool not listed here is denied outright, same
+            # rationale as code-review.yml's allowlist — no human to approve
+            # a mid-run permission prompt. Covers the full implement loop:
+            # read/search, edit, git, gh issue/PR mechanics, and this repo's
+            # lint/test commands. Deliberately excludes anything that can
+            # rewrite git history (`git push --force`, `git reset --hard`)
+            # or touch CI/hook/secret config paths — those stay a step-5
+            # escalation, never an unattended edit.
+            --max-turns 40
+            --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
