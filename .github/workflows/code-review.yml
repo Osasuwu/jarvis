@@ -229,8 +229,19 @@ jobs:
             # the comment-post step (probe/fragment comments, or no post) →
             # verdict gate fails closed → admin-merge. sed/awk/python3(-c)/jq
             # are deliberately EXCLUDED (write-capable).
+            #
+            # #1841: inspecting a merge commit's second parent (e.g. an
+            # autobase-pushed "Merge branch 'main' into <pr-branch>" commit)
+            # needs `gh api repos/<o>/<r>/commits/<sha>`, `gh api
+            # repos/<o>/<r>/compare/<a>...<b>`, and `git fetch origin <sha>
+            # <sha> main` — none of which were allowlisted, so every one was
+            # denied, the reviewer never posted a fresh verdict for that head,
+            # and code-gate's BLINDED-ONLY policy failed closed (observed on
+            # PR #1839, commit e0040993). Widened narrowly and read-only, per
+            # this step's own denial-handling guidance below ("add read-only
+            # ones if they recur; NEVER allowlist python3/jq/awk/sed").
             # (tests/ci/test_code_review_allowed_tools.py pins this list.)
-            --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git grep:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write"
+            --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(gh api repos/*/commits/*:*),Bash(gh api repos/*/compare/*:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git grep:*),Bash(git ls-tree:*),Bash(git fetch:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write"
 
       # Diagnostic escape hatch for silent no-review runs (#1239). The action
       # runs with `show_full_output` unset, so the orchestrator's turns are
