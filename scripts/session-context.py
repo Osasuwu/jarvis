@@ -421,7 +421,7 @@ def _compose_recovery_payload(
 
 # Section drop-priority, HIGHEST = 0 (dropped last) → higher number = dropped
 # first. Pre-Compact Recovery outranks everything; the durable layer
-# (always-load, working state, owner tasks) outranks the one-line
+# (always-load, user profile, owner tasks) outranks the one-line
 # reminders, so a startup session still delivers it under budget pressure
 # (#1271 AC2). Owner tasks sit above goals (#1392 AC3): an escalation is
 # an actionable now-item dispatch() already decided the owner must see,
@@ -447,10 +447,9 @@ def _compose_recovery_payload(
 _PRIORITY_RECOVERY = 0
 _PRIORITY_ALWAYS_LOAD = 1
 _PRIORITY_USER_PROFILE = 2
-_PRIORITY_WORKING_STATE = 3
-_PRIORITY_OWNER_TASKS = 4
-_PRIORITY_GOALS = 5
-_PRIORITY_REMINDER = 6
+_PRIORITY_OWNER_TASKS = 3
+_PRIORITY_GOALS = 4
+_PRIORITY_REMINDER = 5
 
 _BANNER = "MEMORY CONTEXT (auto-loaded — do NOT re-fetch with MCP tools)"
 _FOOTER = "=" * 60
@@ -503,7 +502,7 @@ def assemble_sections(sections, budget_chars: int = ASSEMBLY_BUDGET_CHARS):
     # guarantee). It ensures we never drop all sections entirely. However, it
     # does NOT guarantee the final output stays within budget if that remaining
     # section exceeds budget on its own. All high-priority sections (recovery,
-    # always_load, working_state, etc.) must enforce their own size ceilings
+    # always_load, etc.) must enforce their own size ceilings
     # to prevent individual overflow. The recovery section ceiling (#1353) and
     # always_load byte cap (#1252) fulfill this for the critical path; if a
     # section lacks a self-cap and the guard is hit, the output may exceed
@@ -725,21 +724,7 @@ def main():
             )
         )
 
-    # 3. Working state — ONLY when session is inside a known project dir.
-    #     In a non-project cwd (e.g. scheduled research) working_state is noise.
-    if project:
-        section, ids = _query_working_state(client, project)
-        if section:
-            sections.append(
-                (
-                    _PRIORITY_WORKING_STATE,
-                    "working_state",
-                    f"## Working State ({project})\n" + section,
-                    ids,
-                )
-            )
-
-    # 3b. Owner-assigned task_queue rows (always, including compact resume) —
+    # 3. Owner-assigned task_queue rows (always, including compact resume) —
     #     escalations dispatch() wrote for the principal (#1392 AC3). Not
     #     gated on `project` since an escalation can concern any repo, and
     #     not skipped on compact resume like goals/reminders below (#1460)
@@ -842,7 +827,7 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None, compact=False
     Returns (formatted_text, ids) — ids are used to bump last_accessed_at.
     When compact=True, renders one line per memory (name + description)
     instead of full content. Use compact for always-loaded reminders, full
-    for anything Jarvis actually needs to read verbatim (working state).
+    for anything Jarvis actually needs to read verbatim.
     """
     try:
         q = (
@@ -863,23 +848,6 @@ def _query_memories(client, *, mem_type, limit, extra_filter=None, compact=False
     except Exception as e:
         print(f"[session-context] {mem_type} query failed: {e}", file=sys.stderr)
     return None, []
-
-
-def _query_working_state(client, project):
-    """Working-state lookup for the current project.
-
-    Scoped by BOTH name and project: /end's RMW writes with
-    project=<project>, so that is the canonical row. Without the project
-    filter a stray row in another scope (e.g. a soft-deleted global
-    working_state_jarvis with a newer updated_at — 2026-08-10 incident)
-    shadows the live row via the updated_at-desc ordering.
-    """
-    return _query_memories(
-        client,
-        mem_type="project",
-        limit=1,
-        extra_filter=lambda q: q.eq("name", f"working_state_{project}").eq("project", project),
-    )
 
 
 # always_load admission cap: DOCTRINE.md > Baseline carrier selection ranks
