@@ -33,7 +33,10 @@ no value and duplicates the review cycle.
 It **reuses** `_shared/tdd/` reference docs (`tdd-loop.md`, `tests.md`,
 `mocking.md`, `refactoring.md`) for the red→green→refactor discipline inside
 CRITICAL-finding fixes. Load them as operating procedure per finding — do not
-reinvent the TDD loop inline.
+reinvent the TDD loop inline. (`/implement`'s own §4-TDD inlines its own copy
+of this same loop rather than linking the shared file — that's `/implement`'s
+choice for its file, not a precedent to follow here; `rework` keeps reading
+the shared source directly.)
 
 **Territory boundaries** (what the skill does NOT touch):
 - PR title — never modified
