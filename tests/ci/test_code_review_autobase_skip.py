@@ -131,7 +131,7 @@ def test_autobase_bot_rerun_disarms_skip_and_runs_review():
 
 def _load_steps() -> list[dict]:
     spec = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
-    return spec["jobs"]["review"]["steps"]
+    return spec["jobs"]["code-gate"]["steps"]
 
 
 def _step_by_id(steps: list[dict], step_id: str) -> dict | None:
@@ -227,7 +227,7 @@ def test_actor_not_in_job_level_if():
     here too so the intent is visible from this file.
     """
     spec = yaml.safe_load(WORKFLOW_PATH.read_text(encoding="utf-8"))
-    job_if = str(spec["jobs"]["review"].get("if", ""))
+    job_if = str(spec["jobs"]["code-gate"].get("if", ""))
     assert "github.actor" not in job_if, (
         "github.actor must not appear in the review job-level `if:` — "
         "it changes to the pusher on synchronize events (#944). "

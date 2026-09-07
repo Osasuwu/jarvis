@@ -119,9 +119,7 @@ LGTM_RE = re.compile(r"\bLGTM\b|Verdict:[^\n]*\bAPPROVED?\b", re.I)
 # defense-in-depth fallback, not a live emission path any more) — this is the
 # additive guarantee pinned by test_absent_block_leaves_every_prose_branch_unchanged.
 FINDINGS_MARKER_RE = re.compile(r"<!-- *code-review-findings")
-FINDINGS_BLOCK_RE = re.compile(
-    r"<!-- *code-review-findings[^\n]*\n(.*?)\n-->", re.S
-)
+FINDINGS_BLOCK_RE = re.compile(r"<!-- *code-review-findings[^\n]*\n(.*?)\n-->", re.S)
 
 
 def structured_verdict(body: str) -> str | None:
@@ -1153,10 +1151,7 @@ class TestAutobaseAnchorLogic:
             ("2026-07-01T11:00:00Z", AUTOBASE_BOT),
         ]
         head = "2026-07-01T11:00:00Z"
-        assert (
-            verdict_autobase([], commits, head, autobase=True, ran=True, is_draft=True)
-            == "pass"
-        )
+        assert verdict_autobase([], commits, head, autobase=True, ran=True, is_draft=True) == "pass"
 
     # --- AC4 / CRITIC Risk #1: stale clean before the last real head → fail ---
     def test_autobase_stale_clean_before_last_real_head_fails_closed(self):
@@ -1421,20 +1416,20 @@ def workflow_text() -> str:
 @pytest.fixture(scope="module")
 def verdict_step(workflow_text) -> dict:
     workflow = yaml.safe_load(workflow_text)
-    steps = workflow["jobs"]["review"]["steps"]
+    steps = workflow["jobs"]["code-gate"]["steps"]
     return next(s for s in steps if s.get("name") == "Verify review verdict")
 
 
 @pytest.fixture(scope="module")
 def review_step(workflow_text) -> dict:
     workflow = yaml.safe_load(workflow_text)
-    steps = workflow["jobs"]["review"]["steps"]
+    steps = workflow["jobs"]["code-gate"]["steps"]
     return next(s for s in steps if s.get("name") == "Run code review (Layer B)")
 
 
 @pytest.fixture(scope="module")
 def review_job(workflow_text) -> dict:
-    return yaml.safe_load(workflow_text)["jobs"]["review"]
+    return yaml.safe_load(workflow_text)["jobs"]["code-gate"]
 
 
 def branch_slice(run: str, marker: str) -> str:
@@ -1541,13 +1536,13 @@ class TestVerdictStepWiring:
 
     def test_structured_check_is_authoritative_both_ways(self, verdict_step):
         run = verdict_step["run"]
-        assert '.blocking == ((.findings | length) > 0)' in run, (
+        assert ".blocking == ((.findings | length) > 0)" in run, (
             "The verdict must be the binary {blocking, findings} shape (#1816) "
             "— not a severity ladder — and must fail closed on a schema-"
             "inconsistent payload (blocking asserted with no findings, or vice "
             "versa)."
         )
-        assert 'jq -r \'.blocking\'' in run, (
+        assert "jq -r '.blocking'" in run, (
             "The block/pass decision must key off the .blocking boolean "
             "directly, not off any severity string."
         )
@@ -2261,7 +2256,7 @@ class TestInFlightWiring:
             line for line in zero_branch.splitlines() if "EXEC_FILE" in line and "-f" in line
         )
         assert "IS_DRAFT" in exec_file_line, (
-            "The `[ -n \"$EXEC_FILE\" ] && [ -f \"$EXEC_FILE\" ]` condition must "
+            'The `[ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]` condition must '
             "also require IS_DRAFT != true before failing closed (#1733) — a "
             "draft PR's clean-but-silent run must fall through to the "
             "genuine-skip pass, not hard-fail before the IS_DRAFT carve-out "
@@ -2353,7 +2348,9 @@ class TestStaleGraceWindowWiring:
             "(PR #1492: verdict landed 22s after the step failed closed, "
             "#1469)."
         )
-        assert run.index("GRACE_DEADLINE") < run.index("gh api \"repos/$REPO/issues/$PR/comments\""), (
+        assert run.index("GRACE_DEADLINE") < run.index(
+            'gh api "repos/$REPO/issues/$PR/comments"'
+        ), (
             "The deadline must be set before the first selection fetch so the "
             "window bounds every re-fetch, not just later ones."
         )
@@ -2381,8 +2378,7 @@ class TestStaleGraceWindowWiring:
             "the stale-only state (comments exist, none fresh) may retry."
         )
         assert run.index(breaker) < run.index("sleep "), (
-            "The non-stale break must precede the sleep, or non-racy states "
-            "pay the polling delay."
+            "The non-stale break must precede the sleep, or non-racy states pay the polling delay."
         )
 
     def test_grace_loop_precedes_the_stale_fail_closed_branch(self, verdict_step):

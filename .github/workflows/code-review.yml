@@ -11,7 +11,7 @@ on:
         type: string
 
 jobs:
-  review:
+  code-gate:
     # Skip fork PRs (untrusted code on main runner) and Dependabot (the
     # plugin will mark these as trivial and exit anyway, but bail earlier
     # to save Claude tokens). Draft PRs are skipped at the step-1 eligibility
