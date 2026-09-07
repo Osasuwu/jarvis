@@ -84,13 +84,14 @@ jobs:
             `.github/workflows/**`, anything under `.claude/hooks/**`, or
             `.claude/settings.json` — these are YOUR OWN execution
             environment (this job's permissions, its worker prompt, and the
-            hooks that would otherwise catch a bad edit), and unlike
-            `docs/security/agent-boundaries.md`'s T2 file set they are NOT
-            mechanically blocked below, only asked of you here. If the
-            issue's scope requires touching one of those, or any file in
-            `docs/security/agent-boundaries.md`'s protected-files policy,
-            that is itself a reason to escalate per step 5, not a reason to
-            edit it anyway.
+            hooks that would otherwise catch a bad edit). The `claude_args`
+            below already denies `Edit`/`Write` on these paths mechanically,
+            so this is belt-and-suspenders, not the only backstop — but
+            don't rely on that denial as an excuse to attempt the edit
+            anyway. If the issue's scope requires touching one of those, or
+            any file in `docs/security/agent-boundaries.md`'s
+            protected-files policy, that is itself a reason to escalate per
+            step 5.
           claude_args: |
             # Headless: any tool not listed here is denied outright, same
             # rationale as code-review.yml's allowlist — no human to approve
