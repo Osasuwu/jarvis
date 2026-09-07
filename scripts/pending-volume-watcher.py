@@ -4,8 +4,9 @@ Checks the count of pending memories (``requires_review=true``) and emits
 a ``candidates_pending`` event when it crosses the fire threshold (>= 10),
 with hysteresis to avoid flapping (re-arms when count drops below 8).
 
-Also debounces: skips firing if a ``/learn`` run completed in the last 24
-hours (``event_type='learn_run'`` in the ``events`` table).
+Also debounces: skips firing if a notification already fired in the last 24
+hours (``event_type='learn_run'`` marker in the ``events`` table, self-written
+by this watcher on each fire).
 
 Designed for the orchestrator-watcher's polling loop. Can be called as a
 standalone script or imported as a module.
@@ -244,7 +245,7 @@ def check_and_fire(client, *, dry_run: bool = False, _now=None) -> dict:
                     return {
                         "action": "none",
                         "reason": (
-                            f"/learn ran {age.total_seconds() / 3600:.1f}h ago, "
+                            f"already fired {age.total_seconds() / 3600:.1f}h ago, "
                             f"within {DEBOUNCE_HOURS}h debounce"
                         ),
                         "pending_count": pending,

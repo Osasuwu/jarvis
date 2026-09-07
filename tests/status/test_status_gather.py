@@ -110,7 +110,7 @@ def _snapshot_memory(
     generated_at: str = "2024-06-09T12:00:00+00:00", verdicts: list[dict] | None = None
 ) -> dict:
     """Build a `memories` row whose body carries a fenced yaml contradiction
-    cache, mirroring what the status-record L1 audit writes."""
+    cache, mirroring what the L1 audit writes."""
     verdicts = (
         verdicts
         if verdicts is not None
@@ -677,7 +677,7 @@ class TestGitStateDegradation:
 # ============================================================================
 # Test: Contradiction-cache gather (#1016 AC3/AC4)
 #
-# The status-record L1 audit writes the LLM contradiction verdicts into the
+# The L1 audit writes the LLM contradiction verdicts into the
 # `status-snapshot`-tagged memory as a fenced yaml block. gather() reads that
 # cache back WITHOUT re-running the LLM (AC4: "readable by the renderer without
 # re-running the LLM"). These tests pin the read-back path.
@@ -936,7 +936,7 @@ class TestGatherIntegratesContradictionCache:
 # On Windows, subprocess.run(text=True) without an explicit encoding decodes
 # child stdout with the locale codec (cp1251 here). redrobot issue titles are
 # Cyrillic; gh emits UTF-8 bytes, so the cp1251 decode raised
-# `UnicodeDecodeError` and crashed the whole /status gather. The default git/gh
+# `UnicodeDecodeError` and crashed the whole status gather. The default git/gh
 # runners must pin encoding="utf-8", errors="replace". [no-issue] regression.
 # ============================================================================
 

@@ -1,4 +1,4 @@
-"""eval_detectors.py — regex vs LLM precision/recall A/B for /reflect (#514).
+"""eval_detectors.py — regex vs LLM precision/recall A/B for the comms-audit detectors (#514).
 
 Phase 2 of #514: pulls the owner-labeled ground truth written by
 `collect_labels.py` (`reflect_eval_groundtruth_<period>`), scores the

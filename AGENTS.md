@@ -62,7 +62,7 @@ an interactive session.
   contract, not only when asked by name.
 - **Non-trivial logic leaves one runnable check.** Any change with real logic ships with at least
   one thing that fails if the logic breaks — the smallest such thing, not a suite. Trivial edits
-  need nothing; this doesn't relax the TDD requirement inside `/implement`/`/rework`.
+  need nothing; this doesn't relax the TDD requirement inside `/implement`.
 - **Sibling-grep on fixes.** When a reviewer flags a bug in one helper/pattern, grep sibling
   occurrences across the file and related files before declaring the fix done — a second round
   with the same class of finding means the first fix was partial.

@@ -82,12 +82,12 @@ VOYAGE_API_URL = "https://api.voyageai.com/v1/embeddings"
 VOYAGE_MODEL = "voyage-3-lite"
 EMBED_TIMEOUT = 10.0  # keep fast — blocks the tool call
 
-# Auto-generated serial memories (e.g. the status-record skill's one-row-per-
-# UTC-date snapshots) are intentionally near-identical: a unique date-keyed name
-# + upsert, but ~0.98 cosine to the prior day's row. The cross-name dup gate
+# Auto-generated serial memories (e.g. the daily status-digest cron's one-row-
+# per-UTC-date snapshots) are intentionally near-identical: a unique date-keyed
+# name + upsert, but ~0.98 cosine to the prior day's row. The cross-name dup gate
 # catches *accidental* concept duplication, not a deliberate daily series — so
-# exempt anything carrying these series tags. Without this, the status-record
-# cron is blocked every day after the first, producing false-zero gaps in the
+# exempt anything carrying these series tags. Without this, the snapshot cron
+# is blocked every day after the first, producing false-zero gaps in the
 # trend queries those snapshots exist to feed.
 SERIES_EXEMPT_TAGS = {"status-snapshot", "auto-generated"}
 
@@ -234,7 +234,7 @@ def main():
     if not new_name or not new_type:
         allow()
 
-    # Deliberately-serialized snapshots (status-record etc.) bypass the dup gate.
+    # Deliberately-serialized snapshots (status-digest cron etc.) bypass the dup gate.
     if is_exempt_series(tool_input.get("tags")):
         allow()
 

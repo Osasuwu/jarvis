@@ -341,9 +341,9 @@ def trust_ramp_state(prior_releases: list[dict]) -> str:
 
 def is_routine_host(device_config: dict) -> bool:
     """True iff this device is the sole routine host (``config/device.json``'s
-    ``routine_host`` flag) — same gate /setup-tasks applies, decision
-    1b7ff8d1-bbca-4207-a7e4-4c1edddef67e. A missing or falsy flag means "not
-    the host", never an error — refusal is the caller's job."""
+    ``routine_host`` flag) — decision 1b7ff8d1-bbca-4207-a7e4-4c1edddef67e. A
+    missing or falsy flag means "not the host", never an error — refusal is
+    the caller's job."""
     return device_config.get("routine_host") is True
 
 

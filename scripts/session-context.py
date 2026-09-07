@@ -768,7 +768,7 @@ def main():
                 (
                     _PRIORITY_REMINDER,
                     "pending_review",
-                    f"**Pending memory candidates:** {pending_count} (run `/learn` to review)",
+                    f"**Pending memory candidates:** {pending_count} (review needed)",
                     [],
                 )
             )

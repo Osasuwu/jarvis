@@ -1,4 +1,4 @@
-"""detect_hallucinations.py — correction-phrase detector for /reflect (#513).
+"""detect_hallucinations.py — correction-phrase detector for the comms-audit pipeline (#513).
 
 Flags a preceding assistant message as a hallucination-attribution candidate
 when a later user message contains a correction phrase (RU/EN — "не говорил",

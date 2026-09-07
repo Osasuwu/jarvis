@@ -48,7 +48,7 @@ DECISION_PREFILTER_DAYS = 14
 MEMORY_GIT_CONTRADICTION = "memory-git-contradiction"
 """Detector name for the L1-only memory↔git contradiction detector (#1016).
 
-The judgment itself is the native status-record cron Claude session — there is
+The judgment itself is the native status-digest cron Claude session — there is
 no Anthropic API call here. This engine only folds the session's verdicts into
 DetectorHits (see fold_contradiction_verdicts) and round-trips the cached
 result (serialize/deserialize_contradiction_cache). The detector is L1-only:
@@ -113,7 +113,7 @@ class DecisionInfo:
 class ContradictionVerdict:
     """One LLM judgment over a (decision, issue) prefilter candidate (#1016).
 
-    Emitted by the native status-record cron session, not by this engine.
+    Emitted by the native status-digest cron session, not by this engine.
     `verdict` is one of: 'contradiction' (memory and git disagree),
     'no_contradiction' (they agree / benign divergence), or 'uncertain'
     (judge could not decide). Per the false-negative-over-false-positive
@@ -831,7 +831,7 @@ def analyze(
     This is the sole public interface of status_engine.
 
     ``contradiction_verdicts`` carries the L1 memory↔git verdicts (already
-    judged upstream by the status-record cron, then read from the cached
+    judged upstream by the status-digest cron, then read from the cached
     status-snapshot — see deserialize_contradiction_cache). analyze() only
     *folds* them; it never runs the LLM judgment itself. The default empty
     tuple is the intraday/L2 path: no verdicts → no contradiction hit → no

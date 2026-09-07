@@ -10,10 +10,9 @@ passed — meaning nothing pins that line).
 
 Report-only: the exit code reflects whether the scan itself ran cleanly, never
 a mutation-score threshold or gate. This is the mechanical backend for the
-manual, per-test mutation-probe ritual in
-`.claude-userlevel/skills/_shared/tdd/tdd-loop.md` §3 — it does not replace
-that ritual's "no score/gate" discipline, it just automates flipping the
-operator instead of doing it by hand.
+manual, per-test mutation-probe ritual in `.claude-userlevel/skills/implement/SKILL.md`
+§4-TDD step 3 — it does not replace that ritual's "no score/gate" discipline,
+it just automates flipping the operator instead of doing it by hand.
 
 Usage:
     # Diff-scoped: every changed Python line between `base` and HEAD

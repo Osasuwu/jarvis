@@ -22,7 +22,7 @@ The setup script handles everything interactively:
 - Tests the database connection
 - Validates all prerequisites and project files
 
-After setup, open in Claude Code and run `/status`.
+After setup, open in Claude Code — session context (git, PRs, issues, CI, risks, goals) loads automatically via the SessionStart hook.
 
 ### Prerequisites
 
@@ -76,7 +76,7 @@ recommended plugin list.
 | Component | Description |
 |-----------|-------------|
 | **Cross-device memory** | MCP server syncs memories, goals, events via Supabase. Vector search (Voyage AI or local Ollama) + keyword fallback |
-| **Core skills** | `/status`, `/implement`, `/delegate`, `/verify`, `/reflect`, `/research`, `/self-improve`, `/goals`, `/setup-tasks`, `/end` (`--quick` for fast exit). |
+| **Core skills** | `/implement`, `/delegate`, `/research`, `/end` (`--quick` for fast exit). |
 | **SOUL.md personality** | Auto-loaded every session via hook. Opinionated, direct, bilingual (RU/EN) |
 | **Goal-aware decisions** | Jarvis knows priorities and pushes back when a task conflicts with active goals |
 | **Delegation pipeline** | Issue -> branch -> coding agent -> PR, with verification |
@@ -86,15 +86,9 @@ recommended plugin list.
 
 | Skill | Trigger | What it does |
 |-------|---------|-------------|
-| `/status` | Session start, "what's happening" | Project dashboard: git, PRs, issues, CI, risks, goals |
 | `/implement` | "реализуй #42", "implement #X" | Issue → branch → inline implementation → PR (main session does the work) |
 | `/delegate` | "делегируй #X #Y", "раскидай на агентов" | Multiple issues → parallel coding subagents, orchestrator reviews each diff + decides merge |
-| `/verify` | "проверь результаты", "post-delegation" | Closes outcome loop: PR merge status, test results, lessons extracted |
-| `/reflect` | "что сработало", "уроки" | Reviews recent decisions + outcomes, extracts lessons as feedback memories |
 | `/research` | "research X", "compare A vs B" | Web research with source validation |
-| `/self-improve` | "improve yourself" | Gap analysis -> ideation -> research -> implementation |
-| `/goals` | "goals", "priorities" | View, set, update strategic goals in Supabase |
-| `/setup-tasks` | New device bootstrap | Registers all scheduled tasks (idempotent) |
 | `/end` | End of session | Behavioral reflection, decision log, memory save, commit. With `--quick`: checkpoint + commit only (~30 sec). |
 
 ## Memory System
@@ -162,7 +156,7 @@ jarvis/
 1. Clone the repo
 2. Run `python scripts/setup-device.py`
 3. Open in Claude Code
-4. (Optional) Run `/setup-tasks` to register scheduled automation (daily briefs, risk radar, etc.)
+4. (Optional) Register scheduled automation (daily briefs, risk radar, etc.) via the scheduled-tasks MCP tools
 
 Memory syncs automatically via Supabase. All config lives in the repo.
 

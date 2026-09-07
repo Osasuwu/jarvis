@@ -35,7 +35,8 @@ Contract
   the gate's decision.
 - Structural escape: pass ``intentionally_empty=true`` in the tool args
   to acknowledge no memory informed the decision. The server emits the
-  flag into the episode payload so ``/learn`` (#526) can track the rate.
+  flag into the episode payload so a later review pass (#526) can track
+  the rate.
 - Allowed calls: when stdin carries a valid ``session_id``, emit
   ``hookSpecificOutput.updatedInput`` = tool_input + ``session_id``. The
   harness stdin sid overrides any model-supplied ``session_id``. Missing/
@@ -122,7 +123,7 @@ BLOCK_REASON = (
     "  1. Run memory_recall(brief=true), parse name→uuid, pass UUIDs.\n"
     "  2. If genuinely no memory informed this decision, pass\n"
     "     intentionally_empty=true to acknowledge it. The flag is recorded\n"
-    "     on the episode payload for /learn rate tracking (#524, #526)."
+    "     on the episode payload for review-rate tracking (#524, #526)."
 )
 
 # ---------------------------------------------------------------------------

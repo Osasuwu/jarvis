@@ -739,27 +739,27 @@ def test_existing_bak_orphan_is_not_re_quarantined(
     """`.bak.orphan` leftovers from prior runs must not be re-detected as orphans (#659).
 
     Without the skip, every subsequent install would nest the suffix one level
-    deeper: `dnd.bak.orphan` → `dnd.bak.orphan.bak.orphan` → ...
+    deeper: `widget.bak.orphan` → `widget.bak.orphan.bak.orphan` → ...
     """
     m = installer.load_manifest(manifest)
     installer.apply_plan(installer.build_plan(m, fake_repo), m, run_env=None)
     target = tmp_path / "claude_home"
     # Synthesize the state left by a previous quarantine pass.
-    leftover = target / "skills" / "dnd.bak.orphan"
+    leftover = target / "skills" / "widget.bak.orphan"
     leftover.mkdir()
     (leftover / "SKILL.md").write_text("# previously quarantined\n", encoding="utf-8")
     # Also a timestamped variant (same-day collision case from `_backup_dest`).
-    leftover_stamped = target / "skills" / "dnd-prep.bak.orphan-20260516-120000"
+    leftover_stamped = target / "skills" / "widget-prep.bak.orphan-20260516-120000"
     leftover_stamped.mkdir()
     (target / ".jarvis-version").write_text("old-sha\n", encoding="utf-8")
 
     plan = installer.build_plan(m, fake_repo)
     orphans = [a for a in plan.actions if a.kind == "prune_orphan"]
     orphan_sources = {Path(a.source).name for a in orphans}
-    assert "dnd.bak.orphan" not in orphan_sources, (
+    assert "widget.bak.orphan" not in orphan_sources, (
         "prior-run quarantine must not be re-quarantined into .bak.orphan.bak.orphan"
     )
-    assert "dnd-prep.bak.orphan-20260516-120000" not in orphan_sources, (
+    assert "widget-prep.bak.orphan-20260516-120000" not in orphan_sources, (
         "timestamped quarantine variant must also be skipped"
     )
 
@@ -1208,11 +1208,11 @@ def test_real_userlevel_mcp_json_gates_obsidian_like_uml(monkeypatch) -> None:
 def test_userlevel_skills_dir_exists_and_has_whitelisted_skills() -> None:
     """Source-of-truth directory must exist with every whitelisted skill.
 
-    Convention: entries beginning with ``_`` are shared reference material
-    (e.g. ``_shared/tdd/`` consumed by /implement and /delegate in TDD-mode,
-    #593), not skills. They live under the skills tree so install-time
-    orphan-prune keeps them, but they have no ``SKILL.md`` — the directory
-    must exist and be non-empty.
+    Convention: entries beginning with ``_`` are shared reference material,
+    not skills. They live under the skills tree so install-time orphan-prune
+    keeps them, but they have no ``SKILL.md`` — the directory must exist and
+    be non-empty. (No such entry is currently whitelisted; the branch below
+    stays generic in case one is added again.)
     """
     repo_root = Path(__file__).resolve().parents[2]
     src = repo_root / ".claude-userlevel" / "skills"
@@ -1245,11 +1245,7 @@ def test_every_source_skill_is_whitelisted() -> None:
     # Skills that live in the repo but are deliberately NOT installed at user
     # level — the installer's orphan-prune quarantines them by design. Each entry
     # needs a reason so a future accidental omission can't hide here.
-    INTENTIONALLY_NOT_INSTALLED = {
-        # Personal project-scoped skill (Petr's D&D Obsidian vault, device-specific
-        # absolute paths). Stored in-repo but not a universal user-level skill.
-        "dnd-prep",
-    }
+    INTENTIONALLY_NOT_INSTALLED: set[str] = set()
 
     repo_root = Path(__file__).resolve().parents[2]
     src = repo_root / ".claude-userlevel" / "skills"
@@ -1887,8 +1883,8 @@ def test_deep_merge_prunes_dict_key_removed_from_base() -> None:
     """A whole top-level key dropped from `source` (e.g. deprecated
     `skillOverrides`) is pruned from `existing` too, when `existing` still
     matches what `base` had there (never locally customized)."""
-    existing = {"skillOverrides": {"caveman": "name-only"}, "fallbackModel": ["a"]}
-    base = {"skillOverrides": {"caveman": "name-only"}, "fallbackModel": ["a"]}
+    existing = {"skillOverrides": {"foo-skill": "name-only"}, "fallbackModel": ["a"]}
+    base = {"skillOverrides": {"foo-skill": "name-only"}, "fallbackModel": ["a"]}
     source = {"fallbackModel": ["a"]}
     merged = installer._deep_merge_jarvis_json(existing, source, base)
     assert "skillOverrides" not in merged
@@ -1898,19 +1894,19 @@ def test_deep_merge_preserves_locally_customized_key_removed_from_base() -> None
     """If the user edited the key away from `base` before it was dropped
     upstream, their local edit wins over pruning — never silently destroy a
     user customization just because jarvis stopped shipping the key."""
-    existing = {"skillOverrides": {"caveman": "name-only", "extra": "user-added"}}
-    base = {"skillOverrides": {"caveman": "name-only"}}
+    existing = {"skillOverrides": {"foo-skill": "name-only", "extra": "user-added"}}
+    base = {"skillOverrides": {"foo-skill": "name-only"}}
     source: dict = {}
     merged = installer._deep_merge_jarvis_json(existing, source, base)
-    assert merged["skillOverrides"] == {"caveman": "name-only", "extra": "user-added"}
+    assert merged["skillOverrides"] == {"foo-skill": "name-only", "extra": "user-added"}
 
 
 def test_deep_merge_dict_key_prune_no_base_reproduces_plain_union() -> None:
     """`base=None` (the default) must not prune anything — old behavior."""
-    existing = {"skillOverrides": {"caveman": "name-only"}}
+    existing = {"skillOverrides": {"foo-skill": "name-only"}}
     source: dict = {}
     merged = installer._deep_merge_jarvis_json(existing, source)
-    assert merged["skillOverrides"] == {"caveman": "name-only"}
+    assert merged["skillOverrides"] == {"foo-skill": "name-only"}
 
 
 def test_merge_json_prunes_source_removed_array_entries_on_reapply(

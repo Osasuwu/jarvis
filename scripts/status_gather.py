@@ -119,7 +119,7 @@ class GatherResult:
     Fields:
         repos: Per-repo gathered state dicts (name, git, prs, issues, etc.).
         decisions: Decision_made episodes from Supabase.
-        baselines: Status-record snapshots (may be None/empty on first run
+        baselines: Status-digest cron snapshots (may be None/empty on first run
                    or non-cron device).
         provenance: Top-level provenance for sources not scoped to a repo
                     (repos.conf parsing, Supabase query).
@@ -552,7 +552,7 @@ def gather_decisions(
 # ============================================================================
 # Contradiction-cache gather (#1016 AC3/AC4)
 #
-# The L1 status-record audit runs the memory↔git contradiction LLM ONCE and
+# The L1 audit runs the memory↔git contradiction LLM ONCE and
 # writes its verdicts into the `status-snapshot`-tagged memory as a fenced
 # yaml block (schema contradiction-cache/v1). gather() reads that block back
 # so the engine can FOLD the cached verdicts without re-running the LLM
@@ -854,7 +854,7 @@ def gather(
         )
 
     # --- Step 5: Status-snapshot contradiction cache (optional — tolerate gap) ---
-    # The L1 status-record audit writes the cached memory↔git contradiction
+    # The L1 audit writes the cached memory↔git contradiction
     # verdicts into the `status-snapshot`-tagged memory. We read them back here
     # (pure deserialization, no LLM — #1016 AC4) so the engine can fold them.
     # On first run, a non-cron device, or a missing snapshot, the read is !ok
