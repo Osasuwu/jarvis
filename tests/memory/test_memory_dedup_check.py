@@ -2,12 +2,12 @@
 
 The dedup hook blocks a memory_store when a same-type/same-project memory with a
 DIFFERENT name sits above the cosine threshold. That gate must NOT fire on
-deliberately-serialized snapshots (the status-record skill writes one row per
-UTC date, each ~0.98 similar to the prior day's but with a unique date-keyed
+deliberately-serialized snapshots (the daily status-digest cron writes one row
+per UTC date, each ~0.98 similar to the prior day's but with a unique date-keyed
 name). These carry `status-snapshot` / `auto-generated` tags and are exempted.
 
-Regression for: status-record cron blocked every day after the first because the
-cross-name dup gate treated yesterday's snapshot as a duplicate of today's.
+Regression for: the status-digest cron blocked every day after the first because
+the cross-name dup gate treated yesterday's snapshot as a duplicate of today's.
 
 Loads the hook by path because its filename uses a dash.
 """

@@ -568,7 +568,7 @@ def print_summary(errors):
      claude
 
   2. Test that Jarvis works:
-     /status
+     start a session and confirm the session-start dashboard renders
 
   3. Memory server starts automatically via .mcp.json.
      If you see memory errors, check .env values.

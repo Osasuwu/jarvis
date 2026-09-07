@@ -1,8 +1,8 @@
 # analyze-comms
 
-Communication-pattern extraction across local Claude Code sessions. Used by the `/reflect` skill (Phase A — per-device extraction, Phase B — cross-device merge + qualitative analysis).
+Communication-pattern extraction across local Claude Code sessions. Drives a two-phase analysis (Phase A — per-device extraction, Phase B — cross-device merge + qualitative analysis).
 
-History: these scripts were originally bundled inside the `/reflect` skill at `~/.claude/skills/reflect/`. Migrated here per #530 / ADR-0001 — skill-shape vs. script-shape separation. `/reflect` SKILL.md now invokes them from this directory via `$JARVIS_HOME/scripts/analyze-comms/`.
+History: these scripts were originally bundled inside the old `/reflect` skill at `~/.claude/skills/reflect/`. Migrated here per #530 / ADR-0001 — skill-shape vs. script-shape separation, so the pipeline runs from this directory (`$JARVIS_HOME/scripts/analyze-comms/`) independent of any specific skill.
 
 ## Layout
 
@@ -33,7 +33,7 @@ python "$JARVIS_HOME/scripts/analyze-comms/detect_hallucinations.py"  "$STAGE/co
 
 `detect_rule_violations.py` requires `SUPABASE_URL`/`SUPABASE_KEY` in the environment (reads `feedback`-type, `always_load`-tagged memories). Both detectors must run **after** `compress_patterns.py` — it overwrites `${DEVICE}_patterns.json`; the detectors merge into it.
 
-Then transfer `${DEVICE}_patterns.json` to the Phase B host (manually — Drive web UI, USB, Obsidian sync). No auto-upload; see [SKILL.md](../../.claude-userlevel/skills/reflect/SKILL.md) "Why no auto-upload".
+Then transfer `${DEVICE}_patterns.json` to the Phase B host (manually — Drive web UI, USB, Obsidian sync). No auto-upload — `*_patterns.json` holds anchor quotes (sensitive personal comms data); an automated upload path would put that on a network channel with no human review, so transfer stays a deliberate manual step.
 
 ## Manual invocation (Phase B — cross-device merge)
 
@@ -45,7 +45,7 @@ python "$JARVIS_HOME/scripts/analyze-comms/analyze_cross_device.py" \
   "$MERGE_DIR/merged_patterns.json"
 ```
 
-Qualitative analysis + memory-write decisions happen agent-side via `/reflect` Phase B steps B3–B4 — not in the script.
+Qualitative analysis + memory-write decisions happen agent-side, during Phase B steps B3–B4 of the analysis workflow — not in the script.
 
 ## Manual invocation (Phase 2 — eval, #514)
 
@@ -72,7 +72,7 @@ Per-device registration is **not** automated yet (separate follow-up; tracked vi
 - **Windows** — use `mcp__scheduled-tasks__create_scheduled_task` or Task Scheduler, command: `python "%JARVIS_HOME%\scripts\analyze-comms\extract_comms.py" "%USERPROFILE%\.cache\jarvis-comms-analysis\daily\comms_extract.jsonl"` (extend with `compress_patterns.py` as needed).
 - **Linux/macOS** — `crontab -e`, weekly entry pointing at the same scripts.
 
-The /reflect skill remains the principal-facing trigger ("analyze comms" / "что я делаю не так") regardless of whether Phase A also runs on a schedule.
+Scheduling only covers Phase A's mechanical extraction; the qualitative Phase B pass still needs an agent-side trigger (e.g. "analyze comms" / "что я делаю не так") regardless of whether Phase A also runs on a schedule.
 
 ## Output discipline
 

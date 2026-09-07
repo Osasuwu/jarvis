@@ -198,7 +198,7 @@ def test_convert_flattens_object_labels():
     feeding it a dict raised `TypeError: unhashable type: 'dict'` and crashed
     the whole digest (masked earlier by the cp1251 gather crash). The converter
     must flatten label objects to their names so priority detection survives
-    real gh output. Regression for the /status label-dict crash ([no-issue]).
+    real gh output. Regression for the status label-dict crash ([no-issue]).
     """
     gather_result = make_fixture_gather_result()
     # Replace the fixture's string labels with the real gh object shape.

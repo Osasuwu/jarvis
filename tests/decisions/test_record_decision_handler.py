@@ -107,7 +107,7 @@ class TestRecordDecisionInsert:
 
     @pytest.mark.asyncio
     async def test_intentionally_empty_true_emits_into_payload(self, monkeypatch):
-        """#524 — flag is preserved on the episode payload for /learn rate tracking."""
+        """#524 — flag is preserved on the episode payload for review-rate tracking."""
         client = make_client()
         monkeypatch.setattr("server._get_client", lambda: client)
 

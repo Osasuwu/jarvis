@@ -2,7 +2,7 @@
 
 Used by `/grill` Phase 3 (cross-context review) when the grill is about to lock acceptance criteria or record a decision with `reversibility ∈ {hard, irreversible}`. The point of dispatching a sub-agent (instead of the main grill session self-critiquing) is **role isolation**: single-agent self-critique grades its own exam; personalisation measurably increases sycophancy (MIT 2026; ICLR 2026). A sibling subagent prompted without identity calibration is a cheaper architectural mitigation than calling an external provider.
 
-This file is the inverted counterpart to [`reason/NEUTRAL-RESEARCHER.md`](../reason/NEUTRAL-RESEARCHER.md): NEUTRAL-RESEARCHER hunts evidence with no recommendation; CRITIC delivers a recommendation in fixed-schema form. The dispatch convention, isolation model, and verbatim-system-block pattern are mirrored deliberately.
+CRITIC delivers a recommendation in fixed-schema form via a dedicated sub-agent dispatch — the dispatch convention, isolation model, and verbatim-system-block pattern below are deliberate: role isolation reduces the self-critique sycophancy risk described above.
 
 Decision basis:
 

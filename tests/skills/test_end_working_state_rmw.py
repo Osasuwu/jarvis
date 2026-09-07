@@ -145,7 +145,7 @@ class TestEndSkillWorkingStateRMW:
 
 
 class TestOtherReadersUnchanged:
-    """Verify AC7: other readers (session-context.py, research/SKILL.md, self-improve/SKILL.md) are not modified."""
+    """Verify AC7: other readers (session-context.py, research/SKILL.md) are not modified."""
 
     def test_session_context_working_state_query_unchanged(self):
         """AC7: session-context.py still queries working_state_<project> as before."""

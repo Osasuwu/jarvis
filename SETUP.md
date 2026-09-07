@@ -42,7 +42,7 @@ Commit the regenerated `uv.lock` files. This ensures CI and local environments r
    - Supabase connector — claude.ai/settings/connectors
    - Firecrawl connector — claude.ai/settings/connectors
 
-3. **Verify**: `cd jarvis && claude` — check skills load, `/status` works
+3. **Verify**: `cd jarvis && claude` — check skills load, session-start dashboard renders
 
 ## Architecture
 

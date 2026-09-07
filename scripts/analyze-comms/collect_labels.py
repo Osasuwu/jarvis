@@ -1,6 +1,6 @@
 """collect_labels.py — parse owner-labeled report.md files into ground truth (#514).
 
-Phase B report.md (SKILL.md Step B3) renders one structured, machine-parseable
+Phase B report.md (produced by Phase B step B3 of the analysis workflow) renders one structured, machine-parseable
 line per candidate for `rule_violations` and `hallucinations` (#513). The
 owner edits a copy of the report in GDrive, replacing the leading `[ ]` with
 `[+]` (valid), `[-]` (false positive), or `[?]` (missed — a violation the

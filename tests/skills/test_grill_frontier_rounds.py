@@ -19,7 +19,6 @@ import pytest
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 SKILL_MD = REPO_ROOT / ".claude-userlevel" / "skills" / "grill" / "SKILL.md"
-CREDIT_MD = REPO_ROOT / ".claude-userlevel" / "skills" / "AIHERO_CREDIT.md"
 
 
 def _read(path: Path) -> str:
@@ -30,11 +29,6 @@ def _read(path: Path) -> str:
 @pytest.fixture(scope="module")
 def skill_md() -> str:
     return _read(SKILL_MD)
-
-
-@pytest.fixture(scope="module")
-def credit_md() -> str:
-    return _read(CREDIT_MD)
 
 
 @pytest.fixture(scope="module")
@@ -255,29 +249,3 @@ class TestPhase3Phase4Unchanged:
 
     def test_phase4_trigger_decision_uuid_still_present(self, skill_md: str):
         assert "a5e76208-8636-4c80-9423-98e63981c903" in skill_md
-
-
-class TestAiheroCreditUpdated:
-    """AIHERO_CREDIT.md reflects the frontier-round adoption."""
-
-    def test_grill_row_no_longer_says_one_question_at_a_time(self, credit_md: str):
-        grill_row = re.search(r"\|\s*`grill`\s*\|.*\n", credit_md)
-        assert grill_row is not None, "grill row must exist in AIHERO_CREDIT.md"
-        assert "one-question-at-a-time" not in grill_row.group(0), \
-            "grill row must no longer describe one-question-at-a-time as adopted behavior"
-
-    def test_grilling_row_moved_out_of_not_adopted(self, credit_md: str):
-        not_adopted = re.search(
-            r"## Deliberately not adopted(.*?)(?=\n## |\Z)",
-            credit_md,
-            re.DOTALL,
-        )
-        assert not_adopted is not None, "Deliberately not adopted section must exist"
-        assert "productivity/grilling" not in not_adopted.group(1), \
-            "productivity/grilling row must no longer sit in 'Deliberately not adopted'"
-
-    def test_grilling_partial_adoption_noted(self, credit_md: str):
-        assert re.search(r"frontier-round engine", credit_md, re.IGNORECASE), \
-            "AIHERO_CREDIT.md must note the frontier-round engine was adopted"
-        assert re.search(r"skill-split", credit_md, re.IGNORECASE), \
-            "AIHERO_CREDIT.md must note the skill-split itself was not adopted"

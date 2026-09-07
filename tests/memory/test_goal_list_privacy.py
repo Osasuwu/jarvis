@@ -6,12 +6,12 @@ cross-project (personal) goals from any unscoped ``goal_list`` call, on the
 premise that ``/weekly-release`` calls it unscoped when building a release's
 goal section. That premise was wrong: ``/weekly-release`` always passes an
 explicit ``project=<repo-slug>`` (see ``weekly-release/SKILL.md`` Step 3),
-so it never hits the unscoped branch at all. Meanwhile ``/goals``,
-``/goals review`` and ``/end`` all call ``goal_list(status="active")`` with
-no ``project`` arg and expect personal (cross-project) goals to appear —
-``_format_goal`` even renders ``project or 'cross-project'`` for them. The
-fix belongs (if ever needed) in ``/weekly-release``'s own explicit scoping,
-never in the shared handler's default for every caller.
+so it never hits the unscoped branch at all. An unscoped ``goal_list(status="active")``
+call is expected to return personal (cross-project) goals alongside
+project-scoped ones — ``_format_goal`` even renders ``project or
+'cross-project'`` for them. The fix belongs (if ever needed) in the specific
+caller's own explicit scoping, never in the shared handler's default for
+every caller.
 """
 
 from __future__ import annotations

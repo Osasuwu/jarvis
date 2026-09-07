@@ -249,7 +249,7 @@ def _convert_gather_to_engine_format(gather_result):
 def _contradiction_verdicts_from_gather(gather_result):
     """Deserialize the cached L1 contradiction verdicts from a GatherResult.
 
-    The L1 status-record audit ran the memory↔git contradiction LLM once and
+    The L1 audit ran the memory↔git contradiction LLM once and
     stored its verdicts in the status-snapshot memory; gather() read that cache
     back into `gather_result.contradiction_cache` (pure deserialization, no
     LLM). Here we turn the cache dict into ContradictionVerdict objects for
@@ -294,7 +294,7 @@ async def call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) ->
 
             # Fold the cached L1 memory↔git contradiction verdicts (if any).
             # Reading the cache is pure deserialization — the LLM ran once in
-            # the L1 status-record audit, never here (#1016 AC2/AC4).
+            # the L1 audit, never here (#1016 AC2/AC4).
             contradiction_verdicts = _contradiction_verdicts_from_gather(gather_result)
 
             # Analyze with engine

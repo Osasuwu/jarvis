@@ -41,9 +41,8 @@ CRITIC_MD = REPO_ROOT / ".claude-userlevel" / "skills" / "grill" / "CRITIC.md"
 def extract_system_block(critic_md_text: str) -> str:
     """Return the verbatim system-block body that operators paste into Agent.
 
-    CRITIC.md follows the convention from NEUTRAL-RESEARCHER.md: a markdown
-    heading containing 'System block' is followed by a fenced code block whose
-    body is the verbatim prompt body.
+    CRITIC.md's convention: a markdown heading containing 'System block' is
+    followed by a fenced code block whose body is the verbatim prompt body.
     """
     # Find the System-block heading
     heading_match = re.search(r"^#{1,6}\s.*system block.*$", critic_md_text, re.IGNORECASE | re.MULTILINE)

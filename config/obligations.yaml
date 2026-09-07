@@ -18,7 +18,7 @@
 # Status rules (enforced by evaluate()):
 #   - No ack and no evidence trace → "unknown" (never "overdue")
 #   - "overdue" requires an observed last-done date
-#   - Ack an obligation via MCP tool or /morning ack <id>  (next slice)
+#   - Ack an obligation via MCP tool (next slice)
 
 schema_version: "v1"
 entries:

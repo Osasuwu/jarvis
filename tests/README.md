@@ -13,7 +13,7 @@ every test's identity, only the path prefix changed.
 | `memory/` | Memory server, recall/store, outcomes, calibration, graph, goals, credentials, events FSM | `mcp-memory/` |
 | `decisions/` | `record_decision` Tier-2 gate + doubles | `scripts/record-decision-gate.py` |
 | `comms/` | Communication-pattern classifier / reflect surface | `scripts/comm_patterns/` |
-| `status/` | `/status` digest + deterministic render | `mcp__status`, `scripts/` status |
+| `status/` | status-MCP digest + deterministic render | `mcp__status`, `scripts/` status |
 | `infrastructure/` | Installer units, hooks, secret scanner/scrubber, protected files, risk radar, session-context — the cross-cutting **catch-all** | `scripts/`, `src/` |
 | `ci/` | Path-filtered CI-guard meta-tests (#326) — one per guarded workflow | `.github/workflows/` |
 | `install/` | Installer end-to-end integration | `install.ps1` |

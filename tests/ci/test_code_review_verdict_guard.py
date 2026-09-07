@@ -667,8 +667,8 @@ PR_1452_COMMENT = """\
 Found 2 issues:
 
 1. **`.claude-userlevel/settings.json:9`** — the blanket `Read/Edit(**/.env.*)`
-   deny reverts the `.env.example` carve-out and blocks the `/wizard` skill's
-   documented Phase 1 read.
+   deny reverts the `.env.example` carve-out and blocks a skill's documented
+   Phase 1 read.
 2. **`tests/ci/test_context_extraction_guard.py:3`** — the PR body names files
    under "Files Changed" that carry no diff hunk.
 

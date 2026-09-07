@@ -2,7 +2,7 @@
 
 Invokes the Deriver pipeline to extract ``user`` and ``feedback`` memory
 candidates from the accumulated session transcript, then inserts them
-with ``requires_review=true`` for later owner review via ``/learn``.
+with ``requires_review=true`` for later owner review.
 
 Runs two independent extraction passes per session-end event:
 ``derive_from_session`` (the original default pass) and

@@ -31,7 +31,7 @@ if not is_routine_host(device_config):
 "
 ```
 
-Same refusal pattern as `/setup-tasks` — decision `1b7ff8d1-bbca-4207-a7e4-4c1edddef67e`: one device is the sole routine host, every other device refuses rather than double-running the routine. Registering the routine itself (the cron entry on Workshop) is a manual step, not automated by this slice — see `.claude-userlevel/skills/setup-tasks/SKILL.md` → *Routines (MCP)*.
+Same refusal pattern used elsewhere for routine-gated skills — decision `1b7ff8d1-bbca-4207-a7e4-4c1edddef67e`: one device is the sole routine host, every other device refuses rather than double-running the routine. Registering the routine itself (the cron entry on Workshop) is a manual step, not automated by this slice — see Step 6 below.
 
 ## Step 1 — Gather
 
@@ -143,15 +143,15 @@ Not part of a normal `/weekly-release` invocation — run once to set up the rou
 
 **Gate**: the same `is_routine_host(device_config)` check as Step 0, against the same `config/device.json`. This is deliberate defense-in-depth, not redundancy — Step 0 protects a routine invocation that somehow reaches the wrong device (a stale cron copied off-host) from actually running; this gate protects *registration itself* from happening on the wrong device in the first place. Refuse with the same message pattern as Step 0 if `routine_host` isn't `true` here.
 
-**Registration surface**: the local `create_scheduled_task` MCP tool (`mcp__scheduled-tasks__create_scheduled_task`, Workshop-only per `setup-tasks/SKILL.md` → *Routine host policy*) — confirmed callable in-session. This is explicitly **not** the cloud `/schedule` Routines surface: that surface runs on Anthropic's hosted infrastructure with no access to this repo's local `gh` auth or `scripts/` modules, so it cannot execute this skill.
+**Registration surface**: the local `create_scheduled_task` MCP tool (`mcp__scheduled-tasks__create_scheduled_task`, Workshop-only per the gate above) — confirmed callable in-session. This is explicitly **not** the cloud `/schedule` Routines surface: that surface runs on Anthropic's hosted infrastructure with no access to this repo's local `gh` auth or `scripts/` modules, so it cannot execute this skill.
 
-Canonical registration already lives in `setup-tasks/SKILL.md`'s *Routines (MCP)* table (one idempotent bootstrap covering every routine, this one included) — running `/setup-tasks` on the Workshop host is the normal path. The row, verbatim:
+Register the row below, verbatim:
 
 | Task ID | Cron | Prompt |
 |---|---|---|
 | weekly-release | `0 6 * * 0` | Run `/weekly-release` — draft this week's GitHub release for each `config/repos.conf` `releases=weekly` repo, then `notify_text` the owner per repo (#1658 S2). Registration is this table's own manual step — the skill's own Step 0 device gate (`is_routine_host`) is a defense-in-depth re-check, not a substitute for it. |
 
-If registering this task alone rather than running the full `/setup-tasks` bootstrap: call `list_scheduled_tasks` first — present and `enabled=true` → skip (already registered); present and `enabled=false` → `update_scheduled_task(taskId, enabled=true)`; absent → `create_scheduled_task` with the cron + prompt above. Mirrors `setup-tasks/SKILL.md` step 4's own idempotency rule exactly — no separate rule invented here.
+**Idempotent registration**: call `list_scheduled_tasks` first — present and `enabled=true` → skip (already registered); present and `enabled=false` → `update_scheduled_task(taskId, enabled=true)`; absent → `create_scheduled_task` with the cron + prompt above.
 
 ## Failure modes
 

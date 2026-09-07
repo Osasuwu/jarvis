@@ -215,11 +215,10 @@ def test_empty_plan_renders_without_crashing():
 # ============================================================================
 # Test: CLI entry point (morning_digest MCP | python scripts/morning_render.py)
 # ============================================================================
-# The skill invokes this as a subprocess piping stdin -> stdout (see
-# .claude-userlevel/skills/morning/SKILL.md Step 2). A missing/broken __main__
-# is invisible to render()-level unit tests but leaves the skill's documented
-# invocation silently printing nothing — caught by an E2E smoke, not unit
-# tests, mirroring status_render.py's CLI contract.
+# The caller invokes this as a subprocess piping stdin -> stdout. A
+# missing/broken __main__ is invisible to render()-level unit tests but
+# leaves that documented invocation silently printing nothing — caught by
+# an E2E smoke, not unit tests, mirroring status_render.py's CLI contract.
 
 
 def test_main_reads_stdin_and_prints_render(monkeypatch, capsys):

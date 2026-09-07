@@ -27,15 +27,6 @@ SETTINGS_PATH = REPO_ROOT / ".claude-userlevel" / "settings.json"
 # a short description before tripping the regression guard.
 ROSTER_CHAR_BUDGET = 6500
 
-OWNER_INVOKED_ONLY_SKILLS = {
-    "caveman",
-    "last-work-report",
-    "setup-tasks",
-    "status-record",
-    "zoom-out",
-}
-
-
 def test_roster_stays_under_budget():
     entries = load_skills()
     total = total_roster_chars(entries)
@@ -43,18 +34,6 @@ def test_roster_stays_under_budget():
         f"Roster grew to {total} chars, at/above the {ROSTER_CHAR_BUDGET}-char "
         "regression budget set by #1268. Trim a description or suppress a "
         "skill that shouldn't be model-invocable."
-    )
-
-
-def test_owner_invoked_only_skills_are_suppressed():
-    entries = {e.name: e for e in load_skills()}
-    missing = OWNER_INVOKED_ONLY_SKILLS - entries.keys()
-    assert not missing, f"Expected owner-only skills not found on disk: {missing}"
-
-    not_suppressed = [name for name in OWNER_INVOKED_ONLY_SKILLS if not entries[name].disabled]
-    assert not not_suppressed, (
-        f"These owner-invoked-only skills are missing "
-        f"`disable-model-invocation: true`: {not_suppressed}"
     )
 
 

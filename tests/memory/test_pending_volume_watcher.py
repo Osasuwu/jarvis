@@ -264,7 +264,7 @@ class TestHysteresis:
 
 
 class TestDebounce:
-    """Tests the 24h debounce after /learn runs."""
+    """Tests the 24h debounce after the watcher's own learn_run marker fires."""
 
     def test_recent_learn_skips_fire(self):
         client = MagicMock()
@@ -412,23 +412,6 @@ class TestEmitLearnRunGuard:
             result = watcher.check_and_fire(client, dry_run=False)
 
         assert result["debounce_marker_written"] is False
-
-
-class TestLearnRunContract:
-    """Verify SKILL.md closes the /learn → learn_run event loop (#1)."""
-
-    def test_skill_md_contains_learn_run_emit_instruction(self):
-        """SKILL.md must instruct the skill to emit a learn_run event."""
-        skill_path = (
-            Path(__file__).resolve().parent.parent.parent
-            / ".claude-userlevel"
-            / "skills"
-            / "learn"
-            / "SKILL.md"
-        )
-        content = skill_path.read_text(encoding="utf-8")
-        assert "learn_run" in content, "SKILL.md must instruct emitting learn_run event"
-        assert "learn_skill" in content, "SKILL.md must identify the source as learn_skill"
 
 
 class TestDryRun:
