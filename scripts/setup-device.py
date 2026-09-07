@@ -220,7 +220,7 @@ def setup_env():
 
     # Optional vars -- just report status
     for var, label in [
-        ("VOYAGE_API_KEY", "Voyage AI (semantic search -- optional; alternatively use local Ollama, see SETUP.md §3)"),
+        ("VOYAGE_API_KEY", "Voyage AI (semantic search -- optional; alternatively use local Ollama, see docs/setup.md §3)"),
         ("GITHUB_TOKEN", "GitHub token (for MCP GitHub server)"),
         ("FIRECRAWL_API_KEY", "Firecrawl (web research -- optional)"),
     ]:
@@ -422,10 +422,14 @@ def setup_sibling_repos():
             warn(f"  could not add upstream remote: {upstream_result.stderr.strip()[:120]}")
 
 
-# NB: marketplace name is `jarvis-fork-plugins` for historical reasons —
-# only `code-review` is actually a fork (Osasuwu/claude-plugins-official).
-# The other 5 are upstream Anthropic plugins consumed via git-subdir directly.
-# Kept the name to avoid forcing an opt-in re-add on existing devices.
+# `code-review` is the only actual fork (Osasuwu/claude-plugins-official,
+# pinned per docs/reference/vendored-plugin-pins.md) -- vendored locally via
+# .claude/marketplace/ because it gates the `review` required CI check and
+# must not silently ride in on an upstream bump. The other 5 plugins are
+# unmodified upstream Anthropic plugins (#1797) and install straight from
+# the official `claude-plugins-official` marketplace (no marketplace_path --
+# that marketplace is expected to already be registered locally, e.g. via
+# `claude plugins marketplace add claude-plugins-official`).
 CLAUDE_PLUGINS = [
     {
         "plugin": "code-review",
@@ -435,52 +439,70 @@ CLAUDE_PLUGINS = [
     },
     {
         "plugin": "pr-review-toolkit",
-        "marketplace": "jarvis-fork-plugins",
-        "marketplace_path": ".claude/marketplace",
+        "marketplace": "claude-plugins-official",
         "purpose": "Specialized PR review agents (comments / tests / errors / types / quality / simplification)",
     },
     {
         "plugin": "session-report",
-        "marketplace": "jarvis-fork-plugins",
-        "marketplace_path": ".claude/marketplace",
+        "marketplace": "claude-plugins-official",
         "purpose": "HTML report of session usage — tokens / cache / subagents / skills / costly prompts",
     },
     {
         "plugin": "hookify",
-        "marketplace": "jarvis-fork-plugins",
-        "marketplace_path": ".claude/marketplace",
+        "marketplace": "claude-plugins-official",
         "purpose": "Author custom hooks via markdown rules (conversation pattern detection)",
     },
     {
         "plugin": "claude-md-management",
-        "marketplace": "jarvis-fork-plugins",
-        "marketplace_path": ".claude/marketplace",
+        "marketplace": "claude-plugins-official",
         "purpose": "Audit + improve CLAUDE.md files; capture session learnings",
     },
     {
         "plugin": "mcp-server-dev",
-        "marketplace": "jarvis-fork-plugins",
-        "marketplace_path": ".claude/marketplace",
+        "marketplace": "claude-plugins-official",
         "purpose": "Skills for designing/building MCP servers (deployment, tool patterns, auth, interactive apps)",
     },
 ]
 
 
 def install_claude_plugins():
-    """Install Claude Code plugins from in-repo local marketplaces."""
+    """Install Claude Code plugins, vendored (local marketplace_path) or
+    straight from an already-registered marketplace name (#1797)."""
     header(7, "Claude Code plugins")
 
     if not shutil.which("claude"):
         warn("claude CLI not found -- skipping plugin install")
         return
 
-    # Group entries by (marketplace_name, marketplace_path) so we register +
-    # refresh each marketplace once, regardless of how many plugins it serves.
+    # Only entries carrying marketplace_path vendor a local marketplace.json
+    # that needs `add`/`update`; group those by (marketplace_name, path) so
+    # each is registered + refreshed once regardless of how many plugins it
+    # serves. Entries with no marketplace_path (e.g. claude-plugins-official)
+    # install directly against a marketplace name assumed already registered.
     marketplaces = {}  # name -> (path, [entries])
+    direct_entries = []
     for entry in CLAUDE_PLUGINS:
-        mp_name = entry["marketplace"]
-        mp_path = ROOT / entry["marketplace_path"]
-        marketplaces.setdefault(mp_name, (mp_path, []))[1].append(entry)
+        if entry.get("marketplace_path"):
+            mp_name = entry["marketplace"]
+            mp_path = ROOT / entry["marketplace_path"]
+            marketplaces.setdefault(mp_name, (mp_path, []))[1].append(entry)
+        else:
+            direct_entries.append(entry)
+
+    def _install(entry, mp_name):
+        install_result = subprocess.run(
+            [
+                CLAUDE_BIN, "plugins", "install",
+                f"{entry['plugin']}@{mp_name}",
+                "--scope", "user",
+            ],
+            capture_output=True, text=True,
+        )
+        if install_result.returncode == 0:
+            ok(f"{entry['plugin']}@{mp_name} -- {entry['purpose']}")
+        else:
+            err = (install_result.stderr or install_result.stdout or "").strip()
+            warn(f"install failed for {entry['plugin']}: {err[:200]}")
 
     for mp_name, (mp_path, entries) in marketplaces.items():
         if not mp_path.exists():
@@ -514,19 +536,10 @@ def install_claude_plugins():
             # already had the entry from a prior run
 
         for entry in entries:
-            install_result = subprocess.run(
-                [
-                    CLAUDE_BIN, "plugins", "install",
-                    f"{entry['plugin']}@{mp_name}",
-                    "--scope", "user",
-                ],
-                capture_output=True, text=True,
-            )
-            if install_result.returncode == 0:
-                ok(f"{entry['plugin']}@{mp_name} -- {entry['purpose']}")
-            else:
-                err = (install_result.stderr or install_result.stdout or "").strip()
-                warn(f"install failed for {entry['plugin']}: {err[:200]}")
+            _install(entry, mp_name)
+
+    for entry in direct_entries:
+        _install(entry, entry["marketplace"])
 
 
 def verify_skills():
@@ -573,7 +586,7 @@ def print_summary(errors):
   3. Memory server starts automatically via .mcp.json.
      If you see memory errors, check .env values.
 
-{DIM}Docs: README.md | Setup details: SETUP.md{RESET}
+{DIM}Docs: README.md | Setup details: docs/setup.md{RESET}
 {DIM}Report issues: https://github.com/Osasuwu/jarvis/issues{RESET}
 """)
 

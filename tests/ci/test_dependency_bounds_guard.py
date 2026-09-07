@@ -6,7 +6,7 @@ what turned every jarvis CI job red on 2026-07-28 when `mcp` shipped a
 breaking 2.0.0 (fixed as a stopgap in #1292, SDK port tracked in #1294).
 Sibling-grep for #1296 found the identical unbounded `mcp` range still live
 in `mcp-memory/requirements.txt` — the actual install manifest for the
-production memory server (see SETUP.md) — never touched by #1292.
+production memory server (see docs/setup.md) — never touched by #1292.
 
 Decided strategy (record_decision episode 3ee1b0f6-9aa6-4751-8db0-e93ec3605e40,
 #1296): blanket upper bounds on every runtime dependency range in both

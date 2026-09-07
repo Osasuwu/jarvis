@@ -8,12 +8,14 @@ its existing int-return contract (main() does `errors += setup_venv()`).
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 _PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "setup-device.py"
+_REPO_ROOT = _PATH.resolve().parent.parent
 _spec = importlib.util.spec_from_file_location("setup_device", _PATH)
 sd = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sd)
@@ -124,3 +126,76 @@ def test_setup_venv_heal_uses_longer_timeout_than_env_sync_default(monkeypatch):
 
     assert len(calls) == 1
     assert calls[0].get("timeout", sd.env_sync.DEFAULT_HEAL_TIMEOUT) > sd.env_sync.DEFAULT_HEAL_TIMEOUT
+
+
+def test_claude_plugins_local_entries_match_vendored_marketplace():
+    """Every CLAUDE_PLUGINS entry that points at the vendored
+    .claude/marketplace/ local marketplace must actually exist in that
+    marketplace.json's plugin list (#1797). The manifest was pruned to hold
+    only the fork-pinned `code-review` plugin (the rest are unmodified
+    upstream Anthropic plugins, installed straight from the official
+    claude-plugins-official marketplace instead) -- if CLAUDE_PLUGINS still
+    lists a pruned id against marketplace_path=.claude/marketplace,
+    install_claude_plugins() would try to install a ghost entry that no
+    longer exists in the local manifest."""
+    manifest_path = _REPO_ROOT / ".claude" / "marketplace" / ".claude-plugin" / "marketplace.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    vendored_names = {p["name"] for p in manifest["plugins"]}
+
+    local_entries = [e for e in sd.CLAUDE_PLUGINS if e.get("marketplace_path")]
+    assert local_entries, "expected at least one locally-vendored plugin entry"
+    for entry in local_entries:
+        assert entry["plugin"] in vendored_names, (
+            f"{entry['plugin']} references .claude/marketplace but is not in its "
+            f"marketplace.json plugin list {sorted(vendored_names)} -- "
+            "CLAUDE_PLUGINS is out of sync with the vendored manifest"
+        )
+
+
+def test_install_claude_plugins_installs_every_entry(monkeypatch, tmp_path):
+    """install_claude_plugins() must install every CLAUDE_PLUGINS entry, not
+    just ones vendored via a local marketplace_path (#1797). A plugin
+    classified OFFICIAL has no marketplace_path -- it installs straight from
+    the already-registered claude-plugins-official marketplace name, with no
+    local `marketplace add`/`update` step. The pre-fix implementation
+    indexed entry["marketplace_path"] unconditionally and KeyErrors on such
+    an entry."""
+    monkeypatch.setattr(sd, "ROOT", tmp_path)
+    local_mp = tmp_path / ".claude" / "marketplace"
+    local_mp.mkdir(parents=True)
+
+    monkeypatch.setattr(
+        sd,
+        "CLAUDE_PLUGINS",
+        [
+            {
+                "plugin": "code-review",
+                "marketplace": "jarvis-fork-plugins",
+                "marketplace_path": ".claude/marketplace",
+                "purpose": "vendored fork",
+            },
+            {
+                "plugin": "pr-review-toolkit",
+                "marketplace": "claude-plugins-official",
+                "purpose": "official marketplace, no local vendoring",
+            },
+        ],
+    )
+    monkeypatch.setattr(sd.shutil, "which", lambda name: "/usr/bin/claude")
+
+    calls = []
+
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sd.subprocess, "run", _fake_run)
+
+    sd.install_claude_plugins()
+
+    install_calls = [c for c in calls if "install" in c]
+    installed_specs = {c[c.index("install") + 1] for c in install_calls}
+    assert installed_specs == {
+        "code-review@jarvis-fork-plugins",
+        "pr-review-toolkit@claude-plugins-official",
+    }
