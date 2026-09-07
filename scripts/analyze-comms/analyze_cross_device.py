@@ -19,7 +19,7 @@ def load(fp: Path) -> dict:
 
 def merge(files: list[Path]) -> dict:
     all_data = [load(fp) for fp in files]
-    devices = [d.get("device", fp.stem) for d, fp in zip(all_data, files)]
+    devices = [d.get("device", fp.stem) for d, fp in zip(all_data, files, strict=False)]
     total_sessions_global = sum(d.get("total_sessions", 0) for d in all_data)
     n_devices = len(all_data)
 
@@ -31,7 +31,7 @@ def merge(files: list[Path]) -> dict:
         "examples": [],
     })
 
-    for data, device in zip(all_data, devices):
+    for data, device in zip(all_data, devices, strict=False):
         for cat, cat_data in data.get("correctives", {}).items():
             entry = cat_stats[cat]
             entry["n_sessions_by_device"][device] = cat_data.get("n_sessions", 0)
@@ -47,7 +47,7 @@ def merge(files: list[Path]) -> dict:
         weighted_freq = (
             sum(
                 entry["freq_pct_by_device"].get(dev, 0) * data.get("total_sessions", 1)
-                for dev, data in zip(devices, all_data)
+                for dev, data in zip(devices, all_data, strict=False)
             ) / total_sessions_global
             if total_sessions_global else 0
         )
@@ -69,7 +69,7 @@ def merge(files: list[Path]) -> dict:
     # --- Affirmatives ---
     aff_total = 0
     aff_examples: list[dict] = []
-    for data, device in zip(all_data, devices):
+    for data, device in zip(all_data, devices, strict=False):
         aff = data.get("affirmatives", {})
         aff_total += aff.get("total", 0)
         for ex in aff.get("examples", [])[:3]:
@@ -102,7 +102,7 @@ def merge(files: list[Path]) -> dict:
             "total_sessions": total_sessions_global,
             "date_range": overall_range,
             "date_ranges_by_device": {
-                dev: data.get("date_range", []) for dev, data in zip(devices, all_data)
+                dev: data.get("date_range", []) for dev, data in zip(devices, all_data, strict=False)
             },
         },
         "corrective_patterns": corrective_patterns,

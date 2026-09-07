@@ -223,13 +223,56 @@ def test_has_blocking_finding_false_for_nonblocking(body):
     assert has_blocking_finding(body) is False
 
 
-def test_json_block_medium_severity_still_collected_after_gate_promotion():
-    # #1385 follow-up: the merge gate now blocks on a prose "### MEDIUM"
-    # heading, but the JSON findings-block `severity` field is a distinct,
-    # bucket-derived signal (§8.1) that never gates the merge. A merged PR's
-    # comment can legitimately carry `"severity": "MEDIUM"` findings without
-    # ever tripping has_blocking_finding — collected_severities must still
-    # include MEDIUM.
+def test_has_blocking_finding_true_for_structured_blocking_true():
+    # #1816 Layer B: the structured {blocking, findings} verdict block is
+    # authoritative in both directions when present — no prose heading needed.
+    body = _wrap({"blocking": True, "findings": [{"class": "regression", "file": "a.py"}]})
+    assert has_blocking_finding(body) is True
+
+
+def test_has_blocking_finding_false_for_structured_blocking_false_even_with_prose_word():
+    # Structured block wins over incidental prose that would otherwise match
+    # BLOCKING_RE — the marker is authoritative, not just a first check.
+    body = (
+        "This PR is safe. See ### MEDIUM discussion above (not a real heading, "
+        "just prose mentioning it).\n\n"
+        + _wrap({"blocking": False, "findings": []})
+    )
+    assert has_blocking_finding(body) is False
+
+
+def test_has_blocking_finding_falls_back_to_prose_when_marker_absent_entirely():
+    # No <!-- code-review-findings --> marker at all → legacy prose ladder.
+    assert has_blocking_finding("### MAJOR\nboom") is True
+    assert has_blocking_finding("No issues found.") is False
+
+
+def test_has_blocking_finding_fails_closed_when_marker_present_but_malformed():
+    # Marker present but unparseable/missing the boolean `blocking` field is
+    # NOT "lacking the marker entirely" — treat as blocking (skip collection)
+    # rather than risk collecting debt off an ambiguous verdict.
+    body = "<!-- code-review-findings\n{not valid json,,,}\n-->"
+    assert has_blocking_finding(body) is True
+
+    body_missing_field = _wrap({"findings": []})
+    assert has_blocking_finding(body_missing_field) is True
+
+
+def test_legacy_schema_json_block_without_blocking_field_now_fails_closed():
+    # Historical note (pre-#1816): the old plugin's bucket-derived JSON schema
+    # (`schema_version: 1`, per-finding `severity`/`rule`, §8.1 of the retired
+    # commands/code-review.md) never carried a `blocking` field at all — it
+    # was a separate, always-non-blocking debt channel from the prose
+    # severity ladder. parse_findings_block() still understands that shape
+    # (unchanged — dedup_key and the debt-collection path below are
+    # historical/legacy-compat, not exercised by live Layer B output).
+    #
+    # #1816: has_blocking_finding() now fails CLOSED on any structured marker
+    # lacking a boolean `blocking` field, since a marker present but not in
+    # the new authoritative shape is treated as ambiguous, not as "no
+    # marker at all" (see test_has_blocking_finding_fails_closed_when_marker_present_but_malformed).
+    # A pre-#1816 comment replayed through today's collector would therefore
+    # correctly skip collection rather than assume non-blocking.
     body = _wrap(
         {
             "schema_version": 1,
@@ -244,7 +287,7 @@ def test_json_block_medium_severity_still_collected_after_gate_promotion():
             ],
         }
     )
-    assert has_blocking_finding(body) is False
+    assert has_blocking_finding(body) is True
     assert len(parse_findings_block(body)) == 1
 
 

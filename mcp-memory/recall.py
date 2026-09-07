@@ -109,7 +109,7 @@ def cosine_sim(v1: list[float] | None, v2: list[float] | None) -> float:
         return 0.0
     if len(v1) != len(v2):
         return 0.0
-    dot = sum(a * b for a, b in zip(v1, v2))
+    dot = sum(a * b for a, b in zip(v1, v2, strict=False))
     mag1 = math.sqrt(sum(a * a for a in v1))
     mag2 = math.sqrt(sum(b * b for b in v2))
     if mag1 == 0 or mag2 == 0:

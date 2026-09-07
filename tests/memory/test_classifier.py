@@ -23,7 +23,6 @@ from classifier import (  # noqa: E402
     _build_user_message,
     _parse_response,
     _truncate,
-    ClassifierDecision,
     MAX_NEIGHBOR_CONTENT_CHARS,
 )
 

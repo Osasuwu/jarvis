@@ -84,9 +84,9 @@ def check_columns(rows: list[dict]) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        print(f"\nOK: superseded_by exists as uuid, nullable — compatible.")
+        print("\nOK: superseded_by exists as uuid, nullable — compatible.")
     else:
-        print(f"\nINFO: superseded_by does not exist — will be added by migration.")
+        print("\nINFO: superseded_by does not exist — will be added by migration.")
 
     # ---- confidence compatibility (optional, informational) ----
     if "confidence" in existing:

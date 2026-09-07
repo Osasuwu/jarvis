@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import sys
-import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,7 +28,6 @@ def _run(coro):
 
 class TestIsOllamaModel:
     def test_false_when_no_url(self, monkeypatch):
-        import os
 
         monkeypatch.delenv("OLLAMA_EMBED_URL", raising=False)
         emb = _load_embeddings()
@@ -117,7 +114,6 @@ class TestEmbedRouting:
         emb = _load_embeddings()
         emb.OLLAMA_EMBED_URL = ""
 
-        voyage_called = []
         fake_vec = [0.1] * 512
 
         mock_resp = MagicMock()

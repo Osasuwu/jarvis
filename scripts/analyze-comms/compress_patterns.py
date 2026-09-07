@@ -98,14 +98,13 @@ def main(src_path: str, out_path: str) -> None:
     style_samples: list[str] = []
     ru = en = mixed = 0
 
-    for sess_id, msgs in interactive.items():
+    for _sess_id, msgs in interactive.items():
         msgs.sort(key=lambda m: m["ts"])
         ts_list = [m["ts"] for m in msgs if m["ts"]]
         if ts_list:
             dates.append(ts_list[0][:10])
 
         sess_cats: set[str] = set()
-        has_affirmative = False
 
         for i, m in enumerate(msgs):
             if m["role"] != "u":
@@ -148,7 +147,6 @@ def main(src_path: str, out_path: str) -> None:
                     "trigger": snip(trigger_text),
                     "snippet": snip(correction_text),
                 })
-                has_affirmative = True
 
         for cat in sess_cats:
             corrective_cats[cat]["n_sessions"] += 1

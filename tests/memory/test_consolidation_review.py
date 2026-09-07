@@ -16,7 +16,7 @@ import importlib.util
 import json
 from pathlib import Path
 
-from supabase_stubs import FakeClient, FakeResp, filter_val
+from supabase_stubs import FakeClient, filter_val
 
 
 SCRIPT_PATH = Path(__file__).resolve().parent.parent.parent / "scripts" / "consolidation-review.py"

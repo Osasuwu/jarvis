@@ -228,8 +228,8 @@ def run(
     print(f"[backfill] {stats}")
     if stats["connection_errors"] > 0:
         print(
-            f"[backfill] WARNING: Ollama unavailable — run aborted after first connection failure. "
-            f"Re-run after starting Ollama; results in this run are partial.",
+            "[backfill] WARNING: Ollama unavailable — run aborted after first connection failure. "
+            "Re-run after starting Ollama; results in this run are partial.",
             file=sys.stderr,
         )
     return stats

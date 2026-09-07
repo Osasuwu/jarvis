@@ -94,7 +94,7 @@ jobs:
           # and default-guard the empty-pipeline case.
           LINES=$(git diff "origin/$PR_BASE"...HEAD -- \
             '*.py' '*.ts' '*.tsx' '*.js' '*.jsx' \
-            '*.yaml' '*.yml' '*.json' '*.sh' '*.md' '*.sql' \
+            '*.yaml' '*.yml' '*.json' '*.sh' '*.ps1' '*.md' '*.sql' \
             | grep -cE '^[+-][^+-]' 2>/dev/null || true)
           LINES=${LINES:-0}
           HAS=$( [ "$LINES" -gt 0 ] && echo true || echo false )
@@ -119,14 +119,12 @@ jobs:
           echo "skip=true" >> "$GITHUB_OUTPUT"
           echo "::notice::Push by osasuwu-ci[bot] is an auto-rebase only (no new code); skipping code review."
 
-      - name: Run /code-review
+      - name: Run code review (Layer B)
         id: review
         if: steps.autobase.outputs.skip != 'true' && (github.event_name == 'workflow_dispatch' || steps.diff.outputs.has_code == 'true')
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: ./.claude/marketplace
-          plugins: code-review@jarvis-fork-plugins
           # claude-code-action@v1 added an `allowed_bots` gate that hard-fails
           # ("Workflow initiated by non-human actor") when the triggering actor
           # is a Bot. Two LEGITIMATE bot triggers exist in this pipeline and
@@ -144,44 +142,95 @@ jobs:
           # so fork/external PRs never reach this step, and workflow_dispatch /
           # branch pushes both require repo write access. No untrusted external
           # actor can initiate this run. Allowed-tools are locked read-only
-          # below, except Write — the plugin composes its verdict comment at
+          # below, except Write — the reviewer composes its verdict comment at
           # /tmp/code-review-comment.md and posts via `gh pr comment --body-file`
           # so review prose never passes through shell string-interpretation
           # (#971). Write is granted unscoped (not Write(//tmp/**)) because the
-          # `//tmp/**` glob failed to match the plugin's `/tmp/...` path on the
-          # Linux runner, denying the verdict Write and degrading the post step.
+          # `//tmp/**` glob failed to match `/tmp/...` on the Linux runner,
+          # denying the verdict Write and degrading the post step.
           # Uniform across owned repos for the M48 baseline.
           allowed_bots: "*"
           prompt: |
-            Run /code-review for PR #${{ steps.pr.outputs.number }} in repo ${{ github.repository }}.
+            You are Layer B of a two-layer code-review gate (#1816). Layer A
+            (ruff, exit-code only) already caught syntax/style/dead-code/bare-
+            except/mutable-default-arg mechanically — do NOT re-report those.
+            Your job is the class of defect that requires judgment, not a
+            deterministic tool: git-blame/log context, cross-file reasoning,
+            comparing the diff against the issue's stated intent.
 
-            The /code-review slash command is provided by the code-review plugin
-            (loaded via the action's plugins input). Follow its instructions
-            verbatim — eligibility check, guideline-file gather, 12 parallel
-            reviewers, confidence scoring, post comment.
+            Review PR #${{ steps.pr.outputs.number }} in repo
+            ${{ github.repository }}:
+
+            1. `gh pr view <n> --json title,body,baseRefName,headRefOid` and
+               `gh pr diff <n>` to get the diff and the linked issue's intent.
+            2. Skip review (post nothing, exit 0) if the PR is a draft, or the
+               diff has no code changes, or a `### Code review` comment from
+               you already covers the current head SHA with no new commits
+               since.
+            3. Evaluate the diff against EXACTLY these 8 finding classes — no
+               others, no severity ladder, no nitpicks:
+               - `regression` — reintroduces a bug a prior commit fixed. Use
+                 `git log`/`git blame` on the touched lines to check history
+                 before flagging this; it is the one class that needs blame
+                 context, not diff-only reading.
+               - `exception-handling` — the caught type is correct but the
+                 recovery is wrong for this domain, or the failure is silently
+                 swallowed instead of surfacing (semantic, not the bare-`except`
+                 *form* Layer A already caught).
+               - `intent-vs-logic` — the code does not do what the linked
+                 issue/PR description says it should.
+               - `breaking-contract` — a signature/behavior change breaks a
+                 caller outside this diff. Use `git grep`/`Grep` across the repo
+                 to check call sites before flagging.
+               - `concurrency` — a race, deadlock, or ordering bug.
+               - `requirement-semantics` — the diff doesn't actually satisfy an
+                 acceptance criterion from the linked issue.
+               - `design-modularity` — real erosion of module boundaries or
+                 cohesion introduced by this diff, not a style preference.
+               - `performance` — an N+1 or added O(n²)-in-the-diff that a
+                 reader would flag, not a micro-optimization nitpick.
+            4. For git-blame/log context, keep it narrow: blame only the lines
+               the diff touches, plus the fix commit's message if blame finds
+               one. Do not dump whole files or the import graph into your own
+               context — diff + narrow blame outperforms full-context review
+               (monotonic degradation with more context is documented; stay
+               tight).
+            5. Post exactly one PR comment via `gh pr comment <n> --body-file
+               /tmp/code-review-comment.md` (compose the body with Write, never
+               inline shell string-interpolation of review prose). The comment
+               body is prose summarizing what you found (or "No issues found."
+               if clean), followed by this exact HTML comment as the LAST thing
+               in the body:
+
+               <!-- code-review-findings
+               {"blocking": <bool>, "findings": [{"class": "<one of the 8 class
+               names above>", "file": "<path>"}, ...]}
+               -->
+
+               `blocking` is true iff `findings` is non-empty; `findings` is
+               empty iff `blocking` is false — the two must agree. Every
+               finding's `class` MUST be one of the 8 literal strings above,
+               spelled exactly as given. Do not emit a line number or a
+               severity field — this schema deliberately carries neither.
 
             Do NOT load Jarvis SOUL.md, do NOT call memory_recall/memory_store
-            (not available in this runner). This is plugin invocation only.
+            (not available in this runner).
           claude_args: |
-            # MUST stay a superset of the plugin command's own frontmatter
-            # allowed-tools (commands/code-review.md). The action runs headless,
-            # so any tool the plugin uses that is absent here is DENIED (no human
-            # to approve). This is the redrobot-parity set: the deployed plugin
-            # prose steers reviewer agents to the native Read/Grep/Glob tools for
-            # file discovery and reading — those MUST be granted or the agents are
-            # told to use them then denied. read-utils (head/tail/cat/sort/uniq/
-            # cut/nl/tr/echo) cover compound commands the agents compose (e.g.
+            # The reviewer runs headless — any tool it invokes that is absent
+            # here is DENIED (no human to approve). Read/Grep/Glob cover file
+            # discovery and reading (including the narrow git-blame reasoning
+            # this prompt asks for). read-utils (head/tail/cat/sort/uniq/cut/
+            # nl/tr/echo) cover compound commands the agent composes (e.g.
             # `echo … ; gh pr view …`, `git show <sha>:<f> | wc -l`): headless
             # permission matching splits on ; | && and newlines and checks EACH
             # sub-command, so an un-allowlisted `echo`/`head` prefix denies the
             # whole compound even when the real command is allowlisted. Missing
-            # tools produced repeated permission_denials → agents flail at the
-            # comment-post step (probe/fragment comments, or no post) → verdict
-            # gate fails closed → admin-merge. sed/awk/python3(-c)/jq are
-            # deliberately EXCLUDED (write-capable). Keep this list and the plugin
-            # frontmatter in lockstep (tests/ci/test_code_review_allowed_tools.py
-            # pins this file's allowlist).
-            --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write,Skill(code-review:code-review)"
+            # tools produce repeated permission_denials → the agent flails at
+            # the comment-post step (probe/fragment comments, or no post) →
+            # verdict gate fails closed → admin-merge. sed/awk/python3(-c)/jq
+            # are deliberately EXCLUDED (write-capable).
+            # (tests/ci/test_code_review_allowed_tools.py pins this list.)
+            --allowed-tools "Read,Grep,Glob,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*),Bash(gh label list:*),Bash(git show:*),Bash(git blame:*),Bash(git log:*),Bash(git diff:*),Bash(git grep:*),Bash(git ls-tree:*),Bash(wc:*),Bash(head:*),Bash(tail:*),Bash(cat:*),Bash(sort:*),Bash(uniq:*),Bash(cut:*),Bash(nl:*),Bash(tr:*),Bash(echo:*),Bash(python -m py_compile:*),Bash(python3 -m py_compile:*),Bash(bash -n:*),Bash(node --check:*),Write"
 
       # Diagnostic escape hatch for silent no-review runs (#1239). The action
       # runs with `show_full_output` unset, so the orchestrator's turns are
@@ -208,18 +257,31 @@ jobs:
 
       # Auto-merge MERGE gate (Gate 1 of the two-gate model, #988). Without
       # this step the `review` check is SUCCESS as long as the bot ran —
-      # auto-merge can't distinguish "ran cleanly" from "found CRITICAL bugs".
+      # auto-merge can't distinguish "ran cleanly" from "found a blocking bug".
       # This step turns the `review` check into a real verdict.
       #
-      # TWO-GATE MODEL: the MERGE gate (here) blocks ONLY on a merge-blocking
-      # finding — an all-caps CRITICAL/MAJOR/BLOCKING severity heading. MINOR /
-      # NITPICK / LOW / INFO / MEDIUM and a bare "Found N issues:" line do NOT
-      # block. This matches the REWORK-done gate (scripts/rework_policy.py:
-      # n_critical==0 AND n_major==0): a PR clean of real bugs but carrying
-      # minor nits no longer ping-pongs between "rework thinks it's done" and
-      # "merge gate rejects it" (#976 — PRs were taking 3-5 rework rounds).
-      # Minors are swept best-effort by /rework only while it is already in
-      # context for a bug-triggered round; they never trigger rework alone.
+      # #1816 REBUILD: Layer B (the sole reviewer now) always emits a
+      # machine-readable <!-- code-review-findings --> block carrying exactly
+      # one bit of signal — {"blocking": bool, "findings": [{"class","file"}]}
+      # — across 8 closed finding classes, no severity ladder. That block is
+      # authoritative in BOTH directions (block AND pass) whenever present; see
+      # its own comment further down. The prose severity ladder below is kept
+      # only as a defensive fallback for a comment that lacks the marker
+      # entirely (pre-rebuild or unrelated-bot comment) — it never runs
+      # against a well-formed structured block. The two-gate-model MERGE vs.
+      # REWORK-done split (scripts/rework_policy.py) and the fingerprint-set
+      # convergence it drives are unaffected by this rebuild.
+      #
+      # TWO-GATE MODEL (prose-ladder fallback only): the MERGE gate (here)
+      # blocks ONLY on a merge-blocking finding — an all-caps CRITICAL/MAJOR/
+      # BLOCKING severity heading. MINOR / NITPICK / LOW / INFO / MEDIUM and a
+      # bare "Found N issues:" line do NOT block. This matches the REWORK-done
+      # gate (scripts/rework_policy.py: n_critical==0 AND n_major==0): a PR
+      # clean of real bugs but carrying minor nits no longer ping-pongs
+      # between "rework thinks it's done" and "merge gate rejects it" (#976 —
+      # PRs were taking 3-5 rework rounds). Minors are swept best-effort by
+      # /rework only while it is already in context for a bug-triggered round;
+      # they never trigger rework alone.
       #
       # Incident still guarded (PR #957): the bot posted findings under a
       # deviant title "## Claude Code Review — PR #957" with "### MAJOR
@@ -694,49 +756,56 @@ jobs:
             exit 1
           fi
 
-          # STRUCTURED VERDICT FIRST (#1456). The plugin also emits a
-          # <!-- code-review-findings … --> HTML comment whose JSON gives every
-          # finding an explicit "severity". That block is authoritative: it is
-          # machine-emitted, so severity does not have to be inferred from prose
-          # shape. It runs BEFORE the prose ladder and before `export LC_ALL=C`,
-          # so jq still decodes UTF-8.
+          # STRUCTURED VERDICT, AUTHORITATIVE BOTH WAYS (#1816). Layer B always
+          # emits a <!-- code-review-findings … --> HTML comment whose JSON is
+          # the single binary verdict: {"blocking": bool, "findings": [{"class",
+          # "file"}, ...]}. No severity, no line number, no ladder — exactly one
+          # bit of signal. It runs BEFORE the prose ladder and before
+          # `export LC_ALL=C`, so jq still decodes UTF-8.
           #
-          # Why this exists: the prose ladder only recognises a severity that
-          # appears as a line-start markdown heading. When the plugin uses the
-          # numbered-list shape ("Found N issues:" + prose bullets) the JSON is
-          # the ONLY place severity lives, and the Found-N branch treats the
-          # whole comment as advisory. PR #1452 auto-merged that way with two
-          # MEDIUM findings — a required check silently passing a PR it was
-          # meant to block. #988 accepted that residual risk on the stated basis
-          # that bare Found-N had carried only advisory MEDIUM/LOW; #1385 then
-          # promoted MEDIUM into the blocking set and the plugin gained this
-          # block, so neither half of the acceptance holds any more.
+          # Why authoritative in BOTH directions (revised from #1456's fail-only
+          # short-circuit): under the #1816 rebuild Layer B is the sole reviewer
+          # and always emits this block, so a well-formed blocking:false is a
+          # real "no defect found" verdict, not something that needs the prose
+          # ladder's advisory-severity heuristics to confirm. The prose ladder
+          # below is kept as a defensive fallback for a comment that lacks the
+          # marker entirely (a pre-rebuild or unrelated-bot comment) — it never
+          # runs when a well-formed structured block is present.
           #
-          # Three shapes, deliberately distinct:
-          # - block present, any blocking severity  -> exit 1 here
-          # - block present but payload not valid JSON -> fail closed, same
+          # Four shapes, deliberately distinct:
+          # - blocking: true                          -> exit 1 here
+          # - blocking: false                         -> exit 0 here
+          # - block present but payload not valid JSON, or missing/malformed
+          #   "blocking" field, or blocking/findings-length mismatch (blocking
+          #   asserted with an empty array, or vice versa) -> fail closed, same
           #   floor as the unrecognized-format exit at the end of this step
-          # - block absent (older comments) -> fall through, prose ladder
-          #   unchanged. That is what keeps this additive.
-          # A block carrying only MINOR/LOW/INFO/NITPICK also falls through, so
-          # the two-gate model still decides those.
+          # - block absent (older/unrelated comments) -> fall through, prose
+          #   ladder decides. That is what keeps this additive.
           findings_block=$(sed -n '/<!-- *code-review-findings/,/-->/p' <<<"$body" | sed '1d;$d')
           if grep -q '<!-- *code-review-findings' <<<"$body"; then
             if ! jq -e . >/dev/null 2>&1 <<<"$findings_block"; then
-              echo "::error::code-review-findings block present but its payload is not valid JSON. Failing closed (#1456)."
+              echo "::error::code-review-findings block present but its payload is not valid JSON. Failing closed (#1816)."
               exit 1
             fi
-            blocking=$(jq -r '
-              [ .findings[]? | (.severity // "" | ascii_upcase)
-                | select(. == "CRITICAL" or . == "MAJOR" or . == "BLOCKING" or . == "MEDIUM") ]
-              | length' <<<"$findings_block")
-            if [ "$blocking" -gt 0 ]; then
-              sevs=$(jq -r '[ .findings[]? | (.severity // "" | ascii_upcase)
-                              | select(. == "CRITICAL" or . == "MAJOR" or . == "BLOCKING" or . == "MEDIUM") ]
-                            | unique | join(", ")' <<<"$findings_block")
-              echo "::error::Code review reported $blocking blocking finding(s) ($sevs) in its structured findings block; blocking auto-merge until addressed."
+            blocking_type=$(jq -r 'if (.blocking | type) == "boolean" then "ok" else "bad" end' <<<"$findings_block")
+            findings_type=$(jq -r 'if (.findings | type) == "array" then "ok" else "bad" end' <<<"$findings_block")
+            if [ "$blocking_type" != "ok" ] || [ "$findings_type" != "ok" ]; then
+              echo "::error::code-review-findings block present but 'blocking' (bool) or 'findings' (array) is missing/malformed. Failing closed (#1816)."
               exit 1
             fi
+            consistent=$(jq -r 'if .blocking == ((.findings | length) > 0) then "ok" else "bad" end' <<<"$findings_block")
+            if [ "$consistent" != "ok" ]; then
+              echo "::error::code-review-findings block is schema-inconsistent (blocking does not match whether findings is empty). Failing closed (#1816)."
+              exit 1
+            fi
+            blocking=$(jq -r '.blocking' <<<"$findings_block")
+            if [ "$blocking" = "true" ]; then
+              classes=$(jq -r '[.findings[].class] | unique | join(", ")' <<<"$findings_block")
+              echo "::error::Code review reported blocking finding(s) ($classes) in its structured verdict block; blocking auto-merge until addressed."
+              exit 1
+            fi
+            echo "::notice::Code review structured verdict: clean (#1816)."
+            exit 0
           fi
 
           # Severity greps below classify each byte of heading decoration via the

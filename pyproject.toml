@@ -124,3 +124,9 @@ addopts = "--import-mode=prepend"
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+# Layer A of the #1816 code gate: lint group 1 only (deterministic,
+# exit-code-only, zero PR comments). Groups 2-4 (BLE001/S110/SIM105, E501,
+# S603/S607) are follow-up cleanup slices — see #1816's issue body.
+select = ["F", "B", "E722"]

@@ -139,7 +139,7 @@ def test_get_supabase_client_raises_when_creds_unset(monkeypatch):
 
     try:
         _mod._get_supabase_client()
-        assert False, "expected RuntimeError"
+        raise AssertionError("expected RuntimeError")
     except RuntimeError:
         pass
 

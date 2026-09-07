@@ -22,6 +22,7 @@ convention exists to pin.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -115,8 +116,29 @@ def _mirror_should_create(rows: list[dict]) -> bool:
     return _mirror_cluster_weight(rows) >= CLUSTER_N
 
 
+FINDINGS_BLOCK_RE = re.compile(
+    r"<!--\s*code-review-findings\s*\n(?P<json>.*?)\n\s*-->",
+    re.DOTALL,
+)
+
+
 def _mirror_is_blocking(body: str) -> bool:
-    return BLOCK_RE.search(body or "") is not None
+    # #1816: independent mirror of has_blocking_finding()'s three-tier order —
+    # structured marker (authoritative both directions) > fail-closed on a
+    # malformed/legacy marker > legacy prose heading fallback when no marker
+    # is present at all.
+    if not body:
+        return False
+    m = FINDINGS_BLOCK_RE.search(body)
+    if m is not None:
+        try:
+            payload = json.loads(m.group("json"))
+        except (ValueError, TypeError):
+            return True
+        if not isinstance(payload, dict) or not isinstance(payload.get("blocking"), bool):
+            return True
+        return payload["blocking"]
+    return BLOCK_RE.search(body) is not None
 
 
 @pytest.mark.parametrize(
@@ -166,6 +188,21 @@ def test_threshold_rule_matches_module(rows, expected):
         ("### MINOR\nnit", False),
         ("No issues found.", False),
         ("Medium priority follow-up.", False),  # title-case advisory prose
+        # #1816: structured {blocking, findings} marker is authoritative in
+        # both directions — wins even over incidental matching prose.
+        (
+            '<!-- code-review-findings\n{"blocking": true, "findings": '
+            '[{"class": "regression", "file": "a.py"}]}\n-->',
+            True,
+        ),
+        (
+            "### MEDIUM heading present but the structured verdict overrides it.\n\n"
+            '<!-- code-review-findings\n{"blocking": false, "findings": []}\n-->',
+            False,
+        ),
+        # Marker present but malformed/missing `blocking` → fail closed.
+        ("<!-- code-review-findings\n{not valid json,,,}\n-->", True),
+        ('<!-- code-review-findings\n{"findings": []}\n-->', True),
     ],
 )
 def test_blocking_skip_rule_matches_module(body, expected):

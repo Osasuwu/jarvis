@@ -494,7 +494,7 @@ def sweep(
     # either unrelated (task_id absent in our queue — get_row returns None,
     # skip) or a straggler on an already-terminal row; either way decide()
     # needs the row to know which.
-    for task_id, container in by_task_id.items():
+    for task_id, _container in by_task_id.items():
         if task_id in running_ids:
             continue
         row = port.get_row(task_id)

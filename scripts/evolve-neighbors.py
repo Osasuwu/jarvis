@@ -566,7 +566,7 @@ def render_markdown(results: list[dict], *, model: str, limit: int) -> str:
                 if p.get("new_description") is not None:
                     old_desc = (n.get("description") or "_none_").replace("`", "'")
                     new_desc = p["new_description"].replace("`", "'")
-                    lines.append(f"- description:")
+                    lines.append("- description:")
                     lines.append(f"  - old: {old_desc}")
                     lines.append(f"  - new: {new_desc}")
                 lines.append("")

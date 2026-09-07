@@ -50,7 +50,7 @@ def _diff_globs() -> list[str]:
     """Extract the quoted pathspec globs from the git diff invocation."""
     run = _diff_step()["run"]
     # The globs are the single-quoted '*.ext' tokens fed to `git diff ... --`.
-    return re.findall(r"'(\*\.[a-z]+)'", run)
+    return re.findall(r"'(\*\.[a-z0-9]+)'", run)
 
 
 # --- Config dimension: pin the YAML ---
@@ -72,6 +72,14 @@ def test_common_code_extensions_still_covered():
     globs = _diff_globs()
     for ext in ("*.py", "*.ts", "*.yml", "*.json", "*.sh", "*.md"):
         assert ext in globs, f"{ext} dropped from substantive-diff glob: {globs}"
+
+
+def test_ps1_in_substantive_diff_glob():
+    globs = _diff_globs()
+    assert "*.ps1" in globs, (
+        "PowerShell (.ps1) PRs must count as substantive code so they get "
+        f"reviewed, not silently skipped (#1816 AC3); glob was: {globs}"
+    )
 
 
 def test_no_double_zero_echo_pattern():
@@ -96,7 +104,7 @@ def test_no_double_zero_echo_pattern():
 
 # --- Logic dimension: reimplement count → output formatting ---
 
-CODE_EXT_RE = re.compile(r"\.(py|ts|tsx|js|jsx|yaml|yml|json|sh|md|sql)$")
+CODE_EXT_RE = re.compile(r"\.(py|ts|tsx|js|jsx|yaml|yml|json|sh|ps1|md|sql)$")
 
 
 def _is_code_path(path: str) -> bool:
@@ -133,6 +141,10 @@ def test_positive_matches_flag_has_code():
 def test_sql_path_is_code():
     assert _is_code_path("supabase/migrations/20260415082814_create_credential_registry.sql")
     assert _is_code_path("mcp-memory/schema.sql")
+
+
+def test_ps1_path_is_code():
+    assert _is_code_path("scripts/install.ps1")
 
 
 def test_non_code_path_is_not_code():

@@ -278,37 +278,36 @@ jobs:
             -d "$PAYLOAD"
 
   # ── Review Negative: Claude code-review bot ───────────────────────
-  # The Claude code-review plugin (Osasuwu/claude-plugins-official fork)
-  # posts findings as an issue-comment, not via pull_request_review.
-  # This job parses the verdict here in CI — the only fragile string-match
-  # in the system per PRD #41 — so the orchestrator's filter stays
-  # `event_type = 'review_negative'`, one stable predicate.
+  # The Layer B reviewer (#1816) posts its verdict as an issue-comment
+  # carrying a structured `<!-- code-review-findings -->` JSON block, not via
+  # pull_request_review. This job parses the verdict here in CI — the only
+  # fragile string-match in the system per PRD #41 — so the orchestrator's
+  # filter stays `event_type = 'review_negative'`, one stable predicate.
   #
-  # Two-gate alignment (#992): the BLOCKING predicate here is identical to the
-  # MERGE gate's verdict step in code-review.yml — emit review_negative iff the
-  # comment carries an all-caps CRITICAL/MAJOR/BLOCKING severity heading (case-
-  # sensitive). The old `Found N issues:` trigger was BOTH too loose (fired
-  # rework on minor-only advisories — a PASS under the two-gate model) and too
-  # tight (missed severity-sectioned blockers with no Found-N line — ### MAJOR,
-  # ### 🔴 BLOCKING, #954/#956). Keeping the event-side trigger and the merge
-  # gate on the same predicate is the whole point: a PR the merge gate blocks is
-  # exactly a PR that raises review_negative, and vice-versa.
+  # Two-gate alignment (#992, re-grounded on the {blocking, findings} shape by
+  # #1816): the BLOCKING predicate here is identical to the MERGE gate's
+  # verdict step in code-review.yml — structured marker authoritative in both
+  # directions, fail-closed on a malformed/legacy marker, legacy prose-heading
+  # fallback only when no marker is present at all (older comments predating
+  # #1816). Keeping the event-side trigger and the merge gate on the same
+  # predicate is the whole point: a PR the merge gate blocks is exactly a PR
+  # that raises review_negative, and vice-versa.
   #
-  # Plugin output shapes (observed): severity sections are all-caps headings —
-  # `### MAJOR`, `### MAJOR findings`, `### 🔴 BLOCKING` (decoration/suffix vary,
+  # Legacy plugin output shapes (pre-#1816, still handled by the prose
+  # fallback): severity sections were all-caps headings — `### MAJOR`,
+  # `### MAJOR findings`, `### 🔴 BLOCKING` (decoration/suffix vary,
   # #954/#956/#957). `No issues found.` / `### Blocking issues — None` (#962) /
   # MINOR-only sections (#963) are non-blocking → no emit. Title may deviate
   # from the literal `### Code review` (e.g. `## Claude Code Review — PR #957`),
   # so the selector matches `(Claude )?Code Review` on any line, case-insensitive.
   #
-  # The plugin also emits a SEPARATE `### Simplification opportunities`
-  # comment when agent #10 finds informational opportunities — it carries no
-  # severity heading, so the blocking predicate naturally ignores it (the rework
-  # loop never fires on simplification-only findings).
-  #
-  # Back-compat fields n_critical / n_major / n_minor are preserved for
-  # downstream consumers (orchestrator watcher, /rework convergence). They are
-  # derived from blocking-heading counts — see the dispatch step for the mapping.
+  # `findings` (the structured verdict's array, `[]` on the legacy fallback
+  # path) and `finding_fingerprint` (a sorted, deduped `class|file` array
+  # computed ONLY from that structured array, never from LLM prose) replace
+  # the old n_critical/n_major/n_minor integer counts (#1816 plan step 14): a
+  # repo-wide grep found no consumer of those fields beyond
+  # scripts/rework_policy.py itself, which step 11 moves onto the fingerprint
+  # model — so the counts are dropped rather than carried as dead back-compat.
   review-negative-claude-bot:
     if: >
       github.event_name == 'issue_comment' &&
@@ -349,41 +348,54 @@ jobs:
             exit 0
           fi
 
-          # Two-gate model (#988/#992): emit review_negative ONLY on a real
-          # merge-blocking finding — an all-caps CRITICAL/MAJOR/BLOCKING/MEDIUM
-          # severity heading (case-SENSITIVE), the SAME predicate the MERGE
-          # gate blocks on in code-review.yml. MEDIUM was promoted into the
-          # blocking set (#1385 follow-up) — a MEDIUM finding can genuinely
-          # corrupt state in the moment. This replaces the old
-          # "^Found N issues:" trigger, which (a) false-fired rework on
-          # minor-only advisory comments — a PASS under the two-gate model,
-          # re-introducing the churn #988 removed — and (b) missed severity-
-          # sectioned blockers carrying no "Found N" line (### MAJOR /
-          # ### 🔴 BLOCKING — #954/#956). Heading shape mirrors code-review.yml
-          # byte-for-byte: 1-6 #'s, decoration tolerated between the #'s and the
-          # word (emoji/space), suffix optional. grep -qE (not -qiE) → all-caps
-          # only, so title-case prose "### Blocking issues — None" (#962) or a
-          # title-case "### Medium" advisory is NOT a block. MINOR excluded —
-          # minors never block (swept in-context by /rework, not a gate).
-          if ! grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)\b' <<<"$COMMENT_BODY"; then
-            echo "No blocking severity heading (CRITICAL/MAJOR/BLOCKING/MEDIUM); not emitting review_negative (two-gate model)"
+          # #1816: structured {blocking, findings} marker is authoritative in
+          # both directions (mirrors scripts/review_debt_collector.py's
+          # has_blocking_finding() and code-review.yml's "Verify review
+          # verdict" step byte-for-byte). Marker absent entirely → fall back
+          # to the legacy prose severity-heading check for older comments.
+          FINDINGS_JSON="[]"
+          if grep -q '<!-- *code-review-findings' <<<"$COMMENT_BODY"; then
+            findings_block=$(sed -n '/<!-- *code-review-findings/,/-->/p' <<<"$COMMENT_BODY" | sed '1d;$d')
+            if ! jq -e . >/dev/null 2>&1 <<<"$findings_block"; then
+              echo "code-review-findings block present but payload is not valid JSON; failing closed (#1816)"
+              BLOCKING=true
+            else
+              blocking_type=$(jq -r 'if (.blocking | type) == "boolean" then "ok" else "bad" end' <<<"$findings_block")
+              findings_type=$(jq -r 'if (.findings | type) == "array" then "ok" else "bad" end' <<<"$findings_block")
+              if [ "$blocking_type" != "ok" ] || [ "$findings_type" != "ok" ]; then
+                echo "code-review-findings block malformed (blocking/findings missing or wrong type); failing closed (#1816)"
+                BLOCKING=true
+              else
+                BLOCKING=$(jq -r '.blocking' <<<"$findings_block")
+                if [ "$BLOCKING" = "true" ]; then
+                  FINDINGS_JSON=$(jq -c '.findings' <<<"$findings_block")
+                fi
+              fi
+            fi
+          else
+            # Two-gate model (#988/#992): emit review_negative ONLY on a real
+            # merge-blocking finding — an all-caps CRITICAL/MAJOR/BLOCKING/MEDIUM
+            # severity heading (case-SENSITIVE), the SAME legacy predicate the
+            # MERGE gate falls back to in code-review.yml. MINOR excluded —
+            # minors never block (swept in-context by /rework, not a gate).
+            if grep -qE '^#{1,6}[^[:alnum:]]*(CRITICAL|MAJOR|BLOCKING|MEDIUM)\b' <<<"$COMMENT_BODY"; then
+              BLOCKING=true
+            else
+              BLOCKING=false
+            fi
+          fi
+
+          if [ "$BLOCKING" != "true" ]; then
+            echo "Verdict is not blocking; not emitting review_negative"
             exit 0
           fi
 
-          # Blocking review confirmed. Derive back-compat severity counts for
-          # downstream consumers (orchestrator watcher; /rework convergence in
-          # scripts/rework_policy.py, which converges on n_critical==0 AND
-          # n_major==0 and lex-decreases (n_critical, n_major) per round).
-          # Counts are blocking-heading counts: CRITICAL/BLOCKING → n_critical,
-          # MAJOR → n_major. As the agent resolves blocking sections across
-          # rework rounds the counts strictly decrease, preserving the lex-
-          # decrease stuck-detection contract. n_minor is informational only.
-          # `|| true`: grep -c exits 1 on zero matches (still prints "0") and
-          # this step has no `set -e`, but guard it anyway for robustness.
-          N_CRITICAL=$(grep -cE '^#{1,6}[^[:alnum:]]*(CRITICAL|BLOCKING)\b' <<<"$COMMENT_BODY" || true)
-          N_MAJOR=$(grep -cE '^#{1,6}[^[:alnum:]]*MAJOR\b' <<<"$COMMENT_BODY" || true)
-          N_MINOR=$(grep -cE '^#{1,6}[^[:alnum:]]*(MINOR|NITPICK|LOW|INFO|MEDIUM)\b' <<<"$COMMENT_BODY" || true)
-          N_ISSUES=$((N_CRITICAL + N_MAJOR))
+          # finding_fingerprint: a sorted, deduped "class|file" array computed
+          # ONLY from the structured findings array, never from LLM prose
+          # (#1816 plan step 13) — empty on the legacy prose-fallback path,
+          # since no per-finding class/file is available there.
+          FINGERPRINT_JSON=$(jq -c '[.[] | "\(.class)|\(.file)"] | unique' <<<"$FINDINGS_JSON")
+          N_ISSUES=$(jq 'length' <<<"$FINDINGS_JSON")
 
           REPO="${{ github.repository }}"
           PR_NUM="${{ github.event.issue.number }}"
@@ -402,9 +414,8 @@ jobs:
             --argjson comment_id "$COMMENT_ID" \
             --arg comment_url "$COMMENT_URL" \
             --argjson n_issues "$N_ISSUES" \
-            --argjson n_critical "$N_CRITICAL" \
-            --argjson n_major "$N_MAJOR" \
-            --argjson n_minor "$N_MINOR" \
+            --argjson findings "$FINDINGS_JSON" \
+            --argjson finding_fingerprint "$FINGERPRINT_JSON" \
             --arg event_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{
               event_type: "review_negative",
@@ -419,9 +430,8 @@ jobs:
                 comment_id: $comment_id,
                 comment_url: $comment_url,
                 n_issues: $n_issues,
-                n_critical: $n_critical,
-                n_major: $n_major,
-                n_minor: $n_minor
+                findings: $findings,
+                finding_fingerprint: $finding_fingerprint
               },
               event_at: $event_at
             }')

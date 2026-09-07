@@ -9,6 +9,7 @@ carve-out tests, which must NOT apply here), plan requirement derivation
 from __future__ import annotations
 
 import hashlib
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -279,7 +280,7 @@ class TestPlannerPortContract:
         result = PlanResult(plan_text="## Plan\n- x\nlock: abc\n", resolved=True, reason=None)
         assert result.plan_text.startswith("## Plan")
         assert result.resolved is True
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             result.resolved = False  # frozen
 
     def test_fake_planner_satisfies_the_port_structurally(self):

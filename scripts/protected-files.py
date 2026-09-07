@@ -18,7 +18,6 @@ matrix and ``scripts/principal.py`` for detection logic.
 import json
 import os
 import sys
-from pathlib import Path
 
 # Wire in principal detection. Importing by relative name works because the
 # hook is invoked with cwd inside the repo and ``scripts/`` is the directory

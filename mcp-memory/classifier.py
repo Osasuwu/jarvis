@@ -26,7 +26,6 @@ import asyncio
 import json
 import os
 from dataclasses import dataclass
-from typing import Any
 
 import httpx
 

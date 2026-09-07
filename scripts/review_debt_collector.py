@@ -156,13 +156,31 @@ def severity_weight(severity: str) -> float:
 
 
 def has_blocking_finding(comment_body: str) -> bool:
-    """True iff the review comment carries a merge-blocking heading (AC6).
+    """True iff the review comment carries a merge-blocking verdict (AC6).
 
     When true the whole collector step is skipped: a PR that shipped with a
-    CRITICAL/MAJOR/BLOCKING finding is not a source of sub-MAJOR debt to mine.
+    blocking finding is not a source of debt to mine.
+
+    #1816: Layer B emits a structured ``<!-- code-review-findings -->`` block
+    carrying ``{"blocking": bool, "findings": [...]}``, which is authoritative
+    in both directions when present — mirrors code-review.yml's "Verify review
+    verdict" step. A marker present but unparseable/missing its boolean
+    ``blocking`` field is NOT "lacking the marker entirely": fail closed
+    (treat as blocking) rather than risk collecting debt off an ambiguous
+    verdict. Only a comment with no marker at all falls back to the legacy
+    prose severity-heading ladder (``BLOCKING_RE``).
     """
     if not comment_body:
         return False
+    m = FINDINGS_BLOCK_RE.search(comment_body)
+    if m is not None:
+        try:
+            payload = json.loads(m.group("json"))
+        except (ValueError, TypeError):
+            return True
+        if not isinstance(payload, dict) or not isinstance(payload.get("blocking"), bool):
+            return True
+        return payload["blocking"]
     return BLOCKING_RE.search(comment_body) is not None
 
 

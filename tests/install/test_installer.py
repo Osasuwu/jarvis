@@ -4,8 +4,6 @@ Covers should-fix items from #344 and test coverage gaps.
 """
 
 import json
-import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -491,7 +489,7 @@ class TestSkipEnvCLI:
         base = tmp_path
         target_root = base / "target"
         target_root.mkdir()
-        repo_root = Path(__file__).parent.parent.parent / "scripts" / "install"
+        Path(__file__).parent.parent.parent / "scripts" / "install"
 
         # Create minimal manifest
         manifest_path = base / "manifest.yaml"
