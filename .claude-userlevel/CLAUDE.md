@@ -59,11 +59,11 @@ Capture the returned episode UUID. Maintain a running `decision_uuids[]` per ses
 
 1. **Issue implementation** — always, even if reversible. Outcome attribution needs the basis.
 2. **`reversibility ∈ {hard, irreversible}`** — destructive DB ops, force-pushed history, published API changes.
-3. **`confidence < 0.7`** — uncertain calls deserve recorded rationale so `/reflect` can classify failures as reasoning vs execution.
+3. **`confidence < 0.7`** — uncertain calls deserve recorded rationale so failures can later be classified as reasoning vs execution.
 4. **Policy / schema / tag / config change** — `always_load` tags, protected-file edits, skill add/remove, hook config, schema migrations, installer manifest. Reversible but affects future sessions.
 5. **Architectural direction picked** — resolved "chose X over Y" after discussion, even if reversible. The rationale matters more than the bit set.
 
-Rule of thumb: "I just made a call that will outlive this session" → emit. "I just clarified my own thinking" → skip. When unsure, emit — one tool call vs. a `/reflect` blind spot.
+Rule of thumb: "I just made a call that will outlive this session" → emit. "I just clarified my own thinking" → skip. When unsure, emit — one tool call vs. a reflection blind spot.
 
 #### Post-hoc marker
 
@@ -73,7 +73,7 @@ If a decision is recorded after-the-fact (catching up on a missed call, e.g. dur
 
 Memory records can be wrong:
 
-- **Dead references** — file/skill/issue that no longer exists: ignore + note in skill output for `/reflect`. Don't ask the user about every dead reference.
+- **Dead references** — file/skill/issue that no longer exists: ignore + note in skill output for later review. Don't ask the user about every dead reference.
 - **Show-and-continue** — when a turn leans on memory, list inline as `(leaning on: <one-line> — <uuid>, <age>d)`. Catches staleness in real time without a question per memory. Keep terse: 1–3 records per turn max.
 - **Old reversibles** — `reversibility=reversible` decisions older than ~60 days: surface but don't treat as a constraint.
 
