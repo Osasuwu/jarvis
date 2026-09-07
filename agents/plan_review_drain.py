@@ -43,8 +43,6 @@ _PLANNER_ALLOWED_TOOLS = (
     "Grep",
     "Glob",
     "Agent",
-    "mcp__memory__memory_recall",
-    "mcp__memory__record_decision",
 )
 
 
