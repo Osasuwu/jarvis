@@ -4,10 +4,14 @@ Incident 2026-08-10: a soft-deleted GLOBAL `working_state_jarvis` row
 (deleted 2026-08-09, but with a newer updated_at than the live
 jarvis-scoped row) shadowed the live row in session-start context —
 scripts/session-context.py's `_query_memories` had no `deleted_at`
-filter and no project scoping. `_query_always_load` had the same
-missing filter. The snapshot query (~line 186) already filtered
-correctly; these tests pin the other two plus project scoping on the
-working-state lookup.
+filter. `_query_always_load` had the same missing filter. The snapshot
+query (~line 186) already filtered correctly; these tests pin the
+other two.
+
+(The working-state lookup itself — `_query_working_state`, the third
+callsite this incident originally covered — was removed in #1824 as a
+dead read path once #1793 moved working-state persistence to
+handoff.md; its project-scoping regression tests went with it.)
 
 The fake client below applies eq/is_/contains/order/limit against an
 in-memory row list, so the tests exercise filter *semantics* (does a
@@ -103,63 +107,6 @@ def _row(name, *, project=None, mem_type="project", updated_at, deleted_at=None,
         "updated_at": updated_at,
         "deleted_at": deleted_at,
     }
-
-
-def test_working_state_skips_deleted_global_shadow():
-    """The 2026-08-10 incident verbatim: deleted global row is newer than
-    the live project-scoped row — the live row must win."""
-    live = _row(
-        "working_state_jarvis",
-        project="jarvis",
-        updated_at="2026-08-08T00:00:00+00:00",
-    )
-    deleted_global = _row(
-        "working_state_jarvis",
-        project=None,
-        updated_at="2026-08-10T00:00:00+00:00",
-        deleted_at="2026-08-09T00:00:00+00:00",
-    )
-    client = _fake_client([deleted_global, live])
-
-    text, ids = sc._query_working_state(client, "jarvis")
-
-    assert ids == [live["id"]]
-    assert "content working_state_jarvis jarvis" in text
-
-
-def test_working_state_skips_live_wrong_scope_row():
-    """A live row in another scope (even newer) never shadows the
-    canonical project=<project> row that /end's RMW writes."""
-    live = _row(
-        "working_state_jarvis",
-        project="jarvis",
-        updated_at="2026-08-08T00:00:00+00:00",
-    )
-    stray_global = _row(
-        "working_state_jarvis",
-        project=None,
-        updated_at="2026-08-10T00:00:00+00:00",
-    )
-    client = _fake_client([stray_global, live])
-
-    text, ids = sc._query_working_state(client, "jarvis")
-
-    assert ids == [live["id"]]
-
-
-def test_working_state_no_live_row_returns_empty():
-    deleted = _row(
-        "working_state_jarvis",
-        project="jarvis",
-        updated_at="2026-08-10T00:00:00+00:00",
-        deleted_at="2026-08-09T00:00:00+00:00",
-    )
-    client = _fake_client([deleted])
-
-    text, ids = sc._query_working_state(client, "jarvis")
-
-    assert text is None
-    assert ids == []
 
 
 def test_user_profile_query_skips_deleted():

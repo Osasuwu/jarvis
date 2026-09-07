@@ -9,8 +9,8 @@ What it locks in:
 
 - Clean-path and compact-path assembly each emit < 9,500 chars with every
   surviving section present (AC1).
-- Compact path delivers the durable layer (always-load, user profile, working
-  state, goals) even when the one-line reminders drop (AC2).
+- Compact path delivers the durable layer (always-load, user profile, goals)
+  even when the one-line reminders drop (AC2).
 - Drop-priority order under induced overflow; dropped sections named on the
   ``dropped:`` line (AC3).
 - Every run self-logs its emitted size (AC4); the log lives at
@@ -77,12 +77,6 @@ class TestCleanPath:
         sections = [
             (sc._PRIORITY_ALWAYS_LOAD, "always_load", "## Always-Load Rules\n" + "a" * 1200, []),
             (sc._PRIORITY_USER_PROFILE, "user_profile", "## User Profile\n" + "u" * 500, []),
-            (
-                sc._PRIORITY_WORKING_STATE,
-                "working_state",
-                "## Working State (jarvis)\n" + "w" * 700,
-                [],
-            ),
             (sc._PRIORITY_GOALS, "goals", "## Active Goals (2)\n" + "g" * 250, []),
             (sc._PRIORITY_REMINDER, "pending_review", "**Pending memory candidates:** 3", []),
             (sc._PRIORITY_REMINDER, "milestone_sweep", "## Architecture Sweep\n- Milestone #1", []),
@@ -93,7 +87,6 @@ class TestCleanPath:
         for name in (
             "always_load",
             "user_profile",
-            "working_state",
             "goals",
             "pending_review",
             "milestone_sweep",
@@ -102,7 +95,6 @@ class TestCleanPath:
         # Delivery: every section's content is actually emitted.
         assert output.count("## Always-Load Rules") == 1
         assert output.count("## User Profile") == 1
-        assert output.count("## Working State (jarvis)") == 1
         assert output.count("## Active Goals (2)") == 1
 
 
@@ -114,12 +106,6 @@ class TestCompactPath:
             (sc._PRIORITY_RECOVERY, "recovery", "## Pre-Compact Recovery\n" + "s" * 2000, []),
             (sc._PRIORITY_ALWAYS_LOAD, "always_load", "## Always-Load Rules\n" + "a" * 1200, []),
             (sc._PRIORITY_USER_PROFILE, "user_profile", "## User Profile\n" + "u" * 500, []),
-            (
-                sc._PRIORITY_WORKING_STATE,
-                "working_state",
-                "## Working State (jarvis)\n" + "w" * 700,
-                [],
-            ),
             (sc._PRIORITY_GOALS, "goals", "## Active Goals (2)\n" + "g" * 250, []),
             (sc._PRIORITY_REMINDER, "pending_review", "**Pending memory candidates:** 3", []),
             (sc._PRIORITY_REMINDER, "milestone_sweep", "## Architecture Sweep\n- Milestone #1", []),
@@ -127,12 +113,11 @@ class TestCompactPath:
         output, dropped, emitted_ids, chars = sc.assemble_sections(sections)
         assert chars < sc.ASSEMBLY_BUDGET_CHARS
         # The durable layer + recovery survive; the reminders cut first.
-        for name in ("recovery", "always_load", "user_profile", "working_state", "goals"):
+        for name in ("recovery", "always_load", "user_profile", "goals"):
             assert name not in dropped
         assert "Pre-Compact Recovery" in output
         assert "Always-Load Rules" in output
         assert "User Profile" in output
-        assert "Working State (jarvis)" in output
         assert "Active Goals (2)" in output
 
 
@@ -144,7 +129,6 @@ class TestDropPriority:
             (sc._PRIORITY_RECOVERY, "recovery", "## Pre-Compact Recovery\n" + "r" * 1000, []),
             (sc._PRIORITY_ALWAYS_LOAD, "always_load", "## Always-Load Rules\n" + "a" * 1000, []),
             (sc._PRIORITY_USER_PROFILE, "user_profile", "## User Profile\n" + "u" * 1000, []),
-            (sc._PRIORITY_WORKING_STATE, "working_state", "## Working State\n" + "w" * 1000, []),
             (sc._PRIORITY_GOALS, "goals", "## Active Goals\n" + "g" * 1000, []),
             (sc._PRIORITY_REMINDER, "pending", "**pending**", []),
             (sc._PRIORITY_REMINDER, "sweep", "**sweep**", []),
@@ -156,7 +140,6 @@ class TestDropPriority:
             "sweep",
             "pending",  # reminders — lowest priority, later first
             "goals",
-            "working_state",
             "user_profile",
             "always_load",
         ]
@@ -184,8 +167,8 @@ class TestDropPriority:
 class TestMainTriggerGating:
     """#1460: main() drops the duplicated block on the `compact` trigger.
 
-    Recovery + always-load + working-state are the durable layer and stay
-    unconditional (already covered elsewhere). User profile, active goals,
+    Recovery + always-load are the durable layer and stay unconditional
+    (already covered elsewhere). User profile, active goals,
     and every one-line reminder duplicate what the just-compacted transcript
     summary + Pre-Compact Recovery pointer already carry, so on `compact`
     they must not be re-emitted. `startup` keeps the full block.
@@ -211,9 +194,8 @@ class TestMainTriggerGating:
             sc,
             "_query_memories",
             lambda client, *, mem_type, limit, extra_filter=None, compact=False: (
-                (f"- stub {mem_type}\n", ["id-1"])
-                if mem_type == "user"
-                else ("- working\n", ["id-2"])
+                f"- stub {mem_type}\n",
+                ["id-1"],
             ),
         )
         monkeypatch.setattr(
@@ -242,7 +224,6 @@ class TestMainTriggerGating:
         assert "## MCP Failures" in out
         # Durable layer present too.
         assert "Always-Load Rules" in out
-        assert "Working State (jarvis)" in out
 
     def test_compact_drops_profile_goals_and_reminders(self, monkeypatch, capsys):
         out = self._run_main(monkeypatch, capsys, trigger="compact")
@@ -255,10 +236,9 @@ class TestMainTriggerGating:
         assert "## MCP Failures" not in out
         # Durable layer survives the slim-down.
         assert "Always-Load Rules" in out
-        assert "Working State (jarvis)" in out
 
     def test_compact_output_under_6kb(self, monkeypatch, capsys):
-        """AC2: measured compact-trigger output <= 6 KB with populated working state."""
+        """AC2: measured compact-trigger output <= 6 KB."""
         out = self._run_main(monkeypatch, capsys, trigger="compact")
         assert len(out.encode("utf-8")) <= 6 * 1024
 

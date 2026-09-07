@@ -145,16 +145,13 @@ class TestEndSkillWorkingStateRMW:
 
 
 class TestOtherReadersUnchanged:
-    """Verify AC7: other readers (session-context.py, research/SKILL.md) are not modified."""
+    """Verify AC7: other readers (research/SKILL.md) are not modified.
 
-    def test_session_context_working_state_query_unchanged(self):
-        """AC7: session-context.py still queries working_state_<project> as before."""
-        path = Path(__file__).resolve().parent.parent.parent / "scripts" / "session-context.py"
-        if path.exists():
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            # Verify the simple query is still there
-            assert "working_state_" in content, "session-context.py no longer queries working_state"
+    session-context.py's working_state_<project> read was intentionally
+    deleted in #1824 as dead code (nothing wrote that key after #1793 moved
+    working-state persistence to handoff.md) — the corresponding pin here
+    was removed along with it.
+    """
 
     def test_research_skill_gate_unchanged(self):
         """AC7: research/SKILL.md still references working_state gate pattern."""
