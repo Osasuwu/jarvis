@@ -98,7 +98,6 @@ except ImportError:
 # UserPromptSubmit and other PreToolUse recall hooks (#1276).
 if str(_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(_ROOT / "scripts"))
-from lib.harness import home as _harness_home  # noqa: E402
 from lib.recall_dedup import (  # noqa: E402
     MODE_PRETOOLUSE,
     filter_emittable,
@@ -142,7 +141,19 @@ KNOWN_PROJECTS = {"jarvis", "redrobot"}
 # dedup key already includes the derived query text + project, so a
 # "decision ..." query naturally occupies its own slot regardless of which
 # script computed it.
-_CLAUDE_HOME = _harness_home()
+def _claude_home() -> Path:
+    """Agent home directory: ``~/.claude`` unless ``$JARVIS_CLAUDE_HOME`` overrides it.
+
+    Standalone inline lookup (no harness seam — ``scripts/lib/harness`` was
+    deleted per #1800): honours the same override the former harness adapter did.
+    """
+    override = os.environ.get("JARVIS_CLAUDE_HOME")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".claude"
+
+
+_CLAUDE_HOME = _claude_home()
 CACHE_DIR = _CLAUDE_HOME / "cache"
 CACHE_FILE = CACHE_DIR / "pretooluse-recall-dedup.json"
 STATS_FILE = CACHE_DIR / "pretooluse-recall-stats.json"

@@ -29,9 +29,6 @@ from pathlib import Path
 T2_CANONICAL = {
     ".gitleaks.toml",
     ".pre-commit-config.yaml",
-    "scripts/secret-scanner.py",
-    "scripts/protected-files.py",
-    "scripts/principal.py",
 }
 
 # User-level MIRROR paths (relative to ``~/.claude/``). Canonical source for
