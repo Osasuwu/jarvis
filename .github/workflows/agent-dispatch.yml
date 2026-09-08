@@ -117,7 +117,11 @@ jobs:
             # a fresh `gh`/lint/test round-trip, not a single completion
             # call. Non-fatal-overage handling (catching "successful result
             # after N turns" and not failing the step) is the fallback if a
-            # false red still reproduces above this ceiling.
+            # false red still reproduces above this ceiling. Live
+            # verification that 100 actually clears the false red on a real
+            # run is tracked separately in #1848 — it can't be checked from
+            # this PR, since this workflow file only takes effect for future
+            # `issues: labeled` runs once it's on `main`.
             --max-turns 100
             --allowed-tools "Read,Write,Edit,Glob,Grep,Bash(git status:*),Bash(git branch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push:*),Bash(git diff:*),Bash(git log:*),Bash(gh issue view:*),Bash(gh issue edit:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh label list:*),Bash(ruff check:*),Bash(ruff format:*),Bash(pytest:*),Bash(python -m pytest:*),Bash(python -m compileall:*)"
             # Mechanical backstop for the prompt's "never edit" ask above —
